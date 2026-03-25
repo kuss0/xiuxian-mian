@@ -482,7 +482,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
 def hydrate_identity_profile(send_as_entity):
     send_as_id = int(getattr(send_as_entity, "id", 0) or 0)
     if send_as_id <= 0:
-        raise ValueError("无法解析 SEND_AS_ID")
+        raise ValueError("无法解析 身份 ID")
     username = getattr(send_as_entity, "username", "") or ""
     label = getattr(send_as_entity, "title", "") or getattr(send_as_entity, "first_name", "") or ""
     update_send_as_profile(send_as_id, username=username, label=label)
@@ -1225,11 +1225,11 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
 async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, account_id=None):
     send_as_id_text = str(send_as_id_raw or "").strip()
     if not send_as_id_text:
-        return False, "SEND_AS_ID 不能为空", None
+        return False, "身份 ID 不能为空", None
     try:
         candidate_id = int(send_as_id_text)
     except (TypeError, ValueError):
-        return False, "SEND_AS_ID 必须是数字", None
+        return False, "身份 ID 必须是数字", None
     try:
         # 优先使用关联账号的 client，回退到任意已登录 client
         from .config import get_client, get_all_clients
@@ -1240,11 +1240,11 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
             tc = next(iter(_all.values())) if _all else client
         send_as_entity = await tc.get_entity(candidate_id)
     except Exception:
-        return False, "身份不存在或当前账号无权访问该 SEND_AS_ID", None
+        return False, "身份不存在或当前账号无权访问该 身份 ID", None
 
     canonical_id = int(getattr(send_as_entity, "id", 0) or 0)
     if canonical_id <= 0:
-        return False, "无法解析有效的 SEND_AS_ID", None
+        return False, "无法解析有效的 身份 ID", None
     if canonical_id in get_identity_ids():
         display_name = get_identity_display_name(canonical_id)
         await send_audit_log(f"🪪 新增身份请求命中已存在身份[{display_name}]，来源：{source}。")
