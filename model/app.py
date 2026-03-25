@@ -241,6 +241,10 @@ async def bootstrap():
             acct_id = int(acct_id_str)
             tc = create_account_client(acct_id)
             await tc.start()
+            try:
+                await tc.get_dialogs()
+            except Exception:
+                pass
             register_client(acct_id, tc)
             _register_event_handlers(tc)
         except Exception:

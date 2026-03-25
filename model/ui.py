@@ -756,6 +756,11 @@ async def ui_account_login_verify(code, session_key, password=None):
     # 用正式 session 文件创建 client 并启动
     real_tc = create_account_client(account_id)
     await real_tc.start()
+    # 预加载对话列表，确保新 client 能解析游戏群等实体
+    try:
+        await real_tc.get_dialogs()
+    except Exception:
+        pass
     register_client(account_id, real_tc)
 
     # 注册事件处理器
