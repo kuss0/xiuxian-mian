@@ -90,8 +90,44 @@ REALM_SORT_ORDER = [
     "化神后期大圆满",
 ]
 REALM_SORT_INDEX = {realm: index for index, realm in enumerate(REALM_SORT_ORDER)}
+REALM_XIUWEI_MAX_MAP = {
+    100: "炼气一层",
+    150: "炼气二层",
+    220: "炼气三层",
+    300: "炼气四层",
+    400: "炼气五层",
+    520: "炼气六层",
+    650: "炼气七层",
+    800: "炼气八层",
+    1000: "炼气九层",
+    1250: "炼气十层",
+    1500: "炼气十一层",
+    1800: "炼气十二层",
+    2200: "炼气十三层",
+    5000: "筑基初期",
+    10000: "筑基中期",
+    30000: "筑基后期",
+    50000: "结丹初期",
+    100000: "结丹中期",
+    200000: "结丹后期",
+    500000: "元婴初期",
+    1000000: "元婴中期",
+    2000000: "元婴后期",
+    4000000: "化神初期",
+    8000000: "化神中期",
+    16000000: "化神后期",
+    32000000: "化神后期大圆满",
+}
 YUANYING_MIN_REALM = "元婴初期"
 YUANYING_MIN_REALM_INDEX = REALM_SORT_INDEX[YUANYING_MIN_REALM]
+
+
+def infer_realm_from_xiuwei_max(xiuwei_max):
+    try:
+        xiuwei_max = int(xiuwei_max or 0)
+    except (TypeError, ValueError):
+        return ""
+    return REALM_XIUWEI_MAX_MAP.get(xiuwei_max, "")
 
 IDENTITY_STATE_TEMPLATE = {
     # 业务对象开关（启动默认全开）
@@ -308,6 +344,10 @@ def get_send_as_profile(send_as_id=None):
         send_as_id = get_current_identity_id()
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(int(send_as_id), {}))
+    if not (profile.get("realm") or "").strip():
+        inferred_realm = infer_realm_from_xiuwei_max(profile.get("xiuwei_max", 0))
+        if inferred_realm:
+            profile["realm"] = inferred_realm
     return profile
 
 
@@ -511,17 +551,18 @@ def set_module_window_hours(module_name, send_as_id, start_hour_utc, end_hour_ut
     )
 
 
-def get_realm_sort_index(realm):
-    realm = (realm or "").strip()
+def get_realm_sort_index(realm, xiuwei_max=0):
+    realm = (realm or "").strip() or infer_realm_from_xiuwei_max(xiuwei_max)
     return REALM_SORT_INDEX.get(realm, len(REALM_SORT_INDEX))
 
 
-def get_realm_sort_key(realm, send_as_id=0):
-    return (get_realm_sort_index(realm), int(send_as_id or 0))
+def get_realm_sort_key(realm, send_as_id=0, xiuwei_max=0):
+    return (get_realm_sort_index(realm, xiuwei_max=xiuwei_max), int(send_as_id or 0))
 
 
 def is_yuanying_realm_available(send_as_id=None):
-    realm = (get_send_as_profile(send_as_id).get("realm") or "").strip()
+    profile = get_send_as_profile(send_as_id)
+    realm = (profile.get("realm") or "").strip() or infer_realm_from_xiuwei_max(profile.get("xiuwei_max", 0))
     if not realm:
         return True
     realm_index = REALM_SORT_INDEX.get(realm)

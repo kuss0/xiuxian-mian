@@ -148,7 +148,7 @@ def get_identity_ui_snapshot(send_as_id):
 def get_ui_snapshot(session_token=None):
     identities = sorted(
         (get_identity_ui_snapshot(identity_id) for identity_id in get_identity_ids()),
-        key=lambda identity: get_realm_sort_key(identity.get("realm"), identity.get("send_as_id")),
+        key=lambda identity: get_realm_sort_key(identity.get("realm"), identity.get("send_as_id"), xiuwei_max=identity.get("xiuwei_max", 0)),
     )
     startup_alerts = get_startup_module_alerts()
     if session_token:

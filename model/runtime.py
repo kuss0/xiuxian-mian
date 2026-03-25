@@ -159,17 +159,26 @@ async def fetch_forum_topics(group_id):
     if not bool(getattr(entity, "forum", False)):
         return False, f"群聊[{group_title}]未开启话题功能", []
 
+    request_kwargs = {
+        "q": "",
+        "offset_date": None,
+        "offset_id": 0,
+        "offset_topic": 0,
+        "limit": 100,
+    }
+    request = None
+    for peer_key in ("channel", "peer"):
+        try:
+            request = request_cls(**{peer_key: peer, **request_kwargs})
+            break
+        except TypeError as e:
+            if f"unexpected keyword argument '{peer_key}'" not in str(e):
+                return False, _map_forum_topics_error(e), []
+    if request is None:
+        return False, "当前 Telethon 版本不支持自动读取话题列表", []
+
     try:
-        result = await client(
-            request_cls(
-                channel=peer,
-                q="",
-                offset_date=None,
-                offset_id=0,
-                offset_topic=0,
-                limit=100,
-            )
-        )
+        result = await client(request)
     except Exception as e:
         return False, _map_forum_topics_error(e), []
 
