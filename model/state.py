@@ -230,6 +230,8 @@ GLOBAL_STATE_DEFAULTS = {
     "identity_states": {},
     "identity_ids": list(SEND_AS_IDS),
     "quiz_learning_watchers": {},
+    "accounts": {},
+    "identity_account_map": {},
 }
 _meta_state = copy.deepcopy(GLOBAL_STATE_DEFAULTS)
 

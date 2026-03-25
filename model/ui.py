@@ -1260,6 +1260,7 @@ async def handle_ui_http(reader, writer):
                     ok, message, account_id = await ui_account_login_verify(code, session_key, password=password)
                     if not ok and message == "need_2fa":
                         body = _make_json_payload(False, error="need_2fa")
+                        _write_response(writer, "HTTP/1.1 200 OK", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
                     else:
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(
@@ -1269,7 +1270,7 @@ async def handle_ui_http(reader, writer):
                             snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
                             extra={"account_id": account_id} if account_id else None,
                         )
-                    _write_response(writer, "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             else:
                 _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
     except Exception as e:
