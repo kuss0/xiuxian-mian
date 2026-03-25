@@ -403,7 +403,10 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
         account_id = get_identity_account(send_as_id)
         active_client = get_client(account_id) if account_id else client
         peer = await active_client.get_input_entity(get_game_group_id())
-        send_as_peer = await active_client.get_input_entity(send_as_id)
+        # 如果 send_as_id 就是当前登录账号自己，不需要 send_as 参数
+        me = await active_client.get_me()
+        is_self = me and int(me.id) == send_as_id
+        send_as_peer = None if is_self else await active_client.get_input_entity(send_as_id)
         reply_to_spec = None
         if reply_to:
             reply_to_spec = types.InputReplyToMessage(
@@ -412,13 +415,15 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
             )
         elif topic_id > 0:
             reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
+        request_kwargs = dict(
+            peer=peer,
+            message=command,
+            reply_to=reply_to_spec,
+        )
+        if send_as_peer is not None:
+            request_kwargs["send_as"] = send_as_peer
         result = await active_client(
-            functions.messages.SendMessageRequest(
-                peer=peer,
-                message=command,
-                reply_to=reply_to_spec,
-                send_as=send_as_peer,
-            )
+            functions.messages.SendMessageRequest(**request_kwargs)
         )
         msg_id = _extract_sent_message_id(result)
         if msg_id <= 0:
