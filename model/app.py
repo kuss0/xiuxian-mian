@@ -186,6 +186,7 @@ async def on_message(event):
 
         for identity_id in get_identity_ids():
             with use_identity(identity_id):
+                await handle_tree_invasion_end(text, now, False)
                 await handle_tree_invasion_start(text, now)
                 await handle_tree_rebirth_reset(text, now)
 
