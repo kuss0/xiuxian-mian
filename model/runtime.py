@@ -7,14 +7,17 @@ import time
 import traceback
 from datetime import datetime
 from types import SimpleNamespace
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
+from urllib.request import urlopen
 
 from telethon import functions, types
 
 from .config import (
     CMD_BATTLE_POWER,
     CMD_IDENTITY_INFO,
+    LOG_BOT_TOKEN,
     LOG_GROUP_ID,
+    LOG_SEND_MODE,
     MESSAGES_DIR,
     MY_MSG_MAX,
     MY_MSG_TTL,
@@ -26,6 +29,7 @@ from .config import (
     UI_AUTH_IDLE_TIMEOUT_SEC,
     UI_PUBLIC_BASE_URL,
     client,
+    get_client,
     is_identity_refresh_command_text,
 )
 from .persistence import mark_dirty
@@ -39,6 +43,7 @@ from .state import (
     get_identity_state,
     get_send_as_label,
     is_auto_delete_sent_messages_enabled,
+    get_identity_account,
     state,
     use_identity,
 )
@@ -103,26 +108,73 @@ def is_script_command_text(text):
     return any(raw_text == cmd or raw_text.startswith(f"{cmd} ") for cmd in SCRIPT_COMMANDS)
 
 
+def _send_log_group_via_bot(text, *, reply_to_msg_id=None, link_preview=True):
+    if not LOG_BOT_TOKEN:
+        return False, "missing bot token"
+    payload = {
+        "chat_id": str(LOG_GROUP_ID),
+        "text": text,
+        "disable_web_page_preview": "true" if not link_preview else "false",
+    }
+    if int(reply_to_msg_id or 0) > 0:
+        payload["reply_to_message_id"] = int(reply_to_msg_id)
+    url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/sendMessage"
+    with urlopen(url, data=urlencode(payload).encode("utf-8"), timeout=15) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    try:
+        data = json.loads(body)
+    except Exception:
+        data = None
+    if isinstance(data, dict) and data.get("ok") is True:
+        return True, ""
+    return False, body or "bot api returned non-ok response"
+
+
+async def _send_log_group_message(text, *, reply_to_msg_id=None, link_preview=True):
+    if LOG_SEND_MODE == "bot":
+        try:
+            ok, error_text = await asyncio.to_thread(
+                _send_log_group_via_bot,
+                text,
+                reply_to_msg_id=reply_to_msg_id,
+                link_preview=link_preview,
+            )
+            if ok:
+                return True
+            print(f"_send_log_group_message bot fallback: {error_text} | text={text}")
+        except Exception as e:
+            print(f"_send_log_group_message bot failed: {e} | text={text}")
+    try:
+        await client.send_message(
+            LOG_GROUP_ID,
+            text,
+            reply_to=int(reply_to_msg_id or 0) or None,
+            link_preview=link_preview,
+        )
+        return True
+    except Exception as e:
+        print(f"_send_log_group_message account failed: {e} | text={text}")
+        return False
+
+
 async def send_audit_log(content):
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     message = f"【🍃 监控日志 {now}】\n{content}"
-    try:
-        await client.send_message(LOG_GROUP_ID, message)
-        return True
-    except Exception as e:
-        print(f"send_audit_log failed: {e} | content={content}")
-        return False
+    ok = await _send_log_group_message(message, link_preview=False)
+    if not ok:
+        print(f"send_audit_log failed | content={content}")
+    return ok
 
 
 async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True):
-    try:
-        await event.reply(text, link_preview=link_preview)
+    reply_to_msg_id = int(getattr(event, "id", 0) or 0)
+    ok = await _send_log_group_message(text, reply_to_msg_id=reply_to_msg_id, link_preview=link_preview)
+    if ok:
         return True
-    except Exception as e:
-        print(f"reply_log_group_message failed: {e} | text={text}")
-        if audit_on_error:
-            await send_audit_log(f"{error_prefix}: {e}")
-        return False
+    print(f"reply_log_group_message failed | text={text}")
+    if audit_on_error:
+        await send_audit_log(f"{error_prefix}")
+    return False
 
 
 def _map_forum_topics_error(error):
@@ -348,8 +400,10 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
     topic_id = get_game_topic_id()
 
     try:
-        peer = await client.get_input_entity(get_game_group_id())
-        send_as_peer = await client.get_input_entity(send_as_id)
+        account_id = get_identity_account(send_as_id)
+        active_client = get_client(account_id) if account_id else client
+        peer = await active_client.get_input_entity(get_game_group_id())
+        send_as_peer = await active_client.get_input_entity(send_as_id)
         reply_to_spec = None
         if reply_to:
             reply_to_spec = types.InputReplyToMessage(
@@ -358,7 +412,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
             )
         elif topic_id > 0:
             reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
-        result = await client(
+        result = await active_client(
             functions.messages.SendMessageRequest(
                 peer=peer,
                 message=command,

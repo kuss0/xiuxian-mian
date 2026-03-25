@@ -26,6 +26,10 @@ with open(_env_path, "rb") as _f:
 API_ID = _env["api_id"]
 API_HASH = _env["api_hash"]
 LOG_GROUP_ID = _env["log_group_id"]
+LOG_SEND_MODE = str(_env.get("log_send_mode", "account") or "account").strip().lower()
+if LOG_SEND_MODE not in {"account", "bot"}:
+    LOG_SEND_MODE = "account"
+LOG_BOT_TOKEN = str(_env.get("log_bot_token", "") or "").strip()
 SEND_AS_IDS = _env["send_as_ids"]
 
 GAME_GROUP_ID = -1001680975844  # 游戏主群（可通过 UI 基础配置修改）
@@ -256,6 +260,32 @@ SEND_AS_ID = SEND_AS_DEFAULT_ID  # 兼容旧代码路径，逐步替换为按 id
 migrate_legacy_storage_files()
 os.environ['PYTHONUNBUFFERED'] = '1'
 client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+
+# ================= 多账号 client 管理 =================
+_clients: dict[int, TelegramClient] = {}  # account_id → TelegramClient
+
+
+def get_client(account_id=None):
+    if account_id is None:
+        return client
+    return _clients.get(int(account_id), client)
+
+
+def register_client(account_id, tc):
+    _clients[int(account_id)] = tc
+
+
+def unregister_client(account_id):
+    _clients.pop(int(account_id), None)
+
+
+def get_all_clients():
+    return dict(_clients)
+
+
+def create_account_client(account_id):
+    session_path = os.path.join(SESSION_DIR, f"account_{account_id}")
+    return TelegramClient(session_path, API_ID, API_HASH)
 
 # ================= 预编译正则 =================
 RE_HOURS = re.compile(r'(\d+)\s*小时')

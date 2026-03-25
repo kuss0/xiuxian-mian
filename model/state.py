@@ -44,7 +44,7 @@ IDENTITY_BOOL_FIELDS = {
 }
 LEGACY_PERSIST_KEYS = IDENTITY_MODULE_COLUMNS + IDENTITY_TIMER_COLUMNS + IDENTITY_RUNTIME_COLUMNS
 PERSIST_KEYS = LEGACY_PERSIST_KEYS  # 兼容旧持久化函数，后续切换为 SQLite 实现
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -229,6 +229,7 @@ GLOBAL_STATE_DEFAULTS = {
     "send_as_profiles": {},
     "identity_states": {},
     "identity_ids": list(SEND_AS_IDS),
+    "quiz_learning_watchers": {},
 }
 _meta_state = copy.deepcopy(GLOBAL_STATE_DEFAULTS)
 
@@ -489,6 +490,83 @@ def get_global_enabled():
 def set_global_enabled(enabled):
     _meta_state["global_enabled"] = bool(enabled)
     return get_global_enabled()
+
+
+def get_quiz_learning_watchers():
+    watchers = _meta_state.get("quiz_learning_watchers") or {}
+    return watchers if isinstance(watchers, dict) else {}
+
+
+def set_quiz_learning_watchers(watchers):
+    normalized = {}
+    for raw_key, item in (watchers or {}).items():
+        watcher_key = str(raw_key or "").strip().lower()
+        if not watcher_key or not isinstance(item, dict):
+            continue
+        options = item.get("options") or {}
+        normalized_options = {
+            option_key: str(options.get(option_key) or "").strip()
+            for option_key in ("A", "B", "C", "D")
+        }
+        matched_answer = str(item.get("matched_answer") or "").strip().upper()
+        normalized[watcher_key] = {
+            "target_tag": str(item.get("target_tag") or "").strip(),
+            "question": str(item.get("question") or "").strip(),
+            "options": normalized_options,
+            "prompt_msg_id": int(item.get("prompt_msg_id") or 0),
+            "prompt_ts": float(item.get("prompt_ts") or 0),
+            "expire_at": float(item.get("expire_at") or 0),
+            "matched_answer": matched_answer if matched_answer in {"A", "B", "C", "D"} else "",
+        }
+    _meta_state["quiz_learning_watchers"] = normalized
+    return get_quiz_learning_watchers()
+
+
+# ================= 多账号管理 =================
+
+def get_accounts():
+    accounts = _meta_state.get("accounts") or {}
+    return accounts if isinstance(accounts, dict) else {}
+
+
+def set_accounts(accounts):
+    _meta_state["accounts"] = dict(accounts or {})
+
+
+def get_account(account_id):
+    return get_accounts().get(str(account_id))
+
+
+def set_account(account_id, info):
+    accounts = get_accounts()
+    accounts[str(account_id)] = info
+    set_accounts(accounts)
+
+
+def remove_account(account_id):
+    accounts = get_accounts()
+    accounts.pop(str(account_id), None)
+    set_accounts(accounts)
+
+
+def get_identity_account_map():
+    m = _meta_state.get("identity_account_map") or {}
+    return m if isinstance(m, dict) else {}
+
+
+def set_identity_account_map(m):
+    _meta_state["identity_account_map"] = dict(m or {})
+
+
+def get_identity_account(send_as_id):
+    m = get_identity_account_map()
+    return int(m.get(str(send_as_id), 0) or 0)
+
+
+def set_identity_account(send_as_id, account_id):
+    m = get_identity_account_map()
+    m[str(send_as_id)] = int(account_id)
+    set_identity_account_map(m)
 
 
 def get_module_window_profile_keys(module_name):
@@ -759,6 +837,7 @@ __all__ = [
     "get_forum_topics",
     "get_forum_topics_updated_at",
     "get_global_enabled",
+    "get_quiz_learning_watchers",
     "is_auto_delete_sent_messages_enabled",
     "get_identity_display_name",
     "get_identity_enabled",
@@ -787,6 +866,7 @@ __all__ = [
     "set_game_topic_id",
     "set_forum_topics",
     "set_global_enabled",
+    "set_quiz_learning_watchers",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",
     "set_module_window_hours",

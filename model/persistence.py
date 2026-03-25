@@ -31,9 +31,15 @@ from .state import (
     set_forum_topics,
     set_global_enabled,
     set_game_bot_ids,
+    get_quiz_learning_watchers,
     set_game_group_id,
     set_game_topic_id,
+    set_quiz_learning_watchers,
     set_send_as_profile,
+    get_accounts,
+    set_accounts,
+    get_identity_account_map,
+    set_identity_account_map,
     _meta_state,
 )
 from .timing import configure_timing
@@ -252,6 +258,18 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("global_enabled", "1"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("quiz_learning_watchers", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("accounts", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("identity_account_map", "{}"),
     )
     conn.commit()
     _db_initialized = True
@@ -530,6 +548,18 @@ def save_state():
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
             ("global_enabled", "1" if get_global_enabled() else "0"),
         )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("quiz_learning_watchers", json.dumps(get_quiz_learning_watchers(), ensure_ascii=False)),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("accounts", json.dumps(get_accounts(), ensure_ascii=False)),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("identity_account_map", json.dumps(get_identity_account_map(), ensure_ascii=False)),
+        )
         for send_as_id in get_identity_ids():
             upsert_identity_to_db(send_as_id)
         conn.commit()
@@ -582,6 +612,21 @@ def load_state():
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         set_auto_delete_sent_messages(str(meta_map.get("auto_delete_sent_messages") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
         set_global_enabled(str(meta_map.get("global_enabled") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
+        try:
+            quiz_learning_watchers = json.loads(meta_map.get("quiz_learning_watchers") or "{}")
+        except Exception:
+            quiz_learning_watchers = {}
+        set_quiz_learning_watchers(quiz_learning_watchers)
+        try:
+            accounts = json.loads(meta_map.get("accounts") or "{}")
+        except Exception:
+            accounts = {}
+        set_accounts(accounts)
+        try:
+            identity_account_map = json.loads(meta_map.get("identity_account_map") or "{}")
+        except Exception:
+            identity_account_map = {}
+        set_identity_account_map(identity_account_map)
 
         rows = conn.execute(
             "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"

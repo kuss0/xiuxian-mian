@@ -6,7 +6,7 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client
+from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_all_clients, get_client, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, scan_startup_timeout_tasks, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
@@ -52,6 +52,7 @@ from .runtime import (
 )
 from .state import (
     IDENTITY_TIMER_COLUMNS,
+    get_accounts,
     get_game_bot_ids,
     get_game_group_id,
     get_global_enabled,
@@ -225,9 +226,26 @@ async def on_message_edited(event):
         print(traceback.format_exc())
 
 
+def _register_event_handlers(tc):
+    tc.add_event_handler(on_message, events.NewMessage())
+    tc.add_event_handler(on_message_edited, events.MessageEdited())
+
+
 async def bootstrap():
     await client.start()
     loaded = load_state()
+
+    # 启动已保存的额外账号 client
+    for acct_id_str, acct_info in get_accounts().items():
+        try:
+            acct_id = int(acct_id_str)
+            tc = create_account_client(acct_id)
+            await tc.start()
+            register_client(acct_id, tc)
+            _register_event_handlers(tc)
+        except Exception:
+            print(f"启动额外账号 {acct_id_str} 失败: {traceback.format_exc()}")
+
     await start_ui_server()
     me = await client.get_me()
     state["my_user_id"] = me.id

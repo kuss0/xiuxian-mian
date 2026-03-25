@@ -8,6 +8,8 @@ from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
 
 from .config import (
+    API_HASH,
+    API_ID,
     MODULE_KEY_MAP,
     TZ_LOCAL,
     UI_AUTH_COOKIE_NAME,
@@ -16,6 +18,8 @@ from .config import (
     UI_HOST,
     UI_PORT,
     UI_PUBLIC_BASE_URL,
+    create_account_client,
+    register_client,
 )
 from .control import (
     get_identity_info_refresh_state,
@@ -36,6 +40,7 @@ from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_u
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
+    get_accounts,
     get_available_module_names,
     get_forum_topics,
     get_forum_topics_updated_at,
@@ -52,11 +57,13 @@ from .state import (
     get_module_window_hours_local,
     get_realm_sort_key,
     get_send_as_profile,
+    set_account,
     set_auto_delete_sent_messages,
     set_forum_topics,
     set_game_bot_ids,
     set_game_group_id,
     set_game_topic_id,
+    set_identity_account,
     set_pet_name,
     state,
     use_identity,
@@ -167,6 +174,7 @@ def get_ui_snapshot(session_token=None):
         "auth_idle_timeout_sec": UI_AUTH_IDLE_TIMEOUT_SEC,
         "refresh_interval_sec": UI_AUTO_REFRESH_SEC,
         "startup_alerts": startup_alerts,
+        "accounts": get_accounts(),
         "identities": identities,
     }
 
@@ -452,7 +460,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "</div>"
         "<div id='flash' class='flash hidden'></div>"
         "<div class='layout'>"
-        "<aside class='sidebar'><section class='card'><h2>账号与身份</h2><div class='meta'>当前登录账号：<span id='account-user-id'>-</span></div><div class='sidebar-actions'><span class='form-label' style='margin:0;'>管理 SEND_AS_ID</span><button type='button' class='btn btn-secondary' data-open-add-identity='1'>新增身份</button></div><div class='identity-mobile-picker'><label class='form-label' for='identity-select-mobile' style='margin:0;'>切换身份</label><select id='identity-select-mobile' class='text-input'></select></div><div id='identity-list' class='identity-list'></div></section></aside>"
+        "<aside class='sidebar'><section class='card'><h2>账号与身份</h2><div class='meta'>当前登录账号：<span id='account-user-id'>-</span></div><div class='sidebar-actions'><span class='form-label' style='margin:0;'>管理 SEND_AS_ID</span><button type='button' class='btn btn-secondary' data-open-add-identity='1'>新增身份</button><button type='button' class='btn btn-secondary' data-open-login-account='1' style='margin-top:4px;'>登录账号</button></div><div class='identity-mobile-picker'><label class='form-label' for='identity-select-mobile' style='margin:0;'>切换身份</label><select id='identity-select-mobile' class='text-input'></select></div><div id='identity-list' class='identity-list'></div></section></aside>"
         "<main class='main'><section id='summary-panel'></section><section class='card'><h2>模块详情</h2><div id='module-grid' class='module-grid'></div></section></main>"
         "</div>"
         "<div id='basic-config-modal' class='modal-backdrop'>"
@@ -478,6 +486,27 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "      <input class='text-input' name='send_as_id' inputmode='numeric' placeholder='例如 1234567890' />"
         "      <div class='modal-actions'><button class='btn btn-secondary' type='button' data-close-modal='identity'>取消</button><button class='btn' type='submit'>新增</button></div>"
         "    </form>"
+        "  </div>"
+        "</div>"
+        "<div id='login-account-modal' class='modal-backdrop'>"
+        "  <div class='modal-card'>"
+        "    <div class='modal-header'><h3 style='margin:0;'>登录 Telegram 账号</h3><button class='icon-btn' type='button' data-close-modal='login-account'>×</button></div>"
+        "    <div id='login-step-phone'>"
+        "      <div class='form-label'>输入 Telegram 绑定的手机号（含国际区号，如 +86...）</div>"
+        "      <input class='text-input' id='login-phone' placeholder='+8613800138000' />"
+        "      <div class='modal-actions'><button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button><button class='btn' type='button' id='login-send-code-btn'>发送验证码</button></div>"
+        "    </div>"
+        "    <div id='login-step-code' style='display:none;'>"
+        "      <div class='form-label'>请输入收到的验证码</div>"
+        "      <input class='text-input' id='login-code' placeholder='12345' />"
+        "      <div class='modal-actions'><button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button><button class='btn' type='button' id='login-verify-btn'>验证</button></div>"
+        "    </div>"
+        "    <div id='login-step-2fa' style='display:none;'>"
+        "      <div class='form-label'>该账号已开启两步验证，请输入密码</div>"
+        "      <input class='text-input' id='login-2fa-password' type='password' placeholder='两步验证密码' />"
+        "      <div class='modal-actions'><button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button><button class='btn' type='button' id='login-2fa-btn'>验证</button></div>"
+        "    </div>"
+        "    <div id='login-status' class='form-label' style='color:#f59e0b;margin-top:8px;'></div>"
         "  </div>"
         "</div>"
         "<div id='pet-name-modal' class='modal-backdrop'>"
@@ -553,6 +582,8 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "function closeBasicConfigModal(){document.getElementById('basic-config-modal').classList.remove('show');}"
         "function openIdentityModal(){const modal=document.getElementById('add-identity-modal');modal.classList.add('show');const input=modal.querySelector('input[name=\"send_as_id\"]');if(input){input.value='';input.focus();}}"
         "function closeIdentityModal(){document.getElementById('add-identity-modal').classList.remove('show');}"
+        "function openLoginAccountModal(){const modal=document.getElementById('login-account-modal');modal.classList.add('show');document.getElementById('login-step-phone').style.display='';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='none';document.getElementById('login-status').textContent='';document.getElementById('login-phone').value='';document.getElementById('login-code').value='';document.getElementById('login-phone').focus();}"
+        "function closeLoginAccountModal(){document.getElementById('login-account-modal').classList.remove('show');document.getElementById('login-status').textContent='';}"
         "function openPetModal(){const identity=getSelectedIdentity();if(!identity){return;}const modal=document.getElementById('pet-name-modal');modal.querySelector('input[name=\"send_as_id\"]').value=identity.send_as_id;modal.querySelector('input[name=\"pet_name\"]').value=identity.pet_name||'';document.getElementById('pet-name-identity').textContent=`当前身份：${identity.display_name}`;modal.classList.add('show');const input=modal.querySelector('input[name=\"pet_name\"]');if(input){input.focus();input.select();}}"
         "function closePetModal(){document.getElementById('pet-name-modal').classList.remove('show');}"
         "function openWindowModal(moduleName){const identity=getSelectedIdentity();if(!identity){return;}const modal=document.getElementById('window-modal');const form=document.getElementById('window-form');const windowData=moduleName==='点卯'?(identity.checkin_window_local||{}):(identity.tower_window_local||{});document.getElementById('window-modal-title').textContent=`设置${moduleName}窗口`;document.getElementById('window-modal-identity').textContent=`当前身份：${identity.display_name}`;document.getElementById('window-modal-current').textContent=`当前窗口：${windowData.text||''}`;form.querySelector('input[name=\"send_as_id\"]').value=identity.send_as_id;form.querySelector('input[name=\"module\"]').value=moduleName;form.querySelector('input[name=\"start_hour_local\"]').value=windowData.start_hour||0;form.querySelector('input[name=\"end_hour_local\"]').value=windowData.end_hour||0;modal.classList.add('show');const input=form.querySelector('input[name=\"start_hour_local\"]');if(input){input.focus();input.select();}}"
@@ -570,11 +601,19 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "async function submitBasicConfig(event){event.preventDefault();const form=event.currentTarget;const payload={game_group_id:form.querySelector('input[name=\"game_group_id\"]').value,game_bot_ids:form.querySelector('input[name=\"game_bot_ids\"]').value,game_topic_id:form.querySelector('input[name=\"game_topic_id\"]').value,auto_delete_sent_messages:!!form.querySelector('input[name=\"auto_delete_sent_messages\"]').checked};try{const data=await postJson('/api/basic-config',payload);updateFlash(data.message||'已更新基础配置',false);closeBasicConfigModal();applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){updateFlash((error&&error.message)||'基础配置更新失败',true);renderAll();}}"
         "async function refreshForumTopics(){const form=document.getElementById('basic-config-form');if(!form){return;}const groupId=form.querySelector('input[name=\"game_group_id\"]').value;const topicInput=form.querySelector('input[name=\"game_topic_id\"]');const manualTopicId=topicInput?topicInput.value:'';try{const data=await postJson('/api/forum-topics',{game_group_id:groupId});updateFlash(data.message||'已刷新话题列表',false);if(data.snapshot){applySnapshot(data.snapshot,{keepFlash:true});}const topics=Array.isArray(data.forum_topics)?data.forum_topics:[];appState.snapshot=Object.assign({},appState.snapshot,{forum_topics:topics,forum_topics_updated_at:data.forum_topics_updated_at||((appState.snapshot&&appState.snapshot.forum_topics_updated_at)||'未设置')});renderForumTopicOptions(manualTopicId);if(topicInput){topicInput.value=manualTopicId||'';}}catch(error){updateFlash((error&&error.message)||'刷新话题列表失败',true);renderAll();}}"
         "async function refreshIdentityInfo(sendAsId){try{const data=await postJson('/api/identity-refresh',{send_as_id:sendAsId});updateFlash(data.message||'已开始更新角色信息',false);applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){updateFlash((error&&error.message)||'角色信息更新失败',true);renderAll();}}"
-        "document.addEventListener('click',function(event){const globalToggleBtn=event.target.closest('[data-toggle-global]');if(globalToggleBtn){toggleGlobal(globalToggleBtn.getAttribute('data-enabled')==='1');return;}const selectBtn=event.target.closest('[data-select-identity]');if(selectBtn){selectIdentity(selectBtn.getAttribute('data-select-identity'));return;}const refreshIdentityBtn=event.target.closest('[data-refresh-identity]');if(refreshIdentityBtn){refreshIdentityInfo(refreshIdentityBtn.getAttribute('data-refresh-identity'));return;}const toggleIdentityBtn=event.target.closest('[data-toggle-identity]');if(toggleIdentityBtn){toggleIdentity(toggleIdentityBtn.getAttribute('data-toggle-identity'),toggleIdentityBtn.getAttribute('data-enabled')==='1');return;}const toggleBtn=event.target.closest('[data-toggle-module]');if(toggleBtn){toggleModule(toggleBtn.getAttribute('data-module'),toggleBtn.getAttribute('data-enabled')==='1');return;}const recoverBtn=event.target.closest('[data-recover-startup-alert]');if(recoverBtn){restoreStartupAlert(recoverBtn.getAttribute('data-recover-startup-alert'));return;}if(event.target.closest('[data-open-basic-config]')){openBasicConfigModal();return;}if(event.target.closest('[data-open-add-identity]')){openIdentityModal();return;}if(event.target.closest('[data-open-pet-modal]')){openPetModal();return;}const windowBtn=event.target.closest('[data-open-window-modal]');if(windowBtn){openWindowModal(windowBtn.getAttribute('data-open-window-modal'));return;}if(event.target.closest('[data-refresh-now]')){refreshState({silent:false,keepFlash:true});return;}if(event.target.closest('[data-refresh-forum-topics]')){refreshForumTopics();return;}if(event.target.getAttribute('data-close-modal')==='basic'||event.target.id==='basic-config-modal'){closeBasicConfigModal();return;}if(event.target.getAttribute('data-close-modal')==='identity'||event.target.id==='add-identity-modal'){closeIdentityModal();return;}if(event.target.getAttribute('data-close-modal')==='pet'||event.target.id==='pet-name-modal'){closePetModal();return;}if(event.target.getAttribute('data-close-modal')==='window'||event.target.id==='window-modal'){closeWindowModal();return;}if(event.target.getAttribute('data-close-modal')==='startup-alert'||event.target.id==='startup-alert-modal'){closeStartupAlertModal();return;}});"
-        "document.addEventListener('keydown',function(event){if(event.key==='Escape'){closeBasicConfigModal();closeIdentityModal();closePetModal();closeWindowModal();closeStartupAlertModal();}});"
+        "async function loginSendCode(){const phone=document.getElementById('login-phone').value.trim();const status=document.getElementById('login-status');if(!phone){status.textContent='请输入手机号';return;}status.textContent='正在发送验证码…';document.getElementById('login-send-code-btn').disabled=true;try{const data=await postJson('/api/account/login-start',{phone:phone});status.textContent='验证码已发送，请查收';document.getElementById('login-step-phone').style.display='none';document.getElementById('login-step-code').style.display='';document.getElementById('login-code').focus();}catch(error){status.textContent=(error&&error.message)||'发送验证码失败';}finally{document.getElementById('login-send-code-btn').disabled=false;}}"
+        "async function loginVerifyCode(password){const code=document.getElementById('login-code').value.trim();const status=document.getElementById('login-status');const payload=password?{code:'',password:password}:{code:code};if(!password&&!code){status.textContent='请输入验证码';return;}status.textContent='正在验证…';try{const data=await postJson('/api/account/login-verify',payload);if(data.error==='need_2fa'){status.textContent='需要两步验证密码';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='';document.getElementById('login-2fa-password').focus();return;}status.textContent='';updateFlash(data.message||'登录成功',false);closeLoginAccountModal();applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){const errMsg=(error&&error.message)||'验证失败';if(errMsg==='need_2fa'){status.textContent='需要两步验证密码';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='';document.getElementById('login-2fa-password').focus();}else{status.textContent=errMsg;}}}"
+        "document.addEventListener('click',function(event){const globalToggleBtn=event.target.closest('[data-toggle-global]');if(globalToggleBtn){toggleGlobal(globalToggleBtn.getAttribute('data-enabled')==='1');return;}const selectBtn=event.target.closest('[data-select-identity]');if(selectBtn){selectIdentity(selectBtn.getAttribute('data-select-identity'));return;}const refreshIdentityBtn=event.target.closest('[data-refresh-identity]');if(refreshIdentityBtn){refreshIdentityInfo(refreshIdentityBtn.getAttribute('data-refresh-identity'));return;}const toggleIdentityBtn=event.target.closest('[data-toggle-identity]');if(toggleIdentityBtn){toggleIdentity(toggleIdentityBtn.getAttribute('data-toggle-identity'),toggleIdentityBtn.getAttribute('data-enabled')==='1');return;}const toggleBtn=event.target.closest('[data-toggle-module]');if(toggleBtn){toggleModule(toggleBtn.getAttribute('data-module'),toggleBtn.getAttribute('data-enabled')==='1');return;}const recoverBtn=event.target.closest('[data-recover-startup-alert]');if(recoverBtn){restoreStartupAlert(recoverBtn.getAttribute('data-recover-startup-alert'));return;}if(event.target.closest('[data-open-basic-config]')){openBasicConfigModal();return;}if(event.target.closest('[data-open-add-identity]')){openIdentityModal();return;}if(event.target.closest('[data-open-login-account]')){openLoginAccountModal();return;}if(event.target.closest('[data-open-pet-modal]')){openPetModal();return;}const windowBtn=event.target.closest('[data-open-window-modal]');if(windowBtn){openWindowModal(windowBtn.getAttribute('data-open-window-modal'));return;}if(event.target.closest('[data-refresh-now]')){refreshState({silent:false,keepFlash:true});return;}if(event.target.closest('[data-refresh-forum-topics]')){refreshForumTopics();return;}if(event.target.getAttribute('data-close-modal')==='basic'||event.target.id==='basic-config-modal'){closeBasicConfigModal();return;}if(event.target.getAttribute('data-close-modal')==='identity'||event.target.id==='add-identity-modal'){closeIdentityModal();return;}if(event.target.getAttribute('data-close-modal')==='login-account'||event.target.id==='login-account-modal'){closeLoginAccountModal();return;}if(event.target.getAttribute('data-close-modal')==='pet'||event.target.id==='pet-name-modal'){closePetModal();return;}if(event.target.getAttribute('data-close-modal')==='window'||event.target.id==='window-modal'){closeWindowModal();return;}if(event.target.getAttribute('data-close-modal')==='startup-alert'||event.target.id==='startup-alert-modal'){closeStartupAlertModal();return;}});"
+        "document.addEventListener('keydown',function(event){if(event.key==='Escape'){closeBasicConfigModal();closeIdentityModal();closeLoginAccountModal();closePetModal();closeWindowModal();closeStartupAlertModal();}});"
         "document.getElementById('basic-config-form').addEventListener('submit',submitBasicConfig);"
         "document.getElementById('forum-topic-select').addEventListener('change',function(event){const form=document.getElementById('basic-config-form');const topicInput=form&&form.querySelector('input[name=\"game_topic_id\"]');if(topicInput){topicInput.value=event.target.value||'';}});"
         "document.getElementById('add-identity-form').addEventListener('submit',submitIdentity);"
+        "document.getElementById('login-send-code-btn').addEventListener('click',loginSendCode);"
+        "document.getElementById('login-verify-btn').addEventListener('click',function(){loginVerifyCode();});"
+        "document.getElementById('login-2fa-btn').addEventListener('click',function(){const pw=document.getElementById('login-2fa-password').value;loginVerifyCode(pw);});"
+        "document.getElementById('login-code').addEventListener('keydown',function(e){if(e.key==='Enter'){loginVerifyCode();}});"
+        "document.getElementById('login-2fa-password').addEventListener('keydown',function(e){if(e.key==='Enter'){const pw=document.getElementById('login-2fa-password').value;loginVerifyCode(pw);}});"
+        "document.getElementById('login-phone').addEventListener('keydown',function(e){if(e.key==='Enter'){loginSendCode();}});"
         "document.getElementById('identity-select-mobile').addEventListener('change',function(event){selectIdentity(event.target.value);});"
         "document.getElementById('pet-name-form').addEventListener('submit',submitPetName);"
         "document.getElementById('window-form').addEventListener('submit',submitWindow);"
@@ -647,6 +686,101 @@ async def ui_set_module_window(send_as_id, module_name, start_hour_local, end_ho
 async def ui_add_identity(send_as_id_raw, actor_id=None):
     ok, message, canonical_id = await register_identity(send_as_id_raw, source="ui", actor_id=actor_id)
     return ok, message, canonical_id
+
+
+# ================= 多账号登录 =================
+_pending_login = {}  # 临时存储登录中间态 {session_key: {client, phone, phone_code_hash}}
+
+
+async def ui_account_login_start(phone, session_key):
+    phone = (phone or "").strip()
+    if not phone:
+        return False, "请输入手机号", None
+    # 使用临时 session 名称进行登录
+    tc = create_account_client(f"pending_{session_key}")
+    await tc.connect()
+    try:
+        sent = await tc.send_code_request(phone)
+        _pending_login[session_key] = {
+            "client": tc,
+            "phone": phone,
+            "phone_code_hash": sent.phone_code_hash,
+        }
+        return True, "验证码已发送", sent.phone_code_hash
+    except Exception as e:
+        await tc.disconnect()
+        return False, f"发送验证码失败: {e}", None
+
+
+async def ui_account_login_verify(code, session_key, password=None):
+    pending = _pending_login.get(session_key)
+    if not pending:
+        return False, "登录会话已过期，请重新输入手机号", None
+    tc = pending["client"]
+    phone = pending["phone"]
+    phone_code_hash = pending["phone_code_hash"]
+    try:
+        if password:
+            await tc.sign_in(password=password)
+        else:
+            await tc.sign_in(phone, code, phone_code_hash=phone_code_hash)
+    except Exception as e:
+        err_str = str(e)
+        if "Two-steps verification" in err_str or "SessionPasswordNeeded" in err_str or "2FA" in err_str:
+            return False, "need_2fa", None
+        _pending_login.pop(session_key, None)
+        await tc.disconnect()
+        return False, f"登录失败: {e}", None
+
+    me = await tc.get_me()
+    account_id = me.id
+    username = me.username or me.first_name or str(account_id)
+
+    # 临时 session 验证成功，将其断开
+    await tc.disconnect()
+    _pending_login.pop(session_key, None)
+
+    # 将临时 session 文件重命名为正式路径
+    import os, glob
+    from .config import SESSION_DIR
+    temp_prefix = os.path.join(SESSION_DIR, f"account_pending_{session_key}")
+    real_prefix = os.path.join(SESSION_DIR, f"account_{account_id}")
+    for temp_file in glob.glob(f"{temp_prefix}*"):
+        suffix = temp_file[len(temp_prefix):]
+        real_file = f"{real_prefix}{suffix}"
+        try:
+            os.replace(temp_file, real_file)
+        except OSError:
+            pass
+
+    # 用正式 session 文件创建 client 并启动
+    real_tc = create_account_client(account_id)
+    await real_tc.start()
+    register_client(account_id, real_tc)
+
+    # 注册事件处理器
+    from .app import _register_event_handlers
+    _register_event_handlers(real_tc)
+
+    # 保存账号信息（不存手机号）
+    set_account(account_id, {"session": f"account_{account_id}", "username": username})
+
+    # 自动将该账号的 user_id 注册为 identity 并关联到此账号
+    ok, message, canonical_id = await register_identity(account_id, source="ui_login")
+    if canonical_id:
+        set_identity_account(canonical_id, account_id)
+
+    # hydrate profile
+    try:
+        from .control import hydrate_identity_profile
+        entity = await real_tc.get_me()
+        hydrate_identity_profile(entity)
+    except Exception:
+        pass
+
+    save_state()
+    await send_audit_log(f"🔑 新账号登录成功: @{username} (ID: {account_id})")
+    return True, f"登录成功: @{username}", account_id
 
 
 async def ui_refresh_identity_info(send_as_id, actor_id=None):
@@ -1100,6 +1234,42 @@ async def handle_ui_http(reader, writer):
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/account/login-start":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    phone = payload.get("phone", "")
+                    session_key = (session or {}).get("session_token", "")
+                    ok, message, phone_code_hash = await ui_account_login_start(phone, session_key)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message)
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/account/login-verify":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    code = payload.get("code", "")
+                    password = payload.get("password")
+                    session_key = (session or {}).get("session_token", "")
+                    ok, message, account_id = await ui_account_login_verify(code, session_key, password=password)
+                    if not ok and message == "need_2fa":
+                        body = _make_json_payload(False, error="need_2fa")
+                    else:
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(
+                            ok,
+                            message=message if ok else "",
+                            error="" if ok else message,
+                            snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                            extra={"account_id": account_id} if account_id else None,
+                        )
+                    _write_response(writer, "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             else:
                 _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
     except Exception as e:
