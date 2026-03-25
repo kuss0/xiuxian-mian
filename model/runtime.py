@@ -447,16 +447,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
         except ValueError:
             await active_client.get_dialogs()
             peer = await active_client.get_input_entity(game_group_id)
-        # 如果 send_as_id 就是当前登录账号自己，不需要 send_as 参数
-        me = await active_client.get_me()
-        is_self = me and int(me.id) == send_as_id
-        if not is_self:
-            try:
-                send_as_peer = await active_client.get_input_entity(send_as_id)
-            except Exception as e:
-                raise ValueError(f"无法解析 send_as 身份 {send_as_id} (account={account_id}, me={me.id if me else None}): {e}")
-        else:
-            send_as_peer = None
+        send_as_peer = await active_client.get_input_entity(send_as_id)
         reply_to_spec = None
         if reply_to:
             reply_to_spec = types.InputReplyToMessage(
@@ -465,15 +456,13 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
             )
         elif topic_id > 0:
             reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
-        request_kwargs = dict(
-            peer=peer,
-            message=command,
-            reply_to=reply_to_spec,
-        )
-        if send_as_peer is not None:
-            request_kwargs["send_as"] = send_as_peer
         result = await active_client(
-            functions.messages.SendMessageRequest(**request_kwargs)
+            functions.messages.SendMessageRequest(
+                peer=peer,
+                message=command,
+                reply_to=reply_to_spec,
+                send_as=send_as_peer,
+            )
         )
         msg_id = _extract_sent_message_id(result)
         if msg_id <= 0:
