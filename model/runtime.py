@@ -483,7 +483,12 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
             mark_dirty()
         return msg
     except Exception as e:
-        await send_audit_log(f"❌ 指令发送失败[{get_send_as_label(send_as_id)}]: {command}\n错误: {e}")
+        await send_audit_log(
+            f"❌ 指令发送失败[{get_send_as_label(send_as_id)}]: {command}\n"
+            f"错误: {e}\n"
+            f"identity={send_as_id}, account={get_identity_account(send_as_id)}, "
+            f"game_group={get_game_group_id()}, topic={topic_id}"
+        )
         return None
 
 
