@@ -18,7 +18,7 @@ from .features.deep_retreat import (
     run_deep_retreat_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
-from .features.quiz import handle_quiz_prompt, run_quiz_scheduler
+from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
@@ -140,6 +140,8 @@ async def on_message(event):
         await handle_deep_retreat_summary_broadcast(text, now)
         await handle_yuanying_summary_broadcast(text, now)
         await handle_realm_breakthrough_broadcast(text, now)
+        await handle_quiz_result_broadcast(text, now)
+        await handle_quiz_learning_prompt(text, now, event)
 
         handled_quiz_prompt = False
         for identity_id in get_identity_ids():
@@ -348,6 +350,7 @@ async def main_loop():
                 await run_deep_retreat_scheduler(now)
                 await run_yuanying_scheduler(now)
 
+        await run_quiz_learning_scheduler(now)
         await asyncio.sleep(5)
 
 
