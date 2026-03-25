@@ -108,7 +108,7 @@ def is_script_command_text(text):
     return any(raw_text == cmd or raw_text.startswith(f"{cmd} ") for cmd in SCRIPT_COMMANDS)
 
 
-def _send_log_group_via_bot(text, *, reply_to_msg_id=None, link_preview=True):
+def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True):
     if not LOG_BOT_TOKEN:
         return False, "missing bot token"
     payload = {
@@ -118,6 +118,8 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, link_preview=True):
     }
     if int(reply_to_msg_id or 0) > 0:
         payload["reply_to_message_id"] = int(reply_to_msg_id)
+    if int(message_thread_id or 0) > 0:
+        payload["message_thread_id"] = int(message_thread_id)
     url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/sendMessage"
     with urlopen(url, data=urlencode(payload).encode("utf-8"), timeout=15) as response:
         body = response.read().decode("utf-8", errors="replace")
@@ -130,13 +132,14 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, link_preview=True):
     return False, body or "bot api returned non-ok response"
 
 
-async def _send_log_group_message(text, *, reply_to_msg_id=None, link_preview=True):
+async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True):
     if LOG_SEND_MODE == "bot":
         try:
             ok, error_text = await asyncio.to_thread(
                 _send_log_group_via_bot,
                 text,
                 reply_to_msg_id=reply_to_msg_id,
+                message_thread_id=message_thread_id,
                 link_preview=link_preview,
             )
             if ok:
@@ -172,7 +175,10 @@ async def send_audit_log(content):
 
 async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True):
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
-    ok = await _send_log_group_message(text, reply_to_msg_id=reply_to_msg_id, link_preview=link_preview)
+    # forum 群需要 message_thread_id 才能回复
+    reply_header = getattr(event, "reply_to", None)
+    thread_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0) or int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
+    ok = await _send_log_group_message(text, reply_to_msg_id=reply_to_msg_id, message_thread_id=thread_id, link_preview=link_preview)
     if ok:
         return True
     print(f"reply_log_group_message failed | text={text}")
