@@ -1052,7 +1052,8 @@ async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
         return
     if is_auto_delete_sent_messages_enabled():
         try:
-            await client.delete_messages(get_game_group_id(), [msg_id])
+            from .runtime import _get_identity_client
+            await _get_identity_client(send_as_id).delete_messages(get_game_group_id(), [msg_id])
         except Exception as e:
             print(f"delete_identity_info_trigger_msg failed: {e} | send_as_id={send_as_id} msg_id={msg_id}")
     with use_identity(send_as_id):

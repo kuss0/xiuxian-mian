@@ -73,7 +73,8 @@ async def cleanup_checkin_chain_messages():
         save_state()
         return
     try:
-        await client.delete_messages(get_game_group_id(), msg_ids)
+        from ..runtime import _get_identity_client
+        await _get_identity_client().delete_messages(get_game_group_id(), msg_ids)
     except Exception as e:
         print(f"cleanup_checkin_chain_messages failed: {e} | msg_ids={msg_ids}")
     for msg_id in msg_ids:

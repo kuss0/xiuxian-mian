@@ -29,6 +29,7 @@ from .config import (
     UI_AUTH_IDLE_TIMEOUT_SEC,
     UI_PUBLIC_BASE_URL,
     client,
+    get_all_clients,
     get_client,
     is_identity_refresh_command_text,
 )
@@ -47,6 +48,23 @@ from .state import (
     state,
     use_identity,
 )
+
+
+def _get_any_authed_client():
+    """返回任意一个已认证的 client（优先账号 client，回退主 client）"""
+    _all = get_all_clients()
+    return next(iter(_all.values())) if _all else client
+
+
+def _get_identity_client(send_as_id=None):
+    """根据 identity 返回对应的已认证 client"""
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    account_id = get_identity_account(send_as_id)
+    if account_id:
+        return get_client(account_id)
+    return _get_any_authed_client()
+
 
 _background_tasks = set()
 _ui_login_tokens = {}
@@ -148,10 +166,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
         except Exception as e:
             print(f"_send_log_group_message bot failed: {e} | text={text}")
     try:
-        # 使用任意已认证的账号 client 作为 fallback
-        from .config import get_all_clients
-        _all = get_all_clients()
-        _fb = next(iter(_all.values())) if _all else client
+        _fb = _get_any_authed_client()
         await _fb.send_message(
             LOG_GROUP_ID,
             text,
@@ -211,8 +226,9 @@ async def fetch_forum_topics(group_id):
         return False, "游戏群聊 ID 不能为 0", []
 
     try:
-        peer = await client.get_input_entity(group_id)
-        entity = await client.get_entity(peer)
+        _tc = _get_any_authed_client()
+        peer = await _tc.get_input_entity(group_id)
+        entity = await _tc.get_entity(peer)
     except Exception:
         return False, "游戏群聊不存在或当前账号无权访问", []
 
@@ -245,7 +261,7 @@ async def fetch_forum_topics(group_id):
         return False, "当前 Telethon 版本不支持自动读取话题列表", []
 
     try:
-        result = await client(request)
+        result = await _tc(request)
     except Exception as e:
         return False, _map_forum_topics_error(e), []
 

@@ -135,7 +135,8 @@ async def delete_deep_retreat_summary_trigger_msg():
         return
     if is_auto_delete_sent_messages_enabled():
         try:
-            await client.delete_messages(get_game_group_id(), [msg_id])
+            from ..runtime import _get_identity_client
+            await _get_identity_client().delete_messages(get_game_group_id(), [msg_id])
         except Exception:
             pass
     state["my_msg_ids"].pop(msg_id, None)
