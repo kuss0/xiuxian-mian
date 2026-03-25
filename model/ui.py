@@ -293,7 +293,7 @@ def _render_login_page(message=""):
     return (
         "<!doctype html>"
         "<html lang='zh-CN'><head><meta charset='utf-8'>"
-        "<title>Chaogu 登录</title>"
+        "<title>Xiuxian 登录</title>"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0b1220;color:#e5e7eb;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}"
         "a{color:#93c5fd;text-decoration:none;}"
@@ -306,7 +306,7 @@ def _render_login_page(message=""):
         "code{background:#020617;border:1px solid #1e293b;border-radius:8px;padding:2px 6px;color:#e2e8f0;}"
         "</style></head><body>"
         "<main class='panel'>"
-        "<h1>Chaogu 控制台登录</h1>"
+        "<h1>Xiuxian 控制台登录</h1>"
         "<div class='muted'>浏览器访问地址：" + html_escape(UI_PUBLIC_BASE_URL) + "</div>"
         f"{message_html}"
         "<p>请先到日志群发送 <code>.登录</code>，再在浏览器里打开机器人回复的登录链接。</p>"
@@ -358,7 +358,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
     return (
         "<!doctype html>"
         "<html lang='zh-CN'><head><meta charset='utf-8'>"
-        "<title>Chaogu 控制台</title>"
+        "<title>Xiuxian 控制台</title>"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0b1220;color:#e5e7eb;margin:0;padding:24px;box-sizing:border-box;}"
         "a{color:#93c5fd;text-decoration:none;}"
@@ -435,7 +435,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "@media (max-width: 980px){body{padding:16px;}.layout{grid-template-columns:1fr;}.module-grid,.summary-groups,.summary-grid{grid-template-columns:1fr;}.module-top{flex-direction:column;}.module-tools{justify-content:flex-start;}.topbar{align-items:flex-start;}.identity-mobile-picker{display:grid;}.identity-list{display:none;}}"
         "</style></head><body>"
         "<div class='topbar'>"
-        "<div><h1 style='margin:0;'>Chaogu 控制台</h1><div style='color:#9ca3af;'>生成时间：<span id='generated-at'>-</span> ｜ 自动轮询："
+        "<div><h1 style='margin:0;'>Xiuxian 控制台</h1><div style='color:#9ca3af;'>生成时间：<span id='generated-at'>-</span> ｜ 自动轮询："
         + html_escape(str(UI_AUTO_REFRESH_SEC))
         + "s</div></div>"
         "<div class='topbar-actions'><span id='global-switch-container'></span><button type='button' class='btn btn-secondary' data-open-basic-config='1'>基础配置</button><button type='button' class='btn btn-refresh' data-refresh-now='1'>手动刷新</button><a class='btn btn-secondary' href='/api/state' target='_blank' rel='noreferrer'>JSON</a></div>"
