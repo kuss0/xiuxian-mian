@@ -82,11 +82,18 @@ QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "quiz_bank.json")
 QUIZ_REPLY_TIMEOUT_SEC = 300
 
 
-CMD_BATTLE_POWER = CMD_IDENTITY_INFO  # 兼容旧引用
+CMD_BATTLE_POWER = ".战力"
 
 
 def format_identity_info_command():
     return CMD_IDENTITY_INFO
+
+
+def format_battle_power_command(username=None):
+    normalized_username = (username or "").strip().lstrip("@")
+    if not normalized_username:
+        return CMD_BATTLE_POWER
+    return f"{CMD_BATTLE_POWER} @{normalized_username}"
 
 
 def is_identity_info_command_text(text):
@@ -94,9 +101,13 @@ def is_identity_info_command_text(text):
     return raw_text == CMD_IDENTITY_INFO
 
 
-# 兼容旧引用
-format_battle_power_command = lambda username=None: format_identity_info_command()
-is_battle_power_command_text = is_identity_info_command_text
+def is_battle_power_command_text(text):
+    raw_text = (text or "").strip()
+    return raw_text == CMD_BATTLE_POWER or raw_text.startswith(f"{CMD_BATTLE_POWER} ")
+
+
+def is_identity_refresh_command_text(text):
+    return is_identity_info_command_text(text) or is_battle_power_command_text(text)
 
 
 SCRIPT_COMMANDS = [
@@ -110,6 +121,7 @@ SCRIPT_COMMANDS = [
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_IDENTITY_INFO,
+    CMD_BATTLE_POWER,
     CMD_CHECKIN,
     CMD_SECT_TEACH,
     CMD_TOWER,

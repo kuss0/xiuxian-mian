@@ -34,7 +34,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
-    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at",
+    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at",
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options"}
 IDENTITY_BOOL_FIELDS = {
@@ -200,6 +200,7 @@ IDENTITY_STATE_TEMPLATE = {
     "last_identity_info_msg_id": 0,
     "identity_info_last_error": "",
     "identity_info_last_requested_at": 0,
+    "identity_info_followup_due_at": 0,
     "startup_module_alerts": [],
 
     # 元婴阻塞日志去重（运行态，不持久化）

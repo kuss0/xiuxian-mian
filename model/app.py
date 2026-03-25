@@ -7,7 +7,7 @@ from datetime import datetime
 from telethon import events
 
 from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client
-from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, scan_startup_timeout_tasks, toggle_global_enabled
+from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, scan_startup_timeout_tasks, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
     get_deep_retreat_phase_text,
@@ -320,6 +320,7 @@ async def main_loop():
         gc_ui_sessions(now)
         flush_if_dirty(now)
         await run_retry_scheduler(now)
+        await run_identity_info_followup_scheduler(now)
 
         # bot 静默监测：触发后超时且 bot 无发言，自动全局暂停
         global _bot_silence_triggered_at

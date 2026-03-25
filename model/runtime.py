@@ -12,6 +12,7 @@ from urllib.parse import quote
 from telethon import functions, types
 
 from .config import (
+    CMD_BATTLE_POWER,
     CMD_IDENTITY_INFO,
     LOG_GROUP_ID,
     MESSAGES_DIR,
@@ -25,7 +26,7 @@ from .config import (
     UI_AUTH_IDLE_TIMEOUT_SEC,
     UI_PUBLIC_BASE_URL,
     client,
-    is_identity_info_command_text,
+    is_identity_refresh_command_text,
 )
 from .persistence import mark_dirty
 from .state import (
@@ -66,6 +67,10 @@ def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0):
         traceback.print_exc()
 _ui_sessions = {}
 IDENTITY_INFO_REFRESH_ERROR_TEXT = "获取失败，请手动重新获取"
+
+
+def _is_identity_refresh_command(command):
+    return is_identity_refresh_command_text(command)
 
 
 def _fire_and_forget(coro):
@@ -493,9 +498,10 @@ async def run_retry_scheduler(now, send_as_id=None):
                 with use_identity(identity_id) as identity_state:
                     if retry >= RETRY_LIMIT:
                         await send_audit_log(f"🧯 指令 `{cmd}`[{get_send_as_label(identity_id)}] 已重试 {RETRY_LIMIT} 次仍无响应，停止补发。")
-                        if cmd == CMD_IDENTITY_INFO:
+                        if _is_identity_refresh_command(cmd):
                             identity_state["last_identity_info_msg_id"] = 0
                             identity_state["identity_info_reply_msg_ids"] = []
+                            identity_state["identity_info_followup_due_at"] = 0
                             identity_state["identity_info_last_error"] = IDENTITY_INFO_REFRESH_ERROR_TEXT
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
@@ -506,7 +512,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                 with use_identity(identity_id) as identity_state:
                     if new_msg and new_msg.id in identity_state["pending_tasks"]:
                         identity_state["pending_tasks"][new_msg.id]["retry"] = retry + 1
-                        if cmd == CMD_IDENTITY_INFO:
+                        if _is_identity_refresh_command(cmd):
                             new_msg_id = int(new_msg.id)
                             tracked_ids = {
                                 *(int(tracked_id or 0) for tracked_id in identity_state.get("identity_info_reply_msg_ids", [])),
@@ -515,6 +521,8 @@ async def run_retry_scheduler(now, send_as_id=None):
                             tracked_ids.discard(0)
                             identity_state["last_identity_info_msg_id"] = new_msg_id
                             identity_state["identity_info_reply_msg_ids"] = sorted(tracked_ids)
+                            identity_state["identity_info_followup_due_at"] = 0
+                            identity_state["identity_info_last_requested_at"] = now
                     identity_state["pending_tasks"].pop(msg_id, None)
                     mark_dirty()
 
@@ -540,11 +548,12 @@ async def schedule_cleanup(reply_to, send_as_id=None):
         if msg_id == identity_state.get("sect_teach_reply_to_msg_id") and identity_state.get("next_sect_teach_time", 0) > 0:
             return
         if (
-            is_identity_info_command_text(reply_to.raw_text)
+            is_identity_refresh_command_text(reply_to.raw_text)
             and (
-                any(pending.get("cmd") == CMD_IDENTITY_INFO for pending in identity_state["pending_tasks"].values())
+                any(_is_identity_refresh_command(pending.get("cmd")) for pending in identity_state["pending_tasks"].values())
                 or identity_state.get("identity_info_reply_msg_ids")
                 or identity_state.get("last_identity_info_msg_id", 0)
+                or float(identity_state.get("identity_info_followup_due_at", 0) or 0) > 0
             )
         ):
             return

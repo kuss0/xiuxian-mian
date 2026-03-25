@@ -141,7 +141,8 @@ def init_db():
             identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]',
             last_identity_info_msg_id INTEGER NOT NULL DEFAULT 0,
             identity_info_last_error TEXT NOT NULL DEFAULT '',
-            identity_info_last_requested_at REAL NOT NULL DEFAULT 0
+            identity_info_last_requested_at REAL NOT NULL DEFAULT 0,
+            identity_info_followup_due_at REAL NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS pending_tasks (
@@ -217,6 +218,8 @@ def init_db():
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_last_error TEXT NOT NULL DEFAULT ''")
     if "identity_info_last_requested_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_last_requested_at REAL NOT NULL DEFAULT 0")
+    if "identity_info_followup_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_followup_due_at REAL NOT NULL DEFAULT 0")
 
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
