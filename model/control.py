@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timezone
 
 from .config import (
+    ADMIN_ID,
     CMD_BATTLE_POWER,
     CMD_CHECKIN,
     CMD_DEEP_RETREAT,
@@ -1385,8 +1386,7 @@ async def handle_log_group_command(event):
         return False
 
     sender_id = getattr(event, "sender_id", None)
-    allowed_senders = {state.get("my_user_id"), *get_identity_ids()}
-    if sender_id not in allowed_senders:
+    if ADMIN_ID and sender_id != ADMIN_ID:
         return False
 
     raw_text = (event.raw_text or "").strip()

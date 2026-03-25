@@ -31,6 +31,7 @@ if LOG_SEND_MODE not in {"account", "bot"}:
     LOG_SEND_MODE = "account"
 LOG_BOT_TOKEN = str(_env.get("log_bot_token", "") or "").strip()
 SEND_AS_IDS = _env["send_as_ids"]
+ADMIN_ID = int(_env.get("admin_id", 0) or 0)
 
 GAME_GROUP_ID = -1001680975844  # 游戏主群（可通过 UI 基础配置修改）
 GAME_BOT_IDS = {-1002517347269, -1002225246894}  # 允许处理的机器人/频道ID（可通过 UI 基础配置修改）
