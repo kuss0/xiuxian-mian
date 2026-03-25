@@ -253,15 +253,26 @@ async def bootstrap():
             print(f"启动额外账号 {acct_id_str} 失败: {traceback.format_exc()}")
 
     await start_ui_server()
-    me = await client.get_me()
-    if me:
-        state["my_user_id"] = me.id
+
+    # 尝试从已登录的账号 client 中获取 my_user_id
+    for _acct_id_str in get_accounts():
+        try:
+            _tc = get_client(int(_acct_id_str))
+            _me = await _tc.get_me()
+            if _me:
+                state["my_user_id"] = _me.id
+                break
+        except Exception:
+            pass
 
     identity_ids = get_identity_ids()
     for send_as_id in identity_ids:
         try:
             account_id = get_identity_account(send_as_id)
-            tc = get_client(account_id) if account_id else client
+            if not account_id:
+                print(f"hydrate_identity_profile skipped (no account): {send_as_id}")
+                continue
+            tc = get_client(account_id)
             send_as_entity = await tc.get_entity(send_as_id)
             hydrate_identity_profile(send_as_entity)
         except Exception:

@@ -145,7 +145,11 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, link_preview=Tr
         except Exception as e:
             print(f"_send_log_group_message bot failed: {e} | text={text}")
     try:
-        await client.send_message(
+        # 使用任意已认证的账号 client 作为 fallback
+        from .config import get_all_clients
+        _all = get_all_clients()
+        _fb = next(iter(_all.values())) if _all else client
+        await _fb.send_message(
             LOG_GROUP_ID,
             text,
             reply_to=int(reply_to_msg_id or 0) or None,
@@ -401,7 +405,9 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
 
     try:
         account_id = get_identity_account(send_as_id)
-        active_client = get_client(account_id) if account_id else client
+        if not account_id:
+            raise ValueError(f"identity {send_as_id} 未关联任何账号")
+        active_client = get_client(account_id)
         peer = await active_client.get_input_entity(get_game_group_id())
         # 如果 send_as_id 就是当前登录账号自己，不需要 send_as 参数
         me = await active_client.get_me()
