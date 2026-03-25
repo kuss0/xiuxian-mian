@@ -332,7 +332,7 @@ async def bootstrap():
     recovery_text = "成功" if any_loaded else ("无待恢复任务" if loaded else "首次初始化")
     audit_lines = [
         "🚀 自动化系统启动成功",
-        f"👤 账号: {me.first_name if me else '未登录（等待 UI 登录）'}",
+        f"👤 账号: {state.get('my_user_id') or '未登录（等待 UI 登录）'}",
         f"🎭 并发身份数: {len(identity_ids)}",
         "📡 模式: 多 SEND_AS_ID + SQLite 持久化",
         f"💾 状态恢复: {recovery_text}",
