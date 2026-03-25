@@ -13,6 +13,7 @@ from ..config import (
     IRR_INTERVAL_MAX,
     IRR_INTERVAL_MIN,
     RE_TREE_REMAINING,
+    RETRY_MAX_SEC,
 )
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, send_audit_log, send_game_command
@@ -233,16 +234,26 @@ async def run_tree_scheduler(now):
             state["next_irr_time"] = now + delay
             save_state()
             next_t_str = fmt_time_after(delay)
-            await send_game_command(CMD_TREE_WATER)
-            await send_audit_log(f"🚀 执行常规灌溉。下次预计：{next_t_str}")
+            msg = await send_game_command(CMD_TREE_WATER)
+            if not msg:
+                state["next_irr_time"] = now + RETRY_MAX_SEC
+                save_state()
+                await send_audit_log("❌ 灌溉发送失败，已改为稍后重试。")
+            else:
+                await send_audit_log(f"🚀 执行常规灌溉。下次预计：{next_t_str}")
 
     if state["is_invading"] and now >= state["next_guard_time"]:
         g_delay = random.uniform(GUARD_INTERVAL_MIN, GUARD_INTERVAL_MAX)
         state["next_guard_time"] = now + g_delay
         save_state()
         g_next_t = fmt_time_after(g_delay)
-        await send_game_command(CMD_TREE_GUARD)
-        await send_audit_log(f"🛡️ 执行协同守山。下次预计：{g_next_t}")
+        msg = await send_game_command(CMD_TREE_GUARD)
+        if not msg:
+            state["next_guard_time"] = now + RETRY_MAX_SEC
+            save_state()
+            await send_audit_log("❌ 协同守山发送失败，已改为稍后重试。")
+        else:
+            await send_audit_log(f"🛡️ 执行协同守山。下次预计：{g_next_t}")
 
 
 __all__ = [

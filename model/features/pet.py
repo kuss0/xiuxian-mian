@@ -1,6 +1,6 @@
 import random
 
-from ..config import CD_BUFFER_SEC, CMD_PET, PET_CD
+from ..config import CD_BUFFER_SEC, CMD_PET, PET_CD, RETRY_MAX_SEC
 from ..persistence import save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import get_pet_command, get_pet_name, state
@@ -45,7 +45,12 @@ async def run_pet_scheduler(now):
         state["next_pet_time"] = now + p_delay
         save_state()
         p_next_t = fmt_time_after(p_delay)
-        await send_game_command(get_pet_command())
+        msg = await send_game_command(get_pet_command())
+        if not msg:
+            state["next_pet_time"] = now + RETRY_MAX_SEC
+            save_state()
+            await send_audit_log("❌ 法宝抚摸发送失败，已改为稍后重试。")
+            return
         await send_audit_log(f"🗡️ 执行法宝抚摸[{get_pet_name()}]。下次预计：{p_next_t}")
 
 
