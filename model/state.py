@@ -130,14 +130,14 @@ def infer_realm_from_xiuwei_max(xiuwei_max):
     return REALM_XIUWEI_MAX_MAP.get(xiuwei_max, "")
 
 IDENTITY_STATE_TEMPLATE = {
-    # 业务对象开关（启动默认全开）
-    "tree_enabled": True,
-    "pet_enabled": True,
-    "quiz_enabled": True,
-    "yuanying_enabled": True,
-    "deep_retreat_enabled": True,
-    "checkin_enabled": True,
-    "tower_enabled": True,
+    # 业务对象开关（新身份默认全关，需手动开启）
+    "tree_enabled": False,
+    "pet_enabled": False,
+    "quiz_enabled": False,
+    "yuanying_enabled": False,
+    "deep_retreat_enabled": False,
+    "checkin_enabled": False,
+    "tower_enabled": False,
 
     # 灵树模块
     "next_irr_time": 0,

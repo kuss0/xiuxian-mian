@@ -1221,7 +1221,7 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
     return True
 
 
-async def register_identity(send_as_id_raw, *, source="ui", actor_id=None):
+async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, account_id=None):
     send_as_id_text = str(send_as_id_raw or "").strip()
     if not send_as_id_text:
         return False, "SEND_AS_ID 不能为空", None
@@ -1230,7 +1230,14 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None):
     except (TypeError, ValueError):
         return False, "SEND_AS_ID 必须是数字", None
     try:
-        send_as_entity = await client.get_entity(candidate_id)
+        # 优先使用关联账号的 client，回退到任意已登录 client
+        from .config import get_client, get_all_clients
+        if account_id:
+            tc = get_client(account_id)
+        else:
+            _all = get_all_clients()
+            tc = next(iter(_all.values())) if _all else client
+        send_as_entity = await tc.get_entity(candidate_id)
     except Exception:
         return False, "身份不存在或当前账号无权访问该 SEND_AS_ID", None
 

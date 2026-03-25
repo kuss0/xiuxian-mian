@@ -771,7 +771,7 @@ async def ui_account_login_verify(code, session_key, password=None):
     set_account(account_id, {"session": f"account_{account_id}", "username": username})
 
     # 自动将该账号的 user_id 注册为 identity 并关联到此账号
-    ok, message, canonical_id = await register_identity(account_id, source="ui_login")
+    ok, message, canonical_id = await register_identity(account_id, source="ui_login", account_id=account_id)
     if canonical_id:
         set_identity_account(canonical_id, account_id)
 
