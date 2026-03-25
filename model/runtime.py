@@ -414,7 +414,12 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
         if not account_id:
             raise ValueError(f"identity {send_as_id} 未关联任何账号")
         active_client = get_client(account_id)
-        peer = await active_client.get_input_entity(get_game_group_id())
+        game_group_id = get_game_group_id()
+        try:
+            peer = await active_client.get_input_entity(game_group_id)
+        except ValueError:
+            await active_client.get_dialogs()
+            peer = await active_client.get_input_entity(game_group_id)
         # 如果 send_as_id 就是当前登录账号自己，不需要 send_as 参数
         me = await active_client.get_me()
         is_self = me and int(me.id) == send_as_id
