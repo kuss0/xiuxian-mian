@@ -439,7 +439,13 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
         # 如果 send_as_id 就是当前登录账号自己，不需要 send_as 参数
         me = await active_client.get_me()
         is_self = me and int(me.id) == send_as_id
-        send_as_peer = None if is_self else await active_client.get_input_entity(send_as_id)
+        if not is_self:
+            try:
+                send_as_peer = await active_client.get_input_entity(send_as_id)
+            except Exception as e:
+                raise ValueError(f"无法解析 send_as 身份 {send_as_id} (account={account_id}, me={me.id if me else None}): {e}")
+        else:
+            send_as_peer = None
         reply_to_spec = None
         if reply_to:
             reply_to_spec = types.InputReplyToMessage(
