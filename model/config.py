@@ -33,8 +33,8 @@ LOG_BOT_TOKEN = str(_env.get("log_bot_token", "") or "").strip()
 SEND_AS_IDS = _env.get("send_as_ids", []) or []
 ADMIN_ID = int(_env.get("admin_id", 0) or 0)
 
-GAME_GROUP_ID = -1001680975844  # 游戏主群（可通过 UI 基础配置修改）
-GAME_BOT_IDS = {-1002517347269, -1002225246894}  # 允许处理的机器人/频道ID（可通过 UI 基础配置修改）
+GAME_GROUP_ID = 0  # 游戏主群（通过 UI 基础配置设置）
+GAME_BOT_IDS = set()  # 允许处理的机器人/频道ID（通过 UI 基础配置设置）
 
 RETRY_MIN_SEC = 30
 RETRY_MAX_SEC = 40
