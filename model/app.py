@@ -6,7 +6,7 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, SESSION_FILE, TZ_LOCAL, client, create_account_client, get_all_clients, get_client, register_client
+from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_all_clients, get_client, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, scan_startup_timeout_tasks, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
@@ -233,16 +233,8 @@ def _register_event_handlers(tc):
 
 
 async def bootstrap():
-    # 主 client：有 session 文件时认证登录（向后兼容），否则仅连接
-    import os
-    _has_main_session = any(
-        os.path.exists(f"{SESSION_FILE}{ext}")
-        for ext in ("", ".session")
-    )
-    if _has_main_session:
-        await client.start()
-    else:
-        await client.connect()
+    # 主 client 仅 connect：有 session 时自动恢复认证，无 session 时等待 UI 登录
+    await client.connect()
     loaded = load_state()
 
     # 启动已保存的额外账号 client
