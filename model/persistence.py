@@ -172,6 +172,10 @@ def init_db():
         conn.execute("ALTER TABLE identities ADD COLUMN tower_window_end_hour_utc INTEGER NOT NULL DEFAULT 2")
     if "enabled" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+    if "xiuwei_current" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_current INTEGER NOT NULL DEFAULT 0")
+    if "xiuwei_max" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_max INTEGER NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
     if "identity_info_reply_msg_ids" not in runtime_columns:
@@ -249,9 +253,9 @@ def upsert_identity_to_db(send_as_id):
             send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
-            enabled, created_at, updated_at
+            enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -265,6 +269,8 @@ def upsert_identity_to_db(send_as_id):
             tower_window_start_hour_utc=excluded.tower_window_start_hour_utc,
             tower_window_end_hour_utc=excluded.tower_window_end_hour_utc,
             enabled=excluded.enabled,
+            xiuwei_current=excluded.xiuwei_current,
+            xiuwei_max=excluded.xiuwei_max,
             updated_at=excluded.updated_at
         """,
         (
@@ -281,6 +287,8 @@ def upsert_identity_to_db(send_as_id):
             int(profile.get("tower_window_start_hour_utc", 1) or 1),
             int(profile.get("tower_window_end_hour_utc", 2) or 2),
             1 if profile.get("enabled", True) else 0,
+            int(profile.get("xiuwei_current", 0) or 0),
+            int(profile.get("xiuwei_max", 0) or 0),
             now_ts,
             now_ts,
         ),
@@ -347,7 +355,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -365,6 +373,8 @@ def _load_identity_from_db(send_as_id):
             tower_window_start_hour_utc=row["tower_window_start_hour_utc"],
             tower_window_end_hour_utc=row["tower_window_end_hour_utc"],
             enabled=bool(row["enabled"]),
+            xiuwei_current=int(row["xiuwei_current"] or 0),
+            xiuwei_max=int(row["xiuwei_max"] or 0),
         )
 
     row = conn.execute("SELECT * FROM identity_module_state WHERE send_as_id = ?", (int(send_as_id),)).fetchone()
@@ -515,7 +525,7 @@ def load_state():
         set_global_enabled(str(meta_map.get("global_enabled") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
 
         rows = conn.execute(
-            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled FROM identities ORDER BY send_as_id"
+            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()
         if not rows:
             for send_as_id in SEND_AS_IDS:

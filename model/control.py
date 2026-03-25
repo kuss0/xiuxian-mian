@@ -6,7 +6,7 @@ from .config import (
     CMD_CHECKIN,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
-    CMD_BATTLE_POWER,
+    CMD_IDENTITY_INFO,
     CMD_PET,
     CMD_SECT_TEACH,
     CMD_TOWER,
@@ -31,7 +31,7 @@ from .config import (
     RE_WHITESPACE,
     SUMMARY_TIMEOUT_SEC,
     client,
-    format_battle_power_command,
+    format_identity_info_command,
 )
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
@@ -75,9 +75,11 @@ from .state import (
 )
 from .timing import calc_next_daily_window_after_completion, calc_next_daily_window_time, get_checkin_day_key, get_day_key, reset_checkin_daily_state, schedule_next_checkin, schedule_next_checkin_after_completion, schedule_next_tower, schedule_next_tower_after_completion
 
-RE_IDENTITY_INFO_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
-RE_IDENTITY_INFO_NAME = re.compile(r"👤\s*修士[:：]\s*([^(@\n]+?)\s*(?:\(@[^\n]*\))?(?:\n|$)")
-RE_IDENTITY_INFO_REALM_SECT = re.compile(r"🏔️\s*境界[:：]\s*([^\n()]+?)\s*\(([^()\n]+)\)")
+RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
+RE_IDENTITY_INFO_NAME = re.compile(r"道号[:：]\s*(\S+)")
+RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
+RE_IDENTITY_INFO_SECT = re.compile(r"宗门[:：]\s*【([^】]+)】")
+RE_IDENTITY_INFO_XIUWEI = re.compile(r"修为[:：]\s*([\d,]+)\s*/\s*([\d,]+)")
 RE_REALM_BREAKTHROUGH = re.compile(r"成功突破至【([^】]+)】")
 IDENTITY_INFO_REFRESH_TIMEOUT_SEC = 180
 _IMMEDIATE_ENABLE_RETRY_DELAY_SEC = 1
@@ -782,7 +784,7 @@ def _get_identity_info_refresh_status(send_as_id, now=None):
         now = time.time()
     with use_identity(send_as_id):
         requested_at = float(state.get("identity_info_last_requested_at", 0) or 0)
-        has_pending_cmd = any(pending.get("cmd") == CMD_BATTLE_POWER for pending in state["pending_tasks"].values())
+        has_pending_cmd = any(pending.get("cmd") == CMD_IDENTITY_INFO for pending in state["pending_tasks"].values())
         waiting_followup = bool(state.get("identity_info_reply_msg_ids") or int(state.get("last_identity_info_msg_id", 0) or 0) > 0)
         is_pending = has_pending_cmd or waiting_followup
         timed_out = requested_at > 0 and is_pending and now - requested_at >= IDENTITY_INFO_REFRESH_TIMEOUT_SEC
@@ -803,19 +805,30 @@ def _parse_identity_info(text):
         return None
 
     name_match = RE_IDENTITY_INFO_NAME.search(raw_text)
-    realm_sect_match = RE_IDENTITY_INFO_REALM_SECT.search(raw_text)
-    if not name_match or not realm_sect_match:
+    realm_match = RE_IDENTITY_INFO_REALM_SECT.search(raw_text)
+    sect_match = RE_IDENTITY_INFO_SECT.search(raw_text)
+    if not name_match or not realm_match or not sect_match:
         return None
 
     daohao = (name_match.group(1) or "").strip()
-    realm = (realm_sect_match.group(1) or "").strip()
-    sect_name = (realm_sect_match.group(2) or "").strip()
+    realm = (realm_match.group(1) or "").strip()
+    sect_name = (sect_match.group(1) or "").strip()
     if not daohao or not realm or not sect_name:
         return None
+
+    xiuwei_current = 0
+    xiuwei_max = 0
+    xiuwei_match = RE_IDENTITY_INFO_XIUWEI.search(raw_text)
+    if xiuwei_match:
+        xiuwei_current = int(xiuwei_match.group(1).replace(",", ""))
+        xiuwei_max = int(xiuwei_match.group(2).replace(",", ""))
+
     return {
         "daohao": daohao,
         "realm": realm,
         "sect_name": sect_name,
+        "xiuwei_current": xiuwei_current,
+        "xiuwei_max": xiuwei_max,
     }
 
 
@@ -923,7 +936,7 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         return True, "该身份信息正在更新中，请稍后刷新查看"
 
     profile = get_send_as_profile(send_as_id)
-    command = format_battle_power_command(profile.get("username"))
+    command = format_identity_info_command()
 
     with use_identity(send_as_id):
         state["identity_info_last_error"] = ""
@@ -988,6 +1001,8 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
             daohao=parsed["daohao"],
             realm=parsed["realm"],
             sect_name=parsed["sect_name"],
+            xiuwei_current=parsed.get("xiuwei_current", 0),
+            xiuwei_max=parsed.get("xiuwei_max", 0),
             sect_updated_at=now,
         )
         state["last_identity_info_msg_id"] = 0

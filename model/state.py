@@ -52,6 +52,8 @@ SEND_AS_PROFILE_DEFAULTS = {
     "pet_name": DEFAULT_PET_NAME,
     "sect_name": "",
     "sect_updated_at": 0,
+    "xiuwei_current": 0,
+    "xiuwei_max": 0,
     "checkin_window_start_hour_utc": CHECKIN_WINDOW_START_HOUR_UTC,
     "checkin_window_end_hour_utc": CHECKIN_WINDOW_END_HOUR_UTC,
     "tower_window_start_hour_utc": TOWER_WINDOW_START_HOUR_UTC,
@@ -219,6 +221,8 @@ def set_send_as_profile(
     pet_name=None,
     sect_name=None,
     sect_updated_at=None,
+    xiuwei_current=None,
+    xiuwei_max=None,
     checkin_window_start_hour_utc=None,
     checkin_window_end_hour_utc=None,
     tower_window_start_hour_utc=None,
@@ -234,6 +238,8 @@ def set_send_as_profile(
         pet_name=pet_name,
         sect_name=sect_name,
         sect_updated_at=sect_updated_at,
+        xiuwei_current=xiuwei_current,
+        xiuwei_max=xiuwei_max,
         checkin_window_start_hour_utc=checkin_window_start_hour_utc,
         checkin_window_end_hour_utc=checkin_window_end_hour_utc,
         tower_window_start_hour_utc=tower_window_start_hour_utc,
@@ -261,6 +267,10 @@ def update_send_as_profile(send_as_id, **changes):
         profile["sect_name"] = (changes.get("sect_name") or "").strip()
     if "sect_updated_at" in changes:
         profile["sect_updated_at"] = float(changes.get("sect_updated_at") or 0)
+    if "xiuwei_current" in changes:
+        profile["xiuwei_current"] = int(changes.get("xiuwei_current") or 0)
+    if "xiuwei_max" in changes:
+        profile["xiuwei_max"] = int(changes.get("xiuwei_max") or 0)
     if "checkin_window_start_hour_utc" in changes:
         profile["checkin_window_start_hour_utc"] = int(changes.get("checkin_window_start_hour_utc"))
     if "checkin_window_end_hour_utc" in changes:

@@ -73,22 +73,27 @@ CMD_YUANYING = ".元婴出窍"
 CMD_YUANYING_STATUS = ".元婴状态"
 CMD_DEEP_RETREAT = ".深度闭关"
 CMD_DEEP_RETREAT_QUERY = ".查看闭关"
-CMD_BATTLE_POWER = ".战力"
+CMD_IDENTITY_INFO = ".我的灵根"
 CMD_CHECKIN = ".宗门点卯"
 CMD_SECT_TEACH = ".宗门传功"
 CMD_TOWER = ".闯塔"
 
 
-def format_battle_power_command(username):
-    normalized_username = (username or "").strip().lstrip("@")
-    if not normalized_username:
-        return CMD_BATTLE_POWER
-    return f"{CMD_BATTLE_POWER} @{normalized_username}"
+CMD_BATTLE_POWER = CMD_IDENTITY_INFO  # 兼容旧引用
 
 
-def is_battle_power_command_text(text):
+def format_identity_info_command():
+    return CMD_IDENTITY_INFO
+
+
+def is_identity_info_command_text(text):
     raw_text = (text or "").strip()
-    return raw_text == CMD_BATTLE_POWER or raw_text.startswith(f"{CMD_BATTLE_POWER} ")
+    return raw_text == CMD_IDENTITY_INFO
+
+
+# 兼容旧引用
+format_battle_power_command = lambda username=None: format_identity_info_command()
+is_battle_power_command_text = is_identity_info_command_text
 
 
 SCRIPT_COMMANDS = [
@@ -101,7 +106,7 @@ SCRIPT_COMMANDS = [
     CMD_YUANYING_STATUS,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
-    CMD_BATTLE_POWER,
+    CMD_IDENTITY_INFO,
     CMD_CHECKIN,
     CMD_SECT_TEACH,
     CMD_TOWER,
