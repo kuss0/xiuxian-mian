@@ -435,9 +435,10 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
 
     try:
         account_id = get_identity_account(send_as_id)
-        if not account_id:
-            raise ValueError(f"identity {send_as_id} 未关联任何账号")
-        active_client = get_client(account_id)
+        if account_id:
+            active_client = get_client(account_id)
+        else:
+            active_client = _get_any_authed_client()
         game_group_id = get_game_group_id()
         if not game_group_id:
             raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")

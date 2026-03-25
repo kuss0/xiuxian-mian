@@ -1254,6 +1254,9 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
 
     ensure_identity_registered(canonical_id)
     hydrate_identity_profile(send_as_entity)
+    if account_id:
+        from .state import set_identity_account
+        set_identity_account(canonical_id, account_id)
     with use_identity(canonical_id):
         state["tree_enabled"] = False
         state["pet_enabled"] = False
@@ -1268,10 +1271,7 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
     await send_audit_log(f"🪪 已新增身份[{display_name}]，来源：{source}{actor_suffix}，默认全部模块关闭。")
 
-    refresh_ok, refresh_message = await refresh_identity_info(canonical_id, source=source, actor_id=actor_id)
-    if refresh_ok:
-        return True, f"已新增身份：{display_name}，默认全部模块已关闭；已开始获取角色信息", canonical_id
-    return True, f"已新增身份：{display_name}，默认全部模块已关闭；{refresh_message}", canonical_id
+    return True, f"已新增身份：{display_name}，默认全部模块已关闭", canonical_id
 
 
 async def set_module_window_config(module_name, start_hour_utc, end_hour_utc, send_as_id=None):

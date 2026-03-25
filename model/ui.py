@@ -19,6 +19,7 @@ from .config import (
     UI_PORT,
     UI_PUBLIC_BASE_URL,
     create_account_client,
+    get_client,
     register_client,
 )
 from .control import (
@@ -461,7 +462,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "</div>"
         "<div id='flash' class='flash hidden'></div>"
         "<div class='layout'>"
-        "<aside class='sidebar'><section class='card'><h2 style='display:flex;align-items:center;justify-content:space-between;'>账号与身份<button type='button' class='btn btn-secondary' data-open-login-account='1' style='font-size:0.85em;padding:4px 10px;'>登录账号</button></h2><div class='meta'>当前登录账号：<span id='account-user-id'>-</span></div><div class='sidebar-actions'><span class='form-label' style='margin:0;'>管理 SEND_AS_ID</span><button type='button' class='btn btn-secondary' data-open-add-identity='1'>新增身份</button></div><div class='identity-mobile-picker'><label class='form-label' for='identity-select-mobile' style='margin:0;'>切换身份</label><select id='identity-select-mobile' class='text-input'></select></div><div id='identity-list' class='identity-list'></div></section></aside>"
+        "<aside class='sidebar'><section class='card'><h2 style='display:flex;align-items:center;justify-content:space-between;'>账号与身份<button type='button' class='btn btn-secondary' data-open-login-account='1' style='font-size:0.85em;padding:4px 10px;'>登录账号</button></h2><div class='meta'>当前登录账号：<span id='account-user-id'>-</span></div><div class='sidebar-actions'><span class='form-label' style='margin:0;'>管理身份</span><button type='button' class='btn btn-secondary' data-open-add-identity='1'>新增身份</button></div><div class='identity-mobile-picker'><label class='form-label' for='identity-select-mobile' style='margin:0;'>切换身份</label><select id='identity-select-mobile' class='text-input'></select></div><div id='identity-list' class='identity-list'></div></section></aside>"
         "<main class='main'><section id='summary-panel'></section><section class='card'><h2>模块详情</h2><div id='module-grid' class='module-grid'></div></section></main>"
         "</div>"
         "<div id='basic-config-modal' class='modal-backdrop'>"
@@ -480,13 +481,24 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "  </div>"
         "</div>"
         "<div id='add-identity-modal' class='modal-backdrop'>"
-        "  <div class='modal-card'>"
-        "    <div class='modal-header'><h3 style='margin:0;'>新增角色ID</h3><button class='icon-btn' type='button' data-close-modal='identity'>×</button></div>"
-        "    <form id='add-identity-form'>"
-        "      <div class='form-label'>输入一个可被当前 Telegram 账号访问的角色ID。新增成功后会立即加入调度并显示在左侧列表。</div>"
-        "      <input class='text-input' name='send_as_id' inputmode='numeric' placeholder='例如 1234567890' />"
-        "      <div class='modal-actions'><button class='btn btn-secondary' type='button' data-close-modal='identity'>取消</button><button class='btn' type='submit'>新增</button></div>"
-        "    </form>"
+        "  <div class='modal-card' style='max-width:520px;'>"
+        "    <div class='modal-header'><h3 style='margin:0;'>新增身份</h3><button class='icon-btn' type='button' data-close-modal='identity'>×</button></div>"
+        "    <div style='display:flex;flex-direction:column;gap:12px;'>"
+        "      <label class='field-label'>选择账号<select id='identity-account-select' class='text-input'><option value=''>请先登录账号</option></select></label>"
+        "      <button type='button' class='btn btn-secondary' id='fetch-send-as-btn'>获取可用身份列表</button>"
+        "      <div id='send-as-peers-status' class='form-label' style='margin:0;display:none;'></div>"
+        "      <div id='send-as-peers-list' style='max-height:300px;overflow-y:auto;display:none;'></div>"
+        "      <div id='send-as-peers-actions' style='display:none;gap:8px;align-items:center;'>"
+        "        <label style='display:flex;align-items:center;gap:4px;cursor:pointer;font-size:0.9em;'><input type='checkbox' id='send-as-select-all' /> 全选</label>"
+        "        <button type='button' class='btn' id='batch-add-identity-btn'>批量新增</button>"
+        "      </div>"
+        "      <details style='margin-top:4px;'><summary style='cursor:pointer;font-size:0.9em;color:#94a3b8;'>手动输入身份 ID</summary>"
+        "        <form id='add-identity-form' style='margin-top:8px;display:flex;gap:8px;align-items:flex-end;'>"
+        "          <input class='text-input' name='send_as_id' inputmode='numeric' placeholder='例如 1234567890' style='flex:1;' />"
+        "          <button class='btn' type='submit'>新增</button>"
+        "        </form>"
+        "      </details>"
+        "    </div>"
         "  </div>"
         "</div>"
         "<div id='login-account-modal' class='modal-backdrop'>"
@@ -581,8 +593,10 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "function applySnapshot(nextSnapshot,options){if(!nextSnapshot){return false;}mergeStartupAlerts(nextSnapshot);const nextSerialized=serializeComparableSnapshot(nextSnapshot);if(appState.lastSnapshotSerialized===nextSerialized){if(!(options&&options.keepFlash)){appState.flashMessage='';appState.flashError=false;appState.renderedFlashVersion=0;}appState.snapshot=nextSnapshot;if(pruneResolvedStartupAlerts()){renderAll();return true;}openStartupAlertsModalIfNeeded();setFlash();return false;}appState.snapshot=nextSnapshot;appState.lastSnapshotSerialized=nextSerialized;renderAll();if(nextSnapshot.config_needed&&!appState._configPromptShown){appState._configPromptShown=true;updateFlash('请先完成基础配置（游戏群聊 ID、Bot ID）后再启用模块',true);openBasicConfigModal();}return true;}"
         "function openBasicConfigModal(){const modal=document.getElementById('basic-config-modal');const groupInput=modal.querySelector('input[name=\"game_group_id\"]');const botsInput=modal.querySelector('input[name=\"game_bot_ids\"]');const topicInput=modal.querySelector('input[name=\"game_topic_id\"]');const autoDeleteInput=modal.querySelector('input[name=\"auto_delete_sent_messages\"]');if(groupInput){const groupId=Number(appState.snapshot&&appState.snapshot.game_group_id||0);groupInput.value=groupId?String(groupId):'';}if(botsInput){const botIds=appState.snapshot&&Array.isArray(appState.snapshot.game_bot_ids)?appState.snapshot.game_bot_ids:[];botsInput.value=botIds.join(', ');}if(topicInput){const topicId=Number(appState.snapshot&&appState.snapshot.game_topic_id||0);topicInput.value=topicId>0?String(topicId):'';}if(autoDeleteInput){autoDeleteInput.checked=!!(appState.snapshot&&appState.snapshot.auto_delete_sent_messages);}renderForumTopicOptions(topicInput&&topicInput.value);modal.classList.add('show');if(groupInput){groupInput.focus();groupInput.select();}}"
         "function closeBasicConfigModal(){document.getElementById('basic-config-modal').classList.remove('show');}"
-        "function openIdentityModal(){const modal=document.getElementById('add-identity-modal');modal.classList.add('show');const input=modal.querySelector('input[name=\"send_as_id\"]');if(input){input.value='';input.focus();}}"
+        "function openIdentityModal(){const modal=document.getElementById('add-identity-modal');modal.classList.add('show');const select=document.getElementById('identity-account-select');const accounts=appState.snapshot&&appState.snapshot.accounts||{};select.innerHTML='<option value=\"\">-- 选择账号 --</option>';Object.entries(accounts).forEach(function(entry){const id=entry[0];const info=entry[1];select.innerHTML+='<option value=\"'+escapeHtml(id)+'\">'+escapeHtml((info&&info.username)||id)+' ('+escapeHtml(id)+')</option>';});document.getElementById('send-as-peers-list').style.display='none';document.getElementById('send-as-peers-list').innerHTML='';document.getElementById('send-as-peers-actions').style.display='none';document.getElementById('send-as-peers-status').style.display='none';const input=modal.querySelector('input[name=\"send_as_id\"]');if(input){input.value='';}}"
         "function closeIdentityModal(){document.getElementById('add-identity-modal').classList.remove('show');}"
+        "async function fetchSendAsPeers(){const select=document.getElementById('identity-account-select');const accountId=select.value;if(!accountId){updateFlash('请先选择一个账号',true);renderAll();return;}const status=document.getElementById('send-as-peers-status');const list=document.getElementById('send-as-peers-list');const actions=document.getElementById('send-as-peers-actions');status.style.display='';status.textContent='正在获取身份列表...';list.style.display='none';list.innerHTML='';actions.style.display='none';try{const data=await postJson('/api/account/send-as-peers',{account_id:accountId});const peers=data.peers||[];const existingIds=new Set((data.existing_ids||[]).map(Number));if(!peers.length){status.textContent='该账号在游戏群中没有可用的 send_as 身份';return;}status.textContent='共 '+peers.length+' 个可用身份，已有 '+existingIds.size+' 个已添加';list.style.display='';list.innerHTML=peers.map(function(p){const exists=existingIds.has(Number(p.id));const disabled=exists?' disabled':'';const checked=exists?' checked':'';const opacity=exists?' style=\"opacity:0.5;\"':'';return '<label'+opacity+' style=\"display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #1e293b;cursor:'+(exists?'default':'pointer')+';font-size:0.95em;\"><input type=\"checkbox\" name=\"peer_id\" value=\"'+p.id+'\"'+disabled+checked+' /><span style=\"flex:1;\">'+escapeHtml(p.name)+'</span><span style=\"color:#64748b;font-size:0.85em;\">'+escapeHtml(p.type==='channel'?'频道':'用户')+' | '+p.id+'</span></label>';}).join('');actions.style.display='flex';document.getElementById('send-as-select-all').checked=false;}catch(error){status.textContent='获取失败：'+((error&&error.message)||'未知错误');}}"
+        "async function batchAddIdentities(){const list=document.getElementById('send-as-peers-list');const checkboxes=list.querySelectorAll('input[name=\"peer_id\"]:checked:not(:disabled)');const ids=Array.from(checkboxes).map(function(cb){return cb.value;});if(!ids.length){updateFlash('请至少选择一个身份',true);renderAll();return;}const accountId=document.getElementById('identity-account-select').value;const btn=document.getElementById('batch-add-identity-btn');btn.disabled=true;btn.textContent='添加中...';try{const data=await postJson('/api/identity',{send_as_ids:ids,account_id:accountId});if(data&&data.send_as_id!=null){appState.selectedId=Number(data.send_as_id)||appState.selectedId;}updateFlash(data.message||'批量添加完成',false);closeIdentityModal();applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){updateFlash((error&&error.message)||'批量添加失败',true);renderAll();}finally{btn.disabled=false;btn.textContent='批量新增';}}"
         "function openLoginAccountModal(){const modal=document.getElementById('login-account-modal');modal.classList.add('show');document.getElementById('login-step-phone').style.display='';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='none';document.getElementById('login-status').textContent='';document.getElementById('login-phone').value='';document.getElementById('login-code').value='';document.getElementById('login-phone').focus();}"
         "function closeLoginAccountModal(){document.getElementById('login-account-modal').classList.remove('show');document.getElementById('login-status').textContent='';}"
         "function openPetModal(){const identity=getSelectedIdentity();if(!identity){return;}const modal=document.getElementById('pet-name-modal');modal.querySelector('input[name=\"send_as_id\"]').value=identity.send_as_id;modal.querySelector('input[name=\"pet_name\"]').value=identity.pet_name||'';document.getElementById('pet-name-identity').textContent=`当前身份：${identity.display_name}`;modal.classList.add('show');const input=modal.querySelector('input[name=\"pet_name\"]');if(input){input.focus();input.select();}}"
@@ -609,6 +623,9 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "document.getElementById('basic-config-form').addEventListener('submit',submitBasicConfig);"
         "document.getElementById('forum-topic-select').addEventListener('change',function(event){const form=document.getElementById('basic-config-form');const topicInput=form&&form.querySelector('input[name=\"game_topic_id\"]');if(topicInput){topicInput.value=event.target.value||'';}});"
         "document.getElementById('add-identity-form').addEventListener('submit',submitIdentity);"
+        "document.getElementById('fetch-send-as-btn').addEventListener('click',fetchSendAsPeers);"
+        "document.getElementById('batch-add-identity-btn').addEventListener('click',batchAddIdentities);"
+        "document.getElementById('send-as-select-all').addEventListener('change',function(event){const list=document.getElementById('send-as-peers-list');const checkboxes=list.querySelectorAll('input[name=\"peer_id\"]:not(:disabled)');checkboxes.forEach(function(cb){cb.checked=event.target.checked;});});"
         "document.getElementById('login-send-code-btn').addEventListener('click',loginSendCode);"
         "document.getElementById('login-verify-btn').addEventListener('click',function(){loginVerifyCode();});"
         "document.getElementById('login-2fa-btn').addEventListener('click',function(){const pw=document.getElementById('login-2fa-password').value;loginVerifyCode(pw);});"
@@ -684,8 +701,11 @@ async def ui_set_module_window(send_as_id, module_name, start_hour_local, end_ho
     return True, f"已更新{module_name}执行窗口[{get_identity_display_name(send_as_id)}]：UTC+8 {start_hour_local:02d}:00-{end_hour_local:02d}:00"
 
 
-async def ui_add_identity(send_as_id_raw, actor_id=None):
-    ok, message, canonical_id = await register_identity(send_as_id_raw, source="ui", actor_id=actor_id)
+async def ui_add_identity(send_as_id_raw, actor_id=None, account_id=None):
+    ok, message, canonical_id = await register_identity(send_as_id_raw, source="ui", actor_id=actor_id, account_id=account_id)
+    if ok and canonical_id and account_id:
+        set_identity_account(canonical_id, int(account_id))
+        save_state()
     return ok, message, canonical_id
 
 
@@ -787,6 +807,36 @@ async def ui_account_login_verify(code, session_key, password=None):
     save_state()
     await send_audit_log(f"🔑 新账号登录成功: @{username} (ID: {account_id})")
     return True, f"登录成功: @{username}", account_id
+
+
+async def ui_get_send_as_peers(account_id):
+    """获取指定账号在游戏群中可用的 send_as 身份列表"""
+    account_id = int(account_id)
+    game_group_id = get_game_group_id()
+    if not game_group_id:
+        return False, "请先在基础配置中设置游戏群聊 ID", []
+    tc = get_client(account_id)
+    if not tc:
+        return False, f"账号 {account_id} 未登录", []
+    try:
+        from telethon.tl.functions.channels import GetSendAsRequest
+        result = await tc(GetSendAsRequest(peer=game_group_id))
+        peers = []
+        for send_as_peer in result.peers:
+            peer_obj = send_as_peer.peer
+            try:
+                entity = await tc.get_entity(peer_obj)
+                peer_id = int(entity.id)
+                name = getattr(entity, "title", None) or getattr(entity, "first_name", None) or str(peer_id)
+                username = getattr(entity, "username", "") or ""
+                peer_type = "channel" if hasattr(entity, "title") else "user"
+                peers.append({"id": peer_id, "name": name, "username": username, "type": peer_type})
+            except Exception:
+                continue
+        existing_ids = list(get_identity_ids())
+        return True, f"获取到 {len(peers)} 个可用身份", peers, existing_ids
+    except Exception as e:
+        return False, f"获取 send_as 列表失败: {e}", []
 
 
 async def ui_refresh_identity_info(send_as_id, actor_id=None):
@@ -1046,6 +1096,36 @@ async def handle_ui_http(reader, writer):
                         extra={"forum_topics": topics, "forum_topics_updated_at": fmt_abs_ts(get_forum_topics_updated_at())} if ok else None,
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/account/send-as-peers":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    raw_account_id = payload.get("account_id")
+                    if not raw_account_id:
+                        body = _make_json_payload(False, error="缺少 account_id 参数")
+                        _write_response(writer, "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    else:
+                        try:
+                            result = await ui_get_send_as_peers(raw_account_id)
+                            if len(result) == 4:
+                                ok, message, peers, existing_ids = result
+                            else:
+                                ok, message, peers = result
+                                existing_ids = []
+                            status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                            body = _make_json_payload(
+                                ok,
+                                message=message if ok else "",
+                                error="" if ok else message,
+                                extra={"peers": peers, "existing_ids": existing_ids} if ok else None,
+                            )
+                        except Exception as e:
+                            body = _make_json_payload(False, error=f"获取失败: {e}")
+                            status_line = "HTTP/1.1 500 Internal Server Error"
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/identity":
                 if session is None:
                     body = _make_json_payload(False, error="未登录或登录已失效")
@@ -1060,7 +1140,31 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
                 else:
                     send_as_id_raw = payload.get("send_as_id")
-                    if send_as_id_raw in {None, ""}:
+                    send_as_ids_raw = payload.get("send_as_ids")
+                    batch_account_id = payload.get("account_id")
+                    actor_id = (session or {}).get("sender_id")
+                    if send_as_ids_raw and isinstance(send_as_ids_raw, list):
+                        # 批量添加
+                        results = []
+                        last_canonical_id = None
+                        for raw_id in send_as_ids_raw:
+                            ok, msg, cid = await ui_add_identity(raw_id, actor_id=actor_id, account_id=batch_account_id)
+                            results.append({"id": raw_id, "ok": ok, "message": msg, "canonical_id": cid})
+                            if ok and cid:
+                                last_canonical_id = cid
+                        success_count = sum(1 for r in results if r["ok"])
+                        fail_count = len(results) - success_count
+                        message = f"批量添加完成：成功 {success_count} 个"
+                        if fail_count > 0:
+                            message += f"，失败 {fail_count} 个"
+                        body = _make_json_payload(
+                            True,
+                            message=message,
+                            snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")),
+                            extra={"send_as_id": last_canonical_id, "results": results},
+                        )
+                        _write_response(writer, "HTTP/1.1 200 OK", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    elif send_as_id_raw in {None, ""}:
                         body = _make_json_payload(False, error="缺少 send_as_id 参数")
                         _write_response(
                             writer,
@@ -1070,7 +1174,7 @@ async def handle_ui_http(reader, writer):
                             extra_headers=auth_headers,
                         )
                     else:
-                        ok, message, canonical_id = await ui_add_identity(send_as_id_raw, actor_id=(session or {}).get("sender_id"))
+                        ok, message, canonical_id = await ui_add_identity(send_as_id_raw, actor_id=(session or {}).get("sender_id"), account_id=batch_account_id)
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(
                             ok,
