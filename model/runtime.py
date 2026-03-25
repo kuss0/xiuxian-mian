@@ -120,6 +120,81 @@ async def reply_log_group_message(event, text, *, audit_on_error=True, error_pre
         return False
 
 
+def _map_forum_topics_error(error):
+    error_text = str(error or "").strip()
+    error_code = error_text.upper()
+    if "CHANNEL_FORUM_MISSING" in error_code or ("FORUM" in error_code and "MISSING" in error_code):
+        return "该群未开启话题功能"
+    if any(code in error_code for code in {"CHANNEL_INVALID", "CHANNEL_PRIVATE", "CHAT_ID_INVALID", "PEER_ID_INVALID"}):
+        return "游戏群聊不存在或当前账号无权访问"
+    if "TOPIC" in error_code and "INVALID" in error_code:
+        return "话题接口返回无效结果"
+    return error_text or "读取话题列表失败"
+
+
+async def fetch_forum_topics(group_id):
+    raw_group_id = str(group_id or "").strip()
+    if not raw_group_id:
+        return False, "游戏群聊 ID 不能为空", []
+    try:
+        group_id = int(raw_group_id)
+    except (TypeError, ValueError):
+        return False, "游戏群聊 ID 必须是整数", []
+    if group_id == 0:
+        return False, "游戏群聊 ID 不能为 0", []
+
+    try:
+        peer = await client.get_input_entity(group_id)
+        entity = await client.get_entity(peer)
+    except Exception:
+        return False, "游戏群聊不存在或当前账号无权访问", []
+
+    request_cls = getattr(getattr(functions, "channels", None), "GetForumTopicsRequest", None)
+    if request_cls is None:
+        request_cls = getattr(getattr(functions, "messages", None), "GetForumTopicsRequest", None)
+    if request_cls is None:
+        return False, "当前 Telethon 版本不支持自动读取话题列表", []
+
+    group_title = str(getattr(entity, "title", "") or "").strip() or str(group_id)
+    if not bool(getattr(entity, "forum", False)):
+        return False, f"群聊[{group_title}]未开启话题功能", []
+
+    try:
+        result = await client(
+            request_cls(
+                channel=peer,
+                q="",
+                offset_date=None,
+                offset_id=0,
+                offset_topic=0,
+                limit=100,
+            )
+        )
+    except Exception as e:
+        return False, _map_forum_topics_error(e), []
+
+    topics = []
+    seen_topic_ids = set()
+    for topic in getattr(result, "topics", None) or []:
+        topic_id = int(getattr(topic, "id", 0) or 0)
+        if topic_id <= 0 or topic_id in seen_topic_ids:
+            continue
+        seen_topic_ids.add(topic_id)
+        title = str(getattr(topic, "title", "") or "").strip() or f"话题 {topic_id}"
+        if bool(getattr(topic, "hidden", False)):
+            title = f"{title}（已隐藏）"
+        elif bool(getattr(topic, "closed", False)):
+            title = f"{title}（已关闭）"
+        topics.append({
+            "id": topic_id,
+            "title": title,
+            "top_message": int(getattr(topic, "top_message", 0) or 0),
+        })
+
+    topics.sort(key=lambda item: item["id"])
+    return True, f"已读取群聊[{group_title}]的话题列表，共 {len(topics)} 个", topics
+
+
 def issue_ui_login_token(sender_id, now=None):
     if now is None:
         now = time.time()
@@ -484,6 +559,7 @@ __all__ = [
     "clear_pending_by_reply",
     "clear_ui_auth_state",
     "consume_unseen_startup_alerts",
+    "fetch_forum_topics",
     "find_identity_by_msg_id",
     "gc_my_msg_ids",
     "gc_ui_login_tokens",

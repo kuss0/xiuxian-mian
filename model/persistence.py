@@ -19,6 +19,8 @@ from .state import (
     get_game_group_id,
     get_game_bot_ids,
     get_game_topic_id,
+    get_forum_topics,
+    get_forum_topics_updated_at,
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
     get_identity_ids,
@@ -26,6 +28,7 @@ from .state import (
     get_send_as_profile,
     new_identity_state,
     set_auto_delete_sent_messages,
+    set_forum_topics,
     set_global_enabled,
     set_game_bot_ids,
     set_game_group_id,
@@ -83,6 +86,7 @@ def init_db():
             send_as_id INTEGER PRIMARY KEY,
             tree_enabled INTEGER NOT NULL,
             pet_enabled INTEGER NOT NULL,
+            quiz_enabled INTEGER NOT NULL,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -106,6 +110,7 @@ def init_db():
             next_checkin_time REAL NOT NULL,
             next_sect_teach_time REAL NOT NULL,
             next_tower_time REAL NOT NULL,
+            next_quiz_time REAL NOT NULL,
             next_yuanying_time REAL NOT NULL,
             next_deep_retreat_time REAL NOT NULL
         );
@@ -117,6 +122,12 @@ def init_db():
             last_sect_teach_msg_id INTEGER NOT NULL,
             checkin_cleanup_msg_ids TEXT NOT NULL,
             last_tower_msg_id INTEGER NOT NULL,
+            quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            quiz_question TEXT NOT NULL DEFAULT '',
+            quiz_options TEXT NOT NULL DEFAULT '{}',
+            quiz_answer TEXT NOT NULL DEFAULT '',
+            quiz_last_error TEXT NOT NULL DEFAULT '',
+            quiz_last_matched_at REAL NOT NULL DEFAULT 0,
             yuanying_phase TEXT NOT NULL,
             yuanying_probe_pending INTEGER NOT NULL,
             yuanying_summary_sent_at REAL NOT NULL,
@@ -151,6 +162,10 @@ def init_db():
         );
         """
     )
+    module_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_module_state)").fetchall()}
+    if "quiz_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
+
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN pet_name TEXT NOT NULL DEFAULT ''")
@@ -177,7 +192,23 @@ def init_db():
     if "xiuwei_max" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_max INTEGER NOT NULL DEFAULT 0")
 
+    timer_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_timers)").fetchall()}
+    if "next_quiz_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_quiz_time REAL NOT NULL DEFAULT 0")
+
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+    if "quiz_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "quiz_question" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_question TEXT NOT NULL DEFAULT ''")
+    if "quiz_options" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_options TEXT NOT NULL DEFAULT '{}' ")
+    if "quiz_answer" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_answer TEXT NOT NULL DEFAULT ''")
+    if "quiz_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_error TEXT NOT NULL DEFAULT ''")
+    if "quiz_last_matched_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_matched_at REAL NOT NULL DEFAULT 0")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -202,6 +233,14 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("game_topic_id", "0"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("forum_topics", "[]"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("forum_topics_updated_at", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -474,6 +513,14 @@ def save_state():
         )
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("forum_topics", json.dumps(get_forum_topics(), ensure_ascii=False)),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("forum_topics_updated_at", str(get_forum_topics_updated_at())),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
             ("auto_delete_sent_messages", "1" if is_auto_delete_sent_messages_enabled() else "0"),
         )
         conn.execute(
@@ -521,6 +568,15 @@ def load_state():
             game_bot_ids = []
         set_game_bot_ids(game_bot_ids)
         set_game_topic_id(int(meta_map.get("game_topic_id") or 0))
+        try:
+            forum_topics = json.loads(meta_map.get("forum_topics") or "[]")
+        except Exception:
+            forum_topics = []
+        try:
+            forum_topics_updated_at = float(meta_map.get("forum_topics_updated_at") or 0)
+        except (TypeError, ValueError):
+            forum_topics_updated_at = 0
+        set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         set_auto_delete_sent_messages(str(meta_map.get("auto_delete_sent_messages") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
         set_global_enabled(str(meta_map.get("global_enabled") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
 

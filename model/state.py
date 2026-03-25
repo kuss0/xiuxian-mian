@@ -20,30 +20,31 @@ from .config import (
 _current_identity_id = contextvars.ContextVar("current_identity_id", default=SEND_AS_DEFAULT_ID)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "quiz_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_checkin_time", "next_sect_teach_time",
-    "next_tower_time", "next_yuanying_time", "next_deep_retreat_time",
+    "next_tower_time", "next_quiz_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
     "last_tower_msg_id",
+    "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "quiz_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
 LEGACY_PERSIST_KEYS = IDENTITY_MODULE_COLUMNS + IDENTITY_TIMER_COLUMNS + IDENTITY_RUNTIME_COLUMNS
 PERSIST_KEYS = LEGACY_PERSIST_KEYS  # 兼容旧持久化函数，后续切换为 SQLite 实现
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -96,6 +97,7 @@ IDENTITY_STATE_TEMPLATE = {
     # 业务对象开关（启动默认全开）
     "tree_enabled": True,
     "pet_enabled": True,
+    "quiz_enabled": True,
     "yuanying_enabled": True,
     "deep_retreat_enabled": True,
     "checkin_enabled": True,
@@ -131,6 +133,15 @@ IDENTITY_STATE_TEMPLATE = {
     "next_tower_time": 0,
     "last_tower_day": "",
     "last_tower_msg_id": 0,
+
+    # 玄骨考校模块
+    "next_quiz_time": 0,
+    "quiz_reply_to_msg_id": 0,
+    "quiz_question": "",
+    "quiz_options": {},
+    "quiz_answer": "",
+    "quiz_last_error": "",
+    "quiz_last_matched_at": 0,
 
     # 元婴模块
     "yuanying_phase": "idle",  # idle|launching|running|waiting_summary|post_summary_wait
@@ -174,6 +185,8 @@ GLOBAL_STATE_DEFAULTS = {
     "game_group_id": int(GAME_GROUP_ID),
     "game_bot_ids": sorted(int(bot_id) for bot_id in GAME_BOT_IDS),
     "game_topic_id": 0,
+    "forum_topics": [],
+    "forum_topics_updated_at": 0,
     "auto_delete_sent_messages": True,
     "global_enabled": True,
     "send_as_profiles": {},
@@ -369,6 +382,54 @@ def get_game_topic_id():
 def set_game_topic_id(topic_id):
     _meta_state["game_topic_id"] = int(topic_id or 0)
     return get_game_topic_id()
+
+
+def get_forum_topics():
+    topics = []
+    for item in _meta_state.get("forum_topics") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            topic_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if topic_id <= 0:
+            continue
+        topics.append({
+            "id": topic_id,
+            "title": str(item.get("title") or "").strip() or f"话题 {topic_id}",
+            "top_message": int(item.get("top_message") or 0),
+        })
+    return topics
+
+
+def set_forum_topics(topics, updated_at=None):
+    normalized = []
+    seen_topic_ids = set()
+    for item in topics or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            topic_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if topic_id <= 0 or topic_id in seen_topic_ids:
+            continue
+        seen_topic_ids.add(topic_id)
+        normalized.append({
+            "id": topic_id,
+            "title": str(item.get("title") or "").strip() or f"话题 {topic_id}",
+            "top_message": int(item.get("top_message") or 0),
+        })
+    normalized.sort(key=lambda item: item["id"])
+    _meta_state["forum_topics"] = normalized
+    if updated_at is not None:
+        _meta_state["forum_topics_updated_at"] = float(updated_at or 0)
+    return get_forum_topics()
+
+
+def get_forum_topics_updated_at():
+    return float(_meta_state.get("forum_topics_updated_at") or 0)
 
 
 def is_auto_delete_sent_messages_enabled():
@@ -653,6 +714,8 @@ __all__ = [
     "get_game_group_id",
     "get_game_bot_ids",
     "get_game_topic_id",
+    "get_forum_topics",
+    "get_forum_topics_updated_at",
     "get_global_enabled",
     "is_auto_delete_sent_messages_enabled",
     "get_identity_display_name",
@@ -680,6 +743,7 @@ __all__ = [
     "set_game_group_id",
     "set_game_bot_ids",
     "set_game_topic_id",
+    "set_forum_topics",
     "set_global_enabled",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",

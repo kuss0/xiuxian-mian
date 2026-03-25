@@ -18,6 +18,7 @@ from .features.deep_retreat import (
     run_deep_retreat_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
+from .features.quiz import handle_quiz_prompt, run_quiz_scheduler
 from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
@@ -139,6 +140,17 @@ async def on_message(event):
         await handle_deep_retreat_summary_broadcast(text, now)
         await handle_yuanying_summary_broadcast(text, now)
         await handle_realm_breakthrough_broadcast(text, now)
+
+        handled_quiz_prompt = False
+        for identity_id in get_identity_ids():
+            if not get_identity_enabled(identity_id):
+                continue
+            with use_identity(identity_id):
+                if await handle_quiz_prompt(text, now, event):
+                    handled_quiz_prompt = True
+                    break
+        if handled_quiz_prompt:
+            return
 
         if routed_identity_id is not None:
             with use_identity(routed_identity_id):
@@ -328,6 +340,7 @@ async def main_loop():
                 await run_tree_bootstrap_check(now)
                 await run_tree_scheduler(now)
                 await run_pet_scheduler(now)
+                await run_quiz_scheduler(now)
                 await run_checkin_scheduler(now)
                 await run_tower_scheduler(now)
                 await run_deep_retreat_scheduler(now)

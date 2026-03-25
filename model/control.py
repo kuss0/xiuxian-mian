@@ -8,6 +8,7 @@ from .config import (
     CMD_DEEP_RETREAT_QUERY,
     CMD_IDENTITY_INFO,
     CMD_PET,
+    CMD_QUIZ_ANSWER,
     CMD_SECT_TEACH,
     CMD_TOWER,
     CMD_TREE_GUARD,
@@ -36,6 +37,7 @@ from .config import (
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
 from .features.pet import get_pet_status_text
+from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text
 from .features.yuanying import get_yuanying_status_detail_text
@@ -160,6 +162,12 @@ def _disable_pet_module_state():
     _clear_pending_tasks_by_commands({CMD_PET})
 
 
+def _disable_quiz_module_state():
+    state["quiz_enabled"] = False
+    clear_quiz_state(persist=False)
+    _clear_pending_tasks_by_commands({CMD_QUIZ_ANSWER})
+
+
 def _disable_yuanying_module_state():
     state["yuanying_enabled"] = False
     state["yuanying_phase"] = "idle"
@@ -211,6 +219,25 @@ def _manual_enable_tower_module_state(now):
     if float(state.get("next_tower_time", 0) or 0) > now:
         return
     _set_tower_module_enabled(True, now)
+
+
+def _manual_disable_quiz_module_state():
+    state["quiz_enabled"] = False
+    clear_quiz_state(persist=False)
+    _clear_pending_tasks_by_commands({CMD_QUIZ_ANSWER})
+
+
+def _manual_enable_quiz_module_state(now):
+    state["quiz_enabled"] = True
+    if float(state.get("next_quiz_time", 0) or 0) > now:
+        return
+    state["next_quiz_time"] = 0
+    state["quiz_reply_to_msg_id"] = 0
+    state["quiz_question"] = ""
+    state["quiz_options"] = {}
+    state["quiz_answer"] = ""
+    state["quiz_last_error"] = ""
+    state["quiz_last_matched_at"] = 0
 
 
 def _manual_disable_yuanying_module_state():
@@ -327,6 +354,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TREE_STATUS: "灵树",
     CMD_TREE_HARVEST: "灵树",
     CMD_PET: "法宝",
+    CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
     CMD_TOWER: "闯塔",
@@ -336,6 +364,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
+    "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
@@ -344,6 +373,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
 MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
+    "玄骨考校": _disable_quiz_module_state,
     "元婴": _disable_yuanying_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "点卯": lambda: _set_checkin_module_enabled(False, time.time()),
@@ -410,6 +440,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
     status_map = {
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
+        "玄骨考校": get_quiz_status_text,
         "元婴": get_yuanying_status_detail_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "点卯": get_checkin_status_text,
@@ -1045,6 +1076,7 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None):
     with use_identity(canonical_id):
         state["tree_enabled"] = False
         state["pet_enabled"] = False
+        state["quiz_enabled"] = False
         state["yuanying_enabled"] = False
         state["deep_retreat_enabled"] = False
         state["checkin_enabled"] = False
