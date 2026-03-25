@@ -134,8 +134,12 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
         "text": text,
         "disable_web_page_preview": "true" if not link_preview else "false",
     }
+    # Bot 在超级群组中无法回复用户消息，使用 reply_parameters 并允许失败
     if int(reply_to_msg_id or 0) > 0:
-        payload["reply_to_message_id"] = int(reply_to_msg_id)
+        payload["reply_parameters"] = json.dumps({
+            "message_id": int(reply_to_msg_id),
+            "allow_sending_without_reply": True,
+        })
     if int(message_thread_id or 0) > 0:
         payload["message_thread_id"] = int(message_thread_id)
     url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/sendMessage"
