@@ -86,8 +86,9 @@ from .timing import calc_next_daily_window_after_completion, calc_next_daily_win
 
 RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
-RE_IDENTITY_INFO_NAME = re.compile(r"道号[:：]\s*(\S+)")
+RE_IDENTITY_INFO_NAME = re.compile(r"(?:道号|修士)[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
+RE_IDENTITY_INFO_REALM_WITH_SECT = re.compile(r"境界[:：]\s*\S+\s*\(([^)]+)\)")
 RE_IDENTITY_INFO_SECT = re.compile(r"宗门[:：]\s*【([^】]+)】")
 RE_IDENTITY_INFO_XIUWEI = re.compile(r"修为[:：]\s*([\d,]+)\s*/\s*([\d,]+)")
 RE_REALM_BREAKTHROUGH = re.compile(r"成功突破至【([^】]+)】")
@@ -917,6 +918,12 @@ def _extract_identity_refresh_payload(text, *, card_pattern, require_xiuwei=Fals
         sect_name = (sect_match.group(1) or "").strip()
         if sect_name:
             payload["sect_name"] = sect_name
+    if "sect_name" not in payload:
+        sect_from_realm = RE_IDENTITY_INFO_REALM_WITH_SECT.search(raw_text)
+        if sect_from_realm:
+            sect_name = (sect_from_realm.group(1) or "").strip()
+            if sect_name:
+                payload["sect_name"] = sect_name
 
     xiuwei_match = RE_IDENTITY_INFO_XIUWEI.search(raw_text)
     if xiuwei_match:
