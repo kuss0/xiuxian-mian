@@ -56,6 +56,7 @@ from .state import (
     get_game_bot_ids,
     get_game_group_id,
     get_global_enabled,
+    get_identity_account,
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
@@ -257,7 +258,9 @@ async def bootstrap():
     identity_ids = get_identity_ids()
     for send_as_id in identity_ids:
         try:
-            send_as_entity = await client.get_entity(send_as_id)
+            account_id = get_identity_account(send_as_id)
+            tc = get_client(account_id) if account_id else client
+            send_as_entity = await tc.get_entity(send_as_id)
             hydrate_identity_profile(send_as_entity)
         except Exception:
             print(f"hydrate_identity_profile failed: {send_as_id}")
