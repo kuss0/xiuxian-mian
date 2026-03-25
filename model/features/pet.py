@@ -1,0 +1,56 @@
+import random
+
+from ..config import CD_BUFFER_SEC, CMD_PET, PET_CD
+from ..persistence import save_state
+from ..runtime import send_audit_log, send_game_command
+from ..state import get_pet_command, get_pet_name, state
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
+
+
+def get_pet_status_text():
+    return (
+        "🗡️ 法宝\n"
+        f"- 当前名称：{get_pet_name()}\n"
+        f"- 下次执行：{fmt_abs_ts(state['next_pet_time'])}（{fmt_remaining(state['next_pet_time'])}）"
+    )
+
+
+async def handle_pet_cd_fix(text, now, reply_to):
+    if not state["pet_enabled"]:
+        return
+
+    if not any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息"]):
+        return
+
+    wait_sec = parse_wait_time(text)
+    if wait_sec <= 0:
+        return
+
+    orig_cmd = reply_to.raw_text if reply_to else ""
+    pet_name = get_pet_name()
+    pet_command = get_pet_command()
+    if "法宝" in text or "抚摸" in text or pet_name in text or pet_command in orig_cmd or CMD_PET in orig_cmd:
+        state["next_pet_time"] = now + wait_sec + CD_BUFFER_SEC
+        save_state()
+        target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
+        await send_audit_log(f"⏳ 法宝 CD 修正：预计于 {target_time} 恢复。")
+
+
+async def run_pet_scheduler(now):
+    if not state["pet_enabled"]:
+        return
+
+    if now >= state["next_pet_time"]:
+        p_delay = PET_CD + random.uniform(0, 30)
+        state["next_pet_time"] = now + p_delay
+        save_state()
+        p_next_t = fmt_time_after(p_delay)
+        await send_game_command(get_pet_command())
+        await send_audit_log(f"🗡️ 执行法宝抚摸[{get_pet_name()}]。下次预计：{p_next_t}")
+
+
+__all__ = [
+    "get_pet_status_text",
+    "handle_pet_cd_fix",
+    "run_pet_scheduler",
+]

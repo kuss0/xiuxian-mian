@@ -1,0 +1,478 @@
+import asyncio
+import random
+import secrets
+import time
+from datetime import datetime
+from types import SimpleNamespace
+from urllib.parse import quote
+
+from telethon import functions, types
+
+from .config import (
+    CMD_BATTLE_POWER,
+    LOG_GROUP_ID,
+    MY_MSG_MAX,
+    MY_MSG_TTL,
+    RETRY_LIMIT,
+    RETRY_MAX_SEC,
+    RETRY_MIN_SEC,
+    SCRIPT_COMMANDS,
+    TZ_LOCAL,
+    UI_AUTH_IDLE_TIMEOUT_SEC,
+    UI_PUBLIC_BASE_URL,
+    client,
+    is_battle_power_command_text,
+)
+from .persistence import mark_dirty
+from .state import (
+    get_current_identity_id,
+    get_game_bot_ids,
+    get_game_group_id,
+    get_game_topic_id,
+    get_identity_enabled,
+    get_identity_ids,
+    get_identity_state,
+    get_send_as_label,
+    is_auto_delete_sent_messages_enabled,
+    state,
+    use_identity,
+)
+
+_background_tasks = set()
+_ui_login_tokens = {}
+_ui_sessions = {}
+IDENTITY_INFO_REFRESH_ERROR_TEXT = "获取失败，请手动重新获取"
+
+
+def _fire_and_forget(coro):
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def _secure_lookup(store, token):
+    token = (token or "").strip()
+    if not token:
+        return None, None
+    for stored_token, payload in store.items():
+        if secrets.compare_digest(stored_token, token):
+            return stored_token, payload
+    return None, None
+
+
+def _new_runtime_token(store):
+    while True:
+        token = secrets.token_urlsafe(32)
+        if token not in store:
+            return token
+
+
+def is_script_command_text(text):
+    raw_text = (text or "").strip()
+    if not raw_text:
+        return False
+    return any(raw_text == cmd or raw_text.startswith(f"{cmd} ") for cmd in SCRIPT_COMMANDS)
+
+
+async def send_audit_log(content):
+    now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
+    message = f"【🍃 监控日志 {now}】\n{content}"
+    try:
+        await client.send_message(LOG_GROUP_ID, message)
+        return True
+    except Exception as e:
+        print(f"send_audit_log failed: {e} | content={content}")
+        return False
+
+
+async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True):
+    try:
+        await event.reply(text, link_preview=link_preview)
+        return True
+    except Exception as e:
+        print(f"reply_log_group_message failed: {e} | text={text}")
+        if audit_on_error:
+            await send_audit_log(f"{error_prefix}: {e}")
+        return False
+
+
+def issue_ui_login_token(sender_id, now=None):
+    if now is None:
+        now = time.time()
+    token = _new_runtime_token(_ui_login_tokens)
+    _ui_login_tokens[token] = {
+        "sender_id": int(sender_id) if sender_id is not None else 0,
+        "created_at": now,
+        "last_seen_at": now,
+    }
+    return token
+
+
+def build_ui_login_url(token):
+    return f"{UI_PUBLIC_BASE_URL}/#token={quote((token or '').strip(), safe='')}"
+
+
+def redeem_ui_login_token(token, now=None):
+    if now is None:
+        now = time.time()
+    stored_token, payload = _secure_lookup(_ui_login_tokens, token)
+    if not stored_token or not payload:
+        return None
+    if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC:
+        _ui_login_tokens.pop(stored_token, None)
+        return None
+
+    _ui_login_tokens.pop(stored_token, None)
+    session_token = _new_runtime_token(_ui_sessions)
+    _ui_sessions[session_token] = {
+        "sender_id": int(payload.get("sender_id") or 0),
+        "created_at": now,
+        "last_seen_at": now,
+        "seen_startup_alert_keys": [],
+    }
+    return session_token
+
+
+def validate_ui_session(session_token, now=None):
+    if now is None:
+        now = time.time()
+    stored_token, payload = _secure_lookup(_ui_sessions, session_token)
+    if not stored_token or not payload:
+        return None
+    if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC:
+        _ui_sessions.pop(stored_token, None)
+        return None
+    return {
+        "session_token": stored_token,
+        **payload,
+    }
+
+
+def touch_ui_session(session_token, now=None):
+    if now is None:
+        now = time.time()
+    session = validate_ui_session(session_token, now)
+    if not session:
+        return None
+    _ui_sessions[session["session_token"]]["last_seen_at"] = now
+    session["last_seen_at"] = now
+    return session
+
+
+def gc_ui_login_tokens(now=None):
+    if now is None:
+        now = time.time()
+    expired = [
+        token
+        for token, payload in _ui_login_tokens.items()
+        if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC
+    ]
+    for token in expired:
+        _ui_login_tokens.pop(token, None)
+    return len(expired)
+
+
+def gc_ui_sessions(now=None):
+    if now is None:
+        now = time.time()
+    expired = [
+        token
+        for token, payload in _ui_sessions.items()
+        if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC
+    ]
+    for token in expired:
+        _ui_sessions.pop(token, None)
+    return len(expired)
+
+
+def clear_ui_auth_state():
+    _ui_login_tokens.clear()
+    _ui_sessions.clear()
+
+
+def consume_unseen_startup_alerts(session_token, alerts):
+    session = validate_ui_session(session_token)
+    if not session:
+        return []
+    stored_session = _ui_sessions.get(session["session_token"], {})
+    seen_keys = {
+        str(alert_key)
+        for alert_key in stored_session.get("seen_startup_alert_keys", [])
+        if str(alert_key).strip()
+    }
+    unseen_alerts = []
+    for alert in alerts or []:
+        alert_key = str((alert or {}).get("key") or "").strip()
+        if not alert_key or alert_key in seen_keys:
+            continue
+        unseen_alerts.append(alert)
+        seen_keys.add(alert_key)
+    stored_session["seen_startup_alert_keys"] = sorted(seen_keys)
+    return unseen_alerts
+
+
+def _extract_sent_message_id(result):
+    direct_msg_id = int(getattr(result, "id", 0) or 0)
+    if direct_msg_id > 0:
+        return direct_msg_id
+
+    updates = getattr(result, "updates", None) or []
+    for update in updates:
+        message = getattr(update, "message", None)
+        message_id = int(getattr(message, "id", 0) or 0)
+        if message_id > 0:
+            return message_id
+        update_id = int(getattr(update, "id", 0) or 0)
+        if update_id > 0:
+            return update_id
+    return 0
+
+
+async def send_game_command(command, track=True, reply_to=None, send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    send_as_id = int(send_as_id)
+    topic_id = get_game_topic_id()
+
+    try:
+        peer = await client.get_input_entity(get_game_group_id())
+        send_as_peer = await client.get_input_entity(send_as_id)
+        reply_to_spec = None
+        if reply_to:
+            reply_to_spec = types.InputReplyToMessage(
+                reply_to_msg_id=int(reply_to),
+                top_msg_id=int(topic_id or 0) or None,
+            )
+        elif topic_id > 0:
+            reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
+        result = await client(
+            functions.messages.SendMessageRequest(
+                peer=peer,
+                message=command,
+                reply_to=reply_to_spec,
+                send_as=send_as_peer,
+            )
+        )
+        msg_id = _extract_sent_message_id(result)
+        if msg_id <= 0:
+            raise ValueError("无法从发送结果中解析消息 ID")
+        msg = SimpleNamespace(id=msg_id)
+        with use_identity(send_as_id) as identity_state:
+            sent_at = time.time()
+            identity_state["my_msg_ids"][msg_id] = sent_at
+            if track:
+                identity_state["pending_tasks"][msg_id] = {
+                    "cmd": command,
+                    "sent_at": sent_at,
+                    "retry": 0,
+                    "timeout": random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC),
+                    "reply_to_msg_id": int(reply_to or 0),
+                }
+            mark_dirty()
+        return msg
+    except Exception as e:
+        await send_audit_log(f"❌ 指令发送失败[{get_send_as_label(send_as_id)}]: {command}\n错误: {e}")
+        return None
+
+
+def _get_tracked_identity_message_ids(identity_state):
+    tracked_ids = {
+        int(identity_state.get("last_checkin_msg_id", 0) or 0),
+        int(identity_state.get("last_sect_teach_msg_id", 0) or 0),
+        int(identity_state.get("last_tower_msg_id", 0) or 0),
+        int(identity_state.get("last_yuanying_summary_msg_id", 0) or 0),
+        int(identity_state.get("last_deep_retreat_summary_msg_id", 0) or 0),
+        int(identity_state.get("last_identity_info_msg_id", 0) or 0),
+        *(int(msg_id or 0) for msg_id in identity_state.get("identity_info_reply_msg_ids", [])),
+    }
+    tracked_ids.discard(0)
+    return tracked_ids
+
+
+def find_identity_by_msg_id(msg_id):
+    if not msg_id:
+        return None
+    msg_id = int(msg_id)
+    for send_as_id in get_identity_ids():
+        identity_state = get_identity_state(send_as_id)
+        if msg_id in identity_state["my_msg_ids"] or msg_id in _get_tracked_identity_message_ids(identity_state):
+            return send_as_id
+    return None
+
+
+def is_reply_to_identity_message(reply_to, send_as_id):
+    if not reply_to:
+        return False
+    with use_identity(send_as_id):
+        return reply_to.id in state["my_msg_ids"] or reply_to.id in _get_tracked_identity_message_ids(state)
+
+
+def gc_my_msg_ids(now=None, send_as_id=None):
+    if now is None:
+        now = time.time()
+
+    target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
+    changed = False
+    for identity_id in target_ids:
+        with use_identity(identity_id) as identity_state:
+            expired_ids = [msg_id for msg_id, sent_at in identity_state["my_msg_ids"].items() if now - sent_at > MY_MSG_TTL]
+            if expired_ids:
+                changed = True
+                for msg_id in expired_ids:
+                    identity_state["my_msg_ids"].pop(msg_id, None)
+
+            if len(identity_state["my_msg_ids"]) > MY_MSG_MAX:
+                sorted_items = sorted(identity_state["my_msg_ids"].items(), key=lambda x: x[1], reverse=True)
+                trimmed_items = dict(sorted_items[:MY_MSG_MAX])
+                if trimmed_items != identity_state["my_msg_ids"]:
+                    identity_state["my_msg_ids"] = trimmed_items
+                    changed = True
+    if changed:
+        mark_dirty()
+
+
+def clear_pending_by_reply(reply_to, send_as_id=None):
+    if not reply_to:
+        return
+
+    if send_as_id is None:
+        send_as_id = find_identity_by_msg_id(reply_to.id)
+    if send_as_id is None:
+        return
+
+    with use_identity(send_as_id):
+        item = state["pending_tasks"].pop(reply_to.id, None)
+
+        replied_cmd = None
+        if item:
+            replied_cmd = item.get("cmd")
+        elif reply_to.raw_text:
+            for pending in state["pending_tasks"].values():
+                if pending.get("cmd") and pending["cmd"] in reply_to.raw_text:
+                    replied_cmd = pending["cmd"]
+                    break
+            if not replied_cmd:
+                reply_text = (reply_to.raw_text or "").strip()
+                for cmd in SCRIPT_COMMANDS:
+                    if reply_text == cmd or reply_text.startswith(f"{cmd} "):
+                        replied_cmd = reply_text
+                        break
+
+        if replied_cmd:
+            remove_ids = [msg_id for msg_id, pending in state["pending_tasks"].items() if pending.get("cmd") == replied_cmd]
+            for msg_id in remove_ids:
+                state["pending_tasks"].pop(msg_id, None)
+
+        if item or replied_cmd:
+            mark_dirty()
+
+
+async def run_retry_scheduler(now, send_as_id=None):
+    target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
+    for identity_id in target_ids:
+        if not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id) as identity_state:
+            retry_items = list(identity_state["pending_tasks"].items())
+        for msg_id, item in retry_items:
+            cmd = item["cmd"]
+            send_time = item["sent_at"]
+            threshold = item["timeout"]
+            retry = item["retry"]
+
+            if now - send_time > threshold:
+                with use_identity(identity_id) as identity_state:
+                    if retry >= RETRY_LIMIT:
+                        await send_audit_log(f"🧯 指令 `{cmd}`[{get_send_as_label(identity_id)}] 已重试 {RETRY_LIMIT} 次仍无响应，停止补发。")
+                        if cmd == CMD_BATTLE_POWER:
+                            identity_state["last_identity_info_msg_id"] = 0
+                            identity_state["identity_info_reply_msg_ids"] = []
+                            identity_state["identity_info_last_error"] = IDENTITY_INFO_REFRESH_ERROR_TEXT
+                        identity_state["pending_tasks"].pop(msg_id, None)
+                        mark_dirty()
+                        continue
+
+                await send_audit_log(f"⚠️ 指令 `{cmd}`[{get_send_as_label(identity_id)}] 响应超时({threshold}s)，正在补发...")
+                new_msg = await send_game_command(cmd, send_as_id=identity_id)
+                with use_identity(identity_id) as identity_state:
+                    if new_msg and new_msg.id in identity_state["pending_tasks"]:
+                        identity_state["pending_tasks"][new_msg.id]["retry"] = retry + 1
+                        if cmd == CMD_BATTLE_POWER:
+                            new_msg_id = int(new_msg.id)
+                            tracked_ids = {
+                                *(int(tracked_id or 0) for tracked_id in identity_state.get("identity_info_reply_msg_ids", [])),
+                                new_msg_id,
+                            }
+                            tracked_ids.discard(0)
+                            identity_state["last_identity_info_msg_id"] = new_msg_id
+                            identity_state["identity_info_reply_msg_ids"] = sorted(tracked_ids)
+                    identity_state["pending_tasks"].pop(msg_id, None)
+                    mark_dirty()
+
+
+async def schedule_cleanup(reply_to, send_as_id=None):
+    if not reply_to or not is_auto_delete_sent_messages_enabled():
+        return
+
+    if send_as_id is None:
+        send_as_id = find_identity_by_msg_id(reply_to.id)
+    if send_as_id is None:
+        return
+
+    with use_identity(send_as_id) as identity_state:
+        is_my_msg = reply_to.id in identity_state["my_msg_ids"]
+        is_script_cmd = is_script_command_text(reply_to.raw_text)
+        if not (is_my_msg and is_script_cmd):
+            return
+
+        msg_id = reply_to.id
+        if msg_id in identity_state.get("checkin_cleanup_msg_ids", []):
+            return
+        if msg_id == identity_state.get("sect_teach_reply_to_msg_id") and identity_state.get("next_sect_teach_time", 0) > 0:
+            return
+        if (
+            is_battle_power_command_text(reply_to.raw_text)
+            and (
+                any(pending.get("cmd") == CMD_BATTLE_POWER for pending in identity_state["pending_tasks"].values())
+                or identity_state.get("identity_info_reply_msg_ids")
+                or identity_state.get("last_identity_info_msg_id", 0)
+            )
+        ):
+            return
+
+    async def safe_delete():
+        await asyncio.sleep(1)
+        try:
+            await reply_to.delete()
+        except Exception as e:
+            print(f"schedule_cleanup delete failed: {e} | msg_id={msg_id}")
+        with use_identity(send_as_id) as identity_state:
+            identity_state["my_msg_ids"].pop(msg_id, None)
+            mark_dirty()
+
+    _fire_and_forget(safe_delete())
+
+
+__all__ = [
+    "_fire_and_forget",
+    "build_ui_login_url",
+    "clear_pending_by_reply",
+    "clear_ui_auth_state",
+    "consume_unseen_startup_alerts",
+    "find_identity_by_msg_id",
+    "gc_my_msg_ids",
+    "gc_ui_login_tokens",
+    "gc_ui_sessions",
+    "is_reply_to_identity_message",
+    "is_script_command_text",
+    "issue_ui_login_token",
+    "redeem_ui_login_token",
+    "reply_log_group_message",
+    "run_retry_scheduler",
+    "schedule_cleanup",
+    "send_audit_log",
+    "send_game_command",
+    "touch_ui_session",
+    "validate_ui_session",
+    "IDENTITY_INFO_REFRESH_ERROR_TEXT",
+]

@@ -1,0 +1,31 @@
+# 运行时数据
+data/
+model/data/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# Telegram session 文件
+*.session
+*.session-journal
+*.session-shm
+*.session-wal
+ai_investor_session*
+
+# SQLite 数据库
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# 旧版持久化文件
+chaogu_state.json
+*.migrated.*
+
+# macOS
+.DS_Store
+
+# Claude Code
+.claude/
