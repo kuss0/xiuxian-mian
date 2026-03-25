@@ -17,7 +17,7 @@ from .config import (
     TZ_LOCAL,
 )
 
-_current_identity_id = contextvars.ContextVar("current_identity_id", default=SEND_AS_DEFAULT_ID)
+_current_identity_id = contextvars.ContextVar("current_identity_id", default=SEND_AS_DEFAULT_ID or 0)
 
 IDENTITY_MODULE_COLUMNS = [
     "tree_enabled", "pet_enabled", "quiz_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
@@ -250,7 +250,7 @@ def ensure_identity_registered(send_as_id):
 
 
 def get_identity_ids():
-    if not _meta_state["identity_ids"]:
+    if not _meta_state["identity_ids"] and SEND_AS_IDS:
         _meta_state["identity_ids"] = list(SEND_AS_IDS)
     for send_as_id in list(_meta_state["identity_ids"]):
         ensure_identity_registered(send_as_id)
@@ -259,7 +259,7 @@ def get_identity_ids():
 
 def get_current_identity_id():
     send_as_id = _current_identity_id.get()
-    return int(send_as_id or SEND_AS_DEFAULT_ID)
+    return int(send_as_id or SEND_AS_DEFAULT_ID or 0)
 
 
 def get_identity_state(send_as_id=None):
@@ -687,7 +687,7 @@ def get_send_as_tags(send_as_id=None):
         profile.get("daohao", ""),
         str(send_as_id),
     ]
-    if send_as_id == SEND_AS_DEFAULT_ID:
+    if SEND_AS_DEFAULT_ID and send_as_id == SEND_AS_DEFAULT_ID:
         raw_candidates.append("wxjerry")
 
     tags = []

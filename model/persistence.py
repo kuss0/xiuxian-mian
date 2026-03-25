@@ -489,6 +489,9 @@ def migrate_legacy_json_to_sqlite():
     except Exception:
         return False
 
+    if not SEND_AS_DEFAULT_ID:
+        return False
+
     identity_state = get_identity_state(SEND_AS_DEFAULT_ID)
     for key in LEGACY_PERSIST_KEYS:
         if key in data:

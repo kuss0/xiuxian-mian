@@ -6,7 +6,7 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_all_clients, get_client, register_client
+from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, SESSION_FILE, TZ_LOCAL, client, create_account_client, get_all_clients, get_client, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, scan_startup_timeout_tasks, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
@@ -233,7 +233,16 @@ def _register_event_handlers(tc):
 
 
 async def bootstrap():
-    await client.start()
+    # 主 client：有 session 文件时正常登录，否则仅连接（等待 UI 登录）
+    import os
+    _has_main_session = any(
+        os.path.exists(f"{SESSION_FILE}{ext}")
+        for ext in ("", ".session")
+    )
+    if _has_main_session:
+        await client.start()
+    else:
+        await client.connect()
     loaded = load_state()
 
     # 启动已保存的额外账号 client
@@ -253,7 +262,8 @@ async def bootstrap():
 
     await start_ui_server()
     me = await client.get_me()
-    state["my_user_id"] = me.id
+    if me:
+        state["my_user_id"] = me.id
 
     identity_ids = get_identity_ids()
     for send_as_id in identity_ids:
@@ -319,7 +329,7 @@ async def bootstrap():
     recovery_text = "成功" if any_loaded else ("无待恢复任务" if loaded else "首次初始化")
     audit_lines = [
         "🚀 自动化系统启动成功",
-        f"👤 账号: {me.first_name}",
+        f"👤 账号: {me.first_name if me else '未登录（等待 UI 登录）'}",
         f"🎭 并发身份数: {len(identity_ids)}",
         "📡 模式: 多 SEND_AS_ID + SQLite 持久化",
         f"💾 状态恢复: {recovery_text}",

@@ -30,7 +30,7 @@ LOG_SEND_MODE = str(_env.get("log_send_mode", "account") or "account").strip().l
 if LOG_SEND_MODE not in {"account", "bot"}:
     LOG_SEND_MODE = "account"
 LOG_BOT_TOKEN = str(_env.get("log_bot_token", "") or "").strip()
-SEND_AS_IDS = _env["send_as_ids"]
+SEND_AS_IDS = _env.get("send_as_ids", []) or []
 ADMIN_ID = int(_env.get("admin_id", 0) or 0)
 
 GAME_GROUP_ID = -1001680975844  # 游戏主群（可通过 UI 基础配置修改）
@@ -250,12 +250,12 @@ def normalize_send_as_ids(send_as_ids):
         seen.add(send_as_id)
         normalized.append(send_as_id)
     if not normalized:
-        raise ValueError("SEND_AS_IDS 不能为空")
+        return normalized
     return normalized
 
 
 SEND_AS_IDS = normalize_send_as_ids(SEND_AS_IDS)
-SEND_AS_DEFAULT_ID = SEND_AS_IDS[0]
+SEND_AS_DEFAULT_ID = SEND_AS_IDS[0] if SEND_AS_IDS else None
 SEND_AS_ID = SEND_AS_DEFAULT_ID  # 兼容旧代码路径，逐步替换为按 identity 发送
 
 migrate_legacy_storage_files()

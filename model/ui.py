@@ -958,6 +958,11 @@ async def handle_ui_http(reader, writer):
             session, session_cookie_header = _get_authenticated_session(headers, now)
             auth_headers = [f"Set-Cookie: {session_cookie_header}"] if session_cookie_header else []
 
+            # 初始化模式：无账号且无身份时跳过认证，允许直接使用 UI
+            _setup_mode = not get_accounts() and not get_identity_ids()
+            if _setup_mode and session is None:
+                session = {"session_token": "__setup__", "sender_id": 0, "created_at": now, "last_active_at": now}
+
             if path == "/":
                 if method != "GET":
                     _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
