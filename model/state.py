@@ -10,7 +10,6 @@ from .config import (
     GAME_GROUP_ID,
     MODULE_NAMES,
     SEND_AS_DEFAULT_ID,
-    SEND_AS_ID,
     SEND_AS_IDS,
     TOWER_WINDOW_END_HOUR_UTC,
     TOWER_WINDOW_START_HOUR_UTC,
@@ -42,8 +41,6 @@ IDENTITY_BOOL_FIELDS = {
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
-LEGACY_PERSIST_KEYS = IDENTITY_MODULE_COLUMNS + IDENTITY_TIMER_COLUMNS + IDENTITY_RUNTIME_COLUMNS
-PERSIST_KEYS = LEGACY_PERSIST_KEYS  # 兼容旧持久化函数，后续切换为 SQLite 实现
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
@@ -823,12 +820,9 @@ __all__ = [
     "IDENTITY_RUNTIME_COLUMNS",
     "IDENTITY_STATE_TEMPLATE",
     "IDENTITY_TIMER_COLUMNS",
-    "LEGACY_PERSIST_KEYS",
     "META_STATE_KEYS",
-    "PERSIST_KEYS",
     "REALM_SORT_ORDER",
     "SEND_AS_DEFAULT_ID",
-    "SEND_AS_ID",
     "SEND_AS_IDS",
     "StateProxy",
     "ensure_identity_registered",

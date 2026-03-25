@@ -11,10 +11,6 @@ DATA_DIR = os.path.join(PROJECT_ROOT_DIR, "data")
 SESSION_DIR = os.path.join(DATA_DIR, "session")
 STATE_DIR = os.path.join(DATA_DIR, "state")
 MESSAGES_DIR = os.path.join(DATA_DIR, "messages")
-LEGACY_DATA_DIR = os.path.join(APP_DIR, "data")
-LEGACY_SESSION_FILE = os.path.join(PROJECT_ROOT_DIR, "ai_investor_session")
-LEGACY_STATE_FILE = os.path.join(PROJECT_ROOT_DIR, "chaogu_state.json")
-LEGACY_DB_FILE = os.path.join(PROJECT_ROOT_DIR, "chaogu_state.db")
 SESSION_FILE = os.path.join(SESSION_DIR, "ai_investor_session")
 
 # ================= 从 env.toml 读取启动配置 =================
@@ -62,7 +58,6 @@ SECT_TEACH_DELAY_MIN_SEC = 5       # 宗门传功链路最小等待秒数
 SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 1800     # bot 静默超时，触发全局暂停（30分钟）
-STATE_FILE = os.path.join(STATE_DIR, "chaogu_state.json")
 DB_FILE = os.path.join(STATE_DIR, "chaogu_state.db")
 DB_SCHEMA_VERSION = 2
 TZ_LOCAL = timezone(timedelta(hours=8))
@@ -186,55 +181,10 @@ except (TypeError, ValueError):
 UI_AUTH_COOKIE_NAME = (os.environ.get("CHAOGU_UI_AUTH_COOKIE_NAME") or "chaogu_ui_session").strip() or "chaogu_ui_session"
 
 
-def _move_legacy_file(src, dst):
-    if src == dst or os.path.exists(dst) or not os.path.exists(src):
-        return
-    try:
-        os.replace(src, dst)
-    except OSError:
-        pass
-
-
-def _move_legacy_tree(src_dir, dst_dir):
-    if src_dir == dst_dir or not os.path.isdir(src_dir):
-        return
-    if not os.path.isdir(dst_dir):
-        try:
-            os.replace(src_dir, dst_dir)
-            return
-        except OSError:
-            pass
-    for root, dirnames, filenames in os.walk(src_dir, topdown=False):
-        rel_root = os.path.relpath(root, src_dir)
-        target_root = dst_dir if rel_root == "." else os.path.join(dst_dir, rel_root)
-        os.makedirs(target_root, exist_ok=True)
-        for filename in filenames:
-            _move_legacy_file(os.path.join(root, filename), os.path.join(target_root, filename))
-        for dirname in dirnames:
-            src_child = os.path.join(root, dirname)
-            try:
-                os.rmdir(src_child)
-            except OSError:
-                pass
-    try:
-        os.rmdir(src_dir)
-    except OSError:
-        pass
-
-
 def prepare_storage_dirs():
     os.makedirs(SESSION_DIR, exist_ok=True)
     os.makedirs(STATE_DIR, exist_ok=True)
     os.makedirs(MESSAGES_DIR, exist_ok=True)
-
-
-def migrate_legacy_storage_files():
-    prepare_storage_dirs()
-    _move_legacy_tree(LEGACY_DATA_DIR, DATA_DIR)
-    _move_legacy_file(LEGACY_STATE_FILE, STATE_FILE)
-    _move_legacy_file(LEGACY_DB_FILE, DB_FILE)
-    for suffix in ("", ".session", ".session-journal", ".session-shm", ".session-wal"):
-        _move_legacy_file(f"{LEGACY_SESSION_FILE}{suffix}", f"{SESSION_FILE}{suffix}")
 
 
 def normalize_send_as_ids(send_as_ids):
@@ -256,9 +206,8 @@ def normalize_send_as_ids(send_as_ids):
 
 SEND_AS_IDS = normalize_send_as_ids(SEND_AS_IDS)
 SEND_AS_DEFAULT_ID = SEND_AS_IDS[0] if SEND_AS_IDS else None
-SEND_AS_ID = SEND_AS_DEFAULT_ID  # 兼容旧代码路径，逐步替换为按 identity 发送
 
-migrate_legacy_storage_files()
+prepare_storage_dirs()
 os.environ['PYTHONUNBUFFERED'] = '1'
 client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
 

@@ -341,7 +341,7 @@ async def bootstrap():
         "🚀 自动化系统启动成功",
         f"👤 账号: {state.get('my_user_id') or '未登录（等待 UI 登录）'}",
         f"🎭 并发身份数: {len(identity_ids)}",
-        "📡 模式: 多 SEND_AS_ID + SQLite 持久化",
+        "📡 模式: 多身份 + SQLite 持久化",
         f"💾 状态恢复: {recovery_text}",
         "🪪 身份列表:",
         *identity_lines,

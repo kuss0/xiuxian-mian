@@ -1,10 +1,9 @@
 import json
-import os
 import sqlite3
 import time
 import traceback
 
-from .config import DB_FILE, DB_SCHEMA_VERSION, FLUSH_INTERVAL_SEC, LEGACY_STATE_FILE, STATE_FILE
+from .config import DB_FILE, DB_SCHEMA_VERSION, FLUSH_INTERVAL_SEC
 from .state import (
     IDENTITY_BOOL_FIELDS,
     IDENTITY_JSON_COLUMNS,
@@ -12,7 +11,6 @@ from .state import (
     IDENTITY_RUNTIME_COLUMNS,
     IDENTITY_STATE_TEMPLATE,
     IDENTITY_TIMER_COLUMNS,
-    LEGACY_PERSIST_KEYS,
     SEND_AS_DEFAULT_ID,
     SEND_AS_IDS,
     ensure_identity_registered,
@@ -471,53 +469,6 @@ def _load_identity_from_db(send_as_id):
     return identity_state
 
 
-def migrate_legacy_json_to_sqlite():
-    source_file = STATE_FILE if os.path.exists(STATE_FILE) else LEGACY_STATE_FILE
-    if not os.path.exists(source_file):
-        return False
-    try:
-        with open(source_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, ValueError):
-        backup = source_file + f".corrupt.{int(time.time())}"
-        try:
-            os.rename(source_file, backup)
-            print(f"load_state: JSON corrupted, backed up to {backup}")
-        except Exception:
-            traceback.print_exc()
-        return False
-    except Exception:
-        return False
-
-    if not SEND_AS_DEFAULT_ID:
-        return False
-
-    identity_state = get_identity_state(SEND_AS_DEFAULT_ID)
-    for key in LEGACY_PERSIST_KEYS:
-        if key in data:
-            identity_state[key] = data[key]
-
-    if not identity_state.get("yuanying_phase"):
-        if data.get("yuanying_post_summary_wait"):
-            identity_state["yuanying_phase"] = "post_summary_wait"
-        elif data.get("yuanying_summary_pending"):
-            identity_state["yuanying_phase"] = "waiting_summary"
-        elif data.get("is_yuanying_running"):
-            identity_state["yuanying_phase"] = "running"
-        else:
-            identity_state["yuanying_phase"] = "idle"
-
-    upsert_identity_to_db(SEND_AS_DEFAULT_ID)
-    conn = get_db_conn()
-    conn.commit()
-    backup = source_file + f".migrated.{int(time.time())}"
-    try:
-        os.rename(source_file, backup)
-    except Exception:
-        traceback.print_exc()
-    return True
-
-
 def save_state():
     global _state_dirty, _last_flush_time
     try:
@@ -590,10 +541,6 @@ def load_state():
     try:
         init_db()
         conn = get_db_conn()
-        has_db_identities = conn.execute("SELECT COUNT(*) AS cnt FROM identities").fetchone()["cnt"] > 0
-        migrated = False
-        if not has_db_identities and (os.path.exists(STATE_FILE) or os.path.exists(LEGACY_STATE_FILE)):
-            migrated = migrate_legacy_json_to_sqlite()
 
         meta_rows = conn.execute("SELECT key, value FROM meta").fetchall()
         meta_map = {str(row["key"] or ""): row["value"] for row in meta_rows}
@@ -637,7 +584,7 @@ def load_state():
         if not rows:
             for send_as_id in SEND_AS_IDS:
                 ensure_identity_registered(send_as_id)
-            return migrated
+            return True
 
         _meta_state["identity_ids"] = []
         _meta_state["identity_states"] = {}
@@ -663,7 +610,6 @@ __all__ = [
     "init_db",
     "load_state",
     "mark_dirty",
-    "migrate_legacy_json_to_sqlite",
     "save_state",
     "upsert_identity_to_db",
 ]
