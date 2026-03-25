@@ -63,6 +63,7 @@ from .state import (
     set_global_enabled as set_global_enabled_state,
     get_module_window_hours,
     get_pet_name,
+    infer_realm_from_xiuwei_max,
     is_auto_delete_sent_messages_enabled,
     get_send_as_profile,
     get_send_as_tags,
@@ -836,15 +837,13 @@ def _parse_identity_info(text):
         return None
 
     name_match = RE_IDENTITY_INFO_NAME.search(raw_text)
-    realm_match = RE_IDENTITY_INFO_REALM_SECT.search(raw_text)
     sect_match = RE_IDENTITY_INFO_SECT.search(raw_text)
-    if not name_match or not realm_match or not sect_match:
+    if not name_match or not sect_match:
         return None
 
     daohao = (name_match.group(1) or "").strip()
-    realm = (realm_match.group(1) or "").strip()
     sect_name = (sect_match.group(1) or "").strip()
-    if not daohao or not realm or not sect_name:
+    if not daohao or not sect_name:
         return None
 
     xiuwei_current = 0
@@ -853,6 +852,13 @@ def _parse_identity_info(text):
     if xiuwei_match:
         xiuwei_current = int(xiuwei_match.group(1).replace(",", ""))
         xiuwei_max = int(xiuwei_match.group(2).replace(",", ""))
+
+    realm_match = RE_IDENTITY_INFO_REALM_SECT.search(raw_text)
+    realm = (realm_match.group(1) or "").strip() if realm_match else ""
+    if not realm and xiuwei_max > 0:
+        realm = infer_realm_from_xiuwei_max(xiuwei_max)
+    if not realm:
+        return None
 
     return {
         "daohao": daohao,
