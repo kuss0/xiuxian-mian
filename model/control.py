@@ -1237,10 +1237,12 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
             tc = get_client(account_id)
         else:
             _all = get_all_clients()
-            tc = next(iter(_all.values())) if _all else client
+            if not _all:
+                return False, "尚无已登录账号，请先在「账号管理」中登录一个 Telegram 账号", None
+            tc = next(iter(_all.values()))
         send_as_entity = await tc.get_entity(candidate_id)
-    except Exception:
-        return False, "身份不存在或当前账号无权访问该 身份 ID", None
+    except Exception as e:
+        return False, f"身份不存在或当前账号无权访问该身份 ID：{e}", None
 
     canonical_id = int(getattr(send_as_entity, "id", 0) or 0)
     if canonical_id <= 0:
