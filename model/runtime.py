@@ -134,17 +134,21 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
         "text": text,
         "disable_web_page_preview": "true" if not link_preview else "false",
     }
-    # Bot 在超级群组中无法回复用户消息，使用 reply_parameters 并允许失败
     if int(reply_to_msg_id or 0) > 0:
-        payload["reply_parameters"] = json.dumps({
-            "message_id": int(reply_to_msg_id),
-            "allow_sending_without_reply": True,
-        })
+        payload["reply_to_message_id"] = int(reply_to_msg_id)
+        payload["allow_sending_without_reply"] = "true"
     if int(message_thread_id or 0) > 0:
         payload["message_thread_id"] = int(message_thread_id)
     url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/sendMessage"
-    with urlopen(url, data=urlencode(payload).encode("utf-8"), timeout=15) as response:
-        body = response.read().decode("utf-8", errors="replace")
+    try:
+        from urllib.error import HTTPError
+        with urlopen(url, data=urlencode(payload).encode("utf-8"), timeout=15) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
+        return False, f"HTTP {e.code}: {body}"
+    except Exception as e:
+        return False, str(e)
     try:
         data = json.loads(body)
     except Exception:
