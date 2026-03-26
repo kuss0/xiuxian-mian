@@ -40,6 +40,7 @@ MY_MSG_MAX = 1000
 
 PET_CD = 7200
 YUANYING_CD = 28800
+DEEP_RETREAT_CD = 28800
 YUANYING_PROTECT_SEC = 30          # 元婴出窍后保护间隔
 POST_SUMMARY_WAIT_SEC = 30         # 归窍总结后等待秒数
 SUMMARY_TIMEOUT_SEC = 180          # 归窍总结最长等待时间（3分钟）

@@ -684,8 +684,6 @@ def get_send_as_tags(send_as_id=None):
         profile.get("daohao", ""),
         str(send_as_id),
     ]
-    if SEND_AS_DEFAULT_ID and send_as_id == SEND_AS_DEFAULT_ID:
-        raw_candidates.append("wxjerry")
 
     tags = []
     seen = set()

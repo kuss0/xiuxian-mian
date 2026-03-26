@@ -12,7 +12,6 @@ from ..config import (
     SUMMARY_TIMEOUT_SEC,
     YUANYING_CD,
     YUANYING_PROTECT_SEC,
-    client,
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, send_audit_log, send_game_command

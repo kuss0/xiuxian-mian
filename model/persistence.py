@@ -11,7 +11,6 @@ from .state import (
     IDENTITY_RUNTIME_COLUMNS,
     IDENTITY_STATE_TEMPLATE,
     IDENTITY_TIMER_COLUMNS,
-    SEND_AS_DEFAULT_ID,
     SEND_AS_IDS,
     ensure_identity_registered,
     get_game_group_id,

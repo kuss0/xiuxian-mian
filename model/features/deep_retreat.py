@@ -6,12 +6,12 @@ from ..config import (
     CD_BUFFER_SEC,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    DEEP_RETREAT_CD,
     LAUNCHING_TIMEOUT_SEC,
     POST_SUMMARY_WAIT_SEC,
     RE_WHITESPACE,
     SUMMARY_TIMEOUT_SEC,
     YUANYING_PROTECT_SEC,
-    client,
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, send_audit_log, send_game_command
@@ -103,7 +103,7 @@ def mark_deep_retreat_success(now, next_time=None):
     state["last_deep_retreat_summary_msg_id"] = 0
     state["last_deep_retreat_command_time"] = now
     if next_time is None:
-        next_time = now + 8 * 3600 + CD_BUFFER_SEC
+        next_time = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
     state["next_deep_retreat_time"] = next_time
     save_state()
 
@@ -148,6 +148,9 @@ async def schedule_deep_retreat_status_probe(delay=None):
 
     async def delayed_status():
         await asyncio.sleep(delay)
+        # 如果已经闭关成功（phase=running），不再多余查询
+        if state.get("deep_retreat_phase") not in ("launching",):
+            return
         await send_game_command(CMD_DEEP_RETREAT_QUERY, track=False)
 
     _fire_and_forget(delayed_status())
@@ -286,7 +289,7 @@ async def run_deep_retreat_scheduler(now):
         clear_deep_retreat_summary_flags()
         set_deep_retreat_phase("launching")
         state["last_deep_retreat_command_time"] = now
-        state["next_deep_retreat_time"] = now + 8 * 3600 + CD_BUFFER_SEC
+        state["next_deep_retreat_time"] = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
         save_state()
         await send_audit_log("🧘 检测到闭关总结等待状态异常（缺少触发时间），已自动解卡并继续执行深度闭关。")
         msg = await send_game_command(CMD_DEEP_RETREAT, track=False)
@@ -302,7 +305,7 @@ async def run_deep_retreat_scheduler(now):
         clear_deep_retreat_summary_flags()
         set_deep_retreat_phase("launching")
         state["last_deep_retreat_command_time"] = now
-        state["next_deep_retreat_time"] = now + 8 * 3600 + CD_BUFFER_SEC
+        state["next_deep_retreat_time"] = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
         save_state()
         await send_audit_log("🧘 发送 1 超过 3 分钟仍未等到闭关总结，按兜底逻辑直接继续执行深度闭关。")
         msg = await send_game_command(CMD_DEEP_RETREAT, track=False)
@@ -320,7 +323,7 @@ async def run_deep_retreat_scheduler(now):
 
         set_deep_retreat_phase("launching")
         state["last_deep_retreat_command_time"] = now
-        state["next_deep_retreat_time"] = now + 8 * 3600 + CD_BUFFER_SEC
+        state["next_deep_retreat_time"] = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
         save_state()
         await send_audit_log("🧘 闭关总结后的 30 秒缓冲已结束，继续执行深度闭关。")
         msg = await send_game_command(CMD_DEEP_RETREAT)

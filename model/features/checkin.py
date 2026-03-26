@@ -1,6 +1,6 @@
 import random
 
-from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC, client
+from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC
 from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import format_window_text, get_game_group_id, is_auto_delete_sent_messages_enabled, state

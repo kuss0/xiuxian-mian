@@ -32,3 +32,6 @@ env.toml
 
 # Claude Code
 .claude/
+
+# VS Code
+.vscode/
