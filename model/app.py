@@ -6,11 +6,10 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_all_clients, get_client, register_client
+from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_client, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, scan_startup_timeout_tasks, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
-    get_deep_retreat_phase_text,
     handle_deep_retreat_running_reply,
     handle_deep_retreat_status_reply,
     handle_deep_retreat_success_reply,
@@ -31,7 +30,6 @@ from .features.tree import (
     run_tree_scheduler,
 )
 from .features.yuanying import (
-    get_yuanying_phase_text,
     handle_yuanying_running_reply,
     handle_yuanying_status_reply,
     handle_yuanying_success_reply,
@@ -61,14 +59,11 @@ from .state import (
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
-    get_send_as_label,
     get_send_as_profile,
     state,
     use_identity,
 )
 from .timing import (
-    fmt_abs_ts,
-    fmt_remaining,
     get_checkin_day_key,
     get_day_key,
     reset_checkin_daily_state,

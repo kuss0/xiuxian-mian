@@ -512,8 +512,6 @@ def set_quiz_learning_watchers(watchers):
             "target_tag": str(item.get("target_tag") or "").strip(),
             "question": str(item.get("question") or "").strip(),
             "options": normalized_options,
-            "prompt_msg_id": int(item.get("prompt_msg_id") or 0),
-            "prompt_ts": float(item.get("prompt_ts") or 0),
             "expire_at": float(item.get("expire_at") or 0),
             "matched_answer": matched_answer if matched_answer in {"A", "B", "C", "D"} else "",
         }

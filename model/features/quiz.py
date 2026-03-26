@@ -2,8 +2,8 @@ import json
 import re
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC
-from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..persistence import mark_dirty, save_quiz_learning_watchers_state, save_state
+from ..runtime import send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -19,13 +19,14 @@ RE_QUIZ_PROMPT = re.compile(r"你有\s*(\d+)\s*秒")
 RE_QUIZ_QUESTION = re.compile(r'["“”]{1,2}(.+?)["“”]{1,2}\s*$', re.M)
 RE_QUIZ_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_QUIZ_COMMAND_HINT = re.compile(r"回复本消息并使用\s*\.作答\s*<选项>")
-RE_QUIZ_TARGET_TAG = re.compile(r"@([^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+)")
+QUIZ_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
+RE_QUIZ_TARGET_TAG = re.compile(rf"@({QUIZ_TARGET_TAG_PATTERN})")
 RE_QUIZ_RESULT_CORRECT = re.compile(
-    r"【考校结束[·・•]正确】[\s\S]*?@(?P<tag>[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+)\s*的答案\s*(?P<answer>[A-D])\s*完全正确",
+    rf"【考校结束[·・•]正确】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<answer>[A-D])\s*完全正确",
     re.S,
 )
 RE_QUIZ_RESULT_WRONG = re.compile(
-    r"【考校结束[·・•]错误】[\s\S]*?@(?P<tag>[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+)\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
+    rf"【考校结束[·・•]错误】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
     re.S,
 )
 RE_WHITESPACE = re.compile(r"\s+")
@@ -252,22 +253,28 @@ def _parse_quiz_result(text):
 
 def _set_quiz_learning_watcher(target_key, watcher, *, persist=False):
     watchers = dict(get_quiz_learning_watchers())
-    watchers[str(target_key or "").strip().lower()] = dict(watcher or {})
+    watcher_key = _normalize_quiz_target_key(target_key)
+    if not watcher_key:
+        return
+    watchers[watcher_key] = dict(watcher or {})
     set_quiz_learning_watchers(watchers)
     if persist:
-        save_state()
+        save_quiz_learning_watchers_state()
     else:
         mark_dirty()
 
 
 def _pop_quiz_learning_watcher(target_key, *, persist=False):
     watchers = dict(get_quiz_learning_watchers())
-    removed = watchers.pop(str(target_key or "").strip().lower(), None)
+    watcher_key = _normalize_quiz_target_key(target_key)
+    if not watcher_key:
+        return None
+    removed = watchers.pop(watcher_key, None)
     if removed is None:
         return None
     set_quiz_learning_watchers(watchers)
     if persist:
-        save_state()
+        save_quiz_learning_watchers_state()
     else:
         mark_dirty()
     return removed
@@ -275,7 +282,10 @@ def _pop_quiz_learning_watcher(target_key, *, persist=False):
 
 def _get_quiz_learning_watcher(target_key):
     watchers = get_quiz_learning_watchers()
-    return watchers.get(str(target_key or "").strip().lower())
+    watcher_key = _normalize_quiz_target_key(target_key)
+    if not watcher_key:
+        return None
+    return watchers.get(watcher_key)
 
 
 def get_quiz_status_text():
@@ -289,13 +299,14 @@ def get_quiz_status_text():
     )
 
 
-def clear_quiz_state(*, persist=False):
+def clear_quiz_state(*, persist=False, keep_last_error=False):
     state["next_quiz_time"] = 0
     state["quiz_reply_to_msg_id"] = 0
     state["quiz_question"] = ""
     state["quiz_options"] = {}
     state["quiz_answer"] = ""
-    state["quiz_last_error"] = ""
+    if not keep_last_error:
+        state["quiz_last_error"] = ""
     state["quiz_last_matched_at"] = 0
     if persist:
         save_state()
@@ -399,7 +410,7 @@ def _match_quiz_answer(question, options):
     return "", ""
 
 
-async def handle_quiz_learning_prompt(text, now, event):
+async def handle_quiz_learning_prompt(text, now, event=None):
     parsed = _parse_quiz_prompt(text)
     if not parsed:
         return False
@@ -413,8 +424,6 @@ async def handle_quiz_learning_prompt(text, now, event):
         "target_tag": target_tag,
         "question": parsed["question"],
         "options": dict(parsed["options"]),
-        "prompt_msg_id": int(getattr(event, "id", 0) or 0),
-        "prompt_ts": float(now),
         "expire_at": float(now + float(parsed["timeout_sec"]) + QUIZ_RESULT_GRACE_SEC),
         "matched_answer": matched_answer,
     }
@@ -422,7 +431,10 @@ async def handle_quiz_learning_prompt(text, now, event):
     return True
 
 
-async def handle_quiz_result_broadcast(text, now):
+async def handle_quiz_result_broadcast(text, now=None):
+    if not get_quiz_learning_watchers():
+        return False
+
     parsed = _parse_quiz_result(text)
     if not parsed:
         return False
@@ -578,9 +590,8 @@ async def run_quiz_scheduler(now):
         return
     question = state.get("quiz_question") or "未记录题目"
     state["quiz_last_error"] = "题目已超时"
-    save_state()
     await send_audit_log(f"⚠️ 玄骨考校题目已超时，未继续处理：{question}")
-    clear_quiz_state(persist=True)
+    clear_quiz_state(persist=True, keep_last_error=True)
 
 
 __all__ = [

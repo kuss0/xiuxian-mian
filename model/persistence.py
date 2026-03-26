@@ -274,15 +274,18 @@ def init_db():
 
 def _serialize_db_value(key, value):
     if key in IDENTITY_JSON_COLUMNS:
-        return json.dumps(value or [], ensure_ascii=False)
+        if value is None:
+            default_value = IDENTITY_STATE_TEMPLATE.get(key)
+            value = {} if isinstance(default_value, dict) else []
+        return json.dumps(value, ensure_ascii=False)
     if key in IDENTITY_BOOL_FIELDS:
         return 1 if value else 0
     return value
 
 
 def _deserialize_db_value(key, value):
+    default_value = IDENTITY_STATE_TEMPLATE.get(key)
     if value is None:
-        default_value = IDENTITY_STATE_TEMPLATE.get(key)
         if isinstance(default_value, list):
             return []
         if isinstance(default_value, dict):
@@ -290,9 +293,14 @@ def _deserialize_db_value(key, value):
         return default_value
     if key in IDENTITY_JSON_COLUMNS:
         try:
-            return json.loads(value)
+            parsed = json.loads(value)
         except Exception:
-            return []
+            parsed = None
+        if isinstance(default_value, dict):
+            return parsed if isinstance(parsed, dict) else {}
+        if isinstance(default_value, list):
+            return parsed if isinstance(parsed, list) else []
+        return parsed
     if key in IDENTITY_BOOL_FIELDS:
         return bool(value)
     return value
@@ -468,6 +476,19 @@ def _load_identity_from_db(send_as_id):
     return identity_state
 
 
+def save_quiz_learning_watchers_state():
+    try:
+        init_db()
+        conn = get_db_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            ("quiz_learning_watchers", json.dumps(get_quiz_learning_watchers(), ensure_ascii=False)),
+        )
+        conn.commit()
+    except Exception:
+        traceback.print_exc()
+
+
 def save_state():
     global _state_dirty, _last_flush_time
     try:
@@ -609,6 +630,7 @@ __all__ = [
     "init_db",
     "load_state",
     "mark_dirty",
+    "save_quiz_learning_watchers_state",
     "save_state",
     "upsert_identity_to_db",
 ]
