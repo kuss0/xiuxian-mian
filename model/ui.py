@@ -1396,7 +1396,8 @@ async def handle_ui_http(reader, writer):
         writer.close()
         await writer.wait_closed()
         if peer:
-            print(f"ui request: {peer} {method or '-'} {path or '-'}")
+            from datetime import datetime
+            print(f"[{datetime.now(TZ_LOCAL).strftime('%H:%M:%S')}] ui request: {peer} {method or '-'} {path or '-'}")
 
 
 async def start_ui_server():
