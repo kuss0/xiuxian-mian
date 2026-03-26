@@ -48,6 +48,7 @@ from .runtime import (
     is_reply_to_identity_message,
     run_retry_scheduler,
     schedule_cleanup,
+    mono,
     send_audit_log,
 )
 from .state import (
@@ -335,7 +336,10 @@ async def bootstrap():
                     mark_dirty()
         save_state()
 
-    identity_lines = [f"- {send_as_id}: @{get_send_as_profile(send_as_id).get('username') or '未获取到'}" for send_as_id in identity_ids]
+    identity_lines = [
+        f"- {send_as_id}: {mono('@' + (get_send_as_profile(send_as_id).get('username') or '未获取到'))}"
+        for send_as_id in identity_ids
+    ]
     recovery_text = "成功" if any_loaded else ("无待恢复任务" if loaded else "首次初始化")
     audit_lines = [
         "🚀 自动化系统启动成功",
