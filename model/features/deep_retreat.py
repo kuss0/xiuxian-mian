@@ -14,7 +14,7 @@ from ..config import (
     YUANYING_PROTECT_SEC,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_identity_display_name, get_identity_ids, get_send_as_tags, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
 
@@ -262,7 +262,7 @@ async def handle_deep_retreat_summary_broadcast(text, now):
     target_id, matched_ids = match_deep_retreat_summary_identity(text)
     if target_id is None:
         if len(matched_ids) > 1:
-            names = ", ".join(get_identity_display_name(identity_id) for identity_id in matched_ids)
+            names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
             await send_audit_log(f"🧘 闭关总结命中多个身份，已跳过自动推进：{names}")
         return
 

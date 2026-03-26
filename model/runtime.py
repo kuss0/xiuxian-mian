@@ -126,7 +126,7 @@ def is_script_command_text(text):
     return any(raw_text == cmd or raw_text.startswith(f"{cmd} ") for cmd in SCRIPT_COMMANDS)
 
 
-def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True):
+def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None):
     if not LOG_BOT_TOKEN:
         return False, "missing bot token"
     payload = {
@@ -134,6 +134,8 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
         "text": text,
         "disable_web_page_preview": "true" if not link_preview else "false",
     }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     if int(reply_to_msg_id or 0) > 0:
         payload["reply_to_message_id"] = int(reply_to_msg_id)
         payload["allow_sending_without_reply"] = "true"
@@ -158,7 +160,7 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
     return False, body or "bot api returned non-ok response"
 
 
-async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True):
+async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None):
     if LOG_SEND_MODE == "bot":
         try:
             ok, error_text = await asyncio.to_thread(
@@ -167,6 +169,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
                 reply_to_msg_id=reply_to_msg_id,
                 message_thread_id=message_thread_id,
                 link_preview=link_preview,
+                parse_mode=parse_mode,
             )
             if ok:
                 return True
@@ -180,6 +183,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
             text,
             reply_to=int(reply_to_msg_id or 0) or None,
             link_preview=link_preview,
+            parse_mode=parse_mode or None,
         )
         return True
     except Exception as e:
@@ -187,10 +191,16 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
         return False
 
 
+def mono(text):
+    """将文本包裹为 HTML monospace 格式，防止 Telegram @提及"""
+    from html import escape
+    return f"<code>{escape(str(text))}</code>"
+
+
 async def send_audit_log(content):
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     message = f"【🍃 监控日志 {now}】\n{content}"
-    ok = await _send_log_group_message(message, link_preview=False)
+    ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
     if not ok:
         print(f"send_audit_log failed | content={content}")
     return ok

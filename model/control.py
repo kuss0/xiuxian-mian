@@ -53,6 +53,7 @@ from .runtime import (
     build_ui_login_url,
     console_log,
     issue_ui_login_token,
+    mono,
     reply_log_group_message,
     send_audit_log,
     send_game_command,
@@ -1029,7 +1030,7 @@ async def handle_realm_breakthrough_broadcast(text, now):
     enforce_identity_module_availability(target_id, persist=False)
     save_state()
     await send_audit_log(
-        f"🌟 检测到突破消息[{get_identity_display_name(target_id)}]，境界已从{old_realm or '未获取'}更新为{realm}。"
+        f"🌟 检测到突破消息{mono(get_identity_display_name(target_id))}，境界已从{old_realm or '未获取'}更新为{realm}。"
     )
     return True
 
@@ -1225,7 +1226,7 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
         return False
     if trigger_msg_ids:
         await send_audit_log(
-            f"🪪 已更新身份信息[{display_name}]，道号：{merged_profile['daohao']}，境界：{merged_profile['realm']}，宗门：{merged_profile['sect_name']}。"
+            f"🪪 已更新身份信息{mono(display_name)}，道号：{merged_profile['daohao']}，境界：{merged_profile['realm']}，宗门：{merged_profile['sect_name']}。"
         )
     return True
 
@@ -1277,7 +1278,7 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
     save_state()
     display_name = get_identity_display_name(canonical_id)
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🪪 已新增身份[{display_name}]，来源：{source}{actor_suffix}，默认全部模块关闭。")
+    await send_audit_log(f"🪪 已新增身份{mono(display_name)}，来源：{source}{actor_suffix}，默认全部模块关闭。")
 
     return True, f"已新增身份：{display_name}，默认全部模块已关闭", canonical_id
 
@@ -1308,7 +1309,7 @@ async def set_module_window_config(module_name, start_hour_utc, end_hour_utc, se
                     else:
                         state["next_tower_time"] = calc_next_daily_window_time(start_hour, end_hour, now)
             save_state()
-    await send_audit_log(f"🕒 已更新{module_name}执行窗口[{get_identity_display_name(target_ids[0]) if len(target_ids) == 1 else '全部身份'}]。")
+    await send_audit_log(f"🕒 已更新{module_name}执行窗口{mono(get_identity_display_name(target_ids[0])) if len(target_ids) == 1 else '全部身份'}。")
     return True, f"已更新{module_name}执行窗口"
 
 
@@ -1331,7 +1332,7 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
 
     action_text = "开启" if enabled else "暂停"
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🎭 已{action_text}身份[{get_identity_display_name(send_as_id)}]，来源：{source}{actor_suffix}。")
+    await send_audit_log(f"🎭 已{action_text}身份{mono(get_identity_display_name(send_as_id))}，来源：{source}{actor_suffix}。")
     return True, f"已{action_text}身份[{get_identity_display_name(send_as_id)}]"
 
 
@@ -1393,7 +1394,7 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
 
     action_text = "开启" if enabled else "关闭"
     if len(target_ids) == 1:
-        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块[{get_identity_display_name(target_ids[0])}]。")
+        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块{mono(get_identity_display_name(target_ids[0]))}。")
     else:
         await send_audit_log(f"🎛️ 已{action_text}全部身份的{module_name}模块。")
     return True, ""

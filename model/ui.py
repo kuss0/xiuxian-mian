@@ -37,7 +37,7 @@ from .control import (
 from .features.deep_retreat import get_deep_retreat_phase_text
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
-from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_ui_login_token, send_audit_log, touch_ui_session
+from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, mono, redeem_ui_login_token, send_audit_log, touch_ui_session
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -675,7 +675,7 @@ async def ui_set_pet_name(send_as_id, pet_name):
         return False, "法宝名称不能为空"
     set_pet_name(send_as_id, pet_name)
     save_state()
-    await send_audit_log(f"🗡️ 已更新法宝名称[{get_identity_display_name(send_as_id)}]：{pet_name}")
+    await send_audit_log(f"🗡️ 已更新法宝名称{mono(get_identity_display_name(send_as_id))}：{pet_name}")
     return True, f"已更新法宝名称[{get_identity_display_name(send_as_id)}]：{pet_name}"
 
 
@@ -805,7 +805,7 @@ async def ui_account_login_verify(code, session_key, password=None):
         pass
 
     save_state()
-    await send_audit_log(f"🔑 新账号登录成功: @{username} (ID: {account_id})")
+    await send_audit_log(f"🔑 新账号登录成功: {mono(f'@{username}')} (ID: {account_id})")
     return True, f"登录成功: @{username}", account_id
 
 
