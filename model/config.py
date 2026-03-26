@@ -179,6 +179,10 @@ try:
     UI_AUTH_IDLE_TIMEOUT_SEC = max(60, int(os.environ.get("CHAOGU_UI_AUTH_IDLE_TIMEOUT_SEC", "3600")))
 except (TypeError, ValueError):
     UI_AUTH_IDLE_TIMEOUT_SEC = 3600
+try:
+    UI_AUTH_SESSION_TIMEOUT_SEC = max(60, int(os.environ.get("CHAOGU_UI_AUTH_SESSION_TIMEOUT_SEC", "86400")))
+except (TypeError, ValueError):
+    UI_AUTH_SESSION_TIMEOUT_SEC = 86400
 UI_AUTH_COOKIE_NAME = (os.environ.get("CHAOGU_UI_AUTH_COOKIE_NAME") or "chaogu_ui_session").strip() or "chaogu_ui_session"
 
 

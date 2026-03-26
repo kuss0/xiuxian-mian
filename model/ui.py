@@ -14,6 +14,7 @@ from .config import (
     TZ_LOCAL,
     UI_AUTH_COOKIE_NAME,
     UI_AUTH_IDLE_TIMEOUT_SEC,
+    UI_AUTH_SESSION_TIMEOUT_SEC,
     UI_AUTO_REFRESH_SEC,
     UI_HOST,
     UI_PORT,
@@ -172,7 +173,7 @@ def get_ui_snapshot(session_token=None):
         "forum_topics_updated_at": fmt_abs_ts(get_forum_topics_updated_at()),
         "auto_delete_sent_messages": is_auto_delete_sent_messages_enabled(),
         "global_enabled": get_global_enabled(),
-        "auth_idle_timeout_sec": UI_AUTH_IDLE_TIMEOUT_SEC,
+        "auth_idle_timeout_sec": UI_AUTH_SESSION_TIMEOUT_SEC,
         "refresh_interval_sec": UI_AUTO_REFRESH_SEC,
         "startup_alerts": startup_alerts,
         "accounts": get_accounts(),
@@ -247,7 +248,7 @@ def _build_session_cookie_header(session_token, *, clear=False):
         morsel["max-age"] = 0
         morsel["expires"] = "Thu, 01 Jan 1970 00:00:00 GMT"
     else:
-        morsel["max-age"] = int(UI_AUTH_IDLE_TIMEOUT_SEC)
+        morsel["max-age"] = int(UI_AUTH_SESSION_TIMEOUT_SEC)
     return morsel.OutputString()
 
 
@@ -304,7 +305,8 @@ def _make_json_payload(ok, *, message="", error="", snapshot=None, extra=None):
 
 def _render_login_page(message=""):
     message_html = f"<div class='flash'>{html_escape(message)}</div>" if message else ""
-    timeout_minutes = max(1, UI_AUTH_IDLE_TIMEOUT_SEC // 60)
+    login_timeout_minutes = max(1, UI_AUTH_IDLE_TIMEOUT_SEC // 60)
+    session_timeout_hours = max(1, UI_AUTH_SESSION_TIMEOUT_SEC // 3600)
     secure_note = "HTTPS 公网地址下会自动使用 Secure Cookie。" if _cookie_is_secure() else "如需 Secure Cookie，请将 UI_PUBLIC_BASE_URL 配置为 https 地址。"
     return (
         "<!doctype html>"
@@ -327,7 +329,7 @@ def _render_login_page(message=""):
         f"{message_html}"
         "<p>请先到日志群发送 <code>.登录</code>，再在浏览器里打开机器人回复的登录链接。</p>"
         "<ul>"
-        f"<li>登录链接和登录后的会话都会在 {timeout_minutes} 分钟无请求后自动失效。</li>"
+        f"<li>登录链接 {login_timeout_minutes} 分钟有效，登录后会话 {session_timeout_hours} 小时无请求自动失效。</li>"
         "<li>支持多个登录链接与多个浏览器会话同时存在。</li>"
         f"<li>{html_escape(secure_note)}</li>"
         "</ul>"

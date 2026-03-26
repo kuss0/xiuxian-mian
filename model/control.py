@@ -1469,7 +1469,7 @@ async def handle_log_group_command(event):
             "🔐 UI 登录链接\n"
             f"{login_url}\n\n"
             "- 请在浏览器中打开该链接完成登录\n"
-            "- 登录链接与登录后会话均按 1 小时无请求自动失效\n"
+            "- 登录链接 1 小时有效，登录后会话 24 小时无请求自动失效\n"
             "- 支持多个登录链接和多个浏览器会话并存",
             error_prefix="❌ UI 登录链接发送失败",
             link_preview=False,

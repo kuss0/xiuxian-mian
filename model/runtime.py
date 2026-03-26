@@ -27,6 +27,7 @@ from .config import (
     SCRIPT_COMMANDS,
     TZ_LOCAL,
     UI_AUTH_IDLE_TIMEOUT_SEC,
+    UI_AUTH_SESSION_TIMEOUT_SEC,
     UI_PUBLIC_BASE_URL,
     client,
     get_all_clients,
@@ -353,7 +354,7 @@ def validate_ui_session(session_token, now=None):
     stored_token, payload = _secure_lookup(_ui_sessions, session_token)
     if not stored_token or not payload:
         return None
-    if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC:
+    if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_SESSION_TIMEOUT_SEC:
         _ui_sessions.pop(stored_token, None)
         return None
     return {
@@ -392,7 +393,7 @@ def gc_ui_sessions(now=None):
     expired = [
         token
         for token, payload in _ui_sessions.items()
-        if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC
+        if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_SESSION_TIMEOUT_SEC
     ]
     for token in expired:
         _ui_sessions.pop(token, None)
