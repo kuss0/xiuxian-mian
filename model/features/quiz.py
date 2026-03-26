@@ -16,7 +16,7 @@ from ..state import (
 from ..timing import fmt_abs_ts, fmt_remaining
 
 RE_QUIZ_PROMPT = re.compile(r"你有\s*(\d+)\s*秒")
-RE_QUIZ_QUESTION = re.compile(r"[“\"]{1,2}(.+?)[”\"]{1,2}", re.S)
+RE_QUIZ_QUESTION = re.compile(r'["“”]{1,2}(.+?)["“”]{1,2}\s*$', re.M)
 RE_QUIZ_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_QUIZ_COMMAND_HINT = re.compile(r"回复本消息并使用\s*\.作答\s*<选项>")
 RE_QUIZ_TARGET_TAG = re.compile(r"@([^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+)")
