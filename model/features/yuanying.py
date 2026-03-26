@@ -149,6 +149,9 @@ async def schedule_yuanying_status_probe(delay=None):
 
     async def delayed_status():
         await asyncio.sleep(delay)
+        # 如果已经出窍成功（phase=running），不再多余查询
+        if state.get("yuanying_phase") not in ("launching",):
+            return
         await send_game_command(CMD_YUANYING_STATUS, track=False)
 
     _fire_and_forget(delayed_status())
@@ -320,7 +323,9 @@ async def run_yuanying_scheduler(now):
         save_state()
         await send_audit_log("👶 检测到归窍总结等待状态异常（缺少触发时间），已自动解卡并继续执行元婴出窍。")
         msg = await send_game_command(CMD_YUANYING, track=False)
-        if not msg:
+        if msg:
+            await schedule_yuanying_status_probe(random.uniform(8, 12))
+        else:
             set_yuanying_phase("idle")
             save_state()
         return
@@ -334,7 +339,9 @@ async def run_yuanying_scheduler(now):
         save_state()
         await send_audit_log("👶 发送 1 超过 3 分钟仍未等到归窍总结，按兜底逻辑直接继续执行元婴出窍。")
         msg = await send_game_command(CMD_YUANYING, track=False)
-        if not msg:
+        if msg:
+            await schedule_yuanying_status_probe(random.uniform(8, 12))
+        else:
             set_yuanying_phase("idle")
             save_state()
         return
