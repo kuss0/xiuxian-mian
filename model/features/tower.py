@@ -1,6 +1,6 @@
 from ..config import CMD_TOWER, RETRY_MAX_SEC
 from ..persistence import mark_dirty, save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import format_window_text, state
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 
@@ -45,11 +45,11 @@ async def handle_tower_reply(text, now, reply_to):
         state["last_tower_day"] = get_day_key(now)
         next_ts = _schedule_tower_next_day(now)
         save_state()
-        await send_audit_log(f"🗼 今日闯塔已完成，下次预计：{fmt_abs_ts(next_ts)}")
+        console_log(f"🗼 今日闯塔已完成，下次预计：{fmt_abs_ts(next_ts)}")
         return
 
     mark_dirty()
-    await send_audit_log(f"🗼 收到闯塔回复，下次预计：{fmt_abs_ts(next_ts)}")
+    console_log(f"🗼 收到闯塔回复，下次预计：{fmt_abs_ts(next_ts)}")
 
 
 async def run_tower_scheduler(now):
@@ -83,7 +83,7 @@ async def run_tower_scheduler(now):
             return
         state["last_tower_msg_id"] = msg.id
         next_ts = schedule_next_tower(now)
-        await send_audit_log(f"🗼 执行闯塔，下次预计：{fmt_abs_ts(next_ts)}")
+        console_log(f"🗼 执行闯塔，下次预计：{fmt_abs_ts(next_ts)}")
 
 
 __all__ = [

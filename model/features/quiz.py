@@ -3,7 +3,7 @@ import re
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC
 from ..persistence import mark_dirty, save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -453,7 +453,7 @@ async def handle_quiz_result_broadcast(text, now):
     status, payload = _save_quiz_bank_entry(question, options, correct_answer)
     if status == "added":
         _pop_quiz_learning_watcher(parsed["target_key"], persist=True)
-        await send_audit_log(
+        console_log(
             f"🦴 已学习玄骨考校新题[{target_tag}]，答案：{correct_answer}，题目：{question}"
         )
         return True
@@ -524,7 +524,7 @@ async def handle_quiz_prompt(text, now, event):
         state["quiz_last_error"] = "题库未命中"
         state["quiz_last_matched_at"] = 0
         save_state()
-        await send_audit_log(
+        console_log(
             f"🦴 玄骨考校题库未命中[{parsed['question']}]，选项：{_format_quiz_options(parsed['options'])}"
         )
         return True
@@ -545,7 +545,7 @@ async def handle_quiz_prompt(text, now, event):
         await send_audit_log(f"❌ 玄骨考校作答发送失败，题目：{parsed['question']}")
         return True
 
-    await send_audit_log(
+    console_log(
         f"🦴 已自动作答玄骨考校，答案：{answer}，匹配方式：{match_mode}，题目：{parsed['question']}"
     )
     clear_quiz_state(persist=True)
@@ -579,7 +579,7 @@ async def run_quiz_scheduler(now):
     question = state.get("quiz_question") or "未记录题目"
     state["quiz_last_error"] = "题目已超时"
     save_state()
-    await send_audit_log(f"⚠️ 玄骨考校题目已超时，未继续处理：{question}")
+    console_log(f"⚠️ 玄骨考校题目已超时，未继续处理：{question}")
     clear_quiz_state(persist=True)
 
 

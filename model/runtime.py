@@ -196,6 +196,11 @@ async def send_audit_log(content):
     return ok
 
 
+def console_log(content):
+    ts = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}] {content}")
+
+
 async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True):
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     # forum 群需要 message_thread_id 才能回复
@@ -610,7 +615,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                         mark_dirty()
                         continue
 
-                await send_audit_log(f"⚠️ 指令 `{cmd}`[{get_send_as_label(identity_id)}] 响应超时({threshold}s)，正在补发...")
+                console_log(f"⚠️ 指令 `{cmd}`[{get_send_as_label(identity_id)}] 响应超时({threshold}s)，正在补发...")
                 new_msg = await send_game_command(cmd, send_as_id=identity_id)
                 with use_identity(identity_id) as identity_state:
                     if new_msg and new_msg.id in identity_state["pending_tasks"]:

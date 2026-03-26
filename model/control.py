@@ -51,6 +51,7 @@ from .persistence import mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
     build_ui_login_url,
+    console_log,
     issue_ui_login_token,
     reply_log_group_message,
     send_audit_log,
@@ -1113,7 +1114,7 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
 
     display_name = get_identity_display_name(send_as_id)
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🪪 已发起身份信息刷新[{display_name}]，指令：{command}，来源：{source}{actor_suffix}。")
+    console_log(f"🪪 已发起身份信息刷新[{display_name}]，指令：{command}，来源：{source}{actor_suffix}。")
     return True, "已开始获取角色信息，请等待"
 
 
@@ -1163,7 +1164,7 @@ async def run_identity_info_followup_scheduler(now):
             state["identity_info_last_error"] = ""
             mark_dirty()
 
-        await send_audit_log(f"🪪 已触发身份信息补全[{get_identity_display_name(identity_id)}]，指令：{command}。")
+        console_log(f"🪪 已触发身份信息补全[{get_identity_display_name(identity_id)}]，指令：{command}。")
 
 
 async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
@@ -1256,7 +1257,7 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
         return False, "无法解析有效的 身份 ID", None
     if canonical_id in get_identity_ids():
         display_name = get_identity_display_name(canonical_id)
-        await send_audit_log(f"🪪 新增身份请求命中已存在身份[{display_name}]，来源：{source}。")
+        console_log(f"🪪 新增身份请求命中已存在身份[{display_name}]，来源：{source}。")
         return True, f"身份已存在：{display_name}", canonical_id
 
     ensure_identity_registered(canonical_id)

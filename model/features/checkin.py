@@ -2,7 +2,7 @@ import random
 
 from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC
 from ..persistence import mark_dirty, save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import format_window_text, get_game_group_id, is_auto_delete_sent_messages_enabled, state
 from ..timing import (
     fmt_abs_ts,
@@ -109,9 +109,9 @@ async def handle_checkin_reply(text, now, reply_to):
         next_ts = _schedule_checkin_next_day(now)
         scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"])
         save_state()
-        await send_audit_log(f"📝 宗门点卯已执行，下次预计：{fmt_abs_ts(next_ts)}")
+        console_log(f"📝 宗门点卯已执行，下次预计：{fmt_abs_ts(next_ts)}")
         if scheduled:
-            await send_audit_log(f"📘 宗门传功已排队：{fmt_abs_ts(state['next_sect_teach_time'])}")
+            console_log(f"📘 宗门传功已排队：{fmt_abs_ts(state['next_sect_teach_time'])}")
         return
 
     if is_checkin_already_done_text(text):
@@ -119,12 +119,12 @@ async def handle_checkin_reply(text, now, reply_to):
         next_ts = _schedule_checkin_next_day(now)
         scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"])
         save_state()
-        await send_audit_log(f"📝 点卯已完成或仍在周期内，下次预计：{fmt_abs_ts(next_ts)}")
+        console_log(f"📝 点卯已完成或仍在周期内，下次预计：{fmt_abs_ts(next_ts)}")
         if scheduled:
-            await send_audit_log(f"📘 宗门传功已排队：{fmt_abs_ts(state['next_sect_teach_time'])}")
+            console_log(f"📘 宗门传功已排队：{fmt_abs_ts(state['next_sect_teach_time'])}")
         return
 
-    await send_audit_log(f"📝 收到点卯回复，下次预计：{fmt_abs_ts(next_ts)}")
+    console_log(f"📝 收到点卯回复，下次预计：{fmt_abs_ts(next_ts)}")
 
 
 async def handle_sect_teach_reply(text, now, reply_to):
@@ -160,7 +160,7 @@ async def handle_sect_teach_reply(text, now, reply_to):
         state["sect_teach_reply_to_msg_id"] = 0
         save_state()
         await cleanup_checkin_chain_messages()
-        await send_audit_log(f"📘 宗门传功暂不可执行，今日进度：{state['checkin_teach_count']}/3")
+        console_log(f"📘 宗门传功暂不可执行，今日进度：{state['checkin_teach_count']}/3")
         return
 
 
@@ -189,7 +189,7 @@ async def run_checkin_scheduler(now):
                 state["next_sect_teach_time"] = 0
                 state["sect_teach_reply_to_msg_id"] = 0
                 save_state()
-                await send_audit_log(f"📘 执行宗门传功（今日第 {state['checkin_teach_count'] + 1}/3 次）。")
+                console_log(f"📘 执行宗门传功（今日第 {state['checkin_teach_count'] + 1}/3 次）。")
             else:
                 state["next_sect_teach_time"] = now + RETRY_MAX_SEC
                 save_state()
@@ -213,7 +213,7 @@ async def run_checkin_scheduler(now):
             await send_audit_log("❌ 宗门点卯发送失败，已改为稍后重试。")
             return
         save_state()
-        await send_audit_log(f"📝 执行宗门点卯，下次预计：{fmt_abs_ts(next_ts)}")
+        console_log(f"📝 执行宗门点卯，下次预计：{fmt_abs_ts(next_ts)}")
 
 
 __all__ = [

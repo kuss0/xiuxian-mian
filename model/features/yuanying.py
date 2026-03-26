@@ -14,7 +14,7 @@ from ..config import (
     YUANYING_PROTECT_SEC,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_identity_display_name, get_identity_ids, get_send_as_tags, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
 
@@ -48,19 +48,19 @@ async def update_yuanying_block_log_state(waiting=None, protect=None):
         prev = state.get("yuanying_waiting_logged", False)
         if waiting and not prev:
             state["yuanying_waiting_logged"] = True
-            await send_audit_log("👶 元婴时间已到，但当前仍在等待归窍总结，暂不执行元婴出窍。")
+            console_log("👶 元婴时间已到，但当前仍在等待归窍总结，暂不执行元婴出窍。")
         elif not waiting and prev:
             state["yuanying_waiting_logged"] = False
-            await send_audit_log("👶 等待归窍总结状态已结束。")
+            console_log("👶 等待归窍总结状态已结束。")
 
     if protect is not None:
         prev = state.get("yuanying_protect_logged", False)
         if protect and not prev:
             state["yuanying_protect_logged"] = True
-            await send_audit_log("👶 元婴时间已到，但当前处于 30 秒保护中，暂不重复执行。")
+            console_log("👶 元婴时间已到，但当前处于 30 秒保护中，暂不重复执行。")
         elif not protect and prev:
             state["yuanying_protect_logged"] = False
-            await send_audit_log("👶 元婴 30 秒保护状态已结束。")
+            console_log("👶 元婴 30 秒保护状态已结束。")
 
 
 def get_yuanying_phase_text(phase=None, now=None):
@@ -154,7 +154,7 @@ async def schedule_yuanying_status_probe(delay=None):
         await send_game_command(CMD_YUANYING_STATUS, track=False)
 
     _fire_and_forget(delayed_status())
-    await send_audit_log(f"👶 检测到元婴已在执行任务，将在 {delay:.1f}s 后查询元婴状态。")
+    console_log(f"👶 检测到元婴已在执行任务，将在 {delay:.1f}s 后查询元婴状态。")
 
 
 async def handle_yuanying_success_reply(text, now, reply_to):
@@ -231,7 +231,7 @@ async def handle_yuanying_status_reply(text, now, reply_to):
         state["next_yuanying_time"] = now + YUANYING_CD + CD_BUFFER_SEC
         state["last_yuanying_command_time"] = now
         save_state()
-        await send_audit_log("👶 元婴状态显示’窍中温养’，判定可直接继续元婴出窍。")
+        console_log("👶 元婴状态显示’窍中温养’，判定可直接继续元婴出窍。")
         msg = await send_game_command(CMD_YUANYING)
         if not msg:
             set_yuanying_phase("idle")
@@ -285,7 +285,7 @@ async def handle_yuanying_summary_broadcast(text, now):
     has_expected_tag = any(tag in compact_text for tag in compact_tags) if compact_tags else False
     preview = (text or "").replace("\n", "\\n")[:300]
 
-    await send_audit_log(
+    console_log(
         "🧪 归窍总结调试\n"
         f"- 身份: {get_identity_display_name(target_id)}\n"
         f"- 旧关键词命中: {'是' if old_summary_kw_hit else '否'}\n"
@@ -299,7 +299,7 @@ async def handle_yuanying_summary_broadcast(text, now):
         await delete_yuanying_summary_trigger_msg()
         begin_yuanying_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC)
         await update_yuanying_block_log_state(waiting=False, protect=False)
-        await send_audit_log(f"👶 检测到元神归窍总结[{get_identity_display_name(target_id)}]，已删除触发用的 1，将在 30 秒后继续执行元婴出窍。")
+        console_log(f"👶 检测到元神归窍总结[{get_identity_display_name(target_id)}]，已删除触发用的 1，将在 30 秒后继续执行元婴出窍。")
 
 
 async def run_yuanying_scheduler(now):
@@ -354,7 +354,7 @@ async def run_yuanying_scheduler(now):
         state["last_yuanying_command_time"] = now
         state["next_yuanying_time"] = now + YUANYING_CD + CD_BUFFER_SEC
         save_state()
-        await send_audit_log("👶 归窍总结后的 30 秒缓冲已结束，继续执行元婴出窍。")
+        console_log("👶 归窍总结后的 30 秒缓冲已结束，继续执行元婴出窍。")
         msg = await send_game_command(CMD_YUANYING)
         if not msg:
             set_yuanying_phase("idle")
@@ -364,7 +364,7 @@ async def run_yuanying_scheduler(now):
     if state.get("yuanying_phase") == "running" and state["next_yuanying_time"] > 0 and now >= state["next_yuanying_time"]:
         state["yuanying_probe_pending"] = False
         begin_yuanying_summary_wait(now)
-        await send_audit_log("👶 元婴归来时间已到，先发送 1 触发归窍总结，再继续元婴出窍。")
+        console_log("👶 元婴归来时间已到，先发送 1 触发归窍总结，再继续元婴出窍。")
         msg = await send_game_command("1", track=False)
         if msg:
             state["last_yuanying_summary_msg_id"] = msg.id
@@ -395,7 +395,7 @@ async def run_yuanying_scheduler(now):
 
     if now >= state["next_yuanying_time"]:
         begin_yuanying_summary_wait(now)
-        await send_audit_log("👶 元婴 CD 已到，先发送 1 触发归窍总结。")
+        console_log("👶 元婴 CD 已到，先发送 1 触发归窍总结。")
         msg = await send_game_command("1", track=False)
         if msg:
             state["last_yuanying_summary_msg_id"] = msg.id
