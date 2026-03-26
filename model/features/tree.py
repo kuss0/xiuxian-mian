@@ -75,7 +75,7 @@ async def handle_tree_invasion_end(text, now, is_reply_to_me):
                 await send_audit_log("🛡️ 入侵状态解除！检测到待补偿任务，立即执行灌溉。")
             else:
                 save_state()
-                console_log("🛡️ 入侵状态解除，恢复常态化监控。")
+                await send_audit_log("🛡️ 入侵状态解除，恢复常态化监控。")
 
 
 async def handle_tree_rebirth_reset(text, now):
@@ -113,11 +113,11 @@ async def handle_tree_cd_fix(text, now, reply_to):
     if "守山" in text or "协同" in text or CMD_TREE_GUARD in orig_cmd:
         state["next_guard_time"] = now + wait_sec + CD_BUFFER_SEC
         save_state()
-        console_log(f"⏳ 守山 CD 修正：预计于 {target_time} 恢复。")
+        await send_audit_log(f"⏳ 守山 CD 修正：预计于 {target_time} 恢复。")
     elif "灌溉" in text or CMD_TREE_WATER in orig_cmd:
         state["next_irr_time"] = now + wait_sec + CD_BUFFER_SEC
         save_state()
-        console_log(f"⏳ 灌溉 CD 修正：预计于 {target_time} 恢复。")
+        await send_audit_log(f"⏳ 灌溉 CD 修正：预计于 {target_time} 恢复。")
 
 
 async def handle_tree_exception_prompt(text):
@@ -184,7 +184,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
                 else:
                     if not was_maturing or not state.get("tree_maturing_logged", False):
                         state["tree_maturing_logged"] = True
-                        console_log(f"🌳 进入成熟采摘期，剩余 {remain_sec}s，预计 {end_t} 结束。等待重置广播以恢复灌溉。")
+                        await send_audit_log(f"🌳 进入成熟采摘期，剩余 {remain_sec}s，预计 {end_t} 结束。等待重置广播以恢复灌溉。")
     else:
         state_changed = False
         if state["is_maturing"]:
@@ -192,7 +192,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             state_changed = True
             if state.get("tree_maturing_logged", False):
                 state["tree_maturing_logged"] = False
-                console_log("🌳 成熟采摘期状态已结束，恢复常规灌溉监控。")
+                await send_audit_log("🌳 成熟采摘期状态已结束，恢复常规灌溉监控。")
         if state["is_harvested"]:
             state["is_harvested"] = False
             state_changed = True
@@ -228,7 +228,7 @@ async def run_tree_scheduler(now):
                 state["pending_irrigation"] = True
                 state["next_irr_time"] = now + FREEZE_CD
                 save_state()
-                console_log("⏳ 灌溉 CD 已到，但目前处于入侵状态，已记录至补偿队列。")
+                await send_audit_log("⏳ 灌溉 CD 已到，但目前处于入侵状态，已记录至补偿队列。")
         else:
             delay = random.uniform(IRR_INTERVAL_MIN, IRR_INTERVAL_MAX)
             state["next_irr_time"] = now + delay
@@ -240,7 +240,7 @@ async def run_tree_scheduler(now):
                 save_state()
                 await send_audit_log("❌ 灌溉发送失败，已改为稍后重试。")
             else:
-                console_log(f"🚀 执行常规灌溉。下次预计：{next_t_str}")
+                await send_audit_log(f"🚀 执行常规灌溉。下次预计：{next_t_str}")
 
     if state["is_invading"] and now >= state["next_guard_time"]:
         g_delay = random.uniform(GUARD_INTERVAL_MIN, GUARD_INTERVAL_MAX)
@@ -253,7 +253,7 @@ async def run_tree_scheduler(now):
             save_state()
             await send_audit_log("❌ 协同守山发送失败，已改为稍后重试。")
         else:
-            console_log(f"🛡️ 执行协同守山。下次预计：{g_next_t}")
+            await send_audit_log(f"🛡️ 执行协同守山。下次预计：{g_next_t}")
 
 
 __all__ = [

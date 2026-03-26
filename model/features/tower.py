@@ -45,7 +45,7 @@ async def handle_tower_reply(text, now, reply_to):
         state["last_tower_day"] = get_day_key(now)
         next_ts = _schedule_tower_next_day(now)
         save_state()
-        console_log(f"🗼 今日闯塔已完成，下次预计：{fmt_abs_ts(next_ts)}")
+        await send_audit_log(f"🗼 今日闯塔已完成，下次预计：{fmt_abs_ts(next_ts)}")
         return
 
     mark_dirty()

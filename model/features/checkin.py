@@ -189,7 +189,7 @@ async def run_checkin_scheduler(now):
                 state["next_sect_teach_time"] = 0
                 state["sect_teach_reply_to_msg_id"] = 0
                 save_state()
-                console_log(f"📘 执行宗门传功（今日第 {state['checkin_teach_count'] + 1}/3 次）。")
+                await send_audit_log(f"📘 执行宗门传功（今日第 {state['checkin_teach_count'] + 1}/3 次）。")
             else:
                 state["next_sect_teach_time"] = now + RETRY_MAX_SEC
                 save_state()
@@ -213,7 +213,7 @@ async def run_checkin_scheduler(now):
             await send_audit_log("❌ 宗门点卯发送失败，已改为稍后重试。")
             return
         save_state()
-        console_log(f"📝 执行宗门点卯，下次预计：{fmt_abs_ts(next_ts)}")
+        await send_audit_log(f"📝 执行宗门点卯，下次预计：{fmt_abs_ts(next_ts)}")
 
 
 __all__ = [
