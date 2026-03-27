@@ -42,6 +42,7 @@ from .config import (
 )
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
+from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.tower import get_tower_status_text
@@ -254,6 +255,23 @@ def _manual_enable_quiz_module_state(now):
     state["quiz_last_matched_at"] = 0
 
 
+def _disable_jiyin_module_state():
+    state["jiyin_enabled"] = False
+    clear_jiyin_state(persist=False, keep_last_error=True)
+
+
+def _manual_disable_jiyin_module_state():
+    state["jiyin_enabled"] = False
+    clear_jiyin_state(persist=False, keep_last_error=True)
+
+
+def _manual_enable_jiyin_module_state(now):
+    state["jiyin_enabled"] = True
+    if float(state.get("next_jiyin_time", 0) or 0) > now:
+        return
+    clear_jiyin_state(persist=False)
+
+
 def _manual_disable_yuanying_module_state():
     state["yuanying_enabled"] = False
     _clear_pending_tasks_by_commands({CMD_YUANYING, CMD_YUANYING_STATUS})
@@ -379,6 +397,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
+    "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
@@ -388,6 +407,7 @@ MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
     "玄骨考校": _disable_quiz_module_state,
+    "极阴祖师": _disable_jiyin_module_state,
     "元婴": _disable_yuanying_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "点卯": lambda: _set_checkin_module_enabled(False, time.time()),
@@ -455,6 +475,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
         "玄骨考校": get_quiz_status_text,
+        "极阴祖师": get_jiyin_status_text,
         "元婴": get_yuanying_status_detail_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "点卯": get_checkin_status_text,

@@ -76,6 +76,7 @@ def init_db():
             pet_name TEXT NOT NULL DEFAULT '',
             sect_name TEXT NOT NULL DEFAULT '',
             sect_updated_at REAL NOT NULL DEFAULT 0,
+            jiyin_choice TEXT NOT NULL DEFAULT '',
             checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2,
             checkin_window_end_hour_utc INTEGER NOT NULL DEFAULT 3,
             tower_window_start_hour_utc INTEGER NOT NULL DEFAULT 1,
@@ -114,6 +115,7 @@ def init_db():
             next_sect_teach_time REAL NOT NULL,
             next_tower_time REAL NOT NULL,
             next_quiz_time REAL NOT NULL,
+            next_jiyin_time REAL NOT NULL,
             next_yuanying_time REAL NOT NULL,
             next_deep_retreat_time REAL NOT NULL
         );
@@ -131,6 +133,8 @@ def init_db():
             quiz_answer TEXT NOT NULL DEFAULT '',
             quiz_last_error TEXT NOT NULL DEFAULT '',
             quiz_last_matched_at REAL NOT NULL DEFAULT 0,
+            jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            jiyin_last_error TEXT NOT NULL DEFAULT '',
             yuanying_phase TEXT NOT NULL,
             yuanying_probe_pending INTEGER NOT NULL,
             yuanying_summary_sent_at REAL NOT NULL,
@@ -169,6 +173,8 @@ def init_db():
     module_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_module_state)").fetchall()}
     if "quiz_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
+    if "jiyin_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -181,6 +187,8 @@ def init_db():
         conn.execute("ALTER TABLE identities ADD COLUMN sect_name TEXT NOT NULL DEFAULT ''")
     if "sect_updated_at" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN sect_updated_at REAL NOT NULL DEFAULT 0")
+    if "jiyin_choice" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN jiyin_choice TEXT NOT NULL DEFAULT ''")
     if "checkin_window_start_hour_utc" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2")
     if "checkin_window_end_hour_utc" not in identity_columns:
@@ -199,6 +207,8 @@ def init_db():
     timer_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_timers)").fetchall()}
     if "next_quiz_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_quiz_time REAL NOT NULL DEFAULT 0")
+    if "next_jiyin_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_jiyin_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
     if "quiz_reply_to_msg_id" not in runtime_columns:
@@ -213,6 +223,10 @@ def init_db():
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_error TEXT NOT NULL DEFAULT ''")
     if "quiz_last_matched_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_matched_at REAL NOT NULL DEFAULT 0")
+    if "jiyin_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "jiyin_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_last_error TEXT NOT NULL DEFAULT ''")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -315,12 +329,12 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at,
+            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -329,6 +343,7 @@ def upsert_identity_to_db(send_as_id):
             pet_name=excluded.pet_name,
             sect_name=excluded.sect_name,
             sect_updated_at=excluded.sect_updated_at,
+            jiyin_choice=excluded.jiyin_choice,
             checkin_window_start_hour_utc=excluded.checkin_window_start_hour_utc,
             checkin_window_end_hour_utc=excluded.checkin_window_end_hour_utc,
             tower_window_start_hour_utc=excluded.tower_window_start_hour_utc,
@@ -347,6 +362,7 @@ def upsert_identity_to_db(send_as_id):
             profile.get("pet_name", "") or "",
             profile.get("sect_name", "") or "",
             float(profile.get("sect_updated_at", 0) or 0),
+            profile.get("jiyin_choice", "") or "",
             int(profile.get("checkin_window_start_hour_utc", 2) or 2),
             int(profile.get("checkin_window_end_hour_utc", 3) or 3),
             int(profile.get("tower_window_start_hour_utc", 1) or 1),
@@ -420,7 +436,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -433,6 +449,7 @@ def _load_identity_from_db(send_as_id):
             pet_name=row["pet_name"],
             sect_name=row["sect_name"],
             sect_updated_at=row["sect_updated_at"],
+            jiyin_choice=row["jiyin_choice"],
             checkin_window_start_hour_utc=row["checkin_window_start_hour_utc"],
             checkin_window_end_hour_utc=row["checkin_window_end_hour_utc"],
             tower_window_start_hour_utc=row["tower_window_start_hour_utc"],

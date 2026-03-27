@@ -19,25 +19,26 @@ from .config import (
 _current_identity_id = contextvars.ContextVar("current_identity_id", default=SEND_AS_DEFAULT_ID or 0)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "quiz_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_checkin_time", "next_sect_teach_time",
-    "next_tower_time", "next_quiz_time", "next_yuanying_time", "next_deep_retreat_time",
+    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
     "last_tower_msg_id",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
+    "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at",
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "quiz_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
@@ -52,6 +53,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "sect_updated_at": 0,
     "xiuwei_current": 0,
     "xiuwei_max": 0,
+    "jiyin_choice": "",
     "checkin_window_start_hour_utc": CHECKIN_WINDOW_START_HOUR_UTC,
     "checkin_window_end_hour_utc": CHECKIN_WINDOW_END_HOUR_UTC,
     "tower_window_start_hour_utc": TOWER_WINDOW_START_HOUR_UTC,
@@ -131,6 +133,7 @@ IDENTITY_STATE_TEMPLATE = {
     "tree_enabled": False,
     "pet_enabled": False,
     "quiz_enabled": False,
+    "jiyin_enabled": False,
     "yuanying_enabled": False,
     "deep_retreat_enabled": False,
     "checkin_enabled": False,
@@ -175,6 +178,11 @@ IDENTITY_STATE_TEMPLATE = {
     "quiz_answer": "",
     "quiz_last_error": "",
     "quiz_last_matched_at": 0,
+
+    # 极阴祖师模块
+    "next_jiyin_time": 0,
+    "jiyin_reply_to_msg_id": 0,
+    "jiyin_last_error": "",
 
     # 元婴模块
     "yuanying_phase": "idle",  # idle|launching|running|waiting_summary|post_summary_wait
@@ -276,6 +284,7 @@ def set_send_as_profile(
     sect_updated_at=None,
     xiuwei_current=None,
     xiuwei_max=None,
+    jiyin_choice=None,
     checkin_window_start_hour_utc=None,
     checkin_window_end_hour_utc=None,
     tower_window_start_hour_utc=None,
@@ -293,6 +302,7 @@ def set_send_as_profile(
         sect_updated_at=sect_updated_at,
         xiuwei_current=xiuwei_current,
         xiuwei_max=xiuwei_max,
+        jiyin_choice=jiyin_choice,
         checkin_window_start_hour_utc=checkin_window_start_hour_utc,
         checkin_window_end_hour_utc=checkin_window_end_hour_utc,
         tower_window_start_hour_utc=tower_window_start_hour_utc,
@@ -324,6 +334,8 @@ def update_send_as_profile(send_as_id, **changes):
         profile["xiuwei_current"] = int(changes.get("xiuwei_current") or 0)
     if "xiuwei_max" in changes:
         profile["xiuwei_max"] = int(changes.get("xiuwei_max") or 0)
+    if "jiyin_choice" in changes:
+        profile["jiyin_choice"] = (changes.get("jiyin_choice") or "").strip()
     if "checkin_window_start_hour_utc" in changes:
         profile["checkin_window_start_hour_utc"] = int(changes.get("checkin_window_start_hour_utc"))
     if "checkin_window_end_hour_utc" in changes:
@@ -373,6 +385,18 @@ def get_pet_name(send_as_id=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     return get_send_as_profile(send_as_id).get("pet_name") or DEFAULT_PET_NAME
+
+
+def get_jiyin_choice(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    return (get_send_as_profile(send_as_id).get("jiyin_choice") or "").strip()
+
+
+def set_jiyin_choice(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, jiyin_choice=choice)
+    return get_jiyin_choice(send_as_id)
 
 
 def get_game_group_id():
@@ -845,6 +869,7 @@ __all__ = [
     "get_module_window_hours_local",
     "get_module_window_profile_keys",
     "get_available_module_names",
+    "get_jiyin_choice",
     "get_pet_command",
     "get_pet_name",
     "get_realm_sort_index",
@@ -864,6 +889,7 @@ __all__ = [
     "set_quiz_learning_watchers",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",
+    "set_jiyin_choice",
     "set_module_window_hours",
     "set_pet_name",
     "set_send_as_profile",

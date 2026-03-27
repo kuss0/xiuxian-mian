@@ -17,6 +17,7 @@ from .features.deep_retreat import (
     run_deep_retreat_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
+from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
@@ -150,6 +151,17 @@ async def on_message(event):
                     handled_quiz_prompt = True
                     break
         if handled_quiz_prompt:
+            return
+
+        handled_jiyin_prompt = False
+        for identity_id in get_identity_ids():
+            if not get_identity_enabled(identity_id):
+                continue
+            with use_identity(identity_id):
+                if await handle_jiyin_prompt(text, now, event):
+                    handled_jiyin_prompt = True
+                    break
+        if handled_jiyin_prompt:
             return
 
         if routed_identity_id is not None:
@@ -389,6 +401,7 @@ async def main_loop():
                 await run_tree_scheduler(now)
                 await run_pet_scheduler(now)
                 await run_quiz_scheduler(now)
+                await run_jiyin_scheduler(now)
                 await run_checkin_scheduler(now)
                 await run_tower_scheduler(now)
                 await run_deep_retreat_scheduler(now)

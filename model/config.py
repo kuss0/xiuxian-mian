@@ -60,7 +60,7 @@ SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 1800     # bot 静默超时，触发全局暂停（30分钟）
 DB_FILE = os.path.join(STATE_DIR, "chaogu_state.db")
-DB_SCHEMA_VERSION = 2
+DB_SCHEMA_VERSION = 3
 TZ_LOCAL = timezone(timedelta(hours=8))
 
 
@@ -79,8 +79,11 @@ CMD_CHECKIN = ".宗门点卯"
 CMD_SECT_TEACH = ".宗门传功"
 CMD_TOWER = ".闯塔"
 CMD_QUIZ_ANSWER = ".作答"
+CMD_JIYIN_OFFER_SOUL = ".献上魂魄"
+CMD_JIYIN_HIDE_AURA = ".收敛气息"
 QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "quiz_bank.json")
 QUIZ_REPLY_TIMEOUT_SEC = 300
+JIYIN_REPLY_TIMEOUT_SEC = 180 * 60
 
 
 CMD_BATTLE_POWER = ".战力"
@@ -127,13 +130,16 @@ SCRIPT_COMMANDS = [
     CMD_SECT_TEACH,
     CMD_TOWER,
     CMD_QUIZ_ANSWER,
+    CMD_JIYIN_OFFER_SOUL,
+    CMD_JIYIN_HIDE_AURA,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "玄骨考校", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
     "玄骨考校": "quiz_enabled",
+    "极阴祖师": "jiyin_enabled",
     "元婴": "yuanying_enabled",
     "深度闭关": "deep_retreat_enabled",
     "点卯": "checkin_enabled",
@@ -259,6 +265,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
+    (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
@@ -271,6 +278,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)法宝$'), "法宝", False),
     (re.compile(r'^\.(开启|打开)玄骨考校$'), "玄骨考校", True),
     (re.compile(r'^\.(关闭|关掉)玄骨考校$'), "玄骨考校", False),
+    (re.compile(r'^\.(开启|打开)极阴祖师$'), "极阴祖师", True),
+    (re.compile(r'^\.(关闭|关掉)极阴祖师$'), "极阴祖师", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),
     (re.compile(r'^\.(关闭|关掉)元婴$'), "元婴", False),
     (re.compile(r'^\.(开启|打开)深度闭关$'), "深度闭关", True),
