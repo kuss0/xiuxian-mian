@@ -32,8 +32,8 @@ ADMIN_ID = int(_env.get("admin_id", 0) or 0)
 GAME_GROUP_ID = 0  # 游戏主群（通过 UI 基础配置设置）
 GAME_BOT_IDS = set()  # 允许处理的机器人/频道ID（通过 UI 基础配置设置）
 
-RETRY_MIN_SEC = 30
-RETRY_MAX_SEC = 40
+RETRY_MIN_SEC = 60
+RETRY_MAX_SEC = 70
 RETRY_LIMIT = 3
 MY_MSG_TTL = 3600
 MY_MSG_MAX = 1000
