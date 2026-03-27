@@ -3,7 +3,7 @@ import re
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC
 from ..persistence import mark_dirty, save_quiz_learning_watchers_state, save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -481,12 +481,12 @@ async def handle_quiz_result_broadcast(text, now=None):
         if result_type == "correct":
             if bank_answer == correct_answer:
                 await send_audit_log(
-                    f"🦴 玄骨考校[`{target_tag}`] 题库内答案正确 ✅"
+                    f"🦴 玄骨考校[{mono(target_tag)}] 题库内答案正确 ✅"
                 )
             else:
                 await send_audit_log(
                     "🦴 玄骨考校题库答案不一致，请人工处理\n"
-                    f"- 目标: `{target_tag}`\n"
+                    f"- 目标: {mono(target_tag)}\n"
                     f"- 题目: {question}\n"
                     f"- 选项: {_format_quiz_options(options)}\n"
                     f"- 题库匹配: {bank_answer}\n"
@@ -495,11 +495,11 @@ async def handle_quiz_result_broadcast(text, now=None):
                 )
         elif result_type == "wrong":
             await send_audit_log(
-                f"🦴 玄骨考校[`{target_tag}`] 题目在题库内，群内作答错误"
+                f"🦴 玄骨考校[{mono(target_tag)}] 题目在题库内，群内作答错误"
             )
         elif result_type == "timeout":
             await send_audit_log(
-                f"🦴 玄骨考校[`{target_tag}`] 题目在题库内，超时未作答"
+                f"🦴 玄骨考校[{mono(target_tag)}] 题目在题库内，超时未作答"
             )
     else:
         # ---- 题目不在题库 ----
@@ -507,17 +507,17 @@ async def handle_quiz_result_broadcast(text, now=None):
             status, payload = _save_quiz_bank_entry(question, options, correct_answer)
             if status == "added":
                 await send_audit_log(
-                    f"🦴 玄骨考校[`{target_tag}`] 已记录新题 ✅ 答案：{correct_answer}"
+                    f"🦴 玄骨考校[{mono(target_tag)}] 已记录新题 ✅ 答案：{correct_answer}"
                 )
             elif status == "exists":
                 await send_audit_log(
-                    f"🦴 玄骨考校[`{target_tag}`] 题库内答案正确 ✅"
+                    f"🦴 玄骨考校[{mono(target_tag)}] 题库内答案正确 ✅"
                 )
             elif status == "conflict":
                 existing_answer = str((payload or {}).get("answer") or "").strip().upper()
                 await send_audit_log(
                     "🦴 玄骨考校题库冲突，请人工处理\n"
-                    f"- 目标: `{target_tag}`\n"
+                    f"- 目标: {mono(target_tag)}\n"
                     f"- 题目: {question}\n"
                     f"- 选项: {_format_quiz_options(options)}\n"
                     f"- 题库答案: {existing_answer}\n"
@@ -525,7 +525,7 @@ async def handle_quiz_result_broadcast(text, now=None):
                 )
             else:
                 await send_audit_log(
-                    f"🦴 玄骨考校[`{target_tag}`] 题库记录失败({status})\n"
+                    f"🦴 玄骨考校[{mono(target_tag)}] 题库记录失败({status})\n"
                     f"- 题目: {question}\n"
                     f"- 选项: {_format_quiz_options(options)}\n"
                     f"- 正确答案: {correct_answer}"
@@ -533,14 +533,14 @@ async def handle_quiz_result_broadcast(text, now=None):
         elif result_type == "wrong":
             submitted_text = str(options.get(submitted_answer) or "").strip()
             await send_audit_log(
-                f"🦴 玄骨考校[`{target_tag}`] 题库未收录，群内作答错误\n"
+                f"🦴 玄骨考校[{mono(target_tag)}] 题库未收录，群内作答错误\n"
                 f"- 题目: {question}\n"
                 f"- 选项: {_format_quiz_options(options)}\n"
                 f"- 提交: {submitted_answer}.{submitted_text}"
             )
         elif result_type == "timeout":
             await send_audit_log(
-                f"🦴 玄骨考校[`{target_tag}`] 题库未收录，超时未作答\n"
+                f"🦴 玄骨考校[{mono(target_tag)}] 题库未收录，超时未作答\n"
                 f"- 题目: {question}\n"
                 f"- 选项: {_format_quiz_options(options)}"
             )

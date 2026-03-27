@@ -616,7 +616,7 @@ async def run_retry_scheduler(now, send_as_id=None):
             if now - send_time > threshold:
                 with use_identity(identity_id) as identity_state:
                     if retry >= RETRY_LIMIT:
-                        await send_audit_log(f"🧯 指令 `{cmd}`[{get_send_as_label(identity_id)}] 已重试 {RETRY_LIMIT} 次仍无响应，停止补发。")
+                        await send_audit_log(f"🧯 指令 {mono(cmd)}[{mono(get_send_as_label(identity_id))}] 已重试 {RETRY_LIMIT} 次仍无响应，停止补发。")
                         if _is_identity_refresh_command(cmd):
                             identity_state["last_identity_info_msg_id"] = 0
                             identity_state["identity_info_reply_msg_ids"] = []
