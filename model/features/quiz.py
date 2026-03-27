@@ -439,93 +439,113 @@ async def handle_quiz_result_broadcast(text, now=None):
     if not get_quiz_learning_watchers():
         return False
 
+    # 统一解析三种结果类型
     parsed = _parse_quiz_result(text)
-    if not parsed:
+    result_type = None
+    target_tag = ""
+    target_key = ""
+    correct_answer = ""
+    submitted_answer = ""
+
+    if parsed:
+        result_type = parsed["status"]
+        target_tag = parsed.get("target_tag", "")
+        target_key = parsed.get("target_key", "")
+        correct_answer = str(parsed.get("correct_answer") or "").strip().upper()
+        submitted_answer = str(parsed.get("submitted_answer") or "").strip().upper()
+    else:
         timeout_match = RE_QUIZ_RESULT_TIMEOUT.search(text or "")
         if timeout_match:
+            result_type = "timeout"
             target_tag = f"@{str(timeout_match.group('tag') or '').strip()}"
             target_key = _normalize_quiz_target_key(target_tag)
-            watcher = _get_quiz_learning_watcher(target_key) if target_key else None
-            if watcher:
-                question = str(watcher.get("question") or "").strip()
-                _pop_quiz_learning_watcher(target_key, persist=True)
-                await send_audit_log(
-                    f"🦴 玄骨考校超时未作答[`{target_tag}`]，题目：{question or '未记录题目'}"
-                )
-                return True
-        return False
+        else:
+            return False
 
-    watcher = _get_quiz_learning_watcher(parsed["target_key"])
+    watcher = _get_quiz_learning_watcher(target_key) if target_key else None
     if not watcher:
         return False
 
     question = str(watcher.get("question") or "").strip()
     options = dict(watcher.get("options") or {})
-    correct_answer = str(parsed.get("correct_answer") or "").strip().upper()
-    matched_answer = str(watcher.get("matched_answer") or "").strip().upper()
-    target_tag = watcher.get("target_tag") or parsed.get("target_tag") or "未知目标"
-    correct_option_text = str(options.get(correct_answer) or "").strip()
+    target_tag = watcher.get("target_tag") or target_tag or "未知目标"
 
-    if matched_answer and matched_answer != correct_answer:
-        _pop_quiz_learning_watcher(parsed["target_key"], persist=True)
-        await send_audit_log(
-            "🦴 玄骨考校题库冲突，请人工处理\n"
-            f"- 目标: {target_tag}\n"
-            f"- 题目: {question or '未记录题目'}\n"
-            f"- 题库命中: {matched_answer}.{options.get(matched_answer) or '未知'}\n"
-            f"- 结算答案: {correct_answer}.{correct_option_text or '未知'}\n"
-            f"- 选项: {_format_quiz_options(options)}"
-        )
-        return True
+    # 查题库
+    bank_answer, _ = _match_quiz_answer(question, options)
+    in_bank = bool(bank_answer)
 
-    status, payload = _save_quiz_bank_entry(question, options, correct_answer)
-    if status == "added":
-        _pop_quiz_learning_watcher(parsed["target_key"], persist=True)
-        await send_audit_log(
-            f"🦴 已学习玄骨考校新题[{target_tag}]，答案：{correct_answer}，题目：{question}"
-        )
-        return True
+    _pop_quiz_learning_watcher(target_key, persist=True)
 
-    if status == "exists":
-        _pop_quiz_learning_watcher(parsed["target_key"], persist=True)
-        return True
+    if in_bank:
+        # ---- 题目在题库内 ----
+        if result_type == "correct":
+            if bank_answer == correct_answer:
+                await send_audit_log(
+                    f"🦴 玄骨考校[`{target_tag}`] 题库内答案正确 ✅"
+                )
+            else:
+                await send_audit_log(
+                    "🦴 玄骨考校题库答案不一致，请人工处理\n"
+                    f"- 目标: `{target_tag}`\n"
+                    f"- 题目: {question}\n"
+                    f"- 选项: {_format_quiz_options(options)}\n"
+                    f"- 题库匹配: {bank_answer}\n"
+                    f"- 提交答案: {submitted_answer}\n"
+                    f"- 正确答案: {correct_answer}"
+                )
+        elif result_type == "wrong":
+            await send_audit_log(
+                f"🦴 玄骨考校[`{target_tag}`] 题目在题库内，群内作答错误"
+            )
+        elif result_type == "timeout":
+            await send_audit_log(
+                f"🦴 玄骨考校[`{target_tag}`] 题目在题库内，超时未作答"
+            )
+    else:
+        # ---- 题目不在题库 ----
+        if result_type == "correct":
+            status, payload = _save_quiz_bank_entry(question, options, correct_answer)
+            if status == "added":
+                await send_audit_log(
+                    f"🦴 玄骨考校[`{target_tag}`] 已记录新题 ✅ 答案：{correct_answer}"
+                )
+            elif status == "exists":
+                await send_audit_log(
+                    f"🦴 玄骨考校[`{target_tag}`] 题库内答案正确 ✅"
+                )
+            elif status == "conflict":
+                existing_answer = str((payload or {}).get("answer") or "").strip().upper()
+                await send_audit_log(
+                    "🦴 玄骨考校题库冲突，请人工处理\n"
+                    f"- 目标: `{target_tag}`\n"
+                    f"- 题目: {question}\n"
+                    f"- 选项: {_format_quiz_options(options)}\n"
+                    f"- 题库答案: {existing_answer}\n"
+                    f"- 正确答案: {correct_answer}"
+                )
+            else:
+                await send_audit_log(
+                    f"🦴 玄骨考校[`{target_tag}`] 题库记录失败({status})\n"
+                    f"- 题目: {question}\n"
+                    f"- 选项: {_format_quiz_options(options)}\n"
+                    f"- 正确答案: {correct_answer}"
+                )
+        elif result_type == "wrong":
+            submitted_text = str(options.get(submitted_answer) or "").strip()
+            await send_audit_log(
+                f"🦴 玄骨考校[`{target_tag}`] 题库未收录，群内作答错误\n"
+                f"- 题目: {question}\n"
+                f"- 选项: {_format_quiz_options(options)}\n"
+                f"- 提交: {submitted_answer}.{submitted_text}"
+            )
+        elif result_type == "timeout":
+            await send_audit_log(
+                f"🦴 玄骨考校[`{target_tag}`] 题库未收录，超时未作答\n"
+                f"- 题目: {question}\n"
+                f"- 选项: {_format_quiz_options(options)}"
+            )
 
-    if status == "conflict":
-        existing_answer = str((payload or {}).get("answer") or "").strip().upper()
-        existing_option_text = str((payload or {}).get(existing_answer) or "").strip()
-        _pop_quiz_learning_watcher(parsed["target_key"], persist=True)
-        await send_audit_log(
-            "🦴 玄骨考校题库冲突，请人工处理\n"
-            f"- 目标: {target_tag}\n"
-            f"- 题目: {question or '未记录题目'}\n"
-            f"- 题库记录: {existing_answer}.{existing_option_text or '未知'}\n"
-            f"- 结算答案: {correct_answer}.{correct_option_text or '未知'}\n"
-            f"- 选项: {_format_quiz_options(options)}"
-        )
-        return True
-
-    if status == "invalid":
-        _pop_quiz_learning_watcher(parsed["target_key"], persist=True)
-        await send_audit_log(
-            "🦴 玄骨考校学习失败，题目数据不完整\n"
-            f"- 目标: {target_tag}\n"
-            f"- 题目: {question or '未记录题目'}\n"
-            f"- 正确答案: {correct_answer}\n"
-            f"- 选项: {_format_quiz_options(options)}"
-        )
-        return True
-
-    if status == "io_error":
-        await send_audit_log(
-            "🦴 玄骨考校题库写入失败\n"
-            f"- 目标: {target_tag}\n"
-            f"- 题目: {question or '未记录题目'}\n"
-            f"- 正确答案: {correct_answer}\n"
-            f"- 选项: {_format_quiz_options(options)}"
-        )
-        return True
-
-    return False
+    return True
 
 
 async def handle_quiz_prompt(text, now, event):
