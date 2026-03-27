@@ -454,7 +454,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         ".topic-select{min-width:220px;flex:1;}"
         ".modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}"
         "pre{white-space:pre-wrap;word-break:break-word;background:#020617;border-radius:10px;padding:12px;color:#cbd5e1;margin:0;}"
-        "@media (max-width: 980px){body{padding:16px;}.layout{grid-template-columns:1fr;}.module-grid,.summary-groups,.summary-grid,.window-grid{grid-template-columns:1fr;}.module-top{flex-direction:column;gap:8px;}.module-tools{justify-content:flex-start;}.topbar{align-items:flex-start;flex-direction:column;}.identity-mobile-picker{display:grid;}.identity-list{display:none;}.summary-head{flex-direction:column;align-items:flex-start;}.meta{font-size:12px;}.modal-backdrop{padding:12px;}.xiuwei-bar-wrap{flex-direction:column;gap:4px;}}"
+        "@media (max-width: 980px){body{padding:16px;}.layout{grid-template-columns:1fr;}.module-grid,.summary-groups,.summary-grid,.window-grid{grid-template-columns:1fr;}.module-top{flex-direction:column;gap:8px;}.module-tools{justify-content:flex-start;}.topbar{align-items:flex-start;flex-direction:column;}.identity-mobile-picker{display:grid;}.identity-list{display:none;}.summary-head{flex-direction:column;align-items:flex-start;}.meta{font-size:12px;}.modal-backdrop{padding:12px;}.xiuwei-bar-wrap{flex-direction:column;gap:4px;}.xiuwei-bar-track{width:100%;}}"
         "</style></head><body>"
         "<div class='topbar'>"
         "<div><h1 style='margin:0;'>Xiuxian 控制台</h1><div style='color:#9ca3af;'>生成时间：<span id='generated-at'>-</span> ｜ 自动轮询："
