@@ -30,7 +30,7 @@ RE_QUIZ_RESULT_WRONG = re.compile(
     re.S,
 )
 RE_WHITESPACE = re.compile(r"\s+")
-RE_PUNCT_ONLY = re.compile(r"[\s\u3000“”‘’""'《》〈〉【】()（）\[\]{}，。！？、；：:,.!?;·…—-]+")
+RE_PUNCT_ONLY = re.compile(r”[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+”)
 QUIZ_RESULT_GRACE_SEC = 120
 
 _QUIZ_BANK = None
