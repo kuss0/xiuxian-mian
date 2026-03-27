@@ -168,8 +168,10 @@ def clear_jiyin_state(*, persist=False, keep_last_error=False):
 
 
 async def apply_jiyin_choice(choice, now=None):
-    normalized_choice = normalize_jiyin_choice(choice)
-    if not normalized_choice:
+    raw_choice = str(choice or "").strip().lower()
+    reset_to_auto = raw_choice == "auto"
+    normalized_choice = "" if reset_to_auto else normalize_jiyin_choice(choice)
+    if not reset_to_auto and not normalized_choice:
         return False, "未知极阴祖师选项"
 
     if now is None:
@@ -179,21 +181,28 @@ async def apply_jiyin_choice(choice, now=None):
 
     pending_reply_to = int(state.get("jiyin_reply_to_msg_id", 0) or 0)
     pending_deadline = float(state.get("next_jiyin_time", 0) or 0)
+    effective_choice, choice_source = resolve_jiyin_choice()
     if not state.get("jiyin_enabled") or pending_reply_to <= 0 or pending_deadline <= now:
         save_state()
+        if reset_to_auto:
+            return True, f"已恢复极阴祖师自动判断：{get_jiyin_choice_label(effective_choice)}"
         return True, f"已保存极阴祖师选择：{get_jiyin_choice_label(normalized_choice)}"
 
-    command = get_jiyin_choice_command(normalized_choice)
+    command = get_jiyin_choice_command(effective_choice)
     sent_msg = await send_game_command(command, track=False, reply_to=pending_reply_to)
     if not sent_msg:
         state["jiyin_last_error"] = "极阴祖师选择发送失败"
         save_state()
+        if reset_to_auto:
+            return False, f"已恢复自动判断，但发送失败：{get_jiyin_choice_label(effective_choice)}"
         return False, f"已保存极阴祖师选择，但发送失败：{get_jiyin_choice_label(normalized_choice)}"
 
     await send_audit_log(
-        f"🌑 极阴祖师[{get_identity_display_name()}] 已按手动保存选择回复：{get_jiyin_choice_label(normalized_choice)}"
+        f"🌑 极阴祖师[{get_identity_display_name()}] 已{'恢复自动判断' if reset_to_auto else '按手动保存选择'}回复：{get_jiyin_choice_label(effective_choice)}（{'手动保存' if choice_source == 'manual' else '按境界自动判断'}）。"
     )
     clear_jiyin_state(persist=True)
+    if reset_to_auto:
+        return True, f"已恢复极阴祖师自动判断并执行：{get_jiyin_choice_label(effective_choice)}"
     return True, f"已保存并执行极阴祖师选择：{get_jiyin_choice_label(normalized_choice)}"
 
 
