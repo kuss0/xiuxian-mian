@@ -310,7 +310,7 @@ def _render_login_page(message=""):
     secure_note = "HTTPS 公网地址下会自动使用 Secure Cookie。" if _cookie_is_secure() else "如需 Secure Cookie，请将 UI_PUBLIC_BASE_URL 配置为 https 地址。"
     return (
         "<!doctype html>"
-        "<html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>Xiuxian 登录</title>"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0b1220;color:#e5e7eb;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}"
@@ -375,7 +375,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
     ).replace("</", "<\\/")
     return (
         "<!doctype html>"
-        "<html lang='zh-CN'><head><meta charset='utf-8'>"
+        "<html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>Xiuxian 控制台</title>"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0b1220;color:#e5e7eb;margin:0;padding:24px;box-sizing:border-box;}"
@@ -454,7 +454,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         ".topic-select{min-width:220px;flex:1;}"
         ".modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}"
         "pre{white-space:pre-wrap;word-break:break-word;background:#020617;border-radius:10px;padding:12px;color:#cbd5e1;margin:0;}"
-        "@media (max-width: 980px){body{padding:16px;}.layout{grid-template-columns:1fr;}.module-grid,.summary-groups,.summary-grid{grid-template-columns:1fr;}.module-top{flex-direction:column;}.module-tools{justify-content:flex-start;}.topbar{align-items:flex-start;}.identity-mobile-picker{display:grid;}.identity-list{display:none;}}"
+        "@media (max-width: 980px){body{padding:16px;}.layout{grid-template-columns:1fr;}.module-grid,.summary-groups,.summary-grid,.window-grid{grid-template-columns:1fr;}.module-top{flex-direction:column;gap:8px;}.module-tools{justify-content:flex-start;}.topbar{align-items:flex-start;flex-direction:column;}.identity-mobile-picker{display:grid;}.identity-list{display:none;}.summary-head{flex-direction:column;align-items:flex-start;}.meta{font-size:12px;}.modal-backdrop{padding:12px;}.xiuwei-bar-wrap{flex-direction:column;gap:4px;}}"
         "</style></head><body>"
         "<div class='topbar'>"
         "<div><h1 style='margin:0;'>Xiuxian 控制台</h1><div style='color:#9ca3af;'>生成时间：<span id='generated-at'>-</span> ｜ 自动轮询："
