@@ -941,8 +941,11 @@ async def handle_ui_http(reader, writer):
         except asyncio.IncompleteReadError as e:
             request_head = e.partial
         except Exception:
-            writer.close()
-            await writer.wait_closed()
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError, OSError):
+                pass
             return
 
         header_text = request_head.decode("utf-8", errors="ignore")
@@ -1391,13 +1394,24 @@ async def handle_ui_http(reader, writer):
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             else:
                 _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
+    except (ConnectionResetError, BrokenPipeError, OSError):
+        pass
     except Exception as e:
         traceback.print_exc()
-        _write_response(writer, "HTTP/1.1 500 Internal Server Error", f"Internal Server Error\n{e}\n", content_type="text/plain; charset=utf-8")
+        try:
+            _write_response(writer, "HTTP/1.1 500 Internal Server Error", f"Internal Server Error\n{e}\n", content_type="text/plain; charset=utf-8")
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
     finally:
-        await writer.drain()
-        writer.close()
-        await writer.wait_closed()
+        try:
+            await writer.drain()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
         if peer:
             print(f"[{datetime.now(TZ_LOCAL).strftime('%Y-%m-%d %H:%M:%S')}] ui request: {peer} {method or '-'} {path or '-'}")
 

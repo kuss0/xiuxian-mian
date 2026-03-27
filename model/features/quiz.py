@@ -29,6 +29,10 @@ RE_QUIZ_RESULT_WRONG = re.compile(
     rf"【考校结束[·・•]错误】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
     re.S,
 )
+RE_QUIZ_RESULT_TIMEOUT = re.compile(
+    rf"【考校结束[·・•]超时】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
+    re.S,
+)
 RE_WHITESPACE = re.compile(r"\s+")
 RE_PUNCT_ONLY = re.compile(r”[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+”)
 QUIZ_RESULT_GRACE_SEC = 120
@@ -437,6 +441,18 @@ async def handle_quiz_result_broadcast(text, now=None):
 
     parsed = _parse_quiz_result(text)
     if not parsed:
+        timeout_match = RE_QUIZ_RESULT_TIMEOUT.search(text or "")
+        if timeout_match:
+            target_tag = f"@{str(timeout_match.group('tag') or '').strip()}"
+            target_key = _normalize_quiz_target_key(target_tag)
+            watcher = _get_quiz_learning_watcher(target_key) if target_key else None
+            if watcher:
+                question = str(watcher.get("question") or "").strip()
+                _pop_quiz_learning_watcher(target_key, persist=True)
+                await send_audit_log(
+                    f"🦴 玄骨考校超时未作答[{target_tag}]，题目：{question or '未记录题目'}"
+                )
+                return True
         return False
 
     watcher = _get_quiz_learning_watcher(parsed["target_key"])
