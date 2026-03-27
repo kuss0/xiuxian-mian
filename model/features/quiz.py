@@ -450,7 +450,7 @@ async def handle_quiz_result_broadcast(text, now=None):
                 question = str(watcher.get("question") or "").strip()
                 _pop_quiz_learning_watcher(target_key, persist=True)
                 await send_audit_log(
-                    f"🦴 玄骨考校超时未作答[{target_tag}]，题目：{question or '未记录题目'}"
+                    f"🦴 玄骨考校超时未作答[`{target_tag}`]，题目：{question or '未记录题目'}"
                 )
                 return True
         return False
