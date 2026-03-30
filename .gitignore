@@ -35,3 +35,6 @@ env.toml
 
 # VS Code
 .vscode/
+
+# Virtualenv
+.venv/

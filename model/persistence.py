@@ -55,121 +55,17 @@ def get_db_conn():
     return _db_conn
 
 
-def init_db():
-    global _db_initialized
-    if _db_initialized:
-        return
-    conn = get_db_conn()
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS meta (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
+def _get_schema_version(conn):
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", ("schema_version",)).fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row["value"] or 0)
+    except (TypeError, ValueError, KeyError):
+        return 0
 
-        CREATE TABLE IF NOT EXISTS identities (
-            send_as_id INTEGER PRIMARY KEY,
-            username TEXT NOT NULL DEFAULT '',
-            label TEXT NOT NULL DEFAULT '',
-            daohao TEXT NOT NULL DEFAULT '',
-            realm TEXT NOT NULL DEFAULT '',
-            pet_name TEXT NOT NULL DEFAULT '',
-            sect_name TEXT NOT NULL DEFAULT '',
-            sect_updated_at REAL NOT NULL DEFAULT 0,
-            jiyin_choice TEXT NOT NULL DEFAULT '',
-            checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2,
-            checkin_window_end_hour_utc INTEGER NOT NULL DEFAULT 3,
-            tower_window_start_hour_utc INTEGER NOT NULL DEFAULT 1,
-            tower_window_end_hour_utc INTEGER NOT NULL DEFAULT 2,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        );
 
-        CREATE TABLE IF NOT EXISTS identity_module_state (
-            send_as_id INTEGER PRIMARY KEY,
-            tree_enabled INTEGER NOT NULL,
-            pet_enabled INTEGER NOT NULL,
-            quiz_enabled INTEGER NOT NULL,
-            yuanying_enabled INTEGER NOT NULL,
-            deep_retreat_enabled INTEGER NOT NULL,
-            checkin_enabled INTEGER NOT NULL,
-            tower_enabled INTEGER NOT NULL,
-            is_maturing INTEGER NOT NULL,
-            is_invading INTEGER NOT NULL,
-            is_harvested INTEGER NOT NULL,
-            pending_irrigation INTEGER NOT NULL,
-            tree_bootstrap_check_needed INTEGER NOT NULL,
-            checkin_teach_count INTEGER NOT NULL,
-            checkin_teach_day TEXT NOT NULL,
-            last_checkin_done_day TEXT NOT NULL,
-            last_tower_day TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS identity_timers (
-            send_as_id INTEGER PRIMARY KEY,
-            next_irr_time REAL NOT NULL,
-            next_guard_time REAL NOT NULL,
-            next_pet_time REAL NOT NULL,
-            next_checkin_time REAL NOT NULL,
-            next_sect_teach_time REAL NOT NULL,
-            next_tower_time REAL NOT NULL,
-            next_quiz_time REAL NOT NULL,
-            next_jiyin_time REAL NOT NULL,
-            next_yuanying_time REAL NOT NULL,
-            next_deep_retreat_time REAL NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS identity_runtime_state (
-            send_as_id INTEGER PRIMARY KEY,
-            sect_teach_reply_to_msg_id INTEGER NOT NULL,
-            last_checkin_msg_id INTEGER NOT NULL,
-            last_sect_teach_msg_id INTEGER NOT NULL,
-            checkin_cleanup_msg_ids TEXT NOT NULL,
-            last_tower_msg_id INTEGER NOT NULL,
-            quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
-            quiz_question TEXT NOT NULL DEFAULT '',
-            quiz_options TEXT NOT NULL DEFAULT '{}',
-            quiz_answer TEXT NOT NULL DEFAULT '',
-            quiz_last_error TEXT NOT NULL DEFAULT '',
-            quiz_last_matched_at REAL NOT NULL DEFAULT 0,
-            jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
-            jiyin_last_error TEXT NOT NULL DEFAULT '',
-            yuanying_phase TEXT NOT NULL,
-            yuanying_probe_pending INTEGER NOT NULL,
-            yuanying_summary_sent_at REAL NOT NULL,
-            last_yuanying_summary_msg_id INTEGER NOT NULL,
-            last_yuanying_command_time REAL NOT NULL,
-            deep_retreat_phase TEXT NOT NULL,
-            deep_retreat_probe_pending INTEGER NOT NULL,
-            deep_retreat_summary_sent_at REAL NOT NULL,
-            last_deep_retreat_summary_msg_id INTEGER NOT NULL,
-            last_deep_retreat_command_time REAL NOT NULL,
-            identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]',
-            last_identity_info_msg_id INTEGER NOT NULL DEFAULT 0,
-            identity_info_last_error TEXT NOT NULL DEFAULT '',
-            identity_info_last_requested_at REAL NOT NULL DEFAULT 0,
-            identity_info_followup_due_at REAL NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS pending_tasks (
-            msg_id INTEGER PRIMARY KEY,
-            send_as_id INTEGER NOT NULL,
-            cmd TEXT NOT NULL,
-            sent_at REAL NOT NULL,
-            retry INTEGER NOT NULL,
-            timeout REAL NOT NULL,
-            reply_to_msg_id INTEGER NOT NULL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS message_index (
-            msg_id INTEGER PRIMARY KEY,
-            send_as_id INTEGER NOT NULL,
-            sent_at REAL NOT NULL,
-            kind TEXT NOT NULL DEFAULT 'command'
-        );
-        """
-    )
+def _ensure_schema_columns(conn):
     module_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_module_state)").fetchall()}
     if "quiz_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
@@ -237,11 +133,144 @@ def init_db():
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_last_requested_at REAL NOT NULL DEFAULT 0")
     if "identity_info_followup_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_followup_due_at REAL NOT NULL DEFAULT 0")
+    if "identity_info_primary_payload" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_primary_payload TEXT NOT NULL DEFAULT '{}' ")
 
+
+
+def _migrate_schema_to_current(conn):
+    _ensure_schema_columns(conn)
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
         ("schema_version", str(DB_SCHEMA_VERSION)),
     )
+
+
+
+def init_db():
+    global _db_initialized
+    if _db_initialized:
+        return
+    conn = get_db_conn()
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS identities (
+            send_as_id INTEGER PRIMARY KEY,
+            username TEXT NOT NULL DEFAULT '',
+            label TEXT NOT NULL DEFAULT '',
+            daohao TEXT NOT NULL DEFAULT '',
+            realm TEXT NOT NULL DEFAULT '',
+            pet_name TEXT NOT NULL DEFAULT '',
+            sect_name TEXT NOT NULL DEFAULT '',
+            sect_updated_at REAL NOT NULL DEFAULT 0,
+            jiyin_choice TEXT NOT NULL DEFAULT '',
+            checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2,
+            checkin_window_end_hour_utc INTEGER NOT NULL DEFAULT 3,
+            tower_window_start_hour_utc INTEGER NOT NULL DEFAULT 1,
+            tower_window_end_hour_utc INTEGER NOT NULL DEFAULT 2,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            xiuwei_current INTEGER NOT NULL DEFAULT 0,
+            xiuwei_max INTEGER NOT NULL DEFAULT 0,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS identity_module_state (
+            send_as_id INTEGER PRIMARY KEY,
+            tree_enabled INTEGER NOT NULL,
+            pet_enabled INTEGER NOT NULL,
+            quiz_enabled INTEGER NOT NULL,
+            jiyin_enabled INTEGER NOT NULL DEFAULT 0,
+            yuanying_enabled INTEGER NOT NULL,
+            deep_retreat_enabled INTEGER NOT NULL,
+            checkin_enabled INTEGER NOT NULL,
+            tower_enabled INTEGER NOT NULL,
+            is_maturing INTEGER NOT NULL,
+            is_invading INTEGER NOT NULL,
+            is_harvested INTEGER NOT NULL,
+            pending_irrigation INTEGER NOT NULL,
+            tree_bootstrap_check_needed INTEGER NOT NULL,
+            checkin_teach_count INTEGER NOT NULL,
+            checkin_teach_day TEXT NOT NULL,
+            last_checkin_done_day TEXT NOT NULL,
+            last_tower_day TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS identity_timers (
+            send_as_id INTEGER PRIMARY KEY,
+            next_irr_time REAL NOT NULL,
+            next_guard_time REAL NOT NULL,
+            next_pet_time REAL NOT NULL,
+            next_checkin_time REAL NOT NULL,
+            next_sect_teach_time REAL NOT NULL,
+            next_tower_time REAL NOT NULL,
+            next_quiz_time REAL NOT NULL,
+            next_jiyin_time REAL NOT NULL,
+            next_yuanying_time REAL NOT NULL,
+            next_deep_retreat_time REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS identity_runtime_state (
+            send_as_id INTEGER PRIMARY KEY,
+            sect_teach_reply_to_msg_id INTEGER NOT NULL,
+            last_checkin_msg_id INTEGER NOT NULL,
+            last_sect_teach_msg_id INTEGER NOT NULL,
+            checkin_cleanup_msg_ids TEXT NOT NULL,
+            last_tower_msg_id INTEGER NOT NULL,
+            quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            quiz_question TEXT NOT NULL DEFAULT '',
+            quiz_options TEXT NOT NULL DEFAULT '{}',
+            quiz_answer TEXT NOT NULL DEFAULT '',
+            quiz_last_error TEXT NOT NULL DEFAULT '',
+            quiz_last_matched_at REAL NOT NULL DEFAULT 0,
+            jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            jiyin_last_error TEXT NOT NULL DEFAULT '',
+            yuanying_phase TEXT NOT NULL,
+            yuanying_probe_pending INTEGER NOT NULL,
+            yuanying_summary_sent_at REAL NOT NULL,
+            last_yuanying_summary_msg_id INTEGER NOT NULL,
+            last_yuanying_command_time REAL NOT NULL,
+            deep_retreat_phase TEXT NOT NULL,
+            deep_retreat_probe_pending INTEGER NOT NULL,
+            deep_retreat_summary_sent_at REAL NOT NULL,
+            last_deep_retreat_summary_msg_id INTEGER NOT NULL,
+            last_deep_retreat_command_time REAL NOT NULL,
+            identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]',
+            last_identity_info_msg_id INTEGER NOT NULL DEFAULT 0,
+            identity_info_last_error TEXT NOT NULL DEFAULT '',
+            identity_info_last_requested_at REAL NOT NULL DEFAULT 0,
+            identity_info_followup_due_at REAL NOT NULL DEFAULT 0,
+            identity_info_primary_payload TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE TABLE IF NOT EXISTS pending_tasks (
+            msg_id INTEGER PRIMARY KEY,
+            send_as_id INTEGER NOT NULL,
+            cmd TEXT NOT NULL,
+            sent_at REAL NOT NULL,
+            retry INTEGER NOT NULL,
+            timeout REAL NOT NULL,
+            reply_to_msg_id INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS message_index (
+            msg_id INTEGER PRIMARY KEY,
+            send_as_id INTEGER NOT NULL,
+            sent_at REAL NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'command'
+        );
+        """
+    )
+    current_schema_version = _get_schema_version(conn)
+    if current_schema_version < DB_SCHEMA_VERSION:
+        _migrate_schema_to_current(conn)
+    else:
+        _ensure_schema_columns(conn)
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("game_group_id", "0"),

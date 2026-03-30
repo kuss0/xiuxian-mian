@@ -8,10 +8,10 @@ from ..config import (
     CMD_DEEP_RETREAT_QUERY,
     DEEP_RETREAT_CD,
     LAUNCHING_TIMEOUT_SEC,
+    MODULE_PROTECT_SEC,
     POST_SUMMARY_WAIT_SEC,
     RE_WHITESPACE,
     SUMMARY_TIMEOUT_SEC,
-    YUANYING_PROTECT_SEC,
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
@@ -38,7 +38,7 @@ def get_deep_retreat_block_reason(now=None):
         return "闭关指令已发出，等待回复"
     if phase == "running" or (phase == "idle" and state["next_deep_retreat_time"] > now):
         return "深度闭关执行中"
-    if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] < YUANYING_PROTECT_SEC:
+    if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] < MODULE_PROTECT_SEC:
         return "30秒保护中"
     return "无"
 
@@ -80,7 +80,7 @@ def get_deep_retreat_phase_text(phase=None, now=None):
     if phase == "idle":
         if state["next_deep_retreat_time"] > now:
             return "CD中"
-        if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] < YUANYING_PROTECT_SEC:
+        if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] < MODULE_PROTECT_SEC:
             return "30秒保护中"
         return "待闭关"
     return "待闭关"
@@ -355,7 +355,7 @@ async def run_deep_retreat_scheduler(now):
         await update_deep_retreat_block_log_state(protect=False)
         return
 
-    if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] < YUANYING_PROTECT_SEC:
+    if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] < MODULE_PROTECT_SEC:
         if state["next_deep_retreat_time"] <= now:
             await update_deep_retreat_block_log_state(waiting=False, protect=True)
         else:

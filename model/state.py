@@ -35,9 +35,9 @@ IDENTITY_RUNTIME_COLUMNS = [
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
-    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at",
+    "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
@@ -208,6 +208,7 @@ IDENTITY_STATE_TEMPLATE = {
     "identity_info_last_error": "",
     "identity_info_last_requested_at": 0,
     "identity_info_followup_due_at": 0,
+    "identity_info_primary_payload": {},
     "startup_module_alerts": [],
 
     # 元婴阻塞日志去重（运行态，不持久化）

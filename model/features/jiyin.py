@@ -11,7 +11,6 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
-    get_identity_display_name,
     get_identity_enabled,
     get_identity_ids,
     REALM_SORT_ORDER,

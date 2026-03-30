@@ -5,11 +5,9 @@ from datetime import datetime, timezone
 
 from .config import (
     ADMIN_ID,
-    CMD_BATTLE_POWER,
     CMD_CHECKIN,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
-    CMD_IDENTITY_INFO,
     CMD_PET,
     CMD_QUIZ_ANSWER,
     CMD_SECT_TEACH,
@@ -34,7 +32,6 @@ from .config import (
     RE_CMD_STATUS,
     RE_WHITESPACE,
     SUMMARY_TIMEOUT_SEC,
-    client,
     format_battle_power_command,
     format_identity_info_command,
     is_battle_power_command_text,
@@ -236,12 +233,6 @@ def _manual_enable_tower_module_state(now):
     _set_tower_module_enabled(True, now)
 
 
-def _manual_disable_quiz_module_state():
-    state["quiz_enabled"] = False
-    clear_quiz_state(persist=False)
-    _clear_pending_tasks_by_commands({CMD_QUIZ_ANSWER})
-
-
 def _manual_enable_quiz_module_state(now):
     state["quiz_enabled"] = True
     if float(state.get("next_quiz_time", 0) or 0) > now:
@@ -256,11 +247,6 @@ def _manual_enable_quiz_module_state(now):
 
 
 def _disable_jiyin_module_state():
-    state["jiyin_enabled"] = False
-    clear_jiyin_state(persist=False, keep_last_error=True)
-
-
-def _manual_disable_jiyin_module_state():
     state["jiyin_enabled"] = False
     clear_jiyin_state(persist=False, keep_last_error=True)
 
@@ -396,8 +382,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
-    "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
-    "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
+    "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
+    "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
@@ -881,6 +867,7 @@ def _clear_identity_refresh_runtime(*, error="", clear_pending=True):
     state["last_identity_info_msg_id"] = 0
     state["identity_info_reply_msg_ids"] = []
     state["identity_info_followup_due_at"] = 0
+    state["identity_info_primary_payload"] = {}
     state["identity_info_last_error"] = (error or "").strip()
     if clear_pending:
         remove_ids = [
@@ -977,36 +964,27 @@ def _parse_battle_power_info(text):
     return _extract_identity_refresh_payload(text, card_pattern=RE_BATTLE_POWER_CARD, require_xiuwei=False)
 
 
-def _merge_identity_refresh_payload(profile, payload):
-    merged = {
-        "daohao": (profile.get("daohao") or "").strip(),
-        "realm": (profile.get("realm") or "").strip(),
-        "sect_name": (profile.get("sect_name") or "").strip(),
-        "xiuwei_current": int(profile.get("xiuwei_current") or 0),
-        "xiuwei_max": int(profile.get("xiuwei_max") or 0),
+def _normalize_identity_refresh_payload(payload):
+    normalized = {
+        "daohao": str(payload.get("daohao") or "").strip(),
+        "realm": str(payload.get("realm") or "").strip(),
+        "sect_name": str(payload.get("sect_name") or "").strip(),
+        "xiuwei_current": int(payload.get("xiuwei_current") or 0),
+        "xiuwei_max": int(payload.get("xiuwei_max") or 0),
     }
-    if payload.get("daohao"):
-        merged["daohao"] = (payload.get("daohao") or "").strip()
-    if payload.get("realm"):
-        merged["realm"] = (payload.get("realm") or "").strip()
-    if payload.get("sect_name"):
-        merged["sect_name"] = (payload.get("sect_name") or "").strip()
-    if int(payload.get("xiuwei_max") or 0) > 0:
-        merged["xiuwei_current"] = int(payload.get("xiuwei_current") or 0)
-        merged["xiuwei_max"] = int(payload.get("xiuwei_max") or 0)
-    if not merged["realm"] and merged["xiuwei_max"] > 0:
-        merged["realm"] = infer_realm_from_xiuwei_max(merged["xiuwei_max"])
-    return merged
+    if not normalized["realm"] and normalized["xiuwei_max"] > 0:
+        normalized["realm"] = infer_realm_from_xiuwei_max(normalized["xiuwei_max"])
+    return normalized
 
 
-def _get_identity_refresh_missing_fields(merged_profile):
+def _get_identity_refresh_missing_fields(payload):
     missing_fields = []
     for field_name in IDENTITY_REFRESH_REQUIRED_FIELDS:
         if field_name == "xiuwei":
-            if int(merged_profile.get("xiuwei_current") or 0) <= 0 or int(merged_profile.get("xiuwei_max") or 0) <= 0:
+            if int(payload.get("xiuwei_current") or 0) <= 0 or int(payload.get("xiuwei_max") or 0) <= 0:
                 missing_fields.append(field_name)
             continue
-        if not str(merged_profile.get(field_name) or "").strip():
+        if not str(payload.get(field_name) or "").strip():
             missing_fields.append(field_name)
     return missing_fields
 
@@ -1127,6 +1105,7 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         state["identity_info_reply_msg_ids"] = []
         state["last_identity_info_msg_id"] = 0
         state["identity_info_followup_due_at"] = 0
+        state["identity_info_primary_payload"] = {}
         mark_dirty()
 
     msg = await send_game_command(command, send_as_id=send_as_id)
@@ -1159,11 +1138,19 @@ async def run_identity_info_followup_scheduler(now):
             if due_at <= 0 or due_at > now:
                 continue
 
-            profile = get_send_as_profile(identity_id)
-            merged_profile = _merge_identity_refresh_payload(profile, {})
-            missing_fields = _get_identity_refresh_missing_fields(merged_profile)
+            primary_payload = _normalize_identity_refresh_payload(state.get("identity_info_primary_payload") or {})
+            missing_fields = _get_identity_refresh_missing_fields(primary_payload)
             if not missing_fields:
                 trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
+                update_send_as_profile(
+                    identity_id,
+                    daohao=primary_payload["daohao"],
+                    realm=primary_payload["realm"],
+                    sect_name=primary_payload["sect_name"],
+                    xiuwei_current=primary_payload.get("xiuwei_current", 0),
+                    xiuwei_max=primary_payload.get("xiuwei_max", 0),
+                    sect_updated_at=now,
+                )
                 _clear_identity_refresh_runtime()
                 save_state()
                 for trigger_msg_id in trigger_msg_ids:
@@ -1174,7 +1161,7 @@ async def run_identity_info_followup_scheduler(now):
             if any(_is_identity_refresh_command(pending.get("cmd")) for pending in state["pending_tasks"].values()):
                 continue
 
-            command = format_battle_power_command(profile.get("username"))
+            command = format_battle_power_command()
 
         msg = await send_game_command(command, send_as_id=identity_id)
         if not msg:
@@ -1209,44 +1196,56 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
         return False
 
     send_as_id = get_current_identity_id()
-    merged_profile = None
+    final_payload = None
     trigger_msg_ids = []
     with use_identity(send_as_id):
         reply_msg_ids = _get_identity_refresh_tracking_ids()
         if reply_msg_id not in reply_msg_ids:
             return False
 
-        parsed = _parse_identity_info_partial(text)
-        is_followup_reply = False
-        if not parsed:
-            parsed = _parse_battle_power_info(text)
-            is_followup_reply = bool(parsed)
+        primary_parsed = _parse_identity_info_partial(text)
+        battle_parsed = None if primary_parsed else _parse_battle_power_info(text)
+        is_followup_reply = bool(battle_parsed)
+        parsed = primary_parsed or battle_parsed
         if not parsed:
             _track_identity_refresh_message(current_msg_id)
             return False
 
+        normalized_payload = _normalize_identity_refresh_payload(parsed)
+        missing_fields = _get_identity_refresh_missing_fields(normalized_payload)
         _track_identity_refresh_message(current_msg_id)
-        profile = get_send_as_profile(send_as_id)
-        merged_profile = _merge_identity_refresh_payload(profile, parsed)
-        missing_fields = _get_identity_refresh_missing_fields(merged_profile)
-        update_send_as_profile(
-            send_as_id,
-            daohao=merged_profile["daohao"],
-            realm=merged_profile["realm"],
-            sect_name=merged_profile["sect_name"],
-            xiuwei_current=merged_profile.get("xiuwei_current", 0),
-            xiuwei_max=merged_profile.get("xiuwei_max", 0),
-            sect_updated_at=now,
-        )
         state["identity_info_last_error"] = ""
 
-        if missing_fields:
-            if not is_followup_reply:
+        if not is_followup_reply:
+            state["identity_info_primary_payload"] = dict(normalized_payload)
+            if missing_fields:
                 _schedule_identity_refresh_followup(now)
-            else:
-                state["identity_info_followup_due_at"] = 0
                 mark_dirty()
+            else:
+                final_payload = dict(normalized_payload)
+                update_send_as_profile(
+                    send_as_id,
+                    daohao=final_payload["daohao"],
+                    realm=final_payload["realm"],
+                    sect_name=final_payload["sect_name"],
+                    xiuwei_current=final_payload.get("xiuwei_current", 0),
+                    xiuwei_max=final_payload.get("xiuwei_max", 0),
+                    sect_updated_at=now,
+                )
+                trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
+                _clear_identity_refresh_runtime()
         else:
+            state["identity_info_followup_due_at"] = 0
+            final_payload = dict(normalized_payload)
+            update_send_as_profile(
+                send_as_id,
+                daohao=final_payload["daohao"],
+                realm=final_payload["realm"],
+                sect_name=final_payload["sect_name"],
+                xiuwei_current=final_payload.get("xiuwei_current", 0),
+                xiuwei_max=final_payload.get("xiuwei_max", 0),
+                sect_updated_at=now,
+            )
             trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
             _clear_identity_refresh_runtime()
     enforce_identity_module_availability(send_as_id, persist=False)
@@ -1255,11 +1254,11 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
         for trigger_msg_id in trigger_msg_ids:
             await delete_identity_info_trigger_msg(send_as_id, trigger_msg_id, persist=False)
     save_state()
-    if not merged_profile:
+    if not final_payload:
         return False
     if trigger_msg_ids:
         await send_audit_log(
-            f"🪪 已更新身份信息：{merged_profile['daohao']}｜{merged_profile['realm']}｜{merged_profile['sect_name']}",
+            f"🪪 已更新身份信息：{final_payload['daohao']}｜{final_payload['realm']}｜{final_payload['sect_name']}",
             scope="identity",
             send_as_id=send_as_id,
         )
