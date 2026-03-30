@@ -54,7 +54,6 @@ from .runtime import (
     build_ui_login_url,
     console_log,
     issue_ui_login_token,
-    mono,
     reply_log_group_message,
     send_audit_log,
     send_game_command,
@@ -1052,7 +1051,9 @@ async def handle_realm_breakthrough_broadcast(text, now):
     enforce_identity_module_availability(target_id, persist=False)
     save_state()
     await send_audit_log(
-        f"🌟 检测到突破消息{mono(get_identity_display_name(target_id))}，境界已从{old_realm or '未获取'}更新为{realm}。"
+        f"🌟 境界突破：{old_realm or '未获取'}→{realm}",
+        scope="identity",
+        send_as_id=target_id,
     )
     return True
 
@@ -1086,7 +1087,11 @@ async def delete_identity_info_trigger_msg(send_as_id, msg_id, *, persist=True):
             from .runtime import _get_identity_client
             await _get_identity_client(send_as_id).delete_messages(get_game_group_id(), [msg_id])
         except Exception as e:
-            print(f"delete_identity_info_trigger_msg failed: {e} | send_as_id={send_as_id} msg_id={msg_id}")
+            console_log(
+                f"❌ 删除身份信息触发消息失败：{e}｜msg={msg_id}",
+                scope="identity",
+                send_as_id=send_as_id,
+            )
     with use_identity(send_as_id):
         state["my_msg_ids"].pop(msg_id, None)
         if state.get("last_identity_info_msg_id", 0) == msg_id:
@@ -1135,9 +1140,12 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         state["identity_info_reply_msg_ids"] = [sent_msg_id] if sent_msg_id else []
         mark_dirty()
 
-    display_name = get_identity_display_name(send_as_id)
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    console_log(f"🪪 已发起身份信息刷新[{display_name}]，指令：{command}，来源：{source}{actor_suffix}。")
+    console_log(
+        f"🪪 已发起身份信息刷新：{command}，来源：{source}{actor_suffix}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
     return True, "已开始获取角色信息，请等待"
 
 
@@ -1187,7 +1195,11 @@ async def run_identity_info_followup_scheduler(now):
             state["identity_info_last_error"] = ""
             mark_dirty()
 
-        console_log(f"🪪 已触发身份信息补全[{get_identity_display_name(identity_id)}]，指令：{command}。")
+        console_log(
+            f"🪪 已触发身份信息补全：{command}",
+            scope="identity",
+            send_as_id=identity_id,
+        )
 
 
 async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
@@ -1197,7 +1209,6 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
         return False
 
     send_as_id = get_current_identity_id()
-    display_name = get_identity_display_name(send_as_id)
     merged_profile = None
     trigger_msg_ids = []
     with use_identity(send_as_id):
@@ -1248,7 +1259,9 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
         return False
     if trigger_msg_ids:
         await send_audit_log(
-            f"🪪 已更新身份信息{mono(display_name)}，道号：{merged_profile['daohao']}，境界：{merged_profile['realm']}，宗门：{merged_profile['sect_name']}。"
+            f"🪪 已更新身份信息：{merged_profile['daohao']}｜{merged_profile['realm']}｜{merged_profile['sect_name']}",
+            scope="identity",
+            send_as_id=send_as_id,
         )
     return True
 
@@ -1280,7 +1293,11 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
         return False, "无法解析有效的 身份 ID", None
     if canonical_id in get_identity_ids():
         display_name = get_identity_display_name(canonical_id)
-        console_log(f"🪪 新增身份请求命中已存在身份[{display_name}]，来源：{source}。")
+        console_log(
+            f"🪪 新增身份命中已存在：来源={source}",
+            scope="identity",
+            send_as_id=canonical_id,
+        )
         return True, f"身份已存在：{display_name}", canonical_id
 
     ensure_identity_registered(canonical_id)
@@ -1300,7 +1317,11 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
     save_state()
     display_name = get_identity_display_name(canonical_id)
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🪪 已新增身份{mono(display_name)}，来源：{source}{actor_suffix}，默认全部模块关闭。")
+    await send_audit_log(
+        f"🪪 已新增身份，来源：{source}{actor_suffix}，默认全部模块关闭",
+        scope="identity",
+        send_as_id=canonical_id,
+    )
 
     return True, f"已新增身份：{display_name}，默认全部模块已关闭", canonical_id
 
@@ -1331,7 +1352,14 @@ async def set_module_window_config(module_name, start_hour_utc, end_hour_utc, se
                     else:
                         state["next_tower_time"] = calc_next_daily_window_time(start_hour, end_hour, now)
             save_state()
-    await send_audit_log(f"🕒 已更新{module_name}执行窗口{mono(get_identity_display_name(target_ids[0])) if len(target_ids) == 1 else '全部身份'}。")
+    if len(target_ids) == 1:
+        await send_audit_log(
+            f"🕒 已更新{module_name}执行窗口",
+            scope="identity",
+            send_as_id=target_ids[0],
+        )
+    else:
+        await send_audit_log(f"🕒 已更新{module_name}执行窗口：全部身份", scope="global")
     return True, f"已更新{module_name}执行窗口"
 
 
@@ -1354,7 +1382,11 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
 
     action_text = "开启" if enabled else "暂停"
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🎭 已{action_text}身份{mono(get_identity_display_name(send_as_id))}，来源：{source}{actor_suffix}。")
+    await send_audit_log(
+        f"🎭 已{action_text}身份，来源：{source}{actor_suffix}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
     return True, f"已{action_text}身份[{get_identity_display_name(send_as_id)}]"
 
 
@@ -1416,9 +1448,13 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
 
     action_text = "开启" if enabled else "关闭"
     if len(target_ids) == 1:
-        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块{mono(get_identity_display_name(target_ids[0]))}。")
+        await send_audit_log(
+            f"🎛️ 已{action_text}{module_name}模块",
+            scope="identity",
+            send_as_id=target_ids[0],
+        )
     else:
-        await send_audit_log(f"🎛️ 已{action_text}全部身份的{module_name}模块。")
+        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块：全部身份", scope="global")
     return True, ""
 
 
@@ -1439,48 +1475,63 @@ async def handle_log_group_command(event):
     if RE_CMD_GLOBAL_PAUSE.match(text):
         ok, message = await toggle_global_enabled(False, source="log_group", actor_id=sender_id)
         status_text = "🌐 全局状态：已暂停" if ok else f"❌ {message}"
-        await reply_log_group_message(event, status_text, error_prefix="❌ 全局暂停回复失败")
+        await reply_log_group_message(event, status_text, error_prefix="❌ 全局暂停回复失败", scope="global")
         return True
 
     if RE_CMD_GLOBAL_RESUME.match(text):
         ok, message = await toggle_global_enabled(True, source="log_group", actor_id=sender_id)
         status_text = "🌐 全局状态：运行中" if ok else f"❌ {message}"
-        await reply_log_group_message(event, status_text, error_prefix="❌ 全局恢复回复失败")
+        await reply_log_group_message(event, status_text, error_prefix="❌ 全局恢复回复失败", scope="global")
         return True
 
     if RE_CMD_ENABLE_ALL.match(text):
         for module_name in MODULE_NAMES:
             ok, message = await set_module_enabled(module_name, True, send_as_id=explicit_identity_id)
             if not ok:
-                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败")
+                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
-        prefix = f"✅ 已开启全部模块[{get_identity_display_name(explicit_identity_id)}]" if explicit_identity_id is not None else "✅ 已开启全部模块"
-        await reply_log_group_message(event, f"{prefix}\n{get_module_status_text(explicit_identity_id)}", error_prefix="❌ 模块状态回复失败")
+        prefix = "✅ 已开启全部模块"
+        await reply_log_group_message(
+            event,
+            f"{prefix}\n{get_module_status_text(explicit_identity_id)}",
+            error_prefix="❌ 模块状态回复失败",
+            scope="global",
+            limit=1200,
+        )
         return True
 
     if RE_CMD_DISABLE_ALL.match(text):
         for module_name in MODULE_NAMES:
             ok, message = await set_module_enabled(module_name, False, send_as_id=explicit_identity_id)
             if not ok:
-                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败")
+                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
-        prefix = f"✅ 已关闭全部模块[{get_identity_display_name(explicit_identity_id)}]" if explicit_identity_id is not None else "✅ 已关闭全部模块"
-        await reply_log_group_message(event, f"{prefix}\n{get_module_status_text(explicit_identity_id)}", error_prefix="❌ 模块状态回复失败")
+        prefix = "✅ 已关闭全部模块"
+        await reply_log_group_message(
+            event,
+            f"{prefix}\n{get_module_status_text(explicit_identity_id)}",
+            error_prefix="❌ 模块状态回复失败",
+            scope="global",
+            limit=1200,
+        )
         return True
 
     for pattern, module_name, enabled in RE_CMD_ENABLE_PATTERNS:
         if pattern.match(text):
             ok, message = await set_module_enabled(module_name, enabled, send_as_id=explicit_identity_id)
             if not ok:
-                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败")
+                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
             action_text = "开启" if enabled else "关闭"
             status_text = get_module_status_text(explicit_identity_id)
-            if explicit_identity_id is not None:
-                prefix = f"✅ 已{action_text}{module_name}模块[{get_identity_display_name(explicit_identity_id)}]"
-            else:
-                prefix = f"✅ 已{action_text}{module_name}模块"
-            await reply_log_group_message(event, f"{prefix}\n{status_text}", error_prefix="❌ 模块状态回复失败")
+            prefix = f"✅ 已{action_text}{module_name}模块"
+            await reply_log_group_message(
+                event,
+                f"{prefix}\n{status_text}",
+                error_prefix="❌ 模块状态回复失败",
+                scope="global",
+                limit=1200,
+            )
             return True
 
     if RE_CMD_LOGIN.match(text):
@@ -1490,11 +1541,12 @@ async def handle_log_group_command(event):
             event,
             "🔐 UI 登录链接\n"
             f"{login_url}\n\n"
-            "- 请在浏览器中打开该链接完成登录\n"
-            "- 登录链接 1 小时有效，登录后会话 24 小时无请求自动失效\n"
-            "- 支持多个登录链接和多个浏览器会话并存",
+            "- 浏览器打开后即可登录\n"
+            "- 链接 1 小时有效\n"
+            "- 会话 24 小时无请求自动失效",
             error_prefix="❌ UI 登录链接发送失败",
             link_preview=False,
+            scope="global",
         )
         return True
 
@@ -1503,6 +1555,8 @@ async def handle_log_group_command(event):
             event,
             get_module_status_text(explicit_identity_id),
             error_prefix="❌ 模块状态发送失败",
+            scope="global",
+            limit=1200,
         )
         return True
 
@@ -1512,6 +1566,8 @@ async def handle_log_group_command(event):
                 event,
                 get_single_module_status_text(module_name, explicit_identity_id),
                 error_prefix=f"❌ {module_name}状态发送失败",
+                scope="global",
+                limit=1200,
             )
             return True
 

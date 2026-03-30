@@ -371,7 +371,7 @@ async def bootstrap():
         audit_lines.append(
             f"⚠️ 启动扫描：发现超时任务并自动关闭 {startup_scan_result['closed_count']} 个模块，登录 UI 后可手动恢复。"
         )
-    await send_audit_log("\n".join(audit_lines))
+    await send_audit_log("\n".join(audit_lines), scope="global", limit=1200)
 
 
 async def main_loop():

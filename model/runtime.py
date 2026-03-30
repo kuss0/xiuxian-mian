@@ -36,16 +36,18 @@ from .config import (
 )
 from .persistence import mark_dirty
 from .state import (
+    get_active_identity_id,
     get_current_identity_id,
     get_game_bot_ids,
     get_game_group_id,
     get_game_topic_id,
+    get_identity_account,
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
     get_send_as_label,
+    has_active_identity_context,
     is_auto_delete_sent_messages_enabled,
-    get_identity_account,
     state,
     use_identity,
 )
@@ -198,31 +200,77 @@ def mono(text):
     return f"<code>{escape(str(text))}</code>"
 
 
-async def send_audit_log(content):
+def _truncate_log_text(text, limit=220):
+    raw = str(text or "").strip()
+    if not raw or len(raw) <= limit:
+        return raw
+    return raw[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _resolve_log_identity(scope="auto", send_as_id=None):
+    resolved_scope = (scope or "auto").strip().lower()
+    if resolved_scope == "global":
+        return None
+    if send_as_id is not None:
+        try:
+            return int(send_as_id)
+        except (TypeError, ValueError):
+            return None
+    if resolved_scope == "identity":
+        active_identity_id = get_active_identity_id()
+        if active_identity_id is not None:
+            return active_identity_id
+        current_identity_id = int(get_current_identity_id() or 0)
+        return current_identity_id or None
+    if has_active_identity_context():
+        return get_active_identity_id()
+    return None
+
+
+def _format_log_identity_prefix(send_as_id, *, html=False):
+    if send_as_id is None:
+        return ""
+    label = _truncate_log_text(get_send_as_label(send_as_id), limit=32)
+    if not label:
+        return ""
+    return f"[{mono(label) if html else label}] "
+
+
+def _format_log_message(content, *, scope="auto", send_as_id=None, html=False, limit=220):
+    text = _truncate_log_text(content, limit=limit)
+    identity_id = _resolve_log_identity(scope=scope, send_as_id=send_as_id)
+    prefix = _format_log_identity_prefix(identity_id, html=html)
+    return f"{prefix}{text}" if prefix else text
+
+
+async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220):
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
-    message = f"【🍃 监控日志 {now}】\n{content}"
+    message_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=True, limit=limit)
+    message = f"【🍃 监控日志 {now}】\n{message_body}"
     ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
     if not ok:
-        print(f"send_audit_log failed | content={content}")
+        print(f"send_audit_log failed | content={_truncate_log_text(content, limit=240)}")
     return ok
 
 
-def console_log(content):
+def console_log(content, *, scope="auto", send_as_id=None, limit=180):
     ts = datetime.now(TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {content}")
+    message = _format_log_message(content, scope=scope, send_as_id=send_as_id, limit=limit)
+    print(f"[{ts}] {message}")
 
 
-async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True):
+async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True, scope="global", send_as_id=None, limit=350):
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     # forum 群需要 message_thread_id 才能回复
     reply_header = getattr(event, "reply_to", None)
     thread_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0) or int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
-    ok = await _send_log_group_message(text, reply_to_msg_id=reply_to_msg_id, message_thread_id=thread_id, link_preview=link_preview)
+    message = _format_log_message(text, scope=scope, send_as_id=send_as_id, limit=limit)
+    ok = await _send_log_group_message(message, reply_to_msg_id=reply_to_msg_id, message_thread_id=thread_id, link_preview=link_preview)
     if ok:
         return True
-    print(f"reply_log_group_message failed | text={text}")
+    print(f"reply_log_group_message failed | text={_truncate_log_text(text, limit=240)}")
     if audit_on_error:
-        await send_audit_log(f"{error_prefix}")
+        await send_audit_log(error_prefix, scope="global")
     return False
 
 
@@ -500,10 +548,14 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
         return msg
     except Exception as e:
         await send_audit_log(
-            f"❌ 指令发送失败[{get_send_as_label(send_as_id)}]: {command}\n"
-            f"错误: {e}\n"
-            f"identity={send_as_id}, account={get_identity_account(send_as_id)}, "
-            f"game_group={get_game_group_id()}, topic={topic_id}"
+            (
+                f"❌ 指令发送失败：{_truncate_log_text(command, limit=48)} | "
+                f"{_truncate_log_text(e, limit=72)} | "
+                f"acc={get_identity_account(send_as_id)} group={get_game_group_id()} topic={topic_id}"
+            ),
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=240,
         )
         return None
 
@@ -616,7 +668,11 @@ async def run_retry_scheduler(now, send_as_id=None):
             if now - send_time > threshold:
                 with use_identity(identity_id) as identity_state:
                     if retry >= RETRY_LIMIT:
-                        await send_audit_log(f"🧯 指令 {mono(cmd)}[{mono(get_send_as_label(identity_id))}] 已重试 {RETRY_LIMIT} 次仍无响应，停止补发。")
+                        await send_audit_log(
+                            f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 重试 {RETRY_LIMIT} 次仍无响应，已停补发。",
+                            scope="identity",
+                            send_as_id=identity_id,
+                        )
                         if _is_identity_refresh_command(cmd):
                             identity_state["last_identity_info_msg_id"] = 0
                             identity_state["identity_info_reply_msg_ids"] = []
@@ -626,7 +682,11 @@ async def run_retry_scheduler(now, send_as_id=None):
                         mark_dirty()
                         continue
 
-                console_log(f"⚠️ 指令 `{cmd}`[{get_send_as_label(identity_id)}] 响应超时({threshold}s)，正在补发...")
+                console_log(
+                    f"⚠️ 指令 {_truncate_log_text(cmd, limit=40)} 超时 {threshold}s，正在补发。",
+                    scope="identity",
+                    send_as_id=identity_id,
+                )
                 new_msg = await send_game_command(cmd, send_as_id=identity_id)
                 with use_identity(identity_id) as identity_state:
                     if new_msg and new_msg.id in identity_state["pending_tasks"]:

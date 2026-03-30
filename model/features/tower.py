@@ -38,18 +38,18 @@ async def handle_tower_reply(text, now, reply_to):
         state["last_tower_day"] = get_day_key(now)
         next_ts = _schedule_tower_next_day(now)
         save_state()
-        await send_audit_log(f"🗼 闯塔成功，下次预计：{fmt_abs_ts(next_ts)}")
+        await send_audit_log(f"🗼 闯塔成功→{fmt_abs_ts(next_ts)}")
         return
 
     if any(k in text for k in ["已经闯过", "已闯塔", "已在塔中", "你今日已挑战失败，道心受挫。"]):
         state["last_tower_day"] = get_day_key(now)
         next_ts = _schedule_tower_next_day(now)
         save_state()
-        await send_audit_log(f"🗼 今日闯塔已完成，下次预计：{fmt_abs_ts(next_ts)}")
+        await send_audit_log(f"🗼 今日已完成→{fmt_abs_ts(next_ts)}")
         return
 
     mark_dirty()
-    console_log(f"🗼 收到闯塔回复，下次预计：{fmt_abs_ts(next_ts)}")
+    console_log(f"🗼 收到闯塔回复→{fmt_abs_ts(next_ts)}")
 
 
 async def run_tower_scheduler(now):
@@ -79,11 +79,11 @@ async def run_tower_scheduler(now):
         if not msg:
             state["next_tower_time"] = now + RETRY_MAX_SEC
             save_state()
-            await send_audit_log("❌ 闯塔发送失败，已改为稍后重试。")
+            await send_audit_log("❌ 闯塔发送失败，稍后重试。")
             return
         state["last_tower_msg_id"] = msg.id
         next_ts = schedule_next_tower(now)
-        console_log(f"🗼 执行闯塔，下次预计：{fmt_abs_ts(next_ts)}")
+        console_log(f"🗼 执行闯塔→{fmt_abs_ts(next_ts)}")
 
 
 __all__ = [

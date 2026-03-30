@@ -154,7 +154,7 @@ async def schedule_deep_retreat_status_probe(delay=None):
         await send_game_command(CMD_DEEP_RETREAT_QUERY, track=False)
 
     _fire_and_forget(delayed_status())
-    console_log(f"🧘 检测到深度闭关已在执行，将在 {delay:.1f}s 后查询闭关状态。")
+    console_log(f"🧘 深闭执行中，{delay:.1f}s 后查状态。")
 
 
 async def handle_deep_retreat_success_reply(text, now, reply_to):
@@ -169,7 +169,7 @@ async def handle_deep_retreat_success_reply(text, now, reply_to):
         wait_sec = parse_wait_time(text)
         if wait_sec > 0:
             mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
-            await send_audit_log(f"🧘 深度闭关成功，已按回包时长设置 CD。下次预计：{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
+            await send_audit_log(f"🧘 深闭成功→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
             return True
 
         set_deep_retreat_phase("running")
@@ -226,7 +226,7 @@ async def handle_deep_retreat_status_reply(text, now, reply_to):
         if wait_sec <= 0:
             return False
         mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
-        await send_audit_log(f"⏳ 深度闭关 CD 修正：预计于 {fmt_time_after(wait_sec + CD_BUFFER_SEC)} 恢复。")
+        await send_audit_log(f"⏳ 深闭 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
 
     return False
@@ -263,14 +263,14 @@ async def handle_deep_retreat_summary_broadcast(text, now):
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
-            await send_audit_log(f"🧘 闭关总结命中多个身份，已跳过自动推进：{names}")
+            await send_audit_log(f"🧘 闭关总结命中多个身份，已跳过：{names}", scope="global", limit=280)
         return
 
     with use_identity(target_id):
         await delete_deep_retreat_summary_trigger_msg()
         begin_deep_retreat_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC)
         await update_deep_retreat_block_log_state(waiting=False, protect=False)
-        console_log(f"🧘 检测到闭关总结[{get_identity_display_name(target_id)}]，已删除触发用的 1，将在 30 秒后继续执行深度闭关。")
+        console_log("🧘 收到闭关总结，30 秒后继续。")
 
 
 async def run_deep_retreat_scheduler(now):
@@ -281,7 +281,7 @@ async def run_deep_retreat_scheduler(now):
         if state["last_deep_retreat_command_time"] > 0 and now - state["last_deep_retreat_command_time"] >= LAUNCHING_TIMEOUT_SEC:
             set_deep_retreat_phase("idle")
             save_state()
-            await send_audit_log("🧘 深度闭关 launching 状态超过 2 分钟无回复，已自动回退至 idle。")
+            await send_audit_log("🧘 launching 超时，已回退。")
         return
 
     if state.get("deep_retreat_phase") == "waiting_summary" and state["deep_retreat_summary_sent_at"] <= 0:
@@ -291,7 +291,7 @@ async def run_deep_retreat_scheduler(now):
         state["last_deep_retreat_command_time"] = now
         state["next_deep_retreat_time"] = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
         save_state()
-        await send_audit_log("🧘 检测到闭关总结等待状态异常（缺少触发时间），已自动解卡并继续执行深度闭关。")
+        await send_audit_log("🧘 闭关等待异常，已解卡继续。")
         msg = await send_game_command(CMD_DEEP_RETREAT, track=False)
         if msg:
             await schedule_deep_retreat_status_probe(random.uniform(8, 12))
@@ -307,7 +307,7 @@ async def run_deep_retreat_scheduler(now):
         state["last_deep_retreat_command_time"] = now
         state["next_deep_retreat_time"] = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
         save_state()
-        await send_audit_log("🧘 发送 1 超过 3 分钟仍未等到闭关总结，按兜底逻辑直接继续执行深度闭关。")
+        await send_audit_log("🧘 闭关总结超时，按兜底继续。")
         msg = await send_game_command(CMD_DEEP_RETREAT, track=False)
         if msg:
             await schedule_deep_retreat_status_probe(random.uniform(8, 12))
@@ -325,7 +325,7 @@ async def run_deep_retreat_scheduler(now):
         state["last_deep_retreat_command_time"] = now
         state["next_deep_retreat_time"] = now + DEEP_RETREAT_CD + CD_BUFFER_SEC
         save_state()
-        console_log("🧘 闭关总结后的 30 秒缓冲已结束，继续执行深度闭关。")
+        console_log("🧘 闭关缓冲结束，继续深闭。")
         msg = await send_game_command(CMD_DEEP_RETREAT)
         if not msg:
             set_deep_retreat_phase("idle")
@@ -335,7 +335,7 @@ async def run_deep_retreat_scheduler(now):
     if state.get("deep_retreat_phase") == "running" and state["next_deep_retreat_time"] > 0 and now >= state["next_deep_retreat_time"]:
         state["deep_retreat_probe_pending"] = False
         begin_deep_retreat_summary_wait(now)
-        console_log("🧘 深度闭关时间已到，先发送 1 触发闭关总结，再继续深度闭关。")
+        console_log("🧘 深闭时间到，先发 1。")
         msg = await send_game_command("1", track=False)
         if msg:
             state["last_deep_retreat_summary_msg_id"] = msg.id
@@ -366,7 +366,7 @@ async def run_deep_retreat_scheduler(now):
 
     if now >= state["next_deep_retreat_time"]:
         begin_deep_retreat_summary_wait(now)
-        console_log("🧘 深度闭关 CD 已到，先发送 1 触发闭关总结。")
+        console_log("🧘 深闭 CD 到，先发 1。")
         msg = await send_game_command("1", track=False)
         if msg:
             state["last_deep_retreat_summary_msg_id"] = msg.id

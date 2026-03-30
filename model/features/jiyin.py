@@ -198,7 +198,7 @@ async def apply_jiyin_choice(choice, now=None):
         return False, f"已保存极阴祖师选择，但发送失败：{get_jiyin_choice_label(normalized_choice)}"
 
     await send_audit_log(
-        f"🌑 极阴祖师[{get_identity_display_name()}] 已{'恢复自动判断' if reset_to_auto else '按手动保存选择'}回复：{get_jiyin_choice_label(effective_choice)}（{'手动保存' if choice_source == 'manual' else '按境界自动判断'}）。"
+        f"🌑 {'恢复自动' if reset_to_auto else '执行选择'}：{get_jiyin_choice_label(effective_choice)}（{'手动' if choice_source == 'manual' else '自动'}）"
     )
     clear_jiyin_state(persist=True)
     if reset_to_auto:
@@ -222,9 +222,7 @@ async def handle_jiyin_prompt(text, now, event):
     prev_reply_to_msg_id = int(state.get("jiyin_reply_to_msg_id", 0) or 0)
     prev_deadline = float(state.get("next_jiyin_time", 0) or 0)
     if prev_reply_to_msg_id > 0 and prev_reply_to_msg_id != reply_to_msg_id and prev_deadline > now:
-        await send_audit_log(
-            f"🌑 极阴祖师[{get_identity_display_name()}] 收到新的抉择事件，已覆盖旧待处理消息：{prev_reply_to_msg_id} -> {reply_to_msg_id}"
-        )
+        await send_audit_log(f"🌑 新抉择覆盖旧消息：{prev_reply_to_msg_id}->{reply_to_msg_id}")
 
     state["jiyin_reply_to_msg_id"] = reply_to_msg_id
     state["next_jiyin_time"] = now + float(parsed["timeout_sec"])
@@ -242,14 +240,10 @@ async def handle_jiyin_prompt(text, now, event):
     if not sent_msg:
         state["jiyin_last_error"] = "极阴祖师自动回复发送失败"
         save_state()
-        await send_audit_log(
-            f"❌ 极阴祖师[{get_identity_display_name()}] 自动回复发送失败，已保留待处理事件。"
-        )
+        await send_audit_log("❌ 极阴自动回复失败，待处理已保留。")
         return True
 
-    await send_audit_log(
-        f"🌑 极阴祖师[{get_identity_display_name()}] 已自动选择{get_jiyin_choice_label(choice)}（{'手动保存' if choice_source == 'manual' else '按境界自动判断'}）。"
-    )
+    await send_audit_log(f"🌑 自动选择：{get_jiyin_choice_label(choice)}（{'手动' if choice_source == 'manual' else '自动'}）")
     clear_jiyin_state(persist=True)
     return True
 
@@ -264,9 +258,7 @@ async def run_jiyin_scheduler(now):
         return
 
     state["jiyin_last_error"] = "极阴祖师提示已超时"
-    await send_audit_log(
-        f"⚠️ 极阴祖师[{get_identity_display_name()}] 抉择事件已超时，待回复消息ID：{reply_to_msg_id}。"
-    )
+    await send_audit_log(f"⚠️ 极阴抉择超时，消息ID={reply_to_msg_id}")
     clear_jiyin_state(persist=True, keep_last_error=True)
 
 

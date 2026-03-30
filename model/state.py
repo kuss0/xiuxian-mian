@@ -17,6 +17,7 @@ from .config import (
 )
 
 _current_identity_id = contextvars.ContextVar("current_identity_id", default=SEND_AS_DEFAULT_ID or 0)
+_identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
     "tree_enabled", "pet_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
@@ -266,6 +267,17 @@ def get_identity_ids():
 def get_current_identity_id():
     send_as_id = _current_identity_id.get()
     return int(send_as_id or SEND_AS_DEFAULT_ID or 0)
+
+
+def has_active_identity_context():
+    return bool(_identity_context_active.get())
+
+
+def get_active_identity_id():
+    if not has_active_identity_context():
+        return None
+    send_as_id = _current_identity_id.get()
+    return int(send_as_id or 0) or None
 
 
 def get_identity_state(send_as_id=None):
@@ -780,9 +792,11 @@ def use_identity(send_as_id):
     send_as_id = int(send_as_id)
     ensure_identity_registered(send_as_id)
     token = _current_identity_id.set(send_as_id)
+    active_token = _identity_context_active.set(True)
     try:
         yield _meta_state["identity_states"][send_as_id]
     finally:
+        _identity_context_active.reset(active_token)
         _current_identity_id.reset(token)
 
 
@@ -850,6 +864,7 @@ __all__ = [
     "SEND_AS_IDS",
     "StateProxy",
     "ensure_identity_registered",
+    "get_active_identity_id",
     "get_current_identity_id",
     "get_game_group_id",
     "get_game_bot_ids",
@@ -857,6 +872,7 @@ __all__ = [
     "get_forum_topics",
     "get_forum_topics_updated_at",
     "get_global_enabled",
+    "has_active_identity_context",
     "get_quiz_learning_watchers",
     "is_auto_delete_sent_messages_enabled",
     "get_identity_display_name",

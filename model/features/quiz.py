@@ -62,6 +62,33 @@ def _format_quiz_options(options):
     )
 
 
+def _normalize_quiz_identity_id(identity_id):
+    try:
+        return int(identity_id or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_quiz_log_kwargs(identity_id=None, *, limit=220):
+    normalized_identity_id = _normalize_quiz_identity_id(identity_id)
+    if normalized_identity_id is None:
+        return {
+            "scope": "global",
+            "limit": limit,
+        }
+    return {
+        "scope": "identity",
+        "send_as_id": normalized_identity_id,
+        "limit": limit,
+    }
+
+
+def _format_quiz_brief_log(text, *, identity_id=None, target_tag=""):
+    if _normalize_quiz_identity_id(identity_id) is not None or not target_tag:
+        return f"🦴 {text}"
+    return f"🦴 {mono(target_tag)}｜{text}"
+
+
 def _reset_quiz_bank_cache():
     global _QUIZ_BANK, _QUIZ_BANK_INDEX
     _QUIZ_BANK = None
@@ -426,6 +453,7 @@ async def handle_quiz_learning_prompt(text, now, event=None):
     matched_answer, _ = _match_quiz_answer(parsed["question"], parsed["options"])
     watcher = {
         "target_tag": target_tag,
+        "identity_id": _find_quiz_identity_id(text),
         "question": parsed["question"],
         "options": dict(parsed["options"]),
         "expire_at": float(now + float(parsed["timeout_sec"]) + QUIZ_RESULT_GRACE_SEC),
@@ -469,6 +497,8 @@ async def handle_quiz_result_broadcast(text, now=None):
     question = str(watcher.get("question") or "").strip()
     options = dict(watcher.get("options") or {})
     target_tag = watcher.get("target_tag") or target_tag or "未知目标"
+    identity_id = _normalize_quiz_identity_id(watcher.get("identity_id"))
+    log_kwargs = _get_quiz_log_kwargs(identity_id, limit=520)
 
     # 查题库
     bank_answer, _ = _match_quiz_answer(question, options)
@@ -481,7 +511,8 @@ async def handle_quiz_result_broadcast(text, now=None):
         if result_type == "correct":
             if bank_answer == correct_answer:
                 await send_audit_log(
-                    f"🦴 玄骨考校[{mono(target_tag)}] 题库内答案正确 ✅"
+                    _format_quiz_brief_log("题库内答案正确 ✅", identity_id=identity_id, target_tag=target_tag),
+                    **_get_quiz_log_kwargs(identity_id),
                 )
             else:
                 await send_audit_log(
@@ -491,15 +522,18 @@ async def handle_quiz_result_broadcast(text, now=None):
                     f"- 选项: {_format_quiz_options(options)}\n"
                     f"- 题库匹配: {bank_answer}\n"
                     f"- 提交答案: {submitted_answer}\n"
-                    f"- 正确答案: {correct_answer}"
+                    f"- 正确答案: {correct_answer}",
+                    **log_kwargs,
                 )
         elif result_type == "wrong":
             await send_audit_log(
-                f"🦴 玄骨考校[{mono(target_tag)}] 题目在题库内，群内作答错误"
+                _format_quiz_brief_log("题库内作答错误", identity_id=identity_id, target_tag=target_tag),
+                **_get_quiz_log_kwargs(identity_id),
             )
         elif result_type == "timeout":
             await send_audit_log(
-                f"🦴 玄骨考校[{mono(target_tag)}] 题目在题库内，超时未作答"
+                _format_quiz_brief_log("题库内超时未作答", identity_id=identity_id, target_tag=target_tag),
+                **_get_quiz_log_kwargs(identity_id),
             )
     else:
         # ---- 题目不在题库 ----
@@ -507,11 +541,13 @@ async def handle_quiz_result_broadcast(text, now=None):
             status, payload = _save_quiz_bank_entry(question, options, correct_answer)
             if status == "added":
                 await send_audit_log(
-                    f"🦴 玄骨考校[{mono(target_tag)}] 已记录新题 ✅ 答案：{correct_answer}"
+                    _format_quiz_brief_log(f"已记录新题 ✅ 答案：{correct_answer}", identity_id=identity_id, target_tag=target_tag),
+                    **_get_quiz_log_kwargs(identity_id),
                 )
             elif status == "exists":
                 await send_audit_log(
-                    f"🦴 玄骨考校[{mono(target_tag)}] 题库内答案正确 ✅"
+                    _format_quiz_brief_log("题库内答案正确 ✅", identity_id=identity_id, target_tag=target_tag),
+                    **_get_quiz_log_kwargs(identity_id),
                 )
             elif status == "conflict":
                 existing_answer = str((payload or {}).get("answer") or "").strip().upper()
@@ -521,28 +557,35 @@ async def handle_quiz_result_broadcast(text, now=None):
                     f"- 题目: {question}\n"
                     f"- 选项: {_format_quiz_options(options)}\n"
                     f"- 题库答案: {existing_answer}\n"
-                    f"- 正确答案: {correct_answer}"
+                    f"- 正确答案: {correct_answer}",
+                    **log_kwargs,
                 )
             else:
                 await send_audit_log(
-                    f"🦴 玄骨考校[{mono(target_tag)}] 题库记录失败({status})\n"
+                    f"🦴 玄骨考校题库记录失败({status})\n"
+                    f"- 目标: {mono(target_tag)}\n"
                     f"- 题目: {question}\n"
                     f"- 选项: {_format_quiz_options(options)}\n"
-                    f"- 正确答案: {correct_answer}"
+                    f"- 正确答案: {correct_answer}",
+                    **log_kwargs,
                 )
         elif result_type == "wrong":
             submitted_text = str(options.get(submitted_answer) or "").strip()
             await send_audit_log(
-                f"🦴 玄骨考校[{mono(target_tag)}] 题库未收录，群内作答错误\n"
+                "🦴 玄骨考校题库未收录，群内作答错误\n"
+                f"- 目标: {mono(target_tag)}\n"
                 f"- 题目: {question}\n"
                 f"- 选项: {_format_quiz_options(options)}\n"
-                f"- 提交: {submitted_answer}.{submitted_text}"
+                f"- 提交: {submitted_answer}.{submitted_text}",
+                **log_kwargs,
             )
         elif result_type == "timeout":
             await send_audit_log(
-                f"🦴 玄骨考校[{mono(target_tag)}] 题库未收录，超时未作答\n"
+                "🦴 玄骨考校题库未收录，超时未作答\n"
+                f"- 目标: {mono(target_tag)}\n"
                 f"- 题目: {question}\n"
-                f"- 选项: {_format_quiz_options(options)}"
+                f"- 选项: {_format_quiz_options(options)}",
+                **log_kwargs,
             )
 
     return True
@@ -573,7 +616,10 @@ async def handle_quiz_prompt(text, now, event):
         state["quiz_last_matched_at"] = 0
         save_state()
         await send_audit_log(
-            f"🦴 玄骨考校题库未命中[{parsed['question']}]，选项：{_format_quiz_options(parsed['options'])}"
+            f"🦴 题库未命中：{parsed['question']}｜{_format_quiz_options(parsed['options'])}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=360,
         )
         return True
 
@@ -590,11 +636,19 @@ async def handle_quiz_prompt(text, now, event):
     if not reply_msg:
         state["quiz_last_error"] = "作答发送失败"
         save_state()
-        await send_audit_log(f"❌ 玄骨考校作答发送失败，题目：{parsed['question']}")
+        await send_audit_log(
+            f"❌ 玄骨考校作答发送失败：{parsed['question']}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=320,
+        )
         return True
 
     await send_audit_log(
-        f"🦴 已自动作答玄骨考校，答案：{answer}，匹配方式：{match_mode}，题目：{parsed['question']}"
+        f"🦴 已自动作答：{answer}｜{match_mode}｜{parsed['question']}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=360,
     )
     clear_quiz_state(persist=True)
     return True
@@ -626,7 +680,12 @@ async def run_quiz_scheduler(now):
         return
     question = state.get("quiz_question") or "未记录题目"
     state["quiz_last_error"] = "题目已超时"
-    await send_audit_log(f"⚠️ 玄骨考校题目已超时，未继续处理：{question}")
+    await send_audit_log(
+        f"⚠️ 玄骨考校题目已超时：{question}",
+        scope="identity",
+        send_as_id=get_current_identity_id(),
+        limit=320,
+    )
     clear_quiz_state(persist=True, keep_last_error=True)
 
 

@@ -39,7 +39,7 @@ from .features.deep_retreat import get_deep_retreat_phase_text
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
-from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, mono, redeem_ui_login_token, send_audit_log, touch_ui_session
+from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_ui_login_token, send_audit_log, touch_ui_session
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -693,7 +693,11 @@ async def ui_set_pet_name(send_as_id, pet_name):
         return False, "法宝名称不能为空"
     set_pet_name(send_as_id, pet_name)
     save_state()
-    await send_audit_log(f"🗡️ 已更新法宝名称{mono(get_identity_display_name(send_as_id))}：{pet_name}")
+    await send_audit_log(
+        f"🗡️ 已更新法宝名称：{pet_name}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
     return True, f"已更新法宝名称[{get_identity_display_name(send_as_id)}]：{pet_name}"
 
 
@@ -834,7 +838,7 @@ async def ui_account_login_verify(code, session_key, password=None):
         pass
 
     save_state()
-    await send_audit_log(f"🔑 新账号登录成功: {mono(f'@{username}')} (ID: {account_id})")
+    await send_audit_log(f"🔑 新账号登录成功：@{username}｜{account_id}", scope="global")
     return True, f"登录成功: @{username}", account_id
 
 
@@ -882,8 +886,8 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
         return False, message, []
     set_forum_topics(topics, updated_at=time.time())
     save_state()
-    actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🧩 已刷新话题列表：群聊 ID = {int(game_group_id)}，共 {len(topics)} 个话题{actor_suffix}。")
+    actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
+    await send_audit_log(f"🧩 已刷新话题：群={int(game_group_id)}｜数量={len(topics)}{actor_suffix}", scope="global")
     return True, message, topics
 
 
@@ -935,11 +939,15 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     set_game_topic_id(topic_id)
     set_auto_delete_sent_messages(auto_delete_enabled)
     save_state()
-    actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
+    actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
     display_topic = str(topic_id) if topic_id > 0 else "未启用"
     display_bots = ", ".join(str(bot_id) for bot_id in parsed_bot_ids)
     display_auto_delete = "开启" if auto_delete_enabled else "关闭"
-    await send_audit_log(f"🧩 已更新基础配置：游戏群聊 ID = {group_id}，bot ID = {display_bots}，话题 ID = {display_topic}，自动删消息 = {display_auto_delete}{actor_suffix}。")
+    await send_audit_log(
+        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}{actor_suffix}",
+        scope="global",
+        limit=320,
+    )
     return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete}"
 
 
@@ -1478,7 +1486,7 @@ async def start_ui_server():
     _ui_server = await asyncio.start_server(handle_ui_http, UI_HOST, UI_PORT)
     sockets = _ui_server.sockets or []
     bind_text = ", ".join(str(sock.getsockname()) for sock in sockets) or f"{UI_HOST}:{UI_PORT}"
-    await send_audit_log(f"🖥️ UI 控制台已启动：{bind_text}")
+    await send_audit_log(f"🖥️ UI 已启动：{bind_text}", scope="global")
     return _ui_server
 
 
