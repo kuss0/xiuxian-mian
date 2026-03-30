@@ -1236,7 +1236,17 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
                 _clear_identity_refresh_runtime()
         else:
             state["identity_info_followup_due_at"] = 0
-            final_payload = dict(normalized_payload)
+            primary_payload = _normalize_identity_refresh_payload(state.get("identity_info_primary_payload") or {})
+            final_payload = dict(primary_payload)
+            if normalized_payload["daohao"]:
+                final_payload["daohao"] = normalized_payload["daohao"]
+            if normalized_payload["realm"]:
+                final_payload["realm"] = normalized_payload["realm"]
+            if normalized_payload["sect_name"]:
+                final_payload["sect_name"] = normalized_payload["sect_name"]
+            if int(normalized_payload.get("xiuwei_max") or 0) > 0:
+                final_payload["xiuwei_current"] = normalized_payload.get("xiuwei_current", 0)
+                final_payload["xiuwei_max"] = normalized_payload.get("xiuwei_max", 0)
             update_send_as_profile(
                 send_as_id,
                 daohao=final_payload["daohao"],
