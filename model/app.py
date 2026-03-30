@@ -201,6 +201,7 @@ async def on_message(event):
                 await handle_tree_invasion_end(text, now, False)
                 await handle_tree_invasion_start(text, now)
                 await handle_tree_rebirth_reset(text, now)
+                await handle_tree_panel(text, now, False)
 
     except Exception:
         print(traceback.format_exc())
@@ -224,13 +225,17 @@ async def on_message_edited(event):
 
         await handle_realm_breakthrough_broadcast(text, now)
 
-        if routed_identity_id is None:
+        if routed_identity_id is not None:
+            with use_identity(routed_identity_id):
+                is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
+                await handle_tree_panel(text, now, is_reply_to_me)
+                if is_reply_to_me:
+                    await handle_identity_info_reply(text, now, reply_to, event.id)
             return
-        with use_identity(routed_identity_id):
-            is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
-            if not is_reply_to_me:
-                return
-            await handle_identity_info_reply(text, now, reply_to, event.id)
+
+        for identity_id in get_identity_ids():
+            with use_identity(identity_id):
+                await handle_tree_panel(text, now, False)
     except Exception:
         print(traceback.format_exc())
 

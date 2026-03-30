@@ -168,6 +168,7 @@ def _disable_tree_module_state():
     state["pending_irrigation"] = False
     state["tree_bootstrap_check_needed"] = False
     state["tree_maturing_logged"] = False
+    state["tree_harvest_followup_due_at"] = 0
     _clear_pending_tasks_by_commands({CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TREE_STATUS, CMD_TREE_HARVEST})
 
 

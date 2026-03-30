@@ -148,8 +148,9 @@ IDENTITY_STATE_TEMPLATE = {
     "pending_irrigation": False,
     "tree_bootstrap_check_needed": False,
 
-    # 灵树日志去重（运行态，不持久化）
+    # 灵树运行态（不持久化）
     "tree_maturing_logged": False,
+    "tree_harvest_followup_due_at": 0,
 
     # 法宝模块
     "next_pet_time": 0,

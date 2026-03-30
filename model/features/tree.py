@@ -21,6 +21,11 @@ from ..state import state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
 
 
+TREE_MATURING_FIRST_STATUS_MIN_SEC = 10 * 60
+TREE_MATURING_FIRST_STATUS_MAX_SEC = 20 * 60
+TREE_HARVEST_FOLLOWUP_DELAY_SEC = 30 * 60
+
+
 def get_tree_status_text():
     if state['is_invading']:
         text = (
@@ -141,16 +146,67 @@ async def handle_tree_panel(text, now, is_reply_to_me):
     if not state["tree_enabled"]:
         return
 
-    if "【落云宗 · 灵眼之树】" not in text and "落云宗·灵眼之树" not in text:
+    is_tree_panel = "【落云宗 · 灵眼之树】" in text or "落云宗·灵眼之树" in text
+    is_maturing_broadcast = "🍎 灵果已完全成熟！ 采摘期开启！" in text and "📊 天道榜单已定格！" in text
+    if not is_tree_panel and not is_maturing_broadcast:
         return
+
+    if is_maturing_broadcast and not is_tree_panel:
+        has_pending_tree_cmd = any(
+            p["cmd"] in {CMD_TREE_WATER, CMD_TREE_STATUS} for p in state["pending_tasks"].values()
+        )
+        if not has_pending_tree_cmd and not state["is_maturing"]:
+            return
+        remove_ids = [
+            msg_id for msg_id, pending in state["pending_tasks"].items()
+            if pending.get("cmd") in {CMD_TREE_WATER, CMD_TREE_STATUS}
+        ]
+        for msg_id in remove_ids:
+            state["pending_tasks"].pop(msg_id, None)
 
     state["tree_bootstrap_check_needed"] = False
 
-    if "成熟采摘期" in text:
+    if "成熟采摘期" in text or is_maturing_broadcast:
         was_maturing = state["is_maturing"]
         state["is_maturing"] = True
+        has_pending_status = any(
+            p["cmd"] == CMD_TREE_STATUS for p in state["pending_tasks"].values()
+        )
+        has_pending_harvest = any(
+            p["cmd"] == CMD_TREE_HARVEST for p in state["pending_tasks"].values()
+        )
 
-        if is_reply_to_me and not state["is_harvested"]:
+        remaining_match = RE_TREE_REMAINING.search(text)
+        remain_sec = parse_wait_time(remaining_match.group(1)) if remaining_match else 0
+        if remain_sec > 0:
+            state["next_irr_time"] = now + FREEZE_CD
+
+        no_contribution_snapshot = "(暂无弟子贡献)" in text
+        if no_contribution_snapshot and remain_sec > TREE_HARVEST_FOLLOWUP_DELAY_SEC:
+            next_followup_at = now + TREE_HARVEST_FOLLOWUP_DELAY_SEC
+            previous_followup_at = float(state.get("tree_harvest_followup_due_at", 0) or 0)
+            state["tree_harvest_followup_due_at"] = next_followup_at
+            should_schedule_followup = (not has_pending_status) and previous_followup_at <= now
+            save_state()
+
+            if should_schedule_followup:
+                async def delayed_status_followup():
+                    await asyncio.sleep(TREE_HARVEST_FOLLOWUP_DELAY_SEC)
+                    await send_game_command(CMD_TREE_STATUS)
+
+                _fire_and_forget(delayed_status_followup())
+
+            if previous_followup_at <= now:
+                state["tree_maturing_logged"] = True
+                await send_audit_log(
+                    f"🌳 灵树成熟后贡献榜仍未定格，已延迟 30 分钟至 {fmt_abs_ts(next_followup_at)} 再次查询灵树状态。"
+                )
+                save_state()
+            return
+
+        state["tree_harvest_followup_due_at"] = 0
+
+        if is_reply_to_me and not state["is_harvested"] and not has_pending_harvest:
             state["is_harvested"] = True
             save_state()
 
@@ -161,34 +217,48 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             _fire_and_forget(delayed_harvest())
             await send_audit_log("🍒 灵果已成熟且本地判定未采摘，执行自动采摘并锁定采摘状态。")
 
-        remaining_match = RE_TREE_REMAINING.search(text)
-        if remaining_match:
-            remain_sec = parse_wait_time(remaining_match.group(1))
-            if remain_sec > 0:
-                state["next_irr_time"] = now + FREEZE_CD
-                save_state()
-                end_t = fmt_time_after(remain_sec)
+        first_status_delay_sec = random.uniform(TREE_MATURING_FIRST_STATUS_MIN_SEC, TREE_MATURING_FIRST_STATUS_MAX_SEC)
+        if remain_sec > 0:
+            end_t = fmt_time_after(remain_sec)
+            if not state["is_harvested"] and not has_pending_status and remain_sec > first_status_delay_sec:
+                async def delayed_status():
+                    await asyncio.sleep(first_status_delay_sec)
+                    await send_game_command(CMD_TREE_STATUS)
 
-                has_pending_status = any(
-                    p["cmd"] == CMD_TREE_STATUS for p in state["pending_tasks"].values()
-                )
-                if not state["is_harvested"] and not has_pending_status:
-                    async def delayed_status():
-                        await asyncio.sleep(random.uniform(2, 4))
-                        await send_game_command(CMD_TREE_STATUS)
+                _fire_and_forget(delayed_status())
+                if not state.get("tree_maturing_logged", False):
+                    state["tree_maturing_logged"] = True
+                    await send_audit_log(
+                        f"🌳 进入成熟采摘期，剩余 {remain_sec}s，预计 {end_t} 结束。将在 {first_status_delay_sec / 60:.1f} 分钟后主动查询灵树状态。"
+                    )
+            else:
+                if not was_maturing or not state.get("tree_maturing_logged", False):
+                    state["tree_maturing_logged"] = True
+                    await send_audit_log(f"🌳 进入成熟采摘期，剩余 {remain_sec}s，预计 {end_t} 结束。等待重置广播以恢复灌溉。")
+            save_state()
+        elif is_maturing_broadcast:
+            state["next_irr_time"] = now + FREEZE_CD
+            if not state["is_harvested"] and not has_pending_status:
+                async def delayed_status():
+                    await asyncio.sleep(first_status_delay_sec)
+                    await send_game_command(CMD_TREE_STATUS)
 
-                    _fire_and_forget(delayed_status())
-                    if not state.get("tree_maturing_logged", False):
-                        state["tree_maturing_logged"] = True
-                        console_log(f"🌳 进入成熟采摘期，剩余 {remain_sec}s，预计 {end_t} 结束。当前检测到本地未采摘，已主动查询状态触发采摘。")
-                else:
-                    if not was_maturing or not state.get("tree_maturing_logged", False):
-                        state["tree_maturing_logged"] = True
-                        await send_audit_log(f"🌳 进入成熟采摘期，剩余 {remain_sec}s，预计 {end_t} 结束。等待重置广播以恢复灌溉。")
-    else:
+                _fire_and_forget(delayed_status())
+                if not state.get("tree_maturing_logged", False):
+                    state["tree_maturing_logged"] = True
+                    await send_audit_log(
+                        f"🌳 监听到灵果成熟广播，已进入成熟采摘期，将在 {first_status_delay_sec / 60:.1f} 分钟后主动查询灵树状态。"
+                    )
+            else:
+                if not was_maturing or not state.get("tree_maturing_logged", False):
+                    state["tree_maturing_logged"] = True
+                    await send_audit_log("🌳 监听到灵果成熟广播，已进入成熟采摘期，等待重置广播以恢复灌溉。")
+            save_state()
+    elif is_tree_panel:
         state_changed = False
         if state["is_maturing"]:
             state["is_maturing"] = False
+            state["tree_harvest_followup_due_at"] = 0
             state_changed = True
             if state.get("tree_maturing_logged", False):
                 state["tree_maturing_logged"] = False
