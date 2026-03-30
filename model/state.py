@@ -670,11 +670,11 @@ def get_realm_sort_index(realm, xiuwei_max=0):
     return REALM_SORT_INDEX.get(realm, len(REALM_SORT_INDEX))
 
 
-def get_realm_sort_key(realm, send_as_id=0, xiuwei_max=0):
+def get_realm_sort_key(realm, send_as_id=0, xiuwei_max=0, xiuwei_current=0):
     index = get_realm_sort_index(realm, xiuwei_max=xiuwei_max)
     is_unknown = index >= len(REALM_SORT_ORDER)
-    # 按境界从高到低排序，未知排最后
-    return (1 if is_unknown else 0, -index, int(send_as_id or 0))
+    # 按境界从高到低排序；同境界按修为从高到低；未知排最后
+    return (1 if is_unknown else 0, -index, -int(xiuwei_current or 0), int(send_as_id or 0))
 
 
 def is_yuanying_realm_available(send_as_id=None):

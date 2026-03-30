@@ -1,11 +1,35 @@
 import asyncio
+import glob
 import html
+import importlib.util
 import json
+import os
+import sys
 import time
 import traceback
 from datetime import datetime
 from http.cookies import SimpleCookie
 from urllib.parse import parse_qs, urlsplit
+
+try:
+    import segno
+except ImportError:
+    segno = None
+    project_root = os.path.dirname(os.path.dirname(__file__))
+    for segno_init in sorted(glob.glob(os.path.join(project_root, ".venv", "lib", "python*", "site-packages", "segno", "__init__.py"))):
+        try:
+            package_dir = os.path.dirname(segno_init)
+            spec = importlib.util.spec_from_file_location("segno", segno_init, submodule_search_locations=[package_dir])
+            if not spec or not spec.loader:
+                continue
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["segno"] = module
+            spec.loader.exec_module(module)
+            segno = module
+            break
+        except Exception:
+            sys.modules.pop("segno", None)
+            segno = None
 
 from .config import (
     API_HASH,
@@ -171,7 +195,12 @@ def get_identity_ui_snapshot(send_as_id):
 def get_ui_snapshot(session_token=None):
     identities = sorted(
         (get_identity_ui_snapshot(identity_id) for identity_id in get_identity_ids()),
-        key=lambda identity: get_realm_sort_key(identity.get("realm"), identity.get("send_as_id"), xiuwei_max=identity.get("xiuwei_max", 0)),
+        key=lambda identity: get_realm_sort_key(
+            identity.get("realm"),
+            identity.get("send_as_id"),
+            xiuwei_max=identity.get("xiuwei_max", 0),
+            xiuwei_current=identity.get("xiuwei_current", 0),
+        ),
     )
     startup_alerts = get_startup_module_alerts()
     if session_token:
@@ -467,6 +496,14 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         ".topic-meta{margin-top:8px;color:#94a3b8;font-size:12px;line-height:1.5;}"
         ".topic-select{min-width:220px;flex:1;}"
         ".modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px;}"
+        ".login-mode-tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;}"
+        ".login-mode-tabs .btn{flex:1;}"
+        ".qr-panel{display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px;border:1px dashed #334155;border-radius:12px;background:#020617;}"
+        ".qr-box{width:min(280px,100%);min-height:220px;border-radius:12px;background:#fff;color:#020617;display:flex;align-items:center;justify-content:center;padding:12px;box-sizing:border-box;text-align:center;font-size:13px;line-height:1.6;word-break:break-word;}"
+        ".qr-box svg{display:block;width:min(220px,100%);height:auto;}"
+        ".qr-box a{color:#2563eb;word-break:break-all;}"
+        ".qr-meta{width:100%;color:#94a3b8;font-size:12px;line-height:1.6;}"
+        ".qr-actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;width:100%;}"
         "pre{white-space:pre-wrap;word-break:break-word;background:#020617;border-radius:10px;padding:12px;color:#cbd5e1;margin:0;}"
         "@media (max-width: 980px){body{padding:16px;}.layout{grid-template-columns:1fr;}.module-grid,.summary-groups,.summary-grid,.window-grid{grid-template-columns:1fr;}.module-top{flex-direction:column;gap:8px;}.module-tools{justify-content:flex-start;}.topbar{align-items:flex-start;flex-direction:column;}.identity-mobile-picker{display:grid;}.identity-list{display:none;}.summary-head{flex-direction:column;align-items:flex-start;}.meta{font-size:12px;}.modal-backdrop{padding:12px;}.xiuwei-bar-wrap{flex-direction:column;gap:4px;}.xiuwei-bar-track{width:100%;}}"
         "</style></head><body>"
@@ -520,10 +557,19 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "<div id='login-account-modal' class='modal-backdrop'>"
         "  <div class='modal-card'>"
         "    <div class='modal-header'><h3 style='margin:0;'>登录 Telegram 账号</h3><button class='icon-btn' type='button' data-close-modal='login-account'>×</button></div>"
+        "    <div class='login-mode-tabs'><button class='btn' type='button' id='login-mode-phone-btn'>手机号验证码</button><button class='btn btn-secondary' type='button' id='login-mode-qr-btn'>二维码登录</button></div>"
         "    <div id='login-step-phone'>"
         "      <div class='form-label'>输入 Telegram 绑定的手机号（含国际区号，如 +86...）</div>"
         "      <input class='text-input' id='login-phone' placeholder='+8613800138000' />"
         "      <div class='modal-actions'><button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button><button class='btn' type='button' id='login-send-code-btn'>发送验证码</button></div>"
+        "    </div>"
+        "    <div id='login-step-qr' style='display:none;'>"
+        "      <div class='form-label'>使用已登录 Telegram 的手机扫码，或直接打开下方 tg://login 链接完成确认。</div>"
+        "      <div class='qr-panel'>"
+        "        <div id='login-qr-box' class='qr-box'>点击下方按钮生成二维码登录链接</div>"
+        "        <div id='login-qr-meta' class='qr-meta'></div>"
+        "        <div class='qr-actions'><button class='btn' type='button' id='login-start-qr-btn'>生成二维码</button><button class='btn btn-secondary' type='button' id='login-refresh-qr-btn' style='display:none;'>刷新二维码</button></div>"
+        "      </div>"
         "    </div>"
         "    <div id='login-step-code' style='display:none;'>"
         "      <div class='form-label'>请输入收到的验证码</div>"
@@ -613,8 +659,16 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "function closeIdentityModal(){document.getElementById('add-identity-modal').classList.remove('show');}"
         "async function fetchSendAsPeers(){const select=document.getElementById('identity-account-select');const accountId=select.value;if(!accountId){return;}const status=document.getElementById('send-as-peers-status');const list=document.getElementById('send-as-peers-list');const actions=document.getElementById('send-as-peers-actions');status.style.display='';status.textContent='正在获取身份列表...';list.style.display='none';list.innerHTML='';actions.style.display='none';try{const data=await postJson('/api/account/send-as-peers',{account_id:accountId});const peers=data.peers||[];const existingIds=new Set((data.existing_ids||[]).map(Number));if(!peers.length){status.textContent='该账号在游戏群中没有可用的 send_as 身份';return;}status.textContent='共 '+peers.length+' 个可用身份，已有 '+existingIds.size+' 个已添加';list.style.display='';list.innerHTML=peers.map(function(p){const exists=existingIds.has(Number(p.id));const disabled=exists?' disabled':'';const checked=exists?' checked':'';const baseStyle='display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid #1e293b;font-size:0.95em;';const extraStyle=exists?'opacity:0.5;cursor:default;':'cursor:pointer;';return '<label style=\"'+baseStyle+extraStyle+'\"><input type=\"checkbox\" name=\"peer_id\" value=\"'+p.id+'\"'+disabled+checked+' /><span style=\"flex:1;\">'+escapeHtml(p.name)+'</span><span style=\"color:#64748b;font-size:0.85em;\">'+escapeHtml(p.type==='channel'?'频道':'用户')+' | '+p.id+'</span></label>';}).join('');actions.style.display='flex';document.getElementById('send-as-select-all').checked=false;}catch(error){status.textContent='获取失败：'+((error&&error.message)||'未知错误');}}"
         "async function batchAddIdentities(){const list=document.getElementById('send-as-peers-list');const checkboxes=list.querySelectorAll('input[name=\"peer_id\"]:checked:not(:disabled)');const ids=Array.from(checkboxes).map(function(cb){return cb.value;});if(!ids.length){updateFlash('请至少选择一个身份',true);renderAll();return;}const accountId=document.getElementById('identity-account-select').value;const btn=document.getElementById('batch-add-identity-btn');btn.disabled=true;btn.textContent='添加中...';try{const data=await postJson('/api/identity',{send_as_ids:ids,account_id:accountId});if(data&&data.send_as_id!=null){appState.selectedId=Number(data.send_as_id)||appState.selectedId;}updateFlash(data.message||'批量添加完成',false);closeIdentityModal();applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){updateFlash((error&&error.message)||'批量添加失败',true);renderAll();}finally{btn.disabled=false;btn.textContent='批量新增';}}"
-        "function openLoginAccountModal(){const modal=document.getElementById('login-account-modal');modal.classList.add('show');document.getElementById('login-step-phone').style.display='';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='none';document.getElementById('login-status').textContent='';document.getElementById('login-phone').value='';document.getElementById('login-code').value='';document.getElementById('login-phone').focus();}"
-        "function closeLoginAccountModal(){document.getElementById('login-account-modal').classList.remove('show');document.getElementById('login-status').textContent='';}"
+        "const loginUiState={mode:'phone',qrPollTimer:null};"
+        "function stopQrPolling(){if(loginUiState.qrPollTimer){window.clearInterval(loginUiState.qrPollTimer);loginUiState.qrPollTimer=null;}}"
+        "function resetQrPanel(){const qrBox=document.getElementById('login-qr-box');const qrMeta=document.getElementById('login-qr-meta');const refreshBtn=document.getElementById('login-refresh-qr-btn');if(qrBox){qrBox.textContent='点击下方按钮生成二维码登录链接';}if(qrMeta){qrMeta.textContent='';}if(refreshBtn){refreshBtn.style.display='none';}}"
+        "function setLoginMode(mode){loginUiState.mode=mode==='qr'?'qr':'phone';const isQr=loginUiState.mode==='qr';document.getElementById('login-mode-phone-btn').className=isQr?'btn btn-secondary':'btn';document.getElementById('login-mode-qr-btn').className=isQr?'btn':'btn btn-secondary';document.getElementById('login-step-phone').style.display=isQr?'none':'';document.getElementById('login-step-qr').style.display=isQr?'':'none';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='none';document.getElementById('login-status').textContent='';if(isQr){resetQrPanel();}else{stopQrPolling();document.getElementById('login-phone').focus();}}"
+        "function renderQrState(data){const qrBox=document.getElementById('login-qr-box');const qrMeta=document.getElementById('login-qr-meta');const refreshBtn=document.getElementById('login-refresh-qr-btn');const status=document.getElementById('login-status');const qrUrl=data&&data.qr_url?String(data.qr_url):'';const qrSvg=data&&data.qr_svg?String(data.qr_svg):'';const remainingSec=Math.max(0,Number(data&&data.remaining_sec||0));if(qrSvg){qrBox.innerHTML=`<div style=\"display:flex;flex-direction:column;align-items:center;gap:10px;width:100%;\">${qrSvg}<a href=\"${escapeHtml(qrUrl)}\">${escapeHtml(qrUrl)}</a></div>`;}else if(qrUrl){qrBox.innerHTML=`<div><div style=\"font-weight:600;margin-bottom:8px;\">请用 Telegram 扫描或点开链接</div><a href=\"${escapeHtml(qrUrl)}\">${escapeHtml(qrUrl)}</a></div>`;}else{qrBox.textContent=data&&data.status==='need_2fa'?'扫码成功，请输入两步验证密码':'二维码暂不可用';}if(data&&data.status==='waiting_scan'){qrMeta.textContent=`状态：等待扫码｜剩余 ${remainingSec} 秒｜过期时间：${data.qr_expires_at||'-'}`;refreshBtn.style.display='none';status.textContent=data.message||'请使用 Telegram 扫码';}else if(data&&data.status==='expired'){qrMeta.textContent=`二维码已过期｜过期时间：${data.qr_expires_at||'-'}`;refreshBtn.style.display='';status.textContent=data.message||'二维码已过期，请刷新';}else if(data&&data.status==='need_2fa'){qrMeta.textContent='扫码已确认，等待两步验证';refreshBtn.style.display='none';status.textContent=data.message||'需要两步验证密码';}else if(data&&data.status==='done'){qrMeta.textContent='扫码确认完成';refreshBtn.style.display='none';if(data&&data.message){status.textContent=data.message;}}else{qrMeta.textContent=data&&data.qr_expires_at?`过期时间：${data.qr_expires_at}`:'';refreshBtn.style.display=data&&data.status==='error'?'':'none';if(data&&data.message){status.textContent=data.message;}}}"
+        "async function cancelPendingLogin(){stopQrPolling();try{await postJson('/api/account/login-cancel',{});}catch(_error){}}"
+        "async function pollQrLoginStatus(){try{const response=await fetch('/api/account/login-qr-status',{credentials:'same-origin',cache:'no-store'});const data=await parseApiResponse(response);if(!data){return;}renderQrState(data);if(data.status==='waiting_scan'){return;}stopQrPolling();if(data.status==='need_2fa'){document.getElementById('login-step-qr').style.display='none';document.getElementById('login-step-2fa').style.display='';document.getElementById('login-2fa-password').focus();return;}if(data.status==='done'){updateFlash(data.message||'登录成功',false);closeLoginAccountModal(false);applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});return;}if(data.status==='expired'||data.status==='error'||data.status==='cancelled'){document.getElementById('login-refresh-qr-btn').style.display='';return;}}catch(error){stopQrPolling();document.getElementById('login-status').textContent=(error&&error.message)||'二维码状态查询失败';document.getElementById('login-refresh-qr-btn').style.display='';}}"
+        "async function startQrLogin(){const status=document.getElementById('login-status');status.textContent='正在生成二维码…';stopQrPolling();resetQrPanel();try{const data=await postJson('/api/account/login-qr-start',{});renderQrState(data);if(data.status==='waiting_scan'){loginUiState.qrPollTimer=window.setInterval(pollQrLoginStatus,2000);}}catch(error){status.textContent=(error&&error.message)||'生成二维码失败';document.getElementById('login-refresh-qr-btn').style.display='';}}"
+        "function openLoginAccountModal(){const modal=document.getElementById('login-account-modal');modal.classList.add('show');document.getElementById('login-phone').value='';document.getElementById('login-code').value='';document.getElementById('login-2fa-password').value='';resetQrPanel();setLoginMode('phone');document.getElementById('login-phone').focus();}"
+        "function closeLoginAccountModal(shouldCancel){document.getElementById('login-account-modal').classList.remove('show');document.getElementById('login-status').textContent='';stopQrPolling();if(shouldCancel!==false){cancelPendingLogin();}}"
         "function openPetModal(){const identity=getSelectedIdentity();if(!identity){return;}const modal=document.getElementById('pet-name-modal');modal.querySelector('input[name=\"send_as_id\"]').value=identity.send_as_id;modal.querySelector('input[name=\"pet_name\"]').value=identity.pet_name||'';document.getElementById('pet-name-identity').textContent=`当前身份：${identity.display_name}`;modal.classList.add('show');const input=modal.querySelector('input[name=\"pet_name\"]');if(input){input.focus();input.select();}}"
         "function closePetModal(){document.getElementById('pet-name-modal').classList.remove('show');}"
         "function openWindowModal(moduleName){const identity=getSelectedIdentity();if(!identity){return;}const modal=document.getElementById('window-modal');const form=document.getElementById('window-form');const windowData=moduleName==='点卯'?(identity.checkin_window_local||{}):(identity.tower_window_local||{});document.getElementById('window-modal-title').textContent=`设置${moduleName}窗口`;document.getElementById('window-modal-identity').textContent=`当前身份：${identity.display_name}`;document.getElementById('window-modal-current').textContent=`当前窗口：${windowData.text||''}`;form.querySelector('input[name=\"send_as_id\"]').value=identity.send_as_id;form.querySelector('input[name=\"module\"]').value=moduleName;form.querySelector('input[name=\"start_hour_local\"]').value=windowData.start_hour||0;form.querySelector('input[name=\"end_hour_local\"]').value=windowData.end_hour||0;modal.classList.add('show');const input=form.querySelector('input[name=\"start_hour_local\"]');if(input){input.focus();input.select();}}"
@@ -633,10 +687,10 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "async function refreshForumTopics(){const form=document.getElementById('basic-config-form');if(!form){return;}const groupId=form.querySelector('input[name=\"game_group_id\"]').value;const topicInput=form.querySelector('input[name=\"game_topic_id\"]');const manualTopicId=topicInput?topicInput.value:'';try{const data=await postJson('/api/forum-topics',{game_group_id:groupId});updateFlash(data.message||'已刷新话题列表',false);if(data.snapshot){applySnapshot(data.snapshot,{keepFlash:true});}const topics=Array.isArray(data.forum_topics)?data.forum_topics:[];appState.snapshot=Object.assign({},appState.snapshot,{forum_topics:topics,forum_topics_updated_at:data.forum_topics_updated_at||((appState.snapshot&&appState.snapshot.forum_topics_updated_at)||'未设置')});renderForumTopicOptions(manualTopicId);if(topicInput){topicInput.value=manualTopicId||'';}}catch(error){updateFlash((error&&error.message)||'刷新话题列表失败',true);renderAll();}}"
         "async function refreshIdentityInfo(sendAsId){try{const data=await postJson('/api/identity-refresh',{send_as_id:sendAsId});updateFlash(data.message||'已开始更新角色信息',false);applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){updateFlash((error&&error.message)||'角色信息更新失败',true);renderAll();}}"
         "async function submitJiyinChoice(choice){try{const data=await postJson('/api/jiyin-choice',{send_as_id:appState.selectedId,choice:choice});updateFlash(data.message||'已更新极阴祖师选择',false);applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){updateFlash((error&&error.message)||'极阴祖师选择更新失败',true);renderAll();}}"
-        "async function loginSendCode(){const phone=document.getElementById('login-phone').value.trim();const status=document.getElementById('login-status');if(!phone){status.textContent='请输入手机号';return;}status.textContent='正在发送验证码…';document.getElementById('login-send-code-btn').disabled=true;try{const data=await postJson('/api/account/login-start',{phone:phone});status.textContent='验证码已发送，请查收';document.getElementById('login-step-phone').style.display='none';document.getElementById('login-step-code').style.display='';document.getElementById('login-code').focus();}catch(error){status.textContent=(error&&error.message)||'发送验证码失败';}finally{document.getElementById('login-send-code-btn').disabled=false;}}"
-        "async function loginVerifyCode(password){const code=document.getElementById('login-code').value.trim();const status=document.getElementById('login-status');const payload=password?{code:'',password:password}:{code:code};if(!password&&!code){status.textContent='请输入验证码';return;}status.textContent='正在验证…';try{const data=await postJson('/api/account/login-verify',payload);if(data.error==='need_2fa'){status.textContent='需要两步验证密码';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='';document.getElementById('login-2fa-password').focus();return;}status.textContent='';updateFlash(data.message||'登录成功',false);closeLoginAccountModal();applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){const errMsg=(error&&error.message)||'验证失败';if(errMsg==='need_2fa'){status.textContent='需要两步验证密码';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-2fa').style.display='';document.getElementById('login-2fa-password').focus();}else{status.textContent=errMsg;}}}"
-        "document.addEventListener('click',function(event){const globalToggleBtn=event.target.closest('[data-toggle-global]');if(globalToggleBtn){toggleGlobal(globalToggleBtn.getAttribute('data-enabled')==='1');return;}const selectBtn=event.target.closest('[data-select-identity]');if(selectBtn){selectIdentity(selectBtn.getAttribute('data-select-identity'));return;}const refreshIdentityBtn=event.target.closest('[data-refresh-identity]');if(refreshIdentityBtn){refreshIdentityInfo(refreshIdentityBtn.getAttribute('data-refresh-identity'));return;}const toggleIdentityBtn=event.target.closest('[data-toggle-identity]');if(toggleIdentityBtn){toggleIdentity(toggleIdentityBtn.getAttribute('data-toggle-identity'),toggleIdentityBtn.getAttribute('data-enabled')==='1');return;}const toggleBtn=event.target.closest('[data-toggle-module]');if(toggleBtn){toggleModule(toggleBtn.getAttribute('data-module'),toggleBtn.getAttribute('data-enabled')==='1');return;}const jiyinChoiceBtn=event.target.closest('[data-jiyin-choice]');if(jiyinChoiceBtn){submitJiyinChoice(jiyinChoiceBtn.getAttribute('data-jiyin-choice'));return;}const recoverBtn=event.target.closest('[data-recover-startup-alert]');if(recoverBtn){restoreStartupAlert(recoverBtn.getAttribute('data-recover-startup-alert'));return;}if(event.target.closest('[data-open-basic-config]')){openBasicConfigModal();return;}if(event.target.closest('[data-open-add-identity]')){openIdentityModal();return;}if(event.target.closest('[data-open-login-account]')){openLoginAccountModal();return;}if(event.target.closest('[data-open-pet-modal]')){openPetModal();return;}const windowBtn=event.target.closest('[data-open-window-modal]');if(windowBtn){openWindowModal(windowBtn.getAttribute('data-open-window-modal'));return;}if(event.target.closest('[data-refresh-now]')){refreshState({silent:false,keepFlash:true});return;}if(event.target.closest('[data-refresh-forum-topics]')){refreshForumTopics();return;}if(event.target.getAttribute('data-close-modal')==='basic'||event.target.id==='basic-config-modal'){closeBasicConfigModal();return;}if(event.target.getAttribute('data-close-modal')==='identity'||event.target.id==='add-identity-modal'){closeIdentityModal();return;}if(event.target.getAttribute('data-close-modal')==='login-account'||event.target.id==='login-account-modal'){closeLoginAccountModal();return;}if(event.target.getAttribute('data-close-modal')==='pet'||event.target.id==='pet-name-modal'){closePetModal();return;}if(event.target.getAttribute('data-close-modal')==='window'||event.target.id==='window-modal'){closeWindowModal();return;}if(event.target.getAttribute('data-close-modal')==='startup-alert'||event.target.id==='startup-alert-modal'){closeStartupAlertModal();return;}});"
-        "document.addEventListener('keydown',function(event){if(event.key==='Escape'){closeBasicConfigModal();closeIdentityModal();closeLoginAccountModal();closePetModal();closeWindowModal();closeStartupAlertModal();}});"
+        "async function loginSendCode(){const phone=document.getElementById('login-phone').value.trim();const status=document.getElementById('login-status');if(!phone){status.textContent='请输入手机号';return;}status.textContent='正在发送验证码…';document.getElementById('login-send-code-btn').disabled=true;try{const data=await postJson('/api/account/login-start',{phone:phone});status.textContent=data.message||'验证码已发送，请查收';document.getElementById('login-step-phone').style.display='none';document.getElementById('login-step-code').style.display='';document.getElementById('login-code').focus();}catch(error){status.textContent=(error&&error.message)||'发送验证码失败';}finally{document.getElementById('login-send-code-btn').disabled=false;}}"
+        "async function loginVerifyCode(password){const code=document.getElementById('login-code').value.trim();const status=document.getElementById('login-status');const payload=password?{code:'',password:password}:{code:code};if(!password&&!code){status.textContent='请输入验证码';return;}status.textContent='正在验证…';try{const data=await postJson('/api/account/login-verify',payload);status.textContent='';updateFlash(data.message||'登录成功',false);closeLoginAccountModal(false);applySnapshot(data.snapshot||appState.snapshot,{keepFlash:true});}catch(error){const errMsg=(error&&error.message)||'验证失败';if(errMsg==='need_2fa'){status.textContent='需要两步验证密码';document.getElementById('login-step-code').style.display='none';document.getElementById('login-step-qr').style.display='none';document.getElementById('login-step-2fa').style.display='';document.getElementById('login-2fa-password').focus();}else{status.textContent=errMsg;}}}"
+        "document.addEventListener('click',function(event){const globalToggleBtn=event.target.closest('[data-toggle-global]');if(globalToggleBtn){toggleGlobal(globalToggleBtn.getAttribute('data-enabled')==='1');return;}const selectBtn=event.target.closest('[data-select-identity]');if(selectBtn){selectIdentity(selectBtn.getAttribute('data-select-identity'));return;}const refreshIdentityBtn=event.target.closest('[data-refresh-identity]');if(refreshIdentityBtn){refreshIdentityInfo(refreshIdentityBtn.getAttribute('data-refresh-identity'));return;}const toggleIdentityBtn=event.target.closest('[data-toggle-identity]');if(toggleIdentityBtn){toggleIdentity(toggleIdentityBtn.getAttribute('data-toggle-identity'),toggleIdentityBtn.getAttribute('data-enabled')==='1');return;}const toggleBtn=event.target.closest('[data-toggle-module]');if(toggleBtn){toggleModule(toggleBtn.getAttribute('data-module'),toggleBtn.getAttribute('data-enabled')==='1');return;}const jiyinChoiceBtn=event.target.closest('[data-jiyin-choice]');if(jiyinChoiceBtn){submitJiyinChoice(jiyinChoiceBtn.getAttribute('data-jiyin-choice'));return;}const recoverBtn=event.target.closest('[data-recover-startup-alert]');if(recoverBtn){restoreStartupAlert(recoverBtn.getAttribute('data-recover-startup-alert'));return;}if(event.target.closest('[data-open-basic-config]')){openBasicConfigModal();return;}if(event.target.closest('[data-open-add-identity]')){openIdentityModal();return;}if(event.target.closest('[data-open-login-account]')){openLoginAccountModal();return;}if(event.target.closest('[data-open-pet-modal]')){openPetModal();return;}const windowBtn=event.target.closest('[data-open-window-modal]');if(windowBtn){openWindowModal(windowBtn.getAttribute('data-open-window-modal'));return;}if(event.target.closest('[data-refresh-now]')){refreshState({silent:false,keepFlash:true});return;}if(event.target.closest('[data-refresh-forum-topics]')){refreshForumTopics();return;}if(event.target.getAttribute('data-close-modal')==='basic'||event.target.id==='basic-config-modal'){closeBasicConfigModal();return;}if(event.target.getAttribute('data-close-modal')==='identity'||event.target.id==='add-identity-modal'){closeIdentityModal();return;}if(event.target.getAttribute('data-close-modal')==='login-account'||event.target.id==='login-account-modal'){closeLoginAccountModal(true);return;}if(event.target.getAttribute('data-close-modal')==='pet'||event.target.id==='pet-name-modal'){closePetModal();return;}if(event.target.getAttribute('data-close-modal')==='window'||event.target.id==='window-modal'){closeWindowModal();return;}if(event.target.getAttribute('data-close-modal')==='startup-alert'||event.target.id==='startup-alert-modal'){closeStartupAlertModal();return;}});"
+        "document.addEventListener('keydown',function(event){if(event.key==='Escape'){closeBasicConfigModal();closeIdentityModal();closeLoginAccountModal(true);closePetModal();closeWindowModal();closeStartupAlertModal();}});"
         "document.getElementById('basic-config-form').addEventListener('submit',submitBasicConfig);"
         "document.getElementById('forum-topic-select').addEventListener('change',function(event){const form=document.getElementById('basic-config-form');const topicInput=form&&form.querySelector('input[name=\"game_topic_id\"]');if(topicInput){topicInput.value=event.target.value||'';}});"
         "document.getElementById('add-identity-form').addEventListener('submit',submitIdentity);"
@@ -644,6 +698,10 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "document.getElementById('identity-account-select').addEventListener('change',fetchSendAsPeers);"
         "document.getElementById('batch-add-identity-btn').addEventListener('click',batchAddIdentities);"
         "document.getElementById('send-as-select-all').addEventListener('change',function(event){const list=document.getElementById('send-as-peers-list');const checkboxes=list.querySelectorAll('input[name=\"peer_id\"]:not(:disabled)');checkboxes.forEach(function(cb){cb.checked=event.target.checked;});});"
+        "document.getElementById('login-mode-phone-btn').addEventListener('click',function(){cancelPendingLogin();setLoginMode('phone');});"
+        "document.getElementById('login-mode-qr-btn').addEventListener('click',function(){cancelPendingLogin();setLoginMode('qr');});"
+        "document.getElementById('login-start-qr-btn').addEventListener('click',startQrLogin);"
+        "document.getElementById('login-refresh-qr-btn').addEventListener('click',startQrLogin);"
         "document.getElementById('login-send-code-btn').addEventListener('click',loginSendCode);"
         "document.getElementById('login-verify-btn').addEventListener('click',function(){loginVerifyCode();});"
         "document.getElementById('login-2fa-btn').addEventListener('click',function(){const pw=document.getElementById('login-2fa-password').value;loginVerifyCode(pw);});"
@@ -743,60 +801,87 @@ async def ui_add_identity(send_as_id_raw, actor_id=None, account_id=None):
 
 
 # ================= 多账号登录 =================
-_pending_login = {}  # 临时存储登录中间态 {session_key: {client, phone, phone_code_hash}}
+_pending_login = {}  # {session_key: {mode, status, client, flow_id, ...}}
 
 
-async def ui_account_login_start(phone, session_key):
-    phone = (phone or "").strip()
-    if not phone:
-        return False, "请输入手机号", None
-    # 使用临时 session 名称进行登录
-    tc = create_account_client(f"pending_{session_key}")
-    await tc.connect()
-    try:
-        sent = await tc.send_code_request(phone)
-        _pending_login[session_key] = {
-            "client": tc,
-            "phone": phone,
-            "phone_code_hash": sent.phone_code_hash,
-        }
-        return True, "验证码已发送", sent.phone_code_hash
-    except Exception as e:
-        await tc.disconnect()
-        return False, f"发送验证码失败: {e}", None
+def _cleanup_pending_temp_session_files(session_key):
+    from .config import SESSION_DIR
+
+    temp_prefix = os.path.join(SESSION_DIR, f"account_pending_{session_key}")
+    for temp_file in glob.glob(f"{temp_prefix}*"):
+        try:
+            os.remove(temp_file)
+        except OSError:
+            pass
 
 
-async def ui_account_login_verify(code, session_key, password=None):
+async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_files=False):
+    pending = _pending_login.pop(session_key, None)
+    if not pending:
+        if remove_temp_files:
+            _cleanup_pending_temp_session_files(session_key)
+        return
+
+    wait_task = pending.get("wait_task")
+    current_task = asyncio.current_task()
+    if wait_task and wait_task is not current_task and not wait_task.done():
+        wait_task.cancel()
+
+    tc = pending.get("client")
+    if disconnect and tc:
+        try:
+            await tc.disconnect()
+        except Exception:
+            pass
+
+    if remove_temp_files:
+        _cleanup_pending_temp_session_files(session_key)
+
+
+def _set_pending_login_state(session_key, flow_id=None, **updates):
     pending = _pending_login.get(session_key)
     if not pending:
-        return False, "登录会话已过期，请重新输入手机号", None
-    tc = pending["client"]
-    phone = pending["phone"]
-    phone_code_hash = pending["phone_code_hash"]
-    try:
-        if password:
-            await tc.sign_in(password=password)
-        else:
-            await tc.sign_in(phone, code, phone_code_hash=phone_code_hash)
-    except Exception as e:
-        err_str = str(e)
-        if "Two-steps verification" in err_str or "SessionPasswordNeeded" in err_str or "2FA" in err_str:
-            return False, "need_2fa", None
-        _pending_login.pop(session_key, None)
-        await tc.disconnect()
-        return False, f"登录失败: {e}", None
+        return False
+    if flow_id is not None and str(pending.get("flow_id") or "") != str(flow_id):
+        return False
+    next_pending = dict(pending)
+    next_pending.update(updates)
+    _pending_login[session_key] = next_pending
+    return True
 
+
+def _build_qr_svg_markup(qr_url):
+    qr_url = str(qr_url or "").strip()
+    if not qr_url:
+        return ""
+    if segno is None:
+        return ""
+    try:
+        return segno.make(qr_url).svg_inline(scale=6)
+    except Exception:
+        return ""
+
+
+async def _finalize_account_login(session_key, tc, *, flow_id=None):
     me = await tc.get_me()
-    account_id = me.id
+    account_id = int(getattr(me, "id", 0) or 0)
+    if account_id <= 0:
+        raise RuntimeError("无法解析有效账号 ID")
     username = me.username or me.first_name or str(account_id)
 
-    # 临时 session 验证成功，将其断开
-    await tc.disconnect()
-    _pending_login.pop(session_key, None)
+    if flow_id is not None:
+        pending = _pending_login.get(session_key)
+        if not pending or str(pending.get("flow_id") or "") != str(flow_id):
+            try:
+                await tc.disconnect()
+            except Exception:
+                pass
+            return False, "登录流程已更新，请重新发起", None
 
-    # 将临时 session 文件重命名为正式路径
-    import os, glob
+    await tc.disconnect()
+
     from .config import SESSION_DIR
+
     temp_prefix = os.path.join(SESSION_DIR, f"account_pending_{session_key}")
     real_prefix = os.path.join(SESSION_DIR, f"account_{account_id}")
     for temp_file in glob.glob(f"{temp_prefix}*"):
@@ -807,29 +892,23 @@ async def ui_account_login_verify(code, session_key, password=None):
         except OSError:
             pass
 
-    # 用正式 session 文件创建 client 并启动
     real_tc = create_account_client(account_id)
     await real_tc.start()
-    # 预加载对话列表，确保新 client 能解析游戏群等实体
     try:
         await real_tc.get_dialogs()
     except Exception:
         pass
     register_client(account_id, real_tc)
 
-    # 注册事件处理器
     from .app import _register_event_handlers
     _register_event_handlers(real_tc)
 
-    # 保存账号信息（不存手机号）
     set_account(account_id, {"session": f"account_{account_id}", "username": username})
 
-    # 自动将该账号的 user_id 注册为 identity 并关联到此账号
-    ok, message, canonical_id = await register_identity(account_id, source="ui_login", account_id=account_id)
+    ok, _message, canonical_id = await register_identity(account_id, source="ui_login", account_id=account_id)
     if canonical_id:
         set_identity_account(canonical_id, account_id)
 
-    # hydrate profile
     try:
         from .control import hydrate_identity_profile
         entity = await real_tc.get_me()
@@ -840,6 +919,247 @@ async def ui_account_login_verify(code, session_key, password=None):
     save_state()
     await send_audit_log(f"🔑 新账号登录成功：@{username}｜{account_id}", scope="global")
     return True, f"登录成功: @{username}", account_id
+
+
+async def _wait_pending_qr_login(session_key, flow_id, tc, qr_login):
+    try:
+        await qr_login.wait()
+    except asyncio.TimeoutError:
+        try:
+            await tc.disconnect()
+        except Exception:
+            pass
+        _cleanup_pending_temp_session_files(session_key)
+        _set_pending_login_state(
+            session_key,
+            flow_id,
+            status="expired",
+            message="二维码已过期，请刷新后重试",
+            client=None,
+            wait_task=None,
+            qr_url="",
+            qr_expires_at=0,
+        )
+        return
+    except Exception as e:
+        err_str = str(e)
+        if "Two-steps verification" in err_str or "SessionPasswordNeeded" in err_str or "2FA" in err_str:
+            _set_pending_login_state(
+                session_key,
+                flow_id,
+                status="need_2fa",
+                message="扫码成功，请输入两步验证密码",
+                wait_task=None,
+                qr_url="",
+                qr_expires_at=0,
+            )
+            return
+        try:
+            await tc.disconnect()
+        except Exception:
+            pass
+        _cleanup_pending_temp_session_files(session_key)
+        _set_pending_login_state(
+            session_key,
+            flow_id,
+            status="error",
+            message=f"二维码登录失败: {e}",
+            client=None,
+            wait_task=None,
+            qr_url="",
+            qr_expires_at=0,
+        )
+        return
+
+    try:
+        ok, message, account_id = await _finalize_account_login(session_key, tc, flow_id=flow_id)
+    except Exception as e:
+        _cleanup_pending_temp_session_files(session_key)
+        _set_pending_login_state(
+            session_key,
+            flow_id,
+            status="error",
+            message=f"二维码登录失败: {e}",
+            client=None,
+            wait_task=None,
+            qr_url="",
+            qr_expires_at=0,
+        )
+        return
+
+    if ok:
+        _set_pending_login_state(
+            session_key,
+            flow_id,
+            status="done",
+            message=message,
+            account_id=account_id,
+            client=None,
+            wait_task=None,
+            qr_url="",
+            qr_expires_at=0,
+        )
+    else:
+        _cleanup_pending_temp_session_files(session_key)
+
+
+async def ui_account_login_start(phone, session_key):
+    phone = (phone or "").strip()
+    if not phone:
+        return False, "请输入手机号", None
+
+    await _clear_pending_login(session_key, remove_temp_files=True)
+
+    tc = create_account_client(f"pending_{session_key}")
+    await tc.connect()
+    try:
+        sent = await tc.send_code_request(phone)
+        _pending_login[session_key] = {
+            "mode": "phone",
+            "status": "waiting_code",
+            "message": "验证码已发送，请查收",
+            "client": tc,
+            "phone": phone,
+            "phone_code_hash": sent.phone_code_hash,
+            "qr_url": "",
+            "qr_expires_at": 0,
+            "wait_task": None,
+            "flow_id": str(time.time_ns()),
+            "account_id": 0,
+        }
+        return True, "验证码已发送", None
+    except Exception as e:
+        try:
+            await tc.disconnect()
+        except Exception:
+            pass
+        _cleanup_pending_temp_session_files(session_key)
+        return False, f"发送验证码失败: {e}", None
+
+
+async def ui_account_login_qr_start(session_key):
+    await _clear_pending_login(session_key, remove_temp_files=True)
+
+    tc = create_account_client(f"pending_{session_key}")
+    await tc.connect()
+    try:
+        ignored_ids = []
+        for raw_account_id in get_accounts().keys():
+            try:
+                ignored_ids.append(int(raw_account_id))
+            except (TypeError, ValueError):
+                continue
+        qr_login = await tc.qr_login(ignored_ids=ignored_ids or None)
+        expires_at = float(qr_login.expires.timestamp()) if getattr(qr_login, "expires", None) else 0
+        flow_id = str(time.time_ns())
+        _pending_login[session_key] = {
+            "mode": "qr",
+            "status": "waiting_scan",
+            "message": "请使用已登录 Telegram 的手机扫码确认",
+            "client": tc,
+            "phone": "",
+            "phone_code_hash": "",
+            "qr_url": qr_login.url,
+            "qr_expires_at": expires_at,
+            "wait_task": None,
+            "flow_id": flow_id,
+            "account_id": 0,
+        }
+        wait_task = asyncio.create_task(_wait_pending_qr_login(session_key, flow_id, tc, qr_login))
+        _set_pending_login_state(session_key, flow_id, wait_task=wait_task)
+        qr_svg = _build_qr_svg_markup(qr_login.url)
+        return True, "二维码已生成，请使用 Telegram 扫码确认", {
+            "status": "waiting_scan",
+            "qr_url": qr_login.url,
+            "qr_svg": qr_svg,
+            "qr_expires_at": fmt_abs_ts(expires_at),
+            "qr_expires_at_ts": expires_at,
+            "remaining_sec": max(0, int(expires_at - time.time())),
+        }
+    except Exception as e:
+        try:
+            await tc.disconnect()
+        except Exception:
+            pass
+        _cleanup_pending_temp_session_files(session_key)
+        return False, f"生成二维码失败: {e}", None
+
+
+def ui_account_login_qr_status(session_key):
+    pending = _pending_login.get(session_key)
+    if not pending or pending.get("mode") != "qr":
+        return {
+            "status": "cancelled",
+            "message": "当前没有进行中的二维码登录",
+        }
+
+    qr_expires_at = float(pending.get("qr_expires_at", 0) or 0)
+    status = str(pending.get("status") or "waiting_scan")
+    payload = {
+        "status": status,
+        "message": pending.get("message") or "",
+        "qr_expires_at": fmt_abs_ts(qr_expires_at),
+        "qr_expires_at_ts": qr_expires_at,
+    }
+    if status == "waiting_scan":
+        qr_url = pending.get("qr_url") or ""
+        payload.update({
+            "qr_url": qr_url,
+            "qr_svg": _build_qr_svg_markup(qr_url),
+            "remaining_sec": max(0, int(qr_expires_at - time.time())),
+        })
+    account_id = int(pending.get("account_id", 0) or 0)
+    if account_id > 0:
+        payload["account_id"] = account_id
+    return payload
+
+
+async def ui_account_login_cancel(session_key):
+    await _clear_pending_login(session_key, remove_temp_files=True)
+    return True, "已取消当前登录流程"
+
+
+async def ui_account_login_verify(code, session_key, password=None):
+    pending = _pending_login.get(session_key)
+    if not pending:
+        return False, "登录会话已过期，请重新开始", None
+
+    tc = pending.get("client")
+    mode = str(pending.get("mode") or "phone")
+    phone = pending.get("phone") or ""
+    phone_code_hash = pending.get("phone_code_hash") or ""
+    flow_id = pending.get("flow_id")
+    status = str(pending.get("status") or "")
+    code = (code or "").strip()
+
+    if mode == "qr" and password and status != "need_2fa":
+        return False, "当前二维码登录尚未进入两步验证", None
+
+    try:
+        if password:
+            await tc.sign_in(password=password)
+        elif mode == "phone":
+            await tc.sign_in(phone, code, phone_code_hash=phone_code_hash)
+        else:
+            return False, "当前二维码登录尚未进入两步验证", None
+    except Exception as e:
+        err_str = str(e)
+        if "Two-steps verification" in err_str or "SessionPasswordNeeded" in err_str or "2FA" in err_str:
+            _set_pending_login_state(session_key, flow_id, status="need_2fa", message="需要两步验证密码")
+            return False, "need_2fa", None
+        await _clear_pending_login(session_key, remove_temp_files=True)
+        return False, f"登录失败: {e}", None
+
+    try:
+        ok, message, account_id = await _finalize_account_login(session_key, tc, flow_id=flow_id)
+    except Exception as e:
+        await _clear_pending_login(session_key, disconnect=False, remove_temp_files=True)
+        return False, f"登录失败: {e}", None
+
+    await _clear_pending_login(session_key, disconnect=False, remove_temp_files=False)
+    if not ok:
+        return False, message, None
+    return True, message, account_id
 
 
 async def ui_get_send_as_peers(account_id):
@@ -1427,7 +1747,47 @@ async def handle_ui_http(reader, writer):
                 else:
                     phone = payload.get("phone", "")
                     session_key = (session or {}).get("session_token", "")
-                    ok, message, phone_code_hash = await ui_account_login_start(phone, session_key)
+                    ok, message, _extra = await ui_account_login_start(phone, session_key)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message)
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/account/login-qr-start":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    session_key = (session or {}).get("session_token", "")
+                    ok, message, qr_info = await ui_account_login_qr_start(session_key)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, extra=qr_info if ok else None)
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/account/login-qr-status":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                elif method != "GET":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    session_key = (session or {}).get("session_token", "")
+                    qr_status = ui_account_login_qr_status(session_key)
+                    extra = dict(qr_status)
+                    status = str(extra.get("status") or "")
+                    message = extra.pop("message", "")
+                    account_id = int(extra.get("account_id", 0) or 0)
+                    snapshot = get_ui_snapshot(session_token=(session or {}).get("session_token")) if status == "done" and account_id > 0 else None
+                    body = _make_json_payload(True, message=message, snapshot=snapshot, extra=extra)
+                    _write_response(writer, "HTTP/1.1 200 OK", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/account/login-cancel":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    session_key = (session or {}).get("session_token", "")
+                    ok, message = await ui_account_login_cancel(session_key)
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)

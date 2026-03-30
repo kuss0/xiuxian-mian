@@ -77,6 +77,37 @@ from .ui import start_ui_server
 
 _bot_silence_triggered_at = 0  # 检测到 . 指令的时间，0 表示未触发
 _bot_last_seen_at = 0          # bot 最后发言时间
+_runtime_event_claims = {}
+
+
+def _gc_runtime_event_claims(now=None):
+    now = float(now if now is not None else time.time())
+    expired_keys = [key for key, expires_at in _runtime_event_claims.items() if float(expires_at or 0) <= now]
+    for key in expired_keys:
+        _runtime_event_claims.pop(key, None)
+
+
+def _claim_runtime_event(event, *, scope, ttl=120.0):
+    msg_id = int(getattr(event, "id", 0) or 0)
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    if msg_id <= 0 or chat_id == 0:
+        return True
+    now = time.time()
+    _gc_runtime_event_claims(now)
+    claim_key = f"{scope}:{chat_id}:{msg_id}"
+    if float(_runtime_event_claims.get(claim_key, 0) or 0) > now:
+        return False
+    _runtime_event_claims[claim_key] = now + float(ttl or 0)
+    return True
+
+
+def _is_identity_owner_event(event, send_as_id):
+    send_as_id = int(send_as_id or 0)
+    if send_as_id <= 0:
+        return False
+    account_id = get_identity_account(send_as_id)
+    expected_client = get_client(account_id) if account_id else client
+    return getattr(event, "client", None) is expected_client
 
 
 def _append_game_group_message_log(event, *, event_type="message"):
@@ -136,11 +167,16 @@ async def on_message(event):
         reply_to = await event.get_reply_message()
         routed_identity_id = find_identity_by_msg_id(reply_to.id) if reply_to else None
 
-        await handle_deep_retreat_summary_broadcast(text, now)
-        await handle_yuanying_summary_broadcast(text, now)
-        await handle_realm_breakthrough_broadcast(text, now)
-        await handle_quiz_result_broadcast(text, now)
-        await handle_quiz_learning_prompt(text, now, event)
+        if _claim_runtime_event(event, scope="deep_retreat_summary"):
+            await handle_deep_retreat_summary_broadcast(text, now)
+        if _claim_runtime_event(event, scope="yuanying_summary"):
+            await handle_yuanying_summary_broadcast(text, now)
+        if _claim_runtime_event(event, scope="realm_breakthrough"):
+            await handle_realm_breakthrough_broadcast(text, now)
+        if _claim_runtime_event(event, scope="quiz_result"):
+            await handle_quiz_result_broadcast(text, now)
+        if _claim_runtime_event(event, scope="quiz_learning_prompt"):
+            await handle_quiz_learning_prompt(text, now, event)
 
         handled_quiz_prompt = False
         for identity_id in get_identity_ids():
@@ -165,6 +201,8 @@ async def on_message(event):
             return
 
         if routed_identity_id is not None:
+            if not _is_identity_owner_event(event, routed_identity_id):
+                return
             with use_identity(routed_identity_id):
                 is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
                 clear_pending_by_reply(reply_to, routed_identity_id)
@@ -196,12 +234,22 @@ async def on_message(event):
             await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
             return
 
-        for identity_id in get_identity_ids():
-            with use_identity(identity_id):
-                await handle_tree_invasion_end(text, now, False)
-                await handle_tree_invasion_start(text, now)
-                await handle_tree_rebirth_reset(text, now)
-                await handle_tree_panel(text, now, False)
+        if _claim_runtime_event(event, scope="tree_invasion_end"):
+            for identity_id in get_identity_ids():
+                with use_identity(identity_id):
+                    await handle_tree_invasion_end(text, now, False)
+        if _claim_runtime_event(event, scope="tree_invasion_start"):
+            for identity_id in get_identity_ids():
+                with use_identity(identity_id):
+                    await handle_tree_invasion_start(text, now)
+        if _claim_runtime_event(event, scope="tree_rebirth_reset"):
+            for identity_id in get_identity_ids():
+                with use_identity(identity_id):
+                    await handle_tree_rebirth_reset(text, now)
+        if _claim_runtime_event(event, scope="tree_panel"):
+            for identity_id in get_identity_ids():
+                with use_identity(identity_id):
+                    await handle_tree_panel(text, now, False)
 
     except Exception:
         print(traceback.format_exc())
@@ -223,19 +271,24 @@ async def on_message_edited(event):
         reply_to = await event.get_reply_message()
         routed_identity_id = find_identity_by_msg_id(reply_to.id) if reply_to else None
 
-        await handle_realm_breakthrough_broadcast(text, now)
+        if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
+            await handle_realm_breakthrough_broadcast(text, now)
 
         if routed_identity_id is not None:
+            if not _is_identity_owner_event(event, routed_identity_id):
+                return
             with use_identity(routed_identity_id):
                 is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
-                await handle_tree_panel(text, now, is_reply_to_me)
+                if _claim_runtime_event(event, scope="tree_panel_reply_edit"):
+                    await handle_tree_panel(text, now, is_reply_to_me)
                 if is_reply_to_me:
                     await handle_identity_info_reply(text, now, reply_to, event.id)
             return
 
-        for identity_id in get_identity_ids():
-            with use_identity(identity_id):
-                await handle_tree_panel(text, now, False)
+        if _claim_runtime_event(event, scope="tree_panel_edit"):
+            for identity_id in get_identity_ids():
+                with use_identity(identity_id):
+                    await handle_tree_panel(text, now, False)
     except Exception:
         print(traceback.format_exc())
 
