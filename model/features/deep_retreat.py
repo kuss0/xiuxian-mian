@@ -157,12 +157,12 @@ async def schedule_deep_retreat_status_probe(delay=None):
     console_log(f"🧘 深闭执行中，{delay:.1f}s 后查状态。")
 
 
-async def handle_deep_retreat_success_reply(text, now, reply_to):
+async def handle_deep_retreat_success_reply(text, now, reply_to, matched_family=None):
     if not state["deep_retreat_enabled"]:
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_DEEP_RETREAT not in orig_cmd:
+    if matched_family != "deep_retreat" and CMD_DEEP_RETREAT not in orig_cmd:
         return False
 
     if "你已进入深度闭关状态" in text and "神魂将自行吐纳" in text:
@@ -184,12 +184,12 @@ async def handle_deep_retreat_success_reply(text, now, reply_to):
     return False
 
 
-async def handle_deep_retreat_running_reply(text, now, reply_to):
+async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=None):
     if not state["deep_retreat_enabled"]:
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_DEEP_RETREAT not in orig_cmd:
+    if matched_family != "deep_retreat" and CMD_DEEP_RETREAT not in orig_cmd:
         return False
 
     probe_hit = (
@@ -209,14 +209,15 @@ async def handle_deep_retreat_running_reply(text, now, reply_to):
     return True
 
 
-async def handle_deep_retreat_status_reply(text, now, reply_to):
+async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=None):
     if not state["deep_retreat_enabled"]:
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    is_status_reply = CMD_DEEP_RETREAT_QUERY in orig_cmd
+    is_status_reply = matched_family == "deep_retreat" or CMD_DEEP_RETREAT_QUERY in orig_cmd
     is_retreat_cmd_status_like = (
-        CMD_DEEP_RETREAT in orig_cmd and any(k in text for k in ["预计还需", "尚未恢复", "冷却", "等待", "不足", "休息", "功成圆满"])
+        matched_family == "deep_retreat"
+        or (CMD_DEEP_RETREAT in orig_cmd and any(k in text for k in ["预计还需", "尚未恢复", "冷却", "等待", "不足", "休息", "功成圆满"]))
     )
     if not (is_status_reply or is_retreat_cmd_status_like):
         return False

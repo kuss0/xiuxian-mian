@@ -44,9 +44,11 @@ from .runtime import (
     gc_my_msg_ids,
     gc_ui_login_tokens,
     gc_ui_sessions,
+    get_reply_context,
     is_reply_to_identity_message,
     run_retry_scheduler,
     schedule_cleanup,
+    track_reply_chain_message,
     mono,
     send_audit_log,
 )
@@ -78,6 +80,7 @@ from .ui import start_ui_server
 _bot_silence_triggered_at = 0  # 检测到 . 指令的时间，0 表示未触发
 _bot_last_seen_at = 0          # bot 最后发言时间
 _runtime_event_claims = {}
+_runtime_message_consumed = {}
 
 
 def _gc_runtime_event_claims(now=None):
@@ -99,6 +102,40 @@ def _claim_runtime_event(event, *, scope, ttl=120.0):
         return False
     _runtime_event_claims[claim_key] = now + float(ttl or 0)
     return True
+
+
+def _gc_runtime_message_consumed(now=None):
+    now = float(now if now is not None else time.time())
+    expired_keys = [key for key, expires_at in _runtime_message_consumed.items() if float(expires_at or 0) <= now]
+    for key in expired_keys:
+        _runtime_message_consumed.pop(key, None)
+
+
+def _get_runtime_message_consumed_key(event, family):
+    msg_id = int(getattr(event, "id", 0) or 0)
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    family = str(family or "").strip()
+    if msg_id <= 0 or chat_id == 0 or not family:
+        return ""
+    return f"{family}:{chat_id}:{msg_id}"
+
+
+def _has_runtime_message_consumed(event, family):
+    claim_key = _get_runtime_message_consumed_key(event, family)
+    if not claim_key:
+        return False
+    now = time.time()
+    _gc_runtime_message_consumed(now)
+    return float(_runtime_message_consumed.get(claim_key, 0) or 0) > now
+
+
+def _mark_runtime_message_consumed(event, family, *, ttl=120.0):
+    claim_key = _get_runtime_message_consumed_key(event, family)
+    if not claim_key:
+        return
+    now = time.time()
+    _gc_runtime_message_consumed(now)
+    _runtime_message_consumed[claim_key] = now + float(ttl or 0)
 
 
 def _is_identity_owner_event(event, send_as_id):
@@ -135,6 +172,73 @@ def _append_game_group_message_log(event, *, event_type="message"):
         print(traceback.format_exc())
 
 
+def _get_event_reply_header_msg_id(event):
+    reply_header = getattr(event, "reply_to", None)
+    return int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
+
+
+async def _resolve_event_reply(event):
+    reply_to = await event.get_reply_message()
+    reply_context = get_reply_context(reply_to, reply_to_msg_id=_get_event_reply_header_msg_id(event))
+    return reply_to, reply_context
+
+
+async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
+    routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    matched_family = (reply_context or {}).get("family") or None
+    if routed_identity_id <= 0:
+        return False
+    if not _is_identity_owner_event(event, routed_identity_id):
+        return True
+
+    already_consumed = bool(matched_family) and _has_runtime_message_consumed(event, matched_family)
+    with use_identity(routed_identity_id):
+        is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
+        clear_result = clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
+        root_msg_id = int((reply_context or {}).get("root_msg_id") or (clear_result or {}).get("reply_to_msg_id") or 0)
+        if root_msg_id <= 0:
+            root_msg_id = int(getattr(reply_to, "id", 0) or 0)
+        if matched_family:
+            track_reply_chain_message(event.id, routed_identity_id, matched_family, root_msg_id=root_msg_id)
+
+        handled_any = False
+        await handle_tree_invasion_end(text, now, is_reply_to_me)
+        await handle_tree_invasion_start(text, now)
+        await handle_tree_rebirth_reset(text, now)
+        if allow_tree_panel_claim and not already_consumed:
+            tree_panel_done = await handle_tree_panel(text, now, is_reply_to_me)
+            handled_any = handled_any or tree_panel_done
+
+        if not already_consumed:
+            handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_tower_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
+            deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)
+            handled_any = handled_any or deep_retreat_done
+            if not deep_retreat_done:
+                deep_retreat_done = await handle_deep_retreat_running_reply(text, now, reply_to, matched_family=matched_family)
+                handled_any = handled_any or deep_retreat_done
+            if not deep_retreat_done:
+                handled_any = await handle_deep_retreat_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            yuanying_done = await handle_yuanying_success_reply(text, now, reply_to, matched_family=matched_family)
+            handled_any = handled_any or yuanying_done
+            if not yuanying_done:
+                yuanying_done = await handle_yuanying_running_reply(text, now, reply_to, matched_family=matched_family)
+                handled_any = handled_any or yuanying_done
+            if not yuanying_done:
+                handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_tree_exception_prompt(text) or handled_any
+
+        if matched_family and handled_any and not already_consumed:
+            _mark_runtime_message_consumed(event, matched_family)
+
+    await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
+    return True
+
+
 @client.on(events.NewMessage())
 async def on_message(event):
     _append_game_group_message_log(event, event_type="message")
@@ -164,8 +268,7 @@ async def on_message(event):
     text = event.raw_text or ""
 
     try:
-        reply_to = await event.get_reply_message()
-        routed_identity_id = find_identity_by_msg_id(reply_to.id) if reply_to else None
+        reply_to, reply_context = await _resolve_event_reply(event)
 
         if _claim_runtime_event(event, scope="deep_retreat_summary"):
             await handle_deep_retreat_summary_broadcast(text, now)
@@ -200,39 +303,10 @@ async def on_message(event):
         if handled_jiyin_prompt:
             return
 
-        if routed_identity_id is not None:
-            if not _is_identity_owner_event(event, routed_identity_id):
+        if int((reply_context or {}).get("send_as_id") or 0) > 0:
+            handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
+            if handled_reply:
                 return
-            with use_identity(routed_identity_id):
-                is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
-                clear_pending_by_reply(reply_to, routed_identity_id)
-
-                await handle_tree_invasion_end(text, now, is_reply_to_me)
-                await handle_tree_invasion_start(text, now)
-                await handle_tree_rebirth_reset(text, now)
-                await handle_tree_panel(text, now, is_reply_to_me)
-
-                if is_reply_to_me:
-                    await handle_tree_cd_fix(text, now, reply_to)
-                    await handle_pet_cd_fix(text, now, reply_to)
-                    await handle_checkin_reply(text, now, reply_to)
-                    await handle_sect_teach_reply(text, now, reply_to)
-                    await handle_tower_reply(text, now, reply_to)
-                    await handle_identity_info_reply(text, now, reply_to, event.id)
-                    deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to)
-                    if not deep_retreat_done:
-                        deep_retreat_done = await handle_deep_retreat_running_reply(text, now, reply_to)
-                    if not deep_retreat_done:
-                        await handle_deep_retreat_status_reply(text, now, reply_to)
-                    yuanying_done = await handle_yuanying_success_reply(text, now, reply_to)
-                    if not yuanying_done:
-                        yuanying_done = await handle_yuanying_running_reply(text, now, reply_to)
-                    if not yuanying_done:
-                        await handle_yuanying_status_reply(text, now, reply_to)
-                    await handle_tree_exception_prompt(text)
-
-            await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
-            return
 
         if _claim_runtime_event(event, scope="tree_invasion_end"):
             for identity_id in get_identity_ids():
@@ -268,22 +342,21 @@ async def on_message_edited(event):
     text = event.raw_text or ""
 
     try:
-        reply_to = await event.get_reply_message()
-        routed_identity_id = find_identity_by_msg_id(reply_to.id) if reply_to else None
+        reply_to, reply_context = await _resolve_event_reply(event)
 
         if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
             await handle_realm_breakthrough_broadcast(text, now)
 
-        if routed_identity_id is not None:
-            if not _is_identity_owner_event(event, routed_identity_id):
+        if int((reply_context or {}).get("send_as_id") or 0) > 0:
+            handled_reply = await _handle_routed_reply_event(
+                event,
+                text,
+                now,
+                reply_to,
+                reply_context,
+            )
+            if handled_reply:
                 return
-            with use_identity(routed_identity_id):
-                is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
-                if _claim_runtime_event(event, scope="tree_panel_reply_edit"):
-                    await handle_tree_panel(text, now, is_reply_to_me)
-                if is_reply_to_me:
-                    await handle_identity_info_reply(text, now, reply_to, event.id)
-            return
 
         if _claim_runtime_event(event, scope="tree_panel_edit"):
             for identity_id in get_identity_ids():

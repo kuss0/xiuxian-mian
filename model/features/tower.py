@@ -20,13 +20,13 @@ def get_tower_status_text():
     )
 
 
-async def handle_tower_reply(text, now, reply_to):
+async def handle_tower_reply(text, now, reply_to, matched_family=None):
     if not state["tower_enabled"]:
-        return
+        return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_TOWER not in orig_cmd:
-        return
+    if matched_family != "tower" and CMD_TOWER not in orig_cmd:
+        return False
 
     next_ts = state["next_tower_time"]
     if next_ts <= now:
@@ -39,17 +39,18 @@ async def handle_tower_reply(text, now, reply_to):
         next_ts = _schedule_tower_next_day(now)
         save_state()
         await send_audit_log(f"🗼 闯塔成功→{fmt_abs_ts(next_ts)}")
-        return
+        return True
 
     if any(k in text for k in ["已经闯过", "已闯塔", "已在塔中", "你今日已挑战失败，道心受挫。"]):
         state["last_tower_day"] = get_day_key(now)
         next_ts = _schedule_tower_next_day(now)
         save_state()
         await send_audit_log(f"🗼 今日已完成→{fmt_abs_ts(next_ts)}")
-        return
+        return True
 
     mark_dirty()
     console_log(f"🗼 收到闯塔回复→{fmt_abs_ts(next_ts)}")
+    return True
 
 
 async def run_tower_scheduler(now):

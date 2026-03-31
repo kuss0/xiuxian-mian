@@ -49,6 +49,7 @@ from .persistence import mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
     build_ui_login_url,
+    clear_pending_tasks_by_commands,
     console_log,
     issue_ui_login_token,
     reply_log_group_message,
@@ -148,10 +149,7 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
 
 
 def _clear_pending_tasks_by_commands(commands):
-    commands = set(commands)
-    remove_ids = [msg_id for msg_id, pending in state["pending_tasks"].items() if pending.get("cmd") in commands]
-    for msg_id in remove_ids:
-        state["pending_tasks"].pop(msg_id, None)
+    clear_pending_tasks_by_commands(commands, send_as_id=get_current_identity_id())
 
 
 def _disable_tree_module_state():

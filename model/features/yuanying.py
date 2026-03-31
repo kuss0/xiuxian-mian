@@ -157,12 +157,12 @@ async def schedule_yuanying_status_probe(delay=None):
     console_log(f"👶 元婴执行中，{delay:.1f}s 后查状态。")
 
 
-async def handle_yuanying_success_reply(text, now, reply_to):
+async def handle_yuanying_success_reply(text, now, reply_to, matched_family=None):
     if not state["yuanying_enabled"]:
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_YUANYING not in orig_cmd:
+    if matched_family != "yuanying" and CMD_YUANYING not in orig_cmd:
         return False
 
     if "你心念一动" in text and "元婴化作一道流光飞出" in text:
@@ -174,12 +174,12 @@ async def handle_yuanying_success_reply(text, now, reply_to):
     return False
 
 
-async def handle_yuanying_running_reply(text, now, reply_to):
+async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None):
     if not state["yuanying_enabled"]:
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_YUANYING not in orig_cmd:
+    if matched_family != "yuanying" and CMD_YUANYING not in orig_cmd:
         return False
 
     probe_hit = (
@@ -201,14 +201,15 @@ async def handle_yuanying_running_reply(text, now, reply_to):
     return True
 
 
-async def handle_yuanying_status_reply(text, now, reply_to):
+async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None):
     if not state["yuanying_enabled"]:
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    is_status_reply = CMD_YUANYING_STATUS in orig_cmd
+    is_status_reply = matched_family == "yuanying" or CMD_YUANYING_STATUS in orig_cmd
     is_yuanying_cmd_status_like = (
-        CMD_YUANYING in orig_cmd and any(k in text for k in ["归来倒计时", "窍中温养", "尚未恢复", "冷却", "等待", "不足", "休息"])
+        matched_family == "yuanying"
+        or (CMD_YUANYING in orig_cmd and any(k in text for k in ["归来倒计时", "窍中温养", "尚未恢复", "冷却", "等待", "不足", "休息"]))
     )
     if not (is_status_reply or is_yuanying_cmd_status_like):
         return False

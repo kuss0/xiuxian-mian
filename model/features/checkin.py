@@ -83,13 +83,13 @@ async def cleanup_checkin_chain_messages():
     save_state()
 
 
-async def handle_checkin_reply(text, now, reply_to):
+async def handle_checkin_reply(text, now, reply_to, matched_family=None):
     if not state["checkin_enabled"]:
-        return
+        return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_CHECKIN not in orig_cmd:
-        return
+    if matched_family != "checkin" and CMD_CHECKIN not in orig_cmd:
+        return False
 
     day_key = get_checkin_day_key(now)
     state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
@@ -112,7 +112,7 @@ async def handle_checkin_reply(text, now, reply_to):
         console_log(f"📝 点卯成功→{fmt_abs_ts(next_ts)}")
         if scheduled:
             console_log(f"📘 传功已排队→{fmt_abs_ts(state['next_sect_teach_time'])}")
-        return
+        return True
 
     if is_checkin_already_done_text(text):
         state["last_checkin_done_day"] = day_key
@@ -122,18 +122,19 @@ async def handle_checkin_reply(text, now, reply_to):
         console_log(f"📝 点卯已完成→{fmt_abs_ts(next_ts)}")
         if scheduled:
             console_log(f"📘 传功已排队→{fmt_abs_ts(state['next_sect_teach_time'])}")
-        return
+        return True
 
     console_log(f"📝 收到点卯回复→{fmt_abs_ts(next_ts)}")
+    return True
 
 
-async def handle_sect_teach_reply(text, now, reply_to):
+async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
     if not state["checkin_enabled"]:
-        return
+        return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if CMD_SECT_TEACH not in orig_cmd:
-        return
+    if matched_family != "sect_teach" and CMD_SECT_TEACH not in orig_cmd:
+        return False
 
     state["last_sect_teach_msg_id"] = reply_to.id if reply_to else 0
     remember_checkin_cleanup_msg_id(state["last_sect_teach_msg_id"])
@@ -153,7 +154,7 @@ async def handle_sect_teach_reply(text, now, reply_to):
             save_state()
             await cleanup_checkin_chain_messages()
         await send_audit_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
-        return
+        return True
 
     if is_sect_teach_already_done_text(text):
         state["next_sect_teach_time"] = 0
@@ -161,7 +162,9 @@ async def handle_sect_teach_reply(text, now, reply_to):
         save_state()
         await cleanup_checkin_chain_messages()
         console_log(f"📘 传功暂不可执行 {state['checkin_teach_count']}/3")
-        return
+        return True
+
+    return True
 
 
 async def run_checkin_scheduler(now):

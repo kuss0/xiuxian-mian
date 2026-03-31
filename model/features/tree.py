@@ -102,28 +102,31 @@ async def handle_tree_rebirth_reset(text, now):
             save_state()
 
 
-async def handle_tree_cd_fix(text, now, reply_to):
+async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
     if not state["tree_enabled"]:
-        return
+        return False
 
     if not any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息", "调息"]):
-        return
+        return False
 
     wait_sec = parse_wait_time(text)
     if wait_sec <= 0:
-        return
+        return False
 
     target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
     orig_cmd = reply_to.raw_text if reply_to else ""
 
-    if "守山" in text or "协同" in text or CMD_TREE_GUARD in orig_cmd:
+    if matched_family == "tree_guard" or "守山" in text or "协同" in text or CMD_TREE_GUARD in orig_cmd:
         state["next_guard_time"] = now + wait_sec + CD_BUFFER_SEC
         save_state()
         await send_audit_log(f"⏳ 守山 CD→{target_time}")
-    elif "灌溉" in text or CMD_TREE_WATER in orig_cmd:
+        return True
+    if matched_family == "tree_panel" or "灌溉" in text or CMD_TREE_WATER in orig_cmd:
         state["next_irr_time"] = now + wait_sec + CD_BUFFER_SEC
         save_state()
         await send_audit_log(f"⏳ 灌溉 CD→{target_time}")
+        return True
+    return False
 
 
 async def handle_tree_exception_prompt(text):
@@ -145,19 +148,19 @@ async def handle_tree_exception_prompt(text):
 
 async def handle_tree_panel(text, now, is_reply_to_me):
     if not state["tree_enabled"]:
-        return
+        return False
 
     is_tree_panel = "【落云宗 · 灵眼之树】" in text or "落云宗·灵眼之树" in text
     is_maturing_broadcast = "🍎 灵果已完全成熟！ 采摘期开启！" in text and "📊 天道榜单已定格！" in text
     if not is_tree_panel and not is_maturing_broadcast:
-        return
+        return False
 
     if is_maturing_broadcast and not is_tree_panel:
         has_pending_tree_cmd = any(
             p["cmd"] in {CMD_TREE_WATER, CMD_TREE_STATUS} for p in state["pending_tasks"].values()
         )
         if not has_pending_tree_cmd and not state["is_maturing"]:
-            return
+            return False
         remove_ids = [
             msg_id for msg_id, pending in state["pending_tasks"].items()
             if pending.get("cmd") in {CMD_TREE_WATER, CMD_TREE_STATUS}
@@ -201,7 +204,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
                 state["tree_maturing_logged"] = True
                 await send_audit_log(f"🌳 榜单未定格，30 分钟后复查（{fmt_abs_ts(next_followup_at)}）。")
                 save_state()
-            return
+            return True
 
         state["tree_harvest_followup_due_at"] = 0
 
@@ -249,7 +252,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
                     state["tree_maturing_logged"] = True
                     await send_audit_log("🌳 收到成熟广播，等重置广播。")
             save_state()
-    elif is_tree_panel:
+        return True
+    if is_tree_panel:
         state_changed = False
         if state["is_maturing"]:
             state["is_maturing"] = False
@@ -269,6 +273,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             console_log("🌳 已释放补偿灌溉，恢复调度。")
         if state_changed:
             save_state()
+        return True
+    return False
 
 
 async def run_tree_bootstrap_check(now):

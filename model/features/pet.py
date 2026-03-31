@@ -15,25 +15,27 @@ def get_pet_status_text():
     )
 
 
-async def handle_pet_cd_fix(text, now, reply_to):
+async def handle_pet_cd_fix(text, now, reply_to, matched_family=None):
     if not state["pet_enabled"]:
-        return
+        return False
 
     if not any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息"]):
-        return
+        return False
 
     wait_sec = parse_wait_time(text)
     if wait_sec <= 0:
-        return
+        return False
 
     orig_cmd = reply_to.raw_text if reply_to else ""
     pet_name = get_pet_name()
     pet_command = get_pet_command()
-    if "法宝" in text or "抚摸" in text or pet_name in text or pet_command in orig_cmd or CMD_PET in orig_cmd:
+    if matched_family == "pet" or "法宝" in text or "抚摸" in text or pet_name in text or pet_command in orig_cmd or CMD_PET in orig_cmd:
         state["next_pet_time"] = now + wait_sec + CD_BUFFER_SEC
         save_state()
         target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
         await send_audit_log(f"⏳ 法宝 CD→{target_time}")
+        return True
+    return False
 
 
 async def run_pet_scheduler(now):
