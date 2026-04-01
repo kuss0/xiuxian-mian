@@ -208,6 +208,78 @@ async def _resolve_event_reply(event):
     return reply_to, reply_context
 
 
+async def _run_for_all_identities(handler, *args, enabled_only=False):
+    for identity_id in get_identity_ids():
+        if enabled_only and not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id):
+            await handler(*args)
+
+
+async def _run_until_handled_for_enabled_identities(handler, text, now, event):
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id):
+            if await handler(text, now, event):
+                return True
+    return False
+
+
+async def _dispatch_new_message_broadcasts(event, text, now):
+    if _claim_runtime_event(event, scope="deep_retreat_summary"):
+        await handle_deep_retreat_summary_broadcast(text, now)
+    if _claim_runtime_event(event, scope="yuanying_summary"):
+        await handle_yuanying_summary_broadcast(text, now)
+    if _claim_runtime_event(event, scope="realm_breakthrough"):
+        await handle_realm_breakthrough_broadcast(text, now)
+    if _claim_runtime_event(event, scope="quiz_result"):
+        await handle_quiz_result_broadcast(text, now)
+    if _claim_runtime_event(event, scope="quiz_learning_prompt"):
+        await handle_quiz_learning_prompt(text, now, event)
+
+
+async def _dispatch_tree_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="tree_invasion_end"):
+        await _run_for_all_identities(handle_tree_invasion_end, text, now, False)
+    if _claim_runtime_event(event, scope="tree_invasion_start"):
+        await _run_for_all_identities(handle_tree_invasion_start, text, now)
+    if _claim_runtime_event(event, scope="tree_rebirth_reset"):
+        await _run_for_all_identities(handle_tree_rebirth_reset, text, now)
+    if _claim_runtime_event(event, scope="tree_panel"):
+        await _run_for_all_identities(handle_tree_panel, text, now, False)
+
+
+async def _dispatch_message_edited_realm_breakthrough(event, text, now):
+    if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
+        await handle_realm_breakthrough_broadcast(text, now)
+
+
+async def _dispatch_message_edited_tree_panel(event, text, now):
+    if _claim_runtime_event(event, scope="tree_panel_edit"):
+        await _run_for_all_identities(handle_tree_panel, text, now, False)
+
+
+async def _run_identity_schedulers(now):
+    identity_schedulers = (
+        run_tree_bootstrap_check,
+        run_tree_scheduler,
+        run_pet_scheduler,
+        run_quiz_scheduler,
+        run_jiyin_scheduler,
+        run_checkin_scheduler,
+        run_tower_scheduler,
+        run_deep_retreat_scheduler,
+        run_yuanying_scheduler,
+    )
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id):
+            for scheduler in identity_schedulers:
+                await scheduler(now)
+
+
 async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
     matched_family = (reply_context or {}).get("family") or None
@@ -296,37 +368,12 @@ async def on_message(event):
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
 
-        if _claim_runtime_event(event, scope="deep_retreat_summary"):
-            await handle_deep_retreat_summary_broadcast(text, now)
-        if _claim_runtime_event(event, scope="yuanying_summary"):
-            await handle_yuanying_summary_broadcast(text, now)
-        if _claim_runtime_event(event, scope="realm_breakthrough"):
-            await handle_realm_breakthrough_broadcast(text, now)
-        if _claim_runtime_event(event, scope="quiz_result"):
-            await handle_quiz_result_broadcast(text, now)
-        if _claim_runtime_event(event, scope="quiz_learning_prompt"):
-            await handle_quiz_learning_prompt(text, now, event)
+        await _dispatch_new_message_broadcasts(event, text, now)
 
-        handled_quiz_prompt = False
-        for identity_id in get_identity_ids():
-            if not get_identity_enabled(identity_id):
-                continue
-            with use_identity(identity_id):
-                if await handle_quiz_prompt(text, now, event):
-                    handled_quiz_prompt = True
-                    break
-        if handled_quiz_prompt:
+        if await _run_until_handled_for_enabled_identities(handle_quiz_prompt, text, now, event):
             return
 
-        handled_jiyin_prompt = False
-        for identity_id in get_identity_ids():
-            if not get_identity_enabled(identity_id):
-                continue
-            with use_identity(identity_id):
-                if await handle_jiyin_prompt(text, now, event):
-                    handled_jiyin_prompt = True
-                    break
-        if handled_jiyin_prompt:
+        if await _run_until_handled_for_enabled_identities(handle_jiyin_prompt, text, now, event):
             return
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
@@ -334,22 +381,7 @@ async def on_message(event):
             if handled_reply:
                 return
 
-        if _claim_runtime_event(event, scope="tree_invasion_end"):
-            for identity_id in get_identity_ids():
-                with use_identity(identity_id):
-                    await handle_tree_invasion_end(text, now, False)
-        if _claim_runtime_event(event, scope="tree_invasion_start"):
-            for identity_id in get_identity_ids():
-                with use_identity(identity_id):
-                    await handle_tree_invasion_start(text, now)
-        if _claim_runtime_event(event, scope="tree_rebirth_reset"):
-            for identity_id in get_identity_ids():
-                with use_identity(identity_id):
-                    await handle_tree_rebirth_reset(text, now)
-        if _claim_runtime_event(event, scope="tree_panel"):
-            for identity_id in get_identity_ids():
-                with use_identity(identity_id):
-                    await handle_tree_panel(text, now, False)
+        await _dispatch_tree_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())
@@ -370,8 +402,7 @@ async def on_message_edited(event):
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
 
-        if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
-            await handle_realm_breakthrough_broadcast(text, now)
+        await _dispatch_message_edited_realm_breakthrough(event, text, now)
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(
@@ -384,10 +415,7 @@ async def on_message_edited(event):
             if handled_reply:
                 return
 
-        if _claim_runtime_event(event, scope="tree_panel_edit"):
-            for identity_id in get_identity_ids():
-                with use_identity(identity_id):
-                    await handle_tree_panel(text, now, False)
+        await _dispatch_message_edited_tree_panel(event, text, now)
     except Exception:
         print(traceback.format_exc())
 
@@ -555,20 +583,8 @@ async def main_loop():
         if not get_global_enabled():
             await asyncio.sleep(5)
             continue
-        for identity_id in get_identity_ids():
-            if not get_identity_enabled(identity_id):
-                continue
-            with use_identity(identity_id):
-                await run_tree_bootstrap_check(now)
-                await run_tree_scheduler(now)
-                await run_pet_scheduler(now)
-                await run_quiz_scheduler(now)
-                await run_jiyin_scheduler(now)
-                await run_checkin_scheduler(now)
-                await run_tower_scheduler(now)
-                await run_deep_retreat_scheduler(now)
-                await run_yuanying_scheduler(now)
 
+        await _run_identity_schedulers(now)
         await run_quiz_learning_scheduler(now)
         await asyncio.sleep(5)
 

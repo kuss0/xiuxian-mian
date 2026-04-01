@@ -324,6 +324,74 @@ def get_identity_state(send_as_id=None):
     return _meta_state["identity_states"][send_as_id]
 
 
+def _coerce_send_as_profile_field(field_name, value):
+    if field_name in {"username", "label"}:
+        return value or ""
+    if field_name in {"daohao", "realm", "sect_name", "jiyin_choice"}:
+        return (value or "").strip()
+    if field_name == "pet_name":
+        return (value or "").strip() or DEFAULT_PET_NAME
+    if field_name == "sect_updated_at":
+        return float(value or 0)
+    if field_name in {"xiuwei_current", "xiuwei_max"}:
+        return int(value or 0)
+    if field_name in {
+        "checkin_window_start_hour_utc",
+        "checkin_window_end_hour_utc",
+        "tower_window_start_hour_utc",
+        "tower_window_end_hour_utc",
+    }:
+        return int(value)
+    if field_name == "enabled":
+        return bool(value)
+    return value
+
+
+def _normalize_send_as_profile_updates(changes):
+    normalized = {}
+    for field_name, raw_value in (changes or {}).items():
+        if field_name == "enabled" and raw_value is None:
+            continue
+        normalized[field_name] = _coerce_send_as_profile_field(field_name, raw_value)
+    return normalized
+
+
+def _normalize_game_bot_ids(bot_ids):
+    normalized = []
+    seen = set()
+    for raw_id in bot_ids or []:
+        try:
+            bot_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if bot_id in seen:
+            continue
+        seen.add(bot_id)
+        normalized.append(bot_id)
+    return normalized
+
+
+def _normalize_forum_topics(topics):
+    normalized = []
+    seen_topic_ids = set()
+    for item in topics or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            topic_id = int(item.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if topic_id <= 0 or topic_id in seen_topic_ids:
+            continue
+        seen_topic_ids.add(topic_id)
+        normalized.append({
+            "id": topic_id,
+            "title": str(item.get("title") or "").strip() or f"话题 {topic_id}",
+            "top_message": int(item.get("top_message") or 0),
+        })
+    return normalized
+
+
 def set_send_as_profile(
     send_as_id,
     username="",
@@ -367,38 +435,7 @@ def update_send_as_profile(send_as_id, **changes):
     ensure_identity_registered(send_as_id)
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(send_as_id, {}))
-
-    if "username" in changes:
-        profile["username"] = changes.get("username") or ""
-    if "label" in changes:
-        profile["label"] = changes.get("label") or ""
-    if "daohao" in changes:
-        profile["daohao"] = (changes.get("daohao") or "").strip()
-    if "realm" in changes:
-        profile["realm"] = (changes.get("realm") or "").strip()
-    if "pet_name" in changes:
-        profile["pet_name"] = (changes.get("pet_name") or "").strip() or DEFAULT_PET_NAME
-    if "sect_name" in changes:
-        profile["sect_name"] = (changes.get("sect_name") or "").strip()
-    if "sect_updated_at" in changes:
-        profile["sect_updated_at"] = float(changes.get("sect_updated_at") or 0)
-    if "xiuwei_current" in changes:
-        profile["xiuwei_current"] = int(changes.get("xiuwei_current") or 0)
-    if "xiuwei_max" in changes:
-        profile["xiuwei_max"] = int(changes.get("xiuwei_max") or 0)
-    if "jiyin_choice" in changes:
-        profile["jiyin_choice"] = (changes.get("jiyin_choice") or "").strip()
-    if "checkin_window_start_hour_utc" in changes:
-        profile["checkin_window_start_hour_utc"] = int(changes.get("checkin_window_start_hour_utc"))
-    if "checkin_window_end_hour_utc" in changes:
-        profile["checkin_window_end_hour_utc"] = int(changes.get("checkin_window_end_hour_utc"))
-    if "tower_window_start_hour_utc" in changes:
-        profile["tower_window_start_hour_utc"] = int(changes.get("tower_window_start_hour_utc"))
-    if "tower_window_end_hour_utc" in changes:
-        profile["tower_window_end_hour_utc"] = int(changes.get("tower_window_end_hour_utc"))
-    if "enabled" in changes and changes.get("enabled") is not None:
-        profile["enabled"] = bool(changes.get("enabled"))
-
+    profile.update(_normalize_send_as_profile_updates(changes))
     _meta_state["send_as_profiles"][send_as_id] = profile
     return profile
 
@@ -460,34 +497,11 @@ def set_game_group_id(group_id):
 
 
 def get_game_bot_ids():
-    raw_ids = _meta_state.get("game_bot_ids") or []
-    normalized = []
-    seen = set()
-    for raw_id in raw_ids:
-        try:
-            bot_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if bot_id in seen:
-            continue
-        seen.add(bot_id)
-        normalized.append(bot_id)
-    return normalized
+    return _normalize_game_bot_ids(_meta_state.get("game_bot_ids") or [])
 
 
 def set_game_bot_ids(bot_ids):
-    normalized = []
-    seen = set()
-    for raw_id in bot_ids or []:
-        try:
-            bot_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if bot_id in seen:
-            continue
-        seen.add(bot_id)
-        normalized.append(bot_id)
-    _meta_state["game_bot_ids"] = sorted(normalized)
+    _meta_state["game_bot_ids"] = sorted(_normalize_game_bot_ids(bot_ids))
     return get_game_bot_ids()
 
 
@@ -501,42 +515,11 @@ def set_game_topic_id(topic_id):
 
 
 def get_forum_topics():
-    topics = []
-    for item in _meta_state.get("forum_topics") or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            topic_id = int(item.get("id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if topic_id <= 0:
-            continue
-        topics.append({
-            "id": topic_id,
-            "title": str(item.get("title") or "").strip() or f"话题 {topic_id}",
-            "top_message": int(item.get("top_message") or 0),
-        })
-    return topics
+    return _normalize_forum_topics(_meta_state.get("forum_topics") or [])
 
 
 def set_forum_topics(topics, updated_at=None):
-    normalized = []
-    seen_topic_ids = set()
-    for item in topics or []:
-        if not isinstance(item, dict):
-            continue
-        try:
-            topic_id = int(item.get("id") or 0)
-        except (TypeError, ValueError):
-            continue
-        if topic_id <= 0 or topic_id in seen_topic_ids:
-            continue
-        seen_topic_ids.add(topic_id)
-        normalized.append({
-            "id": topic_id,
-            "title": str(item.get("title") or "").strip() or f"话题 {topic_id}",
-            "top_message": int(item.get("top_message") or 0),
-        })
+    normalized = _normalize_forum_topics(topics)
     normalized.sort(key=lambda item: item["id"])
     _meta_state["forum_topics"] = normalized
     if updated_at is not None:

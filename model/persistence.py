@@ -526,13 +526,106 @@ def _load_identity_from_db(send_as_id):
     return identity_state
 
 
+def _encode_meta_json(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _decode_meta_json(value, fallback):
+    try:
+        return json.loads(value or _encode_meta_json(fallback))
+    except Exception:
+        return fallback
+
+
+def _decode_meta_int(value, fallback=0):
+    try:
+        return int(value or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _decode_meta_float(value, fallback=0.0):
+    try:
+        return float(value or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _decode_meta_bool_flag(value, fallback=True):
+    if value is None:
+        return bool(fallback)
+    return str(value).strip() not in {"0", "false", "False", "off", "OFF"}
+
+
+_META_STATE_CODEC = {
+    "game_group_id": (
+        get_game_group_id,
+        lambda value: str(value),
+        lambda value: set_game_group_id(_decode_meta_int(value, 0)),
+    ),
+    "game_bot_ids": (
+        get_game_bot_ids,
+        _encode_meta_json,
+        lambda value: set_game_bot_ids(_decode_meta_json(value, [])),
+    ),
+    "game_topic_id": (
+        get_game_topic_id,
+        lambda value: str(value),
+        lambda value: set_game_topic_id(_decode_meta_int(value, 0)),
+    ),
+    "forum_topics": (
+        get_forum_topics,
+        _encode_meta_json,
+        lambda value: _decode_meta_json(value, []),
+    ),
+    "forum_topics_updated_at": (
+        get_forum_topics_updated_at,
+        lambda value: str(value),
+        lambda value: _decode_meta_float(value, 0),
+    ),
+    "auto_delete_sent_messages": (
+        is_auto_delete_sent_messages_enabled,
+        lambda value: "1" if value else "0",
+        lambda value: set_auto_delete_sent_messages(_decode_meta_bool_flag(value, True)),
+    ),
+    "global_enabled": (
+        get_global_enabled,
+        lambda value: "1" if value else "0",
+        lambda value: set_global_enabled(_decode_meta_bool_flag(value, True)),
+    ),
+    "quiz_learning_watchers": (
+        get_quiz_learning_watchers,
+        _encode_meta_json,
+        lambda value: set_quiz_learning_watchers(_decode_meta_json(value, {})),
+    ),
+    "accounts": (
+        get_accounts,
+        _encode_meta_json,
+        lambda value: set_accounts(_decode_meta_json(value, {})),
+    ),
+    "identity_account_map": (
+        get_identity_account_map,
+        _encode_meta_json,
+        lambda value: set_identity_account_map(_decode_meta_json(value, {})),
+    ),
+    "identity_membership_initialized": (
+        lambda: True,
+        lambda value: "1" if value else "0",
+        lambda value: _decode_meta_bool_flag(value, False),
+    ),
+}
+
+
 def save_quiz_learning_watchers_state():
     try:
         init_db()
         conn = get_db_conn()
         conn.execute(
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("quiz_learning_watchers", json.dumps(get_quiz_learning_watchers(), ensure_ascii=False)),
+            (
+                "quiz_learning_watchers",
+                _META_STATE_CODEC["quiz_learning_watchers"][1](get_quiz_learning_watchers()),
+            ),
         )
         conn.commit()
     except Exception:
@@ -540,50 +633,11 @@ def save_quiz_learning_watchers_state():
 
 
 def _save_meta_state(conn):
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("game_group_id", str(get_game_group_id())),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("game_bot_ids", json.dumps(get_game_bot_ids(), ensure_ascii=False)),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("game_topic_id", str(get_game_topic_id())),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("forum_topics", json.dumps(get_forum_topics(), ensure_ascii=False)),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("forum_topics_updated_at", str(get_forum_topics_updated_at())),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("auto_delete_sent_messages", "1" if is_auto_delete_sent_messages_enabled() else "0"),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("global_enabled", "1" if get_global_enabled() else "0"),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("quiz_learning_watchers", json.dumps(get_quiz_learning_watchers(), ensure_ascii=False)),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("accounts", json.dumps(get_accounts(), ensure_ascii=False)),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("identity_account_map", json.dumps(get_identity_account_map(), ensure_ascii=False)),
-    )
-    conn.execute(
-        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-        ("identity_membership_initialized", "1"),
-    )
+    for key, (getter, encoder, _) in _META_STATE_CODEC.items():
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (key, encoder(getter())),
+        )
 
 
 
@@ -643,41 +697,18 @@ def load_state():
 
         meta_rows = conn.execute("SELECT key, value FROM meta").fetchall()
         meta_map = {str(row["key"] or ""): row["value"] for row in meta_rows}
-        set_game_group_id(int(meta_map.get("game_group_id") or 0))
-        try:
-            game_bot_ids = json.loads(meta_map.get("game_bot_ids") or "[]")
-        except Exception:
-            game_bot_ids = []
-        set_game_bot_ids(game_bot_ids)
-        set_game_topic_id(int(meta_map.get("game_topic_id") or 0))
-        try:
-            forum_topics = json.loads(meta_map.get("forum_topics") or "[]")
-        except Exception:
-            forum_topics = []
-        try:
-            forum_topics_updated_at = float(meta_map.get("forum_topics_updated_at") or 0)
-        except (TypeError, ValueError):
-            forum_topics_updated_at = 0
+        forum_topics = []
+        forum_topics_updated_at = 0
+        membership_initialized = False
+        for key, (_, _, decoder) in _META_STATE_CODEC.items():
+            decoded = decoder(meta_map.get(key))
+            if key == "forum_topics":
+                forum_topics = decoded
+            elif key == "forum_topics_updated_at":
+                forum_topics_updated_at = decoded
+            elif key == "identity_membership_initialized":
+                membership_initialized = bool(decoded)
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
-        set_auto_delete_sent_messages(str(meta_map.get("auto_delete_sent_messages") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
-        set_global_enabled(str(meta_map.get("global_enabled") or "1").strip() not in {"0", "false", "False", "off", "OFF"})
-        try:
-            quiz_learning_watchers = json.loads(meta_map.get("quiz_learning_watchers") or "{}")
-        except Exception:
-            quiz_learning_watchers = {}
-        set_quiz_learning_watchers(quiz_learning_watchers)
-        try:
-            accounts = json.loads(meta_map.get("accounts") or "{}")
-        except Exception:
-            accounts = {}
-        set_accounts(accounts)
-        try:
-            identity_account_map = json.loads(meta_map.get("identity_account_map") or "{}")
-        except Exception:
-            identity_account_map = {}
-        set_identity_account_map(identity_account_map)
-
-        membership_initialized = str(meta_map.get("identity_membership_initialized") or "0").strip() == "1"
         rows = conn.execute(
             "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()

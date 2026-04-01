@@ -1,6 +1,5 @@
 import asyncio
 import random
-import time
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -15,131 +14,108 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_game_group_id, get_identity_display_name, get_identity_ids, get_send_as_tags, is_auto_delete_sent_messages_enabled, state, use_identity
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
+from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..timing import fmt_time_after, parse_wait_time
+from ._phaseful import (
+    PhasefulSpec,
+    begin_post_summary_wait,
+    begin_summary_wait,
+    clear_summary_flags,
+    delete_summary_trigger_msg,
+    finalize_summary_broadcast,
+    get_block_reason,
+    get_phase_text,
+    get_status_detail_text,
+    mark_success,
+    run_phaseful_scheduler,
+    set_phase,
+    update_block_log_state,
+)
+
+
+YUANYING_SPEC = PhasefulSpec(
+    enabled_key="yuanying_enabled",
+    phase_key="yuanying_phase",
+    next_time_key="next_yuanying_time",
+    last_command_key="last_yuanying_command_time",
+    probe_pending_key="yuanying_probe_pending",
+    summary_sent_at_key="yuanying_summary_sent_at",
+    last_summary_msg_id_key="last_yuanying_summary_msg_id",
+    waiting_logged_key="yuanying_waiting_logged",
+    protect_logged_key="yuanying_protect_logged",
+    cd_sec=YUANYING_CD,
+    protect_sec=YUANYING_PROTECT_SEC,
+    launching_timeout_sec=LAUNCHING_TIMEOUT_SEC,
+    post_summary_wait_sec=POST_SUMMARY_WAIT_SEC,
+    summary_timeout_sec=SUMMARY_TIMEOUT_SEC,
+    title="👶 元婴",
+    summary_pending_label="归窍总结待触发",
+    block_disabled="模块已关闭",
+    block_waiting="等待归窍总结",
+    block_post_wait="归窍后30秒缓冲中",
+    block_launching="出窍指令已发出，等待回复",
+    block_running="元婴执行中",
+    block_protect="30秒保护中",
+    phase_waiting="等待归窍总结",
+    phase_post_wait="总结后缓冲中",
+    phase_launching="出窍中",
+    phase_running="云游中",
+    phase_idle_cd="CD中",
+    phase_idle_protect="30秒保护中",
+    phase_idle_ready="待出窍",
+    waiting_on_log="👶 元婴时间已到，但当前仍在等待归窍总结，暂不执行元婴出窍。",
+    waiting_off_log="👶 等待归窍总结状态已结束。",
+    protect_on_log="👶 元婴时间已到，但当前处于 30 秒保护中，暂不重复执行。",
+    protect_off_log="👶 元婴 30 秒保护状态已结束。",
+    launching_timeout_audit="👶 launching 超时，已回退。",
+    waiting_anomaly_audit="👶 归窍等待异常，已解卡继续。",
+    waiting_timeout_audit="👶 归窍总结超时，按兜底继续。",
+    post_wait_console="👶 归窍缓冲结束，继续元婴。",
+    running_due_console="👶 元婴归来时间到，先发 1。",
+    cd_due_console="👶 元婴 CD 到，先发 1。",
+    summary_received_console="👶 收到归窍总结，30 秒后继续。",
+)
 
 
 def set_yuanying_phase(phase):
-    state["yuanying_phase"] = phase
+    set_phase(YUANYING_SPEC, phase)
 
 
 def get_yuanying_block_reason(now=None):
-    if now is None:
-        now = time.time()
-
-    phase = state.get("yuanying_phase", "idle")
-    if not state["yuanying_enabled"]:
-        return "模块已关闭"
-    if phase == "waiting_summary":
-        return "等待归窍总结"
-    if phase == "post_summary_wait":
-        return "归窍后30秒缓冲中"
-    if phase == "launching":
-        return "出窍指令已发出，等待回复"
-    if phase == "running" or (phase == "idle" and state["next_yuanying_time"] > now):
-        return "元婴执行中"
-    if state["last_yuanying_command_time"] > 0 and now - state["last_yuanying_command_time"] < YUANYING_PROTECT_SEC:
-        return "30秒保护中"
-    return "无"
+    return get_block_reason(YUANYING_SPEC, now)
 
 
 async def update_yuanying_block_log_state(waiting=None, protect=None):
-    if waiting is not None:
-        prev = state.get("yuanying_waiting_logged", False)
-        if waiting and not prev:
-            state["yuanying_waiting_logged"] = True
-            console_log("👶 元婴时间已到，但当前仍在等待归窍总结，暂不执行元婴出窍。")
-        elif not waiting and prev:
-            state["yuanying_waiting_logged"] = False
-            console_log("👶 等待归窍总结状态已结束。")
-
-    if protect is not None:
-        prev = state.get("yuanying_protect_logged", False)
-        if protect and not prev:
-            state["yuanying_protect_logged"] = True
-            console_log("👶 元婴时间已到，但当前处于 30 秒保护中，暂不重复执行。")
-        elif not protect and prev:
-            state["yuanying_protect_logged"] = False
-            console_log("👶 元婴 30 秒保护状态已结束。")
+    await update_block_log_state(YUANYING_SPEC, waiting=waiting, protect=protect)
 
 
 def get_yuanying_phase_text(phase=None, now=None):
-    if phase is None:
-        phase = state.get("yuanying_phase", "idle")
-    if now is None:
-        now = time.time()
-
-    if phase == "waiting_summary":
-        return "等待归窍总结"
-    if phase == "post_summary_wait":
-        return "总结后缓冲中"
-    if phase == "launching":
-        return "出窍中"
-    if phase == "running":
-        return "云游中"
-    if phase == "idle":
-        if state["next_yuanying_time"] > now:
-            return "CD中"
-        if state["last_yuanying_command_time"] > 0 and now - state["last_yuanying_command_time"] < YUANYING_PROTECT_SEC:
-            return "30秒保护中"
-        return "待出窍"
-    return "待出窍"
+    return get_phase_text(YUANYING_SPEC, phase=phase, now=now)
 
 
 def get_yuanying_status_detail_text():
-    return (
-        "👶 元婴\n"
-        f"- 当前阶段：{get_yuanying_phase_text()}\n"
-        f"- 当前阻塞原因：{get_yuanying_block_reason()}\n"
-        f"- 下次执行：{fmt_abs_ts(state['next_yuanying_time'])}（{fmt_remaining(state['next_yuanying_time'])}）\n"
-        f"- 归窍总结待触发：{'是' if state.get('yuanying_phase') == 'waiting_summary' else '否'}｜30秒缓冲中：{'是' if state.get('yuanying_phase') == 'post_summary_wait' else '否'}"
-    )
+    return get_status_detail_text(YUANYING_SPEC)
 
 
 def mark_yuanying_success(now, next_time=None):
-    set_yuanying_phase("running")
-    state["yuanying_probe_pending"] = False
-    state["yuanying_summary_sent_at"] = 0
-    state["last_yuanying_summary_msg_id"] = 0
-    state["last_yuanying_command_time"] = now
-    if next_time is None:
-        next_time = now + YUANYING_CD + CD_BUFFER_SEC
-    state["next_yuanying_time"] = next_time
+    mark_success(YUANYING_SPEC, now, next_time=next_time)
     save_state()
 
 
 def clear_yuanying_summary_flags():
-    state["yuanying_summary_sent_at"] = 0
-    state["last_yuanying_summary_msg_id"] = 0
-    if state.get("yuanying_phase") == "waiting_summary":
-        set_yuanying_phase("idle")
+    clear_summary_flags(YUANYING_SPEC)
 
 
 def begin_yuanying_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC):
-    clear_yuanying_summary_flags()
-    set_yuanying_phase("post_summary_wait")
-    state["yuanying_probe_pending"] = False
-    state["next_yuanying_time"] = now + delay
-    save_state()
+    begin_post_summary_wait(YUANYING_SPEC, now, delay=delay)
 
 
 def begin_yuanying_summary_wait(now):
-    set_yuanying_phase("waiting_summary")
-    state["yuanying_summary_sent_at"] = now
-    save_state()
+    begin_summary_wait(YUANYING_SPEC, now)
 
 
 async def delete_yuanying_summary_trigger_msg():
-    msg_id = state.get("last_yuanying_summary_msg_id", 0)
-    if not msg_id:
-        return
-    if is_auto_delete_sent_messages_enabled():
-        try:
-            from ..runtime import _get_identity_client
-            await _get_identity_client().delete_messages(get_game_group_id(), [msg_id])
-        except Exception:
-            pass
-    state["my_msg_ids"].pop(msg_id, None)
+    await delete_summary_trigger_msg(YUANYING_SPEC)
 
 
 async def schedule_yuanying_status_probe(delay=None):
@@ -294,110 +270,16 @@ async def handle_yuanying_summary_broadcast(text, now):
     )
 
     with use_identity(target_id):
-        await delete_yuanying_summary_trigger_msg()
-        begin_yuanying_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC)
-        await update_yuanying_block_log_state(waiting=False, protect=False)
-        console_log("👶 收到归窍总结，30 秒后继续。")
+        await finalize_summary_broadcast(YUANYING_SPEC, now)
 
 
 async def run_yuanying_scheduler(now):
-    if not state["yuanying_enabled"]:
-        return
-
-    if state.get("yuanying_phase") == "launching":
-        if state["last_yuanying_command_time"] > 0 and now - state["last_yuanying_command_time"] >= LAUNCHING_TIMEOUT_SEC:
-            set_yuanying_phase("idle")
-            save_state()
-            await send_audit_log("👶 launching 超时，已回退。")
-        return
-
-    if state.get("yuanying_phase") == "waiting_summary" and state["yuanying_summary_sent_at"] <= 0:
-        await delete_yuanying_summary_trigger_msg()
-        clear_yuanying_summary_flags()
-        set_yuanying_phase("launching")
-        state["last_yuanying_command_time"] = now
-        state["next_yuanying_time"] = now + YUANYING_CD + CD_BUFFER_SEC
-        save_state()
-        await send_audit_log("👶 归窍等待异常，已解卡继续。")
-        msg = await send_game_command(CMD_YUANYING, track=False)
-        if msg:
-            await schedule_yuanying_status_probe(random.uniform(8, 12))
-        else:
-            set_yuanying_phase("idle")
-            save_state()
-        return
-
-    if state.get("yuanying_phase") == "waiting_summary" and state["yuanying_summary_sent_at"] > 0 and now - state["yuanying_summary_sent_at"] >= SUMMARY_TIMEOUT_SEC:
-        await delete_yuanying_summary_trigger_msg()
-        clear_yuanying_summary_flags()
-        set_yuanying_phase("launching")
-        state["last_yuanying_command_time"] = now
-        state["next_yuanying_time"] = now + YUANYING_CD + CD_BUFFER_SEC
-        save_state()
-        await send_audit_log("👶 归窍总结超时，按兜底继续。")
-        msg = await send_game_command(CMD_YUANYING, track=False)
-        if msg:
-            await schedule_yuanying_status_probe(random.uniform(8, 12))
-        else:
-            set_yuanying_phase("idle")
-            save_state()
-        return
-
-    if state.get("yuanying_phase") == "post_summary_wait":
-        await update_yuanying_block_log_state(waiting=False, protect=False)
-        if now < state["next_yuanying_time"]:
-            return
-
-        set_yuanying_phase("launching")
-        state["last_yuanying_command_time"] = now
-        state["next_yuanying_time"] = now + YUANYING_CD + CD_BUFFER_SEC
-        save_state()
-        console_log("👶 归窍缓冲结束，继续元婴。")
-        msg = await send_game_command(CMD_YUANYING)
-        if not msg:
-            set_yuanying_phase("idle")
-            save_state()
-        return
-
-    if state.get("yuanying_phase") == "running" and state["next_yuanying_time"] > 0 and now >= state["next_yuanying_time"]:
-        state["yuanying_probe_pending"] = False
-        begin_yuanying_summary_wait(now)
-        console_log("👶 元婴归来时间到，先发 1。")
-        msg = await send_game_command("1", track=False)
-        if msg:
-            state["last_yuanying_summary_msg_id"] = msg.id
-            save_state()
-        return
-
-    if state.get("yuanying_phase") == "waiting_summary":
-        if state["next_yuanying_time"] <= now:
-            await update_yuanying_block_log_state(waiting=True, protect=False)
-        else:
-            await update_yuanying_block_log_state(waiting=False, protect=False)
-        return
-    else:
-        await update_yuanying_block_log_state(waiting=False)
-
-    if state.get("yuanying_phase") == "running":
-        await update_yuanying_block_log_state(protect=False)
-        return
-
-    if state["last_yuanying_command_time"] > 0 and now - state["last_yuanying_command_time"] < YUANYING_PROTECT_SEC:
-        if state["next_yuanying_time"] <= now:
-            await update_yuanying_block_log_state(waiting=False, protect=True)
-        else:
-            await update_yuanying_block_log_state(protect=False)
-        return
-    else:
-        await update_yuanying_block_log_state(protect=False)
-
-    if now >= state["next_yuanying_time"]:
-        begin_yuanying_summary_wait(now)
-        console_log("👶 元婴 CD 到，先发 1。")
-        msg = await send_game_command("1", track=False)
-        if msg:
-            state["last_yuanying_summary_msg_id"] = msg.id
-            save_state()
+    await run_phaseful_scheduler(
+        YUANYING_SPEC,
+        now,
+        launch_command=CMD_YUANYING,
+        schedule_probe=schedule_yuanying_status_probe,
+    )
 
 
 __all__ = [

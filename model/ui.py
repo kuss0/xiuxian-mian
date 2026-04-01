@@ -1264,13 +1264,13 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
 
     auto_delete_enabled = bool(auto_delete_sent_messages)
     set_game_group_id(group_id)
-    set_game_bot_ids(parsed_bot_ids)
+    normalized_bot_ids = set_game_bot_ids(parsed_bot_ids)
     set_game_topic_id(topic_id)
     set_auto_delete_sent_messages(auto_delete_enabled)
     save_state()
     actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
     display_topic = str(topic_id) if topic_id > 0 else "未启用"
-    display_bots = ", ".join(str(bot_id) for bot_id in parsed_bot_ids)
+    display_bots = ", ".join(str(bot_id) for bot_id in normalized_bot_ids)
     display_auto_delete = "开启" if auto_delete_enabled else "关闭"
     await send_audit_log(
         f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}{actor_suffix}",
