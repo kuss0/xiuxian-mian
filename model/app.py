@@ -7,7 +7,7 @@ from datetime import datetime
 from telethon import events
 
 from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_client, register_client
-from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, scan_startup_timeout_tasks, toggle_global_enabled
+from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
     handle_deep_retreat_running_reply,
@@ -214,7 +214,8 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
     if routed_identity_id <= 0:
         return False
     if not _is_identity_owner_event(event, routed_identity_id):
-        return True
+        # 非属主 client 只能弃权，不能把 routed reply 误标为已处理。
+        return False
 
     already_consumed = bool(matched_family) and _has_runtime_message_consumed(event, matched_family)
     with use_identity(routed_identity_id):
@@ -402,6 +403,7 @@ async def bootstrap():
     loaded = load_state()
 
     # 启动已保存的额外账号 client
+    failed_accounts = []
     for acct_id_str, acct_info in get_accounts().items():
         try:
             acct_id = int(acct_id_str)
@@ -414,6 +416,8 @@ async def bootstrap():
             register_client(acct_id, tc)
             _register_event_handlers(tc)
         except Exception:
+            error_text = traceback.format_exc().strip().splitlines()[-1] if traceback.format_exc().strip() else "启动失败"
+            failed_accounts.append({"account_id": int(acct_id_str), "error": error_text})
             print(f"启动额外账号 {acct_id_str} 失败: {traceback.format_exc()}")
 
     await start_ui_server()
@@ -437,6 +441,7 @@ async def bootstrap():
                 pass
 
     identity_ids = get_identity_ids()
+    startup_account_check_result = run_startup_account_integrity_check(identity_ids, failed_accounts)
     for send_as_id in identity_ids:
         try:
             account_id = get_identity_account(send_as_id)
@@ -522,6 +527,7 @@ async def bootstrap():
         audit_lines.append(
             f"⚠️ 启动扫描：发现超时任务并自动关闭 {startup_scan_result['closed_count']} 个模块，登录 UI 后可手动恢复。"
         )
+    audit_lines.extend(startup_account_check_result.get("audit_lines") or [])
     await send_audit_log("\n".join(audit_lines), scope="global", limit=1200)
 
 

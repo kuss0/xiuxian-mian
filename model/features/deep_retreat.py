@@ -142,14 +142,13 @@ async def delete_deep_retreat_summary_trigger_msg():
     state["my_msg_ids"].pop(msg_id, None)
 
 
-async def schedule_deep_retreat_status_probe(delay=None):
+async def schedule_deep_retreat_status_probe(delay=None, allowed_phases=("launching",)):
     if delay is None:
         delay = random.uniform(5, 10)
 
     async def delayed_status():
         await asyncio.sleep(delay)
-        # 如果已经闭关成功（phase=running），不再多余查询
-        if state.get("deep_retreat_phase") not in ("launching",):
+        if state.get("deep_retreat_phase") not in tuple(allowed_phases or ("launching",)):
             return
         await send_game_command(CMD_DEEP_RETREAT_QUERY, track=False)
 
@@ -192,10 +191,8 @@ async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=
     if matched_family != "deep_retreat" and CMD_DEEP_RETREAT not in orig_cmd:
         return False
 
-    probe_hit = (
-        "深度闭关" in text and any(k in text for k in ["正在", "闭关中", "预计还需", "功成圆满"])
-    )
-    if not probe_hit:
+    already_in_retreat_hit = "你已在深度闭关之中" in text
+    if not already_in_retreat_hit:
         return False
 
     set_deep_retreat_phase("running")
@@ -205,7 +202,7 @@ async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=
 
     state["deep_retreat_probe_pending"] = True
     mark_dirty()
-    await schedule_deep_retreat_status_probe()
+    await schedule_deep_retreat_status_probe(random.uniform(10, 15), allowed_phases=("running", "launching"))
     return True
 
 

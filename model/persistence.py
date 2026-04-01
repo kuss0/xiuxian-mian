@@ -311,6 +311,10 @@ def init_db():
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("identity_account_map", "{}"),
     )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("identity_membership_initialized", "0"),
+    )
     conn.commit()
     _db_initialized = True
 
@@ -535,51 +539,80 @@ def save_quiz_learning_watchers_state():
         traceback.print_exc()
 
 
+def _save_meta_state(conn):
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("game_group_id", str(get_game_group_id())),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("game_bot_ids", json.dumps(get_game_bot_ids(), ensure_ascii=False)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("game_topic_id", str(get_game_topic_id())),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("forum_topics", json.dumps(get_forum_topics(), ensure_ascii=False)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("forum_topics_updated_at", str(get_forum_topics_updated_at())),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("auto_delete_sent_messages", "1" if is_auto_delete_sent_messages_enabled() else "0"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("global_enabled", "1" if get_global_enabled() else "0"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("quiz_learning_watchers", json.dumps(get_quiz_learning_watchers(), ensure_ascii=False)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("accounts", json.dumps(get_accounts(), ensure_ascii=False)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("identity_account_map", json.dumps(get_identity_account_map(), ensure_ascii=False)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        ("identity_membership_initialized", "1"),
+    )
+
+
+
+def delete_identity_from_db(send_as_id):
+    init_db()
+    conn = get_db_conn()
+    send_as_id = int(send_as_id)
+    conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (send_as_id,))
+    conn.execute("DELETE FROM message_index WHERE send_as_id = ?", (send_as_id,))
+    conn.execute("DELETE FROM identity_runtime_state WHERE send_as_id = ?", (send_as_id,))
+    conn.execute("DELETE FROM identity_timers WHERE send_as_id = ?", (send_as_id,))
+    conn.execute("DELETE FROM identity_module_state WHERE send_as_id = ?", (send_as_id,))
+    conn.execute("DELETE FROM identities WHERE send_as_id = ?", (send_as_id,))
+
+
+
 def save_state():
     global _state_dirty, _last_flush_time
     try:
         init_db()
         conn = get_db_conn()
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("game_group_id", str(get_game_group_id())),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("game_bot_ids", json.dumps(get_game_bot_ids(), ensure_ascii=False)),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("game_topic_id", str(get_game_topic_id())),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("forum_topics", json.dumps(get_forum_topics(), ensure_ascii=False)),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("forum_topics_updated_at", str(get_forum_topics_updated_at())),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("auto_delete_sent_messages", "1" if is_auto_delete_sent_messages_enabled() else "0"),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("global_enabled", "1" if get_global_enabled() else "0"),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("quiz_learning_watchers", json.dumps(get_quiz_learning_watchers(), ensure_ascii=False)),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("accounts", json.dumps(get_accounts(), ensure_ascii=False)),
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            ("identity_account_map", json.dumps(get_identity_account_map(), ensure_ascii=False)),
-        )
+        _save_meta_state(conn)
+        existing_ids = {
+            int(row["send_as_id"])
+            for row in conn.execute("SELECT send_as_id FROM identities").fetchall()
+        }
+        current_ids = {int(send_as_id) for send_as_id in get_identity_ids()}
+        for send_as_id in sorted(existing_ids - current_ids):
+            delete_identity_from_db(send_as_id)
         for send_as_id in get_identity_ids():
             upsert_identity_to_db(send_as_id)
         conn.commit()
@@ -644,13 +677,10 @@ def load_state():
             identity_account_map = {}
         set_identity_account_map(identity_account_map)
 
+        membership_initialized = str(meta_map.get("identity_membership_initialized") or "0").strip() == "1"
         rows = conn.execute(
             "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()
-        if not rows:
-            for send_as_id in SEND_AS_IDS:
-                ensure_identity_registered(send_as_id)
-            return True
 
         _meta_state["identity_ids"] = []
         _meta_state["identity_states"] = {}
@@ -659,8 +689,14 @@ def load_state():
             _meta_state["identity_ids"].append(send_as_id)
             _load_identity_from_db(send_as_id)
 
-        for send_as_id in SEND_AS_IDS:
-            ensure_identity_registered(send_as_id)
+        if not membership_initialized:
+            for send_as_id in SEND_AS_IDS:
+                ensure_identity_registered(send_as_id)
+            _save_meta_state(conn)
+            for send_as_id in get_identity_ids():
+                upsert_identity_to_db(send_as_id)
+            conn.commit()
+
         return True
     except Exception:
         traceback.print_exc()
@@ -675,6 +711,7 @@ __all__ = [
     "get_db_conn",
     "init_db",
     "load_state",
+    "delete_identity_from_db",
     "mark_dirty",
     "save_quiz_learning_watchers_state",
     "save_state",

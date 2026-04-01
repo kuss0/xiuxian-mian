@@ -236,7 +236,7 @@ GLOBAL_STATE_DEFAULTS = {
     "global_enabled": True,
     "send_as_profiles": {},
     "identity_states": {},
-    "identity_ids": list(SEND_AS_IDS),
+    "identity_ids": [],
     "quiz_learning_watchers": {},
     "accounts": {},
     "identity_account_map": {},
@@ -248,6 +248,14 @@ def new_identity_state():
     return copy.deepcopy(IDENTITY_STATE_TEMPLATE)
 
 
+def has_identity(send_as_id):
+    try:
+        send_as_id = int(send_as_id)
+    except (TypeError, ValueError):
+        return False
+    return send_as_id in _meta_state["identity_ids"]
+
+
 def ensure_identity_registered(send_as_id):
     send_as_id = int(send_as_id)
     if send_as_id not in _meta_state["identity_ids"]:
@@ -257,16 +265,40 @@ def ensure_identity_registered(send_as_id):
     return _meta_state["identity_states"][send_as_id]
 
 
+def remove_identity(send_as_id):
+    send_as_id = int(send_as_id)
+    removed = False
+    if send_as_id in _meta_state["identity_ids"]:
+        _meta_state["identity_ids"] = [identity_id for identity_id in _meta_state["identity_ids"] if identity_id != send_as_id]
+        removed = True
+    if _meta_state["identity_states"].pop(send_as_id, None) is not None:
+        removed = True
+    if _meta_state["send_as_profiles"].pop(send_as_id, None) is not None:
+        removed = True
+    identity_account_map = get_identity_account_map()
+    if identity_account_map.pop(str(send_as_id), None) is not None:
+        set_identity_account_map(identity_account_map)
+        removed = True
+    if not has_active_identity_context() and int(_current_identity_id.get() or 0) == send_as_id:
+        fallback_identity_id = int((_meta_state["identity_ids"] or [SEND_AS_DEFAULT_ID or 0])[0] or 0)
+        _current_identity_id.set(fallback_identity_id)
+    return removed
+
+
 def get_identity_ids():
-    if not _meta_state["identity_ids"] and SEND_AS_IDS:
-        _meta_state["identity_ids"] = list(SEND_AS_IDS)
     for send_as_id in list(_meta_state["identity_ids"]):
-        ensure_identity_registered(send_as_id)
+        if send_as_id not in _meta_state["identity_states"]:
+            _meta_state["identity_states"][send_as_id] = new_identity_state()
     return list(_meta_state["identity_ids"])
 
 
 def get_current_identity_id():
-    send_as_id = _current_identity_id.get()
+    send_as_id = int(_current_identity_id.get() or 0)
+    if has_identity(send_as_id):
+        return send_as_id
+    identity_ids = get_identity_ids()
+    if identity_ids:
+        return int(identity_ids[0])
     return int(send_as_id or SEND_AS_DEFAULT_ID or 0)
 
 
@@ -284,7 +316,12 @@ def get_active_identity_id():
 def get_identity_state(send_as_id=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
-    return ensure_identity_registered(send_as_id)
+    send_as_id = int(send_as_id or 0)
+    if not has_identity(send_as_id):
+        raise KeyError(f"unknown identity: {send_as_id}")
+    if send_as_id not in _meta_state["identity_states"]:
+        _meta_state["identity_states"][send_as_id] = new_identity_state()
+    return _meta_state["identity_states"][send_as_id]
 
 
 def set_send_as_profile(
@@ -327,6 +364,7 @@ def set_send_as_profile(
 
 def update_send_as_profile(send_as_id, **changes):
     send_as_id = int(send_as_id)
+    ensure_identity_registered(send_as_id)
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(send_as_id, {}))
 
@@ -362,7 +400,6 @@ def update_send_as_profile(send_as_id, **changes):
         profile["enabled"] = bool(changes.get("enabled"))
 
     _meta_state["send_as_profiles"][send_as_id] = profile
-    ensure_identity_registered(send_as_id)
     return profile
 
 
@@ -599,6 +636,8 @@ def get_identity_account(send_as_id):
 
 
 def set_identity_account(send_as_id, account_id):
+    send_as_id = int(send_as_id)
+    ensure_identity_registered(send_as_id)
     m = get_identity_account_map()
     m[str(send_as_id)] = int(account_id)
     set_identity_account_map(m)
@@ -791,7 +830,10 @@ def split_command_identity_selector(text):
 @contextmanager
 def use_identity(send_as_id):
     send_as_id = int(send_as_id)
-    ensure_identity_registered(send_as_id)
+    if not has_identity(send_as_id):
+        raise KeyError(f"unknown identity: {send_as_id}")
+    if send_as_id not in _meta_state["identity_states"]:
+        _meta_state["identity_states"][send_as_id] = new_identity_state()
     token = _current_identity_id.set(send_as_id)
     active_token = _identity_context_active.set(True)
     try:
@@ -847,8 +889,6 @@ class StateProxy:
 
 
 state = StateProxy()
-for _send_as_id in SEND_AS_IDS:
-    ensure_identity_registered(_send_as_id)
 
 
 __all__ = [
@@ -865,6 +905,8 @@ __all__ = [
     "SEND_AS_IDS",
     "StateProxy",
     "ensure_identity_registered",
+    "has_identity",
+    "remove_identity",
     "get_active_identity_id",
     "get_current_identity_id",
     "get_game_group_id",

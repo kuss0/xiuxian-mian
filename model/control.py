@@ -45,10 +45,11 @@ from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text
 from .features.yuanying import get_yuanying_status_detail_text
-from .persistence import mark_dirty, save_state
+from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
     build_ui_login_url,
+    clear_identity_runtime_tracking,
     clear_pending_tasks_by_commands,
     console_log,
     issue_ui_login_token,
@@ -58,14 +59,18 @@ from .runtime import (
 )
 from .state import (
     ensure_identity_registered,
+    get_accounts,
     get_available_module_names,
     get_current_identity_id,
     get_game_group_id,
+    get_identity_account,
     get_identity_display_name,
     get_identity_enabled,
     get_identity_ids,
     get_identity_ui_display_name,
     get_global_enabled,
+    has_identity,
+    remove_identity,
     set_global_enabled as set_global_enabled_state,
     get_module_window_hours,
     get_pet_name,
@@ -75,6 +80,7 @@ from .state import (
     get_send_as_tags,
     is_module_available,
     is_yuanying_realm_available,
+    set_identity_account,
     set_identity_enabled as set_identity_enabled_profile,
     set_module_window_hours,
     split_command_identity_selector,
@@ -662,6 +668,166 @@ def _get_pending_task_module_name(command):
     if raw_command == CMD_PET or raw_command.startswith(f"{CMD_PET} "):
         return "法宝"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")
+
+
+def _truncate_startup_account_detail(text, *, limit=80):
+    raw_text = str(text or "").strip()
+    if not raw_text or len(raw_text) <= limit:
+        return raw_text
+    return raw_text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def collect_startup_account_integrity(identity_ids, failed_accounts=None):
+    accounts = get_accounts()
+    failed_accounts = list(failed_accounts or [])
+    failed_account_ids = set()
+    normalized_failed_accounts = []
+    for item in failed_accounts:
+        if isinstance(item, dict):
+            try:
+                account_id = int(item.get("account_id") or 0)
+            except (TypeError, ValueError):
+                account_id = 0
+            error_text = _truncate_startup_account_detail(item.get("error") or "")
+        else:
+            try:
+                account_id = int(item)
+            except (TypeError, ValueError):
+                account_id = 0
+            error_text = ""
+        if account_id <= 0:
+            continue
+        failed_account_ids.add(account_id)
+        normalized_failed_accounts.append({
+            "account_id": account_id,
+            "error": error_text,
+        })
+
+    items = []
+    for send_as_id in identity_ids or []:
+        send_as_id = int(send_as_id)
+        account_id = int(get_identity_account(send_as_id) or 0)
+        display_name = get_identity_display_name(send_as_id)
+        if account_id <= 0:
+            items.append({
+                "type": "identity_missing_account",
+                "send_as_id": send_as_id,
+                "display_name": display_name,
+                "account_id": 0,
+            })
+            items.append({
+                "type": "identity_hydrate_skipped_no_account",
+                "send_as_id": send_as_id,
+                "display_name": display_name,
+                "account_id": 0,
+            })
+            continue
+        if str(account_id) not in accounts:
+            items.append({
+                "type": "identity_account_not_found",
+                "send_as_id": send_as_id,
+                "display_name": display_name,
+                "account_id": account_id,
+            })
+
+    for failed in normalized_failed_accounts:
+        items.append({
+            "type": "account_client_start_failed",
+            "account_id": failed["account_id"],
+            "error": failed["error"],
+        })
+
+    return {
+        "identity_ids": [int(identity_id) for identity_id in identity_ids or []],
+        "items": items,
+        "failed_accounts": normalized_failed_accounts,
+        "failed_account_ids": sorted(failed_account_ids),
+    }
+
+
+def repair_startup_account_integrity(scan_result):
+    scan_result = scan_result or {}
+    items = list(scan_result.get("items") or [])
+    fixed_count = 0
+    fixed_items = []
+    type_counts = {}
+    for item in items:
+        issue_type = str(item.get("type") or "").strip()
+        if not issue_type:
+            continue
+        type_counts[issue_type] = int(type_counts.get(issue_type, 0) or 0) + 1
+        if issue_type != "identity_account_not_found":
+            continue
+        send_as_id = int(item.get("send_as_id") or 0)
+        account_id = int(item.get("account_id") or 0)
+        if send_as_id <= 0 or account_id <= 0:
+            continue
+        if int(get_identity_account(send_as_id) or 0) != account_id:
+            continue
+        set_identity_account(send_as_id, 0)
+        fixed_count += 1
+        fixed_items.append({
+            "type": issue_type,
+            "send_as_id": send_as_id,
+            "display_name": item.get("display_name") or get_identity_display_name(send_as_id),
+            "old_account_id": account_id,
+        })
+
+    return {
+        "identity_count": len(scan_result.get("identity_ids") or []),
+        "items": items,
+        "type_counts": type_counts,
+        "fixed_count": fixed_count,
+        "fixed_items": fixed_items,
+        "failed_accounts": list(scan_result.get("failed_accounts") or []),
+    }
+
+
+def build_startup_account_integrity_audit_lines(result):
+    result = result or {}
+    items = list(result.get("items") or [])
+    if not items:
+        return []
+    type_counts = result.get("type_counts") or {}
+    fixed_count = int(result.get("fixed_count") or 0)
+    lines = [
+        "🧩 启动账号自检：",
+        f"- 检查身份: {int(result.get('identity_count') or 0)}",
+        f"- 缺少账号绑定: {int(type_counts.get('identity_missing_account', 0) or 0)}",
+        f"- 失效绑定已清理: {fixed_count}",
+        f"- 账号启动失败: {int(type_counts.get('account_client_start_failed', 0) or 0)}",
+        f"- hydrate 跳过: {int(type_counts.get('identity_hydrate_skipped_no_account', 0) or 0)}",
+    ]
+    detail_lines = []
+    for item in result.get("fixed_items") or []:
+        detail_lines.append(
+            f"- 已清理失效绑定：{item.get('display_name') or item.get('send_as_id')} ← {int(item.get('old_account_id') or 0)}"
+        )
+    for item in items:
+        issue_type = item.get("type")
+        if issue_type == "identity_missing_account":
+            detail_lines.append(f"- 未绑定账号：{item.get('display_name') or item.get('send_as_id')}")
+        elif issue_type == "account_client_start_failed":
+            account_id = int(item.get("account_id") or 0)
+            error_text = _truncate_startup_account_detail(item.get("error") or "启动失败")
+            detail_lines.append(f"- 账号启动失败：{account_id}（{error_text or '启动失败'}）")
+    seen = set()
+    compact_detail_lines = []
+    for line in detail_lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        compact_detail_lines.append(line)
+        if len(compact_detail_lines) >= 5:
+            break
+    return lines + compact_detail_lines
+
+
+def run_startup_account_integrity_check(identity_ids, failed_accounts=None):
+    scan_result = collect_startup_account_integrity(identity_ids, failed_accounts)
+    result = repair_startup_account_integrity(scan_result)
+    result["audit_lines"] = build_startup_account_integrity_audit_lines(result)
+    return result
 
 
 def _disable_module_state(module_name):
@@ -1333,6 +1499,25 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
     return True, f"已新增身份：{display_name}，默认全部模块已关闭", canonical_id
 
 
+async def delete_identity(send_as_id, *, source="ui", actor_id=None):
+    send_as_id = int(send_as_id)
+    if not has_identity(send_as_id):
+        return False, f"未知身份: {send_as_id}"
+    display_name = get_identity_display_name(send_as_id)
+    account_id = get_identity_account(send_as_id)
+    clear_identity_runtime_tracking(send_as_id)
+    remove_identity(send_as_id)
+    delete_identity_from_db(send_as_id)
+    save_state()
+    actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
+    account_suffix = f"，保留账号 {account_id} 登录态" if account_id > 0 else ""
+    await send_audit_log(
+        f"🗑️ 已删除身份，来源：{source}{actor_suffix}{account_suffix}",
+        scope="global",
+    )
+    return True, f"已删除身份：{display_name}{account_suffix}"
+
+
 async def set_module_window_config(module_name, start_hour_utc, end_hour_utc, send_as_id=None):
     if module_name not in {"点卯", "闯塔"}:
         return False, f"模块暂不支持窗口设置: {module_name}"
@@ -1595,9 +1780,11 @@ __all__ = [
     "initialize_identity_runtime",
     "is_identity_info_refresh_pending",
     "get_startup_module_alerts",
+    "run_startup_account_integrity_check",
     "refresh_identity_info",
     "run_identity_info_followup_scheduler",
     "register_identity",
+    "delete_identity",
     "scan_startup_timeout_tasks",
     "set_module_enabled",
     "set_module_window_config",

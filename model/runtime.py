@@ -59,6 +59,7 @@ from .state import (
     get_identity_state,
     get_send_as_label,
     has_active_identity_context,
+    has_identity,
     is_auto_delete_sent_messages_enabled,
     state,
     use_identity,
@@ -171,6 +172,44 @@ def _gc_reply_chain_tracker(now=None):
         _reply_chain_tracker.pop(msg_id, None)
 
 
+
+def clear_identity_runtime_tracking(send_as_id):
+    send_as_id = int(send_as_id or 0)
+    if send_as_id <= 0 or not has_identity(send_as_id):
+        return False
+    changed = False
+    tracked_msg_ids = [
+        msg_id
+        for msg_id, payload in _reply_chain_tracker.items()
+        if int((payload or {}).get("send_as_id", 0) or 0) == send_as_id
+    ]
+    for msg_id in tracked_msg_ids:
+        _reply_chain_tracker.pop(msg_id, None)
+        changed = True
+    with use_identity(send_as_id) as identity_state:
+        if identity_state.get("pending_tasks"):
+            identity_state["pending_tasks"] = {}
+            changed = True
+        if identity_state.get("my_msg_ids"):
+            identity_state["my_msg_ids"] = {}
+            changed = True
+        runtime_reset_fields = {
+            "identity_info_reply_msg_ids": [],
+            "last_identity_info_msg_id": 0,
+            "identity_info_last_error": "",
+            "identity_info_last_requested_at": 0,
+            "identity_info_followup_due_at": 0,
+            "identity_info_primary_payload": {},
+        }
+        for key, value in runtime_reset_fields.items():
+            if identity_state.get(key) != value:
+                identity_state[key] = value
+                changed = True
+    if changed:
+        mark_dirty()
+    return changed
+
+
 def resolve_reply_family(command):
     raw_command = str(command or "").strip()
     if not raw_command:
@@ -215,11 +254,13 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None):
     _gc_reply_chain_tracker()
     tracker_payload = _reply_chain_tracker.get(msg_id)
     tracked_identity_id = int((tracker_payload or {}).get("send_as_id", 0) or 0)
-    if tracked_identity_id > 0 and (send_as_id is None or int(send_as_id) == tracked_identity_id):
+    if tracked_identity_id > 0 and has_identity(tracked_identity_id) and (send_as_id is None or int(send_as_id) == tracked_identity_id):
         return tracked_identity_id, "reply_chain_tracker"
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     for identity_id in target_ids:
+        if not has_identity(identity_id):
+            continue
         identity_state = get_identity_state(identity_id)
         if msg_id in identity_state["my_msg_ids"]:
             return identity_id, "my_msg_ids"
@@ -231,7 +272,7 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None):
 def _resolve_identity_message_family(msg_id, send_as_id):
     msg_id = int(msg_id or 0)
     send_as_id = int(send_as_id or 0)
-    if msg_id <= 0 or send_as_id <= 0:
+    if msg_id <= 0 or send_as_id <= 0 or not has_identity(send_as_id):
         return None, 0
 
     _gc_reply_chain_tracker()
@@ -328,6 +369,8 @@ def clear_pending_tasks_by_commands(commands, send_as_id=None):
     removed_ids = []
     changed = False
     for identity_id in target_ids:
+        if not has_identity(identity_id):
+            continue
         with use_identity(identity_id):
             current_removed_ids = _clear_pending_tasks_by_commands_locked(commands)
             if current_removed_ids:
@@ -803,6 +846,8 @@ def gc_my_msg_ids(now=None, send_as_id=None):
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     changed = False
     for identity_id in target_ids:
+        if not has_identity(identity_id):
+            continue
         with use_identity(identity_id) as identity_state:
             expired_ids = [msg_id for msg_id, sent_at in identity_state["my_msg_ids"].items() if now - sent_at > MY_MSG_TTL]
             if expired_ids:
@@ -891,7 +936,7 @@ def _refresh_identity_info_retry_tracking(identity_state, new_msg_id, now):
 async def run_retry_scheduler(now, send_as_id=None):
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     for identity_id in target_ids:
-        if not get_identity_enabled(identity_id):
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
             continue
         with use_identity(identity_id) as identity_state:
             retry_items = list(identity_state["pending_tasks"].items())
@@ -902,7 +947,7 @@ async def run_retry_scheduler(now, send_as_id=None):
             retry = item["retry"]
             family = resolve_reply_family(cmd)
 
-            if now - send_time <= threshold:
+            if now - send_time <= threshold or not has_identity(identity_id):
                 continue
 
             with use_identity(identity_id) as identity_state:
@@ -917,6 +962,10 @@ async def run_retry_scheduler(now, send_as_id=None):
                 cmd = current_item.get("cmd") or cmd
 
                 if retry >= RETRY_LIMIT:
+                    if family == "deep_retreat":
+                        identity_state["pending_tasks"].pop(msg_id, None)
+                        mark_dirty()
+                        continue
                     await send_audit_log(
                         f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 重试 {RETRY_LIMIT} 次仍无响应，已停补发。",
                         scope="identity",
@@ -937,6 +986,8 @@ async def run_retry_scheduler(now, send_as_id=None):
                 send_as_id=identity_id,
             )
             new_msg = await send_game_command(cmd, send_as_id=identity_id)
+            if not has_identity(identity_id):
+                continue
             with use_identity(identity_id) as identity_state:
                 current_item = identity_state["pending_tasks"].get(msg_id)
                 if current_item:
@@ -954,7 +1005,7 @@ async def schedule_cleanup(reply_to, send_as_id=None):
 
     if send_as_id is None:
         send_as_id = find_identity_by_msg_id(reply_to.id)
-    if send_as_id is None:
+    if send_as_id is None or not has_identity(send_as_id):
         return
 
     with use_identity(send_as_id) as identity_state:
@@ -985,6 +1036,8 @@ async def schedule_cleanup(reply_to, send_as_id=None):
             await reply_to.delete()
         except Exception as e:
             print(f"schedule_cleanup delete failed: {e} | msg_id={msg_id}")
+        if not has_identity(send_as_id):
+            return
         with use_identity(send_as_id) as identity_state:
             identity_state["my_msg_ids"].pop(msg_id, None)
             mark_dirty()
@@ -995,6 +1048,7 @@ async def schedule_cleanup(reply_to, send_as_id=None):
 __all__ = [
     "_fire_and_forget",
     "build_ui_login_url",
+    "clear_identity_runtime_tracking",
     "clear_pending_by_reply",
     "clear_pending_tasks_by_commands",
     "clear_ui_auth_state",
