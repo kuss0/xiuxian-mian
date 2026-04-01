@@ -81,6 +81,7 @@ _bot_silence_triggered_at = 0  # 检测到 . 指令的时间，0 表示未触发
 _bot_last_seen_at = 0          # bot 最后发言时间
 _runtime_event_claims = {}
 _runtime_message_consumed = {}
+_runtime_log_claims = {}
 
 
 def _gc_runtime_event_claims(now=None):
@@ -109,6 +110,28 @@ def _gc_runtime_message_consumed(now=None):
     expired_keys = [key for key, expires_at in _runtime_message_consumed.items() if float(expires_at or 0) <= now]
     for key in expired_keys:
         _runtime_message_consumed.pop(key, None)
+
+
+def _gc_runtime_log_claims(now=None):
+    now = float(now if now is not None else time.time())
+    expired_keys = [key for key, expires_at in _runtime_log_claims.items() if float(expires_at or 0) <= now]
+    for key in expired_keys:
+        _runtime_log_claims.pop(key, None)
+
+
+def _claim_runtime_log_event(event, *, event_type, ttl=120.0):
+    msg_id = int(getattr(event, "id", 0) or 0)
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    event_type = str(event_type or "message").strip() or "message"
+    if msg_id <= 0 or chat_id == 0:
+        return True
+    now = time.time()
+    _gc_runtime_log_claims(now)
+    claim_key = f"{event_type}:{chat_id}:{msg_id}"
+    if float(_runtime_log_claims.get(claim_key, 0) or 0) > now:
+        return False
+    _runtime_log_claims[claim_key] = now + float(ttl or 0)
+    return True
 
 
 def _get_runtime_message_consumed_key(event, family):
@@ -149,6 +172,8 @@ def _is_identity_owner_event(event, send_as_id):
 
 def _append_game_group_message_log(event, *, event_type="message"):
     if event.chat_id != get_game_group_id():
+        return
+    if not _claim_runtime_log_event(event, event_type=event_type):
         return
     now = datetime.now(TZ_LOCAL)
     log_file = f"{MESSAGES_DIR}/{now.strftime('%Y-%m-%d')}.log"
