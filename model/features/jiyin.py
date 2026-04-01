@@ -137,9 +137,62 @@ def _parse_jiyin_prompt(text):
     }
 
 
+def _get_jiyin_pending_state():
+    return (
+        int(state.get("jiyin_reply_to_msg_id", 0) or 0),
+        float(state.get("next_jiyin_time", 0) or 0),
+    )
+
+
+def _has_active_jiyin_pending(now):
+    reply_to_msg_id, deadline = _get_jiyin_pending_state()
+    return reply_to_msg_id > 0 and deadline > now
+
+
+def _resolve_effective_jiyin_command(send_as_id=None):
+    effective_choice, choice_source = resolve_jiyin_choice(send_as_id)
+    return effective_choice, choice_source, get_jiyin_choice_command(effective_choice)
+
+
+def _match_jiyin_prompt_for_current_identity(text):
+    parsed = _parse_jiyin_prompt(text)
+    if not parsed:
+        return None
+    identity_id = _find_jiyin_identity_id(text)
+    if identity_id is None or identity_id != get_current_identity_id():
+        return None
+    return parsed
+
+
+def _set_jiyin_pending(reply_to_msg_id, deadline_at):
+    state["jiyin_reply_to_msg_id"] = int(reply_to_msg_id or 0)
+    state["next_jiyin_time"] = float(deadline_at or 0)
+    state["jiyin_last_error"] = ""
+
+
+def _set_jiyin_error_and_save(message):
+    state["jiyin_last_error"] = message
+    save_state()
+
+
+async def _send_jiyin_command(command, reply_to_msg_id):
+    return await send_game_command(command, track=False, reply_to=reply_to_msg_id)
+
+
+async def _maybe_audit_jiyin_prompt_override(previous_reply_to, previous_deadline, now, new_reply_to):
+    if previous_reply_to > 0 and previous_reply_to != new_reply_to and previous_deadline > now:
+        await send_audit_log(f"🌑 新抉择覆盖旧消息：{previous_reply_to}->{new_reply_to}")
+
+
+async def _finalize_jiyin_success(audit_text):
+    await send_audit_log(audit_text)
+    clear_jiyin_state(persist=True)
+
+
 def get_jiyin_status_text():
     saved_choice = normalize_jiyin_choice(get_jiyin_choice())
     effective_choice, choice_source = resolve_jiyin_choice()
+    reply_to_msg_id, deadline = _get_jiyin_pending_state()
     strategy_text = (
         f"已手动保存：{get_jiyin_choice_label(saved_choice)}"
         if saved_choice
@@ -149,8 +202,8 @@ def get_jiyin_status_text():
         "🌑 极阴祖师\n"
         f"- 当前策略：{strategy_text}\n"
         f"- 当前生效：{get_jiyin_choice_label(effective_choice)}（{'手动' if choice_source == 'manual' else '自动'}）\n"
-        f"- 待回复消息ID：{int(state.get('jiyin_reply_to_msg_id', 0) or 0) or '无'}\n"
-        f"- 截止时间：{fmt_abs_ts(state.get('next_jiyin_time', 0))}（{fmt_remaining(state.get('next_jiyin_time', 0))}）\n"
+        f"- 待回复消息ID：{reply_to_msg_id or '无'}\n"
+        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）\n"
         f"- 最近错误：{state.get('jiyin_last_error') or '无'}"
     )
 
@@ -178,28 +231,24 @@ async def apply_jiyin_choice(choice, now=None):
 
     set_jiyin_choice(get_current_identity_id(), normalized_choice)
 
-    pending_reply_to = int(state.get("jiyin_reply_to_msg_id", 0) or 0)
-    pending_deadline = float(state.get("next_jiyin_time", 0) or 0)
-    effective_choice, choice_source = resolve_jiyin_choice()
-    if not state.get("jiyin_enabled") or pending_reply_to <= 0 or pending_deadline <= now:
+    pending_reply_to, _ = _get_jiyin_pending_state()
+    effective_choice, choice_source, command = _resolve_effective_jiyin_command()
+    if not state.get("jiyin_enabled") or not _has_active_jiyin_pending(now):
         save_state()
         if reset_to_auto:
             return True, f"已恢复极阴祖师自动判断：{get_jiyin_choice_label(effective_choice)}"
         return True, f"已保存极阴祖师选择：{get_jiyin_choice_label(normalized_choice)}"
 
-    command = get_jiyin_choice_command(effective_choice)
-    sent_msg = await send_game_command(command, track=False, reply_to=pending_reply_to)
+    sent_msg = await _send_jiyin_command(command, pending_reply_to)
     if not sent_msg:
-        state["jiyin_last_error"] = "极阴祖师选择发送失败"
-        save_state()
+        _set_jiyin_error_and_save("极阴祖师选择发送失败")
         if reset_to_auto:
             return False, f"已恢复自动判断，但发送失败：{get_jiyin_choice_label(effective_choice)}"
         return False, f"已保存极阴祖师选择，但发送失败：{get_jiyin_choice_label(normalized_choice)}"
 
-    await send_audit_log(
+    await _finalize_jiyin_success(
         f"🌑 {'恢复自动' if reset_to_auto else '执行选择'}：{get_jiyin_choice_label(effective_choice)}（{'手动' if choice_source == 'manual' else '自动'}）"
     )
-    clear_jiyin_state(persist=True)
     if reset_to_auto:
         return True, f"已恢复极阴祖师自动判断并执行：{get_jiyin_choice_label(effective_choice)}"
     return True, f"已保存并执行极阴祖师选择：{get_jiyin_choice_label(normalized_choice)}"
@@ -209,41 +258,31 @@ async def handle_jiyin_prompt(text, now, event):
     if not state.get("jiyin_enabled"):
         return False
 
-    parsed = _parse_jiyin_prompt(text)
+    parsed = _match_jiyin_prompt_for_current_identity(text)
     if not parsed:
         return False
 
-    identity_id = _find_jiyin_identity_id(text)
-    if identity_id is None or identity_id != get_current_identity_id():
-        return False
-
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
-    prev_reply_to_msg_id = int(state.get("jiyin_reply_to_msg_id", 0) or 0)
-    prev_deadline = float(state.get("next_jiyin_time", 0) or 0)
-    if prev_reply_to_msg_id > 0 and prev_reply_to_msg_id != reply_to_msg_id and prev_deadline > now:
-        await send_audit_log(f"🌑 新抉择覆盖旧消息：{prev_reply_to_msg_id}->{reply_to_msg_id}")
+    prev_reply_to_msg_id, prev_deadline = _get_jiyin_pending_state()
+    await _maybe_audit_jiyin_prompt_override(prev_reply_to_msg_id, prev_deadline, now, reply_to_msg_id)
 
-    state["jiyin_reply_to_msg_id"] = reply_to_msg_id
-    state["next_jiyin_time"] = now + float(parsed["timeout_sec"])
-    state["jiyin_last_error"] = ""
+    _set_jiyin_pending(reply_to_msg_id, now + float(parsed["timeout_sec"]))
     save_state()
 
-    choice, choice_source = resolve_jiyin_choice()
-    command = get_jiyin_choice_command(choice)
+    choice, choice_source, command = _resolve_effective_jiyin_command()
     if not command:
-        state["jiyin_last_error"] = "极阴祖师选择无效"
-        save_state()
+        _set_jiyin_error_and_save("极阴祖师选择无效")
         return True
 
-    sent_msg = await send_game_command(command, track=False, reply_to=reply_to_msg_id)
+    sent_msg = await _send_jiyin_command(command, reply_to_msg_id)
     if not sent_msg:
-        state["jiyin_last_error"] = "极阴祖师自动回复发送失败"
-        save_state()
+        _set_jiyin_error_and_save("极阴祖师自动回复发送失败")
         await send_audit_log("❌ 极阴自动回复失败，待处理已保留。")
         return True
 
-    await send_audit_log(f"🌑 自动选择：{get_jiyin_choice_label(choice)}（{'手动' if choice_source == 'manual' else '自动'}）")
-    clear_jiyin_state(persist=True)
+    await _finalize_jiyin_success(
+        f"🌑 自动选择：{get_jiyin_choice_label(choice)}（{'手动' if choice_source == 'manual' else '自动'}）"
+    )
     return True
 
 
@@ -251,8 +290,7 @@ async def run_jiyin_scheduler(now):
     if not state.get("jiyin_enabled"):
         return
 
-    reply_to_msg_id = int(state.get("jiyin_reply_to_msg_id", 0) or 0)
-    next_jiyin_time = float(state.get("next_jiyin_time", 0) or 0)
+    reply_to_msg_id, next_jiyin_time = _get_jiyin_pending_state()
     if reply_to_msg_id <= 0 or next_jiyin_time <= 0 or now < next_jiyin_time:
         return
 

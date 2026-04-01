@@ -319,13 +319,77 @@ def _get_quiz_learning_watcher(target_key):
     return watchers.get(watcher_key)
 
 
+def _get_quiz_pending_state():
+    return (
+        int(state.get("quiz_reply_to_msg_id", 0) or 0),
+        float(state.get("next_quiz_time", 0) or 0),
+    )
+
+
+def _has_active_quiz_pending(now):
+    reply_to_msg_id, deadline = _get_quiz_pending_state()
+    return reply_to_msg_id > 0 and deadline > now
+
+
+def _match_quiz_prompt_for_current_identity(text):
+    parsed = _parse_quiz_prompt(text)
+    if not parsed:
+        return None, None
+    identity_id = _find_quiz_identity_id(text)
+    if identity_id is None or identity_id != get_current_identity_id():
+        return None, None
+    return parsed, identity_id
+
+
+def _set_quiz_pending(question, options, answer, reply_to_msg_id, deadline_at, *, last_error, last_matched_at):
+    state["quiz_question"] = question
+    state["quiz_options"] = dict(options or {})
+    state["quiz_answer"] = answer
+    state["quiz_reply_to_msg_id"] = int(reply_to_msg_id or 0)
+    state["next_quiz_time"] = float(deadline_at or 0)
+    state["quiz_last_error"] = last_error
+    state["quiz_last_matched_at"] = last_matched_at
+
+
+def _set_quiz_error_and_save(message):
+    state["quiz_last_error"] = message
+    save_state()
+
+
+async def _send_quiz_answer(answer, reply_to_msg_id):
+    return await send_game_command(f"{CMD_QUIZ_ANSWER} {answer}", track=False, reply_to=reply_to_msg_id)
+
+
+async def _finalize_quiz_success(audit_text, *, identity_id):
+    await send_audit_log(
+        audit_text,
+        scope="identity",
+        send_as_id=identity_id,
+        limit=360,
+    )
+    clear_quiz_state(persist=True)
+
+
+async def _handle_quiz_pending_timeout(now):
+    question = state.get("quiz_question") or "未记录题目"
+    state["quiz_last_error"] = "题目已超时"
+    await send_audit_log(
+        f"⚠️ 玄骨考校题目已超时：{question}",
+        scope="identity",
+        send_as_id=get_current_identity_id(),
+        limit=320,
+    )
+    clear_quiz_state(persist=True, keep_last_error=True)
+
+
 def get_quiz_status_text():
+    reply_to_msg_id, deadline = _get_quiz_pending_state()
     return (
         "🦴 玄骨考校\n"
         f"- 当前题目：{state.get('quiz_question') or '暂无'}\n"
         f"- 匹配答案：{state.get('quiz_answer') or '未匹配'}\n"
-        f"- 待回复消息ID：{int(state.get('quiz_reply_to_msg_id', 0) or 0) or '无'}\n"
-        f"- 截止时间：{fmt_abs_ts(state.get('next_quiz_time', 0))}（{fmt_remaining(state.get('next_quiz_time', 0))}）\n"
+        f"- 待回复消息ID：{reply_to_msg_id or '无'}\n"
+        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）\n"
         f"- 最近错误：{state.get('quiz_last_error') or '无'}"
     )
 
@@ -594,26 +658,25 @@ async def handle_quiz_result_broadcast(text, now=None):
 async def handle_quiz_prompt(text, now, event):
     if not state.get("quiz_enabled"):
         return False
-    if int(state.get("quiz_reply_to_msg_id", 0) or 0) > 0 and float(state.get("next_quiz_time", 0) or 0) > now:
+    if _has_active_quiz_pending(now):
         return False
 
-    parsed = _parse_quiz_prompt(text)
+    parsed, identity_id = _match_quiz_prompt_for_current_identity(text)
     if not parsed:
         return False
 
-    identity_id = _find_quiz_identity_id(text)
-    if identity_id is None or identity_id != get_current_identity_id():
-        return False
-
+    reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     answer, match_mode = _match_quiz_answer(parsed["question"], parsed["options"])
     if not answer:
-        state["quiz_question"] = parsed["question"]
-        state["quiz_options"] = dict(parsed["options"])
-        state["quiz_answer"] = ""
-        state["quiz_reply_to_msg_id"] = int(getattr(event, "id", 0) or 0)
-        state["next_quiz_time"] = now + float(parsed["timeout_sec"])
-        state["quiz_last_error"] = "题库未命中"
-        state["quiz_last_matched_at"] = 0
+        _set_quiz_pending(
+            parsed["question"],
+            parsed["options"],
+            "",
+            reply_to_msg_id,
+            now + float(parsed["timeout_sec"]),
+            last_error="题库未命中",
+            last_matched_at=0,
+        )
         save_state()
         await send_audit_log(
             f"🦴 题库未命中：{parsed['question']}｜{_format_quiz_options(parsed['options'])}",
@@ -623,19 +686,20 @@ async def handle_quiz_prompt(text, now, event):
         )
         return True
 
-    state["quiz_question"] = parsed["question"]
-    state["quiz_options"] = dict(parsed["options"])
-    state["quiz_answer"] = answer
-    state["quiz_reply_to_msg_id"] = int(getattr(event, "id", 0) or 0)
-    state["next_quiz_time"] = now + float(parsed["timeout_sec"])
-    state["quiz_last_error"] = ""
-    state["quiz_last_matched_at"] = now
+    _set_quiz_pending(
+        parsed["question"],
+        parsed["options"],
+        answer,
+        reply_to_msg_id,
+        now + float(parsed["timeout_sec"]),
+        last_error="",
+        last_matched_at=now,
+    )
     save_state()
 
-    reply_msg = await send_game_command(f"{CMD_QUIZ_ANSWER} {answer}", track=False, reply_to=state["quiz_reply_to_msg_id"])
+    reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
     if not reply_msg:
-        state["quiz_last_error"] = "作答发送失败"
-        save_state()
+        _set_quiz_error_and_save("作答发送失败")
         await send_audit_log(
             f"❌ 玄骨考校作答发送失败：{parsed['question']}",
             scope="identity",
@@ -644,13 +708,10 @@ async def handle_quiz_prompt(text, now, event):
         )
         return True
 
-    await send_audit_log(
+    await _finalize_quiz_success(
         f"🦴 已自动作答：{answer}｜{match_mode}｜{parsed['question']}",
-        scope="identity",
-        send_as_id=identity_id,
-        limit=360,
+        identity_id=identity_id,
     )
-    clear_quiz_state(persist=True)
     return True
 
 
@@ -675,18 +736,10 @@ async def run_quiz_learning_scheduler(now):
 async def run_quiz_scheduler(now):
     if not state.get("quiz_enabled"):
         return
-    next_quiz_time = float(state.get("next_quiz_time", 0) or 0)
+    _, next_quiz_time = _get_quiz_pending_state()
     if next_quiz_time <= 0 or now < next_quiz_time:
         return
-    question = state.get("quiz_question") or "未记录题目"
-    state["quiz_last_error"] = "题目已超时"
-    await send_audit_log(
-        f"⚠️ 玄骨考校题目已超时：{question}",
-        scope="identity",
-        send_as_id=get_current_identity_id(),
-        limit=320,
-    )
-    clear_quiz_state(persist=True, keep_last_error=True)
+    await _handle_quiz_pending_timeout(now)
 
 
 __all__ = [
