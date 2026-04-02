@@ -566,8 +566,14 @@ def set_quiz_learning_watchers(watchers):
             for option_key in ("A", "B", "C", "D")
         }
         matched_answer = str(item.get("matched_answer") or "").strip().upper()
+        raw_identity_id = item.get("identity_id")
+        try:
+            identity_id = int(raw_identity_id or 0) or None
+        except (TypeError, ValueError):
+            identity_id = None
         normalized[watcher_key] = {
             "target_tag": str(item.get("target_tag") or "").strip(),
+            "identity_id": identity_id,
             "question": str(item.get("question") or "").strip(),
             "options": normalized_options,
             "expire_at": float(item.get("expire_at") or 0),

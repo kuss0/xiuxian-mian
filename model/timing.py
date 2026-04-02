@@ -33,6 +33,10 @@ def parse_wait_time(text):
     return total_seconds
 
 
+def has_wait_time(text):
+    return any(pattern.search(text or "") for pattern in (RE_HOURS, RE_MINUTES, RE_SECONDS))
+
+
 def fmt_time_after(seconds):
     return (datetime.now(TZ_LOCAL) + timedelta(seconds=seconds)).strftime("%H:%M:%S")
 

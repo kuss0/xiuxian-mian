@@ -15,7 +15,7 @@ from ..config import (
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
-from ..timing import fmt_time_after, parse_wait_time
+from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
     begin_post_summary_wait,
@@ -193,7 +193,7 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
     has_cd_hint = any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息", "归来倒计时"])
     if has_cd_hint:
         wait_sec = parse_wait_time(text)
-        if wait_sec <= 0:
+        if not has_wait_time(text):
             return False
 
         mark_yuanying_success(now, now + wait_sec + CD_BUFFER_SEC)

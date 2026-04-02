@@ -4,7 +4,7 @@ from ..config import CD_BUFFER_SEC, CMD_PET, PET_CD, RETRY_MAX_SEC
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_pet_command, get_pet_name, state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
 
 PET_CD_HINT_KEYWORDS = ("尚未恢复", "冷却", "等待", "不足", "休息")
@@ -48,7 +48,7 @@ async def handle_pet_cd_fix(text, now, reply_to, matched_family=None):
         return False
 
     wait_sec = parse_wait_time(text)
-    if wait_sec <= 0 or not _is_pet_cd_reply(text, reply_to, matched_family=matched_family):
+    if not has_wait_time(text) or not _is_pet_cd_reply(text, reply_to, matched_family=matched_family):
         return False
 
     _set_pet_next_time(now + wait_sec + CD_BUFFER_SEC)

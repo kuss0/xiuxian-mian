@@ -18,7 +18,7 @@ from ..config import (
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
 
 TREE_MATURING_FIRST_STATUS_MIN_SEC = 10 * 60
@@ -110,7 +110,7 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
         return False
 
     wait_sec = parse_wait_time(text)
-    if wait_sec <= 0:
+    if not has_wait_time(text):
         return False
 
     target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)

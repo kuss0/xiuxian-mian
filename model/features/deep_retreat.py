@@ -15,7 +15,7 @@ from ..config import (
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
-from ..timing import fmt_time_after, parse_wait_time
+from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
     begin_post_summary_wait,
@@ -197,7 +197,7 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
 
     if "预计还需" in text and "即可功成圆满" in text:
         wait_sec = parse_wait_time(text)
-        if wait_sec <= 0:
+        if not has_wait_time(text):
             return False
         mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
         await send_audit_log(f"⏳ 深闭 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
