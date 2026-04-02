@@ -178,6 +178,20 @@ def _disable_pet_module_state():
     _clear_pending_tasks_by_commands({CMD_PET})
 
 
+def _manual_disable_pet_module_state():
+    state["pet_enabled"] = False
+    _clear_pending_tasks_by_commands({CMD_PET})
+
+
+
+def _manual_enable_pet_module_state(now):
+    state["pet_enabled"] = True
+    if float(state.get("next_pet_time", 0) or 0) > now:
+        return
+    _schedule_module_immediate_retry("法宝", now)
+
+
+
 def _disable_quiz_module_state():
     state["quiz_enabled"] = False
     clear_quiz_state(persist=False)
@@ -386,6 +400,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
+    "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),

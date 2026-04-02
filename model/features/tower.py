@@ -5,8 +5,47 @@ from ..state import format_window_text, state
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 
 
+TOWER_DONE_HINTS = ("已经闯过", "已闯塔", "已在塔中", "你今日已挑战失败，道心受挫。")
+
+
 def _schedule_tower_next_day(now):
     return schedule_next_tower_after_completion(now, persist=False)
+
+
+def _is_tower_reply(reply_to, matched_family=None):
+    if matched_family == "tower":
+        return True
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    return CMD_TOWER in orig_cmd
+
+
+
+def _mark_tower_done_today(now):
+    state["last_tower_day"] = get_day_key(now)
+    next_ts = _schedule_tower_next_day(now)
+    save_state()
+    return next_ts
+
+
+
+def _normalize_tower_schedule(now):
+    day_key = get_day_key(now)
+    next_tower_time = float(state.get("next_tower_time", 0) or 0)
+    if state["last_tower_day"] == day_key:
+        if next_tower_time <= 0 or get_day_key(next_tower_time) == day_key:
+            next_tower_time = _schedule_tower_next_day(now)
+            save_state()
+        return next_tower_time, True
+
+    if next_tower_time <= 0:
+        state["last_tower_day"] = ""
+        state["last_tower_msg_id"] = 0
+        schedule_next_tower(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_tower_time", 0) or 0), True
+
+    return next_tower_time, False
+
 
 
 def get_tower_status_text():
@@ -24,8 +63,7 @@ async def handle_tower_reply(text, now, reply_to, matched_family=None):
     if not state["tower_enabled"]:
         return False
 
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "tower" and CMD_TOWER not in orig_cmd:
+    if not _is_tower_reply(reply_to, matched_family=matched_family):
         return False
 
     next_ts = state["next_tower_time"]
@@ -35,16 +73,12 @@ async def handle_tower_reply(text, now, reply_to, matched_family=None):
     state["last_tower_msg_id"] = reply_to.id if reply_to else 0
 
     if "【琉璃问心塔】" in text:
-        state["last_tower_day"] = get_day_key(now)
-        next_ts = _schedule_tower_next_day(now)
-        save_state()
+        next_ts = _mark_tower_done_today(now)
         await send_audit_log(f"🗼 闯塔成功→{fmt_abs_ts(next_ts)}")
         return True
 
-    if any(k in text for k in ["已经闯过", "已闯塔", "已在塔中", "你今日已挑战失败，道心受挫。"]):
-        state["last_tower_day"] = get_day_key(now)
-        next_ts = _schedule_tower_next_day(now)
-        save_state()
+    if any(keyword in text for keyword in TOWER_DONE_HINTS):
+        next_ts = _mark_tower_done_today(now)
         await send_audit_log(f"🗼 今日已完成→{fmt_abs_ts(next_ts)}")
         return True
 
@@ -57,25 +91,11 @@ async def run_tower_scheduler(now):
     if not state["tower_enabled"]:
         return
 
-    day_key = get_day_key(now)
-    if state["last_tower_day"] == day_key:
-        next_tower_time = state.get("next_tower_time", 0)
-        if next_tower_time <= 0 or get_day_key(next_tower_time) == day_key:
-            _schedule_tower_next_day(now)
-            save_state()
-            return
-
-    if state["last_tower_day"] != day_key and state["next_tower_time"] <= 0:
-        state["last_tower_day"] = ""
-        state["last_tower_msg_id"] = 0
-        mark_dirty()
-
-    if state["next_tower_time"] <= 0:
-        schedule_next_tower(now, persist=False)
-        mark_dirty()
+    next_tower_time, should_return = _normalize_tower_schedule(now)
+    if should_return:
         return
 
-    if now >= state["next_tower_time"]:
+    if now >= next_tower_time:
         msg = await send_game_command(CMD_TOWER)
         if not msg:
             state["next_tower_time"] = now + RETRY_MAX_SEC
