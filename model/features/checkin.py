@@ -14,6 +14,62 @@ from ..timing import (
 )
 
 
+CHECKIN_DONE_HINTS = ("已点卯", "已经点过")
+
+
+def _is_checkin_reply(reply_to, matched_family=None):
+    if matched_family == "checkin":
+        return True
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    return CMD_CHECKIN in orig_cmd
+
+
+
+def _schedule_checkin_next_day(now):
+    return schedule_next_checkin_after_completion(now, persist=False)
+
+
+
+def _handle_checkin_day_rollover(now, reply_to=None):
+    day_key = get_checkin_day_key(now)
+    if state["checkin_teach_day"] != day_key:
+        reset_checkin_daily_state(now)
+        state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
+    return day_key
+
+
+
+def _mark_checkin_done_and_schedule_teach(now, status_text):
+    day_key = get_checkin_day_key(now)
+    state["last_checkin_done_day"] = day_key
+    next_ts = _schedule_checkin_next_day(now)
+    scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"])
+    save_state()
+    console_log(f"📝 {status_text}→{fmt_abs_ts(next_ts)}")
+    if scheduled:
+        console_log(f"📘 传功已排队→{fmt_abs_ts(state['next_sect_teach_time'])}")
+    return True
+
+
+
+def _normalize_checkin_schedule(now):
+    day_key = get_checkin_day_key(now)
+    next_checkin_time = float(state.get("next_checkin_time", 0) or 0)
+    if state["last_checkin_done_day"] == day_key:
+        if next_checkin_time <= 0 or get_checkin_day_key(next_checkin_time) == day_key:
+            next_checkin_time = _schedule_checkin_next_day(now)
+            save_state()
+        return next_checkin_time, True
+
+    if next_checkin_time <= 0:
+        schedule_next_checkin(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_checkin_time", 0) or 0), True
+
+    return next_checkin_time, False
+
+
+
 def get_checkin_status_text():
     today_key = get_checkin_day_key()
     return (
@@ -44,15 +100,11 @@ def schedule_sect_teach_chain(now, reply_to_msg_id):
 
 
 def is_checkin_already_done_text(text):
-    return any(k in text for k in ["已点卯", "已经点过"])
+    return any(keyword in text for keyword in CHECKIN_DONE_HINTS)
 
 
 def is_sect_teach_already_done_text(text):
     return any(k in text for k in ["已经传功", "已传功"])
-
-
-def _schedule_checkin_next_day(now):
-    return schedule_next_checkin_after_completion(now, persist=False)
 
 
 def remember_checkin_cleanup_msg_id(msg_id):
@@ -87,17 +139,12 @@ async def handle_checkin_reply(text, now, reply_to, matched_family=None):
     if not state["checkin_enabled"]:
         return False
 
-    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "checkin" and CMD_CHECKIN not in orig_cmd:
+    if not _is_checkin_reply(reply_to, matched_family=matched_family):
         return False
 
-    day_key = get_checkin_day_key(now)
     state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
     remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"])
-
-    if state["checkin_teach_day"] != day_key:
-        reset_checkin_daily_state(now)
-        state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
+    _handle_checkin_day_rollover(now, reply_to=reply_to)
 
     next_ts = state["next_checkin_time"]
     if next_ts <= now:
@@ -105,24 +152,10 @@ async def handle_checkin_reply(text, now, reply_to, matched_family=None):
     mark_dirty()
 
     if "点卯成功" in text:
-        state["last_checkin_done_day"] = day_key
-        next_ts = _schedule_checkin_next_day(now)
-        scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"])
-        save_state()
-        console_log(f"📝 点卯成功→{fmt_abs_ts(next_ts)}")
-        if scheduled:
-            console_log(f"📘 传功已排队→{fmt_abs_ts(state['next_sect_teach_time'])}")
-        return True
+        return _mark_checkin_done_and_schedule_teach(now, "点卯成功")
 
     if is_checkin_already_done_text(text):
-        state["last_checkin_done_day"] = day_key
-        next_ts = _schedule_checkin_next_day(now)
-        scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"])
-        save_state()
-        console_log(f"📝 点卯已完成→{fmt_abs_ts(next_ts)}")
-        if scheduled:
-            console_log(f"📘 传功已排队→{fmt_abs_ts(state['next_sect_teach_time'])}")
-        return True
+        return _mark_checkin_done_and_schedule_teach(now, "点卯已完成")
 
     console_log(f"📝 收到点卯回复→{fmt_abs_ts(next_ts)}")
     return True
@@ -176,13 +209,6 @@ async def run_checkin_scheduler(now):
         reset_checkin_daily_state(now)
         mark_dirty()
 
-    if state["last_checkin_done_day"] == day_key:
-        next_checkin_time = state.get("next_checkin_time", 0)
-        if next_checkin_time <= 0 or get_checkin_day_key(next_checkin_time) == day_key:
-            _schedule_checkin_next_day(now)
-            save_state()
-            return
-
     if state["next_sect_teach_time"] > 0 and now >= state["next_sect_teach_time"]:
         reply_to_msg_id = state.get("sect_teach_reply_to_msg_id", 0)
         if reply_to_msg_id and state["checkin_teach_count"] < 3:
@@ -202,12 +228,11 @@ async def run_checkin_scheduler(now):
             state["sect_teach_reply_to_msg_id"] = 0
             mark_dirty()
 
-    if state["next_checkin_time"] <= 0:
-        schedule_next_checkin(now, persist=False)
-        mark_dirty()
+    next_checkin_time, should_return = _normalize_checkin_schedule(now)
+    if should_return:
         return
 
-    if now >= state["next_checkin_time"]:
+    if now >= next_checkin_time:
         next_ts = schedule_next_checkin(now, persist=False)
         msg = await send_game_command(CMD_CHECKIN)
         if not msg:
