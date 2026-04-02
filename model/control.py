@@ -1156,6 +1156,67 @@ def _normalize_identity_refresh_payload(payload):
     return normalized
 
 
+def _merge_identity_refresh_payload(base_payload, overlay_payload):
+    merged_payload = _normalize_identity_refresh_payload(base_payload or {})
+    overlay_payload = _normalize_identity_refresh_payload(overlay_payload or {})
+    if overlay_payload["daohao"]:
+        merged_payload["daohao"] = overlay_payload["daohao"]
+    if overlay_payload["realm"]:
+        merged_payload["realm"] = overlay_payload["realm"]
+    if overlay_payload["sect_name"]:
+        merged_payload["sect_name"] = overlay_payload["sect_name"]
+    if int(overlay_payload.get("xiuwei_max") or 0) > 0:
+        merged_payload["xiuwei_current"] = overlay_payload.get("xiuwei_current", 0)
+        merged_payload["xiuwei_max"] = overlay_payload.get("xiuwei_max", 0)
+    return merged_payload
+
+
+def _update_identity_profile_from_refresh_payload(send_as_id, payload, now):
+    normalized_payload = _normalize_identity_refresh_payload(payload or {})
+    update_send_as_profile(
+        send_as_id,
+        daohao=normalized_payload["daohao"],
+        realm=normalized_payload["realm"],
+        sect_name=normalized_payload["sect_name"],
+        xiuwei_current=normalized_payload.get("xiuwei_current", 0),
+        xiuwei_max=normalized_payload.get("xiuwei_max", 0),
+        sect_updated_at=now,
+    )
+    return normalized_payload
+
+
+def _begin_identity_refresh_runtime(now):
+    state["identity_info_last_error"] = ""
+    state["identity_info_last_requested_at"] = float(now or 0)
+    state["identity_info_reply_msg_ids"] = []
+    state["last_identity_info_msg_id"] = 0
+    state["identity_info_followup_due_at"] = 0
+    state["identity_info_primary_payload"] = {}
+    mark_dirty()
+
+
+def _record_identity_refresh_message(msg_id, *, requested_at=None, clear_followup=False):
+    sent_msg_id = int(msg_id or 0)
+    tracked_ids = _get_identity_refresh_tracking_ids()
+    if sent_msg_id > 0:
+        tracked_ids.add(sent_msg_id)
+    if requested_at is not None:
+        state["identity_info_last_requested_at"] = float(requested_at or 0)
+    if clear_followup:
+        state["identity_info_followup_due_at"] = 0
+    state["last_identity_info_msg_id"] = sent_msg_id
+    state["identity_info_reply_msg_ids"] = sorted(tracked_ids)
+    state["identity_info_last_error"] = ""
+    mark_dirty()
+
+
+def _finalize_identity_refresh_success(send_as_id, payload, now):
+    final_payload = _update_identity_profile_from_refresh_payload(send_as_id, payload, now)
+    trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
+    _clear_identity_refresh_runtime()
+    return final_payload, trigger_msg_ids
+
+
 def _get_identity_refresh_missing_fields(payload):
     missing_fields = []
     for field_name in IDENTITY_REFRESH_REQUIRED_FIELDS:
@@ -1277,15 +1338,10 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         return True, "该身份信息正在更新中，请稍后刷新查看"
 
     command = format_identity_info_command()
+    requested_at = time.time()
 
     with use_identity(send_as_id):
-        state["identity_info_last_error"] = ""
-        state["identity_info_last_requested_at"] = time.time()
-        state["identity_info_reply_msg_ids"] = []
-        state["last_identity_info_msg_id"] = 0
-        state["identity_info_followup_due_at"] = 0
-        state["identity_info_primary_payload"] = {}
-        mark_dirty()
+        _begin_identity_refresh_runtime(requested_at)
 
     msg = await send_game_command(command, send_as_id=send_as_id)
     if not msg:
@@ -1293,10 +1349,7 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         return False, "角色信息获取发送失败，请手动重新获取"
 
     with use_identity(send_as_id):
-        sent_msg_id = int(getattr(msg, "id", 0) or 0)
-        state["last_identity_info_msg_id"] = sent_msg_id
-        state["identity_info_reply_msg_ids"] = [sent_msg_id] if sent_msg_id else []
-        mark_dirty()
+        _record_identity_refresh_message(getattr(msg, "id", 0))
 
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
     console_log(
@@ -1312,6 +1365,8 @@ async def run_identity_info_followup_scheduler(now):
         if not get_identity_enabled(identity_id):
             continue
 
+        trigger_msg_ids = []
+        command = ""
         with use_identity(identity_id):
             due_at = float(state.get("identity_info_followup_due_at", 0) or 0)
             if due_at <= 0 or due_at > now:
@@ -1320,27 +1375,20 @@ async def run_identity_info_followup_scheduler(now):
             primary_payload = _normalize_identity_refresh_payload(state.get("identity_info_primary_payload") or {})
             missing_fields = _get_identity_refresh_missing_fields(primary_payload)
             if not missing_fields:
-                trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
-                update_send_as_profile(
-                    identity_id,
-                    daohao=primary_payload["daohao"],
-                    realm=primary_payload["realm"],
-                    sect_name=primary_payload["sect_name"],
-                    xiuwei_current=primary_payload.get("xiuwei_current", 0),
-                    xiuwei_max=primary_payload.get("xiuwei_max", 0),
-                    sect_updated_at=now,
-                )
-                _clear_identity_refresh_runtime()
+                _final_payload, trigger_msg_ids = _finalize_identity_refresh_success(identity_id, primary_payload, now)
                 save_state()
-                for trigger_msg_id in trigger_msg_ids:
-                    await delete_identity_info_trigger_msg(identity_id, trigger_msg_id, persist=False)
-                save_state()
+            elif any(_is_identity_refresh_command(pending.get("cmd")) for pending in state["pending_tasks"].values()):
                 continue
+            else:
+                command = format_battle_power_command()
 
-            if any(_is_identity_refresh_command(pending.get("cmd")) for pending in state["pending_tasks"].values()):
-                continue
-
-            command = format_battle_power_command()
+        if trigger_msg_ids:
+            for trigger_msg_id in trigger_msg_ids:
+                await delete_identity_info_trigger_msg(identity_id, trigger_msg_id, persist=False)
+            save_state()
+            continue
+        if not command:
+            continue
 
         msg = await send_game_command(command, send_as_id=identity_id)
         if not msg:
@@ -1350,16 +1398,7 @@ async def run_identity_info_followup_scheduler(now):
             continue
 
         with use_identity(identity_id):
-            sent_msg_id = int(getattr(msg, "id", 0) or 0)
-            tracked_ids = _get_identity_refresh_tracking_ids()
-            if sent_msg_id > 0:
-                tracked_ids.add(sent_msg_id)
-            state["identity_info_last_requested_at"] = now
-            state["identity_info_followup_due_at"] = 0
-            state["last_identity_info_msg_id"] = sent_msg_id
-            state["identity_info_reply_msg_ids"] = sorted(tracked_ids)
-            state["identity_info_last_error"] = ""
-            mark_dirty()
+            _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=now, clear_followup=True)
 
         console_log(
             f"🪪 已触发身份信息补全：{command}",
@@ -1401,42 +1440,12 @@ async def handle_identity_info_reply(text, now, reply_to, current_msg_id):
                 _schedule_identity_refresh_followup(now)
                 mark_dirty()
             else:
-                final_payload = dict(normalized_payload)
-                update_send_as_profile(
-                    send_as_id,
-                    daohao=final_payload["daohao"],
-                    realm=final_payload["realm"],
-                    sect_name=final_payload["sect_name"],
-                    xiuwei_current=final_payload.get("xiuwei_current", 0),
-                    xiuwei_max=final_payload.get("xiuwei_max", 0),
-                    sect_updated_at=now,
-                )
-                trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
-                _clear_identity_refresh_runtime()
+                final_payload, trigger_msg_ids = _finalize_identity_refresh_success(send_as_id, normalized_payload, now)
         else:
             state["identity_info_followup_due_at"] = 0
             primary_payload = _normalize_identity_refresh_payload(state.get("identity_info_primary_payload") or {})
-            final_payload = dict(primary_payload)
-            if normalized_payload["daohao"]:
-                final_payload["daohao"] = normalized_payload["daohao"]
-            if normalized_payload["realm"]:
-                final_payload["realm"] = normalized_payload["realm"]
-            if normalized_payload["sect_name"]:
-                final_payload["sect_name"] = normalized_payload["sect_name"]
-            if int(normalized_payload.get("xiuwei_max") or 0) > 0:
-                final_payload["xiuwei_current"] = normalized_payload.get("xiuwei_current", 0)
-                final_payload["xiuwei_max"] = normalized_payload.get("xiuwei_max", 0)
-            update_send_as_profile(
-                send_as_id,
-                daohao=final_payload["daohao"],
-                realm=final_payload["realm"],
-                sect_name=final_payload["sect_name"],
-                xiuwei_current=final_payload.get("xiuwei_current", 0),
-                xiuwei_max=final_payload.get("xiuwei_max", 0),
-                sect_updated_at=now,
-            )
-            trigger_msg_ids = _collect_identity_refresh_trigger_msg_ids()
-            _clear_identity_refresh_runtime()
+            merged_payload = _merge_identity_refresh_payload(primary_payload, normalized_payload)
+            final_payload, trigger_msg_ids = _finalize_identity_refresh_success(send_as_id, merged_payload, now)
     enforce_identity_module_availability(send_as_id, persist=False)
 
     if trigger_msg_ids:
