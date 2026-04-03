@@ -219,8 +219,7 @@ def get_stargazer_status_text():
         f"- 空闲盘：{int(state.get('stargazer_idle_slot_count', 0) or 0)}\n"
         f"- 黯淡盘：{int(state.get('stargazer_dim_slot_count', 0) or 0)}\n"
         f"- 精华已成：{int(state.get('stargazer_ready_slot_count', 0) or 0)}\n"
-        f"- 下次动作：{fmt_abs_ts(state.get('next_stargazer_panel_time', 0))}（{fmt_remaining(state.get('next_stargazer_panel_time', 0))}）\n"
-        f"- 收集参考：{fmt_abs_ts(state.get('stargazer_collect_due_at', 0))}（{fmt_remaining(state.get('stargazer_collect_due_at', 0))}）"
+        f"- 下次动作：{fmt_abs_ts(state.get('next_stargazer_panel_time', 0))}（{fmt_remaining(state.get('next_stargazer_panel_time', 0))}）"
     )
 
 
@@ -306,15 +305,11 @@ async def handle_stargazer_guide_reply(text, now, reply_to, matched_family=None)
     due_at = now + duration_sec + CD_BUFFER_SEC if duration_sec > 0 else 0
     next_action_time = due_at + random.uniform(5, 10) if due_at > 0 else now + RETRY_MAX_SEC + random.uniform(5, 10)
     existing_collect_due = float(state.get("stargazer_collect_due_at", 0) or 0)
-    existing_action_due = float(state.get("next_stargazer_panel_time", 0) or 0)
 
     if due_at > 0:
         state["stargazer_busy_until"] = max(float(state.get("stargazer_busy_until", 0) or 0), due_at)
         state["stargazer_collect_due_at"] = max(existing_collect_due, due_at)
-        if existing_action_due <= now:
-            state["next_stargazer_panel_time"] = next_action_time
-        else:
-            state["next_stargazer_panel_time"] = min(existing_action_due, next_action_time)
+        state["next_stargazer_panel_time"] = next_action_time
     _clear_stargazer_collect_flags()
     state["stargazer_last_action"] = "guide_success"
     save_state()
