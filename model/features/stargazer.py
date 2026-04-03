@@ -62,7 +62,7 @@ def _parse_stargazer_panel(text):
         if not match:
             continue
         total_slots += 1
-        if "星光黯淡" in line:
+        if "星光黯淡" in line or "元磁紊乱" in line:
             dim_slot_count += 1
             continue
         if "精华已成" in line:
@@ -212,13 +212,16 @@ async def _send_stargazer_guide(now, audit_text=None):
 
 
 def get_stargazer_status_text():
+    total_slots = int(get_stargazer_total_slots() or 0)
+    idle_slot_count = int(state.get('stargazer_idle_slot_count', 0) or 0)
+    dim_slot_count = int(state.get('stargazer_dim_slot_count', 0) or 0)
+    ready_slot_count = int(state.get('stargazer_ready_slot_count', 0) or 0)
+    guiding_slot_count = max(0, total_slots - idle_slot_count - dim_slot_count - ready_slot_count)
     return (
         "🔭 观星台\n"
-        f"- 当前牵引星种：{get_stargazer_star_choice()}\n"
-        f"- 总星盘：{get_stargazer_total_slots()}\n"
-        f"- 空闲盘：{int(state.get('stargazer_idle_slot_count', 0) or 0)}\n"
-        f"- 黯淡盘：{int(state.get('stargazer_dim_slot_count', 0) or 0)}\n"
-        f"- 精华已成：{int(state.get('stargazer_ready_slot_count', 0) or 0)}\n"
+        f"- 总星盘：{total_slots}\n"
+        f"- 空闲盘：{idle_slot_count} ｜ 牵引中：{guiding_slot_count}\n"
+        f"- 黯淡盘：{dim_slot_count} ｜ 精华已成：{ready_slot_count}\n"
         f"- 下次动作：{fmt_abs_ts(state.get('next_stargazer_panel_time', 0))}（{fmt_remaining(state.get('next_stargazer_panel_time', 0))}）"
     )
 
@@ -310,6 +313,8 @@ async def handle_stargazer_guide_reply(text, now, reply_to, matched_family=None)
         state["stargazer_busy_until"] = max(float(state.get("stargazer_busy_until", 0) or 0), due_at)
         state["stargazer_collect_due_at"] = max(existing_collect_due, due_at)
         state["next_stargazer_panel_time"] = next_action_time
+    state["stargazer_idle_slot_count"] = 0
+    state["stargazer_dim_slot_count"] = 0
     _clear_stargazer_collect_flags()
     state["stargazer_last_action"] = "guide_success"
     save_state()
