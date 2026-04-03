@@ -87,6 +87,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identities ADD COLUMN jiyin_choice TEXT NOT NULL DEFAULT ''")
     if "stargazer_star_choice" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星'")
+    if "stargazer_total_slots" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN stargazer_total_slots INTEGER NOT NULL DEFAULT 0")
     if "checkin_window_start_hour_utc" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2")
     if "checkin_window_end_hour_utc" not in identity_columns:
@@ -127,6 +129,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_busy_until REAL NOT NULL DEFAULT 0")
     if "stargazer_followup_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_followup_due_at REAL NOT NULL DEFAULT 0")
+    if "stargazer_wait_full_collect" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_wait_full_collect INTEGER NOT NULL DEFAULT 0")
     if "stargazer_collect_ready" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_collect_ready INTEGER NOT NULL DEFAULT 0")
     if "stargazer_soothe_before_collect" not in runtime_columns:
@@ -196,6 +200,7 @@ def init_db():
             sect_updated_at REAL NOT NULL DEFAULT 0,
             jiyin_choice TEXT NOT NULL DEFAULT '',
             stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星',
+            stargazer_total_slots INTEGER NOT NULL DEFAULT 0,
             checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2,
             checkin_window_end_hour_utc INTEGER NOT NULL DEFAULT 3,
             tower_window_start_hour_utc INTEGER NOT NULL DEFAULT 1,
@@ -259,6 +264,7 @@ def init_db():
             stargazer_ready_slot_count INTEGER NOT NULL DEFAULT 0,
             stargazer_busy_until REAL NOT NULL DEFAULT 0,
             stargazer_followup_due_at REAL NOT NULL DEFAULT 0,
+            stargazer_wait_full_collect INTEGER NOT NULL DEFAULT 0,
             stargazer_collect_ready INTEGER NOT NULL DEFAULT 0,
             stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0,
             quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -401,12 +407,12 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice,
+            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -417,6 +423,7 @@ def upsert_identity_to_db(send_as_id):
             sect_updated_at=excluded.sect_updated_at,
             jiyin_choice=excluded.jiyin_choice,
             stargazer_star_choice=excluded.stargazer_star_choice,
+            stargazer_total_slots=excluded.stargazer_total_slots,
             checkin_window_start_hour_utc=excluded.checkin_window_start_hour_utc,
             checkin_window_end_hour_utc=excluded.checkin_window_end_hour_utc,
             tower_window_start_hour_utc=excluded.tower_window_start_hour_utc,
@@ -437,6 +444,7 @@ def upsert_identity_to_db(send_as_id):
             float(profile.get("sect_updated_at", 0) or 0),
             profile.get("jiyin_choice", "") or "",
             profile.get("stargazer_star_choice", "赤血星") or "赤血星",
+            int(profile.get("stargazer_total_slots", 0) or 0),
             int(profile.get("checkin_window_start_hour_utc", 2) or 2),
             int(profile.get("checkin_window_end_hour_utc", 3) or 3),
             int(profile.get("tower_window_start_hour_utc", 1) or 1),
@@ -510,7 +518,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -525,6 +533,7 @@ def _load_identity_from_db(send_as_id):
             sect_updated_at=row["sect_updated_at"],
             jiyin_choice=row["jiyin_choice"],
             stargazer_star_choice=row["stargazer_star_choice"],
+            stargazer_total_slots=int(row["stargazer_total_slots"] or 0),
             checkin_window_start_hour_utc=row["checkin_window_start_hour_utc"],
             checkin_window_end_hour_utc=row["checkin_window_end_hour_utc"],
             tower_window_start_hour_utc=row["tower_window_start_hour_utc"],
@@ -752,7 +761,7 @@ def load_state():
                 membership_initialized = bool(decoded)
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         rows = conn.execute(
-            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, stargazer_star_choice, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
+            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, stargazer_star_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()
 
         _meta_state["identity_ids"] = []

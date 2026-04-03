@@ -11,12 +11,14 @@ from ..config import (
     STARGAZER_STAR_DURATIONS,
 )
 from ..persistence import save_state
-from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import get_stargazer_star_choice, state
+from ..runtime import console_log, send_audit_log, send_game_command, track_reply_chain_message
+from ..state import get_current_identity_id, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
 
 RE_STARGAZER_SLOT_LINE = re.compile(r"^\s*(\d+)号引星盘[:：]\s*(.+)$")
+RE_STARGAZER_DECLARED_TOTAL_SLOTS = re.compile(r"引星盘总数[:：]\s*(\d+)座")
+RE_STARGAZER_COLLECTED_SLOT_COUNT = re.compile(r"成功从\s*(\d+)\s*座引星盘上收集")
 STARGAZER_CD_HINT_KEYWORDS = ("尚未恢复", "冷却", "等待", "不足", "休息")
 
 
@@ -33,10 +35,20 @@ def _extract_guide_star_choice(command_text):
     return suffix.split()[0] if suffix else ""
 
 
+def _extract_stargazer_collected_slot_count(text):
+    match = RE_STARGAZER_COLLECTED_SLOT_COUNT.search(str(text or ""))
+    return int(match.group(1) or 0) if match else 0
+
+
 def _parse_stargazer_panel(text):
     raw_text = str(text or "")
     if "观星台" not in raw_text or "引星盘" not in raw_text:
         return None
+
+    declared_total_slots = 0
+    declared_match = RE_STARGAZER_DECLARED_TOTAL_SLOTS.search(raw_text)
+    if declared_match:
+        declared_total_slots = int(declared_match.group(1) or 0)
 
     total_slots = 0
     idle_slot_count = 0
@@ -70,6 +82,7 @@ def _parse_stargazer_panel(text):
     all_ready = ready_slot_count == total_slots and total_slots > 0
     return {
         "total_slots": total_slots,
+        "declared_total_slots": declared_total_slots,
         "idle_slot_count": idle_slot_count,
         "dim_slot_count": dim_slot_count,
         "ready_slot_count": ready_slot_count,
@@ -84,6 +97,9 @@ def _sync_stargazer_panel_state(parsed, now):
     state["stargazer_idle_slot_count"] = int(parsed.get("idle_slot_count", 0) or 0)
     state["stargazer_dim_slot_count"] = int(parsed.get("dim_slot_count", 0) or 0)
     state["stargazer_ready_slot_count"] = int(parsed.get("ready_slot_count", 0) or 0)
+    declared_total_slots = int(parsed.get("declared_total_slots", 0) or 0)
+    if declared_total_slots > 0:
+        set_stargazer_total_slots(get_current_identity_id(), declared_total_slots)
     max_wait = int(parsed.get("max_wait", 0) or 0)
     if max_wait > 0:
         state["stargazer_busy_until"] = now + max_wait + CD_BUFFER_SEC
@@ -199,6 +215,7 @@ def get_stargazer_status_text():
     return (
         "🔭 观星台\n"
         f"- 当前牵引星种：{get_stargazer_star_choice()}\n"
+        f"- 总星盘：{get_stargazer_total_slots()}\n"
         f"- 空闲盘：{int(state.get('stargazer_idle_slot_count', 0) or 0)}\n"
         f"- 黯淡盘：{int(state.get('stargazer_dim_slot_count', 0) or 0)}\n"
         f"- 精华已成：{int(state.get('stargazer_ready_slot_count', 0) or 0)}\n"
@@ -221,16 +238,27 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
     state["stargazer_followup_due_at"] = 0
 
     if parsed["dim_slot_count"] > 0:
+        state["stargazer_wait_full_collect"] = False
         _clear_stargazer_collect_flags()
         await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台检测到黯淡盘，稍后安抚星辰")
         return True
 
     if parsed["all_ready"]:
+        state["stargazer_wait_full_collect"] = False
         _clear_stargazer_collect_flags()
         await _queue_stargazer_action(now, "collect", audit_text="💎 观星台已全盘成熟，稍后直接收集精华")
         return True
 
+    if state.get("stargazer_wait_full_collect") and parsed["max_wait"] > 0:
+        next_action_time = now + parsed["max_wait"] + CD_BUFFER_SEC + random.uniform(5, 10)
+        _schedule_next_stargazer_action(next_action_time)
+        state["stargazer_last_action"] = "waiting_full_collect"
+        save_state()
+        console_log(f"🔭 观星台存在未成熟星盘，等待至 {fmt_time_after(max(0, next_action_time - now))} 后重新执行安抚→收集。")
+        return True
+
     if parsed["idle_slot_count"] > 0:
+        state["stargazer_wait_full_collect"] = False
         _clear_stargazer_collect_flags()
         await _queue_stargazer_action(
             now,
@@ -239,6 +267,7 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
         )
         return True
 
+    state["stargazer_wait_full_collect"] = False
     next_action_time = now + parsed["min_wait"] + CD_BUFFER_SEC + random.uniform(5, 10) if parsed["min_wait"] > 0 else now + RETRY_MAX_SEC + random.uniform(5, 10)
     _schedule_next_stargazer_action(next_action_time)
     state["stargazer_last_action"] = "waiting"
@@ -336,9 +365,31 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
         return True
 
     if "收集完成" in text:
+        collected_slot_count = _extract_stargazer_collected_slot_count(text)
+        total_slots = get_stargazer_total_slots()
         _clear_stargazer_collect_flags()
         state["stargazer_collect_due_at"] = 0
         state["stargazer_busy_until"] = 0
+        state["stargazer_ready_slot_count"] = max(0, int(state.get("stargazer_ready_slot_count", 0) or 0) - collected_slot_count)
+        if collected_slot_count > 0:
+            if total_slots > 0 and collected_slot_count >= total_slots:
+                state["stargazer_wait_full_collect"] = False
+                state["stargazer_idle_slot_count"] = total_slots
+                state["stargazer_dim_slot_count"] = 0
+                await _queue_stargazer_action(
+                    now,
+                    "guide",
+                    audit_text=f"🌌 已完成 {collected_slot_count}/{total_slots} 座收集，稍后统一牵引 {get_stargazer_star_choice()}",
+                )
+                return True
+            state["stargazer_wait_full_collect"] = True
+            state["stargazer_idle_slot_count"] = 0
+            await _queue_stargazer_action(
+                now,
+                "panel",
+                audit_text=f"🔭 已收集 {collected_slot_count} 座星盘，稍后回查观星台等待其余星盘成熟",
+            )
+            return True
         _schedule_next_stargazer_action(now + RETRY_MAX_SEC + random.uniform(5, 10))
         state["stargazer_last_action"] = "collect_success"
         save_state()
@@ -349,10 +400,12 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
         _clear_stargazer_collect_flags()
         state["stargazer_collect_due_at"] = 0
         state["stargazer_busy_until"] = 0
+        state["stargazer_wait_full_collect"] = False
         await _queue_stargazer_action(now, "panel", audit_text="🔭 当前无可收集精华，稍后回查观星台")
         return True
 
     _clear_stargazer_collect_flags()
+    state["stargazer_wait_full_collect"] = False
     await _queue_stargazer_action(now, "panel", audit_text="🔭 收集结果异常，稍后回查观星台")
     return True
 
@@ -390,11 +443,34 @@ async def run_stargazer_scheduler(now):
         await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台到时执行主链，稍后安抚星辰")
 
 
+async def sync_stargazer_total_slots(send_as_id):
+    send_as_id = int(send_as_id)
+    msg = await send_game_command(CMD_STARGAZER_PANEL, track=False, send_as_id=send_as_id)
+    if not msg:
+        return False, "观星台同步发送失败"
+    track_reply_chain_message(msg.id, send_as_id, "stargazer_sync", root_msg_id=msg.id)
+    return True, f"已发送同步指令[{send_as_id}]，等待观星台回复"
+
+
+def handle_stargazer_sync_reply(text):
+    parsed = _parse_stargazer_panel(text)
+    if not parsed:
+        return False
+    declared_total_slots = int(parsed.get("declared_total_slots", 0) or 0)
+    if declared_total_slots <= 0:
+        return False
+    set_stargazer_total_slots(get_current_identity_id(), declared_total_slots)
+    save_state()
+    return declared_total_slots
+
+
 __all__ = [
     "get_stargazer_status_text",
     "handle_stargazer_collect_reply",
     "handle_stargazer_guide_reply",
     "handle_stargazer_panel",
     "handle_stargazer_soothe_reply",
+    "handle_stargazer_sync_reply",
     "run_stargazer_scheduler",
+    "sync_stargazer_total_slots",
 ]

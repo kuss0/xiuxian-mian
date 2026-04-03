@@ -33,7 +33,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
     "last_tower_msg_id",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
-    "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_collect_ready", "stargazer_soothe_before_collect",
+    "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
@@ -44,7 +44,7 @@ IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "stargazer_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
-    "stargazer_collect_ready", "stargazer_soothe_before_collect",
+    "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
@@ -60,6 +60,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "xiuwei_max": 0,
     "jiyin_choice": "",
     "stargazer_star_choice": STARGAZER_STAR_CHOICES[0],
+    "stargazer_total_slots": 0,
     "checkin_window_start_hour_utc": CHECKIN_WINDOW_START_HOUR_UTC,
     "checkin_window_end_hour_utc": CHECKIN_WINDOW_END_HOUR_UTC,
     "tower_window_start_hour_utc": TOWER_WINDOW_START_HOUR_UTC,
@@ -172,6 +173,7 @@ IDENTITY_STATE_TEMPLATE = {
     "stargazer_ready_slot_count": 0,
     "stargazer_busy_until": 0,
     "stargazer_followup_due_at": 0,
+    "stargazer_wait_full_collect": False,
     "stargazer_collect_ready": False,
     "stargazer_soothe_before_collect": False,
 
@@ -355,7 +357,7 @@ def _coerce_send_as_profile_field(field_name, value):
         return (value or "").strip() or DEFAULT_PET_NAME
     if field_name == "sect_updated_at":
         return float(value or 0)
-    if field_name in {"xiuwei_current", "xiuwei_max"}:
+    if field_name in {"xiuwei_current", "xiuwei_max", "stargazer_total_slots"}:
         return int(value or 0)
     if field_name in {
         "checkin_window_start_hour_utc",
@@ -427,6 +429,7 @@ def set_send_as_profile(
     xiuwei_max=None,
     jiyin_choice=None,
     stargazer_star_choice=None,
+    stargazer_total_slots=None,
     checkin_window_start_hour_utc=None,
     checkin_window_end_hour_utc=None,
     tower_window_start_hour_utc=None,
@@ -446,6 +449,7 @@ def set_send_as_profile(
         xiuwei_max=xiuwei_max,
         jiyin_choice=jiyin_choice,
         stargazer_star_choice=stargazer_star_choice,
+        stargazer_total_slots=stargazer_total_slots,
         checkin_window_start_hour_utc=checkin_window_start_hour_utc,
         checkin_window_end_hour_utc=checkin_window_end_hour_utc,
         tower_window_start_hour_utc=tower_window_start_hour_utc,
@@ -522,6 +526,18 @@ def set_stargazer_star_choice(send_as_id, choice):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, stargazer_star_choice=choice)
     return get_stargazer_star_choice(send_as_id)
+
+
+def get_stargazer_total_slots(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    return int(get_send_as_profile(send_as_id).get("stargazer_total_slots", 0) or 0)
+
+
+def set_stargazer_total_slots(send_as_id, total_slots):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, stargazer_total_slots=max(0, int(total_slots or 0)))
+    return get_stargazer_total_slots(send_as_id)
 
 
 def get_game_group_id():
@@ -961,6 +977,7 @@ __all__ = [
     "get_pet_command",
     "get_pet_name",
     "get_stargazer_star_choice",
+    "get_stargazer_total_slots",
     "get_realm_sort_index",
     "get_realm_sort_key",
     "get_send_as_label",
@@ -982,6 +999,7 @@ __all__ = [
     "set_module_window_hours",
     "set_pet_name",
     "set_stargazer_star_choice",
+    "set_stargazer_total_slots",
     "set_send_as_profile",
     "split_command_identity_selector",
     "update_send_as_profile",

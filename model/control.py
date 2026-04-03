@@ -83,6 +83,7 @@ from .state import (
     is_auto_delete_sent_messages_enabled,
     get_send_as_profile,
     get_send_as_tags,
+    get_stargazer_total_slots,
     is_module_available,
     is_yuanying_realm_available,
     set_identity_account,
@@ -199,6 +200,7 @@ def _disable_stargazer_module_state():
     state["stargazer_ready_slot_count"] = 0
     state["stargazer_busy_until"] = 0
     state["stargazer_followup_due_at"] = 0
+    state["stargazer_wait_full_collect"] = False
     state["stargazer_collect_ready"] = False
     state["stargazer_soothe_before_collect"] = False
     _clear_pending_tasks_by_commands({CMD_STARGAZER_PANEL, CMD_STARGAZER_GUIDE, CMD_STARGAZER_SOOTHE, CMD_STARGAZER_COLLECT})
@@ -206,10 +208,16 @@ def _disable_stargazer_module_state():
 
 def _manual_enable_stargazer_module_state(now):
     state["stargazer_enabled"] = True
-    state["stargazer_followup_due_at"] = 0
-    if float(state.get("next_stargazer_panel_time", 0) or 0) > now:
+    total_slots = int(get_stargazer_total_slots() or 0)
+    followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
+    next_action_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+    collect_due_at = float(state.get("stargazer_collect_due_at", 0) or 0)
+    has_live_timing = max(followup_due_at, next_action_time, collect_due_at) > now
+    if total_slots > 0 and has_live_timing:
         return
+    state["stargazer_followup_due_at"] = 0
     state["next_stargazer_panel_time"] = now
+    state["stargazer_last_action"] = "queue_panel"
 
 
 def _manual_disable_pet_module_state():
@@ -629,11 +637,16 @@ def _restore_tree_runtime(now):
 
 
 def _restore_stargazer_runtime(now):
-    if float(state.get("stargazer_followup_due_at", 0) or 0) > now:
+    total_slots = int(get_stargazer_total_slots() or 0)
+    followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
+    next_action_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+    collect_due_at = float(state.get("stargazer_collect_due_at", 0) or 0)
+    has_live_timing = max(followup_due_at, next_action_time, collect_due_at) > now
+    if total_slots > 0 and has_live_timing:
         return
-    if float(state.get("next_stargazer_panel_time", 0) or 0) > now:
-        return
-    _schedule_module_immediate_retry("观星台", now)
+    state["stargazer_followup_due_at"] = 0
+    state["next_stargazer_panel_time"] = now
+    state["stargazer_last_action"] = "queue_panel"
 
 
 

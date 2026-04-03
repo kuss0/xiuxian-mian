@@ -24,6 +24,7 @@ from .features.stargazer import (
     handle_stargazer_guide_reply,
     handle_stargazer_panel,
     handle_stargazer_soothe_reply,
+    handle_stargazer_sync_reply,
     run_stargazer_scheduler,
 )
 from .features.tower import handle_tower_reply, run_tower_scheduler
@@ -321,13 +322,19 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
         await handle_tree_invasion_end(text, now, is_reply_to_me)
         await handle_tree_invasion_start(text, now)
         await handle_tree_rebirth_reset(text, now)
-        if allow_tree_panel_claim and not already_consumed:
+        if matched_family == "stargazer_sync":
+            synced_total_slots = handle_stargazer_sync_reply(text)
+            if synced_total_slots:
+                await send_audit_log(f"🔭 已同步观星台总星盘[{routed_identity_id}]：{synced_total_slots}", scope="identity", send_as_id=routed_identity_id)
+                handled_any = True
+
+        if allow_tree_panel_claim and not already_consumed and matched_family != "stargazer_sync":
             tree_panel_done = await handle_tree_panel(text, now, is_reply_to_me)
             handled_any = handled_any or tree_panel_done
             stargazer_panel_done = await handle_stargazer_panel(text, now, is_reply_to_me, matched_family=matched_family)
             handled_any = handled_any or stargazer_panel_done
 
-        if not already_consumed:
+        if not already_consumed and matched_family != "stargazer_sync":
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
