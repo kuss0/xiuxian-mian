@@ -19,6 +19,13 @@ from .features.deep_retreat import (
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
+from .features.stargazer import (
+    handle_stargazer_collect_reply,
+    handle_stargazer_guide_reply,
+    handle_stargazer_panel,
+    handle_stargazer_soothe_reply,
+    run_stargazer_scheduler,
+)
 from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
@@ -250,6 +257,11 @@ async def _dispatch_tree_broadcast_fallbacks(event, text, now):
         await _run_for_all_identities(handle_tree_panel, text, now, False)
 
 
+async def _dispatch_stargazer_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="stargazer_panel"):
+        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
+
+
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
     if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
         await handle_realm_breakthrough_broadcast(text, now)
@@ -260,11 +272,17 @@ async def _dispatch_message_edited_tree_panel(event, text, now):
         await _run_for_all_identities(handle_tree_panel, text, now, False)
 
 
+async def _dispatch_message_edited_stargazer_panel(event, text, now):
+    if _claim_runtime_event(event, scope="stargazer_panel_edit"):
+        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
+
+
 async def _run_identity_schedulers(now):
     identity_schedulers = (
         run_tree_bootstrap_check,
         run_tree_scheduler,
         run_pet_scheduler,
+        run_stargazer_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
         run_checkin_scheduler,
@@ -306,6 +324,8 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
         if allow_tree_panel_claim and not already_consumed:
             tree_panel_done = await handle_tree_panel(text, now, is_reply_to_me)
             handled_any = handled_any or tree_panel_done
+            stargazer_panel_done = await handle_stargazer_panel(text, now, is_reply_to_me, matched_family=matched_family)
+            handled_any = handled_any or stargazer_panel_done
 
         if not already_consumed:
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -313,6 +333,9 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tower_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
             deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)
             handled_any = handled_any or deep_retreat_done
@@ -382,6 +405,7 @@ async def on_message(event):
                 return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
+        await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())
@@ -416,6 +440,7 @@ async def on_message_edited(event):
                 return
 
         await _dispatch_message_edited_tree_panel(event, text, now)
+        await _dispatch_message_edited_stargazer_panel(event, text, now)
     except Exception:
         print(traceback.format_exc())
 

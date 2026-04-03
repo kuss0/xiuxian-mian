@@ -11,6 +11,10 @@ from .config import (
     CMD_PET,
     CMD_QUIZ_ANSWER,
     CMD_SECT_TEACH,
+    CMD_STARGAZER_COLLECT,
+    CMD_STARGAZER_GUIDE,
+    CMD_STARGAZER_PANEL,
+    CMD_STARGAZER_SOOTHE,
     CMD_TOWER,
     CMD_TREE_GUARD,
     CMD_TREE_HARVEST,
@@ -42,6 +46,7 @@ from .features.deep_retreat import get_deep_retreat_status_detail_text
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
+from .features.stargazer import get_stargazer_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text
 from .features.yuanying import get_yuanying_status_detail_text
@@ -129,6 +134,9 @@ def _schedule_module_immediate_retry(module_name, now):
     if module_name == "法宝":
         state["next_pet_time"] = retry_at
         return retry_at
+    if module_name == "观星台":
+        state["next_stargazer_panel_time"] = retry_at
+        return retry_at
     if module_name == "点卯":
         state["next_checkin_time"] = retry_at
         return retry_at
@@ -148,6 +156,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
     if is_module_available(module_name, send_as_id):
         return ""
     if module_name == "灵树":
+        return f"当前宗门未提供{module_name}模块"
+    if module_name == "观星台":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -176,6 +186,30 @@ def _disable_pet_module_state():
     state["pet_enabled"] = False
     state["next_pet_time"] = 0
     _clear_pending_tasks_by_commands({CMD_PET})
+
+
+def _disable_stargazer_module_state():
+    state["stargazer_enabled"] = False
+    state["next_stargazer_panel_time"] = 0
+    state["stargazer_collect_due_at"] = 0
+    state["stargazer_last_panel_msg_id"] = 0
+    state["stargazer_last_action"] = ""
+    state["stargazer_idle_slot_count"] = 0
+    state["stargazer_dim_slot_count"] = 0
+    state["stargazer_ready_slot_count"] = 0
+    state["stargazer_busy_until"] = 0
+    state["stargazer_followup_due_at"] = 0
+    state["stargazer_collect_ready"] = False
+    state["stargazer_soothe_before_collect"] = False
+    _clear_pending_tasks_by_commands({CMD_STARGAZER_PANEL, CMD_STARGAZER_GUIDE, CMD_STARGAZER_SOOTHE, CMD_STARGAZER_COLLECT})
+
+
+def _manual_enable_stargazer_module_state(now):
+    state["stargazer_enabled"] = True
+    state["stargazer_followup_due_at"] = 0
+    if float(state.get("next_stargazer_panel_time", 0) or 0) > now:
+        return
+    state["next_stargazer_panel_time"] = now
 
 
 def _manual_disable_pet_module_state():
@@ -390,6 +424,10 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TREE_STATUS: "灵树",
     CMD_TREE_HARVEST: "灵树",
     CMD_PET: "法宝",
+    CMD_STARGAZER_PANEL: "观星台",
+    CMD_STARGAZER_GUIDE: "观星台",
+    CMD_STARGAZER_SOOTHE: "观星台",
+    CMD_STARGAZER_COLLECT: "观星台",
     CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
@@ -401,6 +439,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
+    "观星台": (_manual_enable_stargazer_module_state, _disable_stargazer_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
@@ -411,6 +450,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
 MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
+    "观星台": _disable_stargazer_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
     "元婴": _disable_yuanying_module_state,
@@ -479,6 +519,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
     status_map = {
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
+        "观星台": get_stargazer_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -524,6 +565,9 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
     with use_identity(send_as_id):
         if not is_module_available("灵树", send_as_id) and state.get("tree_enabled"):
             _disable_tree_module_state()
+            changed = True
+        if not is_module_available("观星台", send_as_id) and state.get("stargazer_enabled"):
+            _disable_stargazer_module_state()
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
@@ -584,6 +628,15 @@ def _restore_tree_runtime(now):
 
 
 
+def _restore_stargazer_runtime(now):
+    if float(state.get("stargazer_followup_due_at", 0) or 0) > now:
+        return
+    if float(state.get("next_stargazer_panel_time", 0) or 0) > now:
+        return
+    _schedule_module_immediate_retry("观星台", now)
+
+
+
 def _restore_phaseful_runtime(module_name, now):
     if module_name == "元婴":
         phase_key = "yuanying_phase"
@@ -622,6 +675,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_tree_runtime(now)
         if state["pet_enabled"] and state["next_pet_time"] <= 0:
             _schedule_module_immediate_retry("法宝", now)
+        if state["stargazer_enabled"]:
+            _restore_stargazer_runtime(now)
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
         if state["tower_enabled"]:
@@ -949,6 +1004,17 @@ def scan_startup_timeout_tasks(now=None):
                     if alert:
                         alerts.append(alert)
                         affected_identity_ids.add(identity_id)
+
+            if state.get("stargazer_enabled") and float(state.get("stargazer_followup_due_at", 0) or 0) > 0 and now - float(state.get("stargazer_followup_due_at", 0) or 0) >= RETRY_MAX_SEC:
+                alert = _disable_module_for_startup_timeout(
+                    identity_id,
+                    "观星台",
+                    "启动时检测到观星台后续动作等待超时，已自动关闭观星台模块。",
+                    "stargazer_followup_timeout",
+                )
+                if alert:
+                    alerts.append(alert)
+                    affected_identity_ids.add(identity_id)
             elif state.get("yuanying_phase") == "post_summary_wait" and state.get("next_yuanying_time", 0) > 0 and now >= state["next_yuanying_time"]:
                 alert = _disable_module_for_startup_timeout(
                     identity_id,

@@ -11,6 +11,7 @@ from .config import (
     MODULE_NAMES,
     SEND_AS_DEFAULT_ID,
     SEND_AS_IDS,
+    STARGAZER_STAR_CHOICES,
     TOWER_WINDOW_END_HOUR_UTC,
     TOWER_WINDOW_START_HOUR_UTC,
     TZ_LOCAL,
@@ -20,17 +21,19 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=SEN
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
-    "next_irr_time", "next_guard_time", "next_pet_time", "next_checkin_time", "next_sect_teach_time",
+    "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
     "last_tower_msg_id",
+    "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
+    "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
@@ -39,8 +42,9 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
+    "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
@@ -55,6 +59,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "xiuwei_current": 0,
     "xiuwei_max": 0,
     "jiyin_choice": "",
+    "stargazer_star_choice": STARGAZER_STAR_CHOICES[0],
     "checkin_window_start_hour_utc": CHECKIN_WINDOW_START_HOUR_UTC,
     "checkin_window_end_hour_utc": CHECKIN_WINDOW_END_HOUR_UTC,
     "tower_window_start_hour_utc": TOWER_WINDOW_START_HOUR_UTC,
@@ -139,6 +144,7 @@ IDENTITY_STATE_TEMPLATE = {
     "deep_retreat_enabled": False,
     "checkin_enabled": False,
     "tower_enabled": False,
+    "stargazer_enabled": False,
 
     # 灵树模块
     "next_irr_time": 0,
@@ -155,6 +161,19 @@ IDENTITY_STATE_TEMPLATE = {
 
     # 法宝模块
     "next_pet_time": 0,
+
+    # 观星台模块
+    "next_stargazer_panel_time": 0,
+    "stargazer_collect_due_at": 0,
+    "stargazer_last_panel_msg_id": 0,
+    "stargazer_last_action": "",
+    "stargazer_idle_slot_count": 0,
+    "stargazer_dim_slot_count": 0,
+    "stargazer_ready_slot_count": 0,
+    "stargazer_busy_until": 0,
+    "stargazer_followup_due_at": 0,
+    "stargazer_collect_ready": False,
+    "stargazer_soothe_before_collect": False,
 
     # 点卯模块
     "next_checkin_time": 0,
@@ -329,6 +348,9 @@ def _coerce_send_as_profile_field(field_name, value):
         return value or ""
     if field_name in {"daohao", "realm", "sect_name", "jiyin_choice"}:
         return (value or "").strip()
+    if field_name == "stargazer_star_choice":
+        normalized = (value or "").strip()
+        return normalized if normalized in STARGAZER_STAR_CHOICES else STARGAZER_STAR_CHOICES[0]
     if field_name == "pet_name":
         return (value or "").strip() or DEFAULT_PET_NAME
     if field_name == "sect_updated_at":
@@ -350,7 +372,7 @@ def _coerce_send_as_profile_field(field_name, value):
 def _normalize_send_as_profile_updates(changes):
     normalized = {}
     for field_name, raw_value in (changes or {}).items():
-        if field_name == "enabled" and raw_value is None:
+        if raw_value is None:
             continue
         normalized[field_name] = _coerce_send_as_profile_field(field_name, raw_value)
     return normalized
@@ -404,6 +426,7 @@ def set_send_as_profile(
     xiuwei_current=None,
     xiuwei_max=None,
     jiyin_choice=None,
+    stargazer_star_choice=None,
     checkin_window_start_hour_utc=None,
     checkin_window_end_hour_utc=None,
     tower_window_start_hour_utc=None,
@@ -422,6 +445,7 @@ def set_send_as_profile(
         xiuwei_current=xiuwei_current,
         xiuwei_max=xiuwei_max,
         jiyin_choice=jiyin_choice,
+        stargazer_star_choice=stargazer_star_choice,
         checkin_window_start_hour_utc=checkin_window_start_hour_utc,
         checkin_window_end_hour_utc=checkin_window_end_hour_utc,
         tower_window_start_hour_utc=tower_window_start_hour_utc,
@@ -485,6 +509,19 @@ def set_jiyin_choice(send_as_id, choice):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, jiyin_choice=choice)
     return get_jiyin_choice(send_as_id)
+
+
+def get_stargazer_star_choice(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    choice = (get_send_as_profile(send_as_id).get("stargazer_star_choice") or "").strip()
+    return choice if choice in STARGAZER_STAR_CHOICES else STARGAZER_STAR_CHOICES[0]
+
+
+def set_stargazer_star_choice(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, stargazer_star_choice=choice)
+    return get_stargazer_star_choice(send_as_id)
 
 
 def get_game_group_id():
@@ -721,6 +758,8 @@ def get_available_module_names(send_as_id=None):
     sect_name = (get_send_as_profile(send_as_id).get("sect_name") or "").strip()
     if sect_name and sect_name != "落云宗":
         available_module_names = [module_name for module_name in available_module_names if module_name != "灵树"]
+    if sect_name and sect_name != "星宫":
+        available_module_names = [module_name for module_name in available_module_names if module_name != "观星台"]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]
     return available_module_names
@@ -921,6 +960,7 @@ __all__ = [
     "get_jiyin_choice",
     "get_pet_command",
     "get_pet_name",
+    "get_stargazer_star_choice",
     "get_realm_sort_index",
     "get_realm_sort_key",
     "get_send_as_label",
@@ -941,6 +981,7 @@ __all__ = [
     "set_jiyin_choice",
     "set_module_window_hours",
     "set_pet_name",
+    "set_stargazer_star_choice",
     "set_send_as_profile",
     "split_command_identity_selector",
     "update_send_as_profile",

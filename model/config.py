@@ -61,7 +61,7 @@ SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 1800     # bot 静默超时，触发全局暂停（30分钟）
 DB_FILE = os.path.join(STATE_DIR, "chaogu_state.db")
-DB_SCHEMA_VERSION = 3
+DB_SCHEMA_VERSION = 4
 TZ_LOCAL = timezone(timedelta(hours=8))
 
 
@@ -71,6 +71,18 @@ CMD_TREE_STATUS = ".灵树状态"
 CMD_TREE_HARVEST = ".采摘灵果"
 CMD_PET = ".抚摸法宝"
 DEFAULT_PET_NAME = "玄天斩灵剑"
+CMD_STARGAZER_PANEL = ".观星台"
+CMD_STARGAZER_GUIDE = ".牵引星辰"
+CMD_STARGAZER_SOOTHE = ".安抚星辰"
+CMD_STARGAZER_COLLECT = ".收集精华"
+STARGAZER_STAR_CHOICES = ("赤血星", "庚金星", "建木星", "天雷星", "帝魂星")
+STARGAZER_STAR_DURATIONS = {
+    "赤血星": 4 * 3600,
+    "庚金星": 6 * 3600,
+    "建木星": 8 * 3600,
+    "天雷星": 36 * 3600,
+    "帝魂星": 48 * 3600,
+}
 CMD_YUANYING = ".元婴出窍"
 CMD_YUANYING_STATUS = ".元婴状态"
 CMD_DEEP_RETREAT = ".深度闭关"
@@ -121,6 +133,10 @@ SCRIPT_COMMANDS = [
     CMD_TREE_STATUS,
     CMD_TREE_HARVEST,
     CMD_PET,
+    CMD_STARGAZER_PANEL,
+    CMD_STARGAZER_GUIDE,
+    CMD_STARGAZER_SOOTHE,
+    CMD_STARGAZER_COLLECT,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     CMD_DEEP_RETREAT,
@@ -135,10 +151,11 @@ SCRIPT_COMMANDS = [
     CMD_JIYIN_HIDE_AURA,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
+    "观星台": "stargazer_enabled",
     "玄骨考校": "quiz_enabled",
     "极阴祖师": "jiyin_enabled",
     "元婴": "yuanying_enabled",
@@ -265,6 +282,7 @@ RE_CMD_STATUS = re.compile(r'^\.(状态|模块状态)$')
 RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
+    (re.compile(r'^\.观星台状态$'), "观星台"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
@@ -277,6 +295,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)灵树$'), "灵树", False),
     (re.compile(r'^\.(开启|打开)法宝$'), "法宝", True),
     (re.compile(r'^\.(关闭|关掉)法宝$'), "法宝", False),
+    (re.compile(r'^\.(开启|打开)观星台$'), "观星台", True),
+    (re.compile(r'^\.(关闭|关掉)观星台$'), "观星台", False),
     (re.compile(r'^\.(开启|打开)玄骨考校$'), "玄骨考校", True),
     (re.compile(r'^\.(关闭|关掉)玄骨考校$'), "玄骨考校", False),
     (re.compile(r'^\.(开启|打开)极阴祖师$'), "极阴祖师", True),
