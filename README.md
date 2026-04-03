@@ -43,7 +43,7 @@
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install telethon
+pip install telethon segno
 ```
 
 如果你的环境里 `python3.11` 不存在，至少要保证 Python 版本不低于 3.11。
