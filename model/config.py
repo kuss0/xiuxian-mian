@@ -13,21 +13,36 @@ STATE_DIR = os.path.join(DATA_DIR, "state")
 MESSAGES_DIR = os.path.join(DATA_DIR, "messages")
 SESSION_FILE = os.path.join(SESSION_DIR, "ai_investor_session")
 
-# ================= 从 env.toml 读取启动配置 =================
-import tomllib as _tomllib
-_env_path = os.path.join(PROJECT_ROOT_DIR, "env.toml")
-with open(_env_path, "rb") as _f:
-    _env = _tomllib.load(_f)
+# ================= 从 .env 读取启动配置 =================
+def _load_dotenv():
+    env_path = os.path.join(PROJECT_ROOT_DIR, ".env")
+    if not os.path.exists(env_path):
+        raise FileNotFoundError(f"missing .env: {env_path}")
+    with open(env_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not key:
+                continue
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+                value = value[1:-1]
+            os.environ[key] = value
 
-API_ID = _env["api_id"]
-API_HASH = _env["api_hash"]
-LOG_GROUP_ID = _env["log_group_id"]
-LOG_SEND_MODE = str(_env.get("log_send_mode", "account") or "account").strip().lower()
+
+_load_dotenv()
+
+API_ID = int(os.environ["API_ID"])
+API_HASH = os.environ["API_HASH"]
+LOG_GROUP_ID = int(os.environ["LOG_GROUP_ID"])
+LOG_SEND_MODE = str(os.environ.get("LOG_SEND_MODE", "account") or "account").strip().lower()
 if LOG_SEND_MODE not in {"account", "bot"}:
     LOG_SEND_MODE = "account"
-LOG_BOT_TOKEN = str(_env.get("log_bot_token", "") or "").strip()
-SEND_AS_IDS = _env.get("send_as_ids", []) or []
-ADMIN_ID = int(_env.get("admin_id", 0) or 0)
+LOG_BOT_TOKEN = str(os.environ.get("LOG_BOT_TOKEN", "") or "").strip()
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 0) or 0)
 
 GAME_GROUP_ID = 0  # 游戏主群（通过 UI 基础配置设置）
 GAME_BOT_IDS = set()  # 允许处理的机器人/频道ID（通过 UI 基础配置设置）
@@ -215,26 +230,6 @@ def prepare_storage_dirs():
     os.makedirs(STATE_DIR, exist_ok=True)
     os.makedirs(MESSAGES_DIR, exist_ok=True)
 
-
-def normalize_send_as_ids(send_as_ids):
-    normalized = []
-    seen = set()
-    for raw_id in send_as_ids:
-        try:
-            send_as_id = int(raw_id)
-        except (TypeError, ValueError):
-            continue
-        if send_as_id in seen:
-            continue
-        seen.add(send_as_id)
-        normalized.append(send_as_id)
-    if not normalized:
-        return normalized
-    return normalized
-
-
-SEND_AS_IDS = normalize_send_as_ids(SEND_AS_IDS)
-SEND_AS_DEFAULT_ID = SEND_AS_IDS[0] if SEND_AS_IDS else None
 
 prepare_storage_dirs()
 os.environ['PYTHONUNBUFFERED'] = '1'

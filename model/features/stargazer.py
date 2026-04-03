@@ -213,7 +213,7 @@ def get_stargazer_status_text():
     idle_slot_count = int(state.get('stargazer_idle_slot_count', 0) or 0)
     dim_slot_count = int(state.get('stargazer_dim_slot_count', 0) or 0)
     ready_slot_count = int(state.get('stargazer_ready_slot_count', 0) or 0)
-    guiding_slot_count = max(0, total_slots - idle_slot_count - dim_slot_count - ready_slot_count)
+    guiding_slot_count = max(0, total_slots - idle_slot_count - ready_slot_count)
     followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
     next_panel_time = float(state.get("next_stargazer_panel_time", 0) or 0)
     next_due_at = 0
@@ -224,8 +224,7 @@ def get_stargazer_status_text():
     return (
         "🔭 观星台\n"
         f"- 总星盘：{total_slots}\n"
-        f"- 空闲盘：{idle_slot_count} ｜ 牵引中：{guiding_slot_count}\n"
-        f"- 黯淡盘：{dim_slot_count} ｜ 精华已成：{ready_slot_count}\n"
+        f"- 空闲盘：{idle_slot_count} ｜ 牵引中：{guiding_slot_count} ｜ 精华已成：{ready_slot_count}\n"
         f"- 下次动作：{fmt_abs_ts(next_due_at)}（{fmt_remaining(next_due_at)}）"
     )
 
@@ -442,7 +441,7 @@ async def sync_stargazer_total_slots(send_as_id):
     return True, f"已发送同步指令[{send_as_id}]，等待观星台回复"
 
 
-def handle_stargazer_sync_reply(text):
+def handle_stargazer_sync_reply(text, now=None):
     parsed = _parse_stargazer_panel(text)
     if not parsed:
         return False
@@ -450,8 +449,11 @@ def handle_stargazer_sync_reply(text):
     if declared_total_slots <= 0:
         return False
     set_stargazer_total_slots(get_current_identity_id(), declared_total_slots)
+    if now is not None:
+        _sync_stargazer_panel_state(parsed, now)
+        state["stargazer_followup_due_at"] = 0
     save_state()
-    return declared_total_slots
+    return parsed
 
 
 __all__ = [

@@ -75,6 +75,7 @@ from .state import (
     use_identity,
 )
 from .timing import (
+    fmt_time_after,
     get_checkin_day_key,
     get_day_key,
     reset_checkin_daily_state,
@@ -323,9 +324,18 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
         await handle_tree_invasion_start(text, now)
         await handle_tree_rebirth_reset(text, now)
         if matched_family == "stargazer_sync":
-            synced_total_slots = handle_stargazer_sync_reply(text)
-            if synced_total_slots:
-                await send_audit_log(f"🔭 已同步观星台总星盘[{routed_identity_id}]：{synced_total_slots}", scope="identity", send_as_id=routed_identity_id)
+            synced_panel = handle_stargazer_sync_reply(text, now=now)
+            if synced_panel:
+                declared_total_slots = int(synced_panel.get("declared_total_slots", 0) or 0)
+                idle_slot_count = int(synced_panel.get("idle_slot_count", 0) or 0)
+                dim_slot_count = int(synced_panel.get("dim_slot_count", 0) or 0)
+                ready_slot_count = int(synced_panel.get("ready_slot_count", 0) or 0)
+                max_wait = int(synced_panel.get("max_wait", 0) or 0)
+                await send_audit_log(
+                    f"🔭 已同步观星台[{routed_identity_id}]：总星盘 {declared_total_slots}，空闲 {idle_slot_count}，黯淡 {dim_slot_count}，精华已成 {ready_slot_count}，最长等待 {fmt_time_after(max_wait) if max_wait > 0 else '已无等待'}",
+                    scope="identity",
+                    send_as_id=routed_identity_id,
+                )
                 handled_any = True
 
         if allow_tree_panel_claim and not already_consumed and matched_family != "stargazer_sync":

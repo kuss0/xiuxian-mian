@@ -28,7 +28,7 @@ chaogu_state.json
 .DS_Store
 
 # 启动配置（含敏感信息）
-env.toml
+.env
 
 # Claude Code
 .claude/

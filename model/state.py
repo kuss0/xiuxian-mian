@@ -9,15 +9,13 @@ from .config import (
     GAME_BOT_IDS,
     GAME_GROUP_ID,
     MODULE_NAMES,
-    SEND_AS_DEFAULT_ID,
-    SEND_AS_IDS,
     STARGAZER_STAR_CHOICES,
     TOWER_WINDOW_END_HOUR_UTC,
     TOWER_WINDOW_START_HOUR_UTC,
     TZ_LOCAL,
 )
 
-_current_identity_id = contextvars.ContextVar("current_identity_id", default=SEND_AS_DEFAULT_ID or 0)
+_current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
@@ -301,7 +299,7 @@ def remove_identity(send_as_id):
         set_identity_account_map(identity_account_map)
         removed = True
     if not has_active_identity_context() and int(_current_identity_id.get() or 0) == send_as_id:
-        fallback_identity_id = int((_meta_state["identity_ids"] or [SEND_AS_DEFAULT_ID or 0])[0] or 0)
+        fallback_identity_id = int((_meta_state["identity_ids"] or [0])[0] or 0)
         _current_identity_id.set(fallback_identity_id)
     return removed
 
@@ -320,7 +318,7 @@ def get_current_identity_id():
     identity_ids = get_identity_ids()
     if identity_ids:
         return int(identity_ids[0])
-    return int(send_as_id or SEND_AS_DEFAULT_ID or 0)
+    return int(send_as_id or 0)
 
 
 def has_active_identity_context():
@@ -945,8 +943,6 @@ __all__ = [
     "IDENTITY_TIMER_COLUMNS",
     "META_STATE_KEYS",
     "REALM_SORT_ORDER",
-    "SEND_AS_DEFAULT_ID",
-    "SEND_AS_IDS",
     "StateProxy",
     "ensure_identity_registered",
     "has_identity",

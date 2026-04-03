@@ -11,7 +11,6 @@ from .state import (
     IDENTITY_RUNTIME_COLUMNS,
     IDENTITY_STATE_TEMPLATE,
     IDENTITY_TIMER_COLUMNS,
-    SEND_AS_IDS,
     ensure_identity_registered,
     get_game_group_id,
     get_game_bot_ids,
@@ -772,10 +771,9 @@ def load_state():
             _load_identity_from_db(send_as_id)
 
         if not membership_initialized:
-            for send_as_id in SEND_AS_IDS:
-                ensure_identity_registered(send_as_id)
             _save_meta_state(conn)
             for send_as_id in get_identity_ids():
+                ensure_identity_registered(send_as_id)
                 upsert_identity_to_db(send_as_id)
             conn.commit()
 
