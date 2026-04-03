@@ -317,15 +317,15 @@ def init_db():
         _ensure_schema_columns(conn)
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_group_id", "0"),
+        ("game_group_id", "-1001680975844"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_bot_ids", "[]"),
+        ("game_bot_ids", "[8388633812]"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_topic_id", "0"),
+        ("game_topic_id", "7310786"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",

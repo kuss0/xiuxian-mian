@@ -44,8 +44,9 @@ if LOG_SEND_MODE not in {"account", "bot"}:
 LOG_BOT_TOKEN = str(os.environ.get("LOG_BOT_TOKEN", "") or "").strip()
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0) or 0)
 
-GAME_GROUP_ID = 0  # 游戏主群（通过 UI 基础配置设置）
-GAME_BOT_IDS = set()  # 允许处理的机器人/频道ID（通过 UI 基础配置设置）
+GAME_GROUP_ID = -1001680975844  # 游戏主群（初始化默认值，可在 UI 基础配置中修改）
+GAME_BOT_IDS = {8388633812}  # 游戏 BOT ID（初始化默认值，可在 UI 基础配置中修改）
+GAME_TOPIC_ID = 7310786  # 游戏话题 ID（初始化默认值，可在 UI 基础配置中修改）
 
 RETRY_MIN_SEC = 60
 RETRY_MAX_SEC = 70

@@ -543,9 +543,9 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         "  <div class='modal-card'>"
         "    <div class='modal-header'><h3 style='margin:0;'>基础配置</h3><button class='icon-btn' type='button' data-close-modal='basic'>×</button></div>"
         "    <form id='basic-config-form'>"
-        "      <div class='form-label'>配置游戏群聊、允许处理的 bot ID，以及固定话题 ID。支持自动读取话题列表，也支持手动输入后强制保存。话题留空或填 0 表示不使用。</div>"
+        "      <div class='form-label'>配置游戏群聊、游戏 BOT ID，以及固定话题 ID。支持自动读取话题列表，也支持手动输入后强制保存。话题留空或填 0 表示不使用。</div>"
         "      <label class='field-label'>游戏群聊 ID<input class='text-input' name='game_group_id' inputmode='numeric' placeholder='例如 -1001234567890' /></label>"
-        "      <label class='field-label'>bot ID<input class='text-input' name='game_bot_ids' placeholder='多个请用逗号分隔' /></label>"
+        "      <label class='field-label'>游戏 BOT ID<input class='text-input' name='game_bot_ids' placeholder='多个请用逗号分隔' /></label>"
         "      <label class='field-label'>话题 ID<input class='text-input' name='game_topic_id' inputmode='numeric' placeholder='例如 12345' /></label>"
         "      <div class='topic-picker'><label class='field-label topic-select'><span>自动识别的话题列表</span><select id='forum-topic-select' class='text-input'><option value=''>请先刷新话题列表</option></select></label><button class='btn btn-secondary' type='button' data-refresh-forum-topics='1'>刷新话题列表</button></div>"
         "      <div id='forum-topic-meta' class='topic-meta'>当前未读取话题列表。</div>"
@@ -1281,7 +1281,7 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
 
     raw_bot_ids = (str(game_bot_ids or "")).strip()
     if not raw_bot_ids:
-        return False, "bot ID 不能为空"
+        return False, "游戏 BOT ID 不能为空"
     parsed_bot_ids = []
     seen_bot_ids = set()
     for part in raw_bot_ids.replace("，", ",").split(","):
@@ -1291,13 +1291,13 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
         try:
             bot_id = int(item)
         except (TypeError, ValueError):
-            return False, "bot ID 必须是整数，多个请用逗号分隔"
+            return False, "游戏 BOT ID 必须是整数，多个请用逗号分隔"
         if bot_id in seen_bot_ids:
             continue
         seen_bot_ids.add(bot_id)
         parsed_bot_ids.append(bot_id)
     if not parsed_bot_ids:
-        return False, "至少需要一个 bot ID"
+        return False, "至少需要一个 游戏 BOT ID"
 
     raw_topic_id = (str(game_topic_id or "")).strip()
     if not raw_topic_id:
