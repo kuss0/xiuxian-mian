@@ -215,8 +215,8 @@ def _manual_enable_stargazer_module_state(now):
     has_live_timing = max(followup_due_at, next_action_time, collect_due_at) > now
     if total_slots > 0 and has_live_timing:
         return
-    state["stargazer_followup_due_at"] = 0
-    state["next_stargazer_panel_time"] = now
+    state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
+    state["next_stargazer_panel_time"] = 0
     state["stargazer_last_action"] = "queue_panel"
 
 
@@ -644,8 +644,8 @@ def _restore_stargazer_runtime(now):
     has_live_timing = max(followup_due_at, next_action_time, collect_due_at) > now
     if total_slots > 0 and has_live_timing:
         return
-    state["stargazer_followup_due_at"] = 0
-    state["next_stargazer_panel_time"] = now
+    state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
+    state["next_stargazer_panel_time"] = 0
     state["stargazer_last_action"] = "queue_panel"
 
 
