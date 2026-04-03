@@ -104,9 +104,7 @@ from .state import (
 from .timing import fmt_abs_ts
 
 _ui_server = None
-UI_FAVICON_DATA_URI = (
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADwAAAA8CAYAAAA6/NlyAAAQAElEQVR4AexaCXiNx9c/d5JIIhISS4hsYq9dUbS1U2pvLeVPKaWfatGipfaltkqtUZS2QUWpXe0RYimxNaFIakkiEUsiyCKRZO73O+O+t3mTe9MofZ7v+f69z5x3tjNnznnnvGfOnLmC/st+/wr8/33B/13hf1f4Od5A+fLlS3p7e7/r7e293MvLKwR5LOAhIMcED9Eeg/IhHx+fZcj7AVyfY8q/HPpCVdrd3b2Mp6fnHDB9Bnm0ECLBYDAEGgyGD1BugdwL4AIQJnBBuzfKLcHpMORrkd+F8MGgMcLDw8Mb9ReaXpjA5cqVa29vbx9tY2PzORh/2cZGsHA2RqNRPgvHGGsL/FbIF9na2t6A4D9AcC+0vZD03AKz2kIt59vZ2e1qUMvDvnvbarJYUbvs9f5vU83KZRSTRuNfC92odnm5ZHIH2ayhD17QU3wIzZowAIJHYY6vIPxzq/tzCQwGetrY2FwDY58AbFJTn1D/LrVl4LzuIjE5nS5du0doF6MGNJbr/d+Sy6d3khOGvS4HdK8jm9bzkrY2Bgin3gmFX7lNZy7cojGDm1Lg3O70xmsVpRCk+kHDAao/BpjXIHhX5H87/V2BDRB2KhjZCChuNBoVA5HRSWLX4SiDc9EiVK6Ms6xaoZRqP3omhpasC6PtB69QEl5E1Qol6bMhr9KmJb3owz4NZNlSTjLzSY4I3Boueo3cSDtDouj9XvXpx/lvU4OaHkpoJoS5XCH4NnzjE7j+d+CZBcb3VNTT05MFncITFnW0lR/2bSjLuBVlVZa9O9Y0fLEgWO48FCWgpoSXIc/+niB+PR8n9oReFcs3nBVffH1I9Pj4J/JffYK8PIrTD3O7Ea+6ra1BZmTmiJ/3XhJ9P91M2/CCvvykFX3Q+2XzavOcgJkQej34cET5mdIzCczC4nsKgRr34FnaN6sk12EV6tcoJ9xKOMqUNKj02K1QzQTbNdvCBQPjYWXyzZOdYxTHzt4U4/2D+QVQm6Z+tHJGF/IoU0ytaFa2FD/t/l2MmLGHmjXyocUTOxC/VKZngj5Y7WBfX18HU71QWT5GChhlwAS8xTRyKVZEzvykJa8sfffzeRo6aSdduZ7E1pXuJKaqVeWVZbAkbN45zkEDBo3fTnG3H9Ly6Z2pesVSSmjG489k6MSdlPwog/zHv0HOTkXMfaDdBHN8x3iFhUILjG92Mq+sb/nicuWMzuTkWIQGg8ldIVGgYQCQMlBF7GyodZMK9PnQV2nlzM60ZWkvuSWgt1wzr5ucNqK57NK6qizhYm9mmkw/XtHJi0Lo4PFrNO+ztsTzmLoo7XGWmLr4MN1JSqWZUPHcxg44fcDbeOSFSorRv8IEwR54m1Mrebti63iTTp6Po09n76N7yenm8aVcHeXQXvXlzzBEQ99pQNnZkrYeuEKzlh+jGQFHaNWm85RwN5W6tq5KGxb0oBH9G0knR7s8ghvE4rVh4sCxazRjVCu8VDuJFVSQI42CX4hLMXv6dFATHcvgbRasdxddo5WKmWEr/cT7LPpWAehJVg4FrDtNC9ecEkYjmcYa5Tsda8q1X71FVfxK0tyVx+mdUZvo6+9Pir0wUmcu3hLnL90WoadjlMEa/MUOMW5+MFWrWIpWz+pC1fz+VF+egyHgx9N09mKCdHSwJUd7W2kwkORfWnoWjZ9/kFo39tOpPeFnMBi+d3V1LY5iQUlj2joOjNQEEFOEYhMeib1Hr5oEJbUCc8a0oW5tq9EUqNyYOQfE3"
-)
+UI_FAVICON_PNG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "favicon.png")
 
 
 def get_identity_ui_snapshot(send_as_id):
@@ -368,9 +366,7 @@ def _render_login_page(message=""):
     return (
         "<!doctype html>"
         "<html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Xiuxian 登录</title><link rel='icon' href='"
-        + UI_FAVICON_DATA_URI
-        + "' />"
+        "<title>Xiuxian 登录</title><link rel='icon' href='/favicon.png' type='image/png' />"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0b1220;color:#e5e7eb;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}"
         "a{color:#93c5fd;text-decoration:none;}"
@@ -435,9 +431,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
     return (
         "<!doctype html>"
         "<html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>Xiuxian 控制台</title><link rel='icon' href='"
-        + UI_FAVICON_DATA_URI
-        + "' />"
+        "<title>Xiuxian 控制台</title><link rel='icon' href='/favicon.png' type='image/png' />"
         "<style>"
         "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#0b1220;color:#e5e7eb;margin:0;padding:24px;box-sizing:border-box;}"
         "a{color:#93c5fd;text-decoration:none;}"
@@ -1428,7 +1422,13 @@ async def handle_ui_http(reader, writer):
             if _setup_mode and session is None:
                 session = {"session_token": "__setup__", "sender_id": 0, "created_at": now, "last_active_at": now}
 
-            if path == "/":
+            if path == "/favicon.png":
+                if method != "GET":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    with open(UI_FAVICON_PNG_PATH, "rb") as favicon_fp:
+                        _write_response(writer, "HTTP/1.1 200 OK", favicon_fp.read(), content_type="image/png")
+            elif path == "/":
                 if method != "GET":
                     _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
                 elif session is None:
