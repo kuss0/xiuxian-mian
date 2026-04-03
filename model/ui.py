@@ -142,6 +142,12 @@ def get_identity_ui_snapshot(send_as_id):
         saved_jiyin_choice = normalize_jiyin_choice(profile.get("jiyin_choice") or "")
         effective_jiyin_choice, _jiyin_choice_source = resolve_jiyin_choice(send_as_id)
         jiyin_reply_to_msg_id = int(identity_state.get("jiyin_reply_to_msg_id", 0) or 0)
+        stargazer_followup_due_at = float(identity_state.get("stargazer_followup_due_at", 0) or 0)
+        stargazer_next_panel_time = float(identity_state.get("next_stargazer_panel_time", 0) or 0)
+        if stargazer_followup_due_at > 0 and stargazer_next_panel_time > 0:
+            stargazer_next_action_time = min(stargazer_followup_due_at, stargazer_next_panel_time)
+        else:
+            stargazer_next_action_time = stargazer_followup_due_at or stargazer_next_panel_time
         jiyin_deadline_at = float(identity_state.get("next_jiyin_time", 0) or 0)
         snapshot = {
             "send_as_id": send_as_id,
@@ -187,6 +193,8 @@ def get_identity_ui_snapshot(send_as_id):
                 "next_irr_time": fmt_abs_ts(identity_state.get("next_irr_time", 0)),
                 "next_pet_time": fmt_abs_ts(identity_state.get("next_pet_time", 0)),
                 "next_stargazer_panel_time": fmt_abs_ts(identity_state.get("next_stargazer_panel_time", 0)),
+                "next_stargazer_action_time": fmt_abs_ts(stargazer_next_action_time),
+                "stargazer_followup_due_at": fmt_abs_ts(stargazer_followup_due_at),
                 "stargazer_collect_due_at": fmt_abs_ts(identity_state.get("stargazer_collect_due_at", 0)),
                 "next_quiz_time": fmt_abs_ts(identity_state.get("next_quiz_time", 0)),
                 "next_checkin_time": fmt_abs_ts(identity_state.get("next_checkin_time", 0)),

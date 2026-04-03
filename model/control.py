@@ -208,12 +208,11 @@ def _disable_stargazer_module_state():
 
 def _manual_enable_stargazer_module_state(now):
     state["stargazer_enabled"] = True
-    total_slots = int(get_stargazer_total_slots() or 0)
     followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
-    next_action_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+    next_panel_time = float(state.get("next_stargazer_panel_time", 0) or 0)
     collect_due_at = float(state.get("stargazer_collect_due_at", 0) or 0)
-    has_live_timing = max(followup_due_at, next_action_time, collect_due_at) > now
-    if total_slots > 0 and has_live_timing:
+    has_live_timing = max(followup_due_at, next_panel_time, collect_due_at) > now
+    if has_live_timing:
         return
     state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
     state["next_stargazer_panel_time"] = 0
@@ -637,12 +636,11 @@ def _restore_tree_runtime(now):
 
 
 def _restore_stargazer_runtime(now):
-    total_slots = int(get_stargazer_total_slots() or 0)
     followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
-    next_action_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+    next_panel_time = float(state.get("next_stargazer_panel_time", 0) or 0)
     collect_due_at = float(state.get("stargazer_collect_due_at", 0) or 0)
-    has_live_timing = max(followup_due_at, next_action_time, collect_due_at) > now
-    if total_slots > 0 and has_live_timing:
+    has_live_timing = max(followup_due_at, next_panel_time, collect_due_at) > now
+    if has_live_timing:
         return
     state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
     state["next_stargazer_panel_time"] = 0
