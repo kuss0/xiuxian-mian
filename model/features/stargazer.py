@@ -429,7 +429,7 @@ async def run_stargazer_scheduler(now):
         next_panel_time = now
 
     if now >= next_panel_time:
-        await _queue_stargazer_action(now, "panel", audit_text="🔭 观星台到时回查盘面，稍后校准当前状态")
+        await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台到时处理，稍后先安抚星辰再收集精华")
 
 
 async def sync_stargazer_total_slots(send_as_id):

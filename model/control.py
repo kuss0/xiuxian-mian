@@ -216,7 +216,7 @@ def _manual_enable_stargazer_module_state(now):
         return
     state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
     state["next_stargazer_panel_time"] = 0
-    state["stargazer_last_action"] = "queue_panel"
+    state["stargazer_last_action"] = "queue_soothe"
 
 
 def _manual_disable_pet_module_state():
@@ -644,7 +644,7 @@ def _restore_stargazer_runtime(now):
         return
     state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
     state["next_stargazer_panel_time"] = 0
-    state["stargazer_last_action"] = "queue_panel"
+    state["stargazer_last_action"] = "queue_soothe"
 
 
 
