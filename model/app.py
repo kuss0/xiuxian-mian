@@ -262,7 +262,7 @@ async def _dispatch_tree_broadcast_fallbacks(event, text, now):
 
 async def _dispatch_stargazer_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="stargazer_panel"):
-        await _run_for_all_identities(handle_stargazer_panel, text, now, False, "stargazer_panel")
+        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
 
 
 async def _dispatch_guanxing_broadcast_fallbacks(event, text, now):
@@ -282,7 +282,7 @@ async def _dispatch_message_edited_tree_panel(event, text, now):
 
 async def _dispatch_message_edited_stargazer_panel(event, text, now):
     if _claim_runtime_event(event, scope="stargazer_panel_edit"):
-        await _run_for_all_identities(handle_stargazer_panel, text, now, False, "stargazer_panel")
+        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
 
 
 async def _dispatch_message_edited_guanxing(event, text, now):

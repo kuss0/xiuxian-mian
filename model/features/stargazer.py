@@ -239,7 +239,7 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
     parsed = _parse_stargazer_panel(text)
     if not parsed:
         return False
-    if matched_family != "stargazer_panel" and not is_reply_to_me:
+    if not is_reply_to_me:
         return False
 
     _sync_stargazer_panel_state(parsed, now)
@@ -265,6 +265,15 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
         console_log(f"🔭 存在未成熟星盘→{fmt_time_after(max(0, next_panel_time - now))} 后再走安抚→收集")
         return True
 
+    if parsed["max_wait"] > 0:
+        state["stargazer_wait_full_collect"] = False
+        next_panel_time = now + parsed["max_wait"] + CD_BUFFER_SEC + random.uniform(5, 10)
+        _schedule_next_stargazer_action(next_panel_time)
+        state["stargazer_last_action"] = "waiting_panel"
+        save_state()
+        console_log(f"🔭 回查→{fmt_time_after(max(0, next_panel_time - now))}")
+        return True
+
     if parsed["idle_slot_count"] > 0:
         state["stargazer_wait_full_collect"] = False
         _clear_stargazer_collect_flags()
@@ -276,7 +285,7 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
         return True
 
     state["stargazer_wait_full_collect"] = False
-    next_panel_time = now + parsed["max_wait"] + CD_BUFFER_SEC + random.uniform(5, 10) if parsed["max_wait"] > 0 else now + RETRY_MAX_SEC + random.uniform(5, 10)
+    next_panel_time = now + RETRY_MAX_SEC + random.uniform(5, 10)
     _schedule_next_stargazer_action(next_panel_time)
     state["stargazer_last_action"] = "waiting_panel"
     save_state()

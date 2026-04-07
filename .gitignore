@@ -1,5 +1,8 @@
 # 运行时数据
-data/
+data/*
+!data/quiz/
+data/quiz/*
+!data/quiz/quiz_bank.json
 model/data/
 
 # Python 缓存
