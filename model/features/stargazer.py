@@ -228,8 +228,7 @@ def get_stargazer_status_text():
         "🔭 观星台\n"
         f"- 总星盘：{total_slots}\n"
         f"- 空闲盘：{idle_slot_count} ｜ 牵引中：{guiding_slot_count} ｜ 黯淡盘：{dim_slot_count} ｜ 精华已成：{ready_slot_count}\n"
-        f"- 下次动作：{fmt_abs_ts(next_due_at)}（{fmt_remaining(next_due_at)}）\n"
-        f"- 收集参考：{fmt_abs_ts(state.get('stargazer_collect_due_at', 0))}（{fmt_remaining(state.get('stargazer_collect_due_at', 0))}）"
+        f"- 下次动作：{fmt_abs_ts(next_due_at)}（{fmt_remaining(next_due_at)}）"
     )
 
 
@@ -277,7 +276,7 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
         return True
 
     state["stargazer_wait_full_collect"] = False
-    next_panel_time = now + parsed["min_wait"] + CD_BUFFER_SEC + random.uniform(5, 10) if parsed["min_wait"] > 0 else now + RETRY_MAX_SEC + random.uniform(5, 10)
+    next_panel_time = now + parsed["max_wait"] + CD_BUFFER_SEC + random.uniform(5, 10) if parsed["max_wait"] > 0 else now + RETRY_MAX_SEC + random.uniform(5, 10)
     _schedule_next_stargazer_action(next_panel_time)
     state["stargazer_last_action"] = "waiting_panel"
     save_state()
