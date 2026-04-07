@@ -164,13 +164,13 @@ async def run_guanxing_scheduler(now):
     seen_panel = bool(state.get("guanxing_seen_panel"))
 
     if matched_keyword:
-        await send_audit_log(f"🌠 当前时段观星命中：{matched_keyword}｜{matched_value}｜{slot_label}")
+        await send_audit_log(f"🌠 观星命中：{matched_keyword}｜{matched_value}｜{slot_label}")
     elif not seen_panel:
         await send_audit_log(f"🌠 当前时段无人观星｜{slot_label}")
     elif last_evolution_value:
-        await send_audit_log(f"🌠 当前时段观星非目标结果：{last_evolution_value}｜{slot_label}")
+        await send_audit_log(f"🌠 观星非目标：{last_evolution_value}｜{slot_label}")
     else:
-        await send_audit_log(f"🌠 当前时段观星已触发，但未解析到目标天象｜{slot_label}")
+        await send_audit_log(f"🌠 观星已触发：未解析到目标天象｜{slot_label}")
 
     state["guanxing_last_notified_slot_key"] = slot_key
     save_state()
