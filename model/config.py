@@ -2,8 +2,8 @@ import os
 import re
 from datetime import timedelta, timezone
 from urllib.parse import quote
-from urllib.request import urlopen
 
+import requests
 from telethon import TelegramClient
 
 APP_DIR = os.path.dirname(__file__)
@@ -263,14 +263,16 @@ def _fetch_public_ip():
         "https://ifconfig.me/ip",
         "https://ipv4.icanhazip.com",
     ]
-    for lookup_url in lookup_urls:
-        try:
-            with urlopen(lookup_url, timeout=3) as response:
-                ip_text = (response.read().decode("utf-8", errors="ignore") or "").strip()
-            if re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip_text):
-                return ip_text
-        except Exception:
-            continue
+    with requests.Session() as session:
+        session.trust_env = False
+        for lookup_url in lookup_urls:
+            try:
+                response = session.get(lookup_url, timeout=(3, 3), proxies={})
+                ip_text = (response.text or "").strip()
+                if response.ok and re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", ip_text):
+                    return ip_text
+            except Exception:
+                continue
     return ""
 
 
