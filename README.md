@@ -43,7 +43,7 @@
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install telethon segno
+pip install telethon segno "requests[socks]"
 ```
 
 如果你的环境里 `python3.11` 不存在，至少要保证 Python 版本不低于 3.11。
@@ -63,6 +63,10 @@ cp .env.example .env
 ```dotenv
 API_ID=123456
 API_HASH=your_api_hash
+TG_PROXY_TYPE=
+TG_PROXY_HOST=127.0.0.1:7890
+TG_PROXY_USERNAME=
+TG_PROXY_PASSWORD=
 LOG_GROUP_ID=-1001234567890
 LOG_SEND_MODE=account
 LOG_BOT_TOKEN=
@@ -77,6 +81,9 @@ CHAOGU_UI_AUTH_SESSION_TIMEOUT_SEC=86400
 配置项说明：
 
 - `API_ID` / `API_HASH`：Telegram API 凭据
+- `TG_PROXY_TYPE`：Telegram 代理类型，支持 `http` / `socks5`；留空表示直连
+- `TG_PROXY_HOST`：Telegram 代理地址，直接填写 `host:port`；默认示例为 `127.0.0.1:7890`
+- `TG_PROXY_USERNAME` / `TG_PROXY_PASSWORD`：代理认证信息；如使用认证代理需要同时填写
 - `LOG_GROUP_ID`：日志群 ID。审计日志、远程控制指令、UI 登录链路都依赖它
 - `LOG_SEND_MODE`：日志群发送模式，可选 `account` / `bot`
 - `LOG_BOT_TOKEN`：当 `LOG_SEND_MODE=bot` 时使用的 bot token
@@ -94,10 +101,12 @@ CHAOGU_UI_AUTH_SESSION_TIMEOUT_SEC=86400
 
 如果你准备通过公网 HTTPS 暴露 UI，建议显式设置 `CHAOGU_UI_PUBLIC_BASE_URL=https://...`，这样 UI 会自动使用 Secure Cookie。
 
+如果运行环境不能直连 Telegram，请先配置 `TG_PROXY_TYPE` 和 `TG_PROXY_HOST` 后再启动。当前支持 `http` / `socks5`，认证可选；这套代理同时作用于 Telethon client 与 `LOG_SEND_MODE=bot` 的 Bot API 发送链路，因此 `.登录` 返回链接也会复用它。普通 HTTP 探测（如公网 IP 自动探测）暂不复用这套配置。
+
 ### 3. 启动程序
 
 ```bash
-PYTHONDONTWRITEBYTECODE=1 python xiuxian.py
+python xiuxian.py
 ```
 
 入口文件是 [xiuxian.py](xiuxian.py)，实际会进入 [model/app.py](model/app.py) 中的 `main()`，启动流程大致是：

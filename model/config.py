@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import timedelta, timezone
+from urllib.parse import quote
 from urllib.request import urlopen
 
 from telethon import TelegramClient
@@ -35,8 +36,74 @@ def _load_dotenv():
 
 _load_dotenv()
 
+
+def _get_env_str(key, default=""):
+    return str(os.environ.get(key, default) or default).strip()
+
+
+def _split_host_port(raw_value):
+    host_port = str(raw_value or "").strip()
+    if not host_port:
+        raise ValueError("TG_PROXY_HOST 不能为空，应填写为 host:port")
+    host, sep, port_text = host_port.rpartition(":")
+    host = host.strip()
+    port_text = port_text.strip()
+    if not sep or not host or not port_text:
+        raise ValueError(f"TG_PROXY_HOST 格式错误: {host_port}，应填写为 host:port")
+    try:
+        port = int(port_text)
+    except (TypeError, ValueError):
+        raise ValueError(f"TG_PROXY_HOST 端口无效: {host_port}") from None
+    if port <= 0 or port > 65535:
+        raise ValueError(f"TG_PROXY_HOST 端口超出范围: {host_port}")
+    return host, port
+
+
+def _build_telethon_proxy_config():
+    proxy_type = _get_env_str("TG_PROXY_TYPE", "").lower()
+    if not proxy_type:
+        return None
+    if proxy_type not in {"http", "socks5"}:
+        raise ValueError(f"TG_PROXY_TYPE 仅支持 http / socks5，当前为: {proxy_type}")
+    host, port = _split_host_port(_get_env_str("TG_PROXY_HOST", ""))
+    username = _get_env_str("TG_PROXY_USERNAME", "") or None
+    password = _get_env_str("TG_PROXY_PASSWORD", "") or None
+    if bool(username) != bool(password):
+        raise ValueError("TG_PROXY_USERNAME 和 TG_PROXY_PASSWORD 需要同时填写")
+    proxy = {
+        "proxy_type": proxy_type,
+        "addr": host,
+        "port": port,
+        "rdns": True,
+    }
+    if username and password:
+        proxy["username"] = username
+        proxy["password"] = password
+    return proxy
+
+
+def _build_requests_proxies():
+    if not TG_PROXY_TYPE:
+        return None
+    host, port = _split_host_port(TG_PROXY_HOST)
+    proxy_scheme = "socks5h" if TG_PROXY_TYPE == "socks5" else "http"
+    if TG_PROXY_USERNAME and TG_PROXY_PASSWORD:
+        username = quote(TG_PROXY_USERNAME, safe="")
+        password = quote(TG_PROXY_PASSWORD, safe="")
+        proxy_url = f"{proxy_scheme}://{username}:{password}@{host}:{port}"
+    else:
+        proxy_url = f"{proxy_scheme}://{host}:{port}"
+    return {"http": proxy_url, "https": proxy_url}
+
+
 API_ID = int(os.environ["API_ID"])
 API_HASH = os.environ["API_HASH"]
+TG_PROXY_TYPE = _get_env_str("TG_PROXY_TYPE", "").lower()
+TG_PROXY_HOST = _get_env_str("TG_PROXY_HOST", "")
+TG_PROXY_USERNAME = _get_env_str("TG_PROXY_USERNAME", "")
+TG_PROXY_PASSWORD = _get_env_str("TG_PROXY_PASSWORD", "")
+TELETHON_PROXY = _build_telethon_proxy_config()
+TG_REQUESTS_PROXIES = _build_requests_proxies()
 LOG_GROUP_ID = int(os.environ["LOG_GROUP_ID"])
 LOG_SEND_MODE = str(os.environ.get("LOG_SEND_MODE", "account") or "account").strip().lower()
 if LOG_SEND_MODE not in {"account", "bot"}:
@@ -238,7 +305,13 @@ def prepare_storage_dirs():
 
 prepare_storage_dirs()
 os.environ['PYTHONUNBUFFERED'] = '1'
-client = TelegramClient(SESSION_FILE, API_ID, API_HASH)
+
+
+def _create_telegram_client(session_path):
+    return TelegramClient(session_path, API_ID, API_HASH, proxy=TELETHON_PROXY)
+
+
+client = _create_telegram_client(SESSION_FILE)
 
 # ================= 多账号 client 管理 =================
 _clients: dict[int, TelegramClient] = {}  # account_id → TelegramClient
@@ -264,7 +337,7 @@ def get_all_clients():
 
 def create_account_client(account_id):
     session_path = os.path.join(SESSION_DIR, f"account_{account_id}")
-    return TelegramClient(session_path, API_ID, API_HASH)
+    return _create_telegram_client(session_path)
 
 # ================= 预编译正则 =================
 RE_HOURS = re.compile(r'(\d+)\s*小时')

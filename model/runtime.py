@@ -7,9 +7,9 @@ import time
 import traceback
 from datetime import datetime
 from types import SimpleNamespace
-from urllib.parse import quote, urlencode
-from urllib.request import urlopen
+from urllib.parse import quote
 
+import requests
 from telethon import functions, types
 
 from .config import (
@@ -34,6 +34,7 @@ from .config import (
     LOG_BOT_TOKEN,
     LOG_GROUP_ID,
     LOG_SEND_MODE,
+    TG_REQUESTS_PROXIES,
     MESSAGES_DIR,
     MY_MSG_MAX,
     MY_MSG_TTL,
@@ -395,27 +396,29 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
     payload = {
         "chat_id": str(LOG_GROUP_ID),
         "text": text,
-        "disable_web_page_preview": "true" if not link_preview else "false",
+        "disable_web_page_preview": not link_preview,
     }
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if int(reply_to_msg_id or 0) > 0:
         payload["reply_to_message_id"] = int(reply_to_msg_id)
-        payload["allow_sending_without_reply"] = "true"
+        payload["allow_sending_without_reply"] = True
     if int(message_thread_id or 0) > 0:
         payload["message_thread_id"] = int(message_thread_id)
     url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/sendMessage"
     try:
-        from urllib.error import HTTPError
-        with urlopen(url, data=urlencode(payload).encode("utf-8"), timeout=15) as response:
-            body = response.read().decode("utf-8", errors="replace")
-    except HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace") if hasattr(e, "read") else str(e)
-        return False, f"HTTP {e.code}: {body}"
-    except Exception as e:
+        response = requests.post(url, data=payload, timeout=(5, 15), proxies=TG_REQUESTS_PROXIES)
+    except requests.exceptions.Timeout as e:
+        return False, f"timeout: {e}"
+    except requests.exceptions.ProxyError as e:
+        return False, f"proxy error: {e}"
+    except requests.exceptions.RequestException as e:
         return False, str(e)
+    body = response.text
+    if not response.ok:
+        return False, f"HTTP {response.status_code}: {body}"
     try:
-        data = json.loads(body)
+        data = response.json()
     except Exception:
         data = None
     if isinstance(data, dict) and data.get("ok") is True:
