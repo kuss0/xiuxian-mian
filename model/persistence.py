@@ -70,6 +70,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
     if "jiyin_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -112,6 +114,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_stargazer_panel_time REAL NOT NULL DEFAULT 0")
     if "stargazer_collect_due_at" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN stargazer_collect_due_at REAL NOT NULL DEFAULT 0")
+    if "next_guanxing_notify_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_guanxing_notify_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
     if "stargazer_last_panel_msg_id" not in runtime_columns:
@@ -134,6 +138,24 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_collect_ready INTEGER NOT NULL DEFAULT 0")
     if "stargazer_soothe_before_collect" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_slot_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_slot_key TEXT NOT NULL DEFAULT ''")
+    if "guanxing_slot_start_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_slot_start_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_slot_end_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_slot_end_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_seen_panel" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_seen_panel INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_matched_keyword" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_matched_keyword TEXT NOT NULL DEFAULT ''")
+    if "guanxing_matched_value" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_matched_value TEXT NOT NULL DEFAULT ''")
+    if "guanxing_last_evolution_value" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_evolution_value TEXT NOT NULL DEFAULT ''")
+    if "guanxing_last_seen_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_seen_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_last_notified_slot_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_notified_slot_key TEXT NOT NULL DEFAULT ''")
     if "stargazer_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN stargazer_enabled INTEGER NOT NULL DEFAULT 0")
     if "quiz_reply_to_msg_id" not in runtime_columns:
@@ -216,6 +238,7 @@ def init_db():
             tree_enabled INTEGER NOT NULL,
             pet_enabled INTEGER NOT NULL,
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
+            guanxing_enabled INTEGER NOT NULL DEFAULT 0,
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
@@ -240,6 +263,7 @@ def init_db():
             next_pet_time REAL NOT NULL,
             next_stargazer_panel_time REAL NOT NULL DEFAULT 0,
             stargazer_collect_due_at REAL NOT NULL DEFAULT 0,
+            next_guanxing_notify_time REAL NOT NULL DEFAULT 0,
             next_checkin_time REAL NOT NULL,
             next_sect_teach_time REAL NOT NULL,
             next_tower_time REAL NOT NULL,
@@ -266,6 +290,15 @@ def init_db():
             stargazer_wait_full_collect INTEGER NOT NULL DEFAULT 0,
             stargazer_collect_ready INTEGER NOT NULL DEFAULT 0,
             stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0,
+            guanxing_slot_key TEXT NOT NULL DEFAULT '',
+            guanxing_slot_start_at REAL NOT NULL DEFAULT 0,
+            guanxing_slot_end_at REAL NOT NULL DEFAULT 0,
+            guanxing_seen_panel INTEGER NOT NULL DEFAULT 0,
+            guanxing_matched_keyword TEXT NOT NULL DEFAULT '',
+            guanxing_matched_value TEXT NOT NULL DEFAULT '',
+            guanxing_last_evolution_value TEXT NOT NULL DEFAULT '',
+            guanxing_last_seen_at REAL NOT NULL DEFAULT 0,
+            guanxing_last_notified_slot_key TEXT NOT NULL DEFAULT '',
             quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             quiz_question TEXT NOT NULL DEFAULT '',
             quiz_options TEXT NOT NULL DEFAULT '{}',

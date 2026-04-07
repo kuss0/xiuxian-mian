@@ -43,6 +43,7 @@ from .config import (
 )
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
+from .features.guanxing import get_guanxing_status_text, restore_guanxing_runtime_state
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
@@ -158,7 +159,7 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
         return ""
     if module_name == "灵树":
         return f"当前宗门未提供{module_name}模块"
-    if module_name == "观星台":
+    if module_name in {"观星台", "观星"}:
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -206,6 +207,19 @@ def _disable_stargazer_module_state():
     _clear_pending_tasks_by_commands({CMD_STARGAZER_PANEL, CMD_STARGAZER_GUIDE, CMD_STARGAZER_SOOTHE, CMD_STARGAZER_COLLECT})
 
 
+def _disable_guanxing_module_state():
+    state["guanxing_enabled"] = False
+    state["next_guanxing_notify_time"] = 0
+    state["guanxing_slot_key"] = ""
+    state["guanxing_slot_start_at"] = 0
+    state["guanxing_slot_end_at"] = 0
+    state["guanxing_seen_panel"] = False
+    state["guanxing_matched_keyword"] = ""
+    state["guanxing_matched_value"] = ""
+    state["guanxing_last_evolution_value"] = ""
+    state["guanxing_last_seen_at"] = 0
+
+
 def _manual_enable_stargazer_module_state(now):
     state["stargazer_enabled"] = True
     followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
@@ -217,6 +231,18 @@ def _manual_enable_stargazer_module_state(now):
     state["stargazer_followup_due_at"] = float(now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC)
     state["next_stargazer_panel_time"] = 0
     state["stargazer_last_action"] = "queue_soothe"
+
+
+def _restore_guanxing_runtime(now):
+    _slot_info, changed = restore_guanxing_runtime_state(now)
+    if changed:
+        mark_dirty()
+
+
+
+def _manual_enable_guanxing_module_state(now):
+    state["guanxing_enabled"] = True
+    _restore_guanxing_runtime(now)
 
 
 def _manual_disable_pet_module_state():
@@ -447,6 +473,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
     "观星台": (_manual_enable_stargazer_module_state, _disable_stargazer_module_state),
+    "观星": (_manual_enable_guanxing_module_state, _disable_guanxing_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
@@ -458,6 +485,7 @@ MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
     "观星台": _disable_stargazer_module_state,
+    "观星": _disable_guanxing_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
     "元婴": _disable_yuanying_module_state,
@@ -527,6 +555,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
         "观星台": get_stargazer_status_text,
+        "观星": get_guanxing_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -575,6 +604,9 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
             changed = True
         if not is_module_available("观星台", send_as_id) and state.get("stargazer_enabled"):
             _disable_stargazer_module_state()
+            changed = True
+        if not is_module_available("观星", send_as_id) and state.get("guanxing_enabled"):
+            _disable_guanxing_module_state()
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
@@ -688,6 +720,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _schedule_module_immediate_retry("法宝", now)
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
+        if state["guanxing_enabled"]:
+            _restore_guanxing_runtime(now)
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
         if state["tower_enabled"]:

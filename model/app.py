@@ -16,6 +16,7 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
+from .features.guanxing import handle_guanxing_broadcast, run_guanxing_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
@@ -261,7 +262,12 @@ async def _dispatch_tree_broadcast_fallbacks(event, text, now):
 
 async def _dispatch_stargazer_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="stargazer_panel"):
-        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
+        await _run_for_all_identities(handle_stargazer_panel, text, now, False, "stargazer_panel")
+
+
+async def _dispatch_guanxing_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="guanxing_broadcast"):
+        await _run_for_all_identities(handle_guanxing_broadcast, text, now)
 
 
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
@@ -276,7 +282,12 @@ async def _dispatch_message_edited_tree_panel(event, text, now):
 
 async def _dispatch_message_edited_stargazer_panel(event, text, now):
     if _claim_runtime_event(event, scope="stargazer_panel_edit"):
-        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
+        await _run_for_all_identities(handle_stargazer_panel, text, now, False, "stargazer_panel")
+
+
+async def _dispatch_message_edited_guanxing(event, text, now):
+    if _claim_runtime_event(event, scope="guanxing_broadcast_edit"):
+        await _run_for_all_identities(handle_guanxing_broadcast, text, now)
 
 
 async def _run_identity_schedulers(now):
@@ -285,6 +296,7 @@ async def _run_identity_schedulers(now):
         run_tree_scheduler,
         run_pet_scheduler,
         run_stargazer_scheduler,
+        run_guanxing_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
         run_checkin_scheduler,
@@ -374,7 +386,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             _mark_runtime_message_consumed(event, matched_family)
 
     await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
-    return True
+    return handled_any
 
 
 @client.on(events.NewMessage())
@@ -423,6 +435,7 @@ async def on_message(event):
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
         await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
+        await _dispatch_guanxing_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())
@@ -458,6 +471,7 @@ async def on_message_edited(event):
 
         await _dispatch_message_edited_tree_panel(event, text, now)
         await _dispatch_message_edited_stargazer_panel(event, text, now)
+        await _dispatch_message_edited_guanxing(event, text, now)
     except Exception:
         print(traceback.format_exc())
 
