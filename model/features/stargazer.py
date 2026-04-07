@@ -323,6 +323,12 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
     if matched_family != "stargazer_soothe" and CMD_STARGAZER_SOOTHE not in orig_cmd:
         return False
 
+    soothe_before_collect = bool(state.get("stargazer_soothe_before_collect"))
+    if soothe_before_collect:
+        _clear_stargazer_collect_flags()
+        await _queue_stargazer_action(now, "collect", audit_text="🌠 已收到安抚回复，收集精华")
+        return True
+
     if any(keyword in text for keyword in STARGAZER_CD_HINT_KEYWORDS) and has_wait_time(text):
         wait_sec = parse_wait_time(text)
         follow_delay = wait_sec + CD_BUFFER_SEC + random.uniform(5, 10)
@@ -429,6 +435,7 @@ async def run_stargazer_scheduler(now):
         next_panel_time = now
 
     if now >= next_panel_time:
+        state["stargazer_soothe_before_collect"] = True
         await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台到时，先安抚再收集")
 
 
