@@ -148,7 +148,7 @@ async def _send_stargazer_panel(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(now, "panel", retry_delay)
         save_state()
-        await send_audit_log(f"❌ 观星台查询发送失败，稍后重试→{fmt_time_after(retry_delay)}")
+        await send_audit_log("❌ 观星台发送失败，稍后重试。")
         return False
     save_state()
     if audit_text:
@@ -165,7 +165,7 @@ async def _send_stargazer_soothe(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(now, "soothe", retry_delay)
         save_state()
-        await send_audit_log(f"❌ 安抚星辰发送失败，稍后重试→{fmt_time_after(retry_delay)}")
+        await send_audit_log("❌ 安抚星辰发送失败，稍后重试。")
         return False
     save_state()
     if audit_text:
@@ -182,7 +182,7 @@ async def _send_stargazer_collect(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(now, "collect", retry_delay)
         save_state()
-        await send_audit_log(f"❌ 收集精华发送失败，稍后重试→{fmt_time_after(retry_delay)}")
+        await send_audit_log("❌ 收集精华发送失败，稍后重试。")
         return False
     save_state()
     if audit_text:
@@ -200,7 +200,7 @@ async def _send_stargazer_guide(now, audit_text=None):
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
         _queue_stargazer_followup_action(now, "guide", retry_delay)
         save_state()
-        await send_audit_log(f"❌ 牵引星辰发送失败，稍后重试→{fmt_time_after(retry_delay)}")
+        await send_audit_log("❌ 牵引星辰发送失败，稍后重试。")
         return False
     save_state()
     if audit_text:
@@ -244,12 +244,12 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
 
     if parsed["dim_slot_count"] > 0:
         _clear_stargazer_collect_flags()
-        await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台检测到黯淡盘，稍后安抚星辰")
+        await _queue_stargazer_action(now, "soothe", audit_text="🌠 检测到黯淡盘，安抚星辰")
         return True
 
     if parsed["all_ready"]:
         _clear_stargazer_collect_flags()
-        await _queue_stargazer_action(now, "collect", audit_text="💎 观星台已全盘成熟，稍后直接收集精华")
+        await _queue_stargazer_action(now, "collect", audit_text="💎 全盘成熟，收集精华")
         return True
 
     if parsed["idle_slot_count"] > 0:
@@ -257,7 +257,7 @@ async def handle_stargazer_panel(text, now, is_reply_to_me, matched_family=None)
         await _queue_stargazer_action(
             now,
             "guide",
-            audit_text=f"🌌 观星台存在空闲盘，稍后牵引 {get_stargazer_star_choice()}",
+            audit_text=f"🌌 存在空闲盘，牵引 {get_stargazer_star_choice()}",
         )
         return True
 
@@ -279,7 +279,7 @@ async def handle_stargazer_guide_reply(text, now, reply_to, matched_family=None)
 
     if "已无空闲的引星盘" in text:
         _clear_stargazer_collect_flags()
-        await _queue_stargazer_action(now, "panel", audit_text="🔄 牵引命中无空闲引星盘，稍后回查观星台")
+        await _queue_stargazer_action(now, "panel", audit_text="🔄 无空闲引星盘，回查观星台")
         return True
 
     if any(keyword in text for keyword in STARGAZER_CD_HINT_KEYWORDS) and has_wait_time(text):
@@ -288,7 +288,7 @@ async def handle_stargazer_guide_reply(text, now, reply_to, matched_family=None)
         _queue_stargazer_followup_action(now, "guide", follow_delay)
         state["stargazer_last_action"] = "queue_guide"
         save_state()
-        await send_audit_log(f"⏳ 观星台牵引等待→{fmt_time_after(follow_delay)}")
+        await send_audit_log(f"⏳ 牵引 CD→{fmt_time_after(follow_delay)}")
         return True
 
     if "牵引成功" not in text:
@@ -309,7 +309,7 @@ async def handle_stargazer_guide_reply(text, now, reply_to, matched_family=None)
     state["stargazer_last_action"] = "guide_success"
     save_state()
     if due_at > 0:
-        await send_audit_log(f"🌌 牵引{star_choice}成功，收集参考→{fmt_time_after(duration_sec + CD_BUFFER_SEC)}")
+        await send_audit_log(f"🌌 牵引{star_choice}成功，收集→{fmt_time_after(duration_sec + CD_BUFFER_SEC)}")
     else:
         await send_audit_log("🌌 牵引星辰成功。")
     return True
@@ -329,16 +329,16 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
         _queue_stargazer_followup_action(now, "soothe", follow_delay)
         state["stargazer_last_action"] = "queue_soothe"
         save_state()
-        await send_audit_log(f"⏳ 安抚星辰等待→{fmt_time_after(follow_delay)}")
+        await send_audit_log(f"⏳ 安抚 CD→{fmt_time_after(follow_delay)}")
         return True
 
     if "安抚完成" in text:
         _clear_stargazer_collect_flags()
-        await _queue_stargazer_action(now, "collect", audit_text="🌠 安抚完成，稍后收集精华")
+        await _queue_stargazer_action(now, "collect", audit_text="🌠 安抚完成，收集精华")
         return True
 
     _clear_stargazer_collect_flags()
-    await _queue_stargazer_action(now, "panel", audit_text="🔭 安抚结果异常，稍后回查观星台")
+    await _queue_stargazer_action(now, "panel", audit_text="🔭 安抚异常，回查观星台")
     return True
 
 
@@ -356,7 +356,7 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
         _queue_stargazer_followup_action(now, "collect", follow_delay)
         state["stargazer_last_action"] = "queue_collect"
         save_state()
-        await send_audit_log(f"⏳ 收集精华等待→{fmt_time_after(follow_delay)}")
+        await send_audit_log(f"⏳ 收集 CD→{fmt_time_after(follow_delay)}")
         return True
 
     if "收集完成" in text:
@@ -372,14 +372,14 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
                 await _queue_stargazer_action(
                     now,
                     "guide",
-                    audit_text=f"🌌 已完成 {collected_slot_count}/{total_slots} 座收集，稍后统一牵引 {get_stargazer_star_choice()}",
+                    audit_text=f"🌌 已完成 {collected_slot_count}/{total_slots} 座收集，牵引 {get_stargazer_star_choice()}",
                 )
                 return True
             state["stargazer_idle_slot_count"] = 0
             await _queue_stargazer_action(
                 now,
                 "panel",
-                audit_text=f"🔭 已收集 {collected_slot_count} 座星盘，稍后回查观星台等待其余星盘成熟",
+                audit_text=f"🔭 已收集 {collected_slot_count} 座，回查观星台",
             )
             return True
         _schedule_next_stargazer_action(now + RETRY_MAX_SEC + random.uniform(5, 10))
@@ -391,11 +391,11 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
     if "没有已凝聚成形的星辰精华可供收集" in text:
         _clear_stargazer_collect_flags()
         state["stargazer_collect_due_at"] = 0
-        await _queue_stargazer_action(now, "panel", audit_text="🔭 当前无可收集精华，稍后回查观星台")
+        await _queue_stargazer_action(now, "panel", audit_text="🔭 当前无可收集精华，回查观星台")
         return True
 
     _clear_stargazer_collect_flags()
-    await _queue_stargazer_action(now, "panel", audit_text="🔭 收集结果异常，稍后回查观星台")
+    await _queue_stargazer_action(now, "panel", audit_text="🔭 收集异常，回查观星台")
     return True
 
 
@@ -429,7 +429,7 @@ async def run_stargazer_scheduler(now):
         next_panel_time = now
 
     if now >= next_panel_time:
-        await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台到时处理，稍后先安抚星辰再收集精华")
+        await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台到时，先安抚再收集")
 
 
 async def sync_stargazer_total_slots(send_as_id):
