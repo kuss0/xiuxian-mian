@@ -75,6 +75,7 @@ from .state import (
     get_identity_ids,
     get_identity_ui_display_name,
     get_global_enabled,
+    get_guanxing_enabled,
     has_identity,
     remove_identity,
     set_global_enabled as set_global_enabled_state,
@@ -90,6 +91,7 @@ from .state import (
     set_identity_account,
     set_identity_enabled as set_identity_enabled_profile,
     set_module_window_hours,
+    set_guanxing_enabled,
     split_command_identity_selector,
     state,
     update_send_as_profile,
@@ -155,11 +157,13 @@ def _schedule_module_immediate_retry(module_name, now):
 
 
 def get_module_unavailable_reason(module_name, send_as_id=None):
+    if module_name == "观星":
+        return ""
     if is_module_available(module_name, send_as_id):
         return ""
     if module_name == "灵树":
         return f"当前宗门未提供{module_name}模块"
-    if module_name in {"观星台", "观星"}:
+    if module_name == "观星台":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -208,7 +212,7 @@ def _disable_stargazer_module_state():
 
 
 def _disable_guanxing_module_state():
-    state["guanxing_enabled"] = False
+    set_guanxing_enabled(False)
     state["next_guanxing_notify_time"] = 0
     state["guanxing_slot_key"] = ""
     state["guanxing_slot_start_at"] = 0
@@ -218,6 +222,7 @@ def _disable_guanxing_module_state():
     state["guanxing_matched_value"] = ""
     state["guanxing_last_evolution_value"] = ""
     state["guanxing_last_seen_at"] = 0
+    state["guanxing_last_notified_slot_key"] = ""
 
 
 def _manual_enable_stargazer_module_state(now):
@@ -242,7 +247,7 @@ def _restore_guanxing_runtime(now):
 
 
 def _manual_enable_guanxing_module_state(now):
-    state["guanxing_enabled"] = True
+    set_guanxing_enabled(True)
     _restore_guanxing_runtime(now)
 
 
@@ -567,6 +572,8 @@ def get_single_module_status_text(module_name, send_as_id=None):
     getter = status_map.get(module_name)
     if not getter:
         return "❌ 未知模块"
+    if module_name == "观星":
+        return getter()
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     blocks = []
@@ -605,9 +612,6 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
             changed = True
         if not is_module_available("观星台", send_as_id) and state.get("stargazer_enabled"):
             _disable_stargazer_module_state()
-            changed = True
-        if not is_module_available("观星", send_as_id) and state.get("guanxing_enabled"):
-            _disable_guanxing_module_state()
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
@@ -722,8 +726,6 @@ def initialize_identity_runtime(send_as_id, now=None):
             _schedule_module_immediate_retry("法宝", now)
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
-        if state["guanxing_enabled"]:
-            _restore_guanxing_runtime(now)
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
         if state["tower_enabled"]:
@@ -1725,6 +1727,8 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
         return True, "全局状态未变化"
     set_global_enabled_state(enabled)
     now = time.time()
+    if enabled and get_guanxing_enabled():
+        _restore_guanxing_runtime(now)
     for identity_id in get_identity_ids():
         if enabled:
             if get_identity_enabled(identity_id):
@@ -1743,6 +1747,18 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
     key = MODULE_KEY_MAP.get(module_name)
     if not key:
         return False
+
+    if module_name == "观星":
+        now = time.time()
+        if bool(get_guanxing_enabled()) != bool(enabled):
+            if enabled:
+                _manual_enable_guanxing_module_state(now)
+            else:
+                _disable_guanxing_module_state()
+            save_state()
+        action_text = "开启" if enabled else "关闭"
+        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块", scope="global")
+        return True, ""
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     if enabled:

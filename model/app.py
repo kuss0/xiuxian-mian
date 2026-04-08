@@ -267,7 +267,7 @@ async def _dispatch_stargazer_broadcast_fallbacks(event, text, now):
 
 async def _dispatch_guanxing_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="guanxing_broadcast"):
-        await _run_for_all_identities(handle_guanxing_broadcast, text, now)
+        await handle_guanxing_broadcast(text, now)
 
 
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
@@ -287,7 +287,7 @@ async def _dispatch_message_edited_stargazer_panel(event, text, now):
 
 async def _dispatch_message_edited_guanxing(event, text, now):
     if _claim_runtime_event(event, scope="guanxing_broadcast_edit"):
-        await _run_for_all_identities(handle_guanxing_broadcast, text, now)
+        await handle_guanxing_broadcast(text, now)
 
 
 async def _run_identity_schedulers(now):
@@ -296,7 +296,6 @@ async def _run_identity_schedulers(now):
         run_tree_scheduler,
         run_pet_scheduler,
         run_stargazer_scheduler,
-        run_guanxing_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
         run_checkin_scheduler,
@@ -310,6 +309,10 @@ async def _run_identity_schedulers(now):
         with use_identity(identity_id):
             for scheduler in identity_schedulers:
                 await scheduler(now)
+
+
+async def _run_global_schedulers(now):
+    await run_guanxing_scheduler(now)
 
 
 async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
@@ -540,6 +543,9 @@ async def bootstrap():
         enforce_identity_module_availability(send_as_id, persist=False)
 
     now = time.time()
+    if state.get("guanxing_enabled"):
+        restore_guanxing_runtime_state(now)
+        mark_dirty()
     startup_scan_result = scan_startup_timeout_tasks(now) if loaded else {"closed_count": 0, "affected_identity_ids": [], "alerts": []}
     any_loaded = False
     if loaded:
@@ -640,6 +646,7 @@ async def main_loop():
             await asyncio.sleep(5)
             continue
 
+        await _run_global_schedulers(now)
         await _run_identity_schedulers(now)
         await run_quiz_learning_scheduler(now)
         await asyncio.sleep(5)

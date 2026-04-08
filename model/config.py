@@ -237,7 +237,7 @@ SCRIPT_COMMANDS = [
     CMD_JIYIN_HIDE_AURA,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "观星", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",

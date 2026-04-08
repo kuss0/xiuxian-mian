@@ -89,31 +89,37 @@ def _format_slot_label(slot_start_at, slot_end_at):
     return f"{start_text}-{end_text}"
 
 
+def get_guanxing_summary_text():
+    matched_keyword = str(state.get("guanxing_matched_keyword") or "")
+    matched_value = str(state.get("guanxing_matched_value") or "")
+    last_evolution_value = str(state.get("guanxing_last_evolution_value") or "")
+
+    if not state.get("guanxing_enabled"):
+        return "已关闭"
+    if matched_keyword:
+        return f"命中 {matched_keyword}（{matched_value or '未记录内容'}）"
+    if last_evolution_value:
+        return f"非目标结果（{last_evolution_value}）"
+    if state.get("guanxing_seen_panel"):
+        return "已触发，未解析到目标天象"
+    return "当前时段未收到显化广播"
+
+
 def get_guanxing_status_text():
     notify_at = float(state.get("next_guanxing_notify_time", 0) or 0)
     slot_start_at = float(state.get("guanxing_slot_start_at", 0) or 0)
     slot_end_at = float(state.get("guanxing_slot_end_at", 0) or 0)
     slot_label = _format_slot_label(slot_start_at, slot_end_at)
-    matched_keyword = str(state.get("guanxing_matched_keyword") or "")
-    matched_value = str(state.get("guanxing_matched_value") or "")
-    last_evolution_value = str(state.get("guanxing_last_evolution_value") or "")
     last_seen_at = float(state.get("guanxing_last_seen_at", 0) or 0)
     current_slot_key = str(state.get("guanxing_slot_key") or "")
     last_notified_slot_key = str(state.get("guanxing_last_notified_slot_key") or "")
-
-    if matched_keyword:
-        result_text = f"命中 {matched_keyword}（{matched_value or '未记录内容'}）"
-    elif last_evolution_value:
-        result_text = f"非目标结果（{last_evolution_value}）"
-    elif state.get("guanxing_seen_panel"):
-        result_text = "已触发，未解析到目标天象"
-    else:
-        result_text = "当前时段未收到显化广播"
+    result_text = get_guanxing_summary_text()
 
     return (
-        "🌠 观星\n"
+        "🌠 观星（全局）\n"
         f"- 当前时段：{slot_label}\n"
         f"- 收口时间：{fmt_abs_ts(notify_at)}（{fmt_remaining(notify_at)}）\n"
+        f"- 已启用：{'是' if state.get('guanxing_enabled') else '否'}\n"
         f"- 已见显化：{'是' if state.get('guanxing_seen_panel') else '否'} ｜ 已收口：{'是' if current_slot_key and current_slot_key == last_notified_slot_key else '否'}\n"
         f"- 当前结果：{result_text}\n"
         f"- 最近显化：{fmt_abs_ts(last_seen_at)}"
@@ -179,6 +185,7 @@ async def run_guanxing_scheduler(now):
 __all__ = [
     "calc_guanxing_slot",
     "restore_guanxing_runtime_state",
+    "get_guanxing_summary_text",
     "get_guanxing_status_text",
     "handle_guanxing_broadcast",
     "run_guanxing_scheduler",

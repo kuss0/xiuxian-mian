@@ -20,12 +20,12 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
-    "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_guanxing_notify_time", "next_checkin_time", "next_sect_teach_time",
+    "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
@@ -33,7 +33,6 @@ IDENTITY_RUNTIME_COLUMNS = [
     "last_tower_msg_id",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
-    "guanxing_slot_key", "guanxing_slot_start_at", "guanxing_slot_end_at", "guanxing_seen_panel", "guanxing_matched_keyword", "guanxing_matched_value", "guanxing_last_evolution_value", "guanxing_last_seen_at", "guanxing_last_notified_slot_key",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
@@ -42,12 +41,12 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
-    "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect", "guanxing_seen_panel",
+    "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "guanxing_enabled", "next_guanxing_notify_time", "guanxing_slot_key", "guanxing_slot_start_at", "guanxing_slot_end_at", "guanxing_seen_panel", "guanxing_matched_keyword", "guanxing_matched_value", "guanxing_last_evolution_value", "guanxing_last_seen_at", "guanxing_last_notified_slot_key", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -140,7 +139,6 @@ IDENTITY_STATE_TEMPLATE = {
     "tree_enabled": False,
     "pet_enabled": False,
     "quiz_enabled": False,
-    "guanxing_enabled": False,
     "jiyin_enabled": False,
     "yuanying_enabled": False,
     "deep_retreat_enabled": False,
@@ -177,18 +175,6 @@ IDENTITY_STATE_TEMPLATE = {
     "stargazer_wait_full_collect": False,
     "stargazer_collect_ready": False,
     "stargazer_soothe_before_collect": False,
-
-    # 观星模块
-    "next_guanxing_notify_time": 0,
-    "guanxing_slot_key": "",
-    "guanxing_slot_start_at": 0,
-    "guanxing_slot_end_at": 0,
-    "guanxing_seen_panel": False,
-    "guanxing_matched_keyword": "",
-    "guanxing_matched_value": "",
-    "guanxing_last_evolution_value": "",
-    "guanxing_last_seen_at": 0,
-    "guanxing_last_notified_slot_key": "",
 
     # 点卯模块
     "next_checkin_time": 0,
@@ -268,6 +254,17 @@ GLOBAL_STATE_DEFAULTS = {
     "forum_topics_updated_at": 0,
     "auto_delete_sent_messages": True,
     "global_enabled": True,
+    "guanxing_enabled": False,
+    "next_guanxing_notify_time": 0,
+    "guanxing_slot_key": "",
+    "guanxing_slot_start_at": 0,
+    "guanxing_slot_end_at": 0,
+    "guanxing_seen_panel": False,
+    "guanxing_matched_keyword": "",
+    "guanxing_matched_value": "",
+    "guanxing_last_evolution_value": "",
+    "guanxing_last_seen_at": 0,
+    "guanxing_last_notified_slot_key": "",
     "send_as_profiles": {},
     "identity_states": {},
     "identity_ids": [],
@@ -615,6 +612,15 @@ def set_global_enabled(enabled):
     return get_global_enabled()
 
 
+def get_guanxing_enabled():
+    return bool(_meta_state.get("guanxing_enabled", False))
+
+
+def set_guanxing_enabled(enabled):
+    _meta_state["guanxing_enabled"] = bool(enabled)
+    return get_guanxing_enabled()
+
+
 def get_quiz_learning_watchers():
     watchers = _meta_state.get("quiz_learning_watchers") or {}
     return watchers if isinstance(watchers, dict) else {}
@@ -788,7 +794,7 @@ def get_available_module_names(send_as_id=None):
     if sect_name and sect_name != "落云宗":
         available_module_names = [module_name for module_name in available_module_names if module_name != "灵树"]
     if sect_name and sect_name != "星宫":
-        available_module_names = [module_name for module_name in available_module_names if module_name not in {"观星台", "观星"}]
+        available_module_names = [module_name for module_name in available_module_names if module_name != "观星台"]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]
     return available_module_names
@@ -970,6 +976,7 @@ __all__ = [
     "get_forum_topics",
     "get_forum_topics_updated_at",
     "get_global_enabled",
+    "get_guanxing_enabled",
     "has_active_identity_context",
     "get_quiz_learning_watchers",
     "is_auto_delete_sent_messages_enabled",
@@ -1003,6 +1010,7 @@ __all__ = [
     "set_game_topic_id",
     "set_forum_topics",
     "set_global_enabled",
+    "set_guanxing_enabled",
     "set_quiz_learning_watchers",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",
