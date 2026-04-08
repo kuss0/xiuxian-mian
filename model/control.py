@@ -8,6 +8,8 @@ from .config import (
     CMD_CHECKIN,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    CMD_GUANXING,
+    CMD_GUANXING_SHIFT,
     CMD_PET,
     CMD_QUIZ_ANSWER,
     CMD_SECT_TEACH,
@@ -43,6 +45,11 @@ from .config import (
 )
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
+from .features.guanxing import (
+    clear_guanxing_identity_runtime,
+    get_guanxing_status_text,
+    restore_guanxing_round_runtime,
+)
 from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore_guanxing_monitor_runtime_state
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
@@ -165,6 +172,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
         return f"当前宗门未提供{module_name}模块"
     if module_name == "观星台":
         return f"当前宗门未提供{module_name}模块"
+    if module_name == "观星":
+        return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
     return f"当前条件未提供{module_name}模块"
@@ -225,6 +234,12 @@ def _disable_guanxing_monitor_module_state():
     state["guanxing_monitor_last_notified_slot_key"] = ""
 
 
+def _disable_guanxing_module_state():
+    state["guanxing_enabled"] = False
+    clear_guanxing_identity_runtime(get_current_identity_id())
+    _clear_pending_tasks_by_commands({CMD_GUANXING, CMD_GUANXING_SHIFT})
+
+
 def _manual_enable_stargazer_module_state(now):
     state["stargazer_enabled"] = True
     total_slots = int(get_stargazer_total_slots() or 0)
@@ -249,6 +264,12 @@ def _restore_guanxing_monitor_runtime(now):
 def _manual_enable_guanxing_monitor_module_state(now):
     set_guanxing_monitor_enabled(True)
     _restore_guanxing_monitor_runtime(now)
+
+
+def _manual_enable_guanxing_module_state(now):
+    state["guanxing_enabled"] = True
+    clear_guanxing_identity_runtime(get_current_identity_id())
+    restore_guanxing_round_runtime(now)
 
 
 def _manual_disable_pet_module_state():
@@ -467,6 +488,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_STARGAZER_GUIDE: "观星台",
     CMD_STARGAZER_SOOTHE: "观星台",
     CMD_STARGAZER_COLLECT: "观星台",
+    CMD_GUANXING: "观星",
+    CMD_GUANXING_SHIFT: "观星",
     CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
@@ -479,6 +502,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
     "观星台": (_manual_enable_stargazer_module_state, _disable_stargazer_module_state),
+    "观星": (_manual_enable_guanxing_module_state, _disable_guanxing_module_state),
     "观星监控": (_manual_enable_guanxing_monitor_module_state, _disable_guanxing_monitor_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
@@ -491,6 +515,7 @@ MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
     "观星台": _disable_stargazer_module_state,
+    "观星": _disable_guanxing_module_state,
     "观星监控": _disable_guanxing_monitor_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
@@ -561,6 +586,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
         "观星台": get_stargazer_status_text,
+        "观星": get_guanxing_status_text,
         "观星监控": get_guanxing_monitor_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
@@ -612,6 +638,9 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
             changed = True
         if not is_module_available("观星台", send_as_id) and state.get("stargazer_enabled"):
             _disable_stargazer_module_state()
+            changed = True
+        if not is_module_available("观星", send_as_id) and state.get("guanxing_enabled"):
+            _disable_guanxing_module_state()
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()

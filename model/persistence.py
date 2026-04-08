@@ -20,6 +20,7 @@ from .state import (
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
     get_guanxing_monitor_enabled,
+    get_guanxing_round_state,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
@@ -32,6 +33,7 @@ from .state import (
     set_game_group_id,
     set_game_topic_id,
     set_guanxing_monitor_enabled,
+    set_guanxing_round_state,
     set_quiz_learning_watchers,
     set_send_as_profile,
     get_accounts,
@@ -74,6 +76,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_monitor_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -158,6 +162,22 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_seen_at REAL NOT NULL DEFAULT 0")
     if "guanxing_monitor_last_notified_slot_key" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_notified_slot_key TEXT NOT NULL DEFAULT ''")
+    if "guanxing_last_query_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_query_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_last_panel_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_panel_slot_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_panel_slot_key TEXT NOT NULL DEFAULT ''")
+    if "guanxing_last_panel_seen_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_panel_seen_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_last_shift_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_last_shift_slot_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_slot_key TEXT NOT NULL DEFAULT ''")
+    if "guanxing_last_shift_target" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_target TEXT NOT NULL DEFAULT ''")
+    if "guanxing_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN stargazer_enabled INTEGER NOT NULL DEFAULT 0")
     if "quiz_reply_to_msg_id" not in runtime_columns:
@@ -241,6 +261,7 @@ def init_db():
             pet_enabled INTEGER NOT NULL,
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0,
+            guanxing_enabled INTEGER NOT NULL DEFAULT 0,
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
@@ -292,6 +313,14 @@ def init_db():
             stargazer_wait_full_collect INTEGER NOT NULL DEFAULT 0,
             stargazer_collect_ready INTEGER NOT NULL DEFAULT 0,
             stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0,
+            guanxing_last_query_msg_id INTEGER NOT NULL DEFAULT 0,
+            guanxing_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
+            guanxing_panel_slot_key TEXT NOT NULL DEFAULT '',
+            guanxing_last_panel_seen_at REAL NOT NULL DEFAULT 0,
+            guanxing_last_shift_msg_id INTEGER NOT NULL DEFAULT 0,
+            guanxing_last_shift_slot_key TEXT NOT NULL DEFAULT '',
+            guanxing_last_shift_target TEXT NOT NULL DEFAULT '',
+            guanxing_last_error TEXT NOT NULL DEFAULT '',
             guanxing_monitor_slot_key TEXT NOT NULL DEFAULT '',
             guanxing_monitor_slot_start_at REAL NOT NULL DEFAULT 0,
             guanxing_monitor_slot_end_at REAL NOT NULL DEFAULT 0,
@@ -421,6 +450,10 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("guanxing_monitor_last_notified_slot_key", ""),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("guanxing_round_state", "{}"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -781,6 +814,11 @@ _META_STATE_CODEC = {
         lambda: str(_meta_state.get("guanxing_monitor_last_notified_slot_key") or ""),
         lambda value: str(value or ""),
         lambda value: _set_meta_value("guanxing_monitor_last_notified_slot_key", str(value or "")),
+    ),
+    "guanxing_round_state": (
+        get_guanxing_round_state,
+        _encode_meta_json,
+        lambda value: set_guanxing_round_state(_decode_meta_json(value, {})),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,

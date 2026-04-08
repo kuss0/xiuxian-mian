@@ -16,6 +16,13 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
+from .features.guanxing import (
+    handle_guanxing_external_shift_command,
+    handle_guanxing_finish_broadcast,
+    handle_guanxing_query_reply,
+    restore_guanxing_round_runtime,
+    run_guanxing_scheduler,
+)
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
@@ -247,6 +254,8 @@ async def _dispatch_new_message_broadcasts(event, text, now):
         await handle_quiz_result_broadcast(text, now)
     if _claim_runtime_event(event, scope="quiz_learning_prompt"):
         await handle_quiz_learning_prompt(text, now, event)
+    if _claim_runtime_event(event, scope="guanxing_finish"):
+        await handle_guanxing_finish_broadcast(text, now)
 
 
 async def _dispatch_tree_broadcast_fallbacks(event, text, now):
@@ -313,6 +322,7 @@ async def _run_identity_schedulers(now):
 
 async def _run_global_schedulers(now):
     await run_guanxing_monitor_scheduler(now)
+    await run_guanxing_scheduler(now)
 
 
 async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
@@ -368,6 +378,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
             deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)
             handled_any = handled_any or deep_retreat_done
@@ -410,6 +421,12 @@ async def on_message(event):
             _bot_silence_triggered_at = time.time()
 
     if event.sender_id not in set(get_game_bot_ids()):
+        now = time.time()
+        text = event.raw_text or ""
+        try:
+            await handle_guanxing_external_shift_command(text, now, event)
+        except Exception:
+            print(traceback.format_exc())
         return
 
     # bot 静默监测：bot 有发言，重置触发状态
@@ -545,6 +562,9 @@ async def bootstrap():
     now = time.time()
     if state.get("guanxing_monitor_enabled"):
         restore_guanxing_monitor_runtime_state(now)
+        mark_dirty()
+    _round_state, round_changed = restore_guanxing_round_runtime(now)
+    if round_changed:
         mark_dirty()
     startup_scan_result = scan_startup_timeout_tasks(now) if loaded else {"closed_count": 0, "affected_identity_ids": [], "alerts": []}
     any_loaded = False

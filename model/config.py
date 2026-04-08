@@ -158,9 +158,14 @@ CMD_STARGAZER_PANEL = ".观星台"
 CMD_STARGAZER_GUIDE = ".牵引星辰"
 CMD_STARGAZER_SOOTHE = ".安抚星辰"
 CMD_STARGAZER_COLLECT = ".收集精华"
+CMD_GUANXING = ".观星"
+CMD_GUANXING_SHIFT = ".改换星移"
 STARGAZER_STAR_CHOICES = ("赤血星", "庚金星", "建木星", "天雷星", "帝魂星")
 GUANXING_SLOT_HOURS = 3
 GUANXING_NOTIFY_ADVANCE_SEC = 10 * 60
+GUANXING_EXECUTE_ADVANCE_SEC = 3 * 60
+GUANXING_SHIFT_START_DELAY_SEC = 10
+GUANXING_SHIFT_TARGET = "@wxjerry"
 GUANXING_TARGET_KEYWORDS = ("地磁暴动", "星辰异象")
 STARGAZER_STAR_DURATIONS = {
     "赤血星": 4 * 3600,
@@ -223,6 +228,8 @@ SCRIPT_COMMANDS = [
     CMD_STARGAZER_GUIDE,
     CMD_STARGAZER_SOOTHE,
     CMD_STARGAZER_COLLECT,
+    CMD_GUANXING,
+    CMD_GUANXING_SHIFT,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     CMD_DEEP_RETREAT,
@@ -237,11 +244,12 @@ SCRIPT_COMMANDS = [
     CMD_JIYIN_HIDE_AURA,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "观星", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
     "观星台": "stargazer_enabled",
+    "观星": "guanxing_enabled",
     "观星监控": "guanxing_monitor_enabled",
     "玄骨考校": "quiz_enabled",
     "极阴祖师": "jiyin_enabled",
@@ -358,8 +366,8 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
     (re.compile(r'^\.观星台状态$'), "观星台"),
+    (re.compile(r'^\.观星状态$'), "观星"),
     (re.compile(r'^\.观星监控状态$'), "观星监控"),
-    (re.compile(r'^\.观星状态$'), "观星监控"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
@@ -374,10 +382,10 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)法宝$'), "法宝", False),
     (re.compile(r'^\.(开启|打开)观星台$'), "观星台", True),
     (re.compile(r'^\.(关闭|关掉)观星台$'), "观星台", False),
+    (re.compile(r'^\.(开启|打开)观星$'), "观星", True),
+    (re.compile(r'^\.(关闭|关掉)观星$'), "观星", False),
     (re.compile(r'^\.(开启|打开)观星监控$'), "观星监控", True),
     (re.compile(r'^\.(关闭|关掉)观星监控$'), "观星监控", False),
-    (re.compile(r'^\.(开启|打开)观星$'), "观星监控", True),
-    (re.compile(r'^\.(关闭|关掉)观星$'), "观星监控", False),
     (re.compile(r'^\.(开启|打开)玄骨考校$'), "玄骨考校", True),
     (re.compile(r'^\.(关闭|关掉)玄骨考校$'), "玄骨考校", False),
     (re.compile(r'^\.(开启|打开)极阴祖师$'), "极阴祖师", True),

@@ -17,6 +17,8 @@ from .config import (
     CMD_CHECKIN,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    CMD_GUANXING,
+    CMD_GUANXING_SHIFT,
     CMD_IDENTITY_INFO,
     CMD_PET,
     CMD_SECT_TEACH,
@@ -104,6 +106,8 @@ REPLY_FAMILY_COMMANDS = {
     "stargazer_guide": {CMD_STARGAZER_GUIDE},
     "stargazer_soothe": {CMD_STARGAZER_SOOTHE},
     "stargazer_collect": {CMD_STARGAZER_COLLECT},
+    "guanxing_query": {CMD_GUANXING},
+    "guanxing_shift": {CMD_GUANXING_SHIFT},
     "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
 }
