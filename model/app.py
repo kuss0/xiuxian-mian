@@ -16,7 +16,7 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
-from .features.guanxing import handle_guanxing_broadcast, run_guanxing_scheduler
+from .features.guanxing import handle_guanxing_broadcast, restore_guanxing_runtime_state, run_guanxing_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
