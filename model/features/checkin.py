@@ -2,8 +2,8 @@ import random
 
 from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_game_group_id, is_auto_delete_sent_messages_enabled, state
+from ..runtime import _get_identity_client, console_log, send_audit_log, send_game_command
+from ..state import format_window_text, get_game_group_id, get_game_topic_id, is_auto_delete_sent_messages_enabled, state
 from ..timing import (
     fmt_abs_ts,
     fmt_remaining,
@@ -125,7 +125,6 @@ async def cleanup_checkin_chain_messages():
         save_state()
         return
     try:
-        from ..runtime import _get_identity_client
         await _get_identity_client().delete_messages(get_game_group_id(), msg_ids)
     except Exception as e:
         print(f"cleanup_checkin_chain_messages failed: {e} | msg_ids={msg_ids}")
@@ -133,6 +132,13 @@ async def cleanup_checkin_chain_messages():
         state["my_msg_ids"].pop(msg_id, None)
     state["checkin_cleanup_msg_ids"] = []
     save_state()
+
+
+async def _notify_sect_teach_completed():
+    try:
+        await _get_identity_client().send_message(get_game_group_id(), "📘 今日传功完成", reply_to=get_game_topic_id())
+    except Exception as e:
+        print(f"notify_sect_teach_completed failed: {e}")
 
 
 async def handle_checkin_reply(text, now, reply_to, matched_family=None):
@@ -181,12 +187,14 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
         state["checkin_teach_count"] = min(3, state["checkin_teach_count"] + 1)
         if state["checkin_teach_count"] < 3:
             schedule_sect_teach_chain(now, state["last_sect_teach_msg_id"])
+            console_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
         else:
             state["next_sect_teach_time"] = 0
             state["sect_teach_reply_to_msg_id"] = 0
             save_state()
             await cleanup_checkin_chain_messages()
-        await send_audit_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
+            console_log("📘 传功成功 3/3")
+            await _notify_sect_teach_completed()
         return True
 
     if is_sect_teach_already_done_text(text):
@@ -218,7 +226,7 @@ async def run_checkin_scheduler(now):
                 state["next_sect_teach_time"] = 0
                 state["sect_teach_reply_to_msg_id"] = 0
                 save_state()
-                await send_audit_log(f"📘 执行传功 {state['checkin_teach_count'] + 1}/3")
+                console_log(f"📘 执行传功 {state['checkin_teach_count'] + 1}/3")
             else:
                 state["next_sect_teach_time"] = now + RETRY_MAX_SEC
                 save_state()
