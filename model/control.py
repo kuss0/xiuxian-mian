@@ -43,7 +43,7 @@ from .config import (
 )
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
-from .features.guanxing import get_guanxing_status_text, restore_guanxing_runtime_state
+from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore_guanxing_monitor_runtime_state
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
@@ -75,7 +75,7 @@ from .state import (
     get_identity_ids,
     get_identity_ui_display_name,
     get_global_enabled,
-    get_guanxing_enabled,
+    get_guanxing_monitor_enabled,
     has_identity,
     remove_identity,
     set_global_enabled as set_global_enabled_state,
@@ -91,7 +91,7 @@ from .state import (
     set_identity_account,
     set_identity_enabled as set_identity_enabled_profile,
     set_module_window_hours,
-    set_guanxing_enabled,
+    set_guanxing_monitor_enabled,
     split_command_identity_selector,
     state,
     update_send_as_profile,
@@ -157,7 +157,7 @@ def _schedule_module_immediate_retry(module_name, now):
 
 
 def get_module_unavailable_reason(module_name, send_as_id=None):
-    if module_name == "观星":
+    if module_name == "观星监控":
         return ""
     if is_module_available(module_name, send_as_id):
         return ""
@@ -211,18 +211,18 @@ def _disable_stargazer_module_state():
     _clear_pending_tasks_by_commands({CMD_STARGAZER_PANEL, CMD_STARGAZER_GUIDE, CMD_STARGAZER_SOOTHE, CMD_STARGAZER_COLLECT})
 
 
-def _disable_guanxing_module_state():
-    set_guanxing_enabled(False)
-    state["next_guanxing_notify_time"] = 0
-    state["guanxing_slot_key"] = ""
-    state["guanxing_slot_start_at"] = 0
-    state["guanxing_slot_end_at"] = 0
-    state["guanxing_seen_panel"] = False
-    state["guanxing_matched_keyword"] = ""
-    state["guanxing_matched_value"] = ""
-    state["guanxing_last_evolution_value"] = ""
-    state["guanxing_last_seen_at"] = 0
-    state["guanxing_last_notified_slot_key"] = ""
+def _disable_guanxing_monitor_module_state():
+    set_guanxing_monitor_enabled(False)
+    state["next_guanxing_monitor_notify_time"] = 0
+    state["guanxing_monitor_slot_key"] = ""
+    state["guanxing_monitor_slot_start_at"] = 0
+    state["guanxing_monitor_slot_end_at"] = 0
+    state["guanxing_monitor_seen_panel"] = False
+    state["guanxing_monitor_matched_keyword"] = ""
+    state["guanxing_monitor_matched_value"] = ""
+    state["guanxing_monitor_last_evolution_value"] = ""
+    state["guanxing_monitor_last_seen_at"] = 0
+    state["guanxing_monitor_last_notified_slot_key"] = ""
 
 
 def _manual_enable_stargazer_module_state(now):
@@ -239,16 +239,16 @@ def _manual_enable_stargazer_module_state(now):
     state["stargazer_last_action"] = "queue_panel"
 
 
-def _restore_guanxing_runtime(now):
-    _slot_info, changed = restore_guanxing_runtime_state(now)
+def _restore_guanxing_monitor_runtime(now):
+    _slot_info, changed = restore_guanxing_monitor_runtime_state(now)
     if changed:
         mark_dirty()
 
 
 
-def _manual_enable_guanxing_module_state(now):
-    set_guanxing_enabled(True)
-    _restore_guanxing_runtime(now)
+def _manual_enable_guanxing_monitor_module_state(now):
+    set_guanxing_monitor_enabled(True)
+    _restore_guanxing_monitor_runtime(now)
 
 
 def _manual_disable_pet_module_state():
@@ -479,7 +479,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
     "观星台": (_manual_enable_stargazer_module_state, _disable_stargazer_module_state),
-    "观星": (_manual_enable_guanxing_module_state, _disable_guanxing_module_state),
+    "观星监控": (_manual_enable_guanxing_monitor_module_state, _disable_guanxing_monitor_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
@@ -491,7 +491,7 @@ MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
     "观星台": _disable_stargazer_module_state,
-    "观星": _disable_guanxing_module_state,
+    "观星监控": _disable_guanxing_monitor_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
     "元婴": _disable_yuanying_module_state,
@@ -561,7 +561,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
         "观星台": get_stargazer_status_text,
-        "观星": get_guanxing_status_text,
+        "观星监控": get_guanxing_monitor_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -572,7 +572,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
     getter = status_map.get(module_name)
     if not getter:
         return "❌ 未知模块"
-    if module_name == "观星":
+    if module_name == "观星监控":
         return getter()
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
@@ -1727,8 +1727,8 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
         return True, "全局状态未变化"
     set_global_enabled_state(enabled)
     now = time.time()
-    if enabled and get_guanxing_enabled():
-        _restore_guanxing_runtime(now)
+    if enabled and get_guanxing_monitor_enabled():
+        _restore_guanxing_monitor_runtime(now)
     for identity_id in get_identity_ids():
         if enabled:
             if get_identity_enabled(identity_id):
@@ -1748,13 +1748,13 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
     if not key:
         return False
 
-    if module_name == "观星":
+    if module_name == "观星监控":
         now = time.time()
-        if bool(get_guanxing_enabled()) != bool(enabled):
+        if bool(get_guanxing_monitor_enabled()) != bool(enabled):
             if enabled:
-                _manual_enable_guanxing_module_state(now)
+                _manual_enable_guanxing_monitor_module_state(now)
             else:
-                _disable_guanxing_module_state()
+                _disable_guanxing_monitor_module_state()
             save_state()
         action_text = "开启" if enabled else "关闭"
         await send_audit_log(f"🎛️ 已{action_text}{module_name}模块", scope="global")

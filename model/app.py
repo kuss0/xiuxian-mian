@@ -16,7 +16,7 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
-from .features.guanxing import handle_guanxing_broadcast, restore_guanxing_runtime_state, run_guanxing_scheduler
+from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
@@ -265,9 +265,9 @@ async def _dispatch_stargazer_broadcast_fallbacks(event, text, now):
         await _run_for_all_identities(handle_stargazer_panel, text, now, False)
 
 
-async def _dispatch_guanxing_broadcast_fallbacks(event, text, now):
-    if _claim_runtime_event(event, scope="guanxing_broadcast"):
-        await handle_guanxing_broadcast(text, now)
+async def _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="guanxing_monitor_broadcast"):
+        await handle_guanxing_monitor_broadcast(text, now)
 
 
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
@@ -285,9 +285,9 @@ async def _dispatch_message_edited_stargazer_panel(event, text, now):
         await _run_for_all_identities(handle_stargazer_panel, text, now, False)
 
 
-async def _dispatch_message_edited_guanxing(event, text, now):
-    if _claim_runtime_event(event, scope="guanxing_broadcast_edit"):
-        await handle_guanxing_broadcast(text, now)
+async def _dispatch_message_edited_guanxing_monitor(event, text, now):
+    if _claim_runtime_event(event, scope="guanxing_monitor_broadcast_edit"):
+        await handle_guanxing_monitor_broadcast(text, now)
 
 
 async def _run_identity_schedulers(now):
@@ -312,7 +312,7 @@ async def _run_identity_schedulers(now):
 
 
 async def _run_global_schedulers(now):
-    await run_guanxing_scheduler(now)
+    await run_guanxing_monitor_scheduler(now)
 
 
 async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
@@ -438,7 +438,7 @@ async def on_message(event):
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
         await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
-        await _dispatch_guanxing_broadcast_fallbacks(event, text, now)
+        await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())
@@ -474,7 +474,7 @@ async def on_message_edited(event):
 
         await _dispatch_message_edited_tree_panel(event, text, now)
         await _dispatch_message_edited_stargazer_panel(event, text, now)
-        await _dispatch_message_edited_guanxing(event, text, now)
+        await _dispatch_message_edited_guanxing_monitor(event, text, now)
     except Exception:
         print(traceback.format_exc())
 
@@ -543,8 +543,8 @@ async def bootstrap():
         enforce_identity_module_availability(send_as_id, persist=False)
 
     now = time.time()
-    if state.get("guanxing_enabled"):
-        restore_guanxing_runtime_state(now)
+    if state.get("guanxing_monitor_enabled"):
+        restore_guanxing_monitor_runtime_state(now)
         mark_dirty()
     startup_scan_result = scan_startup_timeout_tasks(now) if loaded else {"closed_count": 0, "affected_identity_ids": [], "alerts": []}
     any_loaded = False

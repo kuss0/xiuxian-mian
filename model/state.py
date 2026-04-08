@@ -46,7 +46,7 @@ IDENTITY_BOOL_FIELDS = {
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "guanxing_enabled", "next_guanxing_notify_time", "guanxing_slot_key", "guanxing_slot_start_at", "guanxing_slot_end_at", "guanxing_seen_panel", "guanxing_matched_keyword", "guanxing_matched_value", "guanxing_last_evolution_value", "guanxing_last_seen_at", "guanxing_last_notified_slot_key", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "guanxing_monitor_enabled", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -254,17 +254,17 @@ GLOBAL_STATE_DEFAULTS = {
     "forum_topics_updated_at": 0,
     "auto_delete_sent_messages": True,
     "global_enabled": True,
-    "guanxing_enabled": False,
-    "next_guanxing_notify_time": 0,
-    "guanxing_slot_key": "",
-    "guanxing_slot_start_at": 0,
-    "guanxing_slot_end_at": 0,
-    "guanxing_seen_panel": False,
-    "guanxing_matched_keyword": "",
-    "guanxing_matched_value": "",
-    "guanxing_last_evolution_value": "",
-    "guanxing_last_seen_at": 0,
-    "guanxing_last_notified_slot_key": "",
+    "guanxing_monitor_enabled": False,
+    "next_guanxing_monitor_notify_time": 0,
+    "guanxing_monitor_slot_key": "",
+    "guanxing_monitor_slot_start_at": 0,
+    "guanxing_monitor_slot_end_at": 0,
+    "guanxing_monitor_seen_panel": False,
+    "guanxing_monitor_matched_keyword": "",
+    "guanxing_monitor_matched_value": "",
+    "guanxing_monitor_last_evolution_value": "",
+    "guanxing_monitor_last_seen_at": 0,
+    "guanxing_monitor_last_notified_slot_key": "",
     "send_as_profiles": {},
     "identity_states": {},
     "identity_ids": [],
@@ -612,13 +612,13 @@ def set_global_enabled(enabled):
     return get_global_enabled()
 
 
-def get_guanxing_enabled():
-    return bool(_meta_state.get("guanxing_enabled", False))
+def get_guanxing_monitor_enabled():
+    return bool(_meta_state.get("guanxing_monitor_enabled", False))
 
 
-def set_guanxing_enabled(enabled):
-    _meta_state["guanxing_enabled"] = bool(enabled)
-    return get_guanxing_enabled()
+def set_guanxing_monitor_enabled(enabled):
+    _meta_state["guanxing_monitor_enabled"] = bool(enabled)
+    return get_guanxing_monitor_enabled()
 
 
 def get_quiz_learning_watchers():
@@ -976,7 +976,7 @@ __all__ = [
     "get_forum_topics",
     "get_forum_topics_updated_at",
     "get_global_enabled",
-    "get_guanxing_enabled",
+    "get_guanxing_monitor_enabled",
     "has_active_identity_context",
     "get_quiz_learning_watchers",
     "is_auto_delete_sent_messages_enabled",
@@ -1010,7 +1010,7 @@ __all__ = [
     "set_game_topic_id",
     "set_forum_topics",
     "set_global_enabled",
-    "set_guanxing_enabled",
+    "set_guanxing_monitor_enabled",
     "set_quiz_learning_watchers",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",

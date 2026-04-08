@@ -19,7 +19,7 @@ from .state import (
     get_forum_topics_updated_at,
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
-    get_guanxing_enabled,
+    get_guanxing_monitor_enabled,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
@@ -31,7 +31,7 @@ from .state import (
     get_quiz_learning_watchers,
     set_game_group_id,
     set_game_topic_id,
-    set_guanxing_enabled,
+    set_guanxing_monitor_enabled,
     set_quiz_learning_watchers,
     set_send_as_profile,
     get_accounts,
@@ -72,8 +72,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
     if "jiyin_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_monitor_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -116,8 +116,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_stargazer_panel_time REAL NOT NULL DEFAULT 0")
     if "stargazer_collect_due_at" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN stargazer_collect_due_at REAL NOT NULL DEFAULT 0")
-    if "next_guanxing_notify_time" not in timer_columns:
-        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_guanxing_notify_time REAL NOT NULL DEFAULT 0")
+    if "next_guanxing_monitor_notify_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
     if "stargazer_last_panel_msg_id" not in runtime_columns:
@@ -140,24 +140,24 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_collect_ready INTEGER NOT NULL DEFAULT 0")
     if "stargazer_soothe_before_collect" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_slot_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_slot_key TEXT NOT NULL DEFAULT ''")
-    if "guanxing_slot_start_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_slot_start_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_slot_end_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_slot_end_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_seen_panel" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_seen_panel INTEGER NOT NULL DEFAULT 0")
-    if "guanxing_matched_keyword" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_matched_keyword TEXT NOT NULL DEFAULT ''")
-    if "guanxing_matched_value" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_matched_value TEXT NOT NULL DEFAULT ''")
-    if "guanxing_last_evolution_value" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_evolution_value TEXT NOT NULL DEFAULT ''")
-    if "guanxing_last_seen_at" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_seen_at REAL NOT NULL DEFAULT 0")
-    if "guanxing_last_notified_slot_key" not in runtime_columns:
-        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_notified_slot_key TEXT NOT NULL DEFAULT ''")
+    if "guanxing_monitor_slot_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_slot_key TEXT NOT NULL DEFAULT ''")
+    if "guanxing_monitor_slot_start_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_slot_start_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_monitor_slot_end_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_slot_end_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_monitor_seen_panel" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_seen_panel INTEGER NOT NULL DEFAULT 0")
+    if "guanxing_monitor_matched_keyword" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_matched_keyword TEXT NOT NULL DEFAULT ''")
+    if "guanxing_monitor_matched_value" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_matched_value TEXT NOT NULL DEFAULT ''")
+    if "guanxing_monitor_last_evolution_value" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_evolution_value TEXT NOT NULL DEFAULT ''")
+    if "guanxing_monitor_last_seen_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_seen_at REAL NOT NULL DEFAULT 0")
+    if "guanxing_monitor_last_notified_slot_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_monitor_last_notified_slot_key TEXT NOT NULL DEFAULT ''")
     if "stargazer_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN stargazer_enabled INTEGER NOT NULL DEFAULT 0")
     if "quiz_reply_to_msg_id" not in runtime_columns:
@@ -240,7 +240,7 @@ def init_db():
             tree_enabled INTEGER NOT NULL,
             pet_enabled INTEGER NOT NULL,
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
-            guanxing_enabled INTEGER NOT NULL DEFAULT 0,
+            guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0,
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
@@ -265,7 +265,7 @@ def init_db():
             next_pet_time REAL NOT NULL,
             next_stargazer_panel_time REAL NOT NULL DEFAULT 0,
             stargazer_collect_due_at REAL NOT NULL DEFAULT 0,
-            next_guanxing_notify_time REAL NOT NULL DEFAULT 0,
+            next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0,
             next_checkin_time REAL NOT NULL,
             next_sect_teach_time REAL NOT NULL,
             next_tower_time REAL NOT NULL,
@@ -292,15 +292,15 @@ def init_db():
             stargazer_wait_full_collect INTEGER NOT NULL DEFAULT 0,
             stargazer_collect_ready INTEGER NOT NULL DEFAULT 0,
             stargazer_soothe_before_collect INTEGER NOT NULL DEFAULT 0,
-            guanxing_slot_key TEXT NOT NULL DEFAULT '',
-            guanxing_slot_start_at REAL NOT NULL DEFAULT 0,
-            guanxing_slot_end_at REAL NOT NULL DEFAULT 0,
-            guanxing_seen_panel INTEGER NOT NULL DEFAULT 0,
-            guanxing_matched_keyword TEXT NOT NULL DEFAULT '',
-            guanxing_matched_value TEXT NOT NULL DEFAULT '',
-            guanxing_last_evolution_value TEXT NOT NULL DEFAULT '',
-            guanxing_last_seen_at REAL NOT NULL DEFAULT 0,
-            guanxing_last_notified_slot_key TEXT NOT NULL DEFAULT '',
+            guanxing_monitor_slot_key TEXT NOT NULL DEFAULT '',
+            guanxing_monitor_slot_start_at REAL NOT NULL DEFAULT 0,
+            guanxing_monitor_slot_end_at REAL NOT NULL DEFAULT 0,
+            guanxing_monitor_seen_panel INTEGER NOT NULL DEFAULT 0,
+            guanxing_monitor_matched_keyword TEXT NOT NULL DEFAULT '',
+            guanxing_monitor_matched_value TEXT NOT NULL DEFAULT '',
+            guanxing_monitor_last_evolution_value TEXT NOT NULL DEFAULT '',
+            guanxing_monitor_last_seen_at REAL NOT NULL DEFAULT 0,
+            guanxing_monitor_last_notified_slot_key TEXT NOT NULL DEFAULT '',
             quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             quiz_question TEXT NOT NULL DEFAULT '',
             quiz_options TEXT NOT NULL DEFAULT '{}',
@@ -380,47 +380,47 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_enabled", "0"),
+        ("guanxing_monitor_enabled", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("next_guanxing_notify_time", "0"),
+        ("next_guanxing_monitor_notify_time", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_slot_key", ""),
+        ("guanxing_monitor_slot_key", ""),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_slot_start_at", "0"),
+        ("guanxing_monitor_slot_start_at", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_slot_end_at", "0"),
+        ("guanxing_monitor_slot_end_at", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_seen_panel", "0"),
+        ("guanxing_monitor_seen_panel", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_matched_keyword", ""),
+        ("guanxing_monitor_matched_keyword", ""),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_matched_value", ""),
+        ("guanxing_monitor_matched_value", ""),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_last_evolution_value", ""),
+        ("guanxing_monitor_last_evolution_value", ""),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_last_seen_at", "0"),
+        ("guanxing_monitor_last_seen_at", "0"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("guanxing_last_notified_slot_key", ""),
+        ("guanxing_monitor_last_notified_slot_key", ""),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -727,60 +727,60 @@ _META_STATE_CODEC = {
         lambda value: "1" if value else "0",
         lambda value: set_global_enabled(_decode_meta_bool_flag(value, True)),
     ),
-    "guanxing_enabled": (
-        get_guanxing_enabled,
+    "guanxing_monitor_enabled": (
+        get_guanxing_monitor_enabled,
         lambda value: "1" if value else "0",
-        lambda value: set_guanxing_enabled(_decode_meta_bool_flag(value, False)),
+        lambda value: set_guanxing_monitor_enabled(_decode_meta_bool_flag(value, False)),
     ),
-    "next_guanxing_notify_time": (
-        lambda: float(_meta_state.get("next_guanxing_notify_time", 0) or 0),
+    "next_guanxing_monitor_notify_time": (
+        lambda: float(_meta_state.get("next_guanxing_monitor_notify_time", 0) or 0),
         lambda value: str(value),
-        lambda value: _set_meta_value("next_guanxing_notify_time", _decode_meta_float(value, 0)),
+        lambda value: _set_meta_value("next_guanxing_monitor_notify_time", _decode_meta_float(value, 0)),
     ),
-    "guanxing_slot_key": (
-        lambda: str(_meta_state.get("guanxing_slot_key") or ""),
+    "guanxing_monitor_slot_key": (
+        lambda: str(_meta_state.get("guanxing_monitor_slot_key") or ""),
         lambda value: str(value or ""),
-        lambda value: _set_meta_value("guanxing_slot_key", str(value or "")),
+        lambda value: _set_meta_value("guanxing_monitor_slot_key", str(value or "")),
     ),
-    "guanxing_slot_start_at": (
-        lambda: float(_meta_state.get("guanxing_slot_start_at", 0) or 0),
+    "guanxing_monitor_slot_start_at": (
+        lambda: float(_meta_state.get("guanxing_monitor_slot_start_at", 0) or 0),
         lambda value: str(value),
-        lambda value: _set_meta_value("guanxing_slot_start_at", _decode_meta_float(value, 0)),
+        lambda value: _set_meta_value("guanxing_monitor_slot_start_at", _decode_meta_float(value, 0)),
     ),
-    "guanxing_slot_end_at": (
-        lambda: float(_meta_state.get("guanxing_slot_end_at", 0) or 0),
+    "guanxing_monitor_slot_end_at": (
+        lambda: float(_meta_state.get("guanxing_monitor_slot_end_at", 0) or 0),
         lambda value: str(value),
-        lambda value: _set_meta_value("guanxing_slot_end_at", _decode_meta_float(value, 0)),
+        lambda value: _set_meta_value("guanxing_monitor_slot_end_at", _decode_meta_float(value, 0)),
     ),
-    "guanxing_seen_panel": (
-        lambda: bool(_meta_state.get("guanxing_seen_panel", False)),
+    "guanxing_monitor_seen_panel": (
+        lambda: bool(_meta_state.get("guanxing_monitor_seen_panel", False)),
         lambda value: "1" if value else "0",
-        lambda value: _set_meta_value("guanxing_seen_panel", _decode_meta_bool_flag(value, False)),
+        lambda value: _set_meta_value("guanxing_monitor_seen_panel", _decode_meta_bool_flag(value, False)),
     ),
-    "guanxing_matched_keyword": (
-        lambda: str(_meta_state.get("guanxing_matched_keyword") or ""),
+    "guanxing_monitor_matched_keyword": (
+        lambda: str(_meta_state.get("guanxing_monitor_matched_keyword") or ""),
         lambda value: str(value or ""),
-        lambda value: _set_meta_value("guanxing_matched_keyword", str(value or "")),
+        lambda value: _set_meta_value("guanxing_monitor_matched_keyword", str(value or "")),
     ),
-    "guanxing_matched_value": (
-        lambda: str(_meta_state.get("guanxing_matched_value") or ""),
+    "guanxing_monitor_matched_value": (
+        lambda: str(_meta_state.get("guanxing_monitor_matched_value") or ""),
         lambda value: str(value or ""),
-        lambda value: _set_meta_value("guanxing_matched_value", str(value or "")),
+        lambda value: _set_meta_value("guanxing_monitor_matched_value", str(value or "")),
     ),
-    "guanxing_last_evolution_value": (
-        lambda: str(_meta_state.get("guanxing_last_evolution_value") or ""),
+    "guanxing_monitor_last_evolution_value": (
+        lambda: str(_meta_state.get("guanxing_monitor_last_evolution_value") or ""),
         lambda value: str(value or ""),
-        lambda value: _set_meta_value("guanxing_last_evolution_value", str(value or "")),
+        lambda value: _set_meta_value("guanxing_monitor_last_evolution_value", str(value or "")),
     ),
-    "guanxing_last_seen_at": (
-        lambda: float(_meta_state.get("guanxing_last_seen_at", 0) or 0),
+    "guanxing_monitor_last_seen_at": (
+        lambda: float(_meta_state.get("guanxing_monitor_last_seen_at", 0) or 0),
         lambda value: str(value),
-        lambda value: _set_meta_value("guanxing_last_seen_at", _decode_meta_float(value, 0)),
+        lambda value: _set_meta_value("guanxing_monitor_last_seen_at", _decode_meta_float(value, 0)),
     ),
-    "guanxing_last_notified_slot_key": (
-        lambda: str(_meta_state.get("guanxing_last_notified_slot_key") or ""),
+    "guanxing_monitor_last_notified_slot_key": (
+        lambda: str(_meta_state.get("guanxing_monitor_last_notified_slot_key") or ""),
         lambda value: str(value or ""),
-        lambda value: _set_meta_value("guanxing_last_notified_slot_key", str(value or "")),
+        lambda value: _set_meta_value("guanxing_monitor_last_notified_slot_key", str(value or "")),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,
@@ -827,97 +827,6 @@ def _save_meta_state(conn):
             "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
             (key, encoder(getter())),
         )
-
-
-
-def _is_guanxing_meta_uninitialized():
-    return not any([
-        bool(_meta_state.get("guanxing_enabled", False)),
-        float(_meta_state.get("next_guanxing_notify_time", 0) or 0) > 0,
-        bool(_meta_state.get("guanxing_slot_key") or ""),
-        float(_meta_state.get("guanxing_slot_start_at", 0) or 0) > 0,
-        float(_meta_state.get("guanxing_slot_end_at", 0) or 0) > 0,
-        bool(_meta_state.get("guanxing_seen_panel", False)),
-        bool(_meta_state.get("guanxing_matched_keyword") or ""),
-        bool(_meta_state.get("guanxing_matched_value") or ""),
-        bool(_meta_state.get("guanxing_last_evolution_value") or ""),
-        float(_meta_state.get("guanxing_last_seen_at", 0) or 0) > 0,
-        bool(_meta_state.get("guanxing_last_notified_slot_key") or ""),
-    ])
-
-
-
-def _maybe_migrate_legacy_guanxing_state(conn):
-    if not _is_guanxing_meta_uninitialized():
-        return False
-
-    rows = conn.execute(
-        """
-        SELECT
-            i.send_as_id,
-            i.sect_name,
-            COALESCE(ims.guanxing_enabled, 0) AS guanxing_enabled,
-            COALESCE(it.next_guanxing_notify_time, 0) AS next_guanxing_notify_time,
-            COALESCE(irs.guanxing_slot_key, '') AS guanxing_slot_key,
-            COALESCE(irs.guanxing_slot_start_at, 0) AS guanxing_slot_start_at,
-            COALESCE(irs.guanxing_slot_end_at, 0) AS guanxing_slot_end_at,
-            COALESCE(irs.guanxing_seen_panel, 0) AS guanxing_seen_panel,
-            COALESCE(irs.guanxing_matched_keyword, '') AS guanxing_matched_keyword,
-            COALESCE(irs.guanxing_matched_value, '') AS guanxing_matched_value,
-            COALESCE(irs.guanxing_last_evolution_value, '') AS guanxing_last_evolution_value,
-            COALESCE(irs.guanxing_last_seen_at, 0) AS guanxing_last_seen_at,
-            COALESCE(irs.guanxing_last_notified_slot_key, '') AS guanxing_last_notified_slot_key
-        FROM identities i
-        LEFT JOIN identity_module_state ims ON ims.send_as_id = i.send_as_id
-        LEFT JOIN identity_timers it ON it.send_as_id = i.send_as_id
-        LEFT JOIN identity_runtime_state irs ON irs.send_as_id = i.send_as_id
-        """
-    ).fetchall()
-    if not rows:
-        return False
-
-    candidates = []
-    for row in rows:
-        enabled = bool(row["guanxing_enabled"])
-        last_seen_at = float(row["guanxing_last_seen_at"] or 0)
-        has_runtime = any([
-            float(row["next_guanxing_notify_time"] or 0) > 0,
-            bool(row["guanxing_slot_key"] or ""),
-            float(row["guanxing_slot_start_at"] or 0) > 0,
-            float(row["guanxing_slot_end_at"] or 0) > 0,
-            bool(row["guanxing_seen_panel"]),
-            bool(row["guanxing_matched_keyword"] or ""),
-            bool(row["guanxing_matched_value"] or ""),
-            bool(row["guanxing_last_evolution_value"] or ""),
-            last_seen_at > 0,
-            bool(row["guanxing_last_notified_slot_key"] or ""),
-        ])
-        if not enabled and not has_runtime:
-            continue
-        candidates.append((
-            1 if (str(row["sect_name"] or "").strip() == "星宫" and enabled) else 0,
-            1 if enabled else 0,
-            last_seen_at,
-            int(row["send_as_id"] or 0),
-            row,
-        ))
-
-    if not candidates:
-        return False
-
-    _priority, _enabled, _last_seen_at, _send_as_id, source = max(candidates)
-    _meta_state["guanxing_enabled"] = bool(source["guanxing_enabled"])
-    _meta_state["next_guanxing_notify_time"] = float(source["next_guanxing_notify_time"] or 0)
-    _meta_state["guanxing_slot_key"] = str(source["guanxing_slot_key"] or "")
-    _meta_state["guanxing_slot_start_at"] = float(source["guanxing_slot_start_at"] or 0)
-    _meta_state["guanxing_slot_end_at"] = float(source["guanxing_slot_end_at"] or 0)
-    _meta_state["guanxing_seen_panel"] = bool(source["guanxing_seen_panel"])
-    _meta_state["guanxing_matched_keyword"] = str(source["guanxing_matched_keyword"] or "")
-    _meta_state["guanxing_matched_value"] = str(source["guanxing_matched_value"] or "")
-    _meta_state["guanxing_last_evolution_value"] = str(source["guanxing_last_evolution_value"] or "")
-    _meta_state["guanxing_last_seen_at"] = float(source["guanxing_last_seen_at"] or 0)
-    _meta_state["guanxing_last_notified_slot_key"] = str(source["guanxing_last_notified_slot_key"] or "")
-    return True
 
 
 
@@ -1000,16 +909,11 @@ def load_state():
             _meta_state["identity_ids"].append(send_as_id)
             _load_identity_from_db(send_as_id)
 
-        migrated_legacy_guanxing = _maybe_migrate_legacy_guanxing_state(conn)
-
         if not membership_initialized:
             _save_meta_state(conn)
             for send_as_id in get_identity_ids():
                 ensure_identity_registered(send_as_id)
                 upsert_identity_to_db(send_as_id)
-            conn.commit()
-        elif migrated_legacy_guanxing:
-            _save_meta_state(conn)
             conn.commit()
 
         return True
