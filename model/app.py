@@ -56,7 +56,6 @@ from .features.yuanying import (
 from .persistence import flush_if_dirty, load_state, mark_dirty, save_state
 from .runtime import (
     clear_pending_by_reply,
-    find_identity_by_msg_id,
     gc_my_msg_ids,
     gc_ui_login_tokens,
     gc_ui_sessions,

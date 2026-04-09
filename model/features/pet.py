@@ -33,11 +33,12 @@ def _is_pet_cd_reply(text, reply_to, matched_family=None):
 
 
 def get_pet_status_text():
-    return (
-        "🗡️ 法宝\n"
-        f"- 当前名称：{get_pet_name()}\n"
-        f"- 下次执行：{fmt_abs_ts(state['next_pet_time'])}（{fmt_remaining(state['next_pet_time'])}）"
-    )
+    lines = [
+        "🗡️ 法宝",
+        f"- 当前名称：{get_pet_name()}",
+        f"- 下次执行：{fmt_abs_ts(state['next_pet_time'])}（{fmt_remaining(state['next_pet_time'])}）",
+    ]
+    return "\n".join(lines)
 
 
 async def handle_pet_cd_fix(text, now, reply_to, matched_family=None):

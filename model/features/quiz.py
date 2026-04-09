@@ -384,14 +384,15 @@ async def _handle_quiz_pending_timeout(now):
 
 def get_quiz_status_text():
     reply_to_msg_id, deadline = _get_quiz_pending_state()
-    return (
-        "🦴 玄骨考校\n"
-        f"- 当前题目：{state.get('quiz_question') or '暂无'}\n"
-        f"- 匹配答案：{state.get('quiz_answer') or '未匹配'}\n"
-        f"- 待回复消息ID：{reply_to_msg_id or '无'}\n"
-        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）\n"
-        f"- 最近错误：{state.get('quiz_last_error') or '无'}"
-    )
+    lines = [
+        "🦴 玄骨考校",
+        f"- 当前题目：{state.get('quiz_question') or '暂无'}",
+        f"- 匹配答案：{state.get('quiz_answer') or '未匹配'}",
+        f"- 待回复消息ID：{reply_to_msg_id or '无'}",
+        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
+        f"- 最近错误：{state.get('quiz_last_error') or '无'}",
+    ]
+    return "\n".join(lines)
 
 
 def clear_quiz_state(*, persist=False, keep_last_error=False):

@@ -50,13 +50,14 @@ def _normalize_tower_schedule(now):
 
 def get_tower_status_text():
     today_key = get_day_key()
-    return (
-        "🗼 闯塔\n"
-        f"- 今日是否已完成：{'是' if state['last_tower_day'] == today_key else '否'}\n"
-        f"- 下次执行：{fmt_abs_ts(state['next_tower_time'])}（{fmt_remaining(state['next_tower_time'])}）\n"
-        f"- 执行窗口：{format_window_text('闯塔')}\n"
-        f"- 上次执行日：{state['last_tower_day'] or '未记录'}"
-    )
+    lines = [
+        "🗼 闯塔",
+        f"- 今日是否已完成：{'是' if state['last_tower_day'] == today_key else '否'}",
+        f"- 下次执行：{fmt_abs_ts(state['next_tower_time'])}（{fmt_remaining(state['next_tower_time'])}）",
+        f"- 执行窗口：{format_window_text('闯塔')}",
+        f"- 上次执行日：{state['last_tower_day'] or '未记录'}",
+    ]
+    return "\n".join(lines)
 
 
 async def handle_tower_reply(text, now, reply_to, matched_family=None):

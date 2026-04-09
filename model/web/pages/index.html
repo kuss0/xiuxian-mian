@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang='zh-CN'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Xiuxian 控制台</title>
+<link rel='icon' href='/favicon.png' type='image/png' />
+<link rel='stylesheet' href='/static/css/app.css' />
+</head>
+<body>
+<div class='topbar'>
+<div>
+<h1 class='topbar-title'>Xiuxian 控制台</h1>
+<div class='topbar-meta'>生成时间：<span id='generated-at'>-</span> ｜ 自动轮询：{{ui_auto_refresh_sec}}s</div>
+</div>
+<div class='topbar-actions'>
+<span id='guanxing-summary' class='form-label form-label-inline text-nowrap'>
+</span>
+<span id='global-switch-container'>
+</span>
+<button type='button' class='btn btn-secondary' data-open-basic-config='1'>基础配置</button>
+<button type='button' class='btn btn-refresh' data-refresh-now='1'>手动刷新</button>
+<a class='btn btn-secondary' href='/api/state' target='_blank' rel='noreferrer'>JSON</a>
+</div>
+</div>
+<div id='flash' class='flash hidden'>
+</div>
+<div class='layout'>
+<aside class='sidebar'>
+<section class='card'>
+<h2 class='section-title-with-action'>账号与身份<button type='button' class='btn btn-secondary btn-compact' data-open-login-account='1'>登录账号</button>
+</h2>
+<div class='meta'>当前登录账号：<span id='account-user-id'>-</span>
+</div>
+<div class='sidebar-actions'>
+<span class='form-label form-label-inline'>管理身份</span>
+<button type='button' class='btn btn-secondary' data-open-add-identity='1'>新增身份</button>
+</div>
+<div class='identity-mobile-picker'>
+<label class='form-label form-label-inline' for='identity-select-mobile'>切换身份</label>
+<select id='identity-select-mobile' class='text-input'>
+</select>
+</div>
+<div id='identity-list' class='identity-list'>
+</div>
+</section>
+</aside>
+<main class='main'>
+<section id='summary-panel'>
+</section>
+<section class='card'>
+<h2>模块详情</h2>
+<div id='module-grid' class='module-grid'>
+</div>
+</section>
+</main>
+</div>
+<div id='basic-config-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>基础配置</h3>
+<button class='icon-btn' type='button' data-close-modal='basic'>×</button>
+</div>    <form id='basic-config-form'>      <div class='form-label'>配置游戏群聊、游戏 BOT ID，以及固定话题 ID。支持自动读取话题列表，也支持手动输入后强制保存。话题留空或填 0 表示不使用。</div>      <label class='field-label'>游戏群聊 ID<input class='text-input' name='game_group_id' inputmode='numeric' placeholder='例如 -1001234567890' />
+</label>      <label class='field-label'>游戏 BOT ID<input class='text-input' name='game_bot_ids' placeholder='多个请用逗号分隔' />
+</label>      <label class='field-label'>话题 ID<input class='text-input' name='game_topic_id' inputmode='numeric' placeholder='例如 12345' />
+</label>      <div class='topic-picker'>
+<label class='field-label topic-select'>
+<span>自动识别的话题列表</span>
+<select id='forum-topic-select' class='text-input'>
+<option value=''>请先刷新话题列表</option>
+</select>
+</label>
+<button class='btn btn-secondary' type='button' data-refresh-forum-topics='1'>刷新话题列表</button>
+</div>      <div id='forum-topic-meta' class='topic-meta'>当前未读取话题列表。</div>      <label class='field-label'>
+<span>自动删除已发送消息</span>
+<label class='toggle-field'>
+<input type='checkbox' name='auto_delete_sent_messages' />
+<span>开启后，脚本在可删除时会自动删除自己发出的指令消息</span>
+</label>
+</label>      <label class='field-label'>
+<span>观星监控</span>
+<label class='toggle-field'>
+<input type='checkbox' name='guanxing_monitor_enabled' />
+<span>开启后，全局监听群内星盘显化广播，并按 3 小时时段收口</span>
+</label>
+</label>      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='basic'>取消</button>
+<button class='btn' type='submit'>保存</button>
+</div>    </form>  </div>
+</div>
+<div id='add-identity-modal' class='modal-backdrop'>  <div class='modal-card modal-card-medium'>    <div class='modal-header'>
+<h3 class='modal-title'>新增身份</h3>
+<button class='icon-btn' type='button' data-close-modal='identity'>×</button>
+</div>    <div class='stack-12'>      <label class='field-label'>选择账号<select id='identity-account-select' class='text-input'>
+<option value=''>请先登录账号</option>
+</select>
+</label>      <button type='button' class='btn btn-secondary hidden' id='fetch-send-as-btn'>获取可用身份列表</button>      <div id='send-as-peers-status' class='form-label form-label-inline hidden'>
+</div>      <div id='send-as-peers-list' class='peer-list hidden'>
+</div>      <div id='send-as-peers-actions' class='peer-actions hidden'>        <label class='checkbox-inline checkbox-inline-small'>
+<input type='checkbox' id='send-as-select-all' /> 全选</label>        <button type='button' class='btn' id='batch-add-identity-btn'>批量新增</button>      </div>      <details class='mt-4'>
+<summary class='details-summary'>手动输入身份 ID</summary>        <form id='add-identity-form' class='inline-form align-end mt-8'>          <input class='text-input flex-1' name='send_as_id' inputmode='numeric' placeholder='例如 1234567890' />          <button class='btn' type='submit'>新增</button>        </form>      </details>    </div>  </div>
+</div>
+<div id='login-account-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>登录 Telegram 账号</h3>
+<button class='icon-btn' type='button' data-close-modal='login-account'>×</button>
+</div>    <div class='login-mode-tabs'>
+<button class='btn' type='button' id='login-mode-phone-btn'>手机号验证码</button>
+<button class='btn btn-secondary' type='button' id='login-mode-qr-btn'>二维码登录</button>
+</div>    <div id='login-step-phone'>      <div class='form-label'>输入 Telegram 绑定的手机号（含国际区号，如 +86...）</div>      <input class='text-input' id='login-phone' placeholder='+8613800138000' />      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button>
+<button class='btn' type='button' id='login-send-code-btn'>发送验证码</button>
+</div>    </div>    <div id='login-step-qr' class='hidden'>      <div class='form-label'>使用已登录 Telegram 的手机扫码，或直接打开下方 tg://login 链接完成确认。</div>      <div class='qr-panel'>        <div id='login-qr-box' class='qr-box'>点击下方按钮生成二维码登录链接</div>        <div id='login-qr-meta' class='qr-meta'>
+</div>        <div class='qr-actions'>
+<button class='btn' type='button' id='login-start-qr-btn'>生成二维码</button>
+<button class='btn btn-secondary hidden' type='button' id='login-refresh-qr-btn'>刷新二维码</button>
+</div>      </div>    </div>    <div id='login-step-code' class='hidden'>      <div class='form-label'>请输入收到的验证码</div>      <input class='text-input' id='login-code' placeholder='12345' />      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button>
+<button class='btn' type='button' id='login-verify-btn'>验证</button>
+</div>    </div>    <div id='login-step-2fa' class='hidden'>      <div class='form-label'>该账号已开启两步验证，请输入密码</div>      <input class='text-input' id='login-2fa-password' type='password' placeholder='两步验证密码' />      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button>
+<button class='btn' type='button' id='login-2fa-btn'>验证</button>
+</div>    </div>    <div id='login-status' class='form-label login-status-text'>
+</div>  </div>
+</div>
+<div id='pet-name-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>设置法宝名称</h3>
+<button class='icon-btn' type='button' data-close-modal='pet'>×</button>
+</div>    <form id='pet-name-form'>      <input type='hidden' name='send_as_id' />      <div id='pet-name-identity' class='form-label'>
+</div>      <input class='text-input' name='pet_name' placeholder='输入法宝名称' />      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='pet'>取消</button>
+<button class='btn' type='submit'>保存</button>
+</div>    </form>  </div>
+</div>
+<div id='window-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
+<h3 id='window-modal-title' class='modal-title'>设置执行窗口</h3>
+<button class='icon-btn' type='button' data-close-modal='window'>×</button>
+</div>    <form id='window-form'>      <input type='hidden' name='send_as_id' />      <input type='hidden' name='module' />      <div id='window-modal-identity' class='form-label'>
+</div>      <div id='window-modal-current' class='form-label'>
+</div>      <div class='window-grid'>
+<label class='field-label'>开始（UTC+8）<input class='text-input' type='number' min='0' max='23' name='start_hour_local' />
+</label>
+<label class='field-label'>结束（UTC+8）<input class='text-input' type='number' min='0' max='23' name='end_hour_local' />
+</label>
+</div>      <div class='form-label'>仅支持整点小时，且开始时间必须早于结束时间。</div>      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='window'>取消</button>
+<button class='btn' type='submit'>保存</button>
+</div>    </form>  </div>
+</div>
+<div id='startup-alert-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide'>    <div class='modal-header'>
+<h3 class='modal-title'>启动自动关闭提醒</h3>
+<button class='icon-btn' type='button' data-close-modal='startup-alert'>×</button>
+</div>    <div class='form-label'>以下模块在本次启动扫描中检测到旧任务超时，已被自动关闭。你可以在这里直接重新开启。</div>    <div id='startup-alert-list' class='startup-alert-list'>
+</div>    <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='startup-alert'>知道了</button>
+</div>  </div>
+</div>
+<script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
+<script src='/static/js/app.js'></script>
+</body>
+</html>

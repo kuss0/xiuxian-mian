@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang='zh-CN'>
+<head>
+<meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Xiuxian 登录</title>
+<link rel='icon' href='/favicon.png' type='image/png' />
+<link rel='stylesheet' href='/static/css/login.css' />
+</head>
+<body>
+<main class='panel'>
+<h1>Xiuxian 控制台登录</h1>
+<div class='muted'>浏览器访问地址：{{ui_public_base_url}}</div>{{message_html}}<p>请先到日志群发送 <code>.登录</code>，再在浏览器里打开机器人回复的登录链接。</p>
+<ul>
+<li>登录链接 {{login_timeout_minutes}} 分钟有效，登录后会话 {{session_timeout_hours}} 小时无请求自动失效。</li>
+<li>支持多个登录链接与多个浏览器会话同时存在。</li>
+<li>{{secure_note}}</li>
+</ul>
+<div id='login-status' class='status'>等待登录链接…</div>
+</main>
+<script src='/static/js/login.js'></script>
+</body>
+</html>

@@ -198,14 +198,15 @@ def get_jiyin_status_text():
         if saved_choice
         else "自动按境界"
     )
-    return (
-        "🌑 极阴祖师\n"
-        f"- 当前策略：{strategy_text}\n"
-        f"- 当前生效：{get_jiyin_choice_label(effective_choice)}（{'手动' if choice_source == 'manual' else '自动'}）\n"
-        f"- 待回复消息ID：{reply_to_msg_id or '无'}\n"
-        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）\n"
-        f"- 最近错误：{state.get('jiyin_last_error') or '无'}"
-    )
+    lines = [
+        "🌑 极阴祖师",
+        f"- 当前策略：{strategy_text}",
+        f"- 当前生效：{get_jiyin_choice_label(effective_choice)}（{'手动' if choice_source == 'manual' else '自动'}）",
+        f"- 待回复消息ID：{reply_to_msg_id or '无'}",
+        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
+        f"- 最近错误：{state.get('jiyin_last_error') or '无'}",
+    ]
+    return "\n".join(lines)
 
 
 def clear_jiyin_state(*, persist=False, keep_last_error=False):

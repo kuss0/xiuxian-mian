@@ -72,14 +72,15 @@ def _normalize_checkin_schedule(now):
 
 def get_checkin_status_text():
     today_key = get_checkin_day_key()
-    return (
-        "📝 点卯\n"
-        f"- 今日点卯是否已完成：{'是' if state['last_checkin_done_day'] == today_key else '否'}\n"
-        f"- 今日传功是否已完成：{'是' if state['checkin_teach_count'] >= 3 else '否'}（{state['checkin_teach_count']}/3）\n"
-        f"- 下次执行：{fmt_abs_ts(state['next_checkin_time'])}（{fmt_remaining(state['next_checkin_time'])}）\n"
-        f"- 执行窗口：{format_window_text('点卯')}\n"
-        f"- 下次传功：{fmt_abs_ts(state['next_sect_teach_time'])}（{fmt_remaining(state['next_sect_teach_time'])}）"
-    )
+    lines = [
+        "📝 点卯",
+        f"- 今日点卯是否已完成：{'是' if state['last_checkin_done_day'] == today_key else '否'}",
+        f"- 今日传功是否已完成：{'是' if state['checkin_teach_count'] >= 3 else '否'}（{state['checkin_teach_count']}/3）",
+        f"- 下次执行：{fmt_abs_ts(state['next_checkin_time'])}（{fmt_remaining(state['next_checkin_time'])}）",
+        f"- 执行窗口：{format_window_text('点卯')}",
+        f"- 下次传功：{fmt_abs_ts(state['next_sect_teach_time'])}（{fmt_remaining(state['next_sect_teach_time'])}）",
+    ]
+    return "\n".join(lines)
 
 
 def schedule_sect_teach_chain(now, reply_to_msg_id):

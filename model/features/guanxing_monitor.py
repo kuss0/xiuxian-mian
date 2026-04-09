@@ -5,7 +5,7 @@ from ..config import GUANXING_NOTIFY_ADVANCE_SEC, GUANXING_SLOT_HOURS, GUANXING_
 from ..persistence import save_state
 from ..runtime import send_audit_log
 from ..state import state
-from ..timing import fmt_abs_ts, fmt_remaining
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_slot_label
 
 
 RE_GUANXING_PANEL = re.compile(r"【星盘显化】")
@@ -81,15 +81,7 @@ def _match_guanxing_monitor_keyword(evolution_value):
     return ""
 
 
-def _format_slot_label(slot_start_at, slot_end_at):
-    if slot_start_at <= 0 or slot_end_at <= 0:
-        return "未设置"
-    start_text = datetime.fromtimestamp(slot_start_at, TZ_LOCAL).strftime("%H:%M")
-    end_text = datetime.fromtimestamp(slot_end_at, TZ_LOCAL).strftime("%H:%M")
-    return f"{start_text}-{end_text}"
-
-
-def get_guanxing_monitor_summary_text():
+def _get_guanxing_monitor_result_text():
     matched_keyword = str(state.get("guanxing_monitor_matched_keyword") or "")
     matched_value = str(state.get("guanxing_monitor_matched_value") or "")
     last_evolution_value = str(state.get("guanxing_monitor_last_evolution_value") or "")
@@ -105,25 +97,28 @@ def get_guanxing_monitor_summary_text():
     return "当前时段未收到显化广播"
 
 
+def get_guanxing_monitor_summary_text():
+    return _get_guanxing_monitor_result_text()
+
+
 def get_guanxing_monitor_status_text():
     notify_at = float(state.get("next_guanxing_monitor_notify_time", 0) or 0)
     slot_start_at = float(state.get("guanxing_monitor_slot_start_at", 0) or 0)
     slot_end_at = float(state.get("guanxing_monitor_slot_end_at", 0) or 0)
-    slot_label = _format_slot_label(slot_start_at, slot_end_at)
+    slot_label = fmt_slot_label(slot_start_at, slot_end_at)
     last_seen_at = float(state.get("guanxing_monitor_last_seen_at", 0) or 0)
     current_slot_key = str(state.get("guanxing_monitor_slot_key") or "")
     last_notified_slot_key = str(state.get("guanxing_monitor_last_notified_slot_key") or "")
-    result_text = get_guanxing_monitor_summary_text()
-
-    return (
-        "🌠 观星监控（全局）\n"
-        f"- 当前时段：{slot_label}\n"
-        f"- 收口时间：{fmt_abs_ts(notify_at)}（{fmt_remaining(notify_at)}）\n"
-        f"- 已启用：{'是' if state.get('guanxing_monitor_enabled') else '否'}\n"
-        f"- 已见显化：{'是' if state.get('guanxing_monitor_seen_panel') else '否'} ｜ 已收口：{'是' if current_slot_key and current_slot_key == last_notified_slot_key else '否'}\n"
-        f"- 当前结果：{result_text}\n"
-        f"- 最近显化：{fmt_abs_ts(last_seen_at)}"
-    )
+    lines = [
+        "🌠 观星监控（全局）",
+        f"- 当前时段：{slot_label}",
+        f"- 收口时间：{fmt_abs_ts(notify_at)}（{fmt_remaining(notify_at)}）",
+        f"- 已启用：{'是' if state.get('guanxing_monitor_enabled') else '否'}",
+        f"- 已见显化：{'是' if state.get('guanxing_monitor_seen_panel') else '否'} ｜ 已收口：{'是' if current_slot_key and current_slot_key == last_notified_slot_key else '否'}",
+        f"- 当前结果：{_get_guanxing_monitor_result_text()}",
+        f"- 最近显化：{fmt_abs_ts(last_seen_at)}",
+    ]
+    return "\n".join(lines)
 
 
 async def handle_guanxing_monitor_broadcast(text, now):
@@ -163,7 +158,7 @@ async def run_guanxing_monitor_scheduler(now):
     if slot_key and str(state.get("guanxing_monitor_last_notified_slot_key") or "") == slot_key:
         return
 
-    slot_label = _format_slot_label(float(slot_info.get("slot_start_at", 0) or 0), float(slot_info.get("slot_end_at", 0) or 0))
+    slot_label = fmt_slot_label(float(slot_info.get("slot_start_at", 0) or 0), float(slot_info.get("slot_end_at", 0) or 0))
     matched_keyword = str(state.get("guanxing_monitor_matched_keyword") or "")
     matched_value = str(state.get("guanxing_monitor_matched_value") or "")
     last_evolution_value = str(state.get("guanxing_monitor_last_evolution_value") or "")

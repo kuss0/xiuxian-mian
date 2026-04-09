@@ -699,12 +699,6 @@ def set_account(account_id, info):
     set_accounts(accounts)
 
 
-def remove_account(account_id):
-    accounts = get_accounts()
-    accounts.pop(str(account_id), None)
-    set_accounts(accounts)
-
-
 def get_identity_account_map():
     m = _meta_state.get("identity_account_map") or {}
     return m if isinstance(m, dict) else {}

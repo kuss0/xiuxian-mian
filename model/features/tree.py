@@ -27,29 +27,27 @@ TREE_HARVEST_FOLLOWUP_DELAY_SEC = 30 * 60
 
 
 def get_tree_status_text():
+    lines = ["🌳 灵树"]
     if state['is_invading']:
-        text = (
-            "🌳 灵树\n"
-            "- 当前状态：入侵中\n"
-            f"- 下次守山：{fmt_abs_ts(state['next_guard_time'])}（{fmt_remaining(state['next_guard_time'])}）\n"
-            f"- 待补偿灌溉：{'是' if state['pending_irrigation'] else '否'}"
-        )
+        lines.extend([
+            "- 当前状态：入侵中",
+            f"- 下次守山：{fmt_abs_ts(state['next_guard_time'])}（{fmt_remaining(state['next_guard_time'])}）",
+            f"- 待补偿灌溉：{'是' if state['pending_irrigation'] else '否'}",
+        ])
     elif state['is_maturing']:
-        text = (
-            "🌳 灵树\n"
-            "- 当前状态：成熟采摘期\n"
-            f"- 已采摘：{'是' if state['is_harvested'] else '否'}\n"
-            f"- 待补偿灌溉：{'是' if state['pending_irrigation'] else '否'}"
-        )
+        lines.extend([
+            "- 当前状态：成熟采摘期",
+            f"- 已采摘：{'是' if state['is_harvested'] else '否'}",
+            f"- 待补偿灌溉：{'是' if state['pending_irrigation'] else '否'}",
+        ])
     else:
-        text = (
-            "🌳 灵树\n"
-            "- 当前状态：正常生长\n"
-            f"- 下次灌溉：{fmt_abs_ts(state['next_irr_time'])}（{fmt_remaining(state['next_irr_time'])}）"
-        )
+        lines.extend([
+            "- 当前状态：正常生长",
+            f"- 下次灌溉：{fmt_abs_ts(state['next_irr_time'])}（{fmt_remaining(state['next_irr_time'])}）",
+        ])
         if state['tree_bootstrap_check_needed']:
-            text += "\n- 启动校验待执行：是"
-    return text
+            lines.append("- 启动校验待执行：是")
+    return "\n".join(lines)
 
 
 async def handle_tree_invasion_start(text, now):

@@ -62,6 +62,14 @@ def fmt_remaining(ts):
     return f"{s}秒后"
 
 
+def fmt_slot_label(slot_start_at, slot_end_at):
+    if not slot_start_at or slot_start_at <= 0 or not slot_end_at or slot_end_at <= 0:
+        return "未设置"
+    start_text = datetime.fromtimestamp(slot_start_at, TZ_LOCAL).strftime("%H:%M")
+    end_text = datetime.fromtimestamp(slot_end_at, TZ_LOCAL).strftime("%H:%M")
+    return f"{start_text}-{end_text}"
+
+
 def calc_next_daily_window_time(start_hour_utc, end_hour_utc, now=None):
     if now is None:
         now = time.time()
@@ -172,6 +180,7 @@ __all__ = [
     "configure_timing",
     "fmt_abs_ts",
     "fmt_remaining",
+    "fmt_slot_label",
     "fmt_time_after",
     "get_checkin_day_key",
     "get_day_key",

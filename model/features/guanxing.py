@@ -24,7 +24,7 @@ from ..state import (
     state,
     use_identity,
 )
-from ..timing import fmt_abs_ts, fmt_remaining
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_slot_label
 from .guanxing_monitor import calc_guanxing_monitor_slot
 
 RE_GUANXING_PANEL = re.compile(r"【星盘显化】")
@@ -324,16 +324,6 @@ async def _send_next_shift(round_state, now, *, reason_text):
     return False
 
 
-def _format_slot_label(round_state):
-    slot_start_at = float(round_state.get("slot_start_at", 0) or 0)
-    slot_end_at = float(round_state.get("slot_end_at", 0) or 0)
-    if slot_start_at <= 0 or slot_end_at <= 0:
-        return "未设置"
-    start_text = datetime.fromtimestamp(slot_start_at, TZ_LOCAL).strftime("%H:%M")
-    end_text = datetime.fromtimestamp(slot_end_at, TZ_LOCAL).strftime("%H:%M")
-    return f"{start_text}-{end_text}"
-
-
 def _get_round_stage_text(round_state, now):
     stage = str(round_state.get("stage") or ROUND_STAGE_IDLE)
     gate_keyword = str(round_state.get("gate_keyword") or "")
@@ -356,6 +346,21 @@ def _get_round_stage_text(round_state, now):
     if stage == ROUND_STAGE_WAITING_FINISH:
         return "本轮已无后续身份，等待天机阁快报"
     return "待命"
+
+
+def _get_guanxing_gate_text(round_state):
+    gate_keyword = str(round_state.get("gate_keyword") or "")
+    if not gate_keyword:
+        return "当前未命中"
+    gate_value = str(round_state.get("gate_value") or "")
+    return f"已命中 {gate_keyword}（{gate_value or '未记录内容'}）"
+
+
+def _get_guanxing_slot_text(round_state):
+    return fmt_slot_label(
+        float(round_state.get("slot_start_at", 0) or 0),
+        float(round_state.get("slot_end_at", 0) or 0),
+    )
 
 
 def get_guanxing_round_summary_text():
@@ -392,7 +397,6 @@ def get_guanxing_status_text():
         and int(identity_state.get("guanxing_last_shift_msg_id", 0) or 0) > 0
     )
     gate_keyword = str(round_state.get("gate_keyword") or "")
-    gate_value = str(round_state.get("gate_value") or "")
     finish_reason = str(round_state.get("finish_reason") or "")
     stage = str(round_state.get("stage") or ROUND_STAGE_IDLE)
     query_due_at = float(round_state.get("query_due_at", 0) or 0)
@@ -400,14 +404,12 @@ def get_guanxing_status_text():
 
     lines = [
         "🌠 观星",
-        f"- 当前时段：{_format_slot_label(round_state)}",
+        f"- 当前时段：{_get_guanxing_slot_text(round_state)}",
         f"- 轮次状态：{_get_round_stage_text(round_state, now)}",
     ]
 
-    if not gate_keyword:
-        lines.append("- Gate：当前未命中")
-    else:
-        lines.append(f"- Gate：已命中 {gate_keyword}（{gate_value or '未记录内容'}）")
+    lines.append(f"- Gate：{_get_guanxing_gate_text(round_state)}")
+    if gate_keyword:
         if not round_participant_ids and now < query_due_at:
             lines.append(f"- 查询时间：{fmt_abs_ts(query_due_at)}（{fmt_remaining(query_due_at)}）")
         else:
