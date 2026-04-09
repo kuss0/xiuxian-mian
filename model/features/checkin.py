@@ -3,7 +3,7 @@ import random
 from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC
 from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client, console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_game_group_id, get_game_topic_id, is_auto_delete_sent_messages_enabled, state
+from ..state import format_window_text, get_game_group_id, is_auto_delete_sent_messages_enabled, state
 from ..timing import (
     fmt_abs_ts,
     fmt_remaining,
@@ -136,7 +136,7 @@ async def cleanup_checkin_chain_messages():
 
 async def _notify_sect_teach_completed():
     try:
-        await _get_identity_client().send_message(get_game_group_id(), "📘 今日传功完成", reply_to=get_game_topic_id())
+        await send_audit_log("📘 今日传功完成", scope="identity")
     except Exception as e:
         print(f"notify_sect_teach_completed failed: {e}")
 
