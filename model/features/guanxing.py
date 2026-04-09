@@ -363,7 +363,10 @@ def get_guanxing_round_summary_text():
     round_state, _changed = sync_guanxing_round_from_monitor(now)
     gate_keyword = str(round_state.get("gate_keyword") or "")
     if not gate_keyword:
-        return "当前时段未命中"
+        return ""
+    query_due_at = float(round_state.get("query_due_at", 0) or 0)
+    if query_due_at > 0 and now < query_due_at:
+        return ""
     stage_text = _get_round_stage_text(round_state, now)
     return f"命中 {gate_keyword}｜{stage_text}"
 
@@ -390,22 +393,41 @@ def get_guanxing_status_text():
     )
     gate_keyword = str(round_state.get("gate_keyword") or "")
     gate_value = str(round_state.get("gate_value") or "")
-    gate_text = f"已命中 {gate_keyword}（{gate_value or '未记录内容'}）" if gate_keyword else "当前未命中"
     finish_reason = str(round_state.get("finish_reason") or "")
+    stage = str(round_state.get("stage") or ROUND_STAGE_IDLE)
+    query_due_at = float(round_state.get("query_due_at", 0) or 0)
+    shift_due_at = float(round_state.get("shift_due_at", 0) or 0)
 
-    return (
-        "🌠 观星\n"
-        f"- 当前时段：{_format_slot_label(round_state)}\n"
-        f"- Gate：{gate_text}\n"
-        f"- 查询时间：{fmt_abs_ts(round_state.get('query_due_at', 0))}（{fmt_remaining(round_state.get('query_due_at', 0))}）\n"
-        f"- 首发时间：{fmt_abs_ts(round_state.get('shift_due_at', 0))}（{fmt_remaining(round_state.get('shift_due_at', 0))}）\n"
-        f"- 轮次状态：{_get_round_stage_text(round_state, now)}\n"
-        f"- 参与身份：{len(round_participant_ids)} ｜ Panel 就绪：{len(panel_ready_ids)} ｜ 下一位：{next_identity_text}\n"
-        f"- 本身份 panel：{'已就绪' if panel_ready else '未就绪'} ｜ 本身份改换星移：{'已发送' if shift_done else '未发送'}\n"
-        f"- 最近 panel：{fmt_abs_ts(identity_state.get('guanxing_last_panel_seen_at', 0))}\n"
-        f"- 最近错误：{identity_state.get('guanxing_last_error') or '无'}\n"
-        f"- 结束原因：{finish_reason or '未结束'}"
-    )
+    lines = [
+        "🌠 观星",
+        f"- 当前时段：{_format_slot_label(round_state)}",
+        f"- 轮次状态：{_get_round_stage_text(round_state, now)}",
+    ]
+
+    if not gate_keyword:
+        lines.append("- Gate：当前未命中")
+    else:
+        lines.append(f"- Gate：已命中 {gate_keyword}（{gate_value or '未记录内容'}）")
+        if not round_participant_ids and now < query_due_at:
+            lines.append(f"- 查询时间：{fmt_abs_ts(query_due_at)}（{fmt_remaining(query_due_at)}）")
+        else:
+            lines.append(
+                f"- 参与身份：{len(round_participant_ids)} ｜ Panel 就绪：{len(panel_ready_ids)} ｜ 下一位：{next_identity_text}"
+            )
+            if stage == ROUND_STAGE_WAITING_FIRST_SHIFT:
+                lines.append(f"- 首发时间：{fmt_abs_ts(shift_due_at)}（{fmt_remaining(shift_due_at)}）")
+            lines.append(f"- 本身份 panel：{'已就绪' if panel_ready else '未就绪'}")
+            if stage in {ROUND_STAGE_WAITING_EXTERNAL, ROUND_STAGE_WAITING_FINISH, ROUND_STAGE_FINISHED} or shift_done:
+                lines.append(f"- 本身份改换星移：{'已发送' if shift_done else '未发送'}")
+            if panel_ready:
+                lines.append(f"- 最近 panel：{fmt_abs_ts(identity_state.get('guanxing_last_panel_seen_at', 0))}")
+
+    if identity_state.get("guanxing_last_error"):
+        lines.append(f"- 最近错误：{identity_state.get('guanxing_last_error')}")
+    if finish_reason:
+        lines.append(f"- 结束原因：{finish_reason}")
+
+    return "\n".join(lines)
 
 
 async def handle_guanxing_query_reply(text, now, reply_to, current_msg_id, matched_family=None):
