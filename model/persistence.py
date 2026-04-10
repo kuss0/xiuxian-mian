@@ -78,6 +78,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
+    if "last_guanxing_done_day" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN last_guanxing_done_day TEXT NOT NULL DEFAULT ''")
     if "tianti_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_enabled INTEGER NOT NULL DEFAULT 0")
 
@@ -318,7 +320,8 @@ def init_db():
             checkin_teach_count INTEGER NOT NULL,
             checkin_teach_day TEXT NOT NULL,
             last_checkin_done_day TEXT NOT NULL,
-            last_tower_day TEXT NOT NULL
+            last_tower_day TEXT NOT NULL,
+            last_guanxing_done_day TEXT NOT NULL
         );
 
         CREATE TABLE IF NOT EXISTS identity_timers (

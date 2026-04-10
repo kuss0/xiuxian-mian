@@ -1,7 +1,13 @@
 import re
 from datetime import datetime, timedelta
 
-from ..config import GUANXING_NOTIFY_ADVANCE_SEC, GUANXING_SLOT_HOURS, GUANXING_TARGET_KEYWORDS, TZ_LOCAL
+from ..config import (
+    GUANXING_MONITOR_JUDGE_DELAY_SEC,
+    GUANXING_NOTIFY_ADVANCE_SEC,
+    GUANXING_SLOT_HOURS,
+    GUANXING_TARGET_KEYWORDS,
+    TZ_LOCAL,
+)
 from ..persistence import save_state
 from ..runtime import send_audit_log
 from ..state import state
@@ -65,6 +71,14 @@ def _sync_guanxing_monitor_slot(now):
     return slot_info, changed
 
 
+def _is_guanxing_monitor_judge_window_open(now, slot_info=None):
+    current_slot_info = slot_info or calc_guanxing_monitor_slot(now)
+    slot_start_at = float(current_slot_info.get("slot_start_at", 0) or 0)
+    if slot_start_at <= 0:
+        return False
+    return now >= slot_start_at + GUANXING_MONITOR_JUDGE_DELAY_SEC
+
+
 def _extract_guanxing_monitor_evolution_value(text):
     raw_text = str(text or "")
     if not RE_GUANXING_PANEL.search(raw_text):
@@ -81,13 +95,21 @@ def _match_guanxing_monitor_keyword(evolution_value):
     return ""
 
 
-def _get_guanxing_monitor_result_text():
+def _get_guanxing_monitor_result_text(now=None):
     matched_keyword = str(state.get("guanxing_monitor_matched_keyword") or "")
     matched_value = str(state.get("guanxing_monitor_matched_value") or "")
     last_evolution_value = str(state.get("guanxing_monitor_last_evolution_value") or "")
 
     if not state.get("guanxing_monitor_enabled"):
         return "已关闭"
+    if now is None:
+        now = datetime.now(TZ_LOCAL).timestamp()
+    slot_info = {
+        "slot_start_at": float(state.get("guanxing_monitor_slot_start_at", 0) or 0),
+        "slot_end_at": float(state.get("guanxing_monitor_slot_end_at", 0) or 0),
+    }
+    if not _is_guanxing_monitor_judge_window_open(now, slot_info):
+        return "本轮前10分钟内不判断"
     if matched_keyword:
         return f"命中 {matched_keyword}（{matched_value or '未记录内容'}）"
     if last_evolution_value:
@@ -102,6 +124,7 @@ def get_guanxing_monitor_summary_text():
 
 
 def get_guanxing_monitor_status_text():
+    now = datetime.now(TZ_LOCAL).timestamp()
     notify_at = float(state.get("next_guanxing_monitor_notify_time", 0) or 0)
     slot_start_at = float(state.get("guanxing_monitor_slot_start_at", 0) or 0)
     slot_end_at = float(state.get("guanxing_monitor_slot_end_at", 0) or 0)
@@ -115,7 +138,7 @@ def get_guanxing_monitor_status_text():
         f"- 收口时间：{fmt_abs_ts(notify_at)}（{fmt_remaining(notify_at)}）",
         f"- 已启用：{'是' if state.get('guanxing_monitor_enabled') else '否'}",
         f"- 已见显化：{'是' if state.get('guanxing_monitor_seen_panel') else '否'} ｜ 已收口：{'是' if current_slot_key and current_slot_key == last_notified_slot_key else '否'}",
-        f"- 当前结果：{_get_guanxing_monitor_result_text()}",
+        f"- 当前结果：{_get_guanxing_monitor_result_text(now)}",
         f"- 最近显化：{fmt_abs_ts(last_seen_at)}",
     ]
     return "\n".join(lines)
@@ -129,9 +152,13 @@ async def handle_guanxing_monitor_broadcast(text, now):
     if not RE_GUANXING_PANEL.search(raw_text):
         return False
 
-    _sync_guanxing_monitor_slot(now)
+    slot_info, _changed = _sync_guanxing_monitor_slot(now)
     state["guanxing_monitor_seen_panel"] = True
     state["guanxing_monitor_last_seen_at"] = float(now)
+
+    if not _is_guanxing_monitor_judge_window_open(now, slot_info):
+        save_state()
+        return True
 
     evolution_value = _extract_guanxing_monitor_evolution_value(raw_text)
     if evolution_value:

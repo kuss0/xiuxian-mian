@@ -23,7 +23,7 @@ _identity_context_active = contextvars.ContextVar("identity_context_active", def
 IDENTITY_MODULE_COLUMNS = [
     "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
-    "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day",
+    "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_checkin_time", "next_sect_teach_time",
@@ -227,6 +227,9 @@ IDENTITY_STATE_TEMPLATE = {
     "next_tower_time": 0,
     "last_tower_day": "",
     "last_tower_msg_id": 0,
+
+    # 观星模块
+    "last_guanxing_done_day": "",
 
     # 玄骨考校模块
     "next_quiz_time": 0,

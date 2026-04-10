@@ -24,7 +24,7 @@ from ..state import (
     state,
     use_identity,
 )
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_slot_label
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_slot_label, get_day_key
 from .guanxing_monitor import calc_guanxing_monitor_slot
 
 RE_GUANXING_PANEL = re.compile(r"【星盘显化】")
@@ -215,8 +215,9 @@ def _get_identity_label(send_as_id):
     return get_send_as_label(send_as_id) or str(send_as_id)
 
 
-def _get_participant_ids():
+def _get_participant_ids(now):
     participant_ids = []
+    day_key = get_day_key(now)
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
             continue
@@ -226,11 +227,13 @@ def _get_participant_ids():
         identity_state = get_identity_state(identity_id)
         if not identity_state.get("guanxing_enabled"):
             continue
+        if str(identity_state.get("last_guanxing_done_day") or "") == day_key:
+            continue
         participant_ids.append(int(identity_id))
     return participant_ids
 
 
-async def _send_guanxing_query(identity_id, slot_key):
+async def _send_guanxing_query(identity_id, slot_key, now):
     with use_identity(identity_id):
         state["guanxing_last_query_msg_id"] = 0
         state["guanxing_last_panel_msg_id"] = 0
@@ -396,6 +399,7 @@ def get_guanxing_status_text():
         str(identity_state.get("guanxing_last_shift_slot_key") or "") == str(round_state.get("slot_key") or "")
         and int(identity_state.get("guanxing_last_shift_msg_id", 0) or 0) > 0
     )
+    today_participated = str(identity_state.get("last_guanxing_done_day") or "") == get_day_key(now)
     gate_keyword = str(round_state.get("gate_keyword") or "")
     finish_reason = str(round_state.get("finish_reason") or "")
     stage = str(round_state.get("stage") or ROUND_STAGE_IDLE)
@@ -418,6 +422,7 @@ def get_guanxing_status_text():
             )
             if stage == ROUND_STAGE_WAITING_FIRST_SHIFT:
                 lines.append(f"- 首发时间：{fmt_abs_ts(shift_due_at)}（{fmt_remaining(shift_due_at)}）")
+            lines.append(f"- 今日参与：{'已参与' if today_participated else '未参与'}")
             lines.append(f"- 本身份 panel：{'已就绪' if panel_ready else '未就绪'}")
             if stage in {ROUND_STAGE_WAITING_EXTERNAL, ROUND_STAGE_WAITING_FINISH, ROUND_STAGE_FINISHED} or shift_done:
                 lines.append(f"- 本身份改换星移：{'已发送' if shift_done else '未发送'}")
@@ -450,6 +455,7 @@ async def handle_guanxing_query_reply(text, now, reply_to, current_msg_id, match
         state["guanxing_last_panel_msg_id"] = current_msg_id
         state["guanxing_panel_slot_key"] = slot_key
         state["guanxing_last_panel_seen_at"] = float(now)
+        state["last_guanxing_done_day"] = get_day_key(now)
         state["guanxing_last_error"] = ""
 
     _append_panel_ready(round_state, current_identity_id)
@@ -519,13 +525,13 @@ async def run_guanxing_scheduler(now):
 
     participant_ids = [int(identity_id) for identity_id in round_state.get("participant_ids") or [] if int(identity_id or 0) > 0]
     if not participant_ids and now >= float(round_state.get("query_due_at", 0) or 0):
-        participant_ids = _get_participant_ids()
+        participant_ids = _get_participant_ids(now)
         if not participant_ids:
             return
         sent_count = 0
         slot_key = str(round_state.get("slot_key") or "")
         for identity_id in participant_ids:
-            msg = await _send_guanxing_query(identity_id, slot_key)
+            msg = await _send_guanxing_query(identity_id, slot_key, now)
             if msg:
                 sent_count += 1
         round_state["participant_ids"] = participant_ids
