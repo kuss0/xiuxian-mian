@@ -238,6 +238,11 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
             state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             _set_tianti_next_status_time(0, persist=False)
+            cooldown = str(panel_payload.get("cooldown_text") or "")
+            if cooldown and not has_wait_time(cooldown):
+                next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
+                if next_climb <= 0 or next_climb > now:
+                    _set_tianti_next_climb_time(now, persist=False)
             handled = True
 
     if matched_family == "tianti_wenxin":
