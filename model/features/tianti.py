@@ -184,11 +184,9 @@ def _apply_tianti_panel_payload(payload):
 def get_tianti_status_text():
     lines = [
         "☁️ 登天阶",
-        f"- 档位：{get_tianti_rank_choice()}",
         f"- 当前进度：{int(state.get('tianti_progress_current', 0) or 0)} / {int(state.get('tianti_progress_total', 12) or 12)} 阶",
         f"- 已完成周天：{int(state.get('tianti_cycle_count', 0) or 0)} 轮",
         f"- 罡风淬体：{int(state.get('tianti_gangfeng_level', 0) or 0)} / {int(state.get('tianti_gangfeng_total', 12) or 12)} 层",
-        f"- 登阶冷却：{state.get('tianti_cooldown_text') or '未记录'}",
         f"- 问心状态：{state.get('tianti_wenxin_status') or '未记录'}",
         f"- 下次问心：{fmt_abs_ts(float(state.get('next_tianti_wenxin_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_wenxin_time', 0) or 0))}）",
         f"- 下次登阶：{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_climb_time', 0) or 0))}）",
@@ -250,9 +248,11 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
     if has_wait_time(raw_text) and matched_family == "tianti_climb":
         wait_sec = parse_wait_time(raw_text)
         if wait_sec > 0:
+            random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+            total_wait_sec = wait_sec + random_delay
             state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            _set_tianti_next_climb_time(now + wait_sec, persist=False)
-            state["tianti_cooldown_text"] = fmt_time_after(wait_sec)
+            _set_tianti_next_climb_time(now + total_wait_sec, persist=False)
+            state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
             handled = True
 
     if handled:
