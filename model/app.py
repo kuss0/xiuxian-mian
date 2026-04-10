@@ -26,6 +26,7 @@ from .features.guanxing import (
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
+from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.stargazer import (
     handle_stargazer_collect_reply,
@@ -304,6 +305,7 @@ async def _run_identity_schedulers(now):
         run_tree_scheduler,
         run_pet_scheduler,
         run_stargazer_scheduler,
+        run_tianti_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
         run_checkin_scheduler,
@@ -377,6 +379,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_stargazer_guide_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_tianti_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
             deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)

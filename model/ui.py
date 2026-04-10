@@ -34,6 +34,7 @@ except ImportError:
 from .config import (
     MODULE_KEY_MAP,
     STARGAZER_STAR_CHOICES,
+    TIANTI_RANK_CHOICES,
     TZ_LOCAL,
     UI_AUTH_COOKIE_NAME,
     UI_AUTH_IDLE_TIMEOUT_SEC,
@@ -64,6 +65,7 @@ from .features.guanxing import get_guanxing_round_summary_text
 from .features.guanxing_monitor import get_guanxing_monitor_summary_text
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.stargazer import sync_stargazer_total_slots
+from .features.tianti import sync_tianti_status
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
 from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_ui_login_token, send_audit_log, touch_ui_session
@@ -90,6 +92,7 @@ from .state import (
     get_send_as_profile,
     get_stargazer_star_choice,
     get_stargazer_total_slots,
+    get_tianti_rank_choice,
     set_account,
     set_auto_delete_sent_messages,
     set_forum_topics,
@@ -100,6 +103,7 @@ from .state import (
     set_identity_account,
     set_pet_name,
     set_stargazer_star_choice,
+    set_tianti_rank_choice,
     state,
     use_identity,
 )
@@ -179,6 +183,8 @@ def get_identity_ui_snapshot(send_as_id):
             "stargazer_star_choice": get_stargazer_star_choice(send_as_id),
             "stargazer_star_choices": list(STARGAZER_STAR_CHOICES),
             "stargazer_total_slots": get_stargazer_total_slots(send_as_id),
+            "tianti_rank_choice": get_tianti_rank_choice(send_as_id),
+            "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),
             "jiyin_choice_source": _jiyin_choice_source,
@@ -488,11 +494,36 @@ async def ui_set_stargazer_star_choice(send_as_id, choice):
     return True, f"已更新牵引星种[{get_identity_display_name(send_as_id)}]：{choice}"
 
 
+async def ui_set_tianti_rank_choice(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    choice = (choice or "").strip()
+    if choice not in TIANTI_RANK_CHOICES:
+        return False, "无效的登天阶档位"
+    set_tianti_rank_choice(send_as_id, choice)
+    save_state()
+    await send_audit_log(
+        f"☁️ 已更新登天阶档位：{choice}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已更新登天阶档位[{get_identity_display_name(send_as_id)}]：{choice}"
+
+
 async def ui_sync_stargazer_total_slots(send_as_id):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
     ok, message = await sync_stargazer_total_slots(send_as_id)
+    return ok, message
+
+
+async def ui_sync_tianti_status(send_as_id):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    ok, message = await sync_tianti_status(send_as_id)
     return ok, message
 
 
@@ -1526,6 +1557,35 @@ async def handle_ui_http(reader, writer):
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/tianti-rank-choice":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 401 Unauthorized",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    choice = payload.get("choice")
+                    if send_as_id in {None, ""} or not choice:
+                        body = _make_json_payload(False, error="缺少 send_as_id 或 choice 参数")
+                        _write_response(
+                            writer,
+                            "HTTP/1.1 400 Bad Request",
+                            body,
+                            content_type="application/json; charset=utf-8",
+                            extra_headers=auth_headers,
+                        )
+                    else:
+                        ok, message = await ui_set_tianti_rank_choice(send_as_id, choice)
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/stargazer-sync":
                 if session is None:
                     body = _make_json_payload(False, error="未登录或登录已失效")
@@ -1551,6 +1611,34 @@ async def handle_ui_http(reader, writer):
                         )
                     else:
                         ok, message = await ui_sync_stargazer_total_slots(send_as_id)
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/tianti-sync":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 401 Unauthorized",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
+                        _write_response(
+                            writer,
+                            "HTTP/1.1 400 Bad Request",
+                            body,
+                            content_type="application/json; charset=utf-8",
+                            extra_headers=auth_headers,
+                        )
+                    else:
+                        ok, message = await ui_sync_tianti_status(send_as_id)
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
@@ -1715,4 +1803,5 @@ __all__ = [
     "ui_set_pet_name",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",
+    "ui_sync_tianti_status",
 ]

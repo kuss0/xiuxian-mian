@@ -160,7 +160,18 @@ CMD_STARGAZER_SOOTHE = ".安抚星辰"
 CMD_STARGAZER_COLLECT = ".收集精华"
 CMD_GUANXING = ".观星"
 CMD_GUANXING_SHIFT = ".改换星移"
+CMD_TIANTI_STATUS = ".天阶状态"
+CMD_TIANTI_WENXIN = ".问心台"
+CMD_TIANTI_CLIMB = ".登天阶"
 STARGAZER_STAR_CHOICES = ("赤血星", "庚金星", "建木星", "天雷星", "帝魂星")
+TIANTI_RANK_CHOICES = ("普通", "长老", "太上长老")
+TIANTI_RANK_CD_SECONDS = {
+    "普通": 4 * 3600,
+    "长老": 3 * 3600,
+    "太上长老": 3 * 3600,
+}
+TIANTI_CD_RANDOM_MIN_SEC = 5
+TIANTI_CD_RANDOM_MAX_SEC = 10
 GUANXING_SLOT_HOURS = 3
 GUANXING_NOTIFY_ADVANCE_SEC = 10 * 60
 GUANXING_EXECUTE_ADVANCE_SEC = 3 * 60
@@ -230,6 +241,9 @@ SCRIPT_COMMANDS = [
     CMD_STARGAZER_COLLECT,
     CMD_GUANXING,
     CMD_GUANXING_SHIFT,
+    CMD_TIANTI_STATUS,
+    CMD_TIANTI_WENXIN,
+    CMD_TIANTI_CLIMB,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     CMD_DEEP_RETREAT,
@@ -244,13 +258,14 @@ SCRIPT_COMMANDS = [
     CMD_JIYIN_HIDE_AURA,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "观星", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "观星", "登天阶", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
     "观星台": "stargazer_enabled",
     "观星": "guanxing_enabled",
     "观星监控": "guanxing_monitor_enabled",
+    "登天阶": "tianti_enabled",
     "玄骨考校": "quiz_enabled",
     "极阴祖师": "jiyin_enabled",
     "元婴": "yuanying_enabled",
@@ -368,6 +383,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.观星台状态$'), "观星台"),
     (re.compile(r'^\.观星状态$'), "观星"),
     (re.compile(r'^\.观星监控状态$'), "观星监控"),
+    (re.compile(r'^\.天阶状态$'), "登天阶"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
@@ -386,6 +402,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)观星$'), "观星", False),
     (re.compile(r'^\.(开启|打开)观星监控$'), "观星监控", True),
     (re.compile(r'^\.(关闭|关掉)观星监控$'), "观星监控", False),
+    (re.compile(r'^\.(开启|打开)登天阶$'), "登天阶", True),
+    (re.compile(r'^\.(关闭|关掉)登天阶$'), "登天阶", False),
     (re.compile(r'^\.(开启|打开)玄骨考校$'), "玄骨考校", True),
     (re.compile(r'^\.(关闭|关掉)玄骨考校$'), "玄骨考校", False),
     (re.compile(r'^\.(开启|打开)极阴祖师$'), "极阴祖师", True),

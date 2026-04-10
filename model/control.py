@@ -12,6 +12,9 @@ from .config import (
     CMD_GUANXING_SHIFT,
     CMD_PET,
     CMD_QUIZ_ANSWER,
+    CMD_TIANTI_CLIMB,
+    CMD_TIANTI_STATUS,
+    CMD_TIANTI_WENXIN,
     CMD_SECT_TEACH,
     CMD_STARGAZER_COLLECT,
     CMD_STARGAZER_GUIDE,
@@ -55,6 +58,7 @@ from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.stargazer import get_stargazer_status_text
+from .features.tianti import get_tianti_status_text, sync_tianti_status
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text
 from .features.yuanying import get_yuanying_status_detail_text
@@ -93,12 +97,14 @@ from .state import (
     get_send_as_profile,
     get_send_as_tags,
     get_stargazer_total_slots,
+    get_tianti_rank_choice,
     is_module_available,
     is_yuanying_realm_available,
     set_identity_account,
     set_identity_enabled as set_identity_enabled_profile,
     set_module_window_hours,
     set_guanxing_monitor_enabled,
+    set_tianti_rank_choice,
     split_command_identity_selector,
     state,
     update_send_as_profile,
@@ -173,6 +179,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
     if module_name == "观星台":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "观星":
+        return f"当前宗门未提供{module_name}模块"
+    if module_name == "登天阶":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -270,6 +278,40 @@ def _manual_enable_guanxing_module_state(now):
     state["guanxing_enabled"] = True
     clear_guanxing_identity_runtime(get_current_identity_id())
     restore_guanxing_round_runtime(now)
+
+
+def _disable_tianti_module_state():
+    state["tianti_enabled"] = False
+    state["next_tianti_status_time"] = 0
+    state["next_tianti_wenxin_time"] = 0
+    state["next_tianti_climb_time"] = 0
+    state["tianti_status_reply_to_msg_id"] = 0
+    state["tianti_last_status_msg_id"] = 0
+    state["tianti_last_wenxin_msg_id"] = 0
+    state["tianti_last_climb_msg_id"] = 0
+    state["tianti_last_error"] = ""
+    _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB})
+
+
+def _manual_enable_tianti_module_state(now):
+    state["tianti_enabled"] = True
+    next_status_time = float(state.get("next_tianti_status_time", 0) or 0)
+    next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
+    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+    if next_status_time > now or next_wenxin_time > now or next_climb_time > now:
+        return
+    has_status_snapshot = any(
+        value not in {None, "", 0, "未记录"}
+        for value in (
+            state.get("tianti_progress_current"),
+            state.get("tianti_cycle_count"),
+            state.get("tianti_gangfeng_level"),
+            state.get("tianti_cooldown_text"),
+            state.get("tianti_wenxin_status"),
+        )
+    )
+    if not has_status_snapshot or (next_climb_time > 0 and now >= next_climb_time):
+        state["next_tianti_status_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
 
 
 def _manual_disable_pet_module_state():
@@ -490,6 +532,9 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_STARGAZER_COLLECT: "观星台",
     CMD_GUANXING: "观星",
     CMD_GUANXING_SHIFT: "观星",
+    CMD_TIANTI_STATUS: "登天阶",
+    CMD_TIANTI_WENXIN: "登天阶",
+    CMD_TIANTI_CLIMB: "登天阶",
     CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
@@ -504,6 +549,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "观星台": (_manual_enable_stargazer_module_state, _disable_stargazer_module_state),
     "观星": (_manual_enable_guanxing_module_state, _disable_guanxing_module_state),
     "观星监控": (_manual_enable_guanxing_monitor_module_state, _disable_guanxing_monitor_module_state),
+    "登天阶": (_manual_enable_tianti_module_state, _disable_tianti_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
@@ -517,6 +563,7 @@ MODULE_DISABLE_HANDLERS = {
     "观星台": _disable_stargazer_module_state,
     "观星": _disable_guanxing_module_state,
     "观星监控": _disable_guanxing_monitor_module_state,
+    "登天阶": _disable_tianti_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
     "元婴": _disable_yuanying_module_state,
@@ -588,6 +635,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "观星台": get_stargazer_status_text,
         "观星": get_guanxing_status_text,
         "观星监控": get_guanxing_monitor_status_text,
+        "登天阶": get_tianti_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -641,6 +689,9 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
             changed = True
         if not is_module_available("观星", send_as_id) and state.get("guanxing_enabled"):
             _disable_guanxing_module_state()
+            changed = True
+        if not is_module_available("登天阶", send_as_id) and state.get("tianti_enabled"):
+            _disable_tianti_module_state()
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
@@ -755,6 +806,20 @@ def initialize_identity_runtime(send_as_id, now=None):
             _schedule_module_immediate_retry("法宝", now)
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
+        if state["tianti_enabled"]:
+            has_status_snapshot = any(
+                value not in {None, "", 0, "未记录"}
+                for value in (
+                    state.get("tianti_progress_current"),
+                    state.get("tianti_cycle_count"),
+                    state.get("tianti_gangfeng_level"),
+                    state.get("tianti_cooldown_text"),
+                    state.get("tianti_wenxin_status"),
+                )
+            )
+            next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+            if not has_status_snapshot or (next_climb_time > 0 and now >= next_climb_time):
+                state["next_tianti_status_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
         if state["tower_enabled"]:

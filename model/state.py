@@ -11,6 +11,7 @@ from .config import (
     GAME_TOPIC_ID,
     MODULE_NAMES,
     STARGAZER_STAR_CHOICES,
+    TIANTI_RANK_CHOICES,
     TOWER_WINDOW_END_HOUR_UTC,
     TOWER_WINDOW_START_HOUR_UTC,
     TZ_LOCAL,
@@ -20,12 +21,12 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
-    "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_checkin_time", "next_sect_teach_time",
+    "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
@@ -34,6 +35,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
+    "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
@@ -42,7 +44,7 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
@@ -60,6 +62,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "xiuwei_max": 0,
     "jiyin_choice": "",
     "stargazer_star_choice": STARGAZER_STAR_CHOICES[0],
+    "tianti_rank_choice": TIANTI_RANK_CHOICES[0],
     "stargazer_total_slots": 0,
     "checkin_window_start_hour_utc": CHECKIN_WINDOW_START_HOUR_UTC,
     "checkin_window_end_hour_utc": CHECKIN_WINDOW_END_HOUR_UTC,
@@ -141,6 +144,7 @@ IDENTITY_STATE_TEMPLATE = {
     "pet_enabled": False,
     "quiz_enabled": False,
     "jiyin_enabled": False,
+    "tianti_enabled": False,
     "yuanying_enabled": False,
     "deep_retreat_enabled": False,
     "checkin_enabled": False,
@@ -187,6 +191,26 @@ IDENTITY_STATE_TEMPLATE = {
     "guanxing_last_shift_slot_key": "",
     "guanxing_last_shift_target": "",
     "guanxing_last_error": "",
+
+    # 登天阶模块
+    "next_tianti_status_time": 0,
+    "next_tianti_wenxin_time": 0,
+    "next_tianti_climb_time": 0,
+    "tianti_status_reply_to_msg_id": 0,
+    "tianti_last_status_msg_id": 0,
+    "tianti_last_wenxin_msg_id": 0,
+    "tianti_last_climb_msg_id": 0,
+    "tianti_progress_current": 0,
+    "tianti_progress_total": 12,
+    "tianti_cycle_count": 0,
+    "tianti_gangfeng_level": 0,
+    "tianti_gangfeng_total": 12,
+    "tianti_cooldown_text": "未记录",
+    "tianti_wenxin_status": "未记录",
+    "tianti_last_cost_xiuwei": 0,
+    "tianti_last_gain_xiuwei": 0,
+    "tianti_last_gain_contrib": 0,
+    "tianti_last_error": "",
 
     # 点卯模块
     "next_checkin_time": 0,
@@ -376,6 +400,9 @@ def _coerce_send_as_profile_field(field_name, value):
     if field_name == "stargazer_star_choice":
         normalized = (value or "").strip()
         return normalized if normalized in STARGAZER_STAR_CHOICES else STARGAZER_STAR_CHOICES[0]
+    if field_name == "tianti_rank_choice":
+        normalized = (value or "").strip()
+        return normalized if normalized in TIANTI_RANK_CHOICES else TIANTI_RANK_CHOICES[0]
     if field_name == "pet_name":
         return (value or "").strip() or DEFAULT_PET_NAME
     if field_name == "sect_updated_at":
@@ -452,6 +479,7 @@ def set_send_as_profile(
     xiuwei_max=None,
     jiyin_choice=None,
     stargazer_star_choice=None,
+    tianti_rank_choice=None,
     stargazer_total_slots=None,
     checkin_window_start_hour_utc=None,
     checkin_window_end_hour_utc=None,
@@ -472,6 +500,7 @@ def set_send_as_profile(
         xiuwei_max=xiuwei_max,
         jiyin_choice=jiyin_choice,
         stargazer_star_choice=stargazer_star_choice,
+        tianti_rank_choice=tianti_rank_choice,
         stargazer_total_slots=stargazer_total_slots,
         checkin_window_start_hour_utc=checkin_window_start_hour_utc,
         checkin_window_end_hour_utc=checkin_window_end_hour_utc,
@@ -561,6 +590,19 @@ def set_stargazer_total_slots(send_as_id, total_slots):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, stargazer_total_slots=max(0, int(total_slots or 0)))
     return get_stargazer_total_slots(send_as_id)
+
+
+def get_tianti_rank_choice(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    choice = (get_send_as_profile(send_as_id).get("tianti_rank_choice") or "").strip()
+    return choice if choice in TIANTI_RANK_CHOICES else TIANTI_RANK_CHOICES[0]
+
+
+def set_tianti_rank_choice(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, tianti_rank_choice=choice)
+    return get_tianti_rank_choice(send_as_id)
 
 
 def get_game_group_id():
@@ -812,6 +854,8 @@ def get_available_module_names(send_as_id=None):
         available_module_names = [module_name for module_name in available_module_names if module_name != "灵树"]
     if sect_name and sect_name != "星宫":
         available_module_names = [module_name for module_name in available_module_names if module_name not in {"观星台", "观星"}]
+    if sect_name and sect_name != "凌霄宫":
+        available_module_names = [module_name for module_name in available_module_names if module_name != "登天阶"]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]
     return available_module_names
@@ -1013,6 +1057,7 @@ __all__ = [
     "get_pet_name",
     "get_stargazer_star_choice",
     "get_stargazer_total_slots",
+    "get_tianti_rank_choice",
     "get_realm_sort_index",
     "get_realm_sort_key",
     "get_send_as_label",
@@ -1036,6 +1081,7 @@ __all__ = [
     "set_pet_name",
     "set_stargazer_star_choice",
     "set_stargazer_total_slots",
+    "set_tianti_rank_choice",
     "set_send_as_profile",
     "split_command_identity_selector",
     "update_send_as_profile",

@@ -78,6 +78,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
+    if "tianti_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -96,6 +98,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identities ADD COLUMN stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星'")
     if "stargazer_total_slots" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN stargazer_total_slots INTEGER NOT NULL DEFAULT 0")
+    if "tianti_rank_choice" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN tianti_rank_choice TEXT NOT NULL DEFAULT '普通'")
     if "checkin_window_start_hour_utc" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2")
     if "checkin_window_end_hour_utc" not in identity_columns:
@@ -122,6 +126,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN stargazer_collect_due_at REAL NOT NULL DEFAULT 0")
     if "next_guanxing_monitor_notify_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0")
+    if "next_tianti_status_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_status_time REAL NOT NULL DEFAULT 0")
+    if "next_tianti_wenxin_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_wenxin_time REAL NOT NULL DEFAULT 0")
+    if "next_tianti_climb_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_climb_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
     if "stargazer_last_panel_msg_id" not in runtime_columns:
@@ -178,6 +188,36 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_target TEXT NOT NULL DEFAULT ''")
     if "guanxing_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_error TEXT NOT NULL DEFAULT ''")
+    if "tianti_status_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_status_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_wenxin_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_wenxin_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_climb_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_climb_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "tianti_progress_current" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_progress_current INTEGER NOT NULL DEFAULT 0")
+    if "tianti_progress_total" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_progress_total INTEGER NOT NULL DEFAULT 12")
+    if "tianti_cycle_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_cycle_count INTEGER NOT NULL DEFAULT 0")
+    if "tianti_gangfeng_level" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_gangfeng_level INTEGER NOT NULL DEFAULT 0")
+    if "tianti_gangfeng_total" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_gangfeng_total INTEGER NOT NULL DEFAULT 12")
+    if "tianti_cooldown_text" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_cooldown_text TEXT NOT NULL DEFAULT '未记录'")
+    if "tianti_wenxin_status" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_status TEXT NOT NULL DEFAULT '未记录'")
+    if "tianti_last_cost_xiuwei" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_cost_xiuwei INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_gain_xiuwei" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_gain_xiuwei INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_gain_contrib" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_gain_contrib INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN stargazer_enabled INTEGER NOT NULL DEFAULT 0")
     if "quiz_reply_to_msg_id" not in runtime_columns:
@@ -243,6 +283,7 @@ def init_db():
             sect_updated_at REAL NOT NULL DEFAULT 0,
             jiyin_choice TEXT NOT NULL DEFAULT '',
             stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星',
+            tianti_rank_choice TEXT NOT NULL DEFAULT '普通',
             stargazer_total_slots INTEGER NOT NULL DEFAULT 0,
             checkin_window_start_hour_utc INTEGER NOT NULL DEFAULT 2,
             checkin_window_end_hour_utc INTEGER NOT NULL DEFAULT 3,
@@ -262,6 +303,7 @@ def init_db():
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_enabled INTEGER NOT NULL DEFAULT 0,
+            tianti_enabled INTEGER NOT NULL DEFAULT 0,
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
@@ -287,6 +329,9 @@ def init_db():
             next_stargazer_panel_time REAL NOT NULL DEFAULT 0,
             stargazer_collect_due_at REAL NOT NULL DEFAULT 0,
             next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0,
+            next_tianti_status_time REAL NOT NULL DEFAULT 0,
+            next_tianti_wenxin_time REAL NOT NULL DEFAULT 0,
+            next_tianti_climb_time REAL NOT NULL DEFAULT 0,
             next_checkin_time REAL NOT NULL,
             next_sect_teach_time REAL NOT NULL,
             next_tower_time REAL NOT NULL,
@@ -321,6 +366,21 @@ def init_db():
             guanxing_last_shift_slot_key TEXT NOT NULL DEFAULT '',
             guanxing_last_shift_target TEXT NOT NULL DEFAULT '',
             guanxing_last_error TEXT NOT NULL DEFAULT '',
+            tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            tianti_last_wenxin_msg_id INTEGER NOT NULL DEFAULT 0,
+            tianti_last_climb_msg_id INTEGER NOT NULL DEFAULT 0,
+            tianti_progress_current INTEGER NOT NULL DEFAULT 0,
+            tianti_progress_total INTEGER NOT NULL DEFAULT 12,
+            tianti_cycle_count INTEGER NOT NULL DEFAULT 0,
+            tianti_gangfeng_level INTEGER NOT NULL DEFAULT 0,
+            tianti_gangfeng_total INTEGER NOT NULL DEFAULT 12,
+            tianti_cooldown_text TEXT NOT NULL DEFAULT '未记录',
+            tianti_wenxin_status TEXT NOT NULL DEFAULT '未记录',
+            tianti_last_cost_xiuwei INTEGER NOT NULL DEFAULT 0,
+            tianti_last_gain_xiuwei INTEGER NOT NULL DEFAULT 0,
+            tianti_last_gain_contrib INTEGER NOT NULL DEFAULT 0,
+            tianti_last_error TEXT NOT NULL DEFAULT '',
             guanxing_monitor_slot_key TEXT NOT NULL DEFAULT '',
             guanxing_monitor_slot_start_at REAL NOT NULL DEFAULT 0,
             guanxing_monitor_slot_end_at REAL NOT NULL DEFAULT 0,
@@ -518,12 +578,12 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, stargazer_total_slots,
+            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -534,6 +594,7 @@ def upsert_identity_to_db(send_as_id):
             sect_updated_at=excluded.sect_updated_at,
             jiyin_choice=excluded.jiyin_choice,
             stargazer_star_choice=excluded.stargazer_star_choice,
+            tianti_rank_choice=excluded.tianti_rank_choice,
             stargazer_total_slots=excluded.stargazer_total_slots,
             checkin_window_start_hour_utc=excluded.checkin_window_start_hour_utc,
             checkin_window_end_hour_utc=excluded.checkin_window_end_hour_utc,
@@ -555,6 +616,7 @@ def upsert_identity_to_db(send_as_id):
             float(profile.get("sect_updated_at", 0) or 0),
             profile.get("jiyin_choice", "") or "",
             profile.get("stargazer_star_choice", "赤血星") or "赤血星",
+            profile.get("tianti_rank_choice", "普通") or "普通",
             int(profile.get("stargazer_total_slots", 0) or 0),
             int(profile.get("checkin_window_start_hour_utc", 2) or 2),
             int(profile.get("checkin_window_end_hour_utc", 3) or 3),
@@ -629,7 +691,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -644,6 +706,7 @@ def _load_identity_from_db(send_as_id):
             sect_updated_at=row["sect_updated_at"],
             jiyin_choice=row["jiyin_choice"],
             stargazer_star_choice=row["stargazer_star_choice"],
+            tianti_rank_choice=row["tianti_rank_choice"],
             stargazer_total_slots=int(row["stargazer_total_slots"] or 0),
             checkin_window_start_hour_utc=row["checkin_window_start_hour_utc"],
             checkin_window_end_hour_utc=row["checkin_window_end_hour_utc"],
@@ -937,7 +1000,7 @@ def load_state():
                 membership_initialized = bool(decoded)
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         rows = conn.execute(
-            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, stargazer_star_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
+            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()
 
         _meta_state["identity_ids"] = []
