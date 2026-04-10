@@ -125,8 +125,7 @@ def _tianti_status_sync_due(now):
         return True
     if not _has_tianti_status_snapshot():
         return True
-    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
-    return next_climb_time > 0 and now >= next_climb_time
+    return False
 
 
 async def sync_tianti_status(send_as_id):
