@@ -30,14 +30,6 @@ RE_TIANTI_CLIMB_GAIN = re.compile(r"本次获得\s*(\d+)\s*点修为[、,，]\s*
 RE_TIANTI_CLIMB_RESULT = re.compile(r"当前云阶进度[:：]\s*(\d+)\s*/\s*(\d+)[，,]\s*罡风淬体[:：]\s*(\d+)\s*/\s*(\d+)")
 
 
-def _set_tianti_next_status_time(next_time, *, persist=False):
-    state["next_tianti_status_time"] = float(next_time or 0)
-    if persist:
-        save_state()
-    else:
-        mark_dirty()
-
-
 def _set_tianti_next_wenxin_time(next_time, *, persist=False):
     state["next_tianti_wenxin_time"] = float(next_time or 0)
     if persist:
@@ -52,12 +44,6 @@ def _set_tianti_next_climb_time(next_time, *, persist=False):
         save_state()
     else:
         mark_dirty()
-
-
-def _schedule_tianti_status_retry(now, *, persist=False):
-    next_time = float(now) + RETRY_MAX_SEC
-    _set_tianti_next_status_time(next_time, persist=persist)
-    return next_time
 
 
 def _schedule_tianti_wenxin_retry(now, *, persist=False):
@@ -204,7 +190,6 @@ def get_tianti_status_text():
         f"- 罡风淬体：{int(state.get('tianti_gangfeng_level', 0) or 0)} / {int(state.get('tianti_gangfeng_total', 12) or 12)} 层",
         f"- 登阶冷却：{state.get('tianti_cooldown_text') or '未记录'}",
         f"- 问心状态：{state.get('tianti_wenxin_status') or '未记录'}",
-        f"- 下次查状态：{fmt_abs_ts(float(state.get('next_tianti_status_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_status_time', 0) or 0))}）",
         f"- 下次问心：{fmt_abs_ts(float(state.get('next_tianti_wenxin_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_wenxin_time', 0) or 0))}）",
         f"- 下次登阶：{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_climb_time', 0) or 0))}）",
     ]
@@ -236,7 +221,6 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         if matched_family == "tianti_status":
             state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            _set_tianti_next_status_time(0, persist=False)
             cooldown = str(panel_payload.get("cooldown_text") or "")
             if cooldown and not has_wait_time(cooldown):
                 next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
@@ -286,12 +270,10 @@ async def run_tianti_scheduler(now):
     if _tianti_status_sync_due(now):
         msg = await send_game_command(CMD_TIANTI_STATUS)
         if not msg:
-            _schedule_tianti_status_retry(now, persist=True)
             state["tianti_last_error"] = "天阶状态发送失败"
             await send_audit_log("❌ 登天阶状态发送失败，稍后重试。")
             return
         state["tianti_status_reply_to_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        _set_tianti_next_status_time(0, persist=True)
         console_log("☁️ 查询天阶状态")
         return
 
