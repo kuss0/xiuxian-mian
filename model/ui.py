@@ -32,6 +32,7 @@ except ImportError:
             segno = None
 
 from .config import (
+    CMD_TIANTI_GANGFENG,
     MODULE_KEY_MAP,
     STARGAZER_STAR_CHOICES,
     TIANTI_RANK_CHOICES,
@@ -68,7 +69,7 @@ from .features.stargazer import sync_stargazer_total_slots
 from .features.tianti import sync_tianti_status
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
-from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_ui_login_token, send_audit_log, touch_ui_session
+from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -191,6 +192,7 @@ def get_identity_ui_snapshot(send_as_id):
             "stargazer_total_slots": get_stargazer_total_slots(send_as_id),
             "tianti_rank_choice": get_tianti_rank_choice(send_as_id),
             "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
+            "tianti_cycle_count": int(identity_state.get("tianti_cycle_count", 0) or 0),
             "tianti_wenxin_enabled": bool(identity_state.get("tianti_wenxin_enabled", True)),
             "tianti_gangfeng_enabled": bool(identity_state.get("tianti_gangfeng_enabled", True)),
             "jiyin_effective_choice": effective_jiyin_choice,
@@ -547,16 +549,33 @@ async def ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled):
     field_name, display_name = feature_map.get(feature_name, ("", ""))
     if not field_name:
         return False, f"未知登天阶子功能: {feature_name}"
+
+    should_prime_gangfeng = False
     with use_identity(send_as_id):
-        state[field_name] = bool(enabled)
+        enabled = bool(enabled)
+        state[field_name] = enabled
+        if feature_name == "gangfeng" and enabled and int(state.get("tianti_cycle_count", 0) or 0) >= 1:
+            next_gangfeng_time = float(state.get("next_tianti_gangfeng_time", 0) or 0)
+            should_prime_gangfeng = next_gangfeng_time <= time.time()
         save_state()
+
     action_text = "开启" if enabled else "关闭"
+    audit_suffix = ""
+    if should_prime_gangfeng:
+        msg = await send_game_command(CMD_TIANTI_GANGFENG, track=False, send_as_id=send_as_id)
+        if msg:
+            with use_identity(send_as_id):
+                state["tianti_last_gangfeng_msg_id"] = int(getattr(msg, "id", 0) or 0)
+                save_state()
+            audit_suffix = "，已补发一次九天罡风"
+        else:
+            audit_suffix = "，补发九天罡风失败"
     await send_audit_log(
-        f"☁️ 已{action_text}登天阶{display_name}",
+        f"☁️ 已{action_text}登天阶{display_name}{audit_suffix}",
         scope="identity",
         send_as_id=send_as_id,
     )
-    return True, f"已{action_text}登天阶{display_name}[{get_identity_display_name(send_as_id)}]"
+    return True, f"已{action_text}登天阶{display_name}[{get_identity_display_name(send_as_id)}]{audit_suffix}"
 
 
 async def ui_set_jiyin_choice(send_as_id, choice):
