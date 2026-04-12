@@ -40,11 +40,13 @@ from .config import (
     RE_CMD_SINGLE_STATUS_PATTERNS,
     RE_CMD_STATUS,
     RE_WHITESPACE,
+    RETRY_MAX_SEC,
     SUMMARY_TIMEOUT_SEC,
     format_battle_power_command,
     format_identity_info_command,
     is_battle_power_command_text,
     is_identity_info_command_text,
+    is_identity_refresh_command_text,
 )
 from .features.checkin import get_checkin_status_text
 from .features.deep_retreat import get_deep_retreat_status_detail_text
@@ -58,7 +60,7 @@ from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.stargazer import get_stargazer_status_text
-from .features.tianti import get_tianti_status_text, sync_tianti_status
+from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text
 from .features.yuanying import get_yuanying_status_detail_text
@@ -1246,7 +1248,7 @@ def scan_startup_timeout_tasks(now=None):
 
 
 def _is_identity_refresh_command(command):
-    return is_identity_info_command_text(command) or is_battle_power_command_text(command)
+    return is_identity_refresh_command_text(command)
 
 
 def _get_identity_refresh_tracking_ids():
@@ -1735,7 +1737,6 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
     ensure_identity_registered(canonical_id)
     hydrate_identity_profile(send_as_entity)
     if account_id:
-        from .state import set_identity_account
         set_identity_account(canonical_id, account_id)
     with use_identity(canonical_id):
         state["tree_enabled"] = False

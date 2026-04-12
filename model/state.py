@@ -977,6 +977,8 @@ def use_identity(send_as_id):
 
 
 class StateProxy:
+    _MISSING = object()
+
     def _bucket(self):
         return get_identity_state()
 
@@ -1001,10 +1003,12 @@ class StateProxy:
             return _meta_state.setdefault(key, default)
         return self._bucket().setdefault(key, default)
 
-    def pop(self, key, default=None):
+    def pop(self, key, default=_MISSING):
         if key in META_STATE_KEYS:
+            if default is StateProxy._MISSING:
+                return _meta_state.pop(key)
             return _meta_state.pop(key, default)
-        if default is None:
+        if default is StateProxy._MISSING:
             return self._bucket().pop(key)
         return self._bucket().pop(key, default)
 

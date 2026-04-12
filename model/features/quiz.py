@@ -1,7 +1,7 @@
 import json
 import re
 
-from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC
+from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC, RE_WHITESPACE
 from ..persistence import mark_dirty, save_quiz_learning_watchers_state, save_state
 from ..runtime import mono, send_audit_log, send_game_command
 from ..state import (
@@ -33,7 +33,6 @@ RE_QUIZ_RESULT_TIMEOUT = re.compile(
     rf"【考校结束[·・•]超时】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
     re.S,
 )
-RE_WHITESPACE = re.compile(r"\s+")
 RE_PUNCT_ONLY = re.compile(r"[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+")
 QUIZ_RESULT_GRACE_SEC = 120
 
