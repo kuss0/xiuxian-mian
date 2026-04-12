@@ -191,6 +191,8 @@ def get_identity_ui_snapshot(send_as_id):
             "stargazer_total_slots": get_stargazer_total_slots(send_as_id),
             "tianti_rank_choice": get_tianti_rank_choice(send_as_id),
             "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
+            "tianti_wenxin_enabled": bool(identity_state.get("tianti_wenxin_enabled", True)),
+            "tianti_gangfeng_enabled": bool(identity_state.get("tianti_gangfeng_enabled", True)),
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),
             "jiyin_choice_source": _jiyin_choice_source,
@@ -531,6 +533,30 @@ async def ui_sync_tianti_status(send_as_id):
         return False, f"未知身份: {send_as_id}"
     ok, message = await sync_tianti_status(send_as_id)
     return ok, message
+
+
+async def ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    feature_name = str(feature_name or "").strip()
+    feature_map = {
+        "wenxin": ("tianti_wenxin_enabled", "问心台"),
+        "gangfeng": ("tianti_gangfeng_enabled", "九天罡风"),
+    }
+    field_name, display_name = feature_map.get(feature_name, ("", ""))
+    if not field_name:
+        return False, f"未知登天阶子功能: {feature_name}"
+    with use_identity(send_as_id):
+        state[field_name] = bool(enabled)
+        save_state()
+    action_text = "开启" if enabled else "关闭"
+    await send_audit_log(
+        f"☁️ 已{action_text}登天阶{display_name}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已{action_text}登天阶{display_name}[{get_identity_display_name(send_as_id)}]"
 
 
 async def ui_set_jiyin_choice(send_as_id, choice):
@@ -1648,6 +1674,36 @@ async def handle_ui_http(reader, writer):
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/tianti-feature-toggle":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 401 Unauthorized",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    feature_name = payload.get("feature")
+                    enabled = bool(payload.get("enabled"))
+                    if send_as_id in {None, ""} or not feature_name:
+                        body = _make_json_payload(False, error="缺少 send_as_id 或 feature 参数")
+                        _write_response(
+                            writer,
+                            "HTTP/1.1 400 Bad Request",
+                            body,
+                            content_type="application/json; charset=utf-8",
+                            extra_headers=auth_headers,
+                        )
+                    else:
+                        ok, message = await ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled)
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/module-window":
                 if session is None:
                     body = _make_json_payload(False, error="未登录或登录已失效")
@@ -1810,4 +1866,5 @@ __all__ = [
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",
     "ui_sync_tianti_status",
+    "ui_set_tianti_feature_enabled",
 ]

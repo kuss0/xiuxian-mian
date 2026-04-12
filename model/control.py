@@ -13,6 +13,7 @@ from .config import (
     CMD_PET,
     CMD_QUIZ_ANSWER,
     CMD_TIANTI_CLIMB,
+    CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
     CMD_TIANTI_WENXIN,
     CMD_SECT_TEACH,
@@ -301,23 +302,27 @@ def _disable_tianti_module_state():
     state["next_tianti_status_time"] = 0
     state["next_tianti_wenxin_time"] = 0
     state["next_tianti_climb_time"] = 0
+    state["next_tianti_gangfeng_time"] = 0
     state["tianti_status_reply_to_msg_id"] = 0
     state["tianti_last_status_msg_id"] = 0
     state["tianti_last_wenxin_msg_id"] = 0
     state["tianti_last_climb_msg_id"] = 0
+    state["tianti_last_gangfeng_msg_id"] = 0
     state["tianti_remaining_climb_count"] = 0
     state["tianti_last_wenxin_day"] = ""
     state["tianti_wenxin_last_trigger_key"] = ""
+    state["tianti_gangfeng_last_trigger_key"] = ""
     state["tianti_last_skip_reason"] = ""
     state["tianti_theoretical_max_stage"] = 0
     state["tianti_wenxin_trigger_stage"] = 0
+    state["tianti_gangfeng_status"] = "未记录"
     state["tianti_last_error"] = ""
-    _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB})
+    _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB, CMD_TIANTI_GANGFENG})
 
 
 def _manual_disable_tianti_module_state():
     state["tianti_enabled"] = False
-    _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB})
+    _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB, CMD_TIANTI_GANGFENG})
 
 
 def _manual_enable_tianti_module_state(now):
@@ -326,6 +331,7 @@ def _manual_enable_tianti_module_state(now):
     if str(state.get("tianti_last_wenxin_day") or "") != today_key:
         state["tianti_last_wenxin_day"] = ""
         state["tianti_wenxin_last_trigger_key"] = ""
+        state["tianti_gangfeng_last_trigger_key"] = ""
         state["tianti_last_skip_reason"] = ""
         state["tianti_theoretical_max_stage"] = 0
         state["tianti_wenxin_trigger_stage"] = 0
@@ -335,7 +341,8 @@ def _manual_enable_tianti_module_state(now):
     next_status_time = float(state.get("next_tianti_status_time", 0) or 0)
     next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
-    if next_status_time > now or next_wenxin_time > now or next_climb_time > now:
+    next_gangfeng_time = float(state.get("next_tianti_gangfeng_time", 0) or 0)
+    if next_status_time > now or next_wenxin_time > now or next_climb_time > now or next_gangfeng_time > now:
         return
     has_status_snapshot = any(
         value not in {None, "", 0, "未记录"}
@@ -581,6 +588,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TIANTI_STATUS: "登天阶",
     CMD_TIANTI_WENXIN: "登天阶",
     CMD_TIANTI_CLIMB: "登天阶",
+    CMD_TIANTI_GANGFENG: "登天阶",
     CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
@@ -857,6 +865,7 @@ def initialize_identity_runtime(send_as_id, now=None):
             if str(state.get("tianti_last_wenxin_day") or "") != today_key:
                 state["tianti_last_wenxin_day"] = ""
                 state["tianti_wenxin_last_trigger_key"] = ""
+                state["tianti_gangfeng_last_trigger_key"] = ""
                 state["tianti_last_skip_reason"] = ""
                 state["tianti_theoretical_max_stage"] = 0
                 state["tianti_wenxin_trigger_stage"] = 0

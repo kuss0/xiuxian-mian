@@ -23,6 +23,7 @@ from .config import (
     CMD_PET,
     CMD_SECT_TEACH,
     CMD_TIANTI_CLIMB,
+    CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
     CMD_TIANTI_WENXIN,
     CMD_STARGAZER_COLLECT,
@@ -114,6 +115,7 @@ REPLY_FAMILY_COMMANDS = {
     "tianti_status": {CMD_TIANTI_STATUS},
     "tianti_wenxin": {CMD_TIANTI_WENXIN},
     "tianti_climb": {CMD_TIANTI_CLIMB},
+    "tianti_gangfeng": {CMD_TIANTI_GANGFENG},
     "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
 }
