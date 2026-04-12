@@ -194,8 +194,9 @@ def _should_advance_tianti_wenxin_for_gangfeng(now, current_stage, trigger_stage
     next_gangfeng_time = float(state.get("next_tianti_gangfeng_time", 0) or 0)
     if next_climb_time <= 0 or next_gangfeng_time <= now:
         return False
-    predicted_next_climb_time = next_climb_time + _get_tianti_cd_seconds()
-    return next_climb_time < next_gangfeng_time <= predicted_next_climb_time
+    original_wenxin_cycle_start = next_climb_time
+    original_wenxin_cycle_end = next_climb_time + _get_tianti_cd_seconds()
+    return original_wenxin_cycle_start <= next_gangfeng_time <= original_wenxin_cycle_end
 
 
 def _should_trigger_tianti_wenxin(now):
@@ -407,7 +408,6 @@ def get_tianti_status_text():
         f"- 已完成周天：{int(state.get('tianti_cycle_count', 0) or 0)} 轮",
         f"- 罡风淬体：{int(state.get('tianti_gangfeng_level', 0) or 0)} / {int(state.get('tianti_gangfeng_total', 12) or 12)} 层",
         f"- 问心状态：{state.get('tianti_wenxin_status') or '未记录'}",
-        f"- 罡风状态：{state.get('tianti_gangfeng_status') or '未记录'}",
         f"- 今日剩余次数：{int(state.get('tianti_remaining_climb_count', 0) or 0)}",
         f"- 今日目标阶：{int(state.get('tianti_theoretical_max_stage', 0) or 0)} ｜ 触发阶：{int(state.get('tianti_wenxin_trigger_stage', 0) or 0)}",
         f"- 下次问心：{fmt_abs_ts(float(state.get('next_tianti_wenxin_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_wenxin_time', 0) or 0))}）",
