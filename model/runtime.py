@@ -520,6 +520,7 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220):
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     message_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=True, limit=limit)
     message = f"【🍃 监控日志 {now}】\n{message_body}"
+    console_log(content, scope=scope, send_as_id=send_as_id, limit=min(limit, 180))
     ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
     if not ok:
         print(f"send_audit_log failed | content={_truncate_log_text(content, limit=240)}")

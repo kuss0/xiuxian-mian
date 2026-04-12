@@ -289,12 +289,28 @@ def _disable_tianti_module_state():
     state["tianti_last_status_msg_id"] = 0
     state["tianti_last_wenxin_msg_id"] = 0
     state["tianti_last_climb_msg_id"] = 0
+    state["tianti_remaining_climb_count"] = 0
+    state["tianti_last_wenxin_day"] = ""
+    state["tianti_wenxin_last_trigger_key"] = ""
+    state["tianti_last_skip_reason"] = ""
+    state["tianti_theoretical_max_stage"] = 0
+    state["tianti_wenxin_trigger_stage"] = 0
     state["tianti_last_error"] = ""
     _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB})
 
 
 def _manual_enable_tianti_module_state(now):
     state["tianti_enabled"] = True
+    today_key = get_day_key(now)
+    if str(state.get("tianti_last_wenxin_day") or "") != today_key:
+        state["tianti_last_wenxin_day"] = ""
+        state["tianti_wenxin_last_trigger_key"] = ""
+        state["tianti_last_skip_reason"] = ""
+        state["tianti_theoretical_max_stage"] = 0
+        state["tianti_wenxin_trigger_stage"] = 0
+        next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
+        if next_wenxin_time > 0 and get_day_key(next_wenxin_time) != today_key:
+            state["next_tianti_wenxin_time"] = 0
     next_status_time = float(state.get("next_tianti_status_time", 0) or 0)
     next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
@@ -807,6 +823,16 @@ def initialize_identity_runtime(send_as_id, now=None):
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:
+            today_key = get_day_key(now)
+            if str(state.get("tianti_last_wenxin_day") or "") != today_key:
+                state["tianti_last_wenxin_day"] = ""
+                state["tianti_wenxin_last_trigger_key"] = ""
+                state["tianti_last_skip_reason"] = ""
+                state["tianti_theoretical_max_stage"] = 0
+                state["tianti_wenxin_trigger_stage"] = 0
+                next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
+                if next_wenxin_time > 0 and get_day_key(next_wenxin_time) != today_key:
+                    state["next_tianti_wenxin_time"] = 0
             has_status_snapshot = any(
                 value not in {None, "", 0, "未记录"}
                 for value in (

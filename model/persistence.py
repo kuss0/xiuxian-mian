@@ -212,6 +212,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_cooldown_text TEXT NOT NULL DEFAULT '未记录'")
     if "tianti_wenxin_status" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_status TEXT NOT NULL DEFAULT '未记录'")
+    if "tianti_remaining_climb_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_remaining_climb_count INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_wenxin_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_wenxin_day TEXT NOT NULL DEFAULT ''")
+    if "tianti_wenxin_last_trigger_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_last_trigger_key TEXT NOT NULL DEFAULT ''")
+    if "tianti_theoretical_max_stage" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_theoretical_max_stage INTEGER NOT NULL DEFAULT 0")
+    if "tianti_wenxin_trigger_stage" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_trigger_stage INTEGER NOT NULL DEFAULT 0")
     if "tianti_last_cost_xiuwei" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_cost_xiuwei INTEGER NOT NULL DEFAULT 0")
     if "tianti_last_gain_xiuwei" not in runtime_columns:
@@ -380,6 +390,11 @@ def init_db():
             tianti_gangfeng_total INTEGER NOT NULL DEFAULT 12,
             tianti_cooldown_text TEXT NOT NULL DEFAULT '未记录',
             tianti_wenxin_status TEXT NOT NULL DEFAULT '未记录',
+            tianti_remaining_climb_count INTEGER NOT NULL DEFAULT 0,
+            tianti_last_wenxin_day TEXT NOT NULL DEFAULT '',
+            tianti_wenxin_last_trigger_key TEXT NOT NULL DEFAULT '',
+            tianti_theoretical_max_stage INTEGER NOT NULL DEFAULT 0,
+            tianti_wenxin_trigger_stage INTEGER NOT NULL DEFAULT 0,
             tianti_last_cost_xiuwei INTEGER NOT NULL DEFAULT 0,
             tianti_last_gain_xiuwei INTEGER NOT NULL DEFAULT 0,
             tianti_last_gain_contrib INTEGER NOT NULL DEFAULT 0,

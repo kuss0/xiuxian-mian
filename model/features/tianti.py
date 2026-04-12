@@ -1,5 +1,6 @@
 import random
 import re
+from datetime import datetime, timedelta
 
 from ..config import (
     CMD_TIANTI_CLIMB,
@@ -9,11 +10,12 @@ from ..config import (
     TIANTI_CD_RANDOM_MAX_SEC,
     TIANTI_CD_RANDOM_MIN_SEC,
     TIANTI_RANK_CD_SECONDS,
+    TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_tianti_rank_choice, state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 
 RE_TIANTI_PANEL = re.compile(r"【凌霄云阶】")
 RE_TIANTI_PROGRESS = re.compile(r"当前进度[:：]\s*(\d+)\s*/\s*(\d+)\s*阶")
@@ -52,12 +54,151 @@ def _schedule_tianti_wenxin_retry(now, *, persist=False):
     return next_time
 
 
+def _get_tianti_cd_seconds(rank_choice=None):
+    rank_choice = (rank_choice or get_tianti_rank_choice()).strip()
+    return int(TIANTI_RANK_CD_SECONDS.get(rank_choice, TIANTI_RANK_CD_SECONDS["普通"]))
+
+
+def _get_tianti_day_end_ts(now):
+    local_now = datetime.fromtimestamp(now, TZ_LOCAL)
+    next_day = (local_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return next_day.timestamp()
+
+
+def _estimate_tianti_remaining_climb_count(now):
+    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+    day_end_ts = _get_tianti_day_end_ts(now)
+    cd_seconds = _get_tianti_cd_seconds()
+    if next_climb_time <= 0 or cd_seconds <= 0 or next_climb_time >= day_end_ts:
+        return 0
+    remaining_count = 1 + int((day_end_ts - next_climb_time - 1) // cd_seconds)
+    return max(0, remaining_count)
+
+
+def _sync_tianti_remaining_climb_count(now):
+    remaining_count = _estimate_tianti_remaining_climb_count(now)
+    if int(state.get("tianti_remaining_climb_count", 0) or 0) == remaining_count:
+        return False
+    state["tianti_remaining_climb_count"] = remaining_count
+    return True
+
+
+def _log_tianti_plan(prefix, *, scope="auto"):
+    console_log(
+        f"☁️ {prefix}：current={int(state.get('tianti_progress_current', 0) or 0)} remain={int(state.get('tianti_remaining_climb_count', 0) or 0)} target={int(state.get('tianti_theoretical_max_stage', 0) or 0)} trigger={int(state.get('tianti_wenxin_trigger_stage', 0) or 0)} next={fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}",
+        scope=scope,
+    )
+
+
+def _set_tianti_skip_reason(reason):
+    if str(state.get("tianti_last_skip_reason") or "") == reason:
+        return False
+    state["tianti_last_skip_reason"] = reason
+    return True
+
+
+def _reset_tianti_wenxin_daily_state(now):
+    state["tianti_last_wenxin_day"] = ""
+    state["tianti_wenxin_last_trigger_key"] = ""
+    state["tianti_theoretical_max_stage"] = 0
+    state["tianti_wenxin_trigger_stage"] = 0
+    state["tianti_last_skip_reason"] = ""
+    if float(state.get("next_tianti_wenxin_time", 0) or 0) > 0 and get_day_key(float(state.get("next_tianti_wenxin_time", 0) or 0)) != get_day_key(now):
+        state["next_tianti_wenxin_time"] = 0
+
+
+def _ensure_tianti_wenxin_daily_state(now):
+    today_key = get_day_key(now)
+    last_wenxin_day = str(state.get("tianti_last_wenxin_day") or "")
+    trigger_key = str(state.get("tianti_wenxin_last_trigger_key") or "")
+    next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
+
+    should_reset = False
+    if last_wenxin_day and last_wenxin_day != today_key:
+        should_reset = True
+    elif trigger_key and not trigger_key.startswith(f"{today_key}|"):
+        should_reset = True
+    elif next_wenxin_time > 0 and get_day_key(next_wenxin_time) != today_key:
+        should_reset = True
+
+    if not should_reset:
+        return False
+
+    _reset_tianti_wenxin_daily_state(now)
+    console_log("☁️ 问心日切：reset daily state")
+    return True
+
+
+def _calc_tianti_wenxin_plan(now=None):
+    if now is not None:
+        _sync_tianti_remaining_climb_count(now)
+    current_stage = int(state.get("tianti_progress_current", 0) or 0)
+    max_stage = int(state.get("tianti_progress_total", 12) or 12)
+    remaining_count = int(state.get("tianti_remaining_climb_count", 0) or 0)
+
+    target_stage = 0
+    trigger_stage = 0
+    if remaining_count > 0 and 0 <= current_stage < max_stage:
+        target_stage = max_stage if current_stage + remaining_count >= max_stage else current_stage + remaining_count
+        trigger_stage = max(0, target_stage - 1)
+
+    changed = False
+    if int(state.get("tianti_theoretical_max_stage", 0) or 0) != target_stage:
+        state["tianti_theoretical_max_stage"] = target_stage
+        changed = True
+    if int(state.get("tianti_wenxin_trigger_stage", 0) or 0) != trigger_stage:
+        state["tianti_wenxin_trigger_stage"] = trigger_stage
+        changed = True
+    return target_stage, trigger_stage, changed
+
+
+def _build_tianti_wenxin_trigger_key(now):
+    target_stage = int(state.get("tianti_theoretical_max_stage", 0) or 0)
+    next_climb_time = int(float(state.get("next_tianti_climb_time", 0) or 0))
+    current_stage = int(state.get("tianti_progress_current", 0) or 0)
+    if target_stage <= 0 or next_climb_time <= 0:
+        return ""
+    return f"{get_day_key(now)}|{current_stage}|{target_stage}|{next_climb_time}"
+
+
+def _should_trigger_tianti_wenxin(now):
+    today_key = get_day_key(now)
+    if str(state.get("tianti_last_wenxin_day") or "") == today_key:
+        return False, "already_done"
+    if int(state.get("tianti_remaining_climb_count", 0) or 0) <= 0:
+        return False, "remain=0"
+    target_stage = int(state.get("tianti_theoretical_max_stage", 0) or 0)
+    trigger_stage = int(state.get("tianti_wenxin_trigger_stage", 0) or 0)
+    current_stage = int(state.get("tianti_progress_current", 0) or 0)
+    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+    next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
+    if target_stage <= 0:
+        return False, "target=0"
+    if current_stage != trigger_stage:
+        return False, f"stage_mismatch {current_stage}!={trigger_stage}"
+    if next_climb_time <= 0:
+        return False, "next_climb=0"
+    if next_wenxin_time > 0 and now < next_wenxin_time:
+        return False, "wenxin_cd"
+    window_start = next_climb_time - 600
+    if not (window_start <= now < next_climb_time):
+        return False, "window_closed"
+    trigger_key = _build_tianti_wenxin_trigger_key(now)
+    if not trigger_key:
+        return False, "trigger_key_empty"
+    if str(state.get("tianti_wenxin_last_trigger_key") or "") == trigger_key:
+        return False, "trigger_key_hit"
+    return True, "ready"
+
+
 def _apply_tianti_wenxin_result(raw_text, now, reply_to):
     handled = False
     if RE_TIANTI_WENXIN_FAIL.search(raw_text):
         state["tianti_last_wenxin_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
         state["tianti_wenxin_status"] = "今日已问心"
+        state["tianti_last_wenxin_day"] = get_day_key(now)
         _schedule_tianti_wenxin_retry(now, persist=False)
+        console_log("☁️ 问心收口：今日已问心")
         return True
 
     if not RE_TIANTI_WENXIN_PANEL.search(raw_text):
@@ -65,6 +206,8 @@ def _apply_tianti_wenxin_result(raw_text, now, reply_to):
 
     state["tianti_last_wenxin_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
     state["tianti_wenxin_status"] = "今日已问心，下次登天阶奖励提升"
+    state["tianti_last_wenxin_day"] = get_day_key(now)
+    console_log("☁️ 问心收口：成功，下次登天阶奖励提升")
     handled = True
 
     extra_gangfeng_match = RE_TIANTI_WENXIN_EXTRA_GANGFENG.search(raw_text)
@@ -188,6 +331,8 @@ def get_tianti_status_text():
         f"- 已完成周天：{int(state.get('tianti_cycle_count', 0) or 0)} 轮",
         f"- 罡风淬体：{int(state.get('tianti_gangfeng_level', 0) or 0)} / {int(state.get('tianti_gangfeng_total', 12) or 12)} 层",
         f"- 问心状态：{state.get('tianti_wenxin_status') or '未记录'}",
+        f"- 今日剩余次数：{int(state.get('tianti_remaining_climb_count', 0) or 0)}",
+        f"- 今日目标阶：{int(state.get('tianti_theoretical_max_stage', 0) or 0)} ｜ 触发阶：{int(state.get('tianti_wenxin_trigger_stage', 0) or 0)}",
         f"- 下次问心：{fmt_abs_ts(float(state.get('next_tianti_wenxin_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_wenxin_time', 0) or 0))}）",
         f"- 下次登阶：{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_climb_time', 0) or 0))}）",
     ]
@@ -209,6 +354,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
     if not _is_tianti_reply(text, reply_to, matched_family=matched_family):
         return False
 
+    _ensure_tianti_wenxin_daily_state(now)
     raw_text = str(text or "")
     handled = False
 
@@ -220,14 +366,30 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
             state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             cooldown = str(panel_payload.get("cooldown_text") or "")
-            if cooldown and not has_wait_time(cooldown):
-                next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
-                if next_climb <= 0 or next_climb > now:
-                    _set_tianti_next_climb_time(now, persist=False)
+            if cooldown:
+                if has_wait_time(cooldown):
+                    wait_sec = parse_wait_time(cooldown)
+                    if wait_sec > 0:
+                        random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+                        total_wait_sec = wait_sec + random_delay
+                        _set_tianti_next_climb_time(now + total_wait_sec, persist=False)
+                        state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
+                else:
+                    next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
+                    if next_climb <= 0 or next_climb > now:
+                        _set_tianti_next_climb_time(now, persist=False)
+            _calc_tianti_wenxin_plan(now)
+            _log_tianti_plan("天阶状态同步后")
+            if cooldown and has_wait_time(cooldown):
+                await send_audit_log(f"⏳ 天阶 CD→{state.get('tianti_cooldown_text')}")
             handled = True
 
     if matched_family == "tianti_wenxin":
         handled = _apply_tianti_wenxin_result(raw_text, now, reply_to) or handled
+        _calc_tianti_wenxin_plan(now)
+        if handled:
+            await send_audit_log(f"☁️ 问心完成：{state.get('tianti_wenxin_status')}")
+            _log_tianti_plan("问心收口后")
 
     climb_cost_match = RE_TIANTI_CLIMB_COST.search(raw_text)
     climb_gain_match = RE_TIANTI_CLIMB_GAIN.search(raw_text)
@@ -243,6 +405,12 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
         state["tianti_last_error"] = ""
         _schedule_tianti_climb_retry(now, persist=False)
+        state["next_tianti_status_time"] = now + random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+        _calc_tianti_wenxin_plan(now)
+        _log_tianti_plan("登阶成功后")
+        await send_audit_log(
+            f"☁️ 登阶成功：{int(state.get('tianti_progress_current', 0) or 0)}/{int(state.get('tianti_progress_total', 12) or 12)}｜罡风 {int(state.get('tianti_gangfeng_level', 0) or 0)}/{int(state.get('tianti_gangfeng_total', 12) or 12)}｜下次 {state.get('tianti_cooldown_text')}"
+        )
         handled = True
 
     if has_wait_time(raw_text) and matched_family == "tianti_climb":
@@ -253,6 +421,9 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
             state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             _set_tianti_next_climb_time(now + total_wait_sec, persist=False)
             state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
+            _calc_tianti_wenxin_plan(now)
+            _log_tianti_plan("登阶冷却回复后")
+            await send_audit_log(f"⏳ 天阶 CD→{state.get('tianti_cooldown_text')}")
             handled = True
 
     if handled:
@@ -267,6 +438,10 @@ async def run_tianti_scheduler(now):
     if not state.get("tianti_enabled"):
         return
 
+    if _ensure_tianti_wenxin_daily_state(now):
+        mark_dirty()
+    _calc_tianti_wenxin_plan(now)
+
     if _tianti_status_sync_due(now):
         msg = await send_game_command(CMD_TIANTI_STATUS)
         if not msg:
@@ -274,8 +449,27 @@ async def run_tianti_scheduler(now):
             await send_audit_log("❌ 登天阶状态发送失败，稍后重试。")
             return
         state["tianti_status_reply_to_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        _log_tianti_plan("调度前快照")
         console_log("☁️ 查询天阶状态")
         return
+
+    should_trigger_wenxin, skip_reason = _should_trigger_tianti_wenxin(now)
+    if should_trigger_wenxin:
+        msg = await send_game_command(CMD_TIANTI_WENXIN)
+        if not msg:
+            state["tianti_last_error"] = "问心台发送失败"
+            _set_tianti_next_wenxin_time(now + RETRY_MAX_SEC, persist=True)
+            await send_audit_log("❌ 问心台发送失败，稍后重试。")
+            return
+        state["tianti_last_wenxin_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["tianti_wenxin_last_trigger_key"] = _build_tianti_wenxin_trigger_key(now)
+        save_state()
+        await send_audit_log(
+            f"☁️ 执行问心台：target={int(state.get('tianti_theoretical_max_stage', 0) or 0)}｜trigger={int(state.get('tianti_wenxin_trigger_stage', 0) or 0)}"
+        )
+        return
+    if _set_tianti_skip_reason(skip_reason):
+        console_log(f"☁️ 问心跳过：{skip_reason}")
 
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
     if next_climb_time > 0 and now >= next_climb_time:
@@ -287,6 +481,8 @@ async def run_tianti_scheduler(now):
             return
         state["tianti_last_climb_msg_id"] = int(getattr(msg, "id", 0) or 0)
         _schedule_tianti_climb_retry(now, persist=True)
+        _calc_tianti_wenxin_plan(now)
+        _log_tianti_plan("执行登阶后")
         console_log(f"☁️ 执行登天阶→{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}")
 
 
