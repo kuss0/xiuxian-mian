@@ -335,9 +335,7 @@ def _manual_enable_tianti_module_state(now):
         state["tianti_last_skip_reason"] = ""
         state["tianti_theoretical_max_stage"] = 0
         state["tianti_wenxin_trigger_stage"] = 0
-        next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
-        if next_wenxin_time > 0 and get_day_key(next_wenxin_time) != today_key:
-            state["next_tianti_wenxin_time"] = 0
+        state["next_tianti_wenxin_time"] = 0
     next_status_time = float(state.get("next_tianti_status_time", 0) or 0)
     next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
@@ -869,9 +867,7 @@ def initialize_identity_runtime(send_as_id, now=None):
                 state["tianti_last_skip_reason"] = ""
                 state["tianti_theoretical_max_stage"] = 0
                 state["tianti_wenxin_trigger_stage"] = 0
-                next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
-                if next_wenxin_time > 0 and get_day_key(next_wenxin_time) != today_key:
-                    state["next_tianti_wenxin_time"] = 0
+                state["next_tianti_wenxin_time"] = 0
             has_status_snapshot = any(
                 value not in {None, "", 0, "未记录"}
                 for value in (

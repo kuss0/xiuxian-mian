@@ -93,22 +93,18 @@ def _reset_tianti_wenxin_daily_state(now):
     state["tianti_theoretical_max_stage"] = 0
     state["tianti_wenxin_trigger_stage"] = 0
     state["tianti_last_skip_reason"] = ""
-    if float(state.get("next_tianti_wenxin_time", 0) or 0) > 0 and get_day_key(float(state.get("next_tianti_wenxin_time", 0) or 0)) != get_day_key(now):
-        state["next_tianti_wenxin_time"] = 0
+    state["next_tianti_wenxin_time"] = 0
 
 
 def _ensure_tianti_wenxin_daily_state(now):
     today_key = get_day_key(now)
     last_wenxin_day = str(state.get("tianti_last_wenxin_day") or "")
     trigger_key = str(state.get("tianti_wenxin_last_trigger_key") or "")
-    next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
 
     should_reset = False
     if last_wenxin_day and last_wenxin_day != today_key:
         should_reset = True
     elif trigger_key and not trigger_key.startswith(f"{today_key}|"):
-        should_reset = True
-    elif next_wenxin_time > 0 and get_day_key(next_wenxin_time) != today_key:
         should_reset = True
 
     if not should_reset:
@@ -506,7 +502,6 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
         state["tianti_last_error"] = ""
         _schedule_tianti_climb_retry(now, persist=False)
-        state["next_tianti_status_time"] = now + random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
         _calc_tianti_wenxin_plan(now)
         _log_tianti_plan("登阶成功后")
         await send_audit_log(
