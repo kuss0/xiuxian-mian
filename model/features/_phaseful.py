@@ -77,8 +77,10 @@ def get_block_reason(spec, now=None):
         return spec.block_post_wait
     if phase == "launching":
         return spec.block_launching
-    if phase == "running" or (phase == "idle" and state[spec.next_time_key] > now):
+    if phase == "running":
         return spec.block_running
+    if phase == "idle" and state[spec.next_time_key] > now:
+        return spec.phase_idle_cd
     if state[spec.last_command_key] > 0 and now - state[spec.last_command_key] < spec.protect_sec:
         return spec.block_protect
     return "无"

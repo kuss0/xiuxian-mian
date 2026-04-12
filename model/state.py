@@ -35,7 +35,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
-    "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
+    "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
@@ -317,6 +317,7 @@ GLOBAL_STATE_DEFAULTS = {
     "quiz_learning_watchers": {},
     "accounts": {},
     "identity_account_map": {},
+    "identity_membership_initialized": False,
 }
 _meta_state = copy.deepcopy(GLOBAL_STATE_DEFAULTS)
 
@@ -857,7 +858,7 @@ def is_yuanying_realm_available(send_as_id=None):
 
 
 def get_available_module_names(send_as_id=None):
-    available_module_names = list(MODULE_NAMES)
+    available_module_names = [module_name for module_name in MODULE_NAMES if module_name != "观星监控"]
     sect_name = (get_send_as_profile(send_as_id).get("sect_name") or "").strip()
     if sect_name and sect_name != "落云宗":
         available_module_names = [module_name for module_name in available_module_names if module_name != "灵树"]

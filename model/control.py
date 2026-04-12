@@ -230,6 +230,11 @@ def _disable_stargazer_module_state():
     _clear_pending_tasks_by_commands({CMD_STARGAZER_PANEL, CMD_STARGAZER_GUIDE, CMD_STARGAZER_SOOTHE, CMD_STARGAZER_COLLECT})
 
 
+def _manual_disable_stargazer_module_state():
+    state["stargazer_enabled"] = False
+    _clear_pending_tasks_by_commands({CMD_STARGAZER_PANEL, CMD_STARGAZER_GUIDE, CMD_STARGAZER_SOOTHE, CMD_STARGAZER_COLLECT})
+
+
 def _disable_guanxing_monitor_module_state():
     set_guanxing_monitor_enabled(False)
     state["next_guanxing_monitor_notify_time"] = 0
@@ -244,9 +249,18 @@ def _disable_guanxing_monitor_module_state():
     state["guanxing_monitor_last_notified_slot_key"] = ""
 
 
+def _manual_disable_guanxing_monitor_module_state():
+    set_guanxing_monitor_enabled(False)
+
+
 def _disable_guanxing_module_state():
     state["guanxing_enabled"] = False
     clear_guanxing_identity_runtime(get_current_identity_id())
+    _clear_pending_tasks_by_commands({CMD_GUANXING, CMD_GUANXING_SHIFT})
+
+
+def _manual_disable_guanxing_module_state():
+    state["guanxing_enabled"] = False
     _clear_pending_tasks_by_commands({CMD_GUANXING, CMD_GUANXING_SHIFT})
 
 
@@ -301,6 +315,11 @@ def _disable_tianti_module_state():
     _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB})
 
 
+def _manual_disable_tianti_module_state():
+    state["tianti_enabled"] = False
+    _clear_pending_tasks_by_commands({CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB})
+
+
 def _manual_enable_tianti_module_state(now):
     state["tianti_enabled"] = True
     today_key = get_day_key(now)
@@ -349,6 +368,11 @@ def _manual_enable_pet_module_state(now):
 def _disable_quiz_module_state():
     state["quiz_enabled"] = False
     clear_quiz_state(persist=False)
+    _clear_pending_tasks_by_commands({CMD_QUIZ_ANSWER})
+
+
+def _manual_disable_quiz_module_state():
+    state["quiz_enabled"] = False
     _clear_pending_tasks_by_commands({CMD_QUIZ_ANSWER})
 
 
@@ -421,6 +445,10 @@ def _manual_enable_quiz_module_state(now):
 def _disable_jiyin_module_state():
     state["jiyin_enabled"] = False
     clear_jiyin_state(persist=False, keep_last_error=True)
+
+
+def _manual_disable_jiyin_module_state():
+    state["jiyin_enabled"] = False
 
 
 def _manual_enable_jiyin_module_state(now):
@@ -564,12 +592,12 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
-    "观星台": (_manual_enable_stargazer_module_state, _disable_stargazer_module_state),
-    "观星": (_manual_enable_guanxing_module_state, _disable_guanxing_module_state),
-    "观星监控": (_manual_enable_guanxing_monitor_module_state, _disable_guanxing_monitor_module_state),
-    "登天阶": (_manual_enable_tianti_module_state, _disable_tianti_module_state),
-    "玄骨考校": (_manual_enable_quiz_module_state, _disable_quiz_module_state),
-    "极阴祖师": (_manual_enable_jiyin_module_state, _disable_jiyin_module_state),
+    "观星台": (_manual_enable_stargazer_module_state, _manual_disable_stargazer_module_state),
+    "观星": (_manual_enable_guanxing_module_state, _manual_disable_guanxing_module_state),
+    "观星监控": (_manual_enable_guanxing_monitor_module_state, _manual_disable_guanxing_monitor_module_state),
+    "登天阶": (_manual_enable_tianti_module_state, _manual_disable_tianti_module_state),
+    "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
+    "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),

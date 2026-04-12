@@ -365,6 +365,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         if matched_family == "tianti_status":
             state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
+            state["next_tianti_status_time"] = 0
             cooldown = str(panel_payload.get("cooldown_text") or "")
             if cooldown:
                 if has_wait_time(cooldown):

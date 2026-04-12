@@ -218,6 +218,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_wenxin_day TEXT NOT NULL DEFAULT ''")
     if "tianti_wenxin_last_trigger_key" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_wenxin_last_trigger_key TEXT NOT NULL DEFAULT ''")
+    if "tianti_last_skip_reason" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_skip_reason TEXT NOT NULL DEFAULT ''")
     if "tianti_theoretical_max_stage" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_theoretical_max_stage INTEGER NOT NULL DEFAULT 0")
     if "tianti_wenxin_trigger_stage" not in runtime_columns:
@@ -393,6 +395,7 @@ def init_db():
             tianti_remaining_climb_count INTEGER NOT NULL DEFAULT 0,
             tianti_last_wenxin_day TEXT NOT NULL DEFAULT '',
             tianti_wenxin_last_trigger_key TEXT NOT NULL DEFAULT '',
+            tianti_last_skip_reason TEXT NOT NULL DEFAULT '',
             tianti_theoretical_max_stage INTEGER NOT NULL DEFAULT 0,
             tianti_wenxin_trigger_stage INTEGER NOT NULL DEFAULT 0,
             tianti_last_cost_xiuwei INTEGER NOT NULL DEFAULT 0,
@@ -917,9 +920,9 @@ _META_STATE_CODEC = {
         lambda value: set_identity_account_map(_decode_meta_json(value, {})),
     ),
     "identity_membership_initialized": (
-        lambda: True,
+        lambda: bool(_meta_state.get("identity_membership_initialized", False)),
         lambda value: "1" if value else "0",
-        lambda value: _decode_meta_bool_flag(value, False),
+        lambda value: _set_meta_value("identity_membership_initialized", _decode_meta_bool_flag(value, False)),
     ),
 }
 

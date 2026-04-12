@@ -162,11 +162,17 @@ def get_identity_ui_snapshot(send_as_id):
         else:
             stargazer_next_action_time = stargazer_followup_due_at or stargazer_next_panel_time
         jiyin_deadline_at = float(identity_state.get("next_jiyin_time", 0) or 0)
+        identity_status_text = "运行中"
+        if not global_enabled:
+            identity_status_text = "全局暂停"
+        elif not identity_enabled:
+            identity_status_text = "已暂停"
+
         snapshot = {
             "send_as_id": send_as_id,
             "display_name": get_identity_ui_display_name(send_as_id),
             "identity_enabled": identity_enabled,
-            "identity_status_text": "运行中" if identity_enabled else "已暂停",
+            "identity_status_text": identity_status_text,
             "username": profile.get("username") or "",
             "label": profile.get("label") or "",
             "daohao": profile.get("daohao") or "",
