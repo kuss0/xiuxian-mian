@@ -509,7 +509,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         )
         handled = True
 
-    if has_wait_time(raw_text) and matched_family == "tianti_climb":
+    if has_wait_time(raw_text) and matched_family == "tianti_climb" and not (climb_cost_match and climb_gain_match and climb_result_match):
         wait_sec = parse_wait_time(raw_text)
         if wait_sec > 0:
             random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
