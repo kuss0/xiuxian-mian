@@ -31,6 +31,7 @@ RE_TIANTI_WENXIN_EXTRA_GANGFENG = re.compile(r"九天罡风顺势入体，你的
 RE_TIANTI_WENXIN_FAIL = re.compile(r"你今日已在问心台前静坐过一次，道台不会再回应你。")
 RE_TIANTI_CLIMB_COST = re.compile(r"你消耗了\s*(\d+)\s*点修为")
 RE_TIANTI_CLIMB_GAIN = re.compile(r"本次获得\s*(\d+)\s*点修为[、,，]\s*(\d+)\s*点宗门贡献")
+RE_TIANTI_CLIMB_CYCLE = re.compile(r"完成了第\s*(\d+)\s*轮【周天巡天】")
 RE_TIANTI_CLIMB_RESULT = re.compile(r"当前云阶进度[:：]\s*(\d+)\s*/\s*(\d+)[，,]\s*罡风淬体[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_TIANTI_GANGFENG_PANEL = re.compile(r"【九天罡风】")
 RE_TIANTI_GANGFENG_COST = re.compile(r"消耗了\s*(\d+)\s*点修为")
@@ -490,12 +491,15 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
 
     climb_cost_match = RE_TIANTI_CLIMB_COST.search(raw_text)
     climb_gain_match = RE_TIANTI_CLIMB_GAIN.search(raw_text)
+    climb_cycle_match = RE_TIANTI_CLIMB_CYCLE.search(raw_text)
     climb_result_match = RE_TIANTI_CLIMB_RESULT.search(raw_text)
     if climb_cost_match and climb_gain_match and climb_result_match:
         state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
         state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
         state["tianti_last_gain_xiuwei"] = int(climb_gain_match.group(1) or 0)
         state["tianti_last_gain_contrib"] = int(climb_gain_match.group(2) or 0)
+        if climb_cycle_match:
+            state["tianti_cycle_count"] = int(climb_cycle_match.group(1) or 0)
         state["tianti_progress_current"] = int(climb_result_match.group(1) or 0)
         state["tianti_progress_total"] = int(climb_result_match.group(2) or 0)
         state["tianti_gangfeng_level"] = int(climb_result_match.group(3) or 0)
