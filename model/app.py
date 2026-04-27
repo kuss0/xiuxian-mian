@@ -26,6 +26,7 @@ from .features.guanxing import (
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
+from .features.nanlong import handle_nanlong_prompt, run_nanlong_scheduler
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.stargazer import (
@@ -308,6 +309,7 @@ async def _run_identity_schedulers(now):
         run_tianti_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
+        run_nanlong_scheduler,
         run_checkin_scheduler,
         run_tower_scheduler,
         run_deep_retreat_scheduler,
@@ -448,6 +450,9 @@ async def on_message(event):
             return
 
         if await _run_until_handled_for_enabled_identities(handle_jiyin_prompt, text, now, event):
+            return
+
+        if await _run_until_handled_for_enabled_identities(handle_nanlong_prompt, text, now, event):
             return
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:

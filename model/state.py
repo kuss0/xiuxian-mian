@@ -21,13 +21,13 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
-    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_yuanying_time", "next_deep_retreat_time",
+    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_nanlong_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
@@ -38,13 +38,14 @@ IDENTITY_RUNTIME_COLUMNS = [
     "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
+    "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
@@ -61,6 +62,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "xiuwei_current": 0,
     "xiuwei_max": 0,
     "jiyin_choice": "",
+    "nanlong_choice": "reject",
     "stargazer_star_choice": STARGAZER_STAR_CHOICES[0],
     "tianti_rank_choice": TIANTI_RANK_CHOICES[0],
     "stargazer_total_slots": 0,
@@ -144,6 +146,7 @@ IDENTITY_STATE_TEMPLATE = {
     "pet_enabled": False,
     "quiz_enabled": False,
     "jiyin_enabled": False,
+    "nanlong_enabled": False,
     "tianti_enabled": False,
     "tianti_wenxin_enabled": True,
     "tianti_gangfeng_enabled": True,
@@ -256,6 +259,12 @@ IDENTITY_STATE_TEMPLATE = {
     "next_jiyin_time": 0,
     "jiyin_reply_to_msg_id": 0,
     "jiyin_last_error": "",
+
+    # 南陇侯模块
+    "next_nanlong_time": 0,
+    "nanlong_reply_to_msg_id": 0,
+    "nanlong_reply_due_at": 0,
+    "nanlong_last_error": "",
 
     # 元婴模块
     "yuanying_phase": "idle",  # idle|launching|running|waiting_summary|post_summary_wait
@@ -411,7 +420,7 @@ def get_identity_state(send_as_id=None):
 def _coerce_send_as_profile_field(field_name, value):
     if field_name in {"username", "label"}:
         return value or ""
-    if field_name in {"daohao", "realm", "sect_name", "jiyin_choice"}:
+    if field_name in {"daohao", "realm", "sect_name", "jiyin_choice", "nanlong_choice"}:
         return (value or "").strip()
     if field_name == "stargazer_star_choice":
         normalized = (value or "").strip()
@@ -494,6 +503,7 @@ def set_send_as_profile(
     xiuwei_current=None,
     xiuwei_max=None,
     jiyin_choice=None,
+    nanlong_choice=None,
     stargazer_star_choice=None,
     tianti_rank_choice=None,
     stargazer_total_slots=None,
@@ -515,6 +525,7 @@ def set_send_as_profile(
         xiuwei_current=xiuwei_current,
         xiuwei_max=xiuwei_max,
         jiyin_choice=jiyin_choice,
+        nanlong_choice=nanlong_choice,
         stargazer_star_choice=stargazer_star_choice,
         tianti_rank_choice=tianti_rank_choice,
         stargazer_total_slots=stargazer_total_slots,
@@ -581,6 +592,18 @@ def set_jiyin_choice(send_as_id, choice):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, jiyin_choice=choice)
     return get_jiyin_choice(send_as_id)
+
+
+def get_nanlong_choice(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    return (get_send_as_profile(send_as_id).get("nanlong_choice") or "reject").strip() or "reject"
+
+
+def set_nanlong_choice(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, nanlong_choice=choice or "reject")
+    return get_nanlong_choice(send_as_id)
 
 
 def get_stargazer_star_choice(send_as_id=None):
@@ -1073,6 +1096,7 @@ __all__ = [
     "get_module_window_profile_keys",
     "get_available_module_names",
     "get_jiyin_choice",
+    "get_nanlong_choice",
     "get_pet_command",
     "get_pet_name",
     "get_stargazer_star_choice",
@@ -1097,6 +1121,7 @@ __all__ = [
     "set_auto_delete_sent_messages",
     "set_identity_enabled",
     "set_jiyin_choice",
+    "set_nanlong_choice",
     "set_module_window_hours",
     "set_pet_name",
     "set_stargazer_star_choice",

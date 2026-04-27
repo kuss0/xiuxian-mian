@@ -74,6 +74,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
     if "jiyin_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
+    if "nanlong_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN nanlong_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_monitor_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_enabled" not in module_columns:
@@ -100,6 +102,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identities ADD COLUMN sect_updated_at REAL NOT NULL DEFAULT 0")
     if "jiyin_choice" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN jiyin_choice TEXT NOT NULL DEFAULT ''")
+    if "nanlong_choice" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN nanlong_choice TEXT NOT NULL DEFAULT 'reject'")
     if "stargazer_star_choice" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星'")
     if "stargazer_total_slots" not in identity_columns:
@@ -126,6 +130,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_quiz_time REAL NOT NULL DEFAULT 0")
     if "next_jiyin_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_jiyin_time REAL NOT NULL DEFAULT 0")
+    if "next_nanlong_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_nanlong_time REAL NOT NULL DEFAULT 0")
     if "next_stargazer_panel_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_stargazer_panel_time REAL NOT NULL DEFAULT 0")
     if "stargazer_collect_due_at" not in timer_columns:
@@ -262,6 +268,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "jiyin_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_last_error TEXT NOT NULL DEFAULT ''")
+    if "nanlong_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "nanlong_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "nanlong_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_error TEXT NOT NULL DEFAULT ''")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -308,6 +320,7 @@ def init_db():
             sect_name TEXT NOT NULL DEFAULT '',
             sect_updated_at REAL NOT NULL DEFAULT 0,
             jiyin_choice TEXT NOT NULL DEFAULT '',
+            nanlong_choice TEXT NOT NULL DEFAULT 'reject',
             stargazer_star_choice TEXT NOT NULL DEFAULT '赤血星',
             tianti_rank_choice TEXT NOT NULL DEFAULT '普通',
             stargazer_total_slots INTEGER NOT NULL DEFAULT 0,
@@ -334,6 +347,7 @@ def init_db():
             tianti_gangfeng_enabled INTEGER NOT NULL DEFAULT 1,
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
+            nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -367,6 +381,7 @@ def init_db():
             next_tower_time REAL NOT NULL,
             next_quiz_time REAL NOT NULL,
             next_jiyin_time REAL NOT NULL,
+            next_nanlong_time REAL NOT NULL DEFAULT 0,
             next_yuanying_time REAL NOT NULL,
             next_deep_retreat_time REAL NOT NULL
         );
@@ -437,6 +452,9 @@ def init_db():
             quiz_last_matched_at REAL NOT NULL DEFAULT 0,
             jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             jiyin_last_error TEXT NOT NULL DEFAULT '',
+            nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
+            nanlong_last_error TEXT NOT NULL DEFAULT '',
             yuanying_phase TEXT NOT NULL,
             yuanying_probe_pending INTEGER NOT NULL,
             yuanying_summary_sent_at REAL NOT NULL,
@@ -617,12 +635,12 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
+            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -632,6 +650,7 @@ def upsert_identity_to_db(send_as_id):
             sect_name=excluded.sect_name,
             sect_updated_at=excluded.sect_updated_at,
             jiyin_choice=excluded.jiyin_choice,
+            nanlong_choice=excluded.nanlong_choice,
             stargazer_star_choice=excluded.stargazer_star_choice,
             tianti_rank_choice=excluded.tianti_rank_choice,
             stargazer_total_slots=excluded.stargazer_total_slots,
@@ -654,6 +673,7 @@ def upsert_identity_to_db(send_as_id):
             profile.get("sect_name", "") or "",
             float(profile.get("sect_updated_at", 0) or 0),
             profile.get("jiyin_choice", "") or "",
+            profile.get("nanlong_choice", "reject") or "reject",
             profile.get("stargazer_star_choice", "赤血星") or "赤血星",
             profile.get("tianti_rank_choice", "普通") or "普通",
             int(profile.get("stargazer_total_slots", 0) or 0),
@@ -730,7 +750,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -744,6 +764,7 @@ def _load_identity_from_db(send_as_id):
             sect_name=row["sect_name"],
             sect_updated_at=row["sect_updated_at"],
             jiyin_choice=row["jiyin_choice"],
+            nanlong_choice=row["nanlong_choice"],
             stargazer_star_choice=row["stargazer_star_choice"],
             tianti_rank_choice=row["tianti_rank_choice"],
             stargazer_total_slots=int(row["stargazer_total_slots"] or 0),

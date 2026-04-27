@@ -65,6 +65,7 @@ from .features.deep_retreat import get_deep_retreat_phase_text
 from .features.guanxing import get_guanxing_round_summary_text
 from .features.guanxing_monitor import get_guanxing_monitor_summary_text
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
+from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.stargazer import sync_stargazer_total_slots
 from .features.tianti import sync_tianti_status
 from .features.yuanying import get_yuanying_phase_text
@@ -156,6 +157,9 @@ def get_identity_ui_snapshot(send_as_id):
         saved_jiyin_choice = normalize_jiyin_choice(profile.get("jiyin_choice") or "")
         effective_jiyin_choice, _jiyin_choice_source = resolve_jiyin_choice(send_as_id)
         jiyin_reply_to_msg_id = int(identity_state.get("jiyin_reply_to_msg_id", 0) or 0)
+        saved_nanlong_choice = normalize_nanlong_choice(profile.get("nanlong_choice") or "")
+        effective_nanlong_choice, _nanlong_choice_source = resolve_nanlong_choice(send_as_id)
+        nanlong_reply_to_msg_id = int(identity_state.get("nanlong_reply_to_msg_id", 0) or 0)
         stargazer_followup_due_at = float(identity_state.get("stargazer_followup_due_at", 0) or 0)
         stargazer_next_panel_time = float(identity_state.get("next_stargazer_panel_time", 0) or 0)
         if stargazer_followup_due_at > 0 and stargazer_next_panel_time > 0:
@@ -163,6 +167,8 @@ def get_identity_ui_snapshot(send_as_id):
         else:
             stargazer_next_action_time = stargazer_followup_due_at or stargazer_next_panel_time
         jiyin_deadline_at = float(identity_state.get("next_jiyin_time", 0) or 0)
+        nanlong_deadline_at = float(identity_state.get("next_nanlong_time", 0) or 0)
+        nanlong_reply_due_at = float(identity_state.get("nanlong_reply_due_at", 0) or 0)
         identity_status_text = "运行中"
         if not global_enabled:
             identity_status_text = "全局暂停"
@@ -187,6 +193,8 @@ def get_identity_ui_snapshot(send_as_id):
             "sect_refresh_error": sect_refresh_error,
             "jiyin_choice": saved_jiyin_choice,
             "jiyin_choice_label": get_jiyin_choice_label(saved_jiyin_choice),
+            "nanlong_choice": saved_nanlong_choice,
+            "nanlong_choice_label": get_nanlong_choice_label(saved_nanlong_choice),
             "stargazer_star_choice": get_stargazer_star_choice(send_as_id),
             "stargazer_star_choices": list(STARGAZER_STAR_CHOICES),
             "stargazer_total_slots": get_stargazer_total_slots(send_as_id),
@@ -202,6 +210,14 @@ def get_identity_ui_snapshot(send_as_id):
             "jiyin_deadline_at": fmt_abs_ts(jiyin_deadline_at),
             "jiyin_reply_to_msg_id": jiyin_reply_to_msg_id,
             "jiyin_last_error": identity_state.get("jiyin_last_error") or "",
+            "nanlong_effective_choice": effective_nanlong_choice,
+            "nanlong_effective_choice_label": get_nanlong_choice_label(effective_nanlong_choice),
+            "nanlong_choice_source": _nanlong_choice_source,
+            "nanlong_pending": bool(nanlong_reply_to_msg_id > 0 and nanlong_deadline_at > now),
+            "nanlong_deadline_at": fmt_abs_ts(nanlong_deadline_at),
+            "nanlong_reply_due_at": fmt_abs_ts(nanlong_reply_due_at),
+            "nanlong_reply_to_msg_id": nanlong_reply_to_msg_id,
+            "nanlong_last_error": identity_state.get("nanlong_last_error") or "",
             "checkin_window_local": {
                 "start_hour": checkin_window_local[0],
                 "end_hour": checkin_window_local[1],
@@ -584,6 +600,17 @@ async def ui_set_jiyin_choice(send_as_id, choice):
         return False, f"未知身份: {send_as_id}"
     with use_identity(send_as_id):
         ok, message = await apply_jiyin_choice(choice)
+    if not ok:
+        return False, message
+    return True, f"{message}[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_nanlong_choice(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    with use_identity(send_as_id):
+        ok, message = await apply_nanlong_choice(choice)
     if not ok:
         return False, message
     return True, f"{message}[{get_identity_display_name(send_as_id)}]"
@@ -1550,6 +1577,35 @@ async def handle_ui_http(reader, writer):
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/nanlong-choice":
+                if session is None:
+                    body = _make_json_payload(False, error="未登录或登录已失效")
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 401 Unauthorized",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+                elif method != "POST":
+                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    choice = payload.get("choice")
+                    if send_as_id in {None, ""} or not choice:
+                        body = _make_json_payload(False, error="缺少 send_as_id 或 choice 参数")
+                        _write_response(
+                            writer,
+                            "HTTP/1.1 400 Bad Request",
+                            body,
+                            content_type="application/json; charset=utf-8",
+                            extra_headers=auth_headers,
+                        )
+                    else:
+                        ok, message = await ui_set_nanlong_choice(send_as_id, choice)
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/pet-name":
                 if session is None:
                     body = _make_json_payload(False, error="未登录或登录已失效")
@@ -1880,6 +1936,7 @@ __all__ = [
     "ui_set_identity_enabled",
     "ui_set_module_enabled",
     "ui_set_jiyin_choice",
+    "ui_set_nanlong_choice",
     "ui_set_module_window",
     "ui_set_pet_name",
     "ui_set_stargazer_star_choice",

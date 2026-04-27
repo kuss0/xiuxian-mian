@@ -10,6 +10,9 @@ from .config import (
     CMD_DEEP_RETREAT_QUERY,
     CMD_GUANXING,
     CMD_GUANXING_SHIFT,
+    CMD_NANLONG_EXCHANGE_FABAO,
+    CMD_NANLONG_EXCHANGE_GONGFA,
+    CMD_NANLONG_REJECT,
     CMD_PET,
     CMD_QUIZ_ANSWER,
     CMD_TIANTI_CLIMB,
@@ -58,6 +61,7 @@ from .features.guanxing import (
 )
 from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore_guanxing_monitor_runtime_state
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
+from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.stargazer import get_stargazer_status_text
@@ -463,6 +467,22 @@ def _manual_enable_jiyin_module_state(now):
     clear_jiyin_state(persist=False)
 
 
+def _disable_nanlong_module_state():
+    state["nanlong_enabled"] = False
+    clear_nanlong_state(persist=False, keep_last_error=True)
+
+
+def _manual_disable_nanlong_module_state():
+    state["nanlong_enabled"] = False
+
+
+def _manual_enable_nanlong_module_state(now):
+    state["nanlong_enabled"] = True
+    if float(state.get("next_nanlong_time", 0) or 0) > now:
+        return
+    clear_nanlong_state(persist=False)
+
+
 def _manual_disable_yuanying_module_state():
     state["yuanying_enabled"] = False
     _clear_pending_tasks_by_commands({CMD_YUANYING, CMD_YUANYING_STATUS})
@@ -588,6 +608,9 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TIANTI_CLIMB: "登天阶",
     CMD_TIANTI_GANGFENG: "登天阶",
     CMD_QUIZ_ANSWER: "玄骨考校",
+    CMD_NANLONG_EXCHANGE_FABAO: "南陇侯",
+    CMD_NANLONG_EXCHANGE_GONGFA: "南陇侯",
+    CMD_NANLONG_REJECT: "南陇侯",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
     CMD_TOWER: "闯塔",
@@ -604,6 +627,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "登天阶": (_manual_enable_tianti_module_state, _manual_disable_tianti_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
+    "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
@@ -618,6 +642,7 @@ MODULE_DISABLE_HANDLERS = {
     "登天阶": _disable_tianti_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
+    "南陇侯": _disable_nanlong_module_state,
     "元婴": _disable_yuanying_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "点卯": lambda: _set_checkin_module_enabled(False, time.time()),
@@ -690,6 +715,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "登天阶": get_tianti_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
+        "南陇侯": get_nanlong_status_text,
         "元婴": get_yuanying_status_detail_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "点卯": get_checkin_status_text,

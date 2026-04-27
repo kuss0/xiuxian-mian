@@ -199,9 +199,15 @@ CMD_TOWER = ".闯塔"
 CMD_QUIZ_ANSWER = ".作答"
 CMD_JIYIN_OFFER_SOUL = ".献上魂魄"
 CMD_JIYIN_HIDE_AURA = ".收敛气息"
+CMD_NANLONG_EXCHANGE_FABAO = ".交换 法宝"
+CMD_NANLONG_EXCHANGE_GONGFA = ".交换 功法"
+CMD_NANLONG_REJECT = ".拒绝交易"
 QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "quiz_bank.json")
 QUIZ_REPLY_TIMEOUT_SEC = 300
 JIYIN_REPLY_TIMEOUT_SEC = 180 * 60
+NANLONG_REPLY_TIMEOUT_SEC = 10 * 60
+NANLONG_REPLY_DELAY_MIN_SEC = 20
+NANLONG_REPLY_DELAY_MAX_SEC = 30
 
 
 CMD_BATTLE_POWER = ".战力"
@@ -260,9 +266,12 @@ SCRIPT_COMMANDS = [
     CMD_QUIZ_ANSWER,
     CMD_JIYIN_OFFER_SOUL,
     CMD_JIYIN_HIDE_AURA,
+    CMD_NANLONG_EXCHANGE_FABAO,
+    CMD_NANLONG_EXCHANGE_GONGFA,
+    CMD_NANLONG_REJECT,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "南陇侯", "元婴", "深度闭关", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -272,6 +281,7 @@ MODULE_KEY_MAP = {
     "登天阶": "tianti_enabled",
     "玄骨考校": "quiz_enabled",
     "极阴祖师": "jiyin_enabled",
+    "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
     "深度闭关": "deep_retreat_enabled",
     "点卯": "checkin_enabled",
@@ -390,6 +400,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.天阶状态$'), "登天阶"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
+    (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
@@ -412,6 +423,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)玄骨考校$'), "玄骨考校", False),
     (re.compile(r'^\.(开启|打开)极阴祖师$'), "极阴祖师", True),
     (re.compile(r'^\.(关闭|关掉)极阴祖师$'), "极阴祖师", False),
+    (re.compile(r'^\.(开启|打开)南陇侯$'), "南陇侯", True),
+    (re.compile(r'^\.(关闭|关掉)南陇侯$'), "南陇侯", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),
     (re.compile(r'^\.(关闭|关掉)元婴$'), "元婴", False),
     (re.compile(r'^\.(开启|打开)深度闭关$'), "深度闭关", True),
