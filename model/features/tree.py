@@ -206,6 +206,11 @@ async def handle_tree_panel(text, now, is_reply_to_me):
 
         state["tree_harvest_followup_due_at"] = 0
 
+        already_harvested_snapshot = "你的当前状态: 已采摘" in text or "你的当前状态：已采摘" in text
+        if already_harvested_snapshot and not state["is_harvested"]:
+            state["is_harvested"] = True
+            save_state()
+
         if is_reply_to_me and not state["is_harvested"] and not has_pending_harvest:
             state["is_harvested"] = True
             save_state()
