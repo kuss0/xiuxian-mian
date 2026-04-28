@@ -20,6 +20,7 @@ from .config import (
     CMD_TIANTI_STATUS,
     CMD_TIANTI_WENXIN,
     CMD_SECT_TEACH,
+    CMD_SMALL_WORLD_PREACH,
     CMD_STARGAZER_COLLECT,
     CMD_STARGAZER_GUIDE,
     CMD_STARGAZER_PANEL,
@@ -64,6 +65,7 @@ from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
+from .features.small_world import clear_small_world_state, get_small_world_status_text
 from .features.stargazer import get_stargazer_status_text
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
@@ -106,6 +108,7 @@ from .state import (
     get_stargazer_total_slots,
     get_tianti_rank_choice,
     is_module_available,
+    is_small_world_realm_available,
     is_yuanying_realm_available,
     set_identity_account,
     set_identity_enabled as set_identity_enabled_profile,
@@ -190,6 +193,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
     if module_name == "登天阶":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
+        return f"当前境界未达到{module_name}模块开启条件"
+    if module_name == "小世界" and not is_small_world_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
     return f"当前条件未提供{module_name}模块"
 
@@ -483,6 +488,24 @@ def _manual_enable_nanlong_module_state(now):
     clear_nanlong_state(persist=False)
 
 
+def _disable_small_world_module_state():
+    state["small_world_enabled"] = False
+    clear_small_world_state(persist=False, keep_last_error=True)
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH})
+
+
+def _manual_disable_small_world_module_state():
+    state["small_world_enabled"] = False
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH})
+
+
+def _manual_enable_small_world_module_state(now):
+    state["small_world_enabled"] = True
+    if float(state.get("next_small_world_time", 0) or 0) > now:
+        return
+    clear_small_world_state(persist=False)
+
+
 def _manual_disable_yuanying_module_state():
     state["yuanying_enabled"] = False
     _clear_pending_tasks_by_commands({CMD_YUANYING, CMD_YUANYING_STATUS})
@@ -611,6 +634,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_NANLONG_EXCHANGE_FABAO: "南陇侯",
     CMD_NANLONG_EXCHANGE_GONGFA: "南陇侯",
     CMD_NANLONG_REJECT: "南陇侯",
+    CMD_SMALL_WORLD_PREACH: "小世界",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
     CMD_TOWER: "闯塔",
@@ -628,6 +652,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
+    "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
@@ -643,6 +668,7 @@ MODULE_DISABLE_HANDLERS = {
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
     "南陇侯": _disable_nanlong_module_state,
+    "小世界": _disable_small_world_module_state,
     "元婴": _disable_yuanying_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "点卯": lambda: _set_checkin_module_enabled(False, time.time()),
@@ -716,6 +742,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
         "南陇侯": get_nanlong_status_text,
+        "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "点卯": get_checkin_status_text,
@@ -773,6 +800,9 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
+            changed = True
+        if not is_module_available("小世界", send_as_id) and state.get("small_world_enabled"):
+            _disable_small_world_module_state()
             changed = True
     if changed and persist:
         save_state()

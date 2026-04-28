@@ -22,6 +22,7 @@ from .config import (
     CMD_IDENTITY_INFO,
     CMD_PET,
     CMD_SECT_TEACH,
+    CMD_SMALL_WORLD_PREACH,
     CMD_TIANTI_CLIMB,
     CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
@@ -118,6 +119,7 @@ REPLY_FAMILY_COMMANDS = {
     "tianti_gangfeng": {CMD_TIANTI_GANGFENG},
     "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
+    "small_world_preach": {CMD_SMALL_WORLD_PREACH},
 }
 COMMAND_TO_REPLY_FAMILY = {
     command: family

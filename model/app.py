@@ -27,8 +27,9 @@ from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restor
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.nanlong import handle_nanlong_prompt, run_nanlong_scheduler
-from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
+from .features.tianti import handle_tianti_reply, run_tianti_scheduler
+from .features.small_world import handle_small_world_disaster_broadcast, handle_small_world_preach_reply, run_small_world_scheduler
 from .features.stargazer import (
     handle_stargazer_collect_reply,
     handle_stargazer_guide_reply,
@@ -286,6 +287,11 @@ async def _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now):
         await handle_guanxing_monitor_broadcast(text, now)
 
 
+async def _dispatch_small_world_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="small_world_disaster"):
+        await _run_until_handled_for_enabled_identities(handle_small_world_disaster_broadcast, text, now, event)
+
+
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
     if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
         await handle_realm_breakthrough_broadcast(text, now)
@@ -316,6 +322,7 @@ async def _run_identity_schedulers(now):
         run_quiz_scheduler,
         run_jiyin_scheduler,
         run_nanlong_scheduler,
+        run_small_world_scheduler,
         run_checkin_scheduler,
         run_tower_scheduler,
         run_deep_retreat_scheduler,
@@ -405,6 +412,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             if not yuanying_done:
                 handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tree_exception_prompt(text) or handled_any
+            handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if matched_family and handled_any and not already_consumed:
             _mark_runtime_message_consumed(event, matched_family)
@@ -471,6 +479,7 @@ async def on_message(event):
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
         await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
+        await _dispatch_small_world_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())

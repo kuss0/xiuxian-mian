@@ -32,7 +32,7 @@ ${gangfengSwitchHtml}`;}else if(module.name==='观星'){moduleNote='<div class="
 <button type="button" class="btn btn-secondary" data-jiyin-choice="hide_aura">收敛气息</button>
 <button type="button" class="btn btn-secondary" data-jiyin-choice="auto">恢复自动</button>`;}else if(module.name==='南陇侯'){settingsButton=`<button type="button" class="btn btn-secondary" data-nanlong-choice="exchange_fabao">交换法宝</button>
 <button type="button" class="btn btn-secondary" data-nanlong-choice="exchange_gongfa">交换功法</button>
-<button type="button" class="btn btn-secondary" data-nanlong-choice="reject">拒绝交易</button>`;}const nextEnabled=module.enabled?0:1;const switchClass=module.enabled?'switch-on':'switch-off';return `<div class="module-card">
+<button type="button" class="btn btn-secondary" data-nanlong-choice="reject">拒绝交易</button>`;}else if(module.name==='小世界'){moduleNote='<div class="module-note">监听信仰崩塌/动摇后自动 .神迹 布道，直到信仰恢复到 100</div>';}const nextEnabled=module.enabled?0:1;const switchClass=module.enabled?'switch-on':'switch-off';return `<div class="module-card">
 <div class="module-top">
 <div class="module-main">
 <div class="module-title">${escapeHtml(module.name)}</div>${moduleNote}</div>

@@ -21,13 +21,13 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
-    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_nanlong_time", "next_yuanying_time", "next_deep_retreat_time",
+    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_deep_retreat_time",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
@@ -39,13 +39,14 @@ IDENTITY_RUNTIME_COLUMNS = [
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_error",
+    "small_world_preach_reply_to_msg_id", "small_world_faith_value", "small_world_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
@@ -131,6 +132,8 @@ REALM_XIUWEI_MAX_MAP = {
 }
 YUANYING_MIN_REALM = "元婴初期"
 YUANYING_MIN_REALM_INDEX = REALM_SORT_INDEX[YUANYING_MIN_REALM]
+SMALL_WORLD_MIN_REALM = "化神初期"
+SMALL_WORLD_MIN_REALM_INDEX = REALM_SORT_INDEX[SMALL_WORLD_MIN_REALM]
 
 
 def infer_realm_from_xiuwei_max(xiuwei_max):
@@ -152,6 +155,7 @@ IDENTITY_STATE_TEMPLATE = {
     "tianti_gangfeng_enabled": True,
     "yuanying_enabled": False,
     "deep_retreat_enabled": False,
+    "small_world_enabled": False,
     "checkin_enabled": False,
     "tower_enabled": False,
     "stargazer_enabled": False,
@@ -281,6 +285,12 @@ IDENTITY_STATE_TEMPLATE = {
     "deep_retreat_summary_sent_at": 0,
     "last_deep_retreat_summary_msg_id": 0,
     "last_deep_retreat_command_time": 0,
+
+    # 小世界模块
+    "next_small_world_time": 0,
+    "small_world_preach_reply_to_msg_id": 0,
+    "small_world_faith_value": 0,
+    "small_world_last_error": "",
 
     # 运行态
     "identity_info_reply_msg_ids": [],
@@ -886,6 +896,17 @@ def is_yuanying_realm_available(send_as_id=None):
     return realm_index >= YUANYING_MIN_REALM_INDEX
 
 
+def is_small_world_realm_available(send_as_id=None):
+    profile = get_send_as_profile(send_as_id)
+    realm = (profile.get("realm") or "").strip() or infer_realm_from_xiuwei_max(profile.get("xiuwei_max", 0))
+    if not realm:
+        return False
+    realm_index = REALM_SORT_INDEX.get(realm)
+    if realm_index is None:
+        return False
+    return realm_index >= SMALL_WORLD_MIN_REALM_INDEX
+
+
 def get_available_module_names(send_as_id=None):
     available_module_names = [module_name for module_name in MODULE_NAMES if module_name != "观星监控"]
     sect_name = (get_send_as_profile(send_as_id).get("sect_name") or "").strip()
@@ -897,6 +918,8 @@ def get_available_module_names(send_as_id=None):
         available_module_names = [module_name for module_name in available_module_names if module_name != "登天阶"]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]
+    if not is_small_world_realm_available(send_as_id):
+        available_module_names = [module_name for module_name in available_module_names if module_name != "小世界"]
     return available_module_names
 
 
@@ -1107,6 +1130,7 @@ __all__ = [
     "get_send_as_label",
     "is_module_available",
     "is_yuanying_realm_available",
+    "is_small_world_realm_available",
     "get_send_as_profile",
     "get_send_as_tags",
     "new_identity_state",

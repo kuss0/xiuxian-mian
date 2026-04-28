@@ -88,6 +88,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_wenxin_enabled INTEGER NOT NULL DEFAULT 1")
     if "tianti_gangfeng_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_gangfeng_enabled INTEGER NOT NULL DEFAULT 1")
+    if "small_world_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -146,6 +148,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_climb_time REAL NOT NULL DEFAULT 0")
     if "next_tianti_gangfeng_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_gangfeng_time REAL NOT NULL DEFAULT 0")
+    if "next_small_world_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_small_world_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
     if "stargazer_last_panel_msg_id" not in runtime_columns:
@@ -274,6 +278,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_due_at REAL NOT NULL DEFAULT 0")
     if "nanlong_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_error TEXT NOT NULL DEFAULT ''")
+    if "small_world_preach_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_faith_value" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_faith_value INTEGER NOT NULL DEFAULT 0")
+    if "small_world_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_error TEXT NOT NULL DEFAULT ''")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -348,6 +358,7 @@ def init_db():
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -382,6 +393,7 @@ def init_db():
             next_quiz_time REAL NOT NULL,
             next_jiyin_time REAL NOT NULL,
             next_nanlong_time REAL NOT NULL DEFAULT 0,
+            next_small_world_time REAL NOT NULL DEFAULT 0,
             next_yuanying_time REAL NOT NULL,
             next_deep_retreat_time REAL NOT NULL
         );
@@ -455,6 +467,9 @@ def init_db():
             nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
             nanlong_last_error TEXT NOT NULL DEFAULT '',
+            small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_faith_value INTEGER NOT NULL DEFAULT 0,
+            small_world_last_error TEXT NOT NULL DEFAULT '',
             yuanying_phase TEXT NOT NULL,
             yuanying_probe_pending INTEGER NOT NULL,
             yuanying_summary_sent_at REAL NOT NULL,

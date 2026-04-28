@@ -144,7 +144,7 @@ SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 1800     # bot 静默超时，触发全局暂停（30分钟）
 DB_FILE = os.path.join(STATE_DIR, "chaogu_state.db")
-DB_SCHEMA_VERSION = 5
+DB_SCHEMA_VERSION = 6
 TZ_LOCAL = timezone(timedelta(hours=8))
 
 
@@ -202,12 +202,14 @@ CMD_JIYIN_HIDE_AURA = ".收敛气息"
 CMD_NANLONG_EXCHANGE_FABAO = ".交换 法宝"
 CMD_NANLONG_EXCHANGE_GONGFA = ".交换 功法"
 CMD_NANLONG_REJECT = ".拒绝交易"
+CMD_SMALL_WORLD_PREACH = ".神迹 布道"
 QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "quiz_bank.json")
 QUIZ_REPLY_TIMEOUT_SEC = 300
 JIYIN_REPLY_TIMEOUT_SEC = 180 * 60
 NANLONG_REPLY_TIMEOUT_SEC = 10 * 60
 NANLONG_REPLY_DELAY_MIN_SEC = 20
 NANLONG_REPLY_DELAY_MAX_SEC = 30
+SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC = 60
 
 
 CMD_BATTLE_POWER = ".战力"
@@ -269,9 +271,10 @@ SCRIPT_COMMANDS = [
     CMD_NANLONG_EXCHANGE_FABAO,
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
+    CMD_SMALL_WORLD_PREACH,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "南陇侯", "元婴", "深度闭关", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -284,6 +287,7 @@ MODULE_KEY_MAP = {
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
     "深度闭关": "deep_retreat_enabled",
+    "小世界": "small_world_enabled",
     "点卯": "checkin_enabled",
     "闯塔": "tower_enabled",
 }
@@ -403,6 +407,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
+    (re.compile(r'^\.小世界状态$'), "小世界"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
     (re.compile(r'^\.闯塔状态$'), "闯塔"),
 ]
@@ -429,6 +434,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)元婴$'), "元婴", False),
     (re.compile(r'^\.(开启|打开)深度闭关$'), "深度闭关", True),
     (re.compile(r'^\.(关闭|关掉)深度闭关$'), "深度闭关", False),
+    (re.compile(r'^\.(开启|打开)小世界$'), "小世界", True),
+    (re.compile(r'^\.(关闭|关掉)小世界$'), "小世界", False),
     (re.compile(r'^\.(开启|打开)点卯$'), "点卯", True),
     (re.compile(r'^\.(关闭|关掉)点卯$'), "点卯", False),
     (re.compile(r'^\.(开启|打开)闯塔$'), "闯塔", True),
