@@ -70,7 +70,7 @@ from .features.stargazer import sync_stargazer_total_slots
 from .features.tianti import sync_tianti_status
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
-from .runtime import consume_unseen_startup_alerts, fetch_forum_topics, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import consume_unseen_startup_alerts, console_log, fetch_forum_topics, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -1060,7 +1060,7 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
     set_forum_topics(topics, updated_at=time.time())
     save_state()
     actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🧩 已刷新话题：群={int(game_group_id)}｜数量={len(topics)}{actor_suffix}", scope="global")
+    console_log(f"🧩 已刷新话题：群={int(game_group_id)}｜数量={len(topics)}{actor_suffix}", scope="global")
     return True, message, topics
 
 
@@ -1119,7 +1119,7 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     display_bots = ", ".join(str(bot_id) for bot_id in normalized_bot_ids)
     display_auto_delete = "开启" if auto_delete_enabled else "关闭"
     display_guanxing_monitor = "开启" if guanxing_monitor_switch_enabled else "关闭"
-    await send_audit_log(
+    console_log(
         f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜观星监控={display_guanxing_monitor}{actor_suffix}",
         scope="global",
         limit=320,

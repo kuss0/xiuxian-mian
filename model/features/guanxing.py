@@ -10,7 +10,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_guanxing_round_state,
@@ -301,7 +301,7 @@ async def _send_next_shift(round_state, now, *, reason_text):
             )
             _set_round_state(round_state)
             save_state()
-            await send_audit_log(
+            console_log(
                 f"🌠 观星执行：{_get_identity_label(identity_id)}｜{reason_text}｜目标 {GUANXING_SHIFT_TARGET}",
                 scope="identity",
                 send_as_id=identity_id,

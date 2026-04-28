@@ -1887,13 +1887,13 @@ async def set_module_window_config(module_name, start_hour_utc, end_hour_utc, se
                         state["next_tower_time"] = calc_next_daily_window_time(start_hour, end_hour, now)
             save_state()
     if len(target_ids) == 1:
-        await send_audit_log(
+        console_log(
             f"🕒 已更新{module_name}执行窗口",
             scope="identity",
             send_as_id=target_ids[0],
         )
     else:
-        await send_audit_log(f"🕒 已更新{module_name}执行窗口：全部身份", scope="global")
+        console_log(f"🕒 已更新{module_name}执行窗口：全部身份", scope="global")
     return True, f"已更新{module_name}执行窗口"
 
 
@@ -1960,7 +1960,7 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
                 _disable_guanxing_monitor_module_state()
             save_state()
         action_text = "开启" if enabled else "关闭"
-        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块", scope="global")
+        console_log(f"🎛️ 已{action_text}{module_name}模块", scope="global")
         return True, ""
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
@@ -1996,13 +1996,13 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
 
     action_text = "开启" if enabled else "关闭"
     if len(target_ids) == 1:
-        await send_audit_log(
+        console_log(
             f"🎛️ 已{action_text}{module_name}模块",
             scope="identity",
             send_as_id=target_ids[0],
         )
     else:
-        await send_audit_log(f"🎛️ 已{action_text}{module_name}模块：全部身份", scope="global")
+        console_log(f"🎛️ 已{action_text}{module_name}模块：全部身份", scope="global")
     return True, ""
 
 

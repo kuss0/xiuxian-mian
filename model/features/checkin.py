@@ -250,7 +250,7 @@ async def run_checkin_scheduler(now):
             await send_audit_log("❌ 点卯发送失败，稍后重试。")
             return
         save_state()
-        await send_audit_log(f"📝 执行点卯→{fmt_abs_ts(next_ts)}")
+        console_log(f"📝 执行点卯→{fmt_abs_ts(next_ts)}")
 
 
 __all__ = [

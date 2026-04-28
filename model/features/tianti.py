@@ -564,7 +564,7 @@ async def run_tianti_scheduler(now):
         state["tianti_last_wenxin_msg_id"] = int(getattr(msg, "id", 0) or 0)
         state["tianti_wenxin_last_trigger_key"] = str(wenxin_state or "")
         save_state()
-        await send_audit_log(
+        console_log(
             f"☁️ 执行问心台：target={int(state.get('tianti_theoretical_max_stage', 0) or 0)}｜trigger={int(state.get('tianti_wenxin_trigger_stage', 0) or 0)}"
         )
         return
@@ -582,7 +582,7 @@ async def run_tianti_scheduler(now):
         state["tianti_last_gangfeng_msg_id"] = int(getattr(msg, "id", 0) or 0)
         state["tianti_gangfeng_last_trigger_key"] = str(gangfeng_state or "")
         save_state()
-        await send_audit_log("🌪️ 执行九天罡风")
+        console_log("🌪️ 执行九天罡风")
         return
 
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
