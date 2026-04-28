@@ -1147,6 +1147,83 @@ def _disable_module_for_startup_timeout(send_as_id, module_name, reason, reason_
     return _append_startup_module_alert(send_as_id, module_name, reason, reason_code)
 
 
+def _record_startup_timeout(send_as_id, module_name, reason, reason_code, alerts, affected_identity_ids):
+    alert = _disable_module_for_startup_timeout(send_as_id, module_name, reason, reason_code)
+    if not alert:
+        return False
+    alerts.append(alert)
+    affected_identity_ids.add(send_as_id)
+    return True
+
+
+def _scan_pending_task_startup_timeouts(send_as_id, now, alerts, affected_identity_ids):
+    for item in list(state.get("pending_tasks", {}).values()):
+        sent_at = float(item.get("sent_at", 0) or 0)
+        timeout = float(item.get("timeout", 0) or 0)
+        if sent_at <= 0 or timeout <= 0 or now - sent_at <= timeout:
+            continue
+        module_name = _get_pending_task_module_name(item.get("cmd"))
+        if not module_name:
+            continue
+        _record_startup_timeout(
+            send_as_id,
+            module_name,
+            f"启动时检测到旧{module_name}任务等待超时，已自动关闭该模块。",
+            "pending_timeout",
+            alerts,
+            affected_identity_ids,
+        )
+
+
+def _scan_phase_startup_timeouts(send_as_id, now, rule, alerts, affected_identity_ids):
+    module_name = rule["module_name"]
+    phase = state.get(rule["phase_key"])
+    command_time_key = rule["command_time_key"]
+    if phase == "launching" and state.get(command_time_key, 0) > 0 and now - state[command_time_key] >= LAUNCHING_TIMEOUT_SEC:
+        reason, reason_code = rule["launching"]
+        _record_startup_timeout(send_as_id, module_name, reason, reason_code, alerts, affected_identity_ids)
+    elif phase == "waiting_summary":
+        summary_sent_at = float(state.get(rule["summary_sent_at_key"], 0) or 0)
+        if summary_sent_at <= 0:
+            reason, reason_code = rule["summary_missing"]
+            _record_startup_timeout(send_as_id, module_name, reason, reason_code, alerts, affected_identity_ids)
+        elif now - summary_sent_at >= SUMMARY_TIMEOUT_SEC:
+            reason, reason_code = rule["summary_timeout"]
+            _record_startup_timeout(send_as_id, module_name, reason, reason_code, alerts, affected_identity_ids)
+
+
+def _scan_post_summary_startup_timeout(send_as_id, now, rule, alerts, affected_identity_ids):
+    next_time = state.get(rule["next_time_key"], 0)
+    if state.get(rule["phase_key"]) == "post_summary_wait" and next_time > 0 and now >= next_time:
+        reason, reason_code = rule["post_summary"]
+        _record_startup_timeout(send_as_id, rule["module_name"], reason, reason_code, alerts, affected_identity_ids)
+
+
+_YUANYING_STARTUP_TIMEOUT_RULE = {
+    "module_name": "元婴",
+    "phase_key": "yuanying_phase",
+    "command_time_key": "last_yuanying_command_time",
+    "summary_sent_at_key": "yuanying_summary_sent_at",
+    "next_time_key": "next_yuanying_time",
+    "launching": ("启动时检测到元婴出窍等待回复超时，已自动关闭元婴模块。", "yuanying_launching_timeout"),
+    "summary_missing": ("启动时检测到元婴归窍总结等待状态异常，已自动关闭元婴模块。", "yuanying_summary_missing"),
+    "summary_timeout": ("启动时检测到元婴归窍总结等待超时，已自动关闭元婴模块。", "yuanying_summary_timeout"),
+    "post_summary": ("启动时检测到元婴总结后的缓冲等待已过期，已自动关闭元婴模块。", "yuanying_post_summary_overdue"),
+}
+
+_DEEP_RETREAT_STARTUP_TIMEOUT_RULE = {
+    "module_name": "深度闭关",
+    "phase_key": "deep_retreat_phase",
+    "command_time_key": "last_deep_retreat_command_time",
+    "summary_sent_at_key": "deep_retreat_summary_sent_at",
+    "next_time_key": "next_deep_retreat_time",
+    "launching": ("启动时检测到深度闭关等待回复超时，已自动关闭深度闭关模块。", "deep_retreat_launching_timeout"),
+    "summary_missing": ("启动时检测到闭关总结等待状态异常，已自动关闭深度闭关模块。", "deep_retreat_summary_missing"),
+    "summary_timeout": ("启动时检测到闭关总结等待超时，已自动关闭深度闭关模块。", "deep_retreat_summary_timeout"),
+    "post_summary": ("启动时检测到闭关总结后的缓冲等待已过期，已自动关闭深度闭关模块。", "deep_retreat_post_summary_overdue"),
+}
+
+
 def get_startup_module_alerts():
     alerts = []
     for identity_id in get_identity_ids():
@@ -1173,131 +1250,47 @@ def scan_startup_timeout_tasks(now=None):
             if not get_identity_enabled(identity_id):
                 continue
 
-            for item in list(state.get("pending_tasks", {}).values()):
-                sent_at = float(item.get("sent_at", 0) or 0)
-                timeout = float(item.get("timeout", 0) or 0)
-                if sent_at <= 0 or timeout <= 0 or now - sent_at <= timeout:
-                    continue
-                module_name = _get_pending_task_module_name(item.get("cmd"))
-                if not module_name:
-                    continue
-                alert = _disable_module_for_startup_timeout(
-                    identity_id,
-                    module_name,
-                    f"启动时检测到旧{module_name}任务等待超时，已自动关闭该模块。",
-                    "pending_timeout",
-                )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
+            _scan_pending_task_startup_timeouts(identity_id, now, alerts, affected_identity_ids)
 
             if state.get("next_sect_teach_time", 0) > 0 and state.get("sect_teach_reply_to_msg_id", 0) > 0 and now >= state["next_sect_teach_time"]:
-                alert = _disable_module_for_startup_timeout(
+                _record_startup_timeout(
                     identity_id,
                     "点卯",
                     "启动时检测到宗门传功续链已超时，已自动关闭点卯模块。",
                     "checkin_teach_overdue",
+                    alerts,
+                    affected_identity_ids,
                 )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
 
-            if state.get("yuanying_phase") == "launching" and state.get("last_yuanying_command_time", 0) > 0 and now - state["last_yuanying_command_time"] >= LAUNCHING_TIMEOUT_SEC:
-                alert = _disable_module_for_startup_timeout(
-                    identity_id,
-                    "元婴",
-                    "启动时检测到元婴出窍等待回复超时，已自动关闭元婴模块。",
-                    "yuanying_launching_timeout",
-                )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
-            elif state.get("yuanying_phase") == "waiting_summary":
-                summary_sent_at = float(state.get("yuanying_summary_sent_at", 0) or 0)
-                if summary_sent_at <= 0:
-                    alert = _disable_module_for_startup_timeout(
-                        identity_id,
-                        "元婴",
-                        "启动时检测到元婴归窍总结等待状态异常，已自动关闭元婴模块。",
-                        "yuanying_summary_missing",
-                    )
-                    if alert:
-                        alerts.append(alert)
-                        affected_identity_ids.add(identity_id)
-                elif now - summary_sent_at >= SUMMARY_TIMEOUT_SEC:
-                    alert = _disable_module_for_startup_timeout(
-                        identity_id,
-                        "元婴",
-                        "启动时检测到元婴归窍总结等待超时，已自动关闭元婴模块。",
-                        "yuanying_summary_timeout",
-                    )
-                    if alert:
-                        alerts.append(alert)
-                        affected_identity_ids.add(identity_id)
+            _scan_phase_startup_timeouts(identity_id, now, _YUANYING_STARTUP_TIMEOUT_RULE, alerts, affected_identity_ids)
 
-            if state.get("stargazer_enabled") and float(state.get("stargazer_followup_due_at", 0) or 0) > 0 and now - float(state.get("stargazer_followup_due_at", 0) or 0) >= RETRY_MAX_SEC:
-                alert = _disable_module_for_startup_timeout(
+            stargazer_followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
+            if state.get("stargazer_enabled") and stargazer_followup_due_at > 0 and now - stargazer_followup_due_at >= RETRY_MAX_SEC:
+                _record_startup_timeout(
                     identity_id,
                     "观星台",
                     "启动时检测到观星台后续动作等待超时，已自动关闭观星台模块。",
                     "stargazer_followup_timeout",
+                    alerts,
+                    affected_identity_ids,
                 )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
-            elif state.get("yuanying_phase") == "post_summary_wait" and state.get("next_yuanying_time", 0) > 0 and now >= state["next_yuanying_time"]:
-                alert = _disable_module_for_startup_timeout(
+            else:
+                _scan_post_summary_startup_timeout(
                     identity_id,
-                    "元婴",
-                    "启动时检测到元婴总结后的缓冲等待已过期，已自动关闭元婴模块。",
-                    "yuanying_post_summary_overdue",
+                    now,
+                    _YUANYING_STARTUP_TIMEOUT_RULE,
+                    alerts,
+                    affected_identity_ids,
                 )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
 
-            if state.get("deep_retreat_phase") == "launching" and state.get("last_deep_retreat_command_time", 0) > 0 and now - state["last_deep_retreat_command_time"] >= LAUNCHING_TIMEOUT_SEC:
-                alert = _disable_module_for_startup_timeout(
-                    identity_id,
-                    "深度闭关",
-                    "启动时检测到深度闭关等待回复超时，已自动关闭深度闭关模块。",
-                    "deep_retreat_launching_timeout",
-                )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
-            elif state.get("deep_retreat_phase") == "waiting_summary":
-                summary_sent_at = float(state.get("deep_retreat_summary_sent_at", 0) or 0)
-                if summary_sent_at <= 0:
-                    alert = _disable_module_for_startup_timeout(
-                        identity_id,
-                        "深度闭关",
-                        "启动时检测到闭关总结等待状态异常，已自动关闭深度闭关模块。",
-                        "deep_retreat_summary_missing",
-                    )
-                    if alert:
-                        alerts.append(alert)
-                        affected_identity_ids.add(identity_id)
-                elif now - summary_sent_at >= SUMMARY_TIMEOUT_SEC:
-                    alert = _disable_module_for_startup_timeout(
-                        identity_id,
-                        "深度闭关",
-                        "启动时检测到闭关总结等待超时，已自动关闭深度闭关模块。",
-                        "deep_retreat_summary_timeout",
-                    )
-                    if alert:
-                        alerts.append(alert)
-                        affected_identity_ids.add(identity_id)
-            elif state.get("deep_retreat_phase") == "post_summary_wait" and state.get("next_deep_retreat_time", 0) > 0 and now >= state["next_deep_retreat_time"]:
-                alert = _disable_module_for_startup_timeout(
-                    identity_id,
-                    "深度闭关",
-                    "启动时检测到闭关总结后的缓冲等待已过期，已自动关闭深度闭关模块。",
-                    "deep_retreat_post_summary_overdue",
-                )
-                if alert:
-                    alerts.append(alert)
-                    affected_identity_ids.add(identity_id)
+            _scan_phase_startup_timeouts(identity_id, now, _DEEP_RETREAT_STARTUP_TIMEOUT_RULE, alerts, affected_identity_ids)
+            _scan_post_summary_startup_timeout(
+                identity_id,
+                now,
+                _DEEP_RETREAT_STARTUP_TIMEOUT_RULE,
+                alerts,
+                affected_identity_ids,
+            )
 
     return {
         "closed_count": len(alerts),
