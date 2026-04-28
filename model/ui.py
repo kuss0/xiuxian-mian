@@ -1141,6 +1141,32 @@ def _write_response(writer, status_line, body, *, content_type, extra_headers=No
     writer.write("\r\n".join(headers).encode("utf-8") + body_bytes)
 
 
+def _write_method_not_allowed(writer):
+    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+
+
+def _write_json_unauthorized(writer, extra_headers=None):
+    body = _make_json_payload(False, error="未登录或登录已失效")
+    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=extra_headers)
+
+
+def _write_json_bad_request(writer, message, extra_headers=None):
+    body = _make_json_payload(False, error=message)
+    _write_response(writer, "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8", extra_headers=extra_headers)
+
+
+def _write_json_result(writer, ok, message, *, session_token=None, extra_headers=None, extra=None, include_snapshot=True):
+    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+    body = _make_json_payload(
+        ok,
+        message=message if ok else "",
+        error="" if ok else message,
+        snapshot=get_ui_snapshot(session_token=session_token) if ok and include_snapshot else None,
+        extra=extra if ok else None,
+    )
+    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=extra_headers)
+
+
 async def handle_ui_http(reader, writer):
     peer = writer.get_extra_info("peername")
     method = ""
@@ -1195,7 +1221,7 @@ async def handle_ui_http(reader, writer):
 
         if path == "/api/login/exchange":
             if method != "POST":
-                _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                _write_method_not_allowed(writer)
             else:
                 login_token = (payload.get("token") or "").strip()
                 if not login_token:
@@ -1232,13 +1258,13 @@ async def handle_ui_http(reader, writer):
 
             if path == "/favicon.png":
                 if method != "GET":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     with open(UI_FAVICON_PNG_PATH, "rb") as favicon_fp:
                         _write_response(writer, "HTTP/1.1 200 OK", favicon_fp.read(), content_type="image/png")
             elif path.startswith("/static/"):
                 if method != "GET":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     asset_body, asset_content_type = _load_ui_static_asset(path[len("/static/"):])
                     if asset_body is None:
@@ -1247,7 +1273,7 @@ async def handle_ui_http(reader, writer):
                         _write_response(writer, "HTTP/1.1 200 OK", asset_body, content_type=asset_content_type)
             elif path == "/":
                 if method != "GET":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 elif session is None:
                     message = "登录已失效，请重新在日志群发送 .登录" if session_cookie_header else ""
                     _write_response(
@@ -1268,16 +1294,9 @@ async def handle_ui_http(reader, writer):
                     )
             elif path == "/api/state":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "GET":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     body = _make_json_payload(True, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")))
                     _write_response(
@@ -1289,16 +1308,9 @@ async def handle_ui_http(reader, writer):
                     )
             elif path == "/api/basic-config":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("guanxing_monitor_enabled"), actor_id=(session or {}).get("sender_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
@@ -1306,16 +1318,9 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/forum-topics":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     ok, message, topics = await ui_refresh_forum_topics(payload.get("game_group_id"), actor_id=(session or {}).get("sender_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
@@ -1329,15 +1334,13 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/account/send-as-peers":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     raw_account_id = payload.get("account_id")
                     if not raw_account_id:
-                        body = _make_json_payload(False, error="缺少 account_id 参数")
-                        _write_response(writer, "HTTP/1.1 400 Bad Request", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_bad_request(writer, "缺少 account_id 参数", auth_headers)
                     else:
                         try:
                             result = await ui_get_send_as_peers(raw_account_id)
@@ -1359,16 +1362,9 @@ async def handle_ui_http(reader, writer):
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/identity":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id_raw = payload.get("send_as_id")
                     send_as_ids_raw = payload.get("send_as_ids")
@@ -1396,14 +1392,7 @@ async def handle_ui_http(reader, writer):
                         )
                         _write_response(writer, "HTTP/1.1 200 OK", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
                     elif send_as_id_raw in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message, canonical_id = await ui_add_identity(send_as_id_raw, actor_id=(session or {}).get("sender_id"), account_id=batch_account_id)
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
@@ -1417,72 +1406,33 @@ async def handle_ui_http(reader, writer):
                         _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/identity-refresh":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     if send_as_id in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_refresh_identity_info(send_as_id, actor_id=(session or {}).get("sender_id"))
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/identity-delete":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     if send_as_id in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_delete_identity(send_as_id, actor_id=(session or {}).get("sender_id"))
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/global-enabled":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     enabled = bool(payload.get("enabled"))
                     ok, message = await toggle_global_enabled(enabled, source="ui", actor_id=(session or {}).get("sender_id"))
@@ -1491,331 +1441,154 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/identity-enabled":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     enabled = bool(payload.get("enabled"))
                     if send_as_id in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_set_identity_enabled(send_as_id, enabled, actor_id=(session or {}).get("sender_id"))
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/toggle":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     module_name = payload.get("module")
                     enabled = bool(payload.get("enabled"))
                     if send_as_id in {None, ""} or not module_name:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 module 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 module 参数", auth_headers)
                     else:
                         ok, message = await ui_set_module_enabled(send_as_id, module_name, enabled)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/jiyin-choice":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     choice = payload.get("choice")
                     if send_as_id in {None, ""} or not choice:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 choice 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
                     else:
                         ok, message = await ui_set_jiyin_choice(send_as_id, choice)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/nanlong-choice":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     choice = payload.get("choice")
                     if send_as_id in {None, ""} or not choice:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 choice 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
                     else:
                         ok, message = await ui_set_nanlong_choice(send_as_id, choice)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/pet-name":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     pet_name = payload.get("pet_name")
                     if send_as_id in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_set_pet_name(send_as_id, pet_name)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-star-choice":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     choice = payload.get("choice")
                     if send_as_id in {None, ""} or not choice:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 choice 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
                     else:
                         ok, message = await ui_set_stargazer_star_choice(send_as_id, choice)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/tianti-rank-choice":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     choice = payload.get("choice")
                     if send_as_id in {None, ""} or not choice:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 choice 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
                     else:
                         ok, message = await ui_set_tianti_rank_choice(send_as_id, choice)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-sync":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     if send_as_id in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_sync_stargazer_total_slots(send_as_id)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/tianti-sync":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     if send_as_id in {None, ""}:
-                        body = _make_json_payload(False, error="缺少 send_as_id 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_sync_tianti_status(send_as_id)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/tianti-feature-toggle":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     feature_name = payload.get("feature")
                     enabled = bool(payload.get("enabled"))
                     if send_as_id in {None, ""} or not feature_name:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 feature 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 feature 参数", auth_headers)
                     else:
                         ok, message = await ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/module-window":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(
-                        writer,
-                        "HTTP/1.1 401 Unauthorized",
-                        body,
-                        content_type="application/json; charset=utf-8",
-                        extra_headers=auth_headers,
-                    )
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
                     module_name = payload.get("module")
                     start_hour_local = payload.get("start_hour_local")
                     end_hour_local = payload.get("end_hour_local")
                     if send_as_id in {None, ""} or not module_name:
-                        body = _make_json_payload(False, error="缺少 send_as_id 或 module 参数")
-                        _write_response(
-                            writer,
-                            "HTTP/1.1 400 Bad Request",
-                            body,
-                            content_type="application/json; charset=utf-8",
-                            extra_headers=auth_headers,
-                        )
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 module 参数", auth_headers)
                     else:
                         ok, message = await ui_set_module_window(send_as_id, module_name, start_hour_local, end_hour_local)
-                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                        body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/account/login-start":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     phone = payload.get("phone", "")
                     session_key = (session or {}).get("session_token", "")
@@ -1825,10 +1598,9 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/account/login-qr-start":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     session_key = (session or {}).get("session_token", "")
                     ok, message, qr_info = await ui_account_login_qr_start(session_key)
@@ -1837,10 +1609,9 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/account/login-qr-status":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "GET":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     session_key = (session or {}).get("session_token", "")
                     qr_status = ui_account_login_qr_status(session_key)
@@ -1853,10 +1624,9 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, "HTTP/1.1 200 OK", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/account/login-cancel":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     session_key = (session or {}).get("session_token", "")
                     ok, message = await ui_account_login_cancel(session_key)
@@ -1865,10 +1635,9 @@ async def handle_ui_http(reader, writer):
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/account/login-verify":
                 if session is None:
-                    body = _make_json_payload(False, error="未登录或登录已失效")
-                    _write_response(writer, "HTTP/1.1 401 Unauthorized", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    _write_json_unauthorized(writer, auth_headers)
                 elif method != "POST":
-                    _write_response(writer, "HTTP/1.1 405 Method Not Allowed", "Method Not Allowed", content_type="text/plain; charset=utf-8")
+                    _write_method_not_allowed(writer)
                 else:
                     code = payload.get("code", "")
                     password = payload.get("password")
