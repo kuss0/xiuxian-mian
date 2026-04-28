@@ -5,12 +5,11 @@ from ..config import (
     GUANXING_MONITOR_JUDGE_DELAY_SEC,
     GUANXING_NOTIFY_ADVANCE_SEC,
     GUANXING_SLOT_HOURS,
-    GUANXING_TARGET_KEYWORDS,
     TZ_LOCAL,
 )
 from ..persistence import save_state
 from ..runtime import send_audit_log
-from ..state import state
+from ..state import get_guanxing_monitor_targets, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_slot_label
 
 
@@ -89,7 +88,7 @@ def _extract_guanxing_monitor_evolution_value(text):
 
 def _match_guanxing_monitor_keyword(evolution_value):
     raw_value = str(evolution_value or "").strip()
-    for keyword in GUANXING_TARGET_KEYWORDS:
+    for keyword in get_guanxing_monitor_targets():
         if keyword in raw_value:
             return keyword
     return ""

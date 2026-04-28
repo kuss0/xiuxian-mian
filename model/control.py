@@ -96,6 +96,7 @@ from .state import (
     get_identity_ui_display_name,
     get_global_enabled,
     get_guanxing_monitor_enabled,
+    get_guanxing_shift_target,
     has_identity,
     remove_identity,
     set_global_enabled as set_global_enabled_state,
@@ -182,6 +183,8 @@ def _schedule_module_immediate_retry(module_name, now):
 def get_module_unavailable_reason(module_name, send_as_id=None):
     if module_name == "观星监控":
         return ""
+    if module_name == "观星" and not get_guanxing_shift_target():
+        return "请先在基础配置中填写观星改换目标"
     if is_module_available(module_name, send_as_id):
         return ""
     if module_name == "灵树":

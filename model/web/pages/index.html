@@ -61,7 +61,11 @@
 </div>    <form id='basic-config-form'>      <div class='form-label'>配置游戏群聊、游戏 BOT ID，以及固定话题 ID。支持自动读取话题列表，也支持手动输入后强制保存。话题留空或填 0 表示不使用。</div>      <label class='field-label'>游戏群聊 ID<input class='text-input' name='game_group_id' inputmode='numeric' placeholder='例如 -1001234567890' />
 </label>      <label class='field-label'>游戏 BOT ID<input class='text-input' name='game_bot_ids' placeholder='多个请用逗号分隔' />
 </label>      <label class='field-label'>话题 ID<input class='text-input' name='game_topic_id' inputmode='numeric' placeholder='例如 12345' />
-</label>      <div class='topic-picker'>
+</label>      <label class='field-label'>观星改换目标<input class='text-input' name='guanxing_shift_target' placeholder='例如 @wxjerry' />
+</label>      <div class='field-label'>
+<span>观星监控命中结果</span>
+<div id='guanxing-monitor-target-options' class='checkbox-grid'></div>
+</div>      <div class='topic-picker'>
 <label class='field-label topic-select'>
 <span>自动识别的话题列表</span>
 <select id='forum-topic-select' class='text-input'>

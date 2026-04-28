@@ -20,7 +20,9 @@ from .state import (
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
     get_guanxing_monitor_enabled,
+    get_guanxing_monitor_targets,
     get_guanxing_round_state,
+    get_guanxing_shift_target,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
@@ -33,7 +35,9 @@ from .state import (
     set_game_group_id,
     set_game_topic_id,
     set_guanxing_monitor_enabled,
+    set_guanxing_monitor_targets,
     set_guanxing_round_state,
+    set_guanxing_shift_target,
     set_quiz_learning_watchers,
     set_send_as_profile,
     get_accounts,
@@ -545,6 +549,14 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("guanxing_monitor_targets", _encode_meta_json(["地磁暴动", "星辰异象"])),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("guanxing_shift_target", ""),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("next_guanxing_monitor_notify_time", "0"),
     )
     conn.execute(
@@ -902,6 +914,16 @@ _META_STATE_CODEC = {
         get_guanxing_monitor_enabled,
         lambda value: "1" if value else "0",
         lambda value: set_guanxing_monitor_enabled(_decode_meta_bool_flag(value, False)),
+    ),
+    "guanxing_monitor_targets": (
+        get_guanxing_monitor_targets,
+        _encode_meta_json,
+        lambda value: set_guanxing_monitor_targets(_decode_meta_json(value, ["地磁暴动", "星辰异象"])),
+    ),
+    "guanxing_shift_target": (
+        get_guanxing_shift_target,
+        lambda value: str(value or ""),
+        lambda value: set_guanxing_shift_target(str(value or "")),
     ),
     "next_guanxing_monitor_notify_time": (
         lambda: float(_meta_state.get("next_guanxing_monitor_notify_time", 0) or 0),

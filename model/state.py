@@ -9,6 +9,7 @@ from .config import (
     GAME_BOT_IDS,
     GAME_GROUP_ID,
     GAME_TOPIC_ID,
+    GUANXING_TARGET_KEYWORDS,
     MODULE_NAMES,
     STARGAZER_STAR_CHOICES,
     TIANTI_RANK_CHOICES,
@@ -51,7 +52,7 @@ IDENTITY_BOOL_FIELDS = {
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "guanxing_monitor_enabled", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -325,6 +326,8 @@ GLOBAL_STATE_DEFAULTS = {
     "auto_delete_sent_messages": True,
     "global_enabled": True,
     "guanxing_monitor_enabled": False,
+    "guanxing_monitor_targets": list(GUANXING_TARGET_KEYWORDS[:2]),
+    "guanxing_shift_target": "",
     "next_guanxing_monitor_notify_time": 0,
     "guanxing_monitor_slot_key": "",
     "guanxing_monitor_slot_start_at": 0,
@@ -681,6 +684,64 @@ def set_game_topic_id(topic_id):
     return get_game_topic_id()
 
 
+def get_guanxing_monitor_enabled():
+    return bool(_meta_state.get("guanxing_monitor_enabled", False))
+
+
+def set_guanxing_monitor_enabled(enabled):
+    _meta_state["guanxing_monitor_enabled"] = bool(enabled)
+    return get_guanxing_monitor_enabled()
+
+
+def get_guanxing_monitor_target_options():
+    return list(GUANXING_TARGET_KEYWORDS)
+
+
+def _normalize_guanxing_monitor_targets(targets):
+    if targets is None:
+        return []
+    if isinstance(targets, str):
+        candidates = [targets]
+    else:
+        try:
+            candidates = list(targets)
+        except TypeError:
+            candidates = []
+    normalized = []
+    for target in candidates:
+        target_text = str(target or "").strip()
+        if target_text in GUANXING_TARGET_KEYWORDS and target_text not in normalized:
+            normalized.append(target_text)
+    return normalized
+
+
+def get_guanxing_monitor_targets():
+    return _normalize_guanxing_monitor_targets(_meta_state.get("guanxing_monitor_targets"))
+
+
+def set_guanxing_monitor_targets(targets):
+    _meta_state["guanxing_monitor_targets"] = _normalize_guanxing_monitor_targets(targets)
+    return get_guanxing_monitor_targets()
+
+
+def _normalize_guanxing_shift_target(value):
+    target = str(value or "").strip()
+    if not target:
+        return ""
+    if not target.startswith("@"):
+        target = f"@{target}"
+    return target if len(target) > 1 else ""
+
+
+def get_guanxing_shift_target():
+    return _normalize_guanxing_shift_target(_meta_state.get("guanxing_shift_target"))
+
+
+def set_guanxing_shift_target(target):
+    _meta_state["guanxing_shift_target"] = _normalize_guanxing_shift_target(target)
+    return get_guanxing_shift_target()
+
+
 def get_forum_topics():
     return _normalize_forum_topics(_meta_state.get("forum_topics") or [])
 
@@ -714,15 +775,6 @@ def get_global_enabled():
 def set_global_enabled(enabled):
     _meta_state["global_enabled"] = bool(enabled)
     return get_global_enabled()
-
-
-def get_guanxing_monitor_enabled():
-    return bool(_meta_state.get("guanxing_monitor_enabled", False))
-
-
-def set_guanxing_monitor_enabled(enabled):
-    _meta_state["guanxing_monitor_enabled"] = bool(enabled)
-    return get_guanxing_monitor_enabled()
 
 
 def get_guanxing_round_state():
@@ -1104,6 +1156,9 @@ __all__ = [
     "get_forum_topics_updated_at",
     "get_global_enabled",
     "get_guanxing_monitor_enabled",
+    "get_guanxing_monitor_target_options",
+    "get_guanxing_monitor_targets",
+    "get_guanxing_shift_target",
     "has_active_identity_context",
     "get_quiz_learning_watchers",
     "is_auto_delete_sent_messages_enabled",
@@ -1141,6 +1196,8 @@ __all__ = [
     "set_forum_topics",
     "set_global_enabled",
     "set_guanxing_monitor_enabled",
+    "set_guanxing_monitor_targets",
+    "set_guanxing_shift_target",
     "set_quiz_learning_watchers",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",

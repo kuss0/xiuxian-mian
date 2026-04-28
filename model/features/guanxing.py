@@ -6,7 +6,6 @@ from ..config import (
     CMD_GUANXING_SHIFT,
     GUANXING_EXECUTE_ADVANCE_SEC,
     GUANXING_SHIFT_START_DELAY_SEC,
-    GUANXING_SHIFT_TARGET,
     TZ_LOCAL,
 )
 from ..persistence import save_state
@@ -16,6 +15,7 @@ from ..state import (
     get_guanxing_round_state,
     get_identity_enabled,
     get_identity_ids,
+    get_guanxing_shift_target,
     get_identity_state,
     get_send_as_label,
     get_send_as_profile,
@@ -263,13 +263,19 @@ async def _send_guanxing_shift(identity_id, slot_key):
             state["guanxing_last_error"] = "未收到当前时段 panel"
             return False, "未收到当前时段 panel"
 
-    shift_command = f"{CMD_GUANXING_SHIFT} {GUANXING_SHIFT_TARGET}"
+    shift_target = get_guanxing_shift_target()
+    if not shift_target:
+        with use_identity(identity_id):
+            state["guanxing_last_error"] = "观星改换目标未配置"
+        return False, "观星改换目标未配置"
+
+    shift_command = f"{CMD_GUANXING_SHIFT} {shift_target}"
     msg = await send_game_command(shift_command, track=False, reply_to=panel_msg_id, send_as_id=identity_id)
     with use_identity(identity_id):
         if msg:
             state["guanxing_last_shift_msg_id"] = int(getattr(msg, "id", 0) or 0)
             state["guanxing_last_shift_slot_key"] = slot_key
-            state["guanxing_last_shift_target"] = GUANXING_SHIFT_TARGET
+            state["guanxing_last_shift_target"] = shift_target
             state["guanxing_last_error"] = ""
             return True, ""
         state["guanxing_last_error"] = "发送 .改换星移 失败"
@@ -302,7 +308,7 @@ async def _send_next_shift(round_state, now, *, reason_text):
             _set_round_state(round_state)
             save_state()
             console_log(
-                f"🌠 观星执行：{_get_identity_label(identity_id)}｜{reason_text}｜目标 {GUANXING_SHIFT_TARGET}",
+                f"🌠 观星执行：{_get_identity_label(identity_id)}｜{reason_text}｜目标 {get_guanxing_shift_target()}",
                 scope="identity",
                 send_as_id=identity_id,
                 limit=300,

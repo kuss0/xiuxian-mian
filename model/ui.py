@@ -83,6 +83,9 @@ from .state import (
     get_game_topic_id,
     get_global_enabled,
     get_guanxing_monitor_enabled,
+    get_guanxing_monitor_target_options,
+    get_guanxing_monitor_targets,
+    get_guanxing_shift_target,
     is_auto_delete_sent_messages_enabled,
     get_identity_display_name,
     get_identity_enabled,
@@ -102,6 +105,8 @@ from .state import (
     set_game_group_id,
     set_game_topic_id,
     set_guanxing_monitor_enabled,
+    set_guanxing_monitor_targets,
+    set_guanxing_shift_target,
     set_identity_account,
     set_pet_name,
     set_stargazer_star_choice,
@@ -278,6 +283,9 @@ def get_ui_snapshot(session_token=None):
         "auto_delete_sent_messages": is_auto_delete_sent_messages_enabled(),
         "global_enabled": get_global_enabled(),
         "guanxing_monitor_enabled": get_guanxing_monitor_enabled(),
+        "guanxing_monitor_target_options": get_guanxing_monitor_target_options(),
+        "guanxing_monitor_targets": get_guanxing_monitor_targets(),
+        "guanxing_shift_target": get_guanxing_shift_target(),
         "guanxing_monitor_summary": get_guanxing_monitor_summary_text(),
         "guanxing_round_summary": get_guanxing_round_summary_text(),
         "auth_idle_timeout_sec": UI_AUTH_IDLE_TIMEOUT_SEC,
@@ -1064,7 +1072,7 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
     return True, message, topics
 
 
-async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, guanxing_monitor_enabled=False, actor_id=None):
+async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, guanxing_monitor_enabled=False, guanxing_shift_target="", guanxing_monitor_targets=None, actor_id=None):
     raw_group_id = (str(game_group_id or "")).strip()
     if not raw_group_id:
         return False, "游戏群聊 ID 不能为空"
@@ -1108,23 +1116,47 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
 
     auto_delete_enabled = bool(auto_delete_sent_messages)
     guanxing_monitor_switch_enabled = bool(guanxing_monitor_enabled)
+    raw_shift_target = str(guanxing_shift_target or "").strip()
+    if any(char.isspace() for char in raw_shift_target):
+        return False, "观星改换目标不能包含空白字符"
+    if raw_shift_target == "@":
+        return False, "观星改换目标需填写用户名或 @用户名"
+    if isinstance(guanxing_monitor_targets, str):
+        raw_monitor_targets = [guanxing_monitor_targets]
+    else:
+        try:
+            raw_monitor_targets = list(guanxing_monitor_targets or [])
+        except TypeError:
+            raw_monitor_targets = []
+    target_options = get_guanxing_monitor_target_options()
+    normalized_monitor_targets = []
+    for target in raw_monitor_targets:
+        target_text = str(target or "").strip()
+        if target_text in target_options and target_text not in normalized_monitor_targets:
+            normalized_monitor_targets.append(target_text)
+    if guanxing_monitor_switch_enabled and not normalized_monitor_targets:
+        return False, "开启观星监控前请至少选择一个命中结果"
+
     set_game_group_id(group_id)
     normalized_bot_ids = set_game_bot_ids(parsed_bot_ids)
     set_game_topic_id(topic_id)
     set_auto_delete_sent_messages(auto_delete_enabled)
     set_guanxing_monitor_enabled(guanxing_monitor_switch_enabled)
+    set_guanxing_monitor_targets(normalized_monitor_targets)
+    normalized_shift_target = set_guanxing_shift_target(guanxing_shift_target)
     save_state()
     actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
     display_topic = str(topic_id) if topic_id > 0 else "未启用"
     display_bots = ", ".join(str(bot_id) for bot_id in normalized_bot_ids)
     display_auto_delete = "开启" if auto_delete_enabled else "关闭"
     display_guanxing_monitor = "开启" if guanxing_monitor_switch_enabled else "关闭"
+    display_monitor_targets = ", ".join(normalized_monitor_targets) or "未选择"
     console_log(
-        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜观星监控={display_guanxing_monitor}{actor_suffix}",
+        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}{actor_suffix}",
         scope="global",
         limit=320,
     )
-    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 观星监控 {display_guanxing_monitor}"
+    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'}"
 
 
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
@@ -1312,7 +1344,7 @@ async def handle_ui_http(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("guanxing_monitor_enabled"), actor_id=(session or {}).get("sender_id"))
+                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
