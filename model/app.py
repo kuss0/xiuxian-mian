@@ -411,8 +411,9 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 async def on_message(event):
     _append_game_group_message_log(event, event_type="message")
 
-    if await handle_log_group_command(event):
-        return
+    if _claim_runtime_event(event, scope="log_group_command"):
+        if await handle_log_group_command(event):
+            return
 
     if event.chat_id != get_game_group_id():
         return
@@ -428,7 +429,8 @@ async def on_message(event):
         now = time.time()
         text = event.raw_text or ""
         try:
-            await handle_guanxing_external_shift_command(text, now, event)
+            if _claim_runtime_event(event, scope="guanxing_external_shift"):
+                await handle_guanxing_external_shift_command(text, now, event)
         except Exception:
             print(traceback.format_exc())
         return
