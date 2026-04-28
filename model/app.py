@@ -244,6 +244,12 @@ async def _run_until_handled_for_enabled_identities(handler, text, now, event):
     return False
 
 
+async def _run_claimed_prompt_handler(scope, handler, text, now, event):
+    if not _claim_runtime_event(event, scope=scope):
+        return False
+    return await _run_until_handled_for_enabled_identities(handler, text, now, event)
+
+
 async def _dispatch_new_message_broadcasts(event, text, now):
     if _claim_runtime_event(event, scope="deep_retreat_summary"):
         await handle_deep_retreat_summary_broadcast(text, now)
@@ -448,17 +454,14 @@ async def on_message(event):
 
         await _dispatch_new_message_broadcasts(event, text, now)
 
-        if _claim_runtime_event(event, scope="quiz_prompt"):
-            if await _run_until_handled_for_enabled_identities(handle_quiz_prompt, text, now, event):
-                return
+        if await _run_claimed_prompt_handler("quiz_prompt", handle_quiz_prompt, text, now, event):
+            return
 
-        if _claim_runtime_event(event, scope="jiyin_prompt"):
-            if await _run_until_handled_for_enabled_identities(handle_jiyin_prompt, text, now, event):
-                return
+        if await _run_claimed_prompt_handler("jiyin_prompt", handle_jiyin_prompt, text, now, event):
+            return
 
-        if _claim_runtime_event(event, scope="nanlong_prompt"):
-            if await _run_until_handled_for_enabled_identities(handle_nanlong_prompt, text, now, event):
-                return
+        if await _run_claimed_prompt_handler("nanlong_prompt", handle_nanlong_prompt, text, now, event):
+            return
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
