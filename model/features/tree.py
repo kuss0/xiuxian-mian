@@ -24,6 +24,11 @@ from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, p
 TREE_MATURING_FIRST_STATUS_MIN_SEC = 10 * 60
 TREE_MATURING_FIRST_STATUS_MAX_SEC = 20 * 60
 TREE_HARVEST_FOLLOWUP_DELAY_SEC = 30 * 60
+TREE_IRRIGATION_INSUFFICIENT_POWER_KEYWORDS = ("修为不足", "无法调动天地灵气")
+
+
+def _is_tree_irrigation_insufficient_power(text):
+    return all(keyword in str(text or "") for keyword in TREE_IRRIGATION_INSUFFICIENT_POWER_KEYWORDS)
 
 
 def get_tree_status_text():
@@ -104,6 +109,11 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
     if not state["tree_enabled"]:
         return False
 
+    orig_cmd = reply_to.raw_text if reply_to else ""
+    if _is_tree_irrigation_insufficient_power(text) and (matched_family == "tree_panel" or CMD_TREE_WATER in orig_cmd):
+        await send_audit_log("⚠️ 灌溉修为不足，需手动处理。")
+        return True
+
     if not any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息", "调息"]):
         return False
 
@@ -112,7 +122,6 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
         return False
 
     target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
-    orig_cmd = reply_to.raw_text if reply_to else ""
 
     if matched_family == "tree_guard" or "守山" in text or "协同" in text or CMD_TREE_GUARD in orig_cmd:
         state["next_guard_time"] = now + wait_sec + CD_BUFFER_SEC
