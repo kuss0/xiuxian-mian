@@ -298,14 +298,14 @@ async def handle_tiandao_judgement_prompt(text, now, event=None):
         await _send_tiandao_judgement_parse_failure_log(text)
         return True
 
-    identity_id = _find_target_identity_id(question.get("target"), text)
-    if identity_id is None:
-        await send_audit_log(f"⚖️ 天道审判未匹配身份：{mono(question.get('target') or '未知对象')}", scope="global", limit=260)
-        return True
-
     parsed = _complete_tiandao_judgement_question(question)
     if not parsed:
         await _send_tiandao_judgement_parse_failure_log(text, question)
+        return True
+
+    identity_id = _find_target_identity_id(question.get("target"), text)
+    if identity_id is None:
+        await send_audit_log(f"⚖️ 天道审判未匹配身份：{mono(question.get('target') or '未知对象')}", scope="global", limit=260)
         return True
 
     pending_key = _get_event_pending_key(event, parsed)
