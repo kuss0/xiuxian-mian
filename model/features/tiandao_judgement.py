@@ -4,7 +4,7 @@ import re
 from ..config import CMD_TIANDAO_JUDGEMENT_PROVE
 from ..persistence import save_state
 from ..runtime import console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_enabled, get_identity_ids, get_send_as_profile, state
+from ..state import get_identity_ids, get_send_as_profile, state
 from ..timing import fmt_time_after
 
 
@@ -161,7 +161,7 @@ def _calculate_answer(left_value, op, right_value):
     return ""
 
 
-def parse_tiandao_judgement_prompt(text):
+def _extract_tiandao_judgement_question(text):
     if not _is_tiandao_judgement_prompt(text):
         return None
 
@@ -171,30 +171,40 @@ def parse_tiandao_judgement_prompt(text):
         return None
 
     left_text = _normalize_question_left(question_match.group("left"))
-    left_value = TIANDAO_JUDGEMENT_VALUE_MAP.get(left_text)
     right_text = str(question_match.group("right") or "").strip()
-    right_value = _parse_chinese_integer(right_text)
     op = str(question_match.group("op") or "").strip()
-    if left_value is None or right_value is None:
-        return None
-
-    answer = _calculate_answer(left_value, op, right_value)
-    if not answer:
-        return None
-
     target_match = RE_TIANDAO_TARGET.search(raw_text)
     target = str(target_match.group(1) or "").strip() if target_match else ""
     return {
         "target": target,
         "question": f"{left_text}{op}{right_text}",
         "left_text": left_text,
-        "left_value": left_value,
         "op": op,
         "right_text": right_text,
-        "right_value": right_value,
-        "answer": answer,
         "timeout_sec": _parse_timeout_sec(raw_text),
     }
+
+
+def parse_tiandao_judgement_prompt(text):
+    parsed = _extract_tiandao_judgement_question(text)
+    if not parsed:
+        return None
+
+    left_value = TIANDAO_JUDGEMENT_VALUE_MAP.get(parsed["left_text"])
+    right_value = _parse_chinese_integer(parsed["right_text"])
+    if left_value is None or right_value is None:
+        return None
+
+    answer = _calculate_answer(left_value, parsed["op"], right_value)
+    if not answer:
+        return None
+
+    parsed.update({
+        "left_value": left_value,
+        "right_value": right_value,
+        "answer": answer,
+    })
+    return parsed
 
 
 def _get_pending_map():
@@ -222,8 +232,6 @@ def _find_target_identity_id(target):
 
     matched_ids = []
     for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
-            continue
         profile = get_send_as_profile(identity_id)
         candidates = {
             str(identity_id),
@@ -236,6 +244,19 @@ def _find_target_identity_id(target):
     if len(matched_ids) == 1:
         return matched_ids[0]
     return None
+
+
+async def _send_tiandao_judgement_parse_failure_log(text):
+    question = _extract_tiandao_judgement_question(text)
+    if question:
+        left_text = question.get("left_text") or ""
+        question_text = question.get("question") or ""
+        if left_text and left_text not in TIANDAO_JUDGEMENT_VALUE_MAP:
+            await send_audit_log(f"⚖️ 天道审判题目未匹配：{mono(question_text)}", scope="global", limit=360)
+            return
+        await send_audit_log(f"⚖️ 天道审判解析失败：{mono(question_text or '未知题目')}", scope="global", limit=360)
+        return
+    await send_audit_log("⚖️ 天道审判解析失败，请手动处理。", scope="global")
 
 
 def _build_pending_item(parsed, identity_id, event, now):
@@ -267,7 +288,7 @@ async def handle_tiandao_judgement_prompt(text, now, event=None):
 
     parsed = parse_tiandao_judgement_prompt(text)
     if not parsed:
-        await send_audit_log("⚖️ 天道审判解析失败，请手动处理。", scope="global")
+        await _send_tiandao_judgement_parse_failure_log(text)
         return True
 
     identity_id = _find_target_identity_id(parsed.get("target"))
@@ -313,10 +334,10 @@ async def run_tiandao_judgement_scheduler(now):
             continue
         if due_at <= 0 or now < due_at:
             continue
-        if identity_id <= 0 or not get_identity_enabled(identity_id):
+        if identity_id <= 0 or identity_id not in get_identity_ids():
             pending.pop(pending_key, None)
             changed = True
-            await send_audit_log(f"⚖️ 天道审判未发送：{mono(target)} 身份不可用", scope="global", limit=260)
+            await send_audit_log(f"⚖️ 天道审判未发送：{mono(target)} 身份不存在", scope="global", limit=260)
             continue
 
         msg = await send_game_command(f"{CMD_TIANDAO_JUDGEMENT_PROVE} {answer}", track=False, send_as_id=identity_id)
