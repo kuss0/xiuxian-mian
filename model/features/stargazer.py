@@ -20,6 +20,8 @@ RE_STARGAZER_SLOT_LINE = re.compile(r"^\s*(\d+)号引星盘[:：]\s*(.+)$")
 RE_STARGAZER_DECLARED_TOTAL_SLOTS = re.compile(r"引星盘总数[:：]\s*(\d+)座")
 RE_STARGAZER_COLLECTED_SLOT_COUNT = re.compile(r"成功从\s*(\d+)\s*座引星盘上收集")
 STARGAZER_CD_HINT_KEYWORDS = ("尚未恢复", "冷却", "等待", "不足", "休息")
+STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS = ("灵力不足", "安抚", "座引星盘共需要", "点修为")
+STARGAZER_SOOTHE_AFTER_DEEP_RETREAT_DELAY_SEC = 3 * 60
 
 
 def _build_stargazer_guide_command(choice=None):
@@ -339,6 +341,23 @@ async def handle_stargazer_guide_reply(text, now, reply_to, matched_family=None)
     return True
 
 
+def _is_stargazer_soothe_insufficient_power(text):
+    return all(keyword in str(text or "") for keyword in STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS)
+
+
+def _get_stargazer_soothe_after_deep_retreat_delay(now):
+    next_deep_retreat_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    target_time = max(now, next_deep_retreat_time) + STARGAZER_SOOTHE_AFTER_DEEP_RETREAT_DELAY_SEC
+    return max(1, target_time - now)
+
+
+async def _queue_stargazer_soothe_after_deep_retreat(now):
+    delay = _get_stargazer_soothe_after_deep_retreat_delay(now)
+    _queue_stargazer_followup_action(now, "soothe", delay)
+    save_state()
+    await send_audit_log(f"⏳ 安抚灵力不足，深闭 CD 后再安抚→{fmt_time_after(delay)}")
+
+
 async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None):
     if not state.get("stargazer_enabled"):
         return False
@@ -346,6 +365,10 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "stargazer_soothe" and CMD_STARGAZER_SOOTHE not in orig_cmd:
         return False
+
+    if _is_stargazer_soothe_insufficient_power(text):
+        await _queue_stargazer_soothe_after_deep_retreat(now)
+        return True
 
     soothe_before_collect = bool(state.get("stargazer_soothe_before_collect"))
     if soothe_before_collect and not (any(keyword in text for keyword in STARGAZER_CD_HINT_KEYWORDS) and has_wait_time(text)):
