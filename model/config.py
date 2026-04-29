@@ -204,6 +204,7 @@ CMD_NANLONG_EXCHANGE_GONGFA = ".交换 功法"
 CMD_NANLONG_REJECT = ".拒绝交易"
 CMD_SMALL_WORLD_PREACH = ".神迹 布道"
 QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "quiz_bank.json")
+TIANJI_QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "tianji_quiz_bank.json")
 QUIZ_REPLY_TIMEOUT_SEC = 300
 JIYIN_REPLY_TIMEOUT_SEC = 180 * 60
 NANLONG_REPLY_TIMEOUT_SEC = 10 * 60

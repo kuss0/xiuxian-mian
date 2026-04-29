@@ -30,6 +30,7 @@ from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handl
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, run_tiandao_judgement_scheduler
+from .features.tianji_quiz import handle_tianji_quiz_prompt
 from .features.small_world import handle_small_world_disaster_broadcast, handle_small_world_preach_reply, run_small_world_scheduler
 from .features.stargazer import (
     handle_stargazer_collect_reply,
@@ -263,6 +264,8 @@ async def _dispatch_new_message_broadcasts(event, text, now):
         await handle_quiz_result_broadcast(text, now)
     if _claim_runtime_event(event, scope="quiz_learning_prompt"):
         await handle_quiz_learning_prompt(text, now, event)
+    if _claim_runtime_event(event, scope="tianji_quiz_prompt"):
+        await handle_tianji_quiz_prompt(text, now, event)
     if _claim_runtime_event(event, scope="tiandao_judgement_prompt"):
         await handle_tiandao_judgement_prompt(text, now, event)
     if _claim_runtime_event(event, scope="guanxing_finish"):
