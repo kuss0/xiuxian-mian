@@ -4,7 +4,7 @@ import re
 from ..config import CMD_TIANDAO_JUDGEMENT_PROVE
 from ..persistence import save_state
 from ..runtime import console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_ids, get_send_as_profile, state
+from ..state import get_identity_ids, get_send_as_tags, state
 from ..timing import fmt_time_after
 
 
@@ -185,11 +185,11 @@ def _extract_tiandao_judgement_question(text):
     }
 
 
-def parse_tiandao_judgement_prompt(text):
-    parsed = _extract_tiandao_judgement_question(text)
-    if not parsed:
+def _complete_tiandao_judgement_question(question):
+    if not question:
         return None
 
+    parsed = dict(question)
     left_value = TIANDAO_JUDGEMENT_VALUE_MAP.get(parsed["left_text"])
     right_value = _parse_chinese_integer(parsed["right_text"])
     if left_value is None or right_value is None:
@@ -205,6 +205,10 @@ def parse_tiandao_judgement_prompt(text):
         "answer": answer,
     })
     return parsed
+
+
+def parse_tiandao_judgement_prompt(text):
+    return _complete_tiandao_judgement_question(_extract_tiandao_judgement_question(text))
 
 
 def _get_pending_map():
@@ -225,29 +229,32 @@ def _get_event_pending_key(event, parsed):
     return f"{parsed.get('target') or 'unknown'}:{parsed.get('question') or ''}:{parsed.get('answer') or ''}"
 
 
-def _find_target_identity_id(target):
-    target_key = _normalize_identity_text(target)
-    if not target_key:
-        return None
+def _get_identity_tag_keys(identity_id):
+    return {
+        _normalize_identity_text(tag)
+        for tag in get_send_as_tags(identity_id)
+        if _normalize_identity_text(tag)
+    }
 
+
+def _find_target_identity_id(target, text=""):
+    target_key = _normalize_identity_text(target)
+    compact_text = _normalize_identity_text(text)
     matched_ids = []
     for identity_id in get_identity_ids():
-        profile = get_send_as_profile(identity_id)
-        candidates = {
-            str(identity_id),
-            profile.get("username", ""),
-            profile.get("label", ""),
-            profile.get("daohao", ""),
-        }
-        if any(_normalize_identity_text(candidate) == target_key for candidate in candidates if candidate):
+        tag_keys = _get_identity_tag_keys(identity_id)
+        if target_key and target_key in tag_keys:
+            matched_ids.append(int(identity_id))
+        elif not target_key and any(tag_key and tag_key in compact_text for tag_key in tag_keys):
             matched_ids.append(int(identity_id))
     if len(matched_ids) == 1:
         return matched_ids[0]
     return None
 
 
-async def _send_tiandao_judgement_parse_failure_log(text):
-    question = _extract_tiandao_judgement_question(text)
+async def _send_tiandao_judgement_parse_failure_log(text, question=None):
+    if question is None:
+        question = _extract_tiandao_judgement_question(text)
     if question:
         left_text = question.get("left_text") or ""
         question_text = question.get("question") or ""
@@ -286,14 +293,19 @@ async def handle_tiandao_judgement_prompt(text, now, event=None):
     if not _is_tiandao_judgement_prompt(text):
         return False
 
-    parsed = parse_tiandao_judgement_prompt(text)
-    if not parsed:
+    question = _extract_tiandao_judgement_question(text)
+    if not question:
         await _send_tiandao_judgement_parse_failure_log(text)
         return True
 
-    identity_id = _find_target_identity_id(parsed.get("target"))
+    identity_id = _find_target_identity_id(question.get("target"), text)
     if identity_id is None:
-        await send_audit_log(f"⚖️ 天道审判未匹配身份：{mono(parsed.get('target') or '未知对象')}", scope="global", limit=260)
+        await send_audit_log(f"⚖️ 天道审判未匹配身份：{mono(question.get('target') or '未知对象')}", scope="global", limit=260)
+        return True
+
+    parsed = _complete_tiandao_judgement_question(question)
+    if not parsed:
+        await _send_tiandao_judgement_parse_failure_log(text, question)
         return True
 
     pending_key = _get_event_pending_key(event, parsed)
