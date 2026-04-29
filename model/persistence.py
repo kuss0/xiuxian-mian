@@ -19,6 +19,7 @@ from .state import (
     get_forum_topics_updated_at,
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
+    get_tiandao_judgement_enabled,
     get_guanxing_monitor_enabled,
     get_guanxing_monitor_targets,
     get_guanxing_round_state,
@@ -30,6 +31,7 @@ from .state import (
     set_auto_delete_sent_messages,
     set_forum_topics,
     set_global_enabled,
+    set_tiandao_judgement_enabled,
     set_game_bot_ids,
     get_quiz_learning_watchers,
     set_game_group_id,
@@ -557,6 +559,14 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("tiandao_judgement_enabled", "0"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("tiandao_judgement_pending", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("guanxing_monitor_enabled", "0"),
     )
     conn.execute(
@@ -921,6 +931,16 @@ _META_STATE_CODEC = {
         get_global_enabled,
         lambda value: "1" if value else "0",
         lambda value: set_global_enabled(_decode_meta_bool_flag(value, True)),
+    ),
+    "tiandao_judgement_enabled": (
+        get_tiandao_judgement_enabled,
+        lambda value: "1" if value else "0",
+        lambda value: set_tiandao_judgement_enabled(_decode_meta_bool_flag(value, False)),
+    ),
+    "tiandao_judgement_pending": (
+        lambda: _meta_state.get("tiandao_judgement_pending") if isinstance(_meta_state.get("tiandao_judgement_pending"), dict) else {},
+        _encode_meta_json,
+        lambda value: _set_meta_value("tiandao_judgement_pending", _decode_meta_json(value, {})),
     ),
     "guanxing_monitor_enabled": (
         get_guanxing_monitor_enabled,

@@ -52,7 +52,7 @@ IDENTITY_BOOL_FIELDS = {
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -329,6 +329,8 @@ GLOBAL_STATE_DEFAULTS = {
     "forum_topics_updated_at": 0,
     "auto_delete_sent_messages": True,
     "global_enabled": True,
+    "tiandao_judgement_enabled": False,
+    "tiandao_judgement_pending": {},
     "guanxing_monitor_enabled": False,
     "guanxing_monitor_targets": list(GUANXING_TARGET_KEYWORDS[:2]),
     "guanxing_shift_target": "",
@@ -686,6 +688,15 @@ def get_game_topic_id():
 def set_game_topic_id(topic_id):
     _meta_state["game_topic_id"] = int(topic_id or 0)
     return get_game_topic_id()
+
+
+def get_tiandao_judgement_enabled():
+    return bool(_meta_state.get("tiandao_judgement_enabled", False))
+
+
+def set_tiandao_judgement_enabled(enabled):
+    _meta_state["tiandao_judgement_enabled"] = bool(enabled)
+    return get_tiandao_judgement_enabled()
 
 
 def get_guanxing_monitor_enabled():
@@ -1159,6 +1170,7 @@ __all__ = [
     "get_forum_topics",
     "get_forum_topics_updated_at",
     "get_global_enabled",
+    "get_tiandao_judgement_enabled",
     "get_guanxing_monitor_enabled",
     "get_guanxing_monitor_target_options",
     "get_guanxing_monitor_targets",
@@ -1199,6 +1211,7 @@ __all__ = [
     "set_game_topic_id",
     "set_forum_topics",
     "set_global_enabled",
+    "set_tiandao_judgement_enabled",
     "set_guanxing_monitor_enabled",
     "set_guanxing_monitor_targets",
     "set_guanxing_shift_target",

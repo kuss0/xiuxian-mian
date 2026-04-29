@@ -82,6 +82,7 @@ from .state import (
     get_game_group_id,
     get_game_topic_id,
     get_global_enabled,
+    get_tiandao_judgement_enabled,
     get_guanxing_monitor_enabled,
     get_guanxing_monitor_target_options,
     get_guanxing_monitor_targets,
@@ -100,6 +101,7 @@ from .state import (
     get_tianti_rank_choice,
     set_account,
     set_auto_delete_sent_messages,
+    set_tiandao_judgement_enabled,
     set_forum_topics,
     set_game_bot_ids,
     set_game_group_id,
@@ -282,6 +284,7 @@ def get_ui_snapshot(session_token=None):
         "forum_topics_updated_at": fmt_abs_ts(get_forum_topics_updated_at()),
         "auto_delete_sent_messages": is_auto_delete_sent_messages_enabled(),
         "global_enabled": get_global_enabled(),
+        "tiandao_judgement_enabled": get_tiandao_judgement_enabled(),
         "guanxing_monitor_enabled": get_guanxing_monitor_enabled(),
         "guanxing_monitor_target_options": get_guanxing_monitor_target_options(),
         "guanxing_monitor_targets": get_guanxing_monitor_targets(),
@@ -1072,7 +1075,7 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
     return True, message, topics
 
 
-async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, guanxing_monitor_enabled=False, guanxing_shift_target="", guanxing_monitor_targets=None, actor_id=None):
+async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target="", guanxing_monitor_targets=None, actor_id=None):
     raw_group_id = (str(game_group_id or "")).strip()
     if not raw_group_id:
         return False, "游戏群聊 ID 不能为空"
@@ -1115,6 +1118,7 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
             return False, "话题 ID 不能为负数"
 
     auto_delete_enabled = bool(auto_delete_sent_messages)
+    tiandao_judgement_switch_enabled = bool(tiandao_judgement_enabled)
     guanxing_monitor_switch_enabled = bool(guanxing_monitor_enabled)
     raw_shift_target = str(guanxing_shift_target or "").strip()
     if any(char.isspace() for char in raw_shift_target):
@@ -1141,6 +1145,7 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     normalized_bot_ids = set_game_bot_ids(parsed_bot_ids)
     set_game_topic_id(topic_id)
     set_auto_delete_sent_messages(auto_delete_enabled)
+    set_tiandao_judgement_enabled(tiandao_judgement_switch_enabled)
     set_guanxing_monitor_enabled(guanxing_monitor_switch_enabled)
     set_guanxing_monitor_targets(normalized_monitor_targets)
     normalized_shift_target = set_guanxing_shift_target(guanxing_shift_target)
@@ -1149,14 +1154,15 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     display_topic = str(topic_id) if topic_id > 0 else "未启用"
     display_bots = ", ".join(str(bot_id) for bot_id in normalized_bot_ids)
     display_auto_delete = "开启" if auto_delete_enabled else "关闭"
+    display_tiandao_judgement = "开启" if tiandao_judgement_switch_enabled else "关闭"
     display_guanxing_monitor = "开启" if guanxing_monitor_switch_enabled else "关闭"
     display_monitor_targets = ", ".join(normalized_monitor_targets) or "未选择"
     console_log(
-        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}{actor_suffix}",
+        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}{actor_suffix}",
         scope="global",
         limit=320,
     )
-    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'}"
+    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'}"
 
 
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
@@ -1344,7 +1350,7 @@ async def handle_ui_http(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"))
+                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("tiandao_judgement_enabled"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
