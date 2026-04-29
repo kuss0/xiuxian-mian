@@ -32,7 +32,7 @@ IDENTITY_TIMER_COLUMNS = [
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
-    "last_tower_msg_id",
+    "last_tower_msg_id", "pet_last_error",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
@@ -177,6 +177,7 @@ IDENTITY_STATE_TEMPLATE = {
 
     # 法宝模块
     "next_pet_time": 0,
+    "pet_last_error": "",
 
     # 观星台模块
     "next_stargazer_panel_time": 0,

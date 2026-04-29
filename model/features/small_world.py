@@ -55,6 +55,7 @@ async def _send_small_world_preach(now, reason):
     if not sent_msg:
         state["small_world_last_error"] = "神迹布道指令发送失败"
         save_state()
+        await send_audit_log("❌ 小世界布道发送失败，稍后重试。")
         return False
 
     state["small_world_preach_reply_to_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)

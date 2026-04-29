@@ -156,6 +156,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_small_world_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+    if "pet_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_last_panel_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
     if "stargazer_last_action" not in runtime_columns:
@@ -415,6 +417,7 @@ def init_db():
             last_sect_teach_msg_id INTEGER NOT NULL,
             checkin_cleanup_msg_ids TEXT NOT NULL,
             last_tower_msg_id INTEGER NOT NULL,
+            pet_last_error TEXT NOT NULL DEFAULT '',
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             stargazer_last_action TEXT NOT NULL DEFAULT '',
             stargazer_idle_slot_count INTEGER NOT NULL DEFAULT 0,

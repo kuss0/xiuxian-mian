@@ -21,6 +21,7 @@ RE_STARGAZER_DECLARED_TOTAL_SLOTS = re.compile(r"引星盘总数[:：]\s*(\d+)�
 RE_STARGAZER_COLLECTED_SLOT_COUNT = re.compile(r"成功从\s*(\d+)\s*座引星盘上收集")
 STARGAZER_CD_HINT_KEYWORDS = ("尚未恢复", "冷却", "等待", "不足", "休息")
 STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS = ("灵力不足", "安抚", "座引星盘共需要", "点修为")
+STARGAZER_SOOTHE_NO_NEED_KEYWORDS = ("观星台", "没有需要安抚", "星辰")
 STARGAZER_GUIDE_INSUFFICIENT_POWER_KEYWORDS = ("修为不足", "同时牵引", "座引星盘")
 STARGAZER_AFTER_DEEP_RETREAT_DELAY_SEC = 3 * 60
 
@@ -350,6 +351,10 @@ def _is_stargazer_soothe_insufficient_power(text):
     return all(keyword in str(text or "") for keyword in STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS)
 
 
+def _is_stargazer_soothe_no_need(text):
+    return all(keyword in str(text or "") for keyword in STARGAZER_SOOTHE_NO_NEED_KEYWORDS)
+
+
 def _is_stargazer_guide_insufficient_power(text):
     return all(keyword in str(text or "") for keyword in STARGAZER_GUIDE_INSUFFICIENT_POWER_KEYWORDS)
 
@@ -377,6 +382,11 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
 
     if _is_stargazer_soothe_insufficient_power(text):
         await _queue_stargazer_action_after_deep_retreat(now, "soothe", "⏳ 安抚灵力不足，深闭 CD 后再安抚")
+        return True
+
+    if _is_stargazer_soothe_no_need(text):
+        _clear_stargazer_collect_flags()
+        await _queue_stargazer_action(now, "collect", audit_text="🌠 无需安抚，收集")
         return True
 
     soothe_before_collect = bool(state.get("stargazer_soothe_before_collect"))

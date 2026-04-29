@@ -376,6 +376,7 @@ def _manual_disable_pet_module_state():
 
 def _manual_enable_pet_module_state(now):
     state["pet_enabled"] = True
+    state["pet_last_error"] = ""
     if float(state.get("next_pet_time", 0) or 0) > now:
         return
     _schedule_module_immediate_retry("法宝", now)
