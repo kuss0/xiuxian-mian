@@ -40,6 +40,10 @@ NANLONG_CHOICE_COMMANDS = {
 NANLONG_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 RE_NANLONG_TARGET_TAG = re.compile(rf"@({NANLONG_TARGET_TAG_PATTERN})")
 RE_NANLONG_MINUTES = re.compile(r"你有\s*(\d+)\s*分钟")
+NANLONG_SUCCESS_KEYWORDS = ("【天机异闻·魔君之怒】", "【天机异闻·南陇侯的交易】")
+NANLONG_CONFIRM_RETRY_DELAY_SEC = 60
+NANLONG_CONFIRM_RETRY_LIMIT = 3
+NANLONG_CONFIRM_CHOICES = {NANLONG_CHOICE_EXCHANGE_FABAO, NANLONG_CHOICE_EXCHANGE_GONGFA}
 
 
 def _normalize_text(text):
@@ -132,6 +136,10 @@ def _get_nanlong_pending_state():
     )
 
 
+def _is_nanlong_success_reply(text):
+    return any(keyword in str(text or "") for keyword in NANLONG_SUCCESS_KEYWORDS)
+
+
 def _has_active_nanlong_pending(now):
     reply_to_msg_id, deadline, _reply_due_at = _get_nanlong_pending_state()
     return reply_to_msg_id > 0 and deadline > now
@@ -156,6 +164,9 @@ def _schedule_nanlong_reply_due(now):
 def _set_nanlong_pending(reply_to_msg_id, deadline_at, now):
     state["nanlong_reply_to_msg_id"] = int(reply_to_msg_id or 0)
     state["next_nanlong_time"] = float(deadline_at or 0)
+    state["nanlong_last_msg_id"] = 0
+    state["nanlong_retry_count"] = 0
+    state["nanlong_last_command"] = ""
     state["nanlong_last_error"] = ""
     _schedule_nanlong_reply_due(now)
 
@@ -197,6 +208,9 @@ def clear_nanlong_state(*, persist=False, keep_last_error=False):
     state["next_nanlong_time"] = 0
     state["nanlong_reply_to_msg_id"] = 0
     state["nanlong_reply_due_at"] = 0
+    state["nanlong_last_msg_id"] = 0
+    state["nanlong_retry_count"] = 0
+    state["nanlong_last_command"] = ""
     if not keep_last_error:
         state["nanlong_last_error"] = ""
     if persist:
@@ -257,6 +271,13 @@ async def run_nanlong_scheduler(now):
 
     choice = normalize_nanlong_choice(get_nanlong_choice())
     command = get_nanlong_choice_command(choice)
+    requires_confirmation = choice in NANLONG_CONFIRM_CHOICES
+    is_confirmation_retry = bool(state.get("nanlong_last_msg_id"))
+    if requires_confirmation and is_confirmation_retry and int(state.get("nanlong_retry_count", 0) or 0) >= NANLONG_CONFIRM_RETRY_LIMIT:
+        state["nanlong_last_error"] = "南陇侯交易结果未确认"
+        await send_audit_log(f"⚠️ 南陇侯自动回复重发 {NANLONG_CONFIRM_RETRY_LIMIT} 次仍未确认，已停止。")
+        clear_nanlong_state(persist=True, keep_last_error=True)
+        return
     sent_msg = await _send_nanlong_command(command, reply_to_msg_id)
     if not sent_msg:
         state["nanlong_last_error"] = "南陇侯自动回复发送失败"
@@ -265,7 +286,48 @@ async def run_nanlong_scheduler(now):
         await send_audit_log("❌ 南陇侯自动回复失败，待处理已保留。")
         return
 
-    await _finalize_nanlong_success(f"🤝 南陇侯自动选择：{get_nanlong_choice_label(choice)}")
+    if not requires_confirmation:
+        await _finalize_nanlong_success(f"🤝 南陇侯自动选择：{get_nanlong_choice_label(choice)}")
+        return
+
+    state["nanlong_last_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
+    state["nanlong_last_command"] = command
+    if is_confirmation_retry:
+        state["nanlong_retry_count"] = int(state.get("nanlong_retry_count", 0) or 0) + 1
+    state["nanlong_reply_due_at"] = now + NANLONG_CONFIRM_RETRY_DELAY_SEC
+    state["nanlong_last_error"] = "等待南陇侯交易结果"
+    save_state()
+    if is_confirmation_retry:
+        await send_audit_log(f"🤝 南陇侯自动选择重发 {state['nanlong_retry_count']}/{NANLONG_CONFIRM_RETRY_LIMIT}：{get_nanlong_choice_label(choice)}，等待确认")
+
+
+async def handle_nanlong_reply(text, now, reply_to, matched_family=None):
+    if not state.get("nanlong_enabled"):
+        return False
+    if matched_family != "nanlong":
+        return False
+    if not state.get("nanlong_last_msg_id"):
+        return False
+    if not _is_nanlong_success_reply(text):
+        return True
+
+    await _finalize_nanlong_success("🤝 南陇侯交易结果已确认")
+    return True
+
+
+async def handle_nanlong_result_broadcast(text, now, event):
+    if not state.get("nanlong_enabled"):
+        return False
+    if not _is_nanlong_success_reply(text):
+        return False
+    if not state.get("nanlong_last_msg_id"):
+        return False
+    identity_id = _find_nanlong_identity_id(text)
+    if identity_id is None or identity_id != get_current_identity_id():
+        return False
+
+    await _finalize_nanlong_success("🤝 南陇侯交易结果已确认")
+    return True
 
 
 __all__ = [
@@ -278,6 +340,8 @@ __all__ = [
     "get_nanlong_choice_label",
     "get_nanlong_status_text",
     "handle_nanlong_prompt",
+    "handle_nanlong_reply",
+    "handle_nanlong_result_broadcast",
     "normalize_nanlong_choice",
     "resolve_nanlong_choice",
     "run_nanlong_scheduler",

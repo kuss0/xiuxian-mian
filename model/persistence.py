@@ -280,6 +280,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "nanlong_reply_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "nanlong_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "nanlong_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "nanlong_last_command" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_command TEXT NOT NULL DEFAULT ''")
     if "nanlong_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_error TEXT NOT NULL DEFAULT ''")
     if "small_world_preach_reply_to_msg_id" not in runtime_columns:
@@ -470,6 +476,9 @@ def init_db():
             jiyin_last_error TEXT NOT NULL DEFAULT '',
             nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
+            nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            nanlong_retry_count INTEGER NOT NULL DEFAULT 0,
+            nanlong_last_command TEXT NOT NULL DEFAULT '',
             nanlong_last_error TEXT NOT NULL DEFAULT '',
             small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_faith_value INTEGER NOT NULL DEFAULT 0,

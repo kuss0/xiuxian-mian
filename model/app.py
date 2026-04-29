@@ -26,7 +26,7 @@ from .features.guanxing import (
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.pet import handle_pet_cd_fix, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
-from .features.nanlong import handle_nanlong_prompt, run_nanlong_scheduler
+from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.small_world import handle_small_world_disaster_broadcast, handle_small_world_preach_reply, run_small_world_scheduler
@@ -292,6 +292,11 @@ async def _dispatch_small_world_broadcast_fallbacks(event, text, now):
         await _run_until_handled_for_enabled_identities(handle_small_world_disaster_broadcast, text, now, event)
 
 
+async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="nanlong_result"):
+        await _run_until_handled_for_enabled_identities(handle_nanlong_result_broadcast, text, now, event)
+
+
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
     if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
         await handle_realm_breakthrough_broadcast(text, now)
@@ -395,6 +400,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tianti_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
             deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)
@@ -480,6 +486,7 @@ async def on_message(event):
         await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
+        await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())
