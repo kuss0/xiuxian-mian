@@ -635,14 +635,46 @@ async def handle_quiz_result_broadcast(text, now=None):
                 )
         elif result_type == "wrong":
             submitted_text = str(options.get(submitted_answer) or "").strip()
-            await send_audit_log(
-                "🦴 玄骨考校题库未收录，群内作答错误\n"
-                f"- 目标: {mono(target_tag)}\n"
-                f"- 题目: {question}\n"
-                f"- 选项: {_format_quiz_options(options)}\n"
-                f"- 提交: {submitted_answer}.{submitted_text}",
-                **log_kwargs,
-            )
+            correct_text = str(options.get(correct_answer) or "").strip()
+            status, payload = _save_quiz_bank_entry(question, options, correct_answer)
+            if status == "added":
+                await send_audit_log(
+                    f"🦴 已记录新题 ✅ 答案：{correct_answer}\n"
+                    f"- 来源: 群内作答错误\n"
+                    f"- 目标: {mono(target_tag)}\n"
+                    f"- 题目: {question}\n"
+                    f"- 选项: {_format_quiz_options(options)}\n"
+                    f"- 提交: {submitted_answer}.{submitted_text}\n"
+                    f"- 正确: {correct_answer}.{correct_text}",
+                    **log_kwargs,
+                )
+            elif status == "exists":
+                await send_audit_log(
+                    _format_quiz_brief_log("题库已收录错误结果中的正确答案", identity_id=identity_id, target_tag=target_tag),
+                    **_get_quiz_log_kwargs(identity_id),
+                )
+            elif status == "conflict":
+                existing_answer = str((payload or {}).get("answer") or "").strip().upper()
+                await send_audit_log(
+                    "🦴 玄骨考校题库冲突，请人工处理\n"
+                    f"- 目标: {mono(target_tag)}\n"
+                    f"- 题目: {question}\n"
+                    f"- 选项: {_format_quiz_options(options)}\n"
+                    f"- 题库答案: {existing_answer}\n"
+                    f"- 正确答案: {correct_answer}\n"
+                    f"- 提交: {submitted_answer}.{submitted_text}",
+                    **log_kwargs,
+                )
+            else:
+                await send_audit_log(
+                    f"🦴 玄骨考校题库记录失败({status})\n"
+                    f"- 目标: {mono(target_tag)}\n"
+                    f"- 题目: {question}\n"
+                    f"- 选项: {_format_quiz_options(options)}\n"
+                    f"- 正确答案: {correct_answer}\n"
+                    f"- 提交: {submitted_answer}.{submitted_text}",
+                    **log_kwargs,
+                )
         elif result_type == "timeout":
             await send_audit_log(
                 "🦴 玄骨考校题库未收录，超时未作答\n"
