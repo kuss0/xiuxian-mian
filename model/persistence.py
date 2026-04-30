@@ -573,6 +573,10 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("tianji_quiz_pending", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("guanxing_monitor_enabled", "0"),
     )
     conn.execute(
@@ -947,6 +951,11 @@ _META_STATE_CODEC = {
         lambda: _meta_state.get("tiandao_judgement_pending") if isinstance(_meta_state.get("tiandao_judgement_pending"), dict) else {},
         _encode_meta_json,
         lambda value: _set_meta_value("tiandao_judgement_pending", _decode_meta_json(value, {})),
+    ),
+    "tianji_quiz_pending": (
+        lambda: _meta_state.get("tianji_quiz_pending") if isinstance(_meta_state.get("tianji_quiz_pending"), dict) else {},
+        _encode_meta_json,
+        lambda value: _set_meta_value("tianji_quiz_pending", _decode_meta_json(value, {})),
     ),
     "guanxing_monitor_enabled": (
         get_guanxing_monitor_enabled,

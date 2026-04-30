@@ -30,7 +30,7 @@ from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handl
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, run_tiandao_judgement_scheduler
-from .features.tianji_quiz import handle_tianji_quiz_prompt
+from .features.tianji_quiz import handle_tianji_quiz_prompt, run_tianji_quiz_scheduler
 from .features.small_world import handle_small_world_disaster_broadcast, handle_small_world_preach_reply, run_small_world_scheduler
 from .features.stargazer import (
     handle_stargazer_collect_reply,
@@ -351,6 +351,7 @@ async def _run_global_schedulers(now):
     await run_guanxing_monitor_scheduler(now)
     await run_guanxing_scheduler(now)
     await run_tiandao_judgement_scheduler(now)
+    await run_tianji_quiz_scheduler(now)
 
 
 async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
