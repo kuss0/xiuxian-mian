@@ -343,18 +343,13 @@ def _get_message_text(message):
     return str(getattr(message, "raw_text", None) or getattr(message, "message", None) or "")
 
 
-def _parse_tianji_submitted_answer(text, options=None):
+def _parse_tianji_submitted_answer(text):
     raw_text = str(text or "").strip()
     answer_match = RE_TIANJI_REPLY_ANSWER.match(raw_text)
     if answer_match:
         answer = str(answer_match.group(1) or "").strip().upper()
         if answer in TIANJI_QUIZ_OPTIONS:
             return answer
-
-    normalized_text = _normalize_text(raw_text)
-    for key in TIANJI_QUIZ_OPTIONS:
-        if normalized_text and normalized_text == _normalize_text((options or {}).get(key)):
-            return key
     return ""
 
 
@@ -379,7 +374,7 @@ async def _learn_tianji_quiz_answer_from_result(parsed_result, reply_to=None):
     if not parsed_prompt or not parsed_prompt.get("is_choice"):
         return False
 
-    answer = _parse_tianji_submitted_answer(answer_text, parsed_prompt.get("options"))
+    answer = _parse_tianji_submitted_answer(answer_text)
     if answer not in TIANJI_QUIZ_OPTIONS:
         return False
 
