@@ -12,6 +12,7 @@ from ..state import (
     get_send_as_tags,
     set_quiz_learning_watchers,
     state,
+    use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining
 
@@ -35,6 +36,8 @@ RE_QUIZ_RESULT_TIMEOUT = re.compile(
 )
 RE_PUNCT_ONLY = re.compile(r"[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+")
 QUIZ_RESULT_GRACE_SEC = 120
+QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC = 60
+QUIZ_ANSWER_MAX_RETRY_COUNT = 3
 
 _QUIZ_BANK = None
 _QUIZ_BANK_INDEX = None
@@ -325,6 +328,13 @@ def _get_quiz_pending_state():
     )
 
 
+def _get_quiz_retry_count():
+    try:
+        return int(state.get("quiz_retry_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _has_active_quiz_pending(now):
     reply_to_msg_id, deadline = _get_quiz_pending_state()
     return reply_to_msg_id > 0 and deadline > now
@@ -340,12 +350,14 @@ def _match_quiz_prompt_for_current_identity(text):
     return parsed, identity_id
 
 
-def _set_quiz_pending(question, options, answer, reply_to_msg_id, deadline_at, *, last_error, last_matched_at):
+def _set_quiz_pending(question, options, answer, reply_to_msg_id, deadline_at, *, last_error, last_matched_at, retry_count=0, match_mode=""):
     state["quiz_question"] = question
     state["quiz_options"] = dict(options or {})
     state["quiz_answer"] = answer
     state["quiz_reply_to_msg_id"] = int(reply_to_msg_id or 0)
     state["next_quiz_time"] = float(deadline_at or 0)
+    state["quiz_retry_count"] = int(retry_count or 0)
+    state["quiz_match_mode"] = str(match_mode or "")
     state["quiz_last_error"] = last_error
     state["quiz_last_matched_at"] = last_matched_at
 
@@ -369,6 +381,50 @@ async def _finalize_quiz_success(audit_text, *, identity_id):
     clear_quiz_state(persist=True)
 
 
+def _get_quiz_result_identity_id(parsed, watcher):
+    identity_id = _normalize_quiz_identity_id((watcher or {}).get("identity_id"))
+    if identity_id is not None:
+        return identity_id
+    return _find_quiz_identity_id((parsed or {}).get("target_tag") or "", enabled_only=False)
+
+
+def _quiz_pending_matches_result(parsed, watcher):
+    if int(state.get("quiz_reply_to_msg_id", 0) or 0) <= 0:
+        return False
+    pending_answer = str(state.get("quiz_answer") or "").strip().upper()
+    if pending_answer not in {"A", "B", "C", "D"}:
+        return False
+    submitted_answer = str((parsed or {}).get("submitted_answer") or "").strip().upper()
+    if submitted_answer and submitted_answer != pending_answer:
+        return False
+    pending_question = str(state.get("quiz_question") or "").strip()
+    watcher_question = str((watcher or {}).get("question") or "").strip()
+    if pending_question and watcher_question and _normalize_text(pending_question) != _normalize_text(watcher_question):
+        return False
+    return True
+
+
+async def _confirm_quiz_answer_result(parsed, watcher):
+    if (parsed or {}).get("status") not in {"correct", "wrong"}:
+        return False
+    identity_id = _get_quiz_result_identity_id(parsed, watcher)
+    if identity_id is None or identity_id not in get_identity_ids():
+        return False
+    with use_identity(identity_id):
+        if not _quiz_pending_matches_result(parsed, watcher):
+            return False
+        question = state.get("quiz_question") or "未记录题目"
+        answer = str(state.get("quiz_answer") or "").strip().upper()
+        result_label = "正确" if parsed.get("status") == "correct" else "错误"
+        correct_answer = str(parsed.get("correct_answer") or "").strip().upper()
+        correct_suffix = f"｜正确答案 {correct_answer}" if result_label == "错误" and correct_answer else ""
+        await _finalize_quiz_success(
+            f"🦴 作答发送成功：{result_label}｜{answer}{correct_suffix}｜{question}",
+            identity_id=identity_id,
+        )
+    return True
+
+
 async def _handle_quiz_pending_timeout(now):
     question = state.get("quiz_question") or "未记录题目"
     state["quiz_last_error"] = "题目已超时"
@@ -381,14 +437,71 @@ async def _handle_quiz_pending_timeout(now):
     clear_quiz_state(persist=True, keep_last_error=True)
 
 
+async def _handle_quiz_answer_confirmation_timeout(now):
+    question = state.get("quiz_question") or "未记录题目"
+    answer = str(state.get("quiz_answer") or "").strip().upper()
+    reply_to_msg_id = int(state.get("quiz_reply_to_msg_id", 0) or 0)
+    retry_count = _get_quiz_retry_count()
+    identity_id = get_current_identity_id()
+
+    if retry_count >= QUIZ_ANSWER_MAX_RETRY_COUNT:
+        state["quiz_last_error"] = f"作答发送失败：未收到正确/错误结果，已重试 {retry_count} 次"
+        await send_audit_log(
+            f"❌ 玄骨考校作答发送失败：未收到正确/错误结果，已重试 {retry_count} 次｜{answer}｜{question}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=360,
+        )
+        clear_quiz_state(persist=True, keep_last_error=True)
+        return
+
+    retry_index = retry_count + 1
+    reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
+    state["quiz_retry_count"] = retry_index
+
+    if reply_msg:
+        state["next_quiz_time"] = float(now + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
+        state["quiz_last_error"] = f"未收到正确/错误结果，已重试 {retry_index}/{QUIZ_ANSWER_MAX_RETRY_COUNT}"
+        save_state()
+        await send_audit_log(
+            f"⚠️ 玄骨考校作答未收到结果，判定发送失败，已重试 {retry_index}/{QUIZ_ANSWER_MAX_RETRY_COUNT}：{answer}｜{question}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=360,
+        )
+        return
+
+    state["quiz_last_error"] = f"作答重试发送失败 {retry_index}/{QUIZ_ANSWER_MAX_RETRY_COUNT}"
+    if retry_index >= QUIZ_ANSWER_MAX_RETRY_COUNT:
+        await send_audit_log(
+            f"❌ 玄骨考校作答重试发送失败，已达 {QUIZ_ANSWER_MAX_RETRY_COUNT} 次：{answer}｜{question}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=360,
+        )
+        clear_quiz_state(persist=True, keep_last_error=True)
+        return
+
+    state["next_quiz_time"] = float(now + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
+    save_state()
+    await send_audit_log(
+        f"⚠️ 玄骨考校作答重试发送失败 {retry_index}/{QUIZ_ANSWER_MAX_RETRY_COUNT}，1 分钟后继续重试：{answer}｜{question}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=360,
+    )
+
+
 def get_quiz_status_text():
     reply_to_msg_id, deadline = _get_quiz_pending_state()
     lines = [
         "🦴 玄骨考校",
         f"- 当前题目：{state.get('quiz_question') or '暂无'}",
         f"- 匹配答案：{state.get('quiz_answer') or '未匹配'}",
+        f"- 匹配方式：{state.get('quiz_match_mode') or '无'}",
         f"- 待回复消息ID：{reply_to_msg_id or '无'}",
-        f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
+        f"- 重试次数：{_get_quiz_retry_count()}/{QUIZ_ANSWER_MAX_RETRY_COUNT}",
+        f"- 下次检查：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
         f"- 最近错误：{state.get('quiz_last_error') or '无'}",
     ]
     return "\n".join(lines)
@@ -400,6 +513,8 @@ def clear_quiz_state(*, persist=False, keep_last_error=False):
     state["quiz_question"] = ""
     state["quiz_options"] = {}
     state["quiz_answer"] = ""
+    state["quiz_retry_count"] = 0
+    state["quiz_match_mode"] = ""
     if not keep_last_error:
         state["quiz_last_error"] = ""
     state["quiz_last_matched_at"] = 0
@@ -409,13 +524,13 @@ def clear_quiz_state(*, persist=False, keep_last_error=False):
         mark_dirty()
 
 
-def _find_quiz_identity_id(text):
+def _find_quiz_identity_id(text, *, enabled_only=True):
     compact_text = _normalize_text(text)
     if not compact_text:
         return None
     matched_ids = []
     for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
+        if enabled_only and not get_identity_enabled(identity_id):
             continue
         tags = get_send_as_tags(identity_id)
         if not tags:
@@ -528,9 +643,6 @@ async def handle_quiz_learning_prompt(text, now, event=None):
 
 
 async def handle_quiz_result_broadcast(text, now=None):
-    if not get_quiz_learning_watchers():
-        return False
-
     # 统一解析三种结果类型
     parsed = _parse_quiz_result(text)
     result_type = None
@@ -555,8 +667,9 @@ async def handle_quiz_result_broadcast(text, now=None):
             return False
 
     watcher = _get_quiz_learning_watcher(target_key) if target_key else None
+    confirmed_answer = await _confirm_quiz_answer_result(parsed, watcher) if parsed else False
     if not watcher:
-        return False
+        return confirmed_answer
 
     question = str(watcher.get("question") or "").strip()
     options = dict(watcher.get("options") or {})
@@ -723,9 +836,10 @@ async def handle_quiz_prompt(text, now, event):
         parsed["options"],
         answer,
         reply_to_msg_id,
-        now + float(parsed["timeout_sec"]),
+        now + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC,
         last_error="",
         last_matched_at=now,
+        match_mode=match_mode,
     )
     save_state()
 
@@ -740,9 +854,11 @@ async def handle_quiz_prompt(text, now, event):
         )
         return True
 
-    await _finalize_quiz_success(
-        f"🦴 已自动作答：{answer}｜{match_mode}｜{parsed['question']}",
-        identity_id=identity_id,
+    await send_audit_log(
+        f"🦴 已发送作答，等待结果确认：{answer}｜{match_mode}｜{parsed['question']}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=360,
     )
     return True
 
@@ -768,10 +884,14 @@ async def run_quiz_learning_scheduler(now):
 async def run_quiz_scheduler(now):
     if not state.get("quiz_enabled"):
         return
-    _, next_quiz_time = _get_quiz_pending_state()
-    if next_quiz_time <= 0 or now < next_quiz_time:
+    reply_to_msg_id, next_quiz_time = _get_quiz_pending_state()
+    if reply_to_msg_id <= 0 or next_quiz_time <= 0 or now < next_quiz_time:
         return
-    await _handle_quiz_pending_timeout(now)
+    answer = str(state.get("quiz_answer") or "").strip().upper()
+    if answer in {"A", "B", "C", "D"}:
+        await _handle_quiz_answer_confirmation_timeout(now)
+    else:
+        await _handle_quiz_pending_timeout(now)
 
 
 __all__ = [

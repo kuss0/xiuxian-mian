@@ -272,6 +272,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_options TEXT NOT NULL DEFAULT '{}' ")
     if "quiz_answer" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_answer TEXT NOT NULL DEFAULT ''")
+    if "quiz_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "quiz_match_mode" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_match_mode TEXT NOT NULL DEFAULT ''")
     if "quiz_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_error TEXT NOT NULL DEFAULT ''")
     if "quiz_last_matched_at" not in runtime_columns:
@@ -475,6 +479,8 @@ def init_db():
             quiz_question TEXT NOT NULL DEFAULT '',
             quiz_options TEXT NOT NULL DEFAULT '{}',
             quiz_answer TEXT NOT NULL DEFAULT '',
+            quiz_retry_count INTEGER NOT NULL DEFAULT 0,
+            quiz_match_mode TEXT NOT NULL DEFAULT '',
             quiz_last_error TEXT NOT NULL DEFAULT '',
             quiz_last_matched_at REAL NOT NULL DEFAULT 0,
             jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
