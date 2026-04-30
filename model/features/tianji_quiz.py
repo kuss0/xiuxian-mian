@@ -24,6 +24,7 @@ RE_TIANJI_TARGET = re.compile(r"@([^\s，。！？、；：:,.!?\]）】()（）
 RE_TIANJI_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_TIANJI_TIMEOUT_MIN = re.compile(r"请在\s*(\d+)\s*分钟")
 RE_TIANJI_TIMEOUT_SEC = re.compile(r"请在\s*(\d+)\s*秒")
+RE_TIANJI_REPLY_ANSWER = re.compile(r"^\s*([A-D])(?:\s*$|[\s.．、，,):：-]+[\s\S]*$)", re.I)
 RE_TIANJI_WHITESPACE = re.compile(r"\s+")
 RE_TIANJI_IDENTITY_SEPARATORS = re.compile(r"[\s@，。！？、；：:,.!?\[\]【】()（）<>《》“”\"'`]+")
 
@@ -112,12 +113,15 @@ def _write_tianji_quiz_bank_items(items):
         f.write("\n")
 
 
-def _build_tianji_quiz_bank_record(question, options):
+def _build_tianji_quiz_bank_record(question, options, answer=""):
     normalized_question = str(question or "").strip()
     normalized_options = {
         key: str((options or {}).get(key) or "").strip()
         for key in TIANJI_QUIZ_OPTIONS
     }
+    normalized_answer = str(answer or "").strip().upper()
+    if normalized_answer and normalized_answer not in TIANJI_QUIZ_OPTIONS:
+        return None
     if not normalized_question or any(not normalized_options.get(key) for key in TIANJI_QUIZ_OPTIONS):
         return None
     return {
@@ -126,42 +130,60 @@ def _build_tianji_quiz_bank_record(question, options):
         "B": normalized_options["B"],
         "C": normalized_options["C"],
         "D": normalized_options["D"],
-        "answer": "",
+        "answer": normalized_answer,
     }
+
+
+def _get_tianji_quiz_bank_record_keys(record):
+    return (
+        _normalize_text((record or {}).get("question")),
+        {
+            key: _normalize_text((record or {}).get(key))
+            for key in TIANJI_QUIZ_OPTIONS
+        },
+    )
 
 
 def _classify_tianji_quiz_bank_record(existing_items, new_record):
-    question_key = _normalize_text(new_record.get("question"))
-    option_keys = {
-        key: _normalize_text(new_record.get(key))
-        for key in TIANJI_QUIZ_OPTIONS
-    }
+    question_key, option_keys = _get_tianji_quiz_bank_record_keys(new_record)
     if not question_key or any(not value for value in option_keys.values()):
         return "invalid", None
 
     for item in existing_items or []:
         if not isinstance(item, dict):
             continue
-        if _normalize_text(item.get("question")) != question_key:
+        existing_question_key, existing_option_keys = _get_tianji_quiz_bank_record_keys(item)
+        if existing_question_key != question_key:
             continue
-        existing_option_keys = {
-            key: _normalize_text(item.get(key))
-            for key in TIANJI_QUIZ_OPTIONS
-        }
         if existing_option_keys == option_keys:
             return "exists", item
         return "conflict", item
     return "new", None
 
 
-def save_tianji_quiz_bank_entry(question, options):
-    record = _build_tianji_quiz_bank_record(question, options)
+def save_tianji_quiz_bank_entry(question, options, answer=""):
+    record = _build_tianji_quiz_bank_record(question, options, answer)
     if not record:
         return "invalid", None
     items = _load_tianji_quiz_bank_items()
     if items is None:
         return "io_error", None
     status, existing = _classify_tianji_quiz_bank_record(items, record)
+    if status == "exists":
+        normalized_answer = str(answer or "").strip().upper()
+        if not normalized_answer:
+            return "exists", existing
+        existing_answer = str((existing or {}).get("answer") or "").strip().upper()
+        if existing_answer == normalized_answer:
+            return "exists", existing
+        if not existing_answer:
+            try:
+                existing["answer"] = normalized_answer
+                _write_tianji_quiz_bank_items(items)
+            except Exception:
+                return "io_error", None
+            return "updated", existing
+        return "conflict", existing
     if status != "new":
         return status, existing
     try:
@@ -317,6 +339,95 @@ def _format_tianji_result_excerpt(text):
     return first_line[:80].rstrip()
 
 
+def _get_message_text(message):
+    return str(getattr(message, "raw_text", None) or getattr(message, "message", None) or "")
+
+
+def _parse_tianji_submitted_answer(text, options=None):
+    raw_text = str(text or "").strip()
+    answer_match = RE_TIANJI_REPLY_ANSWER.match(raw_text)
+    if answer_match:
+        answer = str(answer_match.group(1) or "").strip().upper()
+        if answer in TIANJI_QUIZ_OPTIONS:
+            return answer
+
+    normalized_text = _normalize_text(raw_text)
+    for key in TIANJI_QUIZ_OPTIONS:
+        if normalized_text and normalized_text == _normalize_text((options or {}).get(key)):
+            return key
+    return ""
+
+
+async def _get_tianji_answer_prompt_message(answer_message):
+    if not answer_message:
+        return None
+    if _is_tianji_quiz_prompt(_get_message_text(answer_message)):
+        return answer_message
+    try:
+        return await answer_message.get_reply_message()
+    except Exception:
+        return None
+
+
+async def _learn_tianji_quiz_answer_from_result(parsed_result, reply_to=None):
+    if (parsed_result or {}).get("status") != "passed" or reply_to is None:
+        return False
+
+    answer_text = _get_message_text(reply_to)
+    prompt_message = await _get_tianji_answer_prompt_message(reply_to)
+    parsed_prompt = parse_tianji_quiz_prompt(_get_message_text(prompt_message))
+    if not parsed_prompt or not parsed_prompt.get("is_choice"):
+        return False
+
+    answer = _parse_tianji_submitted_answer(answer_text, parsed_prompt.get("options"))
+    if answer not in TIANJI_QUIZ_OPTIONS:
+        return False
+
+    question = parsed_prompt.get("question") or ""
+    options = parsed_prompt.get("options") or {}
+    status, payload = save_tianji_quiz_bank_entry(question, options, answer)
+    target = parsed_prompt.get("target") or (parsed_result or {}).get("target") or "未知目标"
+    if status == "added":
+        await send_audit_log(
+            "🧭 天机考验已记录新题 ✅\n"
+            f"- 目标: {mono(target)}\n"
+            f"- 答案: {answer}\n"
+            f"- 题目: {question}\n"
+            f"- 选项: {_format_tianji_options(options)}",
+            scope="global",
+            limit=620,
+        )
+        return True
+    if status == "updated":
+        await send_audit_log(
+            f"🧭 天机考验已补全题库答案 ✅：{mono(target)}｜{answer}｜{question}",
+            scope="global",
+            limit=420,
+        )
+        return True
+    if status == "conflict":
+        existing_answer = str((payload or {}).get("answer") or "").strip().upper()
+        await send_audit_log(
+            "🧭 天机考验题库答案冲突，请手动处理\n"
+            f"- 目标: {mono(target)}\n"
+            f"- 题目: {question}\n"
+            f"- 选项: {_format_tianji_options(options)}\n"
+            f"- 题库答案: {existing_answer or '空'}\n"
+            f"- 通过答案: {answer}",
+            scope="global",
+            limit=700,
+        )
+        return True
+    if status in {"invalid", "io_error"}:
+        await send_audit_log(
+            f"🧭 天机考验题库答案记录失败({status})：{mono(target)}｜{answer}｜{question}",
+            scope="global",
+            limit=520,
+        )
+        return True
+    return False
+
+
 def _has_tianji_answer_sent(item):
     return int((item or {}).get("sent_msg_id", 0) or 0) > 0 or float((item or {}).get("sent_at", 0) or 0) > 0
 
@@ -349,15 +460,16 @@ def _find_tianji_result_pending(parsed_result, event):
     return "", None, pending
 
 
-async def handle_tianji_quiz_result_broadcast(text, now=None, event=None):
+async def handle_tianji_quiz_result_broadcast(text, now=None, event=None, reply_to=None):
     parsed_result = _parse_tianji_quiz_result(text)
     reply_to_msg_id = _get_event_reply_to_msg_id(event)
     if parsed_result is None and reply_to_msg_id <= 0:
         return False
 
+    learned = await _learn_tianji_quiz_answer_from_result(parsed_result, reply_to=reply_to)
     pending_key, item, pending = _find_tianji_result_pending(parsed_result, event)
     if not item:
-        return False
+        return learned
 
     raw_text = str(text or "").strip()
     label = (parsed_result or {}).get("label") or "收到回复"

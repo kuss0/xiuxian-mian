@@ -253,7 +253,7 @@ async def _run_claimed_prompt_handler(scope, handler, text, now, event):
     return await _run_until_handled_for_enabled_identities(handler, text, now, event)
 
 
-async def _dispatch_new_message_broadcasts(event, text, now):
+async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None):
     if _claim_runtime_event(event, scope="deep_retreat_summary"):
         await handle_deep_retreat_summary_broadcast(text, now)
     if _claim_runtime_event(event, scope="yuanying_summary"):
@@ -265,7 +265,7 @@ async def _dispatch_new_message_broadcasts(event, text, now):
     if _claim_runtime_event(event, scope="quiz_learning_prompt"):
         await handle_quiz_learning_prompt(text, now, event)
     if _claim_runtime_event(event, scope="tianji_quiz_result"):
-        await handle_tianji_quiz_result_broadcast(text, now, event)
+        await handle_tianji_quiz_result_broadcast(text, now, event, reply_to=reply_to)
     if _claim_runtime_event(event, scope="tianji_quiz_prompt"):
         await handle_tianji_quiz_prompt(text, now, event)
     if _claim_runtime_event(event, scope="tiandao_judgement_prompt"):
@@ -476,7 +476,7 @@ async def on_message(event):
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
 
-        await _dispatch_new_message_broadcasts(event, text, now)
+        await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to)
 
         if await _run_claimed_prompt_handler("quiz_prompt", handle_quiz_prompt, text, now, event):
             return
