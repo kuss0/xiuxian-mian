@@ -100,6 +100,7 @@ from .ui import start_ui_server
 
 _bot_silence_triggered_at = 0  # 检测到 . 指令的时间，0 表示未触发
 _bot_last_seen_at = 0          # bot 最后发言时间
+_bot_silence_auto_paused = False
 _runtime_event_claims = {}
 _runtime_message_consumed = {}
 _runtime_log_claims = {}
@@ -466,9 +467,13 @@ async def on_message(event):
         return
 
     # bot 静默监测：bot 有发言，重置触发状态
-    global _bot_last_seen_at
+    global _bot_last_seen_at, _bot_silence_auto_paused
     _bot_last_seen_at = time.time()
     _bot_silence_triggered_at = 0
+    if _bot_silence_auto_paused:
+        _bot_silence_auto_paused = False
+        if not get_global_enabled():
+            await toggle_global_enabled(True, source="bot_silence_recovery")
 
     now = time.time()
     text = event.raw_text or ""
@@ -694,7 +699,7 @@ async def main_loop():
         await run_identity_info_followup_scheduler(now)
 
         # bot 静默监测：触发后超时且 bot 无发言，自动全局暂停
-        global _bot_silence_triggered_at
+        global _bot_silence_triggered_at, _bot_silence_auto_paused
         if (
             _bot_silence_triggered_at > 0
             and now - _bot_silence_triggered_at >= BOT_SILENCE_TIMEOUT_SEC
@@ -702,6 +707,7 @@ async def main_loop():
             and get_global_enabled()
         ):
             _bot_silence_triggered_at = 0
+            _bot_silence_auto_paused = True
             await toggle_global_enabled(False, source="bot_silence_monitor")
         if not get_global_enabled():
             await asyncio.sleep(5)
