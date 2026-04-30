@@ -1950,7 +1950,7 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
     return True, f"已{action_text}"
 
 
-async def set_module_enabled(module_name, enabled, send_as_id=None):
+async def set_module_enabled(module_name, enabled, send_as_id=None, *, skip_unavailable=False, allow_empty=False):
     key = MODULE_KEY_MAP.get(module_name)
     if not key:
         return False
@@ -1968,13 +1968,30 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
         return True, ""
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
+    original_target_count = len(target_ids)
     if enabled:
-        unavailable_ids = [identity_id for identity_id in target_ids if get_module_unavailable_reason(module_name, identity_id)]
+        unavailable_reasons = {
+            identity_id: get_module_unavailable_reason(module_name, identity_id)
+            for identity_id in target_ids
+        }
+        unavailable_reasons = {identity_id: reason for identity_id, reason in unavailable_reasons.items() if reason}
+        unavailable_ids = list(unavailable_reasons.keys())
         if unavailable_ids:
-            if len(unavailable_ids) == 1:
+            if skip_unavailable and send_as_id is None:
+                unavailable_id_set = set(unavailable_ids)
+                target_ids = [identity_id for identity_id in target_ids if identity_id not in unavailable_id_set]
+                if not target_ids:
+                    reason_set = set(unavailable_reasons.values())
+                    message = next(iter(reason_set)) if len(reason_set) == 1 else f"没有身份可开启{module_name}模块"
+                    if allow_empty:
+                        console_log(f"🎛️ 已跳过{module_name}模块：无可用身份", scope="global")
+                        return True, message
+                    return False, message
+            elif len(unavailable_ids) == 1:
                 identity_id = unavailable_ids[0]
-                return False, f"{get_identity_display_name(identity_id)} {get_module_unavailable_reason(module_name, identity_id)}"
-            return False, f"存在身份{get_module_unavailable_reason(module_name, unavailable_ids[0])}"
+                return False, f"{get_identity_display_name(identity_id)} {unavailable_reasons[identity_id]}"
+            else:
+                return False, f"存在身份{unavailable_reasons[unavailable_ids[0]]}"
     now = time.time()
     module_state_setter = MODULE_STATE_SETTERS.get(key)
     manual_toggle_handler = MANUAL_MODULE_TOGGLE_HANDLERS.get(module_name)
@@ -1999,12 +2016,14 @@ async def set_module_enabled(module_name, enabled, send_as_id=None):
             save_state()
 
     action_text = "开启" if enabled else "关闭"
-    if len(target_ids) == 1:
+    if send_as_id is not None and len(target_ids) == 1:
         console_log(
             f"🎛️ 已{action_text}{module_name}模块",
             scope="identity",
             send_as_id=target_ids[0],
         )
+    elif enabled and skip_unavailable and len(target_ids) < original_target_count:
+        console_log(f"🎛️ 已{action_text}{module_name}模块：可用身份 {len(target_ids)}/{original_target_count}", scope="global")
     else:
         console_log(f"🎛️ 已{action_text}{module_name}模块：全部身份", scope="global")
     return True, ""
@@ -2038,7 +2057,13 @@ async def handle_log_group_command(event):
 
     if RE_CMD_ENABLE_ALL.match(text):
         for module_name in MODULE_NAMES:
-            ok, message = await set_module_enabled(module_name, True, send_as_id=explicit_identity_id)
+            ok, message = await set_module_enabled(
+                module_name,
+                True,
+                send_as_id=explicit_identity_id,
+                skip_unavailable=explicit_identity_id is None,
+                allow_empty=True,
+            )
             if not ok:
                 await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
@@ -2070,7 +2095,12 @@ async def handle_log_group_command(event):
 
     for pattern, module_name, enabled in RE_CMD_ENABLE_PATTERNS:
         if pattern.match(text):
-            ok, message = await set_module_enabled(module_name, enabled, send_as_id=explicit_identity_id)
+            ok, message = await set_module_enabled(
+                module_name,
+                enabled,
+                send_as_id=explicit_identity_id,
+                skip_unavailable=enabled and explicit_identity_id is None,
+            )
             if not ok:
                 await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
