@@ -24,7 +24,6 @@ RE_TIANJI_TARGET = re.compile(r"@([^\s，。！？、；：:,.!?\]）】()（）
 RE_TIANJI_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_TIANJI_TIMEOUT_MIN = re.compile(r"请在\s*(\d+)\s*分钟")
 RE_TIANJI_TIMEOUT_SEC = re.compile(r"请在\s*(\d+)\s*秒")
-RE_TIANJI_REPLY_ANSWER = re.compile(r"^\s*([A-D])(?:\s*$|[\s.．、，,):：-]+[\s\S]*$)", re.I)
 RE_TIANJI_WHITESPACE = re.compile(r"\s+")
 RE_TIANJI_IDENTITY_SEPARATORS = re.compile(r"[\s@，。！？、；：:,.!?\[\]【】()（）<>《》“”\"'`]+")
 
@@ -344,13 +343,8 @@ def _get_message_text(message):
 
 
 def _parse_tianji_submitted_answer(text):
-    raw_text = str(text or "").strip()
-    answer_match = RE_TIANJI_REPLY_ANSWER.match(raw_text)
-    if answer_match:
-        answer = str(answer_match.group(1) or "").strip().upper()
-        if answer in TIANJI_QUIZ_OPTIONS:
-            return answer
-    return ""
+    answer = str(text or "").strip().upper()
+    return answer if answer in TIANJI_QUIZ_OPTIONS else ""
 
 
 async def _get_tianji_answer_prompt_message(answer_message):
