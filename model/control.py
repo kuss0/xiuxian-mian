@@ -1,6 +1,7 @@
 import random
 import re
 import time
+import unicodedata
 from datetime import datetime, timezone
 
 from .config import (
@@ -687,9 +688,21 @@ MODULE_STATE_SETTERS = {
 
 
 def _get_module_display_name(module_name, send_as_id=None):
-    if module_name == "法宝":
-        return f"法宝({get_pet_name(send_as_id)})"
     return module_name
+
+
+def _text_display_width(text):
+    width = 0
+    for char in str(text or ""):
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+    return width
+
+
+def _pad_display_width(text, target_width):
+    text = str(text or "")
+    return text + " " * max(0, int(target_width or 0) - _text_display_width(text))
 
 
 def get_module_status_text(send_as_id=None):
@@ -699,10 +712,12 @@ def get_module_status_text(send_as_id=None):
     def cell(enabled, name):
         return f"{status_dot(enabled)} {name}"
 
-    def row(cells):
+    def row(cells, first_column_width=0):
         if not cells:
             return ""
-        return "  ｜  ".join(cells)
+        if len(cells) == 1:
+            return cells[0]
+        return f"{_pad_display_width(cells[0], first_column_width)}  ｜  {cells[1]}"
 
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     show_identity_header = len(target_ids) > 1 or (send_as_id is not None and len(get_identity_ids()) > 1)
@@ -710,15 +725,18 @@ def get_module_status_text(send_as_id=None):
     for identity_id in target_ids:
         available_module_names = get_available_module_names(identity_id)
         with use_identity(identity_id):
-            rows = []
-            current_row = []
-            for module_name in available_module_names:
-                current_row.append(cell(state[MODULE_KEY_MAP[module_name]], _get_module_display_name(module_name, identity_id)))
-                if len(current_row) == 2:
-                    rows.append(row(current_row))
-                    current_row = []
-            if current_row:
-                rows.append(row(current_row))
+            cells = [
+                cell(state[MODULE_KEY_MAP[module_name]], _get_module_display_name(module_name, identity_id))
+                for module_name in available_module_names
+            ]
+            first_column_width = max(
+                (_text_display_width(cells[index]) for index in range(0, len(cells), 2)),
+                default=0,
+            )
+            rows = [
+                row(cells[index:index + 2], first_column_width)
+                for index in range(0, len(cells), 2)
+            ]
             body = "📋 模块状态"
             if rows:
                 body += "\n" + "\n".join(rows)
