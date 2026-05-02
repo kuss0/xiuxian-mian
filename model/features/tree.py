@@ -91,7 +91,7 @@ async def handle_tree_rebirth_reset(text, now):
     if not state["tree_enabled"]:
         return
 
-    if "灵眼之树" in text and "轮回" in text:
+    if "灵眼之树" in text and ("新的轮回开始" in text or "贡献度已重置" in text):
         state["is_harvested"] = False
         state["tree_bootstrap_check_needed"] = False
         if state["is_maturing"]:
@@ -147,6 +147,8 @@ async def handle_tree_exception_prompt(text):
 
     async def delayed_status():
         await asyncio.sleep(delay)
+        if not state["tree_enabled"]:
+            return
         await send_game_command(CMD_TREE_STATUS)
 
     _fire_and_forget(delayed_status())
@@ -203,6 +205,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             if should_schedule_followup:
                 async def delayed_status_followup():
                     await asyncio.sleep(TREE_HARVEST_FOLLOWUP_DELAY_SEC)
+                    if not state["is_maturing"] or state["is_harvested"]:
+                        return
                     await send_game_command(CMD_TREE_STATUS)
 
                 _fire_and_forget(delayed_status_followup())
@@ -226,6 +230,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
 
             async def delayed_harvest():
                 await asyncio.sleep(random.uniform(1.5, 3.5))
+                if not state["is_maturing"] or not state["tree_enabled"]:
+                    return
                 await send_game_command(CMD_TREE_HARVEST)
 
             _fire_and_forget(delayed_harvest())
@@ -237,6 +243,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             if not state["is_harvested"] and not has_pending_status and remain_sec > first_status_delay_sec:
                 async def delayed_status():
                     await asyncio.sleep(first_status_delay_sec)
+                    if state["is_harvested"] or not state["is_maturing"]:
+                        return
                     await send_game_command(CMD_TREE_STATUS)
 
                 _fire_and_forget(delayed_status())
@@ -253,6 +261,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             if not state["is_harvested"] and not has_pending_status:
                 async def delayed_status():
                     await asyncio.sleep(first_status_delay_sec)
+                    if state["is_harvested"] or not state["is_maturing"]:
+                        return
                     await send_game_command(CMD_TREE_STATUS)
 
                 _fire_and_forget(delayed_status())
@@ -270,6 +280,10 @@ async def handle_tree_panel(text, now, is_reply_to_me):
         if state["is_maturing"]:
             state["is_maturing"] = False
             state["tree_harvest_followup_due_at"] = 0
+            # 退出成熟期时，next_irr_time 之前被推到 FREEZE_CD，必须重置
+            # 否则会永久卡在 115 天后
+            if state["next_irr_time"] > now + 24 * 3600:
+                state["next_irr_time"] = now
             state_changed = True
             if state.get("tree_maturing_logged", False):
                 state["tree_maturing_logged"] = False

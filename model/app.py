@@ -51,6 +51,22 @@ from .features.tree import (
     run_tree_bootstrap_check,
     run_tree_scheduler,
 )
+from .features.second_soul import (
+    handle_second_soul_choice_result_broadcast,
+    handle_second_soul_heart_demon_warning_broadcast,
+    handle_second_soul_recovery_broadcast,
+    handle_second_soul_status_reply,
+    handle_second_soul_train_reply,
+    run_second_soul_bootstrap_check,
+    run_second_soul_scheduler,
+)
+from .features.taiyi import (
+    handle_taiyi_node_define_reply,
+    handle_taiyi_node_search_reply,
+    handle_taiyi_yindao_reply,
+    run_taiyi_bootstrap_check,
+    run_taiyi_scheduler,
+)
 from .features.yuanying import (
     handle_yuanying_running_reply,
     handle_yuanying_status_reply,
@@ -306,6 +322,15 @@ async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
         await _run_until_handled_for_enabled_identities(handle_nanlong_result_broadcast, text, now, event)
 
 
+async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="second_soul_heart_demon_warning"):
+        await handle_second_soul_heart_demon_warning_broadcast(text, now, event.id)
+    if _claim_runtime_event(event, scope="second_soul_choice_result"):
+        await handle_second_soul_choice_result_broadcast(text, now)
+    if _claim_runtime_event(event, scope="second_soul_recovery"):
+        await handle_second_soul_recovery_broadcast(text, now)
+
+
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
     if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
         await handle_realm_breakthrough_broadcast(text, now)
@@ -341,6 +366,10 @@ async def _run_identity_schedulers(now):
         run_tower_scheduler,
         run_deep_retreat_scheduler,
         run_yuanying_scheduler,
+        run_second_soul_bootstrap_check,
+        run_second_soul_scheduler,
+        run_taiyi_bootstrap_check,
+        run_taiyi_scheduler,
     )
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
@@ -430,6 +459,11 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tree_exception_prompt(text) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_taiyi_node_search_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_taiyi_node_define_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if matched_family and handled_any and not already_consumed:
             _mark_runtime_message_consumed(event, matched_family)
@@ -502,6 +536,7 @@ async def on_message(event):
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
+        await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
 
     except Exception:
         print(traceback.format_exc())

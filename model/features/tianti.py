@@ -88,6 +88,17 @@ def _set_tianti_skip_reason(reason):
     return True
 
 
+def _has_pending_tianti_command(command):
+    command = str(command or "").strip()
+    if not command:
+        return False
+    for pending in state.get("pending_tasks", {}).values():
+        pending_command = str((pending or {}).get("cmd") or "").strip()
+        if pending_command == command or pending_command.startswith(f"{command} "):
+            return True
+    return False
+
+
 def _reset_tianti_wenxin_daily_state(now):
     state["tianti_last_wenxin_day"] = ""
     state["tianti_wenxin_last_trigger_key"] = ""
@@ -452,7 +463,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
                         state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
                 else:
                     next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
-                    if next_climb <= 0 or next_climb > now:
+                    if not _has_pending_tianti_command(CMD_TIANTI_CLIMB) and (next_climb <= 0 or next_climb > now):
                         _set_tianti_next_climb_time(now, persist=False)
             _calc_tianti_wenxin_plan(now)
             _log_tianti_plan("天阶状态同步后")
@@ -543,14 +554,19 @@ async def run_tianti_scheduler(now):
     _calc_tianti_wenxin_plan(now)
 
     if _tianti_status_sync_due(now):
+        if _has_pending_tianti_command(CMD_TIANTI_STATUS):
+            return
         msg = await send_game_command(CMD_TIANTI_STATUS)
         if not msg:
             state["tianti_last_error"] = "天阶状态发送失败"
+            state["next_tianti_status_time"] = now + RETRY_MAX_SEC
             await send_audit_log("❌ 登天阶状态发送失败，稍后重试。")
             return
         state["tianti_status_reply_to_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["next_tianti_status_time"] = now + RETRY_MAX_SEC
         _log_tianti_plan("调度前快照")
         console_log("☁️ 查询天阶状态")
+        save_state()
         return
 
     should_trigger_wenxin, wenxin_state = _should_trigger_tianti_wenxin(now)
@@ -587,6 +603,8 @@ async def run_tianti_scheduler(now):
 
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
     if next_climb_time > 0 and now >= next_climb_time:
+        if _has_pending_tianti_command(CMD_TIANTI_CLIMB):
+            return
         msg = await send_game_command(CMD_TIANTI_CLIMB)
         if not msg:
             _set_tianti_next_climb_time(now + RETRY_MAX_SEC, persist=True)

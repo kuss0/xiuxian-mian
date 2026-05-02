@@ -203,6 +203,13 @@ CMD_NANLONG_EXCHANGE_FABAO = ".交换 法宝"
 CMD_NANLONG_EXCHANGE_GONGFA = ".交换 功法"
 CMD_NANLONG_REJECT = ".拒绝交易"
 CMD_SMALL_WORLD_PREACH = ".神迹 布道"
+CMD_SECOND_SOUL_STATUS = ".第二元神"
+CMD_SECOND_SOUL_TRAIN = ".元神修炼"
+CMD_SECOND_SOUL_CHOICE_BREAK = ".抉择 强行突破"
+CMD_SECOND_SOUL_CHOICE_STABLE = ".抉择 稳固道心"
+CMD_YINDAO = ".引道"
+CMD_NODE_SEARCH = ".搜寻节点"
+CMD_NODE_DEFINE = ".定星"
 QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "quiz_bank.json")
 TIANJI_QUIZ_BANK_FILE = os.path.join(DATA_DIR, "quiz", "tianji_quiz_bank.json")
 QUIZ_REPLY_TIMEOUT_SEC = 300
@@ -211,6 +218,25 @@ NANLONG_REPLY_TIMEOUT_SEC = 10 * 60
 NANLONG_REPLY_DELAY_MIN_SEC = 20
 NANLONG_REPLY_DELAY_MAX_SEC = 30
 SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC = 60
+
+
+SECOND_SOUL_TRAIN_CD_SEC = 24 * 3600
+SECOND_SOUL_INJURED_NO_REMAIN_CD_SEC = 6 * 3600
+SECOND_SOUL_RECHECK_MIN = 30 * 60
+SECOND_SOUL_RECHECK_MAX = 60 * 60
+SECOND_SOUL_HEART_DEMON_DEADLINE_SEC = 3600
+SECOND_SOUL_NOT_UNLOCKED_RETRY_SEC = 7 * 24 * 3600
+
+TAIYI_VALID_ELEMENTS = {"金", "木", "水", "火", "土"}
+TAIYI_CYCLE_CD_SEC = 12 * 3600
+TAIYI_CYCLE_JITTER_SEC = 30 * 60
+TAIYI_RESOURCE_RETRY_SEC = 60 * 60
+TAIYI_FROZEN_RETRY_SEC = 7 * 24 * 3600
+TAIYI_PHASE_TIMEOUT_SEC = 5 * 60
+TAIYI_DEFINE_DELAY_MIN = 1.5
+TAIYI_DEFINE_DELAY_MAX = 3.5
+TAIYI_FAILURE_WINDOW_SEC = 24 * 3600
+TAIYI_FAILURE_LIMIT = 5
 
 
 CMD_BATTLE_POWER = ".战力"
@@ -274,9 +300,16 @@ SCRIPT_COMMANDS = [
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
     CMD_SMALL_WORLD_PREACH,
+    CMD_SECOND_SOUL_STATUS,
+    CMD_SECOND_SOUL_TRAIN,
+    CMD_SECOND_SOUL_CHOICE_BREAK,
+    CMD_SECOND_SOUL_CHOICE_STABLE,
+    CMD_YINDAO,
+    CMD_NODE_SEARCH,
+    CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔"]
+MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -292,6 +325,8 @@ MODULE_KEY_MAP = {
     "小世界": "small_world_enabled",
     "点卯": "checkin_enabled",
     "闯塔": "tower_enabled",
+    "第二元神": "second_soul_enabled",
+    "太一": "taiyi_enabled",
 }
 UI_HOST = os.environ.get("CHAOGU_UI_HOST", "0.0.0.0")
 try:

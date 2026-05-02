@@ -36,6 +36,7 @@ TIANDAO_JUDGEMENT_VALUE_MAP = {
     "元婴出窍历练时长": 8,
     "炼制金光砖需金精矿": 12,
     "大庚剑阵消耗修为": 2000,
+    "股市买入基础手续费": 5,
 }
 
 RE_TIANDAO_TARGET = re.compile(r"对象\s*[【\[]\s*([^】\]]+?)\s*[】\]]")

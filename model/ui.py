@@ -35,6 +35,7 @@ from .config import (
     CMD_TIANTI_GANGFENG,
     MODULE_KEY_MAP,
     STARGAZER_STAR_CHOICES,
+    TAIYI_VALID_ELEMENTS,
     TIANTI_RANK_CHOICES,
     TZ_LOCAL,
     UI_AUTH_COOKIE_NAME,
@@ -254,6 +255,9 @@ def get_identity_ui_snapshot(send_as_id):
                 "yuanying": get_yuanying_phase_text(identity_state.get("yuanying_phase"), now),
                 "deep_retreat": get_deep_retreat_phase_text(identity_state.get("deep_retreat_phase"), now),
             },
+            "taiyi_yindao_element": identity_state.get("taiyi_yindao_element", "水"),
+            "taiyi_yindao_choices": sorted(TAIYI_VALID_ELEMENTS, key=lambda e: ["金","木","水","火","土"].index(e)),
+            "taiyi_node_search_enabled": bool(identity_state.get("taiyi_node_search_enabled", False)),
             "pending_task_count": len(identity_state.get("pending_tasks", {})),
             "message_count": len(identity_state.get("my_msg_ids", {})),
         }
@@ -603,6 +607,41 @@ async def ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled):
         send_as_id=send_as_id,
     )
     return True, f"已{action_text}登天阶{display_name}[{get_identity_display_name(send_as_id)}]{audit_suffix}"
+
+
+async def ui_set_taiyi_yindao_element(send_as_id, element):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    element = (element or "").strip()
+    if element not in TAIYI_VALID_ELEMENTS:
+        return False, f"无效的引道元素: {element}（合法值: 金/木/水/火/土）"
+    with use_identity(send_as_id):
+        state["taiyi_yindao_element"] = element
+        save_state()
+    await send_audit_log(
+        f"🌟 已更新太一引道元素：{element}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已更新太一引道元素[{get_identity_display_name(send_as_id)}]：{element}"
+
+
+async def ui_set_taiyi_node_search_enabled(send_as_id, enabled):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    enabled = bool(enabled)
+    with use_identity(send_as_id):
+        state["taiyi_node_search_enabled"] = enabled
+        save_state()
+    action_text = "开启" if enabled else "关闭"
+    await send_audit_log(
+        f"🌟 已{action_text}太一搜寻节点子模块",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已{action_text}太一搜寻节点[{get_identity_display_name(send_as_id)}]"
 
 
 async def ui_set_jiyin_choice(send_as_id, choice):
@@ -1606,6 +1645,32 @@ async def handle_ui_http(reader, writer):
                         _write_json_bad_request(writer, "缺少 send_as_id 或 feature 参数", auth_headers)
                     else:
                         ok, message = await ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/taiyi-yindao-element":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    element = payload.get("element")
+                    if send_as_id in {None, ""} or not element:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 element 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_taiyi_yindao_element(send_as_id, element)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/taiyi-node-search-toggle":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    enabled = bool(payload.get("enabled"))
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_taiyi_node_search_enabled(send_as_id, enabled)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/module-window":
                 if session is None:

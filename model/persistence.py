@@ -315,6 +315,46 @@ def _ensure_schema_columns(conn):
     if "identity_info_primary_payload" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_primary_payload TEXT NOT NULL DEFAULT '{}' ")
 
+    # 第二元神模块
+    if "second_soul_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_enabled INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "second_soul_heart_demon_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_heart_demon_notified" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_notified INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_error TEXT NOT NULL DEFAULT ''")
+    if "next_second_soul_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_second_soul_time REAL NOT NULL DEFAULT 0")
+    if "second_soul_heart_demon_deadline" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN second_soul_heart_demon_deadline REAL NOT NULL DEFAULT 0")
+
+    # 太一门模块
+    if "taiyi_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN taiyi_enabled INTEGER NOT NULL DEFAULT 0")
+    if "taiyi_node_search_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN taiyi_node_search_enabled INTEGER NOT NULL DEFAULT 0")
+    if "taiyi_yindao_element" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_yindao_element TEXT NOT NULL DEFAULT '水'")
+    if "taiyi_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "taiyi_pending_node_name" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_pending_node_name TEXT NOT NULL DEFAULT ''")
+    if "taiyi_freeze_reason" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_freeze_reason TEXT NOT NULL DEFAULT ''")
+    if "taiyi_failure_history" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_failure_history TEXT NOT NULL DEFAULT '[]'")
+    if "taiyi_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_last_error TEXT NOT NULL DEFAULT ''")
+    if "next_taiyi_cycle_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_taiyi_cycle_time REAL NOT NULL DEFAULT 0")
+    if "taiyi_phase_entered_at" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN taiyi_phase_entered_at REAL NOT NULL DEFAULT 0")
+    if "taiyi_freeze_until" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN taiyi_freeze_until REAL NOT NULL DEFAULT 0")
+
 
 
 def _migrate_schema_to_current(conn):

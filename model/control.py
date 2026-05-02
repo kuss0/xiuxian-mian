@@ -14,8 +14,14 @@ from .config import (
     CMD_NANLONG_EXCHANGE_FABAO,
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
+    CMD_NODE_DEFINE,
+    CMD_NODE_SEARCH,
     CMD_PET,
     CMD_QUIZ_ANSWER,
+    CMD_SECOND_SOUL_CHOICE_BREAK,
+    CMD_SECOND_SOUL_CHOICE_STABLE,
+    CMD_SECOND_SOUL_STATUS,
+    CMD_SECOND_SOUL_TRAIN,
     CMD_TIANTI_CLIMB,
     CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
@@ -31,6 +37,7 @@ from .config import (
     CMD_TREE_HARVEST,
     CMD_TREE_STATUS,
     CMD_TREE_WATER,
+    CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     LAUNCHING_TIMEOUT_SEC,
@@ -71,6 +78,8 @@ from .features.stargazer import get_stargazer_status_text
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text
+from .features.second_soul import get_second_soul_status_text
+from .features.taiyi import get_taiyi_status_text
 from .features.yuanying import get_yuanying_status_detail_text
 from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
@@ -196,6 +205,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
         return f"当前宗门未提供{module_name}模块"
     if module_name == "登天阶":
         return f"当前宗门未提供{module_name}模块"
+    if module_name == "太一":
+        return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
     if module_name == "小世界" and not is_small_world_realm_available(send_as_id):
@@ -219,6 +230,31 @@ def _disable_tree_module_state():
     state["tree_maturing_logged"] = False
     state["tree_harvest_followup_due_at"] = 0
     _clear_pending_tasks_by_commands({CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TREE_STATUS, CMD_TREE_HARVEST})
+
+
+def _disable_second_soul_module_state():
+    state["second_soul_enabled"] = False
+    state["second_soul_phase"] = "idle"
+    state["next_second_soul_time"] = 0
+    state["second_soul_heart_demon_msg_id"] = 0
+    state["second_soul_heart_demon_deadline"] = 0
+    state["second_soul_heart_demon_notified"] = False
+    state["second_soul_last_error"] = ""
+    _clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN, CMD_SECOND_SOUL_CHOICE_BREAK, CMD_SECOND_SOUL_CHOICE_STABLE})
+
+
+def _disable_taiyi_module_state():
+    state["taiyi_enabled"] = False
+    state["taiyi_node_search_enabled"] = False
+    state["taiyi_phase"] = "idle"
+    state["taiyi_pending_node_name"] = ""
+    state["next_taiyi_cycle_time"] = 0
+    state["taiyi_phase_entered_at"] = 0
+    state["taiyi_freeze_until"] = 0
+    state["taiyi_freeze_reason"] = ""
+    state["taiyi_failure_history"] = []
+    state["taiyi_last_error"] = ""
+    _clear_pending_tasks_by_commands({CMD_YINDAO, CMD_NODE_SEARCH, CMD_NODE_DEFINE})
 
 
 def _disable_pet_module_state():
@@ -769,6 +805,8 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "深度闭关": get_deep_retreat_status_detail_text,
         "点卯": get_checkin_status_text,
         "闯塔": get_tower_status_text,
+        "第二元神": get_second_soul_status_text,
+        "太一": get_taiyi_status_text,
     }
     getter = status_map.get(module_name)
     if not getter:
@@ -826,6 +864,9 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
         if not is_module_available("小世界", send_as_id) and state.get("small_world_enabled"):
             _disable_small_world_module_state()
             changed = True
+        if not is_module_available("太一", send_as_id) and state.get("taiyi_enabled"):
+            _disable_taiyi_module_state()
+            changed = True
     if changed and persist:
         save_state()
     return changed
@@ -879,6 +920,40 @@ def _restore_tree_runtime(now):
         return
     if state["next_irr_time"] <= 0:
         _schedule_module_immediate_retry("灵树", now)
+
+
+def _restore_second_soul_runtime(now):
+    """启动恢复时：异常 phase 让 bootstrap_check 处理；idle 时立即调度查询。"""
+    phase = state.get("second_soul_phase", "idle")
+    # status_pending 残留（上次进程被 kill 时卡的）：清掉
+    if phase == "status_pending":
+        state["second_soul_phase"] = "idle"
+        state["next_second_soul_time"] = now
+        return
+    if phase in ("cultivating", "injured", "heart_demon_pending"):
+        # 真实状态保留，等 next_second_soul_time 到点
+        return
+    if phase == "not_unlocked":
+        # 长冻结，不主动查
+        return
+    if state.get("next_second_soul_time", 0) <= 0:
+        state["next_second_soul_time"] = now
+
+
+def _restore_taiyi_runtime(now):
+    """启动恢复时：清残留 pending phase + 启动 stagger 防多号同步。"""
+    phase = state.get("taiyi_phase", "idle")
+    # pending phase 残留（上次进程被 kill 时卡的）：清掉
+    if phase in ("yindao_pending", "search_pending", "define_pending"):
+        state["taiyi_pending_node_name"] = ""
+        state["taiyi_phase"] = "idle"
+        state["taiyi_phase_entered_at"] = 0
+        phase = "idle"
+    if phase == "frozen":
+        return
+    if state.get("next_taiyi_cycle_time", 0) <= 0:
+        # 0-30min 启动 stagger
+        state["next_taiyi_cycle_time"] = now + random.uniform(0, 1800)
 
 
 
@@ -967,6 +1042,10 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_phaseful_runtime("深度闭关", now)
         if state["yuanying_enabled"]:
             _restore_phaseful_runtime("元婴", now)
+        if state["second_soul_enabled"]:
+            _restore_second_soul_runtime(now)
+        if state["taiyi_enabled"]:
+            _restore_taiyi_runtime(now)
 
 
 def _get_startup_module_alerts_bucket():

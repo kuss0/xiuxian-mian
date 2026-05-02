@@ -57,7 +57,9 @@ def _phase(spec):
 
 
 def _default_next_time(spec, now):
-    return now + spec.cd_sec + CD_BUFFER_SEC
+    # 加 1-10 分钟抖动，避免多号同 CD 后同时到点触发"1"风暴
+    jitter = random.uniform(60, 600)
+    return now + spec.cd_sec + CD_BUFFER_SEC + jitter
 
 
 def set_phase(spec, phase):

@@ -23,12 +23,15 @@ _identity_context_active = contextvars.ContextVar("identity_context_active", def
 
 IDENTITY_MODULE_COLUMNS = [
     "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
+    "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_deep_retreat_time",
+    "next_second_soul_time", "second_soul_heart_demon_deadline",
+    "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
@@ -43,14 +46,18 @@ IDENTITY_RUNTIME_COLUMNS = [
     "small_world_preach_reply_to_msg_id", "small_world_faith_value", "small_world_last_error",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
+    "second_soul_phase", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_last_error",
+    "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_last_error",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history"}
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
+    "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
+    "second_soul_heart_demon_notified",
 }
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
@@ -298,6 +305,28 @@ IDENTITY_STATE_TEMPLATE = {
     "small_world_preach_reply_to_msg_id": 0,
     "small_world_faith_value": 0,
     "small_world_last_error": "",
+
+    # 第二元神模块
+    "second_soul_enabled": False,
+    "second_soul_phase": "idle",  # idle|status_pending|cultivating|heart_demon_pending|injured|not_unlocked
+    "next_second_soul_time": 0,
+    "second_soul_heart_demon_msg_id": 0,
+    "second_soul_heart_demon_deadline": 0,
+    "second_soul_heart_demon_notified": False,
+    "second_soul_last_error": "",
+
+    # 太一门模块
+    "taiyi_enabled": False,
+    "taiyi_yindao_element": "水",
+    "taiyi_node_search_enabled": False,
+    "taiyi_phase": "idle",  # idle|yindao_pending|search_pending|define_pending|frozen
+    "taiyi_pending_node_name": "",
+    "next_taiyi_cycle_time": 0,
+    "taiyi_phase_entered_at": 0,
+    "taiyi_freeze_until": 0,
+    "taiyi_freeze_reason": "",
+    "taiyi_failure_history": [],
+    "taiyi_last_error": "",
 
     # 运行态
     "identity_info_reply_msg_ids": [],
@@ -986,6 +1015,8 @@ def get_available_module_names(send_as_id=None):
         available_module_names = [module_name for module_name in available_module_names if module_name not in {"观星台", "观星"}]
     if sect_name and sect_name != "凌霄宫":
         available_module_names = [module_name for module_name in available_module_names if module_name != "登天阶"]
+    if sect_name and sect_name != "太一门":
+        available_module_names = [module_name for module_name in available_module_names if module_name != "太一"]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]
     if not is_small_world_realm_available(send_as_id):
