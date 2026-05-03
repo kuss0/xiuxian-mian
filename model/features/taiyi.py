@@ -6,7 +6,7 @@
 3. 三个 reply handler 都做 phase guard，迟到 reply 不推进流程
 4. 多号防风暴：next_cycle 加 ±30min jitter
 5. 失败熔断：24h 内 5 次失败自动停子开关
-6. bot 临时延迟兜底：phase 5min 超时 reset
+6. bot 临时延迟兜底：phase 15min 超时 reset
 7. bot 全局宕机：复用现有 _bot_silence 机制（外部）
 8. 仅落云宗 -> 灵树 那种"按宗门匹配"的 UI（state.py 的 get_available_module_names 处理）
 
@@ -55,7 +55,7 @@ def _phase():
 
 
 def _set_phase(new_phase, now=None):
-    """切换 phase 并记录进入时间，用于 5min 超时兜底。"""
+    """切换 phase 并记录进入时间，用于超时兜底。"""
     import time
     if now is None:
         now = time.time()
@@ -411,7 +411,7 @@ async def run_taiyi_scheduler(now):
         await send_audit_log("🔓 太一冻结期已过，恢复尝试。")
         phase = "idle"
 
-    # phase 超时兜底：非 idle 状态卡超过 5min 强制 reset
+    # phase 超时兜底：非 idle 状态卡超过配置时间后强制 reset
     if phase != "idle":
         entered_at = state.get("taiyi_phase_entered_at", 0)
         if entered_at > 0 and now - entered_at > TAIYI_PHASE_TIMEOUT_SEC:
