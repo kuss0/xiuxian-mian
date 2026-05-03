@@ -296,6 +296,8 @@ def _disable_second_soul_module_state():
     state["second_soul_heart_demon_msg_id"] = 0
     state["second_soul_heart_demon_deadline"] = 0
     state["second_soul_heart_demon_notified"] = False
+    state["second_soul_status_msg_id"] = 0
+    state["second_soul_train_msg_id"] = 0
     state["second_soul_last_error"] = ""
     _clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN, CMD_SECOND_SOUL_CHOICE_BREAK, CMD_SECOND_SOUL_CHOICE_STABLE})
 
@@ -986,6 +988,8 @@ def _restore_second_soul_runtime(now):
     if phase == "status_pending":
         state["second_soul_phase"] = "idle"
         state["next_second_soul_time"] = now
+        state["second_soul_status_msg_id"] = 0
+        state["second_soul_train_msg_id"] = 0
         return
     if phase in ("cultivating", "injured", "heart_demon_pending"):
         # 真实状态保留，等 next_second_soul_time 到点

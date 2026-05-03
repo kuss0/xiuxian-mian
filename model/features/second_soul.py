@@ -31,12 +31,14 @@ from ..config import (
     SECOND_SOUL_HEART_DEMON_DEADLINE_SEC,
     SECOND_SOUL_INJURED_NO_REMAIN_CD_SEC,
     SECOND_SOUL_NOT_UNLOCKED_RETRY_SEC,
+    SECOND_SOUL_PENDING_TIMEOUT_MAX,
+    SECOND_SOUL_PENDING_TIMEOUT_MIN,
     SECOND_SOUL_RECHECK_MAX,
     SECOND_SOUL_RECHECK_MIN,
     SECOND_SOUL_TRAIN_CD_SEC,
 )
 from ..persistence import save_state
-from ..runtime import console_log, mono, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, console_log, mono, send_audit_log, send_game_command
 from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
@@ -62,6 +64,24 @@ def _clear_heart_demon():
     state["second_soul_heart_demon_notified"] = False
 
 
+def _next_pending_timeout(now):
+    import random
+    return now + random.uniform(SECOND_SOUL_PENDING_TIMEOUT_MIN, SECOND_SOUL_PENDING_TIMEOUT_MAX)
+
+
+def _is_current_reply(reply_to, state_key):
+    expected_msg_id = int(state.get(state_key, 0) or 0)
+    reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0)
+    if expected_msg_id <= 0 or reply_to_msg_id <= 0:
+        return True
+    return reply_to_msg_id == expected_msg_id
+
+
+def _clear_pending_msg_ids():
+    state["second_soul_status_msg_id"] = 0
+    state["second_soul_train_msg_id"] = 0
+
+
 def get_second_soul_status_text():
     lines = ["🌀 第二元神"]
     if not state.get("second_soul_enabled", False):
@@ -77,6 +97,8 @@ def get_second_soul_status_text():
             lines.append(f"- 下次检查：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
     elif phase == "status_pending":
         lines.append("- 当前：状态查询中…")
+        if next_time > 0:
+            lines.append(f"- 超时自愈：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
     elif phase == "cultivating":
         lines.append("- 当前：修炼中")
         lines.append(f"- 修炼结束：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
@@ -142,6 +164,12 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
     )
     if not is_relevant:
         return False
+    if _phase() != "status_pending":
+        console_log(f"🌀 忽略非等待期的第二元神状态回复（phase={_phase()}）。")
+        return True
+    if not _is_current_reply(reply_to, "second_soul_status_msg_id"):
+        console_log("🌀 忽略迟到的第二元神状态回复。")
+        return True
 
     status, remain_sec = _parse_status_field(text)
     if status is None:
@@ -154,25 +182,31 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
         # 注意：必须把 phase 转到一个 scheduler 不会再发 .第二元神 的状态
         # 否则 scheduler 看 phase=idle + next_time<=now 会立即又发一次 .第二元神
         # 用 status_pending 占位，等 train_reply 处理后再转 cultivating
-        # next_time 推到 +10 分钟兜底（bot 偶尔 1 分钟才回，10 分钟充足）
+        # next_time 推到 30-60 分钟兜底；若 bot 延迟，宁可慢查，不自动补发修炼指令。
         # train_reply 正常到达会立即覆盖到 24h
         _clear_heart_demon()
-        state["next_second_soul_time"] = now + 600
+        state["next_second_soul_time"] = _next_pending_timeout(now)
+        state["second_soul_status_msg_id"] = 0
         # 保持 phase = status_pending（之前查 status 时设的），不切回 idle
         save_state()
-        msg = await send_game_command(CMD_SECOND_SOUL_TRAIN)
+        msg = await send_game_command(CMD_SECOND_SOUL_TRAIN, track=False)
         if not msg:
             _set_phase("idle")
             state["second_soul_last_error"] = "发送 .元神修炼 失败"
             state["next_second_soul_time"] = now + 600
+            state["second_soul_train_msg_id"] = 0
             save_state()
             await send_audit_log("❌ 第二元神修炼发送失败，10 分钟后重试。")
+        else:
+            state["second_soul_train_msg_id"] = int(getattr(msg, "id", 0) or 0)
+            save_state()
         # train_reply 处理回复，phase 由那里设
         return True
 
     if status == "修炼中":
         _set_phase("cultivating")
         _clear_heart_demon()
+        _clear_pending_msg_ids()
         if remain_sec > 0:
             state["next_second_soul_time"] = now + remain_sec + CD_BUFFER_SEC
         else:
@@ -186,6 +220,7 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
     if status == "受伤":
         _set_phase("injured")
         _clear_heart_demon()
+        _clear_pending_msg_ids()
         if remain_sec > 0:
             state["next_second_soul_time"] = now + remain_sec + CD_BUFFER_SEC
         else:
@@ -200,6 +235,7 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
         if state.get("second_soul_heart_demon_deadline", 0) <= 0:
             # 我们漏了警示 broadcast，没法精确知道剩余时间，给一个保守 deadline
             state["second_soul_heart_demon_deadline"] = now + SECOND_SOUL_HEART_DEMON_DEADLINE_SEC
+        _clear_pending_msg_ids()
         save_state()
         if not state.get("second_soul_heart_demon_notified", False):
             state["second_soul_heart_demon_notified"] = True
@@ -224,6 +260,12 @@ async def handle_second_soul_train_reply(text, now, reply_to, matched_family=Non
     )
     if not is_relevant:
         return False
+    if _phase() != "status_pending":
+        console_log(f"🌀 忽略非等待期的第二元神修炼回复（phase={_phase()}）。")
+        return True
+    if not _is_current_reply(reply_to, "second_soul_train_msg_id"):
+        console_log("🌀 忽略迟到的第二元神修炼回复。")
+        return True
 
     # 修炼成功
     if "你的第二元神已开始闭关修炼" in text and "24小时" in text:
@@ -231,6 +273,7 @@ async def handle_second_soul_train_reply(text, now, reply_to, matched_family=Non
         state["next_second_soul_time"] = now + SECOND_SOUL_TRAIN_CD_SEC + CD_BUFFER_SEC
         state["second_soul_last_error"] = ""
         _clear_heart_demon()
+        _clear_pending_msg_ids()
         save_state()
         await send_audit_log(f"🌀 第二元神已修炼→{fmt_abs_ts(state['next_second_soul_time'])}")
         return True
@@ -243,12 +286,14 @@ async def handle_second_soul_train_reply(text, now, reply_to, matched_family=Non
             state["next_second_soul_time"] = now + random.uniform(
                 SECOND_SOUL_RECHECK_MIN, SECOND_SOUL_RECHECK_MAX
             )
+            _clear_pending_msg_ids()
             save_state()
             console_log("🌀 第二元神已在修炼中，稍后复查。")
             return True
         if "(受伤)" in text or "（受伤）" in text:
             _set_phase("injured")
             state["next_second_soul_time"] = now + SECOND_SOUL_INJURED_NO_REMAIN_CD_SEC
+            _clear_pending_msg_ids()
             save_state()
             console_log("🤕 第二元神受伤中，6h 后复查。")
             return True
@@ -256,6 +301,7 @@ async def handle_second_soul_train_reply(text, now, reply_to, matched_family=Non
             _set_phase("heart_demon_pending")
             if state.get("second_soul_heart_demon_deadline", 0) <= 0:
                 state["second_soul_heart_demon_deadline"] = now + SECOND_SOUL_HEART_DEMON_DEADLINE_SEC
+            _clear_pending_msg_ids()
             save_state()
             if not state.get("second_soul_heart_demon_notified", False):
                 state["second_soul_heart_demon_notified"] = True
@@ -268,6 +314,7 @@ async def handle_second_soul_train_reply(text, now, reply_to, matched_family=Non
         _set_phase("not_unlocked")
         state["next_second_soul_time"] = now + SECOND_SOUL_NOT_UNLOCKED_RETRY_SEC
         state["second_soul_last_error"] = "尚未凝练第二元神"
+        _clear_pending_msg_ids()
         save_state()
         await send_audit_log("ℹ️ 尚未凝练第二元神，已进入冻结，7 天后重试。")
         return True
@@ -335,6 +382,7 @@ async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_
         state["second_soul_heart_demon_msg_id"] = int(event_msg_id or 0)
         state["second_soul_heart_demon_deadline"] = now + SECOND_SOUL_HEART_DEMON_DEADLINE_SEC
         state["second_soul_heart_demon_notified"] = True
+        _clear_pending_msg_ids()
         save_state()
         await send_audit_log(
             f"🔥 第二元神心魔试炼来袭！1 小时内回复警示消息 {event_msg_id}：\n"
@@ -370,6 +418,7 @@ async def handle_second_soul_choice_result_broadcast(text, now):
             _set_phase("injured")
             state["next_second_soul_time"] = now + SECOND_SOUL_TRAIN_CD_SEC + CD_BUFFER_SEC
             _clear_heart_demon()
+            _clear_pending_msg_ids()
             save_state()
             await send_audit_log(
                 f"💀 第二元神破而后立失败，受伤 24 小时→{fmt_abs_ts(state['next_second_soul_time'])}",
@@ -380,6 +429,7 @@ async def handle_second_soul_choice_result_broadcast(text, now):
             _set_phase("idle")
             state["next_second_soul_time"] = now
             _clear_heart_demon()
+            _clear_pending_msg_ids()
             save_state()
             label = "稳扎稳打·成功" if is_stable_success else "破而后立·成功"
             await send_audit_log(
@@ -413,6 +463,7 @@ async def handle_second_soul_recovery_broadcast(text, now):
         _set_phase("idle")
         state["next_second_soul_time"] = now
         _clear_heart_demon()
+        _clear_pending_msg_ids()
         state["second_soul_last_error"] = ""
         save_state()
         if is_heart_demon_dissolve:
@@ -461,27 +512,40 @@ async def run_second_soul_scheduler(now):
         else:
             return  # 仍在抉择期，不发任何命令
 
-    # status_pending: 看 pending_tasks 是否还有 .第二元神 在飞
-    # 简化：如果 next_second_soul_time 已过太久仍是 status_pending，强制重置
     if phase == "status_pending":
-        # 留给 retry_scheduler 兜底重发，本 scheduler 不再发新的
-        return
+        # 第二元神不用通用 retry 补发，避免 bot 延迟时重复刷屏。
+        # 到 30-60 分钟慢速自愈点后，清掉旧 pending，回到 idle 重新查一次。
+        if state.get("next_second_soul_time", 0) > now:
+            return
+        clear_pending_tasks_by_commands({CMD_SECOND_SOUL_STATUS, CMD_SECOND_SOUL_TRAIN})
+        _set_phase("idle")
+        state["next_second_soul_time"] = now
+        state["second_soul_last_error"] = "状态查询等待超时，已自愈重查"
+        _clear_pending_msg_ids()
+        save_state()
+        await send_audit_log("🌀 第二元神状态等待超时，已清理旧指令并重新查询。")
 
     # 到点：发 .第二元神 查状态
     if state.get("next_second_soul_time", 0) > now:
         return
 
     _set_phase("status_pending")
+    state["next_second_soul_time"] = _next_pending_timeout(now)
+    state["second_soul_status_msg_id"] = 0
+    state["second_soul_train_msg_id"] = 0
     save_state()
-    msg = await send_game_command(CMD_SECOND_SOUL_STATUS)
+    msg = await send_game_command(CMD_SECOND_SOUL_STATUS, track=False)
     if not msg:
         # 发送失败：回退到 idle，下个 scheduler tick 重试
         _set_phase("idle")
         state["next_second_soul_time"] = now + 60  # 1min 后重试
         state["second_soul_last_error"] = "发送 .第二元神 失败"
+        _clear_pending_msg_ids()
         save_state()
         await send_audit_log("❌ 第二元神状态查询发送失败，1min 后重试。")
     else:
+        state["second_soul_status_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        save_state()
         console_log("🌀 已发 .第二元神 查状态。")
 
 

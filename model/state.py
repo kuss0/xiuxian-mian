@@ -313,6 +313,8 @@ IDENTITY_STATE_TEMPLATE = {
     "second_soul_heart_demon_msg_id": 0,
     "second_soul_heart_demon_deadline": 0,
     "second_soul_heart_demon_notified": False,
+    "second_soul_status_msg_id": 0,
+    "second_soul_train_msg_id": 0,
     "second_soul_last_error": "",
 
     # 太一门模块
