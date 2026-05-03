@@ -67,9 +67,12 @@ from .config import (
     UI_AUTH_SESSION_TIMEOUT_SEC,
     UI_PUBLIC_BASE_URL,
     client,
+    get_account_offline_reason,
     get_all_clients,
-    get_client,
+    get_registered_client,
+    is_account_offline,
     is_identity_refresh_command_text,
+    mark_account_offline,
 )
 from .persistence import mark_dirty
 from .state import (
@@ -93,8 +96,10 @@ from .state import (
 
 def _get_any_authed_client():
     """返回任意一个已认证的 client（优先账号 client，回退主 client）"""
-    _all = get_all_clients()
-    return next(iter(_all.values())) if _all else client
+    for account_id, tc in get_all_clients().items():
+        if not is_account_offline(account_id):
+            return tc
+    return client
 
 
 def _get_identity_client(send_as_id=None):
@@ -102,8 +107,10 @@ def _get_identity_client(send_as_id=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     account_id = get_identity_account(send_as_id)
-    if account_id:
-        return get_client(account_id)
+    if account_id and not is_account_offline(account_id):
+        tc = get_registered_client(account_id)
+        if tc is not None:
+            return tc
     return _get_any_authed_client()
 
 
@@ -125,6 +132,8 @@ NORMAL_SEND_GAP_MAX_SEC = 120.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
+_ACCOUNT_OFFLINE_AUDIT_LAST = {}
+ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
 
 
 # ============== 天尊健康状态 ==============
@@ -1014,30 +1023,139 @@ def _extract_sent_message_id(result):
     return 0
 
 
+def _is_account_session_error(error):
+    error_text = str(error or "")
+    error_code = error_text.upper()
+    markers = (
+        "THE KEY IS NOT REGISTERED IN THE SYSTEM",
+        "AUTH_KEY_UNREGISTERED",
+        "AUTHKEYUNREGISTERED",
+        "AUTH_KEY_DUPLICATED",
+        "UNAUTHORIZED",
+        "USERDEACTIVATED",
+        "USER_DEACTIVATED",
+        "PLEASE ENTER YOUR PHONE",
+        "EOF WHEN READING A LINE",
+    )
+    return any(marker in error_code for marker in markers)
+
+
+def _compact_account_error(error):
+    return _truncate_log_text(str(error or "账号 session 不可用"), limit=72)
+
+
+async def _ensure_account_client_ready(tc):
+    is_connected = getattr(tc, "is_connected", None)
+    if callable(is_connected) and not is_connected():
+        await tc.connect()
+    is_user_authorized = getattr(tc, "is_user_authorized", None)
+    if callable(is_user_authorized) and not await is_user_authorized():
+        raise RuntimeError("UNAUTHORIZED: 账号 session 未授权，请重新登录")
+
+
+async def _log_account_offline_blocked(command, *, send_as_id, account_id, reason, force=False):
+    now = time.time()
+    audit_key = (int(account_id), int(send_as_id))
+    last_at = float(_ACCOUNT_OFFLINE_AUDIT_LAST.get(audit_key, 0) or 0)
+    if not force and now - last_at < ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC:
+        return
+    _ACCOUNT_OFFLINE_AUDIT_LAST[audit_key] = now
+    label = get_send_as_label(send_as_id)
+    await send_audit_log(
+        (
+            f"⏸ 账号离线熔断：{label}｜acc={int(account_id)}｜"
+            f"跳过 {_truncate_log_text(command, limit=32)}｜{_truncate_log_text(reason, limit=72)}"
+        ),
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=240,
+    )
+
+
 async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     send_as_id = int(send_as_id)
     topic_id = get_game_topic_id()
     send_priority = _normalize_send_priority(command, priority=priority)
+    account_id = int(get_identity_account(send_as_id) or 0)
 
     try:
+        if account_id and is_account_offline(account_id):
+            await _log_account_offline_blocked(
+                command,
+                send_as_id=send_as_id,
+                account_id=account_id,
+                reason=get_account_offline_reason(account_id) or "账号离线",
+            )
+            return None
+
         if _bot_health_blocks_send(send_priority):
             await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
             return None
 
         async with _GAME_SEND_LOCK:
+            if account_id and is_account_offline(account_id):
+                await _log_account_offline_blocked(
+                    command,
+                    send_as_id=send_as_id,
+                    account_id=account_id,
+                    reason=get_account_offline_reason(account_id) or "账号离线",
+                )
+                return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
                 return None
             await _wait_before_locked_send(send_priority)
+            if account_id and is_account_offline(account_id):
+                await _log_account_offline_blocked(
+                    command,
+                    send_as_id=send_as_id,
+                    account_id=account_id,
+                    reason=get_account_offline_reason(account_id) or "账号离线",
+                )
+                return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
                 return None
 
-            account_id = get_identity_account(send_as_id)
             if account_id:
-                active_client = get_client(account_id)
+                active_client = get_registered_client(account_id)
+                if active_client is None:
+                    reason = "账号 client 未注册或启动失败"
+                    mark_account_offline(account_id, reason)
+                    await _log_account_offline_blocked(
+                        command,
+                        send_as_id=send_as_id,
+                        account_id=account_id,
+                        reason=reason,
+                        force=True,
+                    )
+                    return None
+                try:
+                    await _ensure_account_client_ready(active_client)
+                except Exception as e:
+                    reason = _compact_account_error(e)
+                    if _is_account_session_error(e):
+                        mark_account_offline(account_id, reason)
+                        await _log_account_offline_blocked(
+                            command,
+                            send_as_id=send_as_id,
+                            account_id=account_id,
+                            reason=reason,
+                            force=True,
+                        )
+                    else:
+                        await send_audit_log(
+                            (
+                                f"⚠️ 账号连接检查失败，稍后重试：acc={account_id}｜"
+                                f"{reason}｜跳过 {_truncate_log_text(command, limit=32)}"
+                            ),
+                            scope="identity",
+                            send_as_id=send_as_id,
+                            limit=240,
+                        )
+                    return None
             else:
                 active_client = _get_any_authed_client()
             game_group_id = get_game_group_id()
@@ -1099,11 +1217,22 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
             return msg
     except Exception as e:
+        if account_id and _is_account_session_error(e):
+            reason = _compact_account_error(e)
+            mark_account_offline(account_id, reason)
+            await _log_account_offline_blocked(
+                command,
+                send_as_id=send_as_id,
+                account_id=account_id,
+                reason=reason,
+                force=True,
+            )
+            return None
         await send_audit_log(
             (
                 f"❌ 指令发送失败：{_truncate_log_text(command, limit=48)} | "
                 f"{_truncate_log_text(e, limit=72)} | "
-                f"acc={get_identity_account(send_as_id)} group={get_game_group_id()} topic={topic_id}"
+                f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
             ),
             scope="identity",
             send_as_id=send_as_id,

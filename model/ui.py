@@ -46,7 +46,8 @@ from .config import (
     UI_PORT,
     UI_PUBLIC_BASE_URL,
     create_account_client,
-    get_client,
+    get_registered_client,
+    is_account_offline,
     register_client,
 )
 from .control import (
@@ -1071,7 +1072,9 @@ async def ui_get_send_as_peers(account_id):
     game_group_id = get_game_group_id()
     if not game_group_id:
         return False, "请先在基础配置中设置游戏群聊 ID", []
-    tc = get_client(account_id)
+    if is_account_offline(account_id):
+        return False, f"账号 {account_id} 离线，请重新登录", []
+    tc = get_registered_client(account_id)
     if not tc:
         return False, f"账号 {account_id} 未登录", []
     try:

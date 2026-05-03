@@ -6,7 +6,7 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_client, register_client
+from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
@@ -226,7 +226,14 @@ def _is_identity_owner_event(event, send_as_id):
     if send_as_id <= 0:
         return False
     account_id = get_identity_account(send_as_id)
-    expected_client = get_client(account_id) if account_id else client
+    if not account_id:
+        expected_client = client
+    elif is_account_offline(account_id):
+        return False
+    else:
+        expected_client = get_registered_client(account_id)
+        if expected_client is None:
+            return False
     return getattr(event, "client", None) is expected_client
 
 
@@ -626,6 +633,7 @@ async def bootstrap():
             _register_event_handlers(tc)
         except Exception:
             error_text = traceback.format_exc().strip().splitlines()[-1] if traceback.format_exc().strip() else "启动失败"
+            mark_account_offline(acct_id_str, error_text)
             failed_accounts.append({"account_id": int(acct_id_str), "error": error_text})
             print(f"启动额外账号 {acct_id_str} 失败: {traceback.format_exc()}")
 
@@ -641,7 +649,12 @@ async def bootstrap():
     if not state.get("my_user_id"):
         for _acct_id_str in get_accounts():
             try:
-                _tc = get_client(int(_acct_id_str))
+                _account_id = int(_acct_id_str)
+                if is_account_offline(_account_id):
+                    continue
+                _tc = get_registered_client(_account_id)
+                if _tc is None:
+                    continue
                 _me = await _tc.get_me()
                 if _me:
                     state["my_user_id"] = _me.id
@@ -657,7 +670,13 @@ async def bootstrap():
             if not account_id:
                 print(f"hydrate_identity_profile skipped (no account): {send_as_id}")
                 continue
-            tc = get_client(account_id)
+            if is_account_offline(account_id):
+                print(f"hydrate_identity_profile skipped (offline account): {send_as_id} acc={account_id}")
+                continue
+            tc = get_registered_client(account_id)
+            if tc is None:
+                print(f"hydrate_identity_profile skipped (account client missing): {send_as_id} acc={account_id}")
+                continue
             send_as_entity = await tc.get_entity(send_as_id)
             hydrate_identity_profile(send_as_entity)
         except Exception:

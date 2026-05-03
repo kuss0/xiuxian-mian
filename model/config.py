@@ -1,5 +1,6 @@
 import os
 import re
+import time
 from datetime import timedelta, timezone
 from urllib.parse import quote
 
@@ -397,6 +398,7 @@ client = _create_telegram_client(SESSION_FILE)
 
 # ================= 多账号 client 管理 =================
 _clients: dict[int, TelegramClient] = {}  # account_id → TelegramClient
+_offline_accounts: dict[int, dict] = {}  # account_id → {"reason": str, "marked_at": float}
 
 
 def get_client(account_id=None):
@@ -406,7 +408,9 @@ def get_client(account_id=None):
 
 
 def register_client(account_id, tc):
-    _clients[int(account_id)] = tc
+    account_id = int(account_id)
+    _clients[account_id] = tc
+    mark_account_online(account_id)
 
 
 def unregister_client(account_id):
@@ -415,6 +419,37 @@ def unregister_client(account_id):
 
 def get_all_clients():
     return dict(_clients)
+
+
+def get_registered_client(account_id):
+    return _clients.get(int(account_id))
+
+
+def mark_account_offline(account_id, reason=""):
+    account_id = int(account_id)
+    if account_id <= 0:
+        return False
+    reason = str(reason or "账号不可用").strip() or "账号不可用"
+    previous = _offline_accounts.get(account_id) or {}
+    changed = previous.get("reason") != reason
+    _offline_accounts[account_id] = {
+        "reason": reason,
+        "marked_at": time.time(),
+    }
+    return changed
+
+
+def mark_account_online(account_id):
+    return _offline_accounts.pop(int(account_id), None) is not None
+
+
+def is_account_offline(account_id):
+    return int(account_id or 0) in _offline_accounts
+
+
+def get_account_offline_reason(account_id):
+    info = _offline_accounts.get(int(account_id or 0)) or {}
+    return str(info.get("reason") or "").strip()
 
 
 def create_account_client(account_id):

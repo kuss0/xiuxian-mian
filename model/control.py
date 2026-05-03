@@ -56,6 +56,9 @@ from .config import (
     RETRY_MAX_SEC,
     SUMMARY_TIMEOUT_SEC,
     format_battle_power_command,
+    get_all_clients,
+    get_registered_client,
+    is_account_offline,
     format_identity_info_command,
     is_battle_power_command_text,
     is_identity_info_command_text,
@@ -1959,15 +1962,21 @@ async def register_identity(send_as_id_raw, *, source="ui", actor_id=None, accou
     except (TypeError, ValueError):
         return False, "身份 ID 必须是数字", None
     try:
-        # 优先使用关联账号的 client，回退到任意已登录 client
-        from .config import get_client, get_all_clients
         if account_id:
-            tc = get_client(account_id)
+            account_id = int(account_id)
+            if is_account_offline(account_id):
+                return False, f"账号 {account_id} 离线，请重新登录后再绑定身份", None
+            tc = get_registered_client(account_id)
+            if tc is None:
+                return False, f"账号 {account_id} 未登录，请重新登录后再绑定身份", None
         else:
-            _all = get_all_clients()
-            if not _all:
+            tc = None
+            for candidate_account_id, candidate_client in get_all_clients().items():
+                if not is_account_offline(candidate_account_id):
+                    tc = candidate_client
+                    break
+            if tc is None:
                 return False, "尚无已登录账号，请先在「账号管理」中登录一个 Telegram 账号", None
-            tc = next(iter(_all.values()))
         send_as_entity = await tc.get_entity(candidate_id)
     except Exception as e:
         return False, f"身份不存在或当前账号无权访问该身份 ID：{e}", None
