@@ -118,8 +118,9 @@ _background_tasks = set()
 
 
 # ============== 全局发送通道（防多号同步特征 + GM 检测） ==============
-# 所有游戏群指令共用一条发送通道；P0 只缩短间隔，不绕开通道。
+# 所有游戏群指令共用一条发送通道；P0/chain 只缩短间隔，不绕开通道。
 SEND_PRIORITY_P0 = "p0"
+SEND_PRIORITY_CHAIN = "chain"
 SEND_PRIORITY_PROBE = "probe"
 SEND_PRIORITY_NORMAL = "normal"
 
@@ -127,6 +128,8 @@ P0_COMMAND_PREFIXES = (".验证", CMD_TIANDAO_JUDGEMENT_PROVE, CMD_QUIZ_ANSWER)
 
 P0_SEND_GAP_MIN_SEC = 10.0
 P0_SEND_GAP_MAX_SEC = 30.0
+CHAIN_SEND_GAP_MIN_SEC = 15.0
+CHAIN_SEND_GAP_MAX_SEC = 45.0
 NORMAL_SEND_GAP_MIN_SEC = 120.0
 NORMAL_SEND_GAP_MAX_SEC = 480.0
 
@@ -277,7 +280,7 @@ def should_pause_for_bot_health():
 
 def _normalize_send_priority(command, priority=None):
     explicit = str(priority or "").strip().lower()
-    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
+    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_CHAIN, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
         return explicit
     cmd = str(command or "").strip()
     if any(cmd.startswith(prefix) for prefix in P0_COMMAND_PREFIXES):
@@ -309,6 +312,8 @@ async def _wait_before_locked_send(priority):
     global _GAME_LAST_SEND_AT
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         min_gap, max_gap = P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
+    elif priority == SEND_PRIORITY_CHAIN:
+        min_gap, max_gap = CHAIN_SEND_GAP_MIN_SEC, CHAIN_SEND_GAP_MAX_SEC
     else:
         min_gap, max_gap = NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
     elapsed = time.monotonic() - _GAME_LAST_SEND_AT if _GAME_LAST_SEND_AT > 0 else 0.0

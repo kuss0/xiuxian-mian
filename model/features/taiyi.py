@@ -79,7 +79,7 @@ def _is_current_reply(reply_to, state_key):
 
 
 async def _send_taiyi_search(now):
-    msg = await send_game_command(CMD_NODE_SEARCH, track=False)
+    msg = await send_game_command(CMD_NODE_SEARCH, track=False, priority="chain")
     if not msg:
         _set_phase("idle", now)
         state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
@@ -330,7 +330,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
                 return
             import time
             sent_at = time.time()
-            msg = await send_game_command(f"{CMD_NODE_DEFINE} {node_name}", track=False)
+            msg = await send_game_command(f"{CMD_NODE_DEFINE} {node_name}", track=False, priority="chain")
             if _phase() != "define_pending" or state.get("taiyi_pending_node_name", "") != node_name:
                 return
             if msg:
