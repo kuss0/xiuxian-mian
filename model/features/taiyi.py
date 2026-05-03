@@ -7,8 +7,9 @@
 4. 多号防风暴：next_cycle 加 ±30min jitter
 5. 失败熔断：24h 内 5 次失败自动停子开关
 6. bot 临时延迟兜底：phase 15min 超时 reset
-7. bot 全局宕机：复用现有 _bot_silence 机制（外部）
-8. 仅落云宗 -> 灵树 那种"按宗门匹配"的 UI（state.py 的 get_available_module_names 处理）
+7. 链路指令不走通用 retry；每一阶段只接受当前 msg_id 的回复
+8. bot 全局宕机：复用现有 _bot_silence 机制（外部）
+9. 仅落云宗 -> 灵树 那种"按宗门匹配"的 UI（state.py 的 get_available_module_names 处理）
 
 phase 状态机：
     idle               - 等下次 cycle
@@ -61,6 +62,36 @@ def _set_phase(new_phase, now=None):
         now = time.time()
     state["taiyi_phase"] = new_phase
     state["taiyi_phase_entered_at"] = now
+
+
+def _clear_chain_msg_ids():
+    state["taiyi_yindao_msg_id"] = 0
+    state["taiyi_node_search_msg_id"] = 0
+    state["taiyi_node_define_msg_id"] = 0
+
+
+def _is_current_reply(reply_to, state_key):
+    expected_msg_id = int(state.get(state_key, 0) or 0)
+    reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0)
+    if expected_msg_id <= 0 or reply_to_msg_id <= 0:
+        return True
+    return reply_to_msg_id == expected_msg_id
+
+
+async def _send_taiyi_search(now):
+    msg = await send_game_command(CMD_NODE_SEARCH, track=False)
+    if not msg:
+        _set_phase("idle", now)
+        state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
+        state["taiyi_node_search_msg_id"] = 0
+        _record_failure(now, "搜寻节点发送失败")
+        save_state()
+        await send_audit_log("❌ 太一搜寻节点发送失败，1h 后重试。")
+        await _check_failure_breaker(now)
+        return False
+    state["taiyi_node_search_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    save_state()
+    return True
 
 
 def _next_cycle_with_jitter(now):
@@ -197,28 +228,26 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
     if _phase() != "yindao_pending":
         console_log(f"⚠️ 引道 reply 迟到（phase={_phase()}），仅清 pending 不改 state。")
         return True
+    if not _is_current_reply(reply_to, "taiyi_yindao_msg_id"):
+        console_log("⚠️ 忽略迟到的太一引道回复。")
+        return True
 
     # 成功
     if RE_YINDAO_SUCCESS.search(text) and "100点神识" in text:
         _reset_failures()
         if state.get("taiyi_node_search_enabled", False):
             # 链式：成功后立即搜寻节点
+            state["taiyi_yindao_msg_id"] = 0
+            state["taiyi_node_search_msg_id"] = 0
+            state["taiyi_node_define_msg_id"] = 0
             _set_phase("search_pending", now)
             save_state()
-            msg = await send_game_command(CMD_NODE_SEARCH)
-            if not msg:
-                # 搜寻发送失败，回到 idle 短退避
-                _set_phase("idle", now)
-                state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
-                _record_failure(now, "搜寻节点发送失败")
-                save_state()
-                await send_audit_log("❌ 太一搜寻节点发送失败，1h 后重试。")
-                await _check_failure_breaker(now)
-            else:
+            if await _send_taiyi_search(now):
                 await send_audit_log(f"🌟 太一引道→100 神识，已发搜寻节点。")
         else:
             _set_phase("idle", now)
             state["next_taiyi_cycle_time"] = _next_cycle_with_jitter(now)
+            _clear_chain_msg_ids()
             save_state()
             await send_audit_log(f"🌟 太一引道成功（+100 神识），下次→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
         return True
@@ -232,6 +261,7 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
             # 解析失败：保守回退 12h
             state["next_taiyi_cycle_time"] = now + TAIYI_CYCLE_CD_SEC
         _set_phase("idle", now)
+        _clear_chain_msg_ids()
         save_state()
         await send_audit_log(f"⏳ 太一引道 CD→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
         return True
@@ -239,6 +269,7 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
     # 非弟子
     if "你并非太一门弟子" in text:
         _freeze(now, "非太一门弟子")
+        _clear_chain_msg_ids()
         save_state()
         await send_audit_log("ℹ️ 你并非太一门弟子，太一模块已冻结 7 天。")
         return True
@@ -265,6 +296,9 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
     if _phase() != "search_pending":
         console_log(f"⚠️ 搜寻节点 reply 迟到（phase={_phase()}），仅清 pending 不改 state。")
         return True
+    if not _is_current_reply(reply_to, "taiyi_node_search_msg_id"):
+        console_log("⚠️ 忽略迟到的太一搜寻节点回复。")
+        return True
 
     # 找到节点（含"获得：【空间节点·X】"）
     m = RE_NODE_NAME.search(text)
@@ -273,6 +307,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
         if not _is_safe_node_name(node_name):
             _set_phase("idle", now)
             state["next_taiyi_cycle_time"] = _next_cycle_with_jitter(now)
+            _clear_chain_msg_ids()
             _record_failure(now, f"节点名解析异常: {node_name[:30]}")
             save_state()
             await send_audit_log(f"⚠️ 节点名异常已跳过定星: {node_name[:30]}")
@@ -281,6 +316,8 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
 
         # 链式：fire-and-forget 短延迟后定星（1.5-3.5s 模拟反应时间）
         state["taiyi_pending_node_name"] = node_name
+        state["taiyi_node_search_msg_id"] = 0
+        state["taiyi_node_define_msg_id"] = 0
         _set_phase("define_pending", now)
         save_state()
 
@@ -291,7 +328,23 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
                 return
             if state.get("taiyi_pending_node_name", "") != node_name:
                 return
-            await send_game_command(f"{CMD_NODE_DEFINE} {node_name}")
+            import time
+            sent_at = time.time()
+            msg = await send_game_command(f"{CMD_NODE_DEFINE} {node_name}", track=False)
+            if _phase() != "define_pending" or state.get("taiyi_pending_node_name", "") != node_name:
+                return
+            if msg:
+                state["taiyi_node_define_msg_id"] = int(getattr(msg, "id", 0) or 0)
+                save_state()
+                return
+            state["taiyi_pending_node_name"] = ""
+            state["taiyi_node_define_msg_id"] = 0
+            _set_phase("idle", sent_at)
+            state["next_taiyi_cycle_time"] = sent_at + TAIYI_RESOURCE_RETRY_SEC
+            _record_failure(sent_at, "定星发送失败")
+            save_state()
+            await send_audit_log("❌ 太一定星发送失败，1h 后重试。")
+            await _check_failure_breaker(sent_at)
 
         _fire_and_forget(delayed_define())
         await send_audit_log(f"🎯 太一搜寻发现【{node_name}】，将自动定星。")
@@ -301,6 +354,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
     if "【虚空漫游】" in text or "【斩妖除魔】" in text:
         _set_phase("idle", now)
         state["next_taiyi_cycle_time"] = _next_cycle_with_jitter(now)
+        _clear_chain_msg_ids()
         _reset_failures()  # 这是正常空轮，不算失败
         save_state()
         console_log(f"🌟 太一搜寻空轮，下次→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
@@ -310,6 +364,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
     if "修为不足" in text and "神游太虚" in text:
         _set_phase("idle", now)
         state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
+        _clear_chain_msg_ids()
         _record_failure(now, "修为不足")
         save_state()
         await send_audit_log(f"⚠️ 太一搜寻修为不足，1h 后重试。")
@@ -320,6 +375,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
     if "神识不足" in text and "虚空中定位" in text:
         _set_phase("idle", now)
         state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
+        _clear_chain_msg_ids()
         _record_failure(now, "神识不足（异常）")
         save_state()
         await send_audit_log("⚠️ 太一搜寻神识不足（异常），1h 后重试。")
@@ -329,6 +385,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
     # 境界不足
     if "【境界不足】" in text and "化神期" in text:
         _freeze(now, "境界不足（化神期前）")
+        _clear_chain_msg_ids()
         save_state()
         await send_audit_log("ℹ️ 境界不足化神期，太一搜寻已冻结 7 天。")
         return True
@@ -355,6 +412,9 @@ async def handle_taiyi_node_define_reply(text, now, reply_to, matched_family=Non
     if _phase() != "define_pending":
         console_log(f"⚠️ 定星 reply 迟到（phase={_phase()}），仅清 pending 不改 state。")
         return True
+    if not _is_current_reply(reply_to, "taiyi_node_define_msg_id"):
+        console_log("⚠️ 忽略迟到的太一定星回复。")
+        return True
 
     if RE_DEFINE_SUCCESS.search(text):
         # 提取额外产出做 audit
@@ -362,6 +422,7 @@ async def handle_taiyi_node_define_reply(text, now, reply_to, matched_family=Non
         state["taiyi_pending_node_name"] = ""
         _set_phase("idle", now)
         state["next_taiyi_cycle_time"] = _next_cycle_with_jitter(now)
+        _clear_chain_msg_ids()
         _reset_failures()
         save_state()
 
@@ -383,6 +444,7 @@ async def handle_taiyi_node_define_reply(text, now, reply_to, matched_family=Non
     state["taiyi_pending_node_name"] = ""
     _set_phase("idle", now)
     state["next_taiyi_cycle_time"] = _next_cycle_with_jitter(now)
+    _clear_chain_msg_ids()
     _record_failure(now, "定星回复异常")
     save_state()
     await send_audit_log(f"⚠️ 太一定星回复异常: {text[:80]}")
@@ -418,6 +480,7 @@ async def run_taiyi_scheduler(now):
             stale_phase = phase
             stale_node = state.get("taiyi_pending_node_name", "")
             state["taiyi_pending_node_name"] = ""
+            _clear_chain_msg_ids()
             _set_phase("idle", now)
             state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
             _record_failure(now, f"phase {stale_phase} 超时")
@@ -435,16 +498,23 @@ async def run_taiyi_scheduler(now):
 
     cmd = _resolve_yindao_command()
     _set_phase("yindao_pending", now)
+    state["taiyi_yindao_msg_id"] = 0
+    state["taiyi_node_search_msg_id"] = 0
+    state["taiyi_node_define_msg_id"] = 0
     save_state()
-    msg = await send_game_command(cmd)
+    msg = await send_game_command(cmd, track=False)
     if not msg:
         # 发送失败：回退 idle 短退避
         _set_phase("idle", now)
         state["next_taiyi_cycle_time"] = now + 60  # 1min 后重试
+        _clear_chain_msg_ids()
         _record_failure(now, "引道发送失败")
         save_state()
         await send_audit_log("❌ 太一引道发送失败，1min 后重试。")
         await _check_failure_breaker(now)
+    else:
+        state["taiyi_yindao_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        save_state()
 
 
 async def run_taiyi_bootstrap_check(now):

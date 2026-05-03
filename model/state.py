@@ -323,6 +323,9 @@ IDENTITY_STATE_TEMPLATE = {
     "taiyi_node_search_enabled": False,
     "taiyi_phase": "idle",  # idle|yindao_pending|search_pending|define_pending|frozen
     "taiyi_pending_node_name": "",
+    "taiyi_yindao_msg_id": 0,
+    "taiyi_node_search_msg_id": 0,
+    "taiyi_node_define_msg_id": 0,
     "next_taiyi_cycle_time": 0,
     "taiyi_phase_entered_at": 0,
     "taiyi_freeze_until": 0,

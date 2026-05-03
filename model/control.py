@@ -307,6 +307,9 @@ def _disable_taiyi_module_state():
     state["taiyi_node_search_enabled"] = False
     state["taiyi_phase"] = "idle"
     state["taiyi_pending_node_name"] = ""
+    state["taiyi_yindao_msg_id"] = 0
+    state["taiyi_node_search_msg_id"] = 0
+    state["taiyi_node_define_msg_id"] = 0
     state["next_taiyi_cycle_time"] = 0
     state["taiyi_phase_entered_at"] = 0
     state["taiyi_freeze_until"] = 0
@@ -1007,6 +1010,9 @@ def _restore_taiyi_runtime(now):
     # pending phase 残留（上次进程被 kill 时卡的）：清掉
     if phase in ("yindao_pending", "search_pending", "define_pending"):
         state["taiyi_pending_node_name"] = ""
+        state["taiyi_yindao_msg_id"] = 0
+        state["taiyi_node_search_msg_id"] = 0
+        state["taiyi_node_define_msg_id"] = 0
         state["taiyi_phase"] = "idle"
         state["taiyi_phase_entered_at"] = 0
         phase = "idle"
