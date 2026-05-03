@@ -150,15 +150,23 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
     state["second_soul_last_error"] = ""
 
     if status == "窍中温养":
-        # 闲置且可修炼。清异常态，立即发 .元神修炼
-        _set_phase("idle")
+        # 闲置且可修炼。立即发 .元神修炼
+        # 注意：必须把 phase 转到一个 scheduler 不会再发 .第二元神 的状态
+        # 否则 scheduler 看 phase=idle + next_time<=now 会立即又发一次 .第二元神
+        # 用 status_pending 占位，等 train_reply 处理后再转 cultivating
+        # next_time 推到 +10 分钟兜底（bot 偶尔 1 分钟才回，10 分钟充足）
+        # train_reply 正常到达会立即覆盖到 24h
         _clear_heart_demon()
+        state["next_second_soul_time"] = now + 600
+        # 保持 phase = status_pending（之前查 status 时设的），不切回 idle
         save_state()
         msg = await send_game_command(CMD_SECOND_SOUL_TRAIN)
         if not msg:
+            _set_phase("idle")
             state["second_soul_last_error"] = "发送 .元神修炼 失败"
+            state["next_second_soul_time"] = now + 600
             save_state()
-            await send_audit_log("❌ 第二元神修炼发送失败，稍后重试。")
+            await send_audit_log("❌ 第二元神修炼发送失败，10 分钟后重试。")
         # train_reply 处理回复，phase 由那里设
         return True
 

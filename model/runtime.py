@@ -11,6 +11,7 @@ from urllib.parse import quote
 
 import requests
 from telethon import functions, types
+from telethon.errors import FloodWaitError
 
 from .config import (
     CMD_BATTLE_POWER,
@@ -105,6 +106,48 @@ def _get_identity_client(send_as_id=None):
 
 
 _background_tasks = set()
+
+
+# ============== 全局发送节流（防多号同步特征 + GM 检测） ==============
+# 主队列：所有非紧急命令排队，5-15s 间隔
+# 紧急队列：deadline 类命令独立队列，20-25s 间隔（不阻塞主队列）
+# 设计原则：脚本视角整体节流（不分账号），避免 GM 看到多号瞬时同步发送
+_GLOBAL_SEND_LOCK = asyncio.Lock()
+_GLOBAL_LAST_SEND_AT = 0.0
+GLOBAL_MIN_GAP_SEC = 5.0
+GLOBAL_JITTER_SEC = 10.0   # 实际间隔 5-15s
+
+_URGENT_SEND_LOCK = asyncio.Lock()
+_URGENT_LAST_SEND_AT = 0.0
+URGENT_MIN_GAP_SEC = 20.0
+URGENT_JITTER_SEC = 5.0    # 实际间隔 20-25s
+
+# 紧急命令前缀（含 deadline 必须及时响应的）
+URGENT_COMMAND_PREFIXES = (".验证", ".自证", ".抉择", ".作答")
+
+
+def _is_urgent_command(command):
+    cmd = (command or "").strip()
+    return any(cmd.startswith(p) for p in URGENT_COMMAND_PREFIXES)
+
+
+async def _throttle_before_send(command):
+    """在真正调 telethon 前排队等候，按命令类型走不同队列。"""
+    global _GLOBAL_LAST_SEND_AT, _URGENT_LAST_SEND_AT
+    if _is_urgent_command(command):
+        async with _URGENT_SEND_LOCK:
+            elapsed = time.monotonic() - _URGENT_LAST_SEND_AT
+            wait = max(0, URGENT_MIN_GAP_SEC - elapsed) + random.uniform(0, URGENT_JITTER_SEC)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _URGENT_LAST_SEND_AT = time.monotonic()
+    else:
+        async with _GLOBAL_SEND_LOCK:
+            elapsed = time.monotonic() - _GLOBAL_LAST_SEND_AT
+            wait = max(0, GLOBAL_MIN_GAP_SEC - elapsed) + random.uniform(0, GLOBAL_JITTER_SEC)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _GLOBAL_LAST_SEND_AT = time.monotonic()
 _ui_login_tokens = {}
 _reply_chain_tracker = {}
 
@@ -792,6 +835,9 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
     send_as_id = int(send_as_id)
     topic_id = get_game_topic_id()
 
+    # 全局节流：在真正发送前排队
+    await _throttle_before_send(command)
+
     try:
         account_id = get_identity_account(send_as_id)
         if account_id:
@@ -815,14 +861,23 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None)
             )
         elif topic_id > 0:
             reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
-        result = await active_client(
-            functions.messages.SendMessageRequest(
-                peer=peer,
-                message=command,
-                reply_to=reply_to_spec,
-                send_as=send_as_peer,
+        try:
+            result = await active_client(
+                functions.messages.SendMessageRequest(
+                    peer=peer,
+                    message=command,
+                    reply_to=reply_to_spec,
+                    send_as=send_as_peer,
+                )
             )
-        )
+        except FloodWaitError as flood_err:
+            backoff = int(flood_err.seconds) + random.randint(15, 60)
+            await send_audit_log(
+                f"⏸ FloodWait 被 TG 限流 {flood_err.seconds}s（命令 {_truncate_log_text(command, limit=24)}），退避 {backoff}s 后由 retry 接手",
+                scope="identity", send_as_id=send_as_id, limit=200,
+            )
+            await asyncio.sleep(backoff)
+            return None
         msg_id = _extract_sent_message_id(result)
         if msg_id <= 0:
             raise ValueError("无法从发送结果中解析消息 ID")
