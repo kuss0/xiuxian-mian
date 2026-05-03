@@ -589,7 +589,7 @@ async def run_tianji_quiz_scheduler(now):
             )
             continue
 
-        msg = await send_game_command(answer, track=False, reply_to=msg_id, send_as_id=identity_id)
+        msg = await send_game_command(answer, track=False, reply_to=msg_id, send_as_id=identity_id, priority="p0")
         if msg:
             item["phase"] = "waiting_result"
             item["sent_msg_id"] = int(getattr(msg, "id", 0) or 0)

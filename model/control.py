@@ -146,6 +146,32 @@ IDENTITY_INFO_FOLLOWUP_DELAY_MIN_SEC = 20
 IDENTITY_INFO_FOLLOWUP_DELAY_MAX_SEC = 25
 IDENTITY_REFRESH_REQUIRED_FIELDS = ("daohao", "sect_name", "realm", "xiuwei")
 _IMMEDIATE_ENABLE_RETRY_DELAY_SEC = 1
+RECOVERY_SPREAD_MIN_SEC = 60
+RECOVERY_SPREAD_MAX_SEC = 1200
+RECOVERY_SPREAD_DUE_GRACE_SEC = 2
+RECOVERY_SPREAD_TIMER_KEYS = (
+    "next_irr_time",
+    "next_guard_time",
+    "next_pet_time",
+    "next_stargazer_panel_time",
+    "stargazer_collect_due_at",
+    "stargazer_followup_due_at",
+    "next_tianti_status_time",
+    "next_tianti_wenxin_time",
+    "next_tianti_climb_time",
+    "next_tianti_gangfeng_time",
+    "next_checkin_time",
+    "next_sect_teach_time",
+    "next_tower_time",
+    "next_quiz_time",
+    "next_jiyin_time",
+    "next_nanlong_time",
+    "next_small_world_time",
+    "next_yuanying_time",
+    "next_deep_retreat_time",
+    "next_second_soul_time",
+    "next_taiyi_cycle_time",
+)
 
 
 def _is_within_module_window(module_name, now):
@@ -188,6 +214,37 @@ def _schedule_module_immediate_retry(module_name, now):
         state["next_deep_retreat_time"] = retry_at
         return retry_at
     raise ValueError(f"未知模块: {module_name}")
+
+
+def spread_overdue_runtime_timers(now=None, *, reason="recovery"):
+    """启动/恢复时把已到期任务摊开，避免多身份集中发送。"""
+    if now is None:
+        now = time.time()
+    now = float(now)
+    due_cutoff = now + RECOVERY_SPREAD_DUE_GRACE_SEC
+    changed_count = 0
+    affected_identity_ids = set()
+    for identity_id in get_identity_ids():
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id):
+            for timer_key in RECOVERY_SPREAD_TIMER_KEYS:
+                try:
+                    timer_value = float(state.get(timer_key, 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                if 0 < timer_value <= due_cutoff:
+                    state[timer_key] = now + random.uniform(RECOVERY_SPREAD_MIN_SEC, RECOVERY_SPREAD_MAX_SEC)
+                    changed_count += 1
+                    affected_identity_ids.add(int(identity_id))
+    if changed_count > 0:
+        mark_dirty()
+        console_log(
+            f"🧯 {reason} 错峰：{len(affected_identity_ids)} 个身份 / {changed_count} 个到期计时器已摊到 1-20 分钟内",
+            scope="global",
+            limit=220,
+        )
+    return changed_count
 
 
 def get_module_unavailable_reason(module_name, send_as_id=None):
@@ -2040,6 +2097,8 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
         else:
             with use_identity(identity_id):
                 _clear_startup_module_alerts()
+    if enabled:
+        spread_overdue_runtime_timers(now, reason="全局恢复")
     save_state()
     action_text = "恢复运行" if enabled else "全局暂停"
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
@@ -2275,5 +2334,6 @@ __all__ = [
     "scan_startup_timeout_tasks",
     "set_module_enabled",
     "set_module_window_config",
+    "spread_overdue_runtime_timers",
     "toggle_global_enabled",
 ]

@@ -6,8 +6,8 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_client, register_client
-from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, toggle_global_enabled
+from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_client, register_client
+from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features.deep_retreat import (
     handle_deep_retreat_running_reply,
@@ -76,14 +76,21 @@ from .features.yuanying import (
 )
 from .persistence import flush_if_dirty, load_state, mark_dirty, save_state
 from .runtime import (
+    check_bot_health_timeout,
+    clear_all_pending_tasks,
     clear_pending_by_reply,
     gc_my_msg_ids,
     gc_ui_login_tokens,
     gc_ui_sessions,
     get_reply_context,
     is_reply_to_identity_message,
+    mark_bot_health_recovered,
+    note_game_bot_message,
+    note_game_command_observed,
     run_retry_scheduler,
     schedule_cleanup,
+    send_game_command,
+    should_pause_for_bot_health,
     track_reply_chain_message,
     mono,
     send_audit_log,
@@ -114,12 +121,27 @@ from .timing import (
 )
 from .ui import start_ui_server
 
-_bot_silence_triggered_at = 0  # 检测到 . 指令的时间，0 表示未触发
-_bot_last_seen_at = 0          # bot 最后发言时间
 _bot_silence_auto_paused = False
 _runtime_event_claims = {}
 _runtime_message_consumed = {}
 _runtime_log_claims = {}
+
+
+def _get_bot_health_probe_identity_id():
+    for identity_id in get_identity_ids():
+        if get_identity_enabled(identity_id):
+            return int(identity_id)
+    return None
+
+
+async def _send_bot_health_probe():
+    identity_id = _get_bot_health_probe_identity_id()
+    if identity_id is None:
+        await send_audit_log("🩺 天尊恢复探测跳过：没有可用身份，维持全局暂停。", scope="global", limit=220)
+        return
+    msg = await send_game_command(CMD_IDENTITY_INFO, track=True, send_as_id=identity_id, priority="probe")
+    if msg:
+        await send_audit_log("🩺 天尊恢复探测已发送，等待确认回复后恢复普通调度。", scope="identity", send_as_id=identity_id, limit=220)
 
 
 def _gc_runtime_event_claims(now=None):
@@ -483,12 +505,11 @@ async def on_message(event):
     if event.chat_id != get_game_group_id():
         return
 
-    # bot 静默监测：记录 . 开头指令的触发时间
-    global _bot_silence_triggered_at
+    # bot 健康监测：记录 . 开头指令的触发时间
     raw_text = (event.raw_text or "").strip()
-    if raw_text.startswith(".") and event.sender_id not in set(get_game_bot_ids()):
-        if _bot_silence_triggered_at <= 0 and get_global_enabled():
-            _bot_silence_triggered_at = time.time()
+    sender_id = int(event.sender_id or 0)
+    if raw_text.startswith(".") and sender_id in set(int(identity_id) for identity_id in get_identity_ids()) and get_global_enabled():
+        note_game_command_observed(raw_text)
 
     if event.sender_id not in set(get_game_bot_ids()):
         now = time.time()
@@ -500,14 +521,17 @@ async def on_message(event):
             print(traceback.format_exc())
         return
 
-    # bot 静默监测：bot 有发言，重置触发状态
-    global _bot_last_seen_at, _bot_silence_auto_paused
-    _bot_last_seen_at = time.time()
-    _bot_silence_triggered_at = 0
-    if _bot_silence_auto_paused:
+    # bot 健康监测：bot 有发言后，暂停态先探测，再恢复
+    global _bot_silence_auto_paused
+    bot_health_action = note_game_bot_message(time.time())
+    if bot_health_action == "probe":
+        if _bot_silence_auto_paused:
+            asyncio.create_task(_send_bot_health_probe())
+    elif bot_health_action == "recover":
+        if _bot_silence_auto_paused and not get_global_enabled():
+            await toggle_global_enabled(True, source="bot_health_recovery")
         _bot_silence_auto_paused = False
-        if not get_global_enabled():
-            await toggle_global_enabled(True, source="bot_silence_recovery")
+        mark_bot_health_recovered("bot 恢复确认完成")
 
     now = time.time()
     text = event.raw_text or ""
@@ -659,6 +683,7 @@ async def bootstrap():
     if not any_loaded:
         for identity_id in identity_ids:
             initialize_identity_runtime(identity_id, now)
+        spread_overdue_runtime_timers(now, reason="启动初始化")
         save_state()
     else:
         for identity_id in identity_ids:
@@ -693,6 +718,7 @@ async def bootstrap():
                 if state["yuanying_enabled"] and state["next_yuanying_time"] <= 0:
                     state["next_yuanying_time"] = now + 1
                     mark_dirty()
+        spread_overdue_runtime_timers(now, reason="启动恢复")
         save_state()
 
     identity_lines = [
@@ -733,17 +759,13 @@ async def main_loop():
         await run_retry_scheduler(now)
         await run_identity_info_followup_scheduler(now)
 
-        # bot 静默监测：触发后超时且 bot 无发言，自动全局暂停
-        global _bot_silence_triggered_at, _bot_silence_auto_paused
-        if (
-            _bot_silence_triggered_at > 0
-            and now - _bot_silence_triggered_at >= BOT_SILENCE_TIMEOUT_SEC
-            and _bot_last_seen_at < _bot_silence_triggered_at
-            and get_global_enabled()
-        ):
-            _bot_silence_triggered_at = 0
+        # bot 健康监测：疑似静默/探测中直接全局暂停，避免继续普通发送
+        global _bot_silence_auto_paused
+        check_bot_health_timeout(now, BOT_SILENCE_TIMEOUT_SEC)
+        if should_pause_for_bot_health() and get_global_enabled():
             _bot_silence_auto_paused = True
-            await toggle_global_enabled(False, source="bot_silence_monitor")
+            clear_all_pending_tasks("天尊健康暂停")
+            await toggle_global_enabled(False, source="bot_health_monitor")
         if not get_global_enabled():
             await asyncio.sleep(5)
             continue

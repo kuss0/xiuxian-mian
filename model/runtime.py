@@ -27,6 +27,7 @@ from .config import (
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET,
+    CMD_QUIZ_ANSWER,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
     CMD_SECOND_SOUL_STATUS,
@@ -37,6 +38,7 @@ from .config import (
     CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
     CMD_TIANTI_WENXIN,
+    CMD_TIANDAO_JUDGEMENT_PROVE,
     CMD_STARGAZER_COLLECT,
     CMD_STARGAZER_GUIDE,
     CMD_STARGAZER_PANEL,
@@ -108,46 +110,205 @@ def _get_identity_client(send_as_id=None):
 _background_tasks = set()
 
 
-# ============== 全局发送节流（防多号同步特征 + GM 检测） ==============
-# 主队列：所有非紧急命令排队，5-15s 间隔
-# 紧急队列：deadline 类命令独立队列，20-25s 间隔（不阻塞主队列）
-# 设计原则：脚本视角整体节流（不分账号），避免 GM 看到多号瞬时同步发送
-_GLOBAL_SEND_LOCK = asyncio.Lock()
-_GLOBAL_LAST_SEND_AT = 0.0
-GLOBAL_MIN_GAP_SEC = 5.0
-GLOBAL_JITTER_SEC = 10.0   # 实际间隔 5-15s
+# ============== 全局发送通道（防多号同步特征 + GM 检测） ==============
+# 所有游戏群指令共用一条发送通道；P0 只缩短间隔，不绕开通道。
+SEND_PRIORITY_P0 = "p0"
+SEND_PRIORITY_PROBE = "probe"
+SEND_PRIORITY_NORMAL = "normal"
 
-_URGENT_SEND_LOCK = asyncio.Lock()
-_URGENT_LAST_SEND_AT = 0.0
-URGENT_MIN_GAP_SEC = 20.0
-URGENT_JITTER_SEC = 5.0    # 实际间隔 20-25s
+P0_COMMAND_PREFIXES = (".验证", CMD_TIANDAO_JUDGEMENT_PROVE, CMD_QUIZ_ANSWER)
 
-# 紧急命令前缀（含 deadline 必须及时响应的）
-URGENT_COMMAND_PREFIXES = (".验证", ".自证", ".抉择", ".作答")
+P0_SEND_GAP_MIN_SEC = 10.0
+P0_SEND_GAP_MAX_SEC = 30.0
+NORMAL_SEND_GAP_MIN_SEC = 45.0
+NORMAL_SEND_GAP_MAX_SEC = 120.0
 
-
-def _is_urgent_command(command):
-    cmd = (command or "").strip()
-    return any(cmd.startswith(p) for p in URGENT_COMMAND_PREFIXES)
+_GAME_SEND_LOCK = asyncio.Lock()
+_GAME_LAST_SEND_AT = 0.0
 
 
-async def _throttle_before_send(command):
-    """在真正调 telethon 前排队等候，按命令类型走不同队列。"""
-    global _GLOBAL_LAST_SEND_AT, _URGENT_LAST_SEND_AT
-    if _is_urgent_command(command):
-        async with _URGENT_SEND_LOCK:
-            elapsed = time.monotonic() - _URGENT_LAST_SEND_AT
-            wait = max(0, URGENT_MIN_GAP_SEC - elapsed) + random.uniform(0, URGENT_JITTER_SEC)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            _URGENT_LAST_SEND_AT = time.monotonic()
+# ============== 天尊健康状态 ==============
+BOT_HEALTH_HEALTHY = "healthy"
+BOT_HEALTH_SUSPECT = "suspect"
+BOT_HEALTH_PAUSED = "paused"
+BOT_HEALTH_PROBING = "probing"
+BOT_HEALTH_RECOVERING = "recovering"
+
+_bot_health_state = BOT_HEALTH_HEALTHY
+_bot_health_reason = ""
+_bot_health_changed_at = 0.0
+_bot_waiting_since = 0.0
+_bot_last_seen_at = 0.0
+_bot_probe_sent_at = 0.0
+_bot_last_block_log_at = 0.0
+
+
+def _now_ts(now=None):
+    return float(now if now is not None else time.time())
+
+
+def _set_bot_health_state(new_state, reason="", now=None):
+    global _bot_health_state, _bot_health_reason, _bot_health_changed_at
+    now = _now_ts(now)
+    new_state = str(new_state or BOT_HEALTH_HEALTHY)
+    reason = str(reason or "").strip()
+    if _bot_health_state == new_state and _bot_health_reason == reason:
+        return False
+    old_state = _bot_health_state
+    _bot_health_state = new_state
+    _bot_health_reason = reason
+    _bot_health_changed_at = now
+    try:
+        console_log(f"🩺 天尊状态 {old_state} -> {new_state}：{reason or '无'}", scope="global")
+    except Exception:
+        pass
+    return True
+
+
+def get_bot_health_snapshot():
+    return {
+        "state": _bot_health_state,
+        "reason": _bot_health_reason,
+        "changed_at": _bot_health_changed_at,
+        "waiting_since": _bot_waiting_since,
+        "last_seen_at": _bot_last_seen_at,
+        "probe_sent_at": _bot_probe_sent_at,
+    }
+
+
+def get_bot_last_seen_at():
+    return float(_bot_last_seen_at or 0)
+
+
+def note_game_command_observed(command, now=None):
+    """看到群内有人发出游戏指令后，开始观察 bot 是否静默。"""
+    global _bot_waiting_since
+    cmd = str(command or "").strip()
+    if not cmd.startswith("."):
+        return
+    now = _now_ts(now)
+    if _bot_health_state in {BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}:
+        return
+    if _bot_waiting_since <= 0:
+        _bot_waiting_since = now
+
+
+def note_game_command_sent(command, sent_at=None, priority=SEND_PRIORITY_NORMAL):
+    global _bot_waiting_since, _bot_probe_sent_at
+    sent_at = _now_ts(sent_at)
+    priority = _normalize_send_priority(command, priority=priority)
+    if priority == SEND_PRIORITY_PROBE:
+        _bot_probe_sent_at = sent_at
+        return
+    if _bot_health_state not in {BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}:
+        _bot_waiting_since = sent_at
+
+
+def note_game_bot_message(now=None):
+    """返回 probe/recover/None，交给 app 层决定是否发探测或恢复全局。"""
+    global _bot_last_seen_at, _bot_waiting_since, _bot_probe_sent_at
+    now = _now_ts(now)
+    previous_state = _bot_health_state
+    _bot_last_seen_at = now
+    _bot_waiting_since = 0.0
+    if previous_state == BOT_HEALTH_PAUSED:
+        _set_bot_health_state(BOT_HEALTH_PROBING, "bot 有发言，先探测确认", now)
+        return "probe"
+    if previous_state == BOT_HEALTH_PROBING:
+        if _bot_probe_sent_at > 0 and now >= _bot_probe_sent_at:
+            _bot_probe_sent_at = 0.0
+            _set_bot_health_state(BOT_HEALTH_RECOVERING, "探测后已看到 bot 回复", now)
+            return "recover"
+        return None
+    if previous_state == BOT_HEALTH_SUSPECT:
+        _set_bot_health_state(BOT_HEALTH_RECOVERING, "疑似静默后已看到 bot 回复", now)
+        return "recover"
+    return None
+
+
+def mark_bot_health_recovered(reason="恢复普通调度", now=None):
+    global _bot_waiting_since, _bot_probe_sent_at
+    now = _now_ts(now)
+    _bot_waiting_since = 0.0
+    _bot_probe_sent_at = 0.0
+    return _set_bot_health_state(BOT_HEALTH_HEALTHY, reason, now)
+
+
+def mark_bot_health_suspect(reason, reference_at=None, now=None):
+    now = _now_ts(now)
+    reference_at = float(reference_at or now)
+    if _bot_last_seen_at >= reference_at:
+        return False
+    return _set_bot_health_state(BOT_HEALTH_SUSPECT, reason, now)
+
+
+def check_bot_health_timeout(now=None, silence_timeout_sec=600):
+    global _bot_probe_sent_at
+    now = _now_ts(now)
+    if (
+        _bot_waiting_since > 0
+        and _bot_last_seen_at < _bot_waiting_since
+        and now - _bot_waiting_since >= float(silence_timeout_sec or 600)
+    ):
+        return _set_bot_health_state(BOT_HEALTH_PAUSED, f"{int(silence_timeout_sec)} 秒无 bot 回复", now)
+    if (
+        _bot_health_state == BOT_HEALTH_PROBING
+        and _bot_probe_sent_at > 0
+        and _bot_last_seen_at < _bot_probe_sent_at
+        and now - _bot_probe_sent_at >= RETRY_MAX_SEC
+    ):
+        _bot_probe_sent_at = 0.0
+        return _set_bot_health_state(BOT_HEALTH_PAUSED, "恢复探测超时，继续暂停", now)
+    return False
+
+
+def should_pause_for_bot_health():
+    return _bot_health_state in {BOT_HEALTH_SUSPECT, BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}
+
+
+def _normalize_send_priority(command, priority=None):
+    explicit = str(priority or "").strip().lower()
+    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
+        return explicit
+    cmd = str(command or "").strip()
+    if any(cmd.startswith(prefix) for prefix in P0_COMMAND_PREFIXES):
+        return SEND_PRIORITY_P0
+    return SEND_PRIORITY_NORMAL
+
+
+def _bot_health_blocks_send(priority):
+    if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+        return False
+    return _bot_health_state in {BOT_HEALTH_SUSPECT, BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}
+
+
+async def _log_bot_health_blocked_send(command, send_as_id=None):
+    global _bot_last_block_log_at
+    now = time.time()
+    if now - _bot_last_block_log_at < 300:
+        return
+    _bot_last_block_log_at = now
+    await send_audit_log(
+        f"⏸ 天尊状态 {_bot_health_state}，普通指令暂缓：{_truncate_log_text(command, limit=32)}",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=220,
+    )
+
+
+async def _wait_before_locked_send(priority):
+    global _GAME_LAST_SEND_AT
+    if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+        min_gap, max_gap = P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
     else:
-        async with _GLOBAL_SEND_LOCK:
-            elapsed = time.monotonic() - _GLOBAL_LAST_SEND_AT
-            wait = max(0, GLOBAL_MIN_GAP_SEC - elapsed) + random.uniform(0, GLOBAL_JITTER_SEC)
-            if wait > 0:
-                await asyncio.sleep(wait)
-            _GLOBAL_LAST_SEND_AT = time.monotonic()
+        min_gap, max_gap = NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
+    elapsed = time.monotonic() - _GAME_LAST_SEND_AT if _GAME_LAST_SEND_AT > 0 else 0.0
+    wait = random.uniform(min_gap, max_gap)
+    if _GAME_LAST_SEND_AT > 0:
+        wait = max(wait, min_gap - elapsed)
+    if wait > 0:
+        await asyncio.sleep(wait)
+    _GAME_LAST_SEND_AT = time.monotonic()
 _ui_login_tokens = {}
 _reply_chain_tracker = {}
 
@@ -291,6 +452,30 @@ def clear_identity_runtime_tracking(send_as_id):
     if changed:
         mark_dirty()
     return changed
+
+
+def clear_all_pending_tasks(reason=""):
+    changed_count = 0
+    affected_identity_ids = set()
+    for identity_id in get_identity_ids():
+        if not has_identity(identity_id):
+            continue
+        with use_identity(identity_id) as identity_state:
+            pending_count = len(identity_state.get("pending_tasks", {}) or {})
+            if pending_count <= 0:
+                continue
+            identity_state["pending_tasks"] = {}
+            changed_count += pending_count
+            affected_identity_ids.add(int(identity_id))
+    if changed_count > 0:
+        mark_dirty()
+        suffix = f"：{reason}" if reason else ""
+        console_log(
+            f"🧹 已清理 {len(affected_identity_ids)} 个身份 / {changed_count} 条待补发指令{suffix}",
+            scope="global",
+            limit=220,
+        )
+    return changed_count
 
 
 def resolve_reply_family(command):
@@ -829,76 +1014,90 @@ def _extract_sent_message_id(result):
     return 0
 
 
-async def send_game_command(command, track=True, reply_to=None, send_as_id=None):
+async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     send_as_id = int(send_as_id)
     topic_id = get_game_topic_id()
-
-    # 全局节流：在真正发送前排队
-    await _throttle_before_send(command)
+    send_priority = _normalize_send_priority(command, priority=priority)
 
     try:
-        account_id = get_identity_account(send_as_id)
-        if account_id:
-            active_client = get_client(account_id)
-        else:
-            active_client = _get_any_authed_client()
-        game_group_id = get_game_group_id()
-        if not game_group_id:
-            raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
-        try:
-            peer = await active_client.get_input_entity(game_group_id)
-        except ValueError:
-            await active_client.get_dialogs()
-            peer = await active_client.get_input_entity(game_group_id)
-        send_as_peer = await active_client.get_input_entity(send_as_id)
-        reply_to_spec = None
-        if reply_to:
-            reply_to_spec = types.InputReplyToMessage(
-                reply_to_msg_id=int(reply_to),
-                top_msg_id=int(topic_id or 0) or None,
-            )
-        elif topic_id > 0:
-            reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
-        try:
-            result = await active_client(
-                functions.messages.SendMessageRequest(
-                    peer=peer,
-                    message=command,
-                    reply_to=reply_to_spec,
-                    send_as=send_as_peer,
-                )
-            )
-        except FloodWaitError as flood_err:
-            backoff = int(flood_err.seconds) + random.randint(15, 60)
-            await send_audit_log(
-                f"⏸ FloodWait 被 TG 限流 {flood_err.seconds}s（命令 {_truncate_log_text(command, limit=24)}），退避 {backoff}s 后由 retry 接手",
-                scope="identity", send_as_id=send_as_id, limit=200,
-            )
-            await asyncio.sleep(backoff)
+        if _bot_health_blocks_send(send_priority):
+            await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
             return None
-        msg_id = _extract_sent_message_id(result)
-        if msg_id <= 0:
-            raise ValueError("无法从发送结果中解析消息 ID")
-        msg = SimpleNamespace(id=msg_id)
-        _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=int(reply_to or 0))
-        with use_identity(send_as_id) as identity_state:
-            sent_at = time.time()
-            identity_state["my_msg_ids"][msg_id] = sent_at
-            if track:
-                identity_state["pending_tasks"][msg_id] = {
-                    "cmd": command,
-                    "sent_at": sent_at,
-                    "retry": 0,
-                    "timeout": random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC),
-                    "reply_to_msg_id": int(reply_to or 0),
-                }
-            mark_dirty()
-        family = resolve_reply_family(command)
-        if family:
-            track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
-        return msg
+
+        async with _GAME_SEND_LOCK:
+            if _bot_health_blocks_send(send_priority):
+                await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+                return None
+            await _wait_before_locked_send(send_priority)
+            if _bot_health_blocks_send(send_priority):
+                await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+                return None
+
+            account_id = get_identity_account(send_as_id)
+            if account_id:
+                active_client = get_client(account_id)
+            else:
+                active_client = _get_any_authed_client()
+            game_group_id = get_game_group_id()
+            if not game_group_id:
+                raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
+            try:
+                peer = await active_client.get_input_entity(game_group_id)
+            except ValueError:
+                await active_client.get_dialogs()
+                peer = await active_client.get_input_entity(game_group_id)
+            send_as_peer = await active_client.get_input_entity(send_as_id)
+            reply_to_spec = None
+            if reply_to:
+                reply_to_spec = types.InputReplyToMessage(
+                    reply_to_msg_id=int(reply_to),
+                    top_msg_id=int(topic_id or 0) or None,
+                )
+            elif topic_id > 0:
+                reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
+            try:
+                result = await active_client(
+                    functions.messages.SendMessageRequest(
+                        peer=peer,
+                        message=command,
+                        reply_to=reply_to_spec,
+                        send_as=send_as_peer,
+                    )
+                )
+            except FloodWaitError as flood_err:
+                mark_bot_health_suspect(
+                    f"TG FloodWait {int(flood_err.seconds)}s",
+                    reference_at=time.time(),
+                )
+                await send_audit_log(
+                    f"⏸ TG FloodWait {int(flood_err.seconds)}s，普通指令已暂停等待恢复：{_truncate_log_text(command, limit=24)}",
+                    scope="identity", send_as_id=send_as_id, limit=220,
+                )
+                return None
+            msg_id = _extract_sent_message_id(result)
+            if msg_id <= 0:
+                raise ValueError("无法从发送结果中解析消息 ID")
+            msg = SimpleNamespace(id=msg_id)
+            _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=int(reply_to or 0))
+            with use_identity(send_as_id) as identity_state:
+                sent_at = time.time()
+                identity_state["my_msg_ids"][msg_id] = sent_at
+                if track:
+                    identity_state["pending_tasks"][msg_id] = {
+                        "cmd": command,
+                        "sent_at": sent_at,
+                        "retry": 0,
+                        "timeout": random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC),
+                        "reply_to_msg_id": int(reply_to or 0),
+                    }
+                mark_dirty()
+            note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
+            family = resolve_reply_family(command)
+            if family:
+                track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
+            return msg
     except Exception as e:
         await send_audit_log(
             (
@@ -1032,6 +1231,8 @@ def _refresh_identity_info_retry_tracking(identity_state, new_msg_id, now):
 
 
 async def run_retry_scheduler(now, send_as_id=None):
+    if should_pause_for_bot_health():
+        return
     target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
     for identity_id in target_ids:
         if not has_identity(identity_id) or not get_identity_enabled(identity_id):
@@ -1058,6 +1259,23 @@ async def run_retry_scheduler(now, send_as_id=None):
                     continue
                 retry = int(current_item.get("retry", retry) or 0)
                 cmd = current_item.get("cmd") or cmd
+
+                if get_bot_last_seen_at() < float(send_time or 0):
+                    changed = mark_bot_health_suspect(
+                        f"指令 {_truncate_log_text(cmd, limit=32)} 超时且无 bot 发言",
+                        reference_at=send_time,
+                        now=now,
+                    )
+                    if changed:
+                        await send_audit_log(
+                            f"🩺 天尊疑似静默：{mono(_truncate_log_text(cmd, limit=40))} 超时 {threshold}s 后仍无 bot 发言，已暂停普通补发。",
+                            scope="identity",
+                            send_as_id=identity_id,
+                            limit=260,
+                        )
+                    identity_state["pending_tasks"].pop(msg_id, None)
+                    mark_dirty()
+                    continue
 
                 if retry >= RETRY_LIMIT:
                     if family == "deep_retreat":
@@ -1146,6 +1364,8 @@ async def schedule_cleanup(reply_to, send_as_id=None):
 __all__ = [
     "_fire_and_forget",
     "build_ui_login_url",
+    "check_bot_health_timeout",
+    "clear_all_pending_tasks",
     "clear_identity_runtime_tracking",
     "clear_pending_by_reply",
     "clear_pending_tasks_by_commands",
@@ -1156,11 +1376,18 @@ __all__ = [
     "gc_my_msg_ids",
     "gc_ui_login_tokens",
     "gc_ui_sessions",
+    "get_bot_health_snapshot",
+    "get_bot_last_seen_at",
     "get_reply_context",
     "get_reply_family_commands",
     "is_reply_to_identity_message",
     "is_script_command_text",
     "issue_ui_login_token",
+    "mark_bot_health_recovered",
+    "mark_bot_health_suspect",
+    "note_game_bot_message",
+    "note_game_command_observed",
+    "note_game_command_sent",
     "redeem_ui_login_token",
     "reply_log_group_message",
     "resolve_reply_family",
@@ -1168,6 +1395,7 @@ __all__ = [
     "schedule_cleanup",
     "send_audit_log",
     "send_game_command",
+    "should_pause_for_bot_health",
     "touch_ui_session",
     "track_reply_chain_message",
     "validate_ui_session",
