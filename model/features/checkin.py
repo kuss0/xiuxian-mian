@@ -1,9 +1,11 @@
 import random
+import time
+from datetime import datetime, timezone
 
 from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC
 from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client, console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_game_group_id, is_auto_delete_sent_messages_enabled, state
+from ..state import format_window_text, get_game_group_id, get_module_window_hours, is_auto_delete_sent_messages_enabled, state
 from ..timing import (
     fmt_abs_ts,
     fmt_remaining,
@@ -27,6 +29,25 @@ def _is_checkin_reply(reply_to, matched_family=None):
 
 def _schedule_checkin_next_day(now):
     return schedule_next_checkin_after_completion(now, persist=False)
+
+
+def _is_checkin_window_time(ts):
+    start_hour_utc, end_hour_utc = get_module_window_hours("点卯")
+    utc_time = datetime.fromtimestamp(float(ts), timezone.utc)
+    day_start = utc_time.replace(hour=start_hour_utc, minute=0, second=0, microsecond=0)
+    day_end = utc_time.replace(hour=end_hour_utc, minute=0, second=0, microsecond=0)
+    return day_start <= utc_time < day_end
+
+
+def _has_checkin_pending():
+    pending_tasks = state.get("pending_tasks", {})
+    last_msg_id = int(state.get("last_checkin_msg_id", 0) or 0)
+    if last_msg_id > 0 and last_msg_id in pending_tasks:
+        return True
+    for pending in pending_tasks.values():
+        if str((pending or {}).get("cmd") or "").strip() == CMD_CHECKIN:
+            return True
+    return False
 
 
 
@@ -55,6 +76,9 @@ def _mark_checkin_done_and_schedule_teach(now, status_text):
 def _normalize_checkin_schedule(now):
     day_key = get_checkin_day_key(now)
     next_checkin_time = float(state.get("next_checkin_time", 0) or 0)
+    if _has_checkin_pending():
+        return next_checkin_time, True
+
     if state["last_checkin_done_day"] == day_key:
         if next_checkin_time <= 0 or get_checkin_day_key(next_checkin_time) == day_key:
             next_checkin_time = _schedule_checkin_next_day(now)
@@ -62,6 +86,16 @@ def _normalize_checkin_schedule(now):
         return next_checkin_time, True
 
     if next_checkin_time <= 0:
+        schedule_next_checkin(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_checkin_time", 0) or 0), True
+
+    if not _is_checkin_window_time(next_checkin_time):
+        schedule_next_checkin(now, persist=False)
+        mark_dirty()
+        return float(state.get("next_checkin_time", 0) or 0), True
+
+    if now >= next_checkin_time and not _is_checkin_window_time(now):
         schedule_next_checkin(now, persist=False)
         mark_dirty()
         return float(state.get("next_checkin_time", 0) or 0), True
@@ -229,7 +263,8 @@ async def run_checkin_scheduler(now):
                 save_state()
                 console_log(f"📘 执行传功 {state['checkin_teach_count'] + 1}/3")
             else:
-                state["next_sect_teach_time"] = now + RETRY_MAX_SEC
+                failed_at = time.time()
+                state["next_sect_teach_time"] = failed_at + RETRY_MAX_SEC
                 save_state()
                 await send_audit_log("❌ 传功发送失败，稍后重试。")
         else:
@@ -242,15 +277,17 @@ async def run_checkin_scheduler(now):
         return
 
     if now >= next_checkin_time:
-        next_ts = schedule_next_checkin(now, persist=False)
-        msg = await send_game_command(CMD_CHECKIN)
+        msg = await send_game_command(CMD_CHECKIN, max_retry=1)
         if not msg:
-            state["next_checkin_time"] = now + RETRY_MAX_SEC
+            failed_at = time.time()
+            state["next_checkin_time"] = failed_at + RETRY_MAX_SEC
             save_state()
             await send_audit_log("❌ 点卯发送失败，稍后重试。")
             return
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        next_ts = _schedule_checkin_next_day(sent_at)
         save_state()
-        console_log(f"📝 执行点卯→{fmt_abs_ts(next_ts)}")
+        console_log(f"📝 执行点卯，等待回复→{fmt_abs_ts(next_ts)}")
 
 
 __all__ = [

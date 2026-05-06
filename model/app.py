@@ -6,9 +6,10 @@ from datetime import datetime
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_registered_client, is_account_offline, mark_account_offline, register_client
+from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
+from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
 from .features.deep_retreat import (
     handle_deep_retreat_running_reply,
     handle_deep_retreat_status_reply,
@@ -24,7 +25,18 @@ from .features.guanxing import (
     run_guanxing_scheduler,
 )
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
-from .features.pet import handle_pet_cd_fix, run_pet_scheduler
+from .features.concubine import (
+    handle_concubine_dream_reply,
+    handle_concubine_fragment_reply,
+    handle_concubine_loss_broadcast,
+    handle_concubine_puzzle_reply,
+    handle_concubine_reacquire_reply,
+    handle_concubine_status_reply,
+    handle_concubine_tianji_reply,
+    restore_concubine_runtime,
+    run_concubine_scheduler,
+)
+from .features.pet import handle_pet_cd_fix, handle_pet_trial_reply, run_pet_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
@@ -44,6 +56,7 @@ from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
     handle_tree_exception_prompt,
+    handle_tree_harvest_reply,
     handle_tree_invasion_end,
     handle_tree_invasion_start,
     handle_tree_panel,
@@ -55,6 +68,7 @@ from .features.second_soul import (
     handle_second_soul_choice_result_broadcast,
     handle_second_soul_heart_demon_warning_broadcast,
     handle_second_soul_recovery_broadcast,
+    handle_second_soul_return_broadcast,
     handle_second_soul_status_reply,
     handle_second_soul_train_reply,
     run_second_soul_bootstrap_check,
@@ -76,6 +90,7 @@ from .features.yuanying import (
 )
 from .persistence import flush_if_dirty, load_state, mark_dirty, save_state
 from .runtime import (
+    _fire_and_forget,
     check_bot_health_timeout,
     clear_all_pending_tasks,
     clear_pending_by_reply,
@@ -83,10 +98,12 @@ from .runtime import (
     gc_ui_login_tokens,
     gc_ui_sessions,
     get_reply_context,
+    is_account_session_error,
     is_reply_to_identity_message,
     mark_bot_health_recovered,
     note_game_bot_message,
     note_game_command_observed,
+    resolve_reply_family,
     run_retry_scheduler,
     schedule_cleanup,
     send_game_command,
@@ -106,30 +123,154 @@ from .state import (
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
+    set_game_bot_ids,
     state,
     use_identity,
 )
-from .timing import (
-    fmt_time_after,
-    get_checkin_day_key,
-    get_day_key,
-    reset_checkin_daily_state,
-    schedule_next_checkin,
-    schedule_next_checkin_after_completion,
-    schedule_next_tower,
-    schedule_next_tower_after_completion,
-)
+from .timing import fmt_time_after
 from .ui import start_ui_server
 
 _bot_silence_auto_paused = False
+_identity_scheduler_task = None
+_identity_scheduler_started_at = 0.0
+_identity_scheduler_last_warn_at = 0.0
 _runtime_event_claims = {}
 _runtime_message_consumed = {}
 _runtime_log_claims = {}
+_suspected_game_bot_hits = {}
+
+IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
+UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
+UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
+
+BOT_REPLY_FAMILY_HINTS = {
+    "checkin": ("点卯", "已点卯", "已经点过", "宗门"),
+    "sect_teach": ("传功", "宗门", "贡献"),
+    "tower": ("闯塔", "古塔", "塔灵", "挑战", "道心受挫"),
+    "pet": ("器灵", "法宝", "默契", "经验", "休息"),
+    "pet_trial": ("器灵试炼", "试炼", "共鸣", "灵潮", "反噬"),
+    "tree_panel": ("灵眼之树", "灵树", "果实", "采摘", "成熟"),
+    "tree_guard": ("守山", "护山", "攻山", "灵树"),
+    "tree_harvest": ("采摘", "灵果", "木髓", "灵树"),
+    "stargazer_panel": ("观星台", "引星盘", "星辰"),
+    "stargazer_guide": ("牵引", "星辰", "引星盘", "星力"),
+    "stargazer_soothe": ("安抚", "狂暴星力", "引星盘"),
+    "stargazer_collect": ("收集", "精华", "星辰", "引星盘"),
+    "stargazer_sync": ("观星台", "引星盘", "星辰"),
+    "guanxing_query": ("观星台", "引星盘", "空闲", "精华"),
+    "guanxing_shift": ("牵引", "星辰", "引星盘", "星力"),
+    "tianti_status": ("天梯", "问心", "罡风", "登天"),
+    "tianti_wenxin": ("问心", "天梯", "道心"),
+    "tianti_climb": ("天梯", "登天", "层", "修为"),
+    "tianti_gangfeng": ("九天罡风", "罡风", "再聚"),
+    "yuanying": ("元婴", "出窍", "归窍", "法则碎片", "探寻"),
+    "deep_retreat": ("深度闭关", "闭关", "神魂", "功成圆满", "总结"),
+    "small_world_preach": ("小世界", "香火", "信仰", "神识", "神迹"),
+    "concubine_status": ("侍妾", "道侣", "红尘", "情缘", "残图"),
+    "concubine_dream": ("入梦寻图", "侍妾", "残图", "梦图感应"),
+    "concubine_fragment": ("虚天残图", "残图", "残纹", "拼片"),
+    "concubine_puzzle": ("拼图", "虚天残图", "拼合", "残纹"),
+    "concubine_reacquire": ("侍妾", "道侣", "红尘寻缘", "宗门赐婚", "红颜"),
+    "concubine_tianji": ("天机代卜", "天机链路", "卜算天机", "代卜"),
+    "nanlong": ("南陇侯", "交易", "侍妾", "法宝", "功法"),
+    "second_soul_status": ("第二元神", "元神", "心魔", "修炼"),
+    "second_soul_train": ("第二元神", "元神", "修炼", "闭关"),
+    "second_soul_choice": ("心魔", "抉择", "第二元神"),
+    "taiyi_yindao": ("引道", "太一", "五行", "神识"),
+    "taiyi_node_search": ("搜寻节点", "空间节点", "虚空", "神识"),
+    "taiyi_node_define": ("定星", "空间节点", "稳固", "材料"),
+}
+
+
+def _track_manual_game_command(sender_id, text, msg_id):
+    command = str(text or "").strip()
+    if not command:
+        return
+    family = resolve_reply_family(command)
+    if family:
+        track_reply_chain_message(msg_id, sender_id, family, root_msg_id=msg_id)
+
+
+def _looks_like_game_bot_reply(text, family):
+    raw_text = str(text or "").strip()
+    if not raw_text or raw_text.startswith("."):
+        return False
+    hints = BOT_REPLY_FAMILY_HINTS.get(str(family or "").strip()) or ()
+    return any(hint in raw_text for hint in hints)
+
+
+async def _note_game_bot_activity():
+    global _bot_silence_auto_paused
+    bot_health_action = note_game_bot_message(time.time())
+    if bot_health_action == "probe":
+        if _bot_silence_auto_paused:
+            asyncio.create_task(_send_bot_health_probe())
+    elif bot_health_action == "recover":
+        if _bot_silence_auto_paused and not get_global_enabled():
+            await toggle_global_enabled(True, source="bot_health_recovery")
+        _bot_silence_auto_paused = False
+        mark_bot_health_recovered("bot 恢复确认完成")
+
+
+async def _record_suspected_game_bot(sender_id, family, text):
+    sender_id = int(sender_id or 0)
+    if sender_id == 0 or sender_id in set(get_game_bot_ids()):
+        return
+    now = time.time()
+    item = _suspected_game_bot_hits.get(sender_id) or {"count": 0, "first_seen": now, "notified": False, "learned": False}
+    if now - float(item.get("first_seen", now) or now) > UNKNOWN_GAME_BOT_HIT_TTL_SEC:
+        item = {"count": 0, "first_seen": now, "notified": False, "learned": False}
+    item["count"] = int(item.get("count", 0) or 0) + 1
+    _suspected_game_bot_hits[sender_id] = item
+
+    if not item.get("notified"):
+        item["notified"] = True
+        await send_audit_log(
+            f"🧩 检测到未登记游戏 bot 回复，已临时放行：{sender_id}｜{family}｜{str(text or '')[:60]}",
+            scope="global",
+            limit=260,
+        )
+
+    if int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_LEARN_THRESHOLD and not item.get("learned"):
+        known_ids = set(get_game_bot_ids())
+        known_ids.add(sender_id)
+        set_game_bot_ids(sorted(known_ids))
+        item["learned"] = True
+        save_state()
+        await send_audit_log(
+            f"🧩 未登记游戏 bot {sender_id} 连续命中 {item['count']} 次，已自动加入 game_bot_ids。",
+            scope="global",
+            limit=220,
+        )
+
+
+async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
+    sender_id = int(getattr(event, "sender_id", 0) or 0)
+    if sender_id in set(int(identity_id) for identity_id in get_identity_ids()):
+        return False
+    reply_to, reply_context = await _resolve_event_reply(event)
+    routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    matched_family = (reply_context or {}).get("family") or None
+    if routed_identity_id <= 0 or not matched_family:
+        return False
+    if not _looks_like_game_bot_reply(text, matched_family):
+        return False
+
+    handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
+    if handled_reply:
+        await _note_game_bot_activity()
+        await _record_suspected_game_bot(sender_id, matched_family, text)
+    return handled_reply
+
+
+def _is_identity_account_offline(identity_id):
+    account_id = int(get_identity_account(identity_id) or 0)
+    return bool(account_id and is_account_offline(account_id))
 
 
 def _get_bot_health_probe_identity_id():
     for identity_id in get_identity_ids():
-        if get_identity_enabled(identity_id):
+        if get_identity_enabled(identity_id) and not _is_identity_account_offline(identity_id):
             return int(identity_id)
     return None
 
@@ -139,7 +280,7 @@ async def _send_bot_health_probe():
     if identity_id is None:
         await send_audit_log("🩺 天尊恢复探测跳过：没有可用身份，维持全局暂停。", scope="global", limit=220)
         return
-    msg = await send_game_command(CMD_IDENTITY_INFO, track=True, send_as_id=identity_id, priority="probe")
+    msg = await send_game_command(CMD_IDENTITY_INFO, track=True, send_as_id=identity_id, priority="probe", max_retry=0)
     if msg:
         await send_audit_log("🩺 天尊恢复探测已发送，等待确认回复后恢复普通调度。", scope="identity", send_as_id=identity_id, limit=220)
 
@@ -227,7 +368,12 @@ def _is_identity_owner_event(event, send_as_id):
         return False
     account_id = get_identity_account(send_as_id)
     if not account_id:
-        expected_client = client
+        live_clients = [
+            tc
+            for live_account_id, tc in get_all_clients().items()
+            if int(live_account_id or 0) > 0 and not is_account_offline(live_account_id)
+        ]
+        expected_client = live_clients[0] if len(live_clients) == 1 else client
     elif is_account_offline(account_id):
         return False
     else:
@@ -270,7 +416,18 @@ def _get_event_reply_header_msg_id(event):
 
 
 async def _resolve_event_reply(event):
-    reply_to = await event.get_reply_message()
+    try:
+        reply_to = await event.get_reply_message()
+    except Exception as exc:
+        if is_account_session_error(exc):
+            event_client = getattr(event, "client", None)
+            for account_id, tc in get_all_clients().items():
+                if event_client is tc:
+                    mark_account_offline(account_id, str(exc))
+                    break
+            reply_to = None
+        else:
+            raise
     reply_context = get_reply_context(reply_to, reply_to_msg_id=_get_event_reply_header_msg_id(event))
     return reply_to, reply_context
 
@@ -299,6 +456,15 @@ async def _run_claimed_prompt_handler(scope, handler, text, now, event):
     return await _run_until_handled_for_enabled_identities(handler, text, now, event)
 
 
+def _is_concubine_loss_broadcast_candidate(text):
+    raw_text = str(text or "")
+    return (
+        "南陇侯" in raw_text
+        and "侍妾" in raw_text
+        and ("掳走" in raw_text or "选择将侍妾" in raw_text)
+    )
+
+
 async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None):
     if _claim_runtime_event(event, scope="deep_retreat_summary"):
         await handle_deep_retreat_summary_broadcast(text, now)
@@ -318,6 +484,8 @@ async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None):
         await handle_tiandao_judgement_prompt(text, now, event)
     if _claim_runtime_event(event, scope="guanxing_finish"):
         await handle_guanxing_finish_broadcast(text, now)
+    if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
+        await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
 
 
 async def _dispatch_tree_broadcast_fallbacks(event, text, now):
@@ -352,6 +520,8 @@ async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
 
 
 async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="second_soul_return"):
+        await handle_second_soul_return_broadcast(text, now)
     if _claim_runtime_event(event, scope="second_soul_heart_demon_warning"):
         await handle_second_soul_heart_demon_warning_broadcast(text, now, event.id)
     if _claim_runtime_event(event, scope="second_soul_choice_result"):
@@ -380,8 +550,24 @@ async def _dispatch_message_edited_guanxing_monitor(event, text, now):
         await handle_guanxing_monitor_broadcast(text, now)
 
 
+async def _dispatch_message_edited_concubine_loss(event, text, now):
+    if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
+        await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
+
+
+async def _dispatch_message_edited_phaseful_summaries(event, text, now):
+    if _claim_runtime_event(event, scope="deep_retreat_summary_edit"):
+        await handle_deep_retreat_summary_broadcast(text, now)
+    if _claim_runtime_event(event, scope="yuanying_summary_edit"):
+        await handle_yuanying_summary_broadcast(text, now)
+
+
 async def _run_identity_schedulers(now):
-    identity_schedulers = (
+    phaseful_schedulers = (
+        run_deep_retreat_scheduler,
+        run_yuanying_scheduler,
+    )
+    ordinary_schedulers = (
         run_tree_bootstrap_check,
         run_tree_scheduler,
         run_pet_scheduler,
@@ -389,22 +575,35 @@ async def _run_identity_schedulers(now):
         run_tianti_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
+        run_concubine_scheduler,
         run_nanlong_scheduler,
         run_small_world_scheduler,
         run_checkin_scheduler,
         run_tower_scheduler,
-        run_deep_retreat_scheduler,
-        run_yuanying_scheduler,
         run_second_soul_bootstrap_check,
         run_second_soul_scheduler,
         run_taiyi_bootstrap_check,
         run_taiyi_scheduler,
     )
+
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
             continue
+        if _is_identity_account_offline(identity_id):
+            continue
         with use_identity(identity_id):
-            for scheduler in identity_schedulers:
+            for scheduler in phaseful_schedulers:
+                await scheduler(now)
+
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            if has_phaseful_summary_block(now):
+                continue
+            for scheduler in ordinary_schedulers:
                 await scheduler(now)
 
 
@@ -415,15 +614,66 @@ async def _run_global_schedulers(now):
     await run_tianji_quiz_scheduler(now)
 
 
-async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True):
+async def _run_identity_schedulers_background(now):
+    await _run_identity_schedulers(now)
+
+
+def _handle_identity_scheduler_done(task):
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        print("identity scheduler crashed:")
+        print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        _fire_and_forget(
+            send_audit_log(
+                f"❌ 身份调度后台异常：{str(exc)[:180]}",
+                scope="global",
+                limit=300,
+            )
+        )
+
+
+def _start_identity_schedulers_if_idle(now):
+    global _identity_scheduler_task, _identity_scheduler_started_at, _identity_scheduler_last_warn_at
+    if _identity_scheduler_task and not _identity_scheduler_task.done():
+        if now - _identity_scheduler_started_at >= IDENTITY_SCHEDULER_STUCK_WARN_SEC and now - _identity_scheduler_last_warn_at >= IDENTITY_SCHEDULER_STUCK_WARN_SEC:
+            _identity_scheduler_last_warn_at = now
+            _fire_and_forget(
+                send_audit_log(
+                    "⏳ 身份调度仍在等待发送队列，主循环未阻塞，会继续按全局间隔串行发送。",
+                    scope="global",
+                    limit=260,
+                )
+            )
+        return
+    _identity_scheduler_started_at = float(now)
+    _identity_scheduler_task = asyncio.create_task(_run_identity_schedulers_background(now))
+    _identity_scheduler_task.add_done_callback(_handle_identity_scheduler_done)
+
+
+def _cancel_identity_schedulers():
+    global _identity_scheduler_task
+    if _identity_scheduler_task and not _identity_scheduler_task.done():
+        _identity_scheduler_task.cancel()
+
+
+async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, *, allow_tree_panel_claim=True, event_kind="message"):
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
     matched_family = (reply_context or {}).get("family") or None
     if routed_identity_id <= 0:
         return False
-    if not _is_identity_owner_event(event, routed_identity_id):
-        # 非属主 client 只能弃权，不能把 routed reply 误标为已处理。
+
+    family_scope = str(matched_family or "unknown").strip() or "unknown"
+    kind_scope = str(event_kind or "message").strip() or "message"
+    if not _claim_runtime_event(event, scope=f"routed_reply:{kind_scope}:{routed_identity_id}:{family_scope}"):
         return False
 
+    # In multi-client mode a bot reply can be delivered to a different account
+    # client than the one that sent the command. The reply_to message id is the
+    # authoritative owner here; requiring the owner client would leave pending
+    # tasks uncleared and trigger retry storms.
     already_consumed = bool(matched_family) and _has_runtime_message_consumed(event, matched_family)
     with use_identity(routed_identity_id):
         is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
@@ -458,10 +708,12 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = handled_any or tree_panel_done
             stargazer_panel_done = await handle_stargazer_panel(text, now, is_reply_to_me, matched_family=matched_family)
             handled_any = handled_any or stargazer_panel_done
+            handled_any = await handle_tree_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if not already_consumed and matched_family != "stargazer_sync":
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tower_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -469,6 +721,12 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tianti_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_dream_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_fragment_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_puzzle_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_reacquire_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_tianji_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
@@ -521,7 +779,12 @@ async def on_message(event):
     if event.sender_id not in set(get_game_bot_ids()):
         now = time.time()
         text = event.raw_text or ""
+        if sender_id in set(int(identity_id) for identity_id in get_identity_ids()):
+            observe_phaseful_identity_message(sender_id, text, now=now, msg_id=event.id)
+            _track_manual_game_command(sender_id, text, event.id)
         try:
+            if await _handle_suspected_game_bot_reply(event, text, now):
+                return
             if _claim_runtime_event(event, scope="guanxing_external_shift"):
                 await handle_guanxing_external_shift_command(text, now, event)
         except Exception:
@@ -529,16 +792,7 @@ async def on_message(event):
         return
 
     # bot 健康监测：bot 有发言后，暂停态先探测，再恢复
-    global _bot_silence_auto_paused
-    bot_health_action = note_game_bot_message(time.time())
-    if bot_health_action == "probe":
-        if _bot_silence_auto_paused:
-            asyncio.create_task(_send_bot_health_probe())
-    elif bot_health_action == "recover":
-        if _bot_silence_auto_paused and not get_global_enabled():
-            await toggle_global_enabled(True, source="bot_health_recovery")
-        _bot_silence_auto_paused = False
-        mark_bot_health_recovered("bot 恢复确认完成")
+    await _note_game_bot_activity()
 
     now = time.time()
     text = event.raw_text or ""
@@ -580,7 +834,15 @@ async def on_message_edited(event):
     if event.chat_id != get_game_group_id():
         return
     if event.sender_id not in set(get_game_bot_ids()):
+        try:
+            now = time.time()
+            text = event.raw_text or ""
+            await _handle_suspected_game_bot_reply(event, text, now, edited=True)
+        except Exception:
+            print(traceback.format_exc())
         return
+
+    await _note_game_bot_activity()
 
     now = time.time()
     text = event.raw_text or ""
@@ -589,6 +851,8 @@ async def on_message_edited(event):
         reply_to, reply_context = await _resolve_event_reply(event)
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
+        await _dispatch_message_edited_concubine_loss(event, text, now)
+        await _dispatch_message_edited_phaseful_summaries(event, text, now)
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(
@@ -597,6 +861,7 @@ async def on_message_edited(event):
                 now,
                 reply_to,
                 reply_context,
+                event_kind="edit",
             )
             if handled_reply:
                 return
@@ -614,17 +879,33 @@ def _register_event_handlers(tc):
 
 
 async def bootstrap():
-    # 主 client 仅 connect：有 session 时自动恢复认证，无 session 时等待 UI 登录
-    await client.connect()
     loaded = load_state()
+    saved_accounts = get_accounts()
+
+    # 多账号模式下只启动账号 client，避免主 session 也挂一个空转 Telegram 会话。
+    # 没有保存账号时保留旧的单账号主 session 启动路径。
+    if not saved_accounts:
+        await client.connect()
 
     # 启动已保存的额外账号 client
     failed_accounts = []
-    for acct_id_str, acct_info in get_accounts().items():
+    for acct_id_str, acct_info in saved_accounts.items():
+        acct_id = 0
+        tc = None
         try:
             acct_id = int(acct_id_str)
             tc = create_account_client(acct_id)
-            await tc.start()
+            await tc.connect()
+            if not await tc.is_user_authorized():
+                error_text = "session 未授权，请通过 UI 重新登录账号"
+                mark_account_offline(acct_id, error_text)
+                failed_accounts.append({"account_id": acct_id, "error": error_text})
+                print(f"启动额外账号 {acct_id_str} 跳过: {error_text}")
+                try:
+                    await tc.disconnect()
+                except Exception:
+                    pass
+                continue
             try:
                 await tc.get_dialogs()
             except Exception:
@@ -632,20 +913,29 @@ async def bootstrap():
             register_client(acct_id, tc)
             _register_event_handlers(tc)
         except Exception:
-            error_text = traceback.format_exc().strip().splitlines()[-1] if traceback.format_exc().strip() else "启动失败"
+            tb = traceback.format_exc()
+            error_text = tb.strip().splitlines()[-1] if tb.strip() else "启动失败"
             mark_account_offline(acct_id_str, error_text)
-            failed_accounts.append({"account_id": int(acct_id_str), "error": error_text})
-            print(f"启动额外账号 {acct_id_str} 失败: {traceback.format_exc()}")
+            failed_accounts.append({"account_id": acct_id or int(acct_id_str), "error": error_text})
+            if tc is not None and tc.is_connected():
+                try:
+                    await tc.disconnect()
+                except Exception:
+                    pass
+            print(f"启动额外账号 {acct_id_str} 失败: {tb}")
 
     await start_ui_server()
 
     # 获取 my_user_id：优先主 client，再尝试已登录账号
-    try:
-        _me = await client.get_me()
-        if _me:
-            state["my_user_id"] = _me.id
-    except Exception:
-        pass
+    if client.is_connected():
+        try:
+            _me = await client.get_me()
+            if _me:
+                state["my_user_id"] = _me.id
+                if get_registered_client(_me.id) is None:
+                    register_client(_me.id, client)
+        except Exception:
+            pass
     if not state.get("my_user_id"):
         for _acct_id_str in get_accounts():
             try:
@@ -664,9 +954,15 @@ async def bootstrap():
 
     identity_ids = get_identity_ids()
     startup_account_check_result = run_startup_account_integrity_check(identity_ids, failed_accounts)
+    runtime_account_ids = [
+        int(account_id)
+        for account_id in get_all_clients().keys()
+        if int(account_id or 0) > 0 and not is_account_offline(account_id)
+    ]
+    single_runtime_account_id = runtime_account_ids[0] if len(runtime_account_ids) == 1 else 0
     for send_as_id in identity_ids:
         try:
-            account_id = get_identity_account(send_as_id)
+            account_id = get_identity_account(send_as_id) or single_runtime_account_id
             if not account_id:
                 print(f"hydrate_identity_profile skipped (no account): {send_as_id}")
                 continue
@@ -706,37 +1002,8 @@ async def bootstrap():
         save_state()
     else:
         for identity_id in identity_ids:
-            if not get_identity_enabled(identity_id):
-                continue
-            with use_identity(identity_id):
-                if state["tree_enabled"] and (state["is_maturing"] or state["is_invading"] or state["pending_irrigation"]):
-                    state["tree_bootstrap_check_needed"] = True
-                    mark_dirty()
-                if state["checkin_enabled"]:
-                    day_key = get_checkin_day_key(now)
-                    if state["checkin_teach_day"] != day_key:
-                        reset_checkin_daily_state(now)
-                        mark_dirty()
-                    if state["last_checkin_done_day"] == day_key and state["next_checkin_time"] <= now:
-                        schedule_next_checkin_after_completion(now, persist=False)
-                        mark_dirty()
-                    elif state["next_checkin_time"] <= 0:
-                        schedule_next_checkin(now, persist=False)
-                        mark_dirty()
-                if state["tower_enabled"]:
-                    day_key = get_day_key(now)
-                    if state["last_tower_day"] == day_key and state["next_tower_time"] <= now:
-                        schedule_next_tower_after_completion(now, persist=False)
-                        mark_dirty()
-                    elif state["last_tower_day"] != day_key and state["next_tower_time"] <= 0:
-                        schedule_next_tower(now, persist=False)
-                        mark_dirty()
-                if state["deep_retreat_enabled"] and state["next_deep_retreat_time"] <= 0:
-                    state["next_deep_retreat_time"] = now + 1
-                    mark_dirty()
-                if state["yuanying_enabled"] and state["next_yuanying_time"] <= 0:
-                    state["next_yuanying_time"] = now + 1
-                    mark_dirty()
+            initialize_identity_runtime(identity_id, now)
+            mark_dirty()
         spread_overdue_runtime_timers(now, reason="启动恢复")
         save_state()
 
@@ -764,7 +1031,7 @@ async def bootstrap():
             f"⚠️ 启动扫描：发现超时任务并自动关闭 {startup_scan_result['closed_count']} 个模块，登录 UI 后可手动恢复。"
         )
     audit_lines.extend(startup_account_check_result.get("audit_lines") or [])
-    await send_audit_log("\n".join(audit_lines), scope="global", limit=1200)
+    _fire_and_forget(send_audit_log("\n".join(audit_lines), scope="global", limit=1200))
 
 
 async def main_loop():
@@ -775,23 +1042,25 @@ async def main_loop():
         gc_ui_login_tokens(now)
         gc_ui_sessions(now)
         flush_if_dirty(now)
-        await run_retry_scheduler(now)
-        await run_identity_info_followup_scheduler(now)
 
         # bot 健康监测：疑似静默/探测中直接全局暂停，避免继续普通发送
         global _bot_silence_auto_paused
         check_bot_health_timeout(now, BOT_SILENCE_TIMEOUT_SEC)
         if should_pause_for_bot_health() and get_global_enabled():
             _bot_silence_auto_paused = True
+            _cancel_identity_schedulers()
             clear_all_pending_tasks("天尊健康暂停")
             await toggle_global_enabled(False, source="bot_health_monitor")
         if not get_global_enabled():
+            _cancel_identity_schedulers()
             await asyncio.sleep(5)
             continue
 
         await _run_global_schedulers(now)
-        await _run_identity_schedulers(now)
         await run_quiz_learning_scheduler(now)
+        await run_retry_scheduler(now)
+        await run_identity_info_followup_scheduler(now)
+        _start_identity_schedulers_if_idle(now)
         await asyncio.sleep(5)
 
 

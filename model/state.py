@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from .config import (
     CHECKIN_WINDOW_END_HOUR_UTC,
     CHECKIN_WINDOW_START_HOUR_UTC,
+    CMD_PET_TRIAL,
     DEFAULT_PET_NAME,
     GAME_BOT_IDS,
     GAME_GROUP_ID,
@@ -22,42 +23,47 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
     "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
-    "next_irr_time", "next_guard_time", "next_pet_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
-    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_deep_retreat_time",
+    "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_trial_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
+    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_deep_retreat_time",
     "next_second_soul_time", "second_soul_heart_demon_deadline",
     "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
-    "last_tower_msg_id", "pet_last_error",
+    "tree_maturing_logged", "tree_harvest_followup_due_at", "tree_harvest_inflight_until", "tree_bootstrap_check_due_at", "last_tree_status_sent_at",
+    "last_tower_msg_id", "pet_last_error", "pet_trial_last_error",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
     "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_retry_count", "quiz_match_mode", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
+    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_last_error",
     "small_world_preach_reply_to_msg_id", "small_world_faith_value", "small_world_last_error",
+    "resource_shortage_backoffs",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
-    "second_soul_phase", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_last_error",
-    "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_last_error",
+    "second_soul_phase", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
+    "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
+    "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_last_error",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history", "resource_shortage_backoffs"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
     "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
     "second_soul_heart_demon_notified",
+    "tree_maturing_logged",
 }
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
 SEND_AS_PROFILE_DEFAULTS = {
@@ -155,8 +161,12 @@ IDENTITY_STATE_TEMPLATE = {
     # 业务对象开关（新身份默认全关，需手动开启）
     "tree_enabled": False,
     "pet_enabled": False,
+    "pet_trial_enabled": False,
     "quiz_enabled": False,
     "jiyin_enabled": False,
+    "concubine_enabled": False,
+    "concubine_tianji_enabled": False,
+    "concubine_auto_reacquire": True,
     "nanlong_enabled": False,
     "tianti_enabled": False,
     "tianti_wenxin_enabled": True,
@@ -181,10 +191,15 @@ IDENTITY_STATE_TEMPLATE = {
     # 灵树运行态（不持久化）
     "tree_maturing_logged": False,
     "tree_harvest_followup_due_at": 0,
+    "tree_harvest_inflight_until": 0,
+    "tree_bootstrap_check_due_at": 0,
+    "last_tree_status_sent_at": 0,
 
     # 法宝模块
     "next_pet_time": 0,
+    "next_pet_trial_time": 0,
     "pet_last_error": "",
+    "pet_trial_last_error": "",
 
     # 观星台模块
     "next_stargazer_panel_time": 0,
@@ -275,6 +290,35 @@ IDENTITY_STATE_TEMPLATE = {
     "jiyin_reply_to_msg_id": 0,
     "jiyin_last_error": "",
 
+    # 侍妾模块
+    "next_concubine_time": 0,
+    "concubine_phase": "idle",  # idle|status_pending|dream_pending|fragment_pending|puzzle_ready|puzzle_pending|reacquire_pending|no_partner
+    "concubine_availability": "unknown",
+    "concubine_nanlong_strategy": "reacquire_after_loss",
+    "concubine_status_msg_id": 0,
+    "concubine_dream_msg_id": 0,
+    "concubine_fragment_msg_id": 0,
+    "concubine_puzzle_msg_id": 0,
+    "concubine_reacquire_msg_id": 0,
+    "concubine_tianji_msg_id": 0,
+    "concubine_name": "",
+    "concubine_kind": "",
+    "concubine_location": "",
+    "concubine_affinity": 0,
+    "concubine_oath": "",
+    "concubine_dream_due_at": 0,
+    "concubine_tianji_due_at": 0,
+    "concubine_tianji_chain": "",
+    "concubine_tianji_chain_due_at": 0,
+    "concubine_fragment_count": 0,
+    "concubine_fragment_total": 4,
+    "concubine_last_snapshot_at": 0,
+    "concubine_reacquire_blocked_until": 0,
+    "concubine_reacquire_attempts": 0,
+    "concubine_reacquire_command_override": "",
+    "concubine_last_error": "",
+    "concubine_tianji_last_error": "",
+
     # 南陇侯模块
     "next_nanlong_time": 0,
     "nanlong_reply_to_msg_id": 0,
@@ -285,7 +329,7 @@ IDENTITY_STATE_TEMPLATE = {
     "nanlong_last_error": "",
 
     # 元婴模块
-    "yuanying_phase": "idle",  # idle|launching|running|waiting_summary|post_summary_wait
+    "yuanying_phase": "idle",  # idle|queued_launch|launching|running|summary_due|observing_summary|waiting_summary|post_summary_wait
     "next_yuanying_time": 0,
     "yuanying_probe_pending": False,
     "yuanying_summary_sent_at": 0,
@@ -293,7 +337,7 @@ IDENTITY_STATE_TEMPLATE = {
     "last_yuanying_command_time": 0,
 
     # 深度闭关模块
-    "deep_retreat_phase": "idle",  # idle|launching|running|waiting_summary|post_summary_wait
+    "deep_retreat_phase": "idle",  # idle|queued_launch|launching|running|summary_due|observing_summary|waiting_summary|post_summary_wait
     "next_deep_retreat_time": 0,
     "deep_retreat_probe_pending": False,
     "deep_retreat_summary_sent_at": 0,
@@ -305,16 +349,20 @@ IDENTITY_STATE_TEMPLATE = {
     "small_world_preach_reply_to_msg_id": 0,
     "small_world_faith_value": 0,
     "small_world_last_error": "",
+    "resource_shortage_backoffs": {},
 
     # 第二元神模块
     "second_soul_enabled": False,
-    "second_soul_phase": "idle",  # idle|status_pending|cultivating|heart_demon_pending|injured|not_unlocked
+    "second_soul_phase": "idle",  # idle|status_pending|ready_to_train|train_pending|cultivating|heart_demon_pending|injured|not_unlocked
     "next_second_soul_time": 0,
     "second_soul_heart_demon_msg_id": 0,
     "second_soul_heart_demon_deadline": 0,
     "second_soul_heart_demon_notified": False,
     "second_soul_status_msg_id": 0,
     "second_soul_train_msg_id": 0,
+    "second_soul_last_train_started_at": 0,
+    "second_soul_last_broadcast_key": "",
+    "second_soul_last_broadcast_at": 0,
     "second_soul_last_error": "",
 
     # 太一门模块
@@ -1037,6 +1085,10 @@ def get_pet_command(send_as_id=None):
     return f".抚摸法宝 {get_pet_name(send_as_id)}"
 
 
+def get_pet_trial_command(send_as_id=None):
+    return f"{CMD_PET_TRIAL} {get_pet_name(send_as_id)}"
+
+
 def set_pet_name(send_as_id, pet_name):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, pet_name=pet_name)
@@ -1232,6 +1284,7 @@ __all__ = [
     "get_nanlong_choice",
     "get_pet_command",
     "get_pet_name",
+    "get_pet_trial_command",
     "get_stargazer_star_choice",
     "get_stargazer_total_slots",
     "get_tianti_rank_choice",

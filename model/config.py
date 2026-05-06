@@ -113,7 +113,7 @@ LOG_BOT_TOKEN = str(os.environ.get("LOG_BOT_TOKEN", "") or "").strip()
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 0) or 0)
 
 GAME_GROUP_ID = -1001680975844  # 游戏主群（初始化默认值，可在 UI 基础配置中修改）
-GAME_BOT_IDS = {8388633812}  # 游戏 BOT ID（初始化默认值，可在 UI 基础配置中修改）
+GAME_BOT_IDS = {-1003983937918, 7900199668, 8388633812, 8547797815, 8757550896}  # 游戏 BOT ID（初始化默认值，可在 UI 基础配置中修改）
 GAME_TOPIC_ID = 7310786  # 游戏话题 ID（初始化默认值，可在 UI 基础配置中修改）
 
 RETRY_MIN_SEC = 600
@@ -123,6 +123,7 @@ MY_MSG_TTL = 3600
 MY_MSG_MAX = 1000
 
 PET_CD = 7200
+PET_TRIAL_CD = 8 * 3600
 YUANYING_CD = 28800
 DEEP_RETREAT_CD = 28800
 MODULE_PROTECT_SEC = 30            # 状态机模块执行后的保护间隔
@@ -131,11 +132,15 @@ SUMMARY_TIMEOUT_SEC = 900          # 总结最长等待时间（15分钟，避�
 YUANYING_PROTECT_SEC = MODULE_PROTECT_SEC
 CD_BUFFER_SEC = 5                  # CD 修正时额外缓冲秒数
 FREEZE_CD = 9999999                # 冻结某个定时器时使用的极大值
-GUARD_INTERVAL_MIN = 300           # 守山间隔下限（秒）
-GUARD_INTERVAL_MAX = 330           # 守山间隔上限（秒）
+TREE_GUARD_ACTIVE_COUNT = 3        # 每轮入侵最多主动守山的身份数
+TREE_GUARD_SELECTION_WINDOW_SEC = 6 * 3600  # 守山身份稳定随机窗口，避免同一轮入侵重启后换人
+TREE_GUARD_INITIAL_DELAY_MIN_SEC = 30       # 入侵后首次守山最小延迟
+TREE_GUARD_INITIAL_DELAY_MAX_SEC = 180      # 入侵后首次守山最大延迟
+GUARD_INTERVAL_MIN = 1500          # 守山重复间隔下限（秒）
+GUARD_INTERVAL_MAX = 2100          # 守山重复间隔上限（秒）
 IRR_INTERVAL_MIN = 7200            # 灌溉间隔下限（秒）
 IRR_INTERVAL_MAX = 7230            # 灌溉间隔上限（秒）
-LAUNCHING_TIMEOUT_SEC = 900        # launching 状态超时（15分钟，避免 bot 延迟时误判）
+LAUNCHING_TIMEOUT_SEC = 300        # launching 状态超时（5分钟，避免发送成功但回复丢失时长期卡住）
 CHECKIN_WINDOW_START_HOUR_UTC = 2  # 宗门点卯窗口开始（UTC+0）
 CHECKIN_WINDOW_END_HOUR_UTC = 3    # 宗门点卯窗口结束（UTC+0）
 TOWER_WINDOW_START_HOUR_UTC = 1    # 闯塔窗口开始（UTC+0）
@@ -145,7 +150,7 @@ SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 600      # bot 静默超时，触发全局暂停（10分钟）
 DB_FILE = os.path.join(STATE_DIR, "chaogu_state.db")
-DB_SCHEMA_VERSION = 6
+DB_SCHEMA_VERSION = 7
 TZ_LOCAL = timezone(timedelta(hours=8))
 
 
@@ -154,6 +159,7 @@ CMD_TREE_GUARD = ".协同守山"
 CMD_TREE_STATUS = ".灵树状态"
 CMD_TREE_HARVEST = ".采摘灵果"
 CMD_PET = ".抚摸法宝"
+CMD_PET_TRIAL = ".器灵试炼"
 DEFAULT_PET_NAME = "玄天斩灵剑"
 CMD_STARGAZER_PANEL = ".观星台"
 CMD_STARGAZER_GUIDE = ".牵引星辰"
@@ -203,6 +209,13 @@ CMD_JIYIN_HIDE_AURA = ".收敛气息"
 CMD_NANLONG_EXCHANGE_FABAO = ".交换 法宝"
 CMD_NANLONG_EXCHANGE_GONGFA = ".交换 功法"
 CMD_NANLONG_REJECT = ".拒绝交易"
+CMD_CONCUBINE_STATUS = ".我的侍妾"
+CMD_CONCUBINE_DREAM = ".入梦寻图"
+CMD_CONCUBINE_FRAGMENT = ".残图"
+CMD_CONCUBINE_PUZZLE = ".拼图"
+CMD_CONCUBINE_SECT_MARRY = ".宗门赐婚"
+CMD_CONCUBINE_ROMANCE = ".红尘寻缘"
+CMD_CONCUBINE_TIANJI = ".天机代卜"
 CMD_SMALL_WORLD_PREACH = ".神迹 布道"
 CMD_SECOND_SOUL_STATUS = ".第二元神"
 CMD_SECOND_SOUL_TRAIN = ".元神修炼"
@@ -218,6 +231,16 @@ JIYIN_REPLY_TIMEOUT_SEC = 180 * 60
 NANLONG_REPLY_TIMEOUT_SEC = 10 * 60
 NANLONG_REPLY_DELAY_MIN_SEC = 20
 NANLONG_REPLY_DELAY_MAX_SEC = 30
+CONCUBINE_DREAM_CD_SEC = 8 * 3600
+CONCUBINE_PHASE_TIMEOUT_SEC = 15 * 60
+CONCUBINE_NO_PARTNER_RETRY_SEC = 12 * 3600
+CONCUBINE_STATUS_STALE_SEC = 12 * 3600
+CONCUBINE_STATUS_RECHECK_MIN_SEC = 30 * 60
+CONCUBINE_STATUS_RECHECK_MAX_SEC = 60 * 60
+CONCUBINE_CHAIN_DELAY_MIN_SEC = 10
+CONCUBINE_CHAIN_DELAY_MAX_SEC = 30
+CONCUBINE_REACQUIRE_RETRY_SEC = 12 * 3600
+CONCUBINE_TIANJI_CD_SEC = 12 * 3600
 SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC = 60
 
 
@@ -276,6 +299,7 @@ SCRIPT_COMMANDS = [
     CMD_TREE_STATUS,
     CMD_TREE_HARVEST,
     CMD_PET,
+    CMD_PET_TRIAL,
     CMD_STARGAZER_PANEL,
     CMD_STARGAZER_GUIDE,
     CMD_STARGAZER_SOOTHE,
@@ -302,6 +326,13 @@ SCRIPT_COMMANDS = [
     CMD_NANLONG_EXCHANGE_FABAO,
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
+    CMD_CONCUBINE_STATUS,
+    CMD_CONCUBINE_DREAM,
+    CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_PUZZLE,
+    CMD_CONCUBINE_SECT_MARRY,
+    CMD_CONCUBINE_ROMANCE,
+    CMD_CONCUBINE_TIANJI,
     CMD_SMALL_WORLD_PREACH,
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
@@ -312,16 +343,19 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一"]
+MODULE_NAMES = ["灵树", "法宝", "器灵试炼", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
+    "器灵试炼": "pet_trial_enabled",
     "观星台": "stargazer_enabled",
     "观星": "guanxing_enabled",
     "观星监控": "guanxing_monitor_enabled",
     "登天阶": "tianti_enabled",
     "玄骨考校": "quiz_enabled",
     "极阴祖师": "jiyin_enabled",
+    "侍妾": "concubine_enabled",
+    "天机代卜": "concubine_tianji_enabled",
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
     "深度闭关": "deep_retreat_enabled",
@@ -472,12 +506,15 @@ RE_CMD_STATUS = re.compile(r'^\.(状态|模块状态)$')
 RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
+    (re.compile(r'^\.器灵试炼状态$'), "器灵试炼"),
     (re.compile(r'^\.观星台状态$'), "观星台"),
     (re.compile(r'^\.观星状态$'), "观星"),
     (re.compile(r'^\.观星监控状态$'), "观星监控"),
     (re.compile(r'^\.天阶状态$'), "登天阶"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
+    (re.compile(r'^\.侍妾状态$'), "侍妾"),
+    (re.compile(r'^\.天机代卜状态$'), "天机代卜"),
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
@@ -490,6 +527,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)灵树$'), "灵树", False),
     (re.compile(r'^\.(开启|打开)法宝$'), "法宝", True),
     (re.compile(r'^\.(关闭|关掉)法宝$'), "法宝", False),
+    (re.compile(r'^\.(开启|打开)器灵试炼$'), "器灵试炼", True),
+    (re.compile(r'^\.(关闭|关掉)器灵试炼$'), "器灵试炼", False),
     (re.compile(r'^\.(开启|打开)观星台$'), "观星台", True),
     (re.compile(r'^\.(关闭|关掉)观星台$'), "观星台", False),
     (re.compile(r'^\.(开启|打开)观星$'), "观星", True),
@@ -502,6 +541,10 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)玄骨考校$'), "玄骨考校", False),
     (re.compile(r'^\.(开启|打开)极阴祖师$'), "极阴祖师", True),
     (re.compile(r'^\.(关闭|关掉)极阴祖师$'), "极阴祖师", False),
+    (re.compile(r'^\.(开启|打开)侍妾$'), "侍妾", True),
+    (re.compile(r'^\.(关闭|关掉)侍妾$'), "侍妾", False),
+    (re.compile(r'^\.(开启|打开)天机代卜$'), "天机代卜", True),
+    (re.compile(r'^\.(关闭|关掉)天机代卜$'), "天机代卜", False),
     (re.compile(r'^\.(开启|打开)南陇侯$'), "南陇侯", True),
     (re.compile(r'^\.(关闭|关掉)南陇侯$'), "南陇侯", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),

@@ -27,6 +27,7 @@ from ._phaseful import (
     get_phase_text,
     get_status_detail_text,
     mark_success,
+    register_phaseful_spec,
     run_phaseful_scheduler,
     set_phase,
     update_block_log_state,
@@ -71,10 +72,21 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     waiting_anomaly_audit="🧘 闭关等待异常，已解卡继续。",
     waiting_timeout_audit="🧘 闭关总结超时，按兜底继续。",
     post_wait_console="🧘 闭关缓冲结束，继续深闭。",
-    running_due_console="🧘 深闭时间到，先发 1。",
-    cd_due_console="🧘 深闭 CD 到，先发 1。",
+    running_due_console="🧘 深闭时间到",
+    cd_due_console="🧘 深闭 CD 到",
     summary_received_console="🧘 收到闭关总结，30 秒后继续。",
+    summary_trigger_command=CMD_DEEP_RETREAT_QUERY,
+    summary_passive_triggers=("查看闭关", "1"),
+    summary_passive_timeout_sec=120,
+    summary_due_delay_min_sec=5 * 60,
+    summary_due_delay_max_sec=15 * 60,
+    summary_retry_min_sec=5 * 60,
+    summary_retry_max_sec=10 * 60,
 )
+register_phaseful_spec(DEEP_RETREAT_SPEC)
+
+DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
+DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
 
 
 def set_deep_retreat_phase(phase):
@@ -126,7 +138,7 @@ async def schedule_deep_retreat_status_probe(delay=None, allowed_phases=("launch
         await asyncio.sleep(delay)
         if state.get("deep_retreat_phase") not in tuple(allowed_phases or ("launching",)):
             return
-        await send_game_command(CMD_DEEP_RETREAT_QUERY, track=False)
+        await send_game_command(CMD_DEEP_RETREAT_QUERY, track=False, priority="chain")
 
     _fire_and_forget(delayed_status())
     console_log(f"🧘 深闭执行中，{delay:.1f}s 后查状态。")
@@ -203,21 +215,38 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         await send_audit_log(f"⏳ 深闭 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
 
+    if "并未处于深度闭关" in text or "未处于深度闭关" in text:
+        phase = state.get("deep_retreat_phase", "idle")
+        if phase in ("summary_due", "observing_summary", "waiting_summary", "running"):
+            await delete_deep_retreat_summary_trigger_msg()
+            delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC)
+            begin_deep_retreat_post_summary_wait(now, delay=delay)
+            await update_deep_retreat_block_log_state(waiting=False, protect=False)
+            await send_audit_log(f"🧘 深闭状态为空，{int(delay / 60)}分钟后补发深度闭关。")
+            return True
+
     return False
 
 
-def match_deep_retreat_summary_identity(text):
+def match_deep_retreat_summary_identity(text, now=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
     summary_kw_hit = "天道感应：检测到" in compact_text and "功成圆满，神魂正在归位" in compact_text
     if not summary_kw_hit:
         return None, []
+    now = float(now or 0)
 
     matched_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state["deep_retreat_enabled"]:
                 continue
-            if state.get("deep_retreat_phase") != "waiting_summary":
+            phase = state.get("deep_retreat_phase")
+            due_while_running = (
+                phase == "running"
+                and now > 0
+                and 0 < float(state.get("next_deep_retreat_time", 0) or 0) <= now
+            )
+            if phase not in ("summary_due", "observing_summary", "waiting_summary") and not due_while_running:
                 continue
             tags = get_send_as_tags(identity_id)
             if tags:
@@ -233,7 +262,7 @@ def match_deep_retreat_summary_identity(text):
 
 
 async def handle_deep_retreat_summary_broadcast(text, now):
-    target_id, matched_ids = match_deep_retreat_summary_identity(text)
+    target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now)
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)

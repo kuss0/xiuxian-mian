@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import random
@@ -6,7 +7,7 @@ import time
 
 from ..config import TIANJI_QUIZ_BANK_FILE
 from ..persistence import save_state
-from ..runtime import mono, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, mono, send_audit_log, send_game_command
 from ..state import get_identity_ids, get_send_as_tags, state
 
 
@@ -26,6 +27,7 @@ RE_TIANJI_TIMEOUT_MIN = re.compile(r"请在\s*(\d+)\s*分钟")
 RE_TIANJI_TIMEOUT_SEC = re.compile(r"请在\s*(\d+)\s*秒")
 RE_TIANJI_WHITESPACE = re.compile(r"\s+")
 RE_TIANJI_IDENTITY_SEPARATORS = re.compile(r"[\s@，。！？、；：:,.!?\[\]【】()（）<>《》“”\"'`]+")
+_TIANJI_QUIZ_SCHEDULER_LOCK = asyncio.Lock()
 
 
 def _is_tianji_quiz_prompt(text):
@@ -92,6 +94,19 @@ def _format_tianji_options(options):
         for key in TIANJI_QUIZ_OPTIONS
         if str((options or {}).get(key) or "").strip()
     )
+
+
+def _format_tianji_answer_detail(answer, options):
+    normalized_answer = str(answer or "").strip().upper()
+    if normalized_answer not in TIANJI_QUIZ_OPTIONS:
+        return normalized_answer or "未匹配"
+    option_text = str((options or {}).get(normalized_answer) or "").strip()
+    return f"{normalized_answer}.{option_text}" if option_text else normalized_answer
+
+
+def _get_tianji_item_options(item):
+    options = (item or {}).get("options", {})
+    return dict(options) if isinstance(options, dict) else {}
 
 
 def _load_tianji_quiz_bank_items():
@@ -263,6 +278,7 @@ def _build_tianji_quiz_pending_item(parsed, identity_id, answer, event, now):
         "target": parsed.get("target") or "未知目标",
         "identity_id": int(identity_id),
         "question": parsed.get("question") or "",
+        "options": dict(parsed.get("options") or {}),
         "answer": answer,
         "due_at": float(due_at),
         "deadline_at": float(deadline_at),
@@ -276,6 +292,17 @@ def _build_tianji_quiz_pending_item(parsed, identity_id, answer, event, now):
     }
 
 
+async def _run_tianji_quiz_due_task(due_at):
+    await asyncio.sleep(max(0.0, float(due_at or 0) - time.time()))
+    await run_tianji_quiz_scheduler(time.time())
+
+
+def _schedule_tianji_quiz_due_task(due_at):
+    due_at = float(due_at or 0)
+    if due_at > 0:
+        _fire_and_forget(_run_tianji_quiz_due_task(due_at))
+
+
 async def _queue_tianji_quiz_answer(parsed, now, event):
     answer, _ = _match_tianji_quiz_answer(parsed.get("question"), parsed.get("options"))
     if not answer:
@@ -284,13 +311,15 @@ async def _queue_tianji_quiz_answer(parsed, now, event):
     if identity_id is None:
         return
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
+    answer_detail = _format_tianji_answer_detail(answer, parsed.get("options"))
     if reply_to_msg_id <= 0:
         await send_audit_log(
             "🧭 天机考验无法自动作答：缺少题目消息ID\n"
             f"- 目标: {mono(parsed.get('target') or '未知目标')}\n"
-            f"- 答案: {answer}",
+            f"- 答案: {answer_detail}\n"
+            f"- 题目: {parsed.get('question') or '未知题目'}",
             scope="global",
-            limit=360,
+            limit=520,
         )
         return
 
@@ -302,13 +331,15 @@ async def _queue_tianji_quiz_answer(parsed, now, event):
     item = _build_tianji_quiz_pending_item(parsed, identity_id, answer, event, now)
     pending[pending_key] = item
     _set_tianji_quiz_pending_map(pending)
+    _schedule_tianji_quiz_due_task(item["due_at"])
     await send_audit_log(
         "🧭 天机考验已排队作答\n"
         f"- 目标: {mono(item.get('target') or '未知目标')}\n"
-        f"- 答案: {answer}\n"
+        f"- 答案: {answer_detail}\n"
+        f"- 题目: {item.get('question') or '未知题目'}\n"
         f"- 延迟: {int(max(0, item['due_at'] - float(now)))}秒",
         scope="global",
-        limit=360,
+        limit=520,
     )
 
 
@@ -380,7 +411,7 @@ async def _learn_tianji_quiz_answer_from_result(parsed_result, reply_to=None):
         await send_audit_log(
             "🧭 天机考验已记录新题 ✅\n"
             f"- 目标: {mono(target)}\n"
-            f"- 答案: {answer}\n"
+            f"- 答案: {_format_tianji_answer_detail(answer, options)}\n"
             f"- 题目: {question}\n"
             f"- 选项: {_format_tianji_options(options)}",
             scope="global",
@@ -389,9 +420,9 @@ async def _learn_tianji_quiz_answer_from_result(parsed_result, reply_to=None):
         return True
     if status == "updated":
         await send_audit_log(
-            f"🧭 天机考验已补全题库答案 ✅：{mono(target)}｜{answer}｜{question}",
+            f"🧭 天机考验已补全题库答案 ✅：{mono(target)}｜{_format_tianji_answer_detail(answer, options)}｜题目：{question}",
             scope="global",
-            limit=420,
+            limit=520,
         )
         return True
     if status == "conflict":
@@ -401,15 +432,15 @@ async def _learn_tianji_quiz_answer_from_result(parsed_result, reply_to=None):
             f"- 目标: {mono(target)}\n"
             f"- 题目: {question}\n"
             f"- 选项: {_format_tianji_options(options)}\n"
-            f"- 题库答案: {existing_answer or '空'}\n"
-            f"- 通过答案: {answer}",
+            f"- 题库答案: {_format_tianji_answer_detail(existing_answer, payload or options)}\n"
+            f"- 通过答案: {_format_tianji_answer_detail(answer, options)}",
             scope="global",
             limit=700,
         )
         return True
     if status in {"invalid", "io_error"}:
         await send_audit_log(
-            f"🧭 天机考验题库答案记录失败({status})：{mono(target)}｜{answer}｜{question}",
+            f"🧭 天机考验题库答案记录失败({status})：{mono(target)}｜{_format_tianji_answer_detail(answer, options)}｜题目：{question}",
             scope="global",
             limit=520,
         )
@@ -463,15 +494,19 @@ async def handle_tianji_quiz_result_broadcast(text, now=None, event=None, reply_
     raw_text = str(text or "").strip()
     label = (parsed_result or {}).get("label") or "收到回复"
     target = str((item or {}).get("target") or (parsed_result or {}).get("target") or "未知目标")
+    question = str((item or {}).get("question") or "未知题目")
+    answer_detail = _format_tianji_answer_detail((item or {}).get("answer"), _get_tianji_item_options(item))
     pending.pop(pending_key, None)
     _set_tianji_quiz_pending_map(pending)
     await send_audit_log(
         "🧭 天机考验收到结果，停止重试\n"
         f"- 目标: {mono(target)}\n"
+        f"- 作答: {answer_detail}\n"
+        f"- 题目: {question}\n"
         f"- 结果: {label}\n"
         f"- 内容: {_format_tianji_result_excerpt(raw_text)}",
         scope="global",
-        limit=420,
+        limit=620,
     )
     return True
 
@@ -540,6 +575,11 @@ def _schedule_tianji_quiz_retry(item, now):
 
 
 async def run_tianji_quiz_scheduler(now):
+    async with _TIANJI_QUIZ_SCHEDULER_LOCK:
+        await _run_tianji_quiz_scheduler_locked(now)
+
+
+async def _run_tianji_quiz_scheduler_locked(now):
     pending = _get_tianji_quiz_pending_map()
     if not pending:
         return
@@ -549,6 +589,9 @@ async def run_tianji_quiz_scheduler(now):
         identity_id = int((item or {}).get("identity_id", 0) or 0)
         target = str((item or {}).get("target") or "未知目标")
         answer = str((item or {}).get("answer") or "").strip().upper()
+        options = _get_tianji_item_options(item)
+        answer_detail = _format_tianji_answer_detail(answer, options)
+        question = str((item or {}).get("question") or "未知题目")
         msg_id = int((item or {}).get("msg_id", 0) or 0)
         due_at = float((item or {}).get("due_at", 0) or 0)
         deadline_at = float((item or {}).get("deadline_at", 0) or 0)
@@ -559,14 +602,22 @@ async def run_tianji_quiz_scheduler(now):
             pending.pop(pending_key, None)
             changed = True
             if answer and msg_id > 0:
-                await send_audit_log(f"🧭 天机考验作答已超时：{mono(target)}", scope="global", limit=260)
+                await send_audit_log(
+                    f"🧭 天机考验作答已超时：{mono(target)}｜{answer_detail}｜题目：{question}",
+                    scope="global",
+                    limit=520,
+                )
             continue
         if due_at <= 0 or now < due_at:
             continue
         if identity_id <= 0 or identity_id not in get_identity_ids():
             pending.pop(pending_key, None)
             changed = True
-            await send_audit_log(f"🧭 天机考验未发送：{mono(target)} 身份不存在", scope="global", limit=260)
+            await send_audit_log(
+                f"🧭 天机考验未发送：{mono(target)} 身份不存在｜{answer_detail}｜题目：{question}",
+                scope="global",
+                limit=520,
+            )
             continue
 
         if phase == "waiting_result":
@@ -574,50 +625,58 @@ async def run_tianji_quiz_scheduler(now):
                 pending.pop(pending_key, None)
                 changed = True
                 await send_audit_log(
-                    f"🧭 天机考验 20 秒未收到结果，已重试 {retry_count} 次，停止重试：{mono(target)}",
+                    f"🧭 天机考验 20 秒未收到结果，已重试 {retry_count} 次，停止重试：{mono(target)}｜{answer_detail}｜题目：{question}",
                     scope="global",
-                    limit=320,
+                    limit=520,
                 )
                 continue
             retry_count, delay_sec = _schedule_tianji_quiz_retry(item, now)
             pending[pending_key] = item
+            _schedule_tianji_quiz_due_task(item["due_at"])
             changed = True
             await send_audit_log(
-                f"🧭 天机考验 20 秒未收到结果，{int(delay_sec)} 秒后重试 {retry_count}/{TIANJI_QUIZ_MAX_RETRY_COUNT}：{mono(target)}",
+                f"🧭 天机考验 20 秒未收到结果，{int(delay_sec)} 秒后重试 {retry_count}/{TIANJI_QUIZ_MAX_RETRY_COUNT}：{mono(target)}｜{answer_detail}｜题目：{question}",
                 scope="global",
-                limit=320,
+                limit=520,
             )
             continue
 
         msg = await send_game_command(answer, track=False, reply_to=msg_id, send_as_id=identity_id, priority="p0")
         if msg:
+            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
             item["phase"] = "waiting_result"
             item["sent_msg_id"] = int(getattr(msg, "id", 0) or 0)
-            item["sent_at"] = float(now)
-            item["result_due_at"] = float(now + TIANJI_QUIZ_RESULT_TIMEOUT_SEC)
+            item["sent_at"] = sent_at
+            item["result_due_at"] = float(sent_at + TIANJI_QUIZ_RESULT_TIMEOUT_SEC)
             item["due_at"] = item["result_due_at"]
             pending[pending_key] = item
+            _schedule_tianji_quiz_due_task(item["due_at"])
             changed = True
             await send_audit_log(
-                f"🧭 天机考验已作答，等待结果：{mono(target)}｜{answer}",
+                f"🧭 天机考验已作答，等待结果：{mono(target)}｜{answer_detail}｜题目：{question}",
                 scope="global",
-                limit=260,
+                limit=520,
             )
             continue
 
         if retry_count >= TIANJI_QUIZ_MAX_RETRY_COUNT:
             pending.pop(pending_key, None)
             changed = True
-            await send_audit_log(f"🧭 天机考验作答发送失败，已重试 {retry_count} 次：{mono(target)}", scope="global", limit=260)
+            await send_audit_log(
+                f"🧭 天机考验作答发送失败，已重试 {retry_count} 次：{mono(target)}｜{answer_detail}｜题目：{question}",
+                scope="global",
+                limit=520,
+            )
             continue
 
-        retry_count, delay_sec = _schedule_tianji_quiz_retry(item, now)
+        retry_count, delay_sec = _schedule_tianji_quiz_retry(item, time.time())
         pending[pending_key] = item
+        _schedule_tianji_quiz_due_task(item["due_at"])
         changed = True
         await send_audit_log(
-            f"🧭 天机考验作答发送失败，{int(delay_sec)} 秒后重试 {retry_count}/{TIANJI_QUIZ_MAX_RETRY_COUNT}：{mono(target)}",
+            f"🧭 天机考验作答发送失败，{int(delay_sec)} 秒后重试 {retry_count}/{TIANJI_QUIZ_MAX_RETRY_COUNT}：{mono(target)}｜{answer_detail}｜题目：{question}",
             scope="global",
-            limit=320,
+            limit=520,
         )
 
     if changed:

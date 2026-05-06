@@ -46,6 +46,8 @@ from .config import (
     UI_PORT,
     UI_PUBLIC_BASE_URL,
     create_account_client,
+    get_account_offline_reason,
+    get_all_clients,
     get_registered_client,
     is_account_offline,
     register_client,
@@ -93,6 +95,7 @@ from .state import (
     get_identity_display_name,
     get_identity_enabled,
     get_identity_ids,
+    get_identity_account,
     get_identity_ui_display_name,
     get_identity_state,
     get_module_window_hours_local,
@@ -136,6 +139,9 @@ def get_identity_ui_snapshot(send_as_id):
     now = time.time()
     identity_enabled = get_identity_enabled(send_as_id)
     global_enabled = get_global_enabled()
+    account_id = int(get_identity_account(send_as_id) or 0)
+    account_offline = bool(account_id and is_account_offline(account_id))
+    account_offline_reason = get_account_offline_reason(account_id) if account_offline else ""
     with use_identity(send_as_id):
         identity_state = get_identity_state(send_as_id)
         profile = get_send_as_profile(send_as_id)
@@ -143,9 +149,11 @@ def get_identity_ui_snapshot(send_as_id):
         available_module_names = get_available_module_names(send_as_id)
         for module_name in available_module_names:
             configured_enabled = bool(identity_state.get(MODULE_KEY_MAP[module_name], False))
-            effective_enabled = bool(global_enabled and identity_enabled and configured_enabled)
+            effective_enabled = bool(global_enabled and identity_enabled and configured_enabled and not account_offline)
             effective_reason = ""
-            if configured_enabled and not global_enabled:
+            if configured_enabled and account_offline:
+                effective_reason = f"账号离线，调度已跳过；原因：{account_offline_reason or '账号不可用'}"
+            elif configured_enabled and not global_enabled:
                 effective_reason = "全局已暂停，恢复后会按保存状态继续运行。"
             elif configured_enabled and not identity_enabled:
                 effective_reason = "当前身份已暂停，该模块配置已保留，重新开启身份后会按保存状态恢复运行。"
@@ -183,12 +191,17 @@ def get_identity_ui_snapshot(send_as_id):
             identity_status_text = "全局暂停"
         elif not identity_enabled:
             identity_status_text = "已暂停"
+        elif account_offline:
+            identity_status_text = "账号离线"
 
         snapshot = {
             "send_as_id": send_as_id,
             "display_name": get_identity_ui_display_name(send_as_id),
             "identity_enabled": identity_enabled,
             "identity_status_text": identity_status_text,
+            "account_id": account_id,
+            "account_offline": account_offline,
+            "account_offline_reason": account_offline_reason,
             "username": profile.get("username") or "",
             "label": profile.get("label") or "",
             "daohao": profile.get("daohao") or "",
@@ -299,7 +312,7 @@ def get_ui_snapshot(session_token=None):
         "auth_idle_timeout_sec": UI_AUTH_IDLE_TIMEOUT_SEC,
         "refresh_interval_sec": UI_AUTO_REFRESH_SEC,
         "startup_alerts": startup_alerts,
-        "accounts": get_accounts(),
+        "accounts": _get_runtime_accounts_snapshot(),
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),
     }
@@ -708,6 +721,53 @@ async def ui_delete_identity(send_as_id, actor_id=None):
 _pending_login = {}  # {session_key: {mode, status, client, flow_id, ...}}
 
 
+def _get_runtime_accounts_snapshot():
+    accounts = dict(get_accounts())
+    for account_id_raw, info in list(accounts.items()):
+        try:
+            account_id = int(account_id_raw)
+        except (TypeError, ValueError):
+            continue
+        account_info = dict(info or {})
+        offline = is_account_offline(account_id)
+        account_info["offline"] = offline
+        account_info["status"] = "offline" if offline else "online"
+        if offline:
+            account_info["offline_reason"] = get_account_offline_reason(account_id) or "账号不可用"
+        else:
+            account_info.pop("offline_reason", None)
+        accounts[str(account_id)] = account_info
+    for account_id in sorted(get_all_clients().keys()):
+        account_id = int(account_id or 0)
+        if account_id <= 0 or is_account_offline(account_id):
+            continue
+        account_info = dict(accounts.get(str(account_id)) or {})
+        account_info.update({
+            "session": "main" if account_id == int(state.get("my_user_id") or 0) else f"account_{account_id}",
+            "username": account_info.get("username") or str(account_id),
+            "offline": False,
+            "status": "online",
+        })
+        account_info.pop("offline_reason", None)
+        accounts[str(account_id)] = account_info
+    return accounts
+
+
+def _resolve_runtime_account_id(account_id=None):
+    try:
+        resolved = int(account_id or 0)
+    except (TypeError, ValueError):
+        resolved = 0
+    if resolved > 0:
+        return resolved
+    live_account_ids = [
+        int(candidate_id)
+        for candidate_id in sorted(get_all_clients().keys())
+        if int(candidate_id or 0) > 0 and not is_account_offline(candidate_id)
+    ]
+    return live_account_ids[0] if len(live_account_ids) == 1 else 0
+
+
 def _cleanup_pending_temp_session_files(session_key):
     from .config import SESSION_DIR
 
@@ -797,7 +857,13 @@ async def _finalize_account_login(session_key, tc, *, flow_id=None):
             pass
 
     real_tc = create_account_client(account_id)
-    await real_tc.start()
+    await real_tc.connect()
+    if not await real_tc.is_user_authorized():
+        try:
+            await real_tc.disconnect()
+        except Exception:
+            pass
+        return False, "登录完成但新 session 未授权，请重新登录", None
     try:
         await real_tc.get_dialogs()
     except Exception:
@@ -1068,15 +1134,17 @@ async def ui_account_login_verify(code, session_key, password=None):
 
 async def ui_get_send_as_peers(account_id):
     """获取指定账号在游戏群中可用的 send_as 身份列表"""
-    account_id = int(account_id)
+    account_id = _resolve_runtime_account_id(account_id)
+    if account_id <= 0:
+        return False, "请先选择一个已登录账号", [], []
     game_group_id = get_game_group_id()
     if not game_group_id:
-        return False, "请先在基础配置中设置游戏群聊 ID", []
+        return False, "请先在基础配置中设置游戏群聊 ID", [], []
     if is_account_offline(account_id):
-        return False, f"账号 {account_id} 离线，请重新登录", []
+        return False, f"账号 {account_id} 离线，请重新登录", [], []
     tc = get_registered_client(account_id)
     if not tc:
-        return False, f"账号 {account_id} 未登录", []
+        return False, f"账号 {account_id} 未登录", [], []
     try:
         from telethon.tl.functions.channels import GetSendAsRequest
         result = await tc(GetSendAsRequest(peer=game_group_id))
@@ -1095,7 +1163,7 @@ async def ui_get_send_as_peers(account_id):
         existing_ids = list(get_identity_ids())
         return True, f"获取到 {len(peers)} 个可用身份", peers, existing_ids
     except Exception as e:
-        return False, f"获取 send_as 列表失败: {e}", []
+        return False, f"获取 send_as 列表失败: {e}", [], []
 
 
 async def ui_refresh_identity_info(send_as_id, actor_id=None):
@@ -1419,27 +1487,19 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     raw_account_id = payload.get("account_id")
-                    if not raw_account_id:
-                        _write_json_bad_request(writer, "缺少 account_id 参数", auth_headers)
-                    else:
-                        try:
-                            result = await ui_get_send_as_peers(raw_account_id)
-                            if len(result) == 4:
-                                ok, message, peers, existing_ids = result
-                            else:
-                                ok, message, peers = result
-                                existing_ids = []
-                            status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
-                            body = _make_json_payload(
-                                ok,
-                                message=message if ok else "",
-                                error="" if ok else message,
-                                extra={"peers": peers, "existing_ids": existing_ids} if ok else None,
-                            )
-                        except Exception as e:
-                            body = _make_json_payload(False, error=f"获取失败: {e}")
-                            status_line = "HTTP/1.1 500 Internal Server Error"
-                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+                    try:
+                        ok, message, peers, existing_ids = await ui_get_send_as_peers(raw_account_id)
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(
+                            ok,
+                            message=message if ok else "",
+                            error="" if ok else message,
+                            extra={"peers": peers, "existing_ids": existing_ids} if ok else None,
+                        )
+                    except Exception as e:
+                        body = _make_json_payload(False, error=f"获取失败: {e}")
+                        status_line = "HTTP/1.1 500 Internal Server Error"
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/identity":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)

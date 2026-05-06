@@ -1,4 +1,5 @@
 import re
+import time
 
 from ..config import CMD_SMALL_WORLD_PREACH, SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC
 from ..persistence import mark_dirty, save_state
@@ -52,6 +53,7 @@ def _clear_small_world_pending():
 
 async def _send_small_world_preach(now, reason):
     sent_msg = await send_game_command(CMD_SMALL_WORLD_PREACH, track=False)
+    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
     if not sent_msg:
         state["small_world_last_error"] = "神迹布道指令发送失败"
         save_state()
@@ -59,7 +61,7 @@ async def _send_small_world_preach(now, reason):
         return False
 
     state["small_world_preach_reply_to_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
-    state["next_small_world_time"] = float(now + SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC)
+    state["next_small_world_time"] = float(sent_at + SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC)
     state["small_world_last_error"] = ""
     save_state()
     await send_audit_log(f"🌍 小世界{reason}，已发送神迹布道")

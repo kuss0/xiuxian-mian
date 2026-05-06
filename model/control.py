@@ -1,12 +1,22 @@
-import random
+import asyncio
 import re
+import random
+import sys
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from .config import (
     ADMIN_ID,
     CMD_CHECKIN,
+    CMD_CONCUBINE_DREAM,
+    CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_PUZZLE,
+    CMD_CONCUBINE_ROMANCE,
+    CMD_CONCUBINE_SECT_MARRY,
+    CMD_CONCUBINE_STATUS,
+    CMD_CONCUBINE_TIANJI,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_GUANXING,
@@ -17,6 +27,7 @@ from .config import (
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET,
+    CMD_PET_TRIAL,
     CMD_QUIZ_ANSWER,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
@@ -44,6 +55,7 @@ from .config import (
     LOG_GROUP_ID,
     MODULE_KEY_MAP,
     MODULE_NAMES,
+    PROJECT_ROOT_DIR,
     RE_CMD_DISABLE_ALL,
     RE_CMD_ENABLE_ALL,
     RE_CMD_ENABLE_PATTERNS,
@@ -55,7 +67,9 @@ from .config import (
     RE_WHITESPACE,
     RETRY_MAX_SEC,
     SUMMARY_TIMEOUT_SEC,
+    TZ_LOCAL,
     format_battle_power_command,
+    get_account_offline_reason,
     get_all_clients,
     get_registered_client,
     is_account_offline,
@@ -65,6 +79,7 @@ from .config import (
     is_identity_refresh_command_text,
 )
 from .features.checkin import get_checkin_status_text
+from .features.concubine import clear_concubine_state, clear_concubine_tianji_state, get_concubine_status_text, restore_concubine_runtime
 from .features.deep_retreat import get_deep_retreat_status_detail_text
 from .features.guanxing import (
     clear_guanxing_identity_runtime,
@@ -80,7 +95,7 @@ from .features.small_world import clear_small_world_state, get_small_world_statu
 from .features.stargazer import get_stargazer_status_text
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
-from .features.tree import get_tree_status_text
+from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import get_taiyi_status_text
 from .features.yuanying import get_yuanying_status_detail_text
@@ -115,6 +130,7 @@ from .state import (
     set_global_enabled as set_global_enabled_state,
     get_module_window_hours,
     get_pet_name,
+    resolve_identity_selector,
     infer_realm_from_xiuwei_max,
     is_auto_delete_sent_messages_enabled,
     get_send_as_profile,
@@ -138,6 +154,10 @@ from .timing import calc_next_daily_window_after_completion, calc_next_daily_win
 
 RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
+RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
+RE_STORAGE_BAG_RECENT_DAYS = re.compile(r"近\s*(\d{1,2})\s*天")
+STORAGE_BAG_REPORT_TIMEOUT_SEC = 30
+STORAGE_BAG_REPORT_REPLY_LIMIT = 3300
 RE_IDENTITY_INFO_NAME = re.compile(r"(?:道号|修士)[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_WITH_SECT = re.compile(r"境界[:：]\s*\S+\s*\(([^)]+)\)")
@@ -156,6 +176,7 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_irr_time",
     "next_guard_time",
     "next_pet_time",
+    "next_pet_trial_time",
     "next_stargazer_panel_time",
     "stargazer_collect_due_at",
     "stargazer_followup_due_at",
@@ -168,6 +189,7 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_tower_time",
     "next_quiz_time",
     "next_jiyin_time",
+    "next_concubine_time",
     "next_nanlong_time",
     "next_small_world_time",
     "next_yuanying_time",
@@ -200,6 +222,12 @@ def _schedule_module_immediate_retry(module_name, now):
         return retry_at
     if module_name == "法宝":
         state["next_pet_time"] = retry_at
+        return retry_at
+    if module_name == "器灵试炼":
+        state["next_pet_trial_time"] = retry_at
+        return retry_at
+    if module_name in {"侍妾", "天机代卜"}:
+        state["next_concubine_time"] = retry_at
         return retry_at
     if module_name == "观星台":
         state["next_stargazer_panel_time"] = retry_at
@@ -289,6 +317,7 @@ def _disable_tree_module_state():
     state["tree_bootstrap_check_needed"] = False
     state["tree_maturing_logged"] = False
     state["tree_harvest_followup_due_at"] = 0
+    state["tree_harvest_inflight_until"] = 0
     _clear_pending_tasks_by_commands({CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TREE_STATUS, CMD_TREE_HARVEST})
 
 
@@ -484,6 +513,19 @@ def _manual_enable_pet_module_state(now):
     _schedule_module_immediate_retry("法宝", now)
 
 
+def _manual_disable_pet_trial_module_state():
+    state["pet_trial_enabled"] = False
+    state["next_pet_trial_time"] = 0
+    _clear_pending_tasks_by_commands({CMD_PET_TRIAL})
+
+
+def _manual_enable_pet_trial_module_state(now):
+    state["pet_trial_enabled"] = True
+    state["pet_trial_last_error"] = ""
+    if float(state.get("next_pet_trial_time", 0) or 0) > now:
+        return
+    _schedule_module_immediate_retry("器灵试炼", now)
+
 
 def _disable_quiz_module_state():
     state["quiz_enabled"] = False
@@ -539,13 +581,12 @@ def _manual_enable_checkin_module_state(now):
 
 def _manual_disable_tower_module_state():
     state["tower_enabled"] = False
+    state["next_tower_time"] = 0
+    state["last_tower_msg_id"] = 0
     _clear_pending_tasks_by_commands({CMD_TOWER})
 
 
 def _manual_enable_tower_module_state(now):
-    state["tower_enabled"] = True
-    if float(state.get("next_tower_time", 0) or 0) > now:
-        return
     _set_tower_module_enabled(True, now)
 
 
@@ -592,6 +633,58 @@ def _manual_enable_nanlong_module_state(now):
     if float(state.get("next_nanlong_time", 0) or 0) > now:
         return
     clear_nanlong_state(persist=False)
+
+
+def _disable_concubine_module_state():
+    state["concubine_enabled"] = False
+    clear_concubine_state(persist=False, keep_last_error=True)
+
+
+def _manual_disable_concubine_module_state():
+    state["concubine_enabled"] = False
+    clear_concubine_state(persist=False, keep_last_error=True)
+
+
+def _manual_enable_concubine_module_state(now):
+    state["concubine_enabled"] = True
+    if float(state.get("next_concubine_time", 0) or 0) > now:
+        return
+    clear_concubine_state(persist=False)
+    restore_concubine_runtime(now)
+
+
+def _manual_disable_concubine_tianji_module_state():
+    state["concubine_tianji_enabled"] = False
+    clear_concubine_tianji_state(persist=False, keep_last_error=True)
+
+
+def _manual_enable_concubine_tianji_module_state(now):
+    state["concubine_tianji_enabled"] = True
+    state["concubine_tianji_last_error"] = ""
+    next_time = float(state.get("next_concubine_time", 0) or 0)
+    if next_time <= 0 or next_time > now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC:
+        state["next_concubine_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+    restore_concubine_runtime(now)
+
+
+def _manual_disable_second_soul_module_state():
+    _disable_second_soul_module_state()
+
+
+def _manual_enable_second_soul_module_state(now):
+    state["second_soul_enabled"] = True
+    state["second_soul_last_error"] = ""
+    _restore_second_soul_runtime(now)
+
+
+def _manual_disable_taiyi_module_state():
+    _disable_taiyi_module_state()
+
+
+def _manual_enable_taiyi_module_state(now):
+    state["taiyi_enabled"] = True
+    state["taiyi_last_error"] = ""
+    _restore_taiyi_runtime(now)
 
 
 def _disable_small_world_module_state():
@@ -726,6 +819,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TREE_STATUS: "灵树",
     CMD_TREE_HARVEST: "灵树",
     CMD_PET: "法宝",
+    CMD_PET_TRIAL: "器灵试炼",
     CMD_STARGAZER_PANEL: "观星台",
     CMD_STARGAZER_GUIDE: "观星台",
     CMD_STARGAZER_SOOTHE: "观星台",
@@ -737,6 +831,13 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TIANTI_CLIMB: "登天阶",
     CMD_TIANTI_GANGFENG: "登天阶",
     CMD_QUIZ_ANSWER: "玄骨考校",
+    CMD_CONCUBINE_STATUS: "侍妾",
+    CMD_CONCUBINE_DREAM: "侍妾",
+    CMD_CONCUBINE_FRAGMENT: "侍妾",
+    CMD_CONCUBINE_PUZZLE: "侍妾",
+    CMD_CONCUBINE_SECT_MARRY: "侍妾",
+    CMD_CONCUBINE_ROMANCE: "侍妾",
+    CMD_CONCUBINE_TIANJI: "天机代卜",
     CMD_NANLONG_EXCHANGE_FABAO: "南陇侯",
     CMD_NANLONG_EXCHANGE_GONGFA: "南陇侯",
     CMD_NANLONG_REJECT: "南陇侯",
@@ -748,35 +849,52 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_YUANYING_STATUS: "元婴",
     CMD_DEEP_RETREAT: "深度闭关",
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
+    CMD_SECOND_SOUL_STATUS: "第二元神",
+    CMD_SECOND_SOUL_TRAIN: "第二元神",
+    CMD_SECOND_SOUL_CHOICE_BREAK: "第二元神",
+    CMD_SECOND_SOUL_CHOICE_STABLE: "第二元神",
+    CMD_YINDAO: "太一",
+    CMD_NODE_SEARCH: "太一",
+    CMD_NODE_DEFINE: "太一",
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
+    "器灵试炼": (_manual_enable_pet_trial_module_state, _manual_disable_pet_trial_module_state),
     "观星台": (_manual_enable_stargazer_module_state, _manual_disable_stargazer_module_state),
     "观星": (_manual_enable_guanxing_module_state, _manual_disable_guanxing_module_state),
     "观星监控": (_manual_enable_guanxing_monitor_module_state, _manual_disable_guanxing_monitor_module_state),
     "登天阶": (_manual_enable_tianti_module_state, _manual_disable_tianti_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
+    "侍妾": (_manual_enable_concubine_module_state, _manual_disable_concubine_module_state),
+    "天机代卜": (_manual_enable_concubine_tianji_module_state, _manual_disable_concubine_tianji_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
     "深度闭关": (_manual_enable_deep_retreat_module_state, _manual_disable_deep_retreat_module_state),
+    "第二元神": (_manual_enable_second_soul_module_state, _manual_disable_second_soul_module_state),
+    "太一": (_manual_enable_taiyi_module_state, _manual_disable_taiyi_module_state),
 }
 MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
+    "器灵试炼": _manual_disable_pet_trial_module_state,
     "观星台": _disable_stargazer_module_state,
     "观星": _disable_guanxing_module_state,
     "观星监控": _disable_guanxing_monitor_module_state,
     "登天阶": _disable_tianti_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
+    "侍妾": _disable_concubine_module_state,
+    "天机代卜": _manual_disable_concubine_tianji_module_state,
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
     "元婴": _disable_yuanying_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
+    "第二元神": _disable_second_soul_module_state,
+    "太一": _disable_taiyi_module_state,
     "点卯": lambda: _set_checkin_module_enabled(False, time.time()),
     "闯塔": lambda: _set_tower_module_enabled(False, time.time()),
 }
@@ -790,6 +908,13 @@ MODULE_STATE_SETTERS = {
 
 def _get_module_display_name(module_name, send_as_id=None):
     return module_name
+
+
+def _get_identity_account_offline_detail(send_as_id):
+    account_id = int(get_identity_account(send_as_id) or 0)
+    if account_id <= 0 or not is_account_offline(account_id):
+        return 0, ""
+    return account_id, get_account_offline_reason(account_id) or "账号不可用"
 
 
 def _text_display_width(text):
@@ -807,11 +932,13 @@ def _pad_display_width(text, target_width):
 
 
 def get_module_status_text(send_as_id=None):
-    def status_dot(enabled):
+    def status_dot(enabled, paused=False):
+        if enabled and paused:
+            return "🟡"
         return "🟢" if enabled else "🔴"
 
-    def cell(enabled, name):
-        return f"{status_dot(enabled)} {name}"
+    def cell(enabled, name, paused=False):
+        return f"{status_dot(enabled, paused=paused)} {name}"
 
     def row(cells, first_column_width=0):
         if not cells:
@@ -825,9 +952,14 @@ def get_module_status_text(send_as_id=None):
     blocks = []
     for identity_id in target_ids:
         available_module_names = get_available_module_names(identity_id)
+        offline_account_id, offline_reason = _get_identity_account_offline_detail(identity_id)
         with use_identity(identity_id):
             cells = [
-                cell(state[MODULE_KEY_MAP[module_name]], _get_module_display_name(module_name, identity_id))
+                cell(
+                    state[MODULE_KEY_MAP[module_name]],
+                    _get_module_display_name(module_name, identity_id),
+                    paused=bool(offline_account_id),
+                )
                 for module_name in available_module_names
             ]
             first_column_width = max(
@@ -839,6 +971,11 @@ def get_module_status_text(send_as_id=None):
                 for index in range(0, len(cells), 2)
             ]
             body = "📋 模块状态"
+            if offline_account_id:
+                body += (
+                    f"\n⏸ 账号离线：acc={offline_account_id}，该身份调度已跳过。"
+                    f"\n原因：{offline_reason}"
+                )
             if rows:
                 body += "\n" + "\n".join(rows)
             else:
@@ -858,12 +995,15 @@ def get_single_module_status_text(module_name, send_as_id=None):
     status_map = {
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
+        "器灵试炼": get_pet_status_text,
         "观星台": get_stargazer_status_text,
         "观星": get_guanxing_status_text,
         "观星监控": get_guanxing_monitor_status_text,
         "登天阶": get_tianti_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
+        "侍妾": get_concubine_status_text,
+        "天机代卜": get_concubine_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -887,7 +1027,16 @@ def get_single_module_status_text(module_name, send_as_id=None):
             body = f"❌ {unavailable_reason}"
         else:
             with use_identity(identity_id):
-                body = getter()
+                module_key = MODULE_KEY_MAP.get(module_name)
+                offline_account_id, offline_reason = _get_identity_account_offline_detail(identity_id)
+                if offline_account_id and module_key and state.get(module_key, False):
+                    body = (
+                        f"⏸ 账号离线：acc={offline_account_id}，调度已跳过。\n"
+                        f"原因：{offline_reason}\n"
+                        "说明：本地 timer 可能显示已到期，但离线账号不会发送指令，不属于漏发。"
+                    )
+                else:
+                    body = getter()
         if len(target_ids) > 1 or (send_as_id is not None and len(get_identity_ids()) > 1):
             body = f"👤 {get_identity_display_name(identity_id)}\n{body}"
         blocks.append(body)
@@ -981,7 +1130,7 @@ def _restore_tower_runtime(now):
 
 def _restore_tree_runtime(now):
     if state["is_maturing"] or state["is_invading"] or state["pending_irrigation"]:
-        state["tree_bootstrap_check_needed"] = True
+        request_tree_bootstrap_check(now)
         return
     if state["next_irr_time"] <= 0:
         _schedule_module_immediate_retry("灵树", now)
@@ -990,12 +1139,16 @@ def _restore_tree_runtime(now):
 def _restore_second_soul_runtime(now):
     """启动恢复时：异常 phase 让 bootstrap_check 处理；idle 时立即调度查询。"""
     phase = state.get("second_soul_phase", "idle")
-    # status_pending 残留（上次进程被 kill 时卡的）：清掉
-    if phase == "status_pending":
+    # pending 残留（上次进程被 kill 时卡的）：清掉，重启后先查状态，不补发修炼指令
+    if phase in ("status_pending", "train_pending"):
         state["second_soul_phase"] = "idle"
         state["next_second_soul_time"] = now
         state["second_soul_status_msg_id"] = 0
         state["second_soul_train_msg_id"] = 0
+        return
+    if phase == "ready_to_train":
+        if state.get("next_second_soul_time", 0) <= 0:
+            state["next_second_soul_time"] = now
         return
     if phase in ("cultivating", "injured", "heart_demon_pending"):
         # 真实状态保留，等 next_second_soul_time 到点
@@ -1008,17 +1161,20 @@ def _restore_second_soul_runtime(now):
 
 
 def _restore_taiyi_runtime(now):
-    """启动恢复时：清残留 pending phase + 启动 stagger 防多号同步。"""
+    """启动恢复时保留太一链路阶段，让状态机做一次有锁兜底。"""
     phase = state.get("taiyi_phase", "idle")
-    # pending phase 残留（上次进程被 kill 时卡的）：清掉
     if phase in ("yindao_pending", "search_pending", "define_pending"):
-        state["taiyi_pending_node_name"] = ""
         state["taiyi_yindao_msg_id"] = 0
         state["taiyi_node_search_msg_id"] = 0
         state["taiyi_node_define_msg_id"] = 0
-        state["taiyi_phase"] = "idle"
-        state["taiyi_phase_entered_at"] = 0
-        phase = "idle"
+        if phase == "define_pending" and not str(state.get("taiyi_pending_node_name") or "").strip():
+            state["taiyi_phase"] = "idle"
+            state["taiyi_phase_entered_at"] = 0
+            phase = "idle"
+        elif float(state.get("taiyi_phase_entered_at", 0) or 0) <= 0:
+            state["taiyi_phase_entered_at"] = max(0, now - 120)
+    if phase == "search_scheduled" and float(state.get("taiyi_phase_entered_at", 0) or 0) <= 0:
+        state["taiyi_phase_entered_at"] = max(0, now - 120)
     if phase == "frozen":
         return
     if state.get("next_taiyi_cycle_time", 0) <= 0:
@@ -1056,11 +1212,20 @@ def _restore_phaseful_runtime(module_name, now):
         raise ValueError(f"不支持的模块恢复: {module_name}")
 
     phase = str(state.get(phase_key) or "idle")
-    valid_phases = {"idle", "launching", "running", "waiting_summary", "post_summary_wait"}
+    valid_phases = {
+        "idle",
+        "launching",
+        "queued_launch",
+        "running",
+        "summary_due",
+        "observing_summary",
+        "waiting_summary",
+        "post_summary_wait",
+    }
     if phase not in valid_phases:
         enable_handler(True, now)
         return
-    if phase == "launching" and float(state.get(last_command_time_key, 0) or 0) <= 0:
+    if phase in ("launching", "queued_launch") and float(state.get(last_command_time_key, 0) or 0) <= 0:
         enable_handler(True, now)
         return
     if phase == "idle" and float(state.get(next_time_key, 0) or 0) <= now:
@@ -1079,6 +1244,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_tree_runtime(now)
         if state["pet_enabled"] and state["next_pet_time"] <= 0:
             _schedule_module_immediate_retry("法宝", now)
+        if state.get("pet_trial_enabled") and state.get("next_pet_trial_time", 0) <= 0:
+            _schedule_module_immediate_retry("器灵试炼", now)
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:
@@ -1116,6 +1283,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_second_soul_runtime(now)
         if state["taiyi_enabled"]:
             _restore_taiyi_runtime(now)
+        if state["concubine_enabled"] or state.get("concubine_tianji_enabled"):
+            restore_concubine_runtime(now)
 
 
 def _get_startup_module_alerts_bucket():
@@ -1168,6 +1337,8 @@ def _get_pending_task_module_name(command):
         return ""
     if raw_command == CMD_PET or raw_command.startswith(f"{CMD_PET} "):
         return "法宝"
+    if raw_command == CMD_PET_TRIAL or raw_command.startswith(f"{CMD_PET_TRIAL} "):
+        return "器灵试炼"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")
 
 
@@ -1180,6 +1351,12 @@ def _truncate_startup_account_detail(text, *, limit=80):
 
 def collect_startup_account_integrity(identity_ids, failed_accounts=None):
     accounts = get_accounts()
+    runtime_account_ids = {
+        int(account_id)
+        for account_id in get_all_clients().keys()
+        if int(account_id or 0) > 0 and not is_account_offline(account_id)
+    }
+    single_runtime_account_id = next(iter(runtime_account_ids)) if len(runtime_account_ids) == 1 else 0
     failed_accounts = list(failed_accounts or [])
     failed_account_ids = set()
     normalized_failed_accounts = []
@@ -1210,6 +1387,8 @@ def collect_startup_account_integrity(identity_ids, failed_accounts=None):
         account_id = int(get_identity_account(send_as_id) or 0)
         display_name = get_identity_display_name(send_as_id)
         if account_id <= 0:
+            if single_runtime_account_id > 0:
+                continue
             items.append({
                 "type": "identity_missing_account",
                 "send_as_id": send_as_id,
@@ -1475,23 +1654,11 @@ def scan_startup_timeout_tasks(now=None):
                     alerts,
                     affected_identity_ids,
                 )
-            else:
-                _scan_post_summary_startup_timeout(
-                    identity_id,
-                    now,
-                    _YUANYING_STARTUP_TIMEOUT_RULE,
-                    alerts,
-                    affected_identity_ids,
-                )
+            # post_summary_wait means the summary was already observed and the next
+            # action is a normal relaunch. Keep it alive across restarts; the
+            # recovery spread will stagger the relaunch instead of disabling it.
 
             _scan_phase_startup_timeouts(identity_id, now, _DEEP_RETREAT_STARTUP_TIMEOUT_RULE, alerts, affected_identity_ids)
-            _scan_post_summary_startup_timeout(
-                identity_id,
-                now,
-                _DEEP_RETREAT_STARTUP_TIMEOUT_RULE,
-                alerts,
-                affected_identity_ids,
-            )
 
     return {
         "closed_count": len(alerts),
@@ -1833,13 +2000,14 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
     with use_identity(send_as_id):
         _begin_identity_refresh_runtime(requested_at)
 
-    msg = await send_game_command(command, send_as_id=send_as_id)
+    msg = await send_game_command(command, send_as_id=send_as_id, max_retry=1)
     if not msg:
         _set_identity_info_error(send_as_id, "获取请求发送失败，请手动重新获取")
         return False, "角色信息获取发送失败，请手动重新获取"
 
     with use_identity(send_as_id):
-        _record_identity_refresh_message(getattr(msg, "id", 0))
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at)
 
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
     console_log(
@@ -1880,7 +2048,7 @@ async def run_identity_info_followup_scheduler(now):
         if not command:
             continue
 
-        msg = await send_game_command(command, send_as_id=identity_id)
+        msg = await send_game_command(command, send_as_id=identity_id, max_retry=1)
         if not msg:
             with use_identity(identity_id):
                 _clear_identity_refresh_runtime(error="角色信息补全请求发送失败，请手动重新获取")
@@ -1888,7 +2056,8 @@ async def run_identity_info_followup_scheduler(now):
             continue
 
         with use_identity(identity_id):
-            _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=now, clear_followup=True)
+            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+            _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at, clear_followup=True)
 
         console_log(
             f"🪪 已触发身份信息补全：{command}",
@@ -2204,6 +2373,163 @@ async def set_module_enabled(module_name, enabled, send_as_id=None, *, skip_unav
     return True, ""
 
 
+def _split_storage_bag_report_chunks(text, limit=STORAGE_BAG_REPORT_REPLY_LIMIT):
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    chunks = []
+    current = []
+    current_len = 0
+    for line in raw.splitlines():
+        pending_len = len(line) + 1
+        if len(line) > limit:
+            if current:
+                chunks.append("\n".join(current))
+                current = []
+                current_len = 0
+            for start in range(0, len(line), limit):
+                chunks.append(line[start:start + limit])
+            continue
+        if current and current_len + pending_len > limit:
+            chunks.append("\n".join(current))
+            current = []
+            current_len = 0
+        current.append(line)
+        current_len += pending_len
+    if current:
+        chunks.append("\n".join(current))
+    if len(chunks) <= 1:
+        return chunks
+    total = len(chunks)
+    return [f"{chunk}\n\n({idx}/{total})" for idx, chunk in enumerate(chunks, 1)]
+
+
+def _parse_storage_bag_report_options(raw_args):
+    args_text = RE_WHITESPACE.sub(" ", str(raw_args or "").strip())
+    if not args_text:
+        return [], ""
+
+    if args_text in {"帮助", "help", "-h", "--help"}:
+        return None, (
+            "【储物袋汇总】\n"
+            ".储物袋汇总\n"
+            ".储物袋汇总 竹星紫 4\n"
+            ".储物袋汇总 详细\n\n"
+            "默认读取每个身份的历史最新快照，并显示时效；不发送游戏指令；WA2000 默认保护排除。"
+        )
+
+    report_args = ["--chunk-limit", "20000"]
+    verbose = False
+    for marker in ("最新", "latest", "全部", "all"):
+        if args_text == marker or args_text.startswith(f"{marker} "):
+            args_text = args_text.replace(marker, " ", 1)
+    for marker in ("详细", "调试", "verbose"):
+        if marker in args_text:
+            verbose = True
+            args_text = args_text.replace(marker, " ")
+
+    today = datetime.now(TZ_LOCAL).date()
+    if "今天" in args_text or "今日" in args_text:
+        day_text = today.isoformat()
+        report_args.extend(["--since", day_text, "--until", day_text])
+        args_text = args_text.replace("今天", " ").replace("今日", " ")
+    elif "昨天" in args_text or "昨日" in args_text:
+        day_text = (today - timedelta(days=1)).isoformat()
+        report_args.extend(["--since", day_text, "--until", day_text])
+        args_text = args_text.replace("昨天", " ").replace("昨日", " ")
+    else:
+        recent_match = RE_STORAGE_BAG_RECENT_DAYS.search(args_text)
+        if recent_match:
+            days = max(1, min(30, int(recent_match.group(1))))
+            since_text = (today - timedelta(days=days - 1)).isoformat()
+            report_args.extend(["--since", since_text, "--until", today.isoformat()])
+            args_text = f"{args_text[:recent_match.start()]} {args_text[recent_match.end():]}"
+
+    if verbose:
+        report_args.append("--verbose")
+
+    selector = RE_WHITESPACE.sub(" ", args_text).strip()
+    if selector:
+        identity_id = resolve_identity_selector(selector)
+        if identity_id is None:
+            return None, f"❌ 找不到身份：{selector}"
+        profile = get_send_as_profile(identity_id)
+        username = (profile.get("username") or "").strip()
+        if "wa2000" in username.casefold() or "wa2000" in selector.casefold():
+            return None, f"🛡️ {get_identity_ui_display_name(identity_id)} 是保护账号，不读取储物袋。"
+        report_args.extend(["--only-name", username or selector])
+
+    return report_args, ""
+
+
+async def _run_storage_bag_report(report_args):
+    script_path = Path(PROJECT_ROOT_DIR) / "tools" / "storage_bag_report.py"
+    if not script_path.exists():
+        return False, f"❌ 储物袋汇总脚本不存在：{script_path}"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-B",
+        str(script_path),
+        *report_args,
+        cwd=PROJECT_ROOT_DIR,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=STORAGE_BAG_REPORT_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return False, "❌ 储物袋汇总超时，已停止本次离线解析。"
+
+    stdout_text = stdout.decode("utf-8", errors="replace").strip()
+    stderr_text = stderr.decode("utf-8", errors="replace").strip()
+    if proc.returncode != 0:
+        error_text = stderr_text or stdout_text or f"脚本退出码 {proc.returncode}"
+        return False, f"❌ 储物袋汇总失败：{error_text[:1000]}"
+    return True, stdout_text or "无可用储物袋快照。"
+
+
+async def _handle_storage_bag_report_command(event, raw_args):
+    report_args, message = _parse_storage_bag_report_options(raw_args)
+    if report_args is None:
+        await reply_log_group_message(
+            event,
+            message,
+            error_prefix="❌ 储物袋汇总回复失败",
+            link_preview=False,
+            scope="global",
+            limit=1200,
+        )
+        return True
+
+    ok, report_text = await _run_storage_bag_report(report_args)
+    if not ok:
+        await reply_log_group_message(
+            event,
+            report_text,
+            error_prefix="❌ 储物袋汇总回复失败",
+            link_preview=False,
+            scope="global",
+            limit=1200,
+        )
+        return True
+
+    chunks = _split_storage_bag_report_chunks(report_text)
+    if not chunks:
+        chunks = ["无可用储物袋快照。"]
+    for chunk in chunks:
+        await reply_log_group_message(
+            event,
+            chunk,
+            error_prefix="❌ 储物袋汇总回复失败",
+            link_preview=False,
+            scope="global",
+            limit=STORAGE_BAG_REPORT_REPLY_LIMIT + 100,
+        )
+    return True
+
+
 async def handle_log_group_command(event):
     if event.chat_id != LOG_GROUP_ID:
         return False
@@ -2215,6 +2541,10 @@ async def handle_log_group_command(event):
     raw_text = (event.raw_text or "").strip()
     if not raw_text:
         return False
+
+    storage_bag_match = RE_CMD_STORAGE_BAG_REPORT.match(raw_text)
+    if storage_bag_match:
+        return await _handle_storage_bag_report_command(event, storage_bag_match.group(2) or "")
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
 

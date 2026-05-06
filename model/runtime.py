@@ -5,6 +5,7 @@ import random
 import secrets
 import time
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from urllib.parse import quote
@@ -16,6 +17,13 @@ from telethon.errors import FloodWaitError
 from .config import (
     CMD_BATTLE_POWER,
     CMD_CHECKIN,
+    CMD_CONCUBINE_DREAM,
+    CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_PUZZLE,
+    CMD_CONCUBINE_ROMANCE,
+    CMD_CONCUBINE_SECT_MARRY,
+    CMD_CONCUBINE_STATUS,
+    CMD_CONCUBINE_TIANJI,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_GUANXING,
@@ -27,6 +35,7 @@ from .config import (
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET,
+    CMD_PET_TRIAL,
     CMD_QUIZ_ANSWER,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
@@ -127,16 +136,34 @@ SEND_PRIORITY_NORMAL = "normal"
 P0_COMMAND_PREFIXES = (".验证", CMD_TIANDAO_JUDGEMENT_PROVE, CMD_QUIZ_ANSWER)
 
 P0_SEND_GAP_MIN_SEC = 10.0
-P0_SEND_GAP_MAX_SEC = 30.0
-CHAIN_SEND_GAP_MIN_SEC = 15.0
-CHAIN_SEND_GAP_MAX_SEC = 45.0
-NORMAL_SEND_GAP_MIN_SEC = 120.0
-NORMAL_SEND_GAP_MAX_SEC = 480.0
+P0_SEND_GAP_MAX_SEC = 20.0
+CHAIN_SEND_GAP_MIN_SEC = 10.0
+CHAIN_SEND_GAP_MAX_SEC = 25.0
+NORMAL_SEND_GAP_MIN_SEC = 10.0
+NORMAL_SEND_GAP_MAX_SEC = 30.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
+_GAME_COMMAND_SENT_OBSERVERS = []
+LOG_BOT_CONNECT_TIMEOUT_SEC = 3
+LOG_BOT_READ_TIMEOUT_SEC = 8
+LOG_BOT_TOTAL_TIMEOUT_SEC = 12
+LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
+
+
+def register_game_command_sent_observer(observer):
+    if callable(observer) and observer not in _GAME_COMMAND_SENT_OBSERVERS:
+        _GAME_COMMAND_SENT_OBSERVERS.append(observer)
+
+
+def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id):
+    for observer in list(_GAME_COMMAND_SENT_OBSERVERS):
+        try:
+            observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id)
+        except Exception:
+            traceback.print_exc()
 
 
 # ============== 天尊健康状态 ==============
@@ -294,6 +321,13 @@ def _bot_health_blocks_send(priority):
     return _bot_health_state in {BOT_HEALTH_SUSPECT, BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}
 
 
+def _refresh_bot_health_timeout_before_send():
+    try:
+        check_bot_health_timeout(time.time())
+    except Exception:
+        traceback.print_exc()
+
+
 async def _log_bot_health_blocked_send(command, send_as_id=None):
     global _bot_last_block_log_at
     now = time.time()
@@ -308,21 +342,44 @@ async def _log_bot_health_blocked_send(command, send_as_id=None):
     )
 
 
-async def _wait_before_locked_send(priority):
-    global _GAME_LAST_SEND_AT
+def _get_send_gap_range(priority):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
-        min_gap, max_gap = P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
-    elif priority == SEND_PRIORITY_CHAIN:
-        min_gap, max_gap = CHAIN_SEND_GAP_MIN_SEC, CHAIN_SEND_GAP_MAX_SEC
-    else:
-        min_gap, max_gap = NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
-    elapsed = time.monotonic() - _GAME_LAST_SEND_AT if _GAME_LAST_SEND_AT > 0 else 0.0
-    wait = random.uniform(min_gap, max_gap)
+        return P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
+    if priority == SEND_PRIORITY_CHAIN:
+        return CHAIN_SEND_GAP_MIN_SEC, CHAIN_SEND_GAP_MAX_SEC
+    return NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
+
+
+def _build_send_not_before(priority):
+    min_gap, max_gap = _get_send_gap_range(priority)
+    now_mono = time.monotonic()
+    not_before = now_mono + random.uniform(min_gap, max_gap)
     if _GAME_LAST_SEND_AT > 0:
-        wait = max(wait, min_gap - elapsed)
-    if wait > 0:
-        await asyncio.sleep(wait)
-    _GAME_LAST_SEND_AT = time.monotonic()
+        not_before = max(not_before, _GAME_LAST_SEND_AT + min_gap)
+    return not_before
+
+
+@asynccontextmanager
+async def _send_slot(priority):
+    global _GAME_LAST_SEND_AT
+    min_gap, _max_gap = _get_send_gap_range(priority)
+    not_before = _build_send_not_before(priority)
+    while True:
+        await _GAME_SEND_LOCK.acquire()
+        now_mono = time.monotonic()
+        ready_at = not_before
+        if _GAME_LAST_SEND_AT > 0:
+            ready_at = max(ready_at, _GAME_LAST_SEND_AT + min_gap)
+        wait = ready_at - now_mono
+        if wait <= 0:
+            try:
+                yield
+            finally:
+                _GAME_LAST_SEND_AT = time.monotonic()
+                _GAME_SEND_LOCK.release()
+            return
+        _GAME_SEND_LOCK.release()
+        await asyncio.sleep(min(wait, 5.0))
 _ui_login_tokens = {}
 _reply_chain_tracker = {}
 
@@ -332,6 +389,7 @@ REPLY_FAMILY_COMMANDS = {
     "sect_teach": {CMD_SECT_TEACH},
     "tower": {CMD_TOWER},
     "pet": {CMD_PET},
+    "pet_trial": {CMD_PET_TRIAL},
     "tree_panel": {CMD_TREE_WATER, CMD_TREE_STATUS},
     "tree_guard": {CMD_TREE_GUARD},
     "tree_harvest": {CMD_TREE_HARVEST},
@@ -348,6 +406,12 @@ REPLY_FAMILY_COMMANDS = {
     "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
     "small_world_preach": {CMD_SMALL_WORLD_PREACH},
+    "concubine_status": {CMD_CONCUBINE_STATUS},
+    "concubine_dream": {CMD_CONCUBINE_DREAM},
+    "concubine_fragment": {CMD_CONCUBINE_FRAGMENT},
+    "concubine_puzzle": {CMD_CONCUBINE_PUZZLE},
+    "concubine_reacquire": {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE},
+    "concubine_tianji": {CMD_CONCUBINE_TIANJI},
     "nanlong": {CMD_NANLONG_EXCHANGE_FABAO, CMD_NANLONG_EXCHANGE_GONGFA, CMD_NANLONG_REJECT},
     "second_soul_status": {CMD_SECOND_SOUL_STATUS},
     "second_soul_train": {CMD_SECOND_SOUL_TRAIN},
@@ -680,7 +744,12 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
         payload["message_thread_id"] = int(message_thread_id)
     url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/sendMessage"
     try:
-        response = requests.post(url, data=payload, timeout=(5, 15), proxies=TG_REQUESTS_PROXIES)
+        response = requests.post(
+            url,
+            data=payload,
+            timeout=(LOG_BOT_CONNECT_TIMEOUT_SEC, LOG_BOT_READ_TIMEOUT_SEC),
+            proxies=TG_REQUESTS_PROXIES,
+        )
     except requests.exceptions.Timeout as e:
         return False, f"timeout: {e}"
     except requests.exceptions.ProxyError as e:
@@ -702,29 +771,40 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
 async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None):
     if LOG_SEND_MODE == "bot":
         try:
-            ok, error_text = await asyncio.to_thread(
-                _send_log_group_via_bot,
-                text,
-                reply_to_msg_id=reply_to_msg_id,
-                message_thread_id=message_thread_id,
-                link_preview=link_preview,
-                parse_mode=parse_mode,
+            ok, error_text = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _send_log_group_via_bot,
+                    text,
+                    reply_to_msg_id=reply_to_msg_id,
+                    message_thread_id=message_thread_id,
+                    link_preview=link_preview,
+                    parse_mode=parse_mode,
+                ),
+                timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
             )
             if ok:
                 return True
             print(f"_send_log_group_message bot fallback: {error_text} | text={text}")
+        except asyncio.TimeoutError:
+            print(f"_send_log_group_message bot timeout | text={text}")
         except Exception as e:
             print(f"_send_log_group_message bot failed: {e} | text={text}")
     try:
         _fb = _get_any_authed_client()
-        await _fb.send_message(
-            LOG_GROUP_ID,
-            text,
-            reply_to=int(reply_to_msg_id or 0) or None,
-            link_preview=link_preview,
-            parse_mode=parse_mode or None,
+        await asyncio.wait_for(
+            _fb.send_message(
+                LOG_GROUP_ID,
+                text,
+                reply_to=int(reply_to_msg_id or 0) or None,
+                link_preview=link_preview,
+                parse_mode=parse_mode or None,
+            ),
+            timeout=LOG_ACCOUNT_SEND_TIMEOUT_SEC,
         )
         return True
+    except asyncio.TimeoutError:
+        print(f"_send_log_group_message account timeout | text={text}")
+        return False
     except Exception as e:
         print(f"_send_log_group_message account failed: {e} | text={text}")
         return False
@@ -1036,13 +1116,21 @@ def _is_account_session_error(error):
         "AUTH_KEY_UNREGISTERED",
         "AUTHKEYUNREGISTERED",
         "AUTH_KEY_DUPLICATED",
+        "AUTHORIZATION HAS BEEN INVALIDATED",
         "UNAUTHORIZED",
+        "SESSIONREVOKED",
+        "SESSION_REVOKED",
         "USERDEACTIVATED",
         "USER_DEACTIVATED",
+        "USER TERMINATING ALL SESSIONS",
         "PLEASE ENTER YOUR PHONE",
         "EOF WHEN READING A LINE",
     )
     return any(marker in error_code for marker in markers)
+
+
+def is_account_session_error(error):
+    return _is_account_session_error(error)
 
 
 def _compact_account_error(error):
@@ -1077,7 +1165,7 @@ async def _log_account_offline_blocked(command, *, send_as_id, account_id, reaso
     )
 
 
-async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None):
+async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None, max_retry=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     send_as_id = int(send_as_id)
@@ -1095,11 +1183,13 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             )
             return None
 
+        _refresh_bot_health_timeout_before_send()
         if _bot_health_blocks_send(send_priority):
             await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
             return None
 
-        async with _GAME_SEND_LOCK:
+        async with _send_slot(send_priority):
+            _refresh_bot_health_timeout_before_send()
             if account_id and is_account_offline(account_id):
                 await _log_account_offline_blocked(
                     command,
@@ -1111,7 +1201,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
                 return None
-            await _wait_before_locked_send(send_priority)
+            _refresh_bot_health_timeout_before_send()
             if account_id and is_account_offline(account_id):
                 await _log_account_offline_blocked(
                     command,
@@ -1202,24 +1292,28 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             msg_id = _extract_sent_message_id(result)
             if msg_id <= 0:
                 raise ValueError("无法从发送结果中解析消息 ID")
-            msg = SimpleNamespace(id=msg_id)
             _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=int(reply_to or 0))
+            sent_at = time.time()
+            msg = SimpleNamespace(id=msg_id, sent_at=sent_at)
             with use_identity(send_as_id) as identity_state:
-                sent_at = time.time()
                 identity_state["my_msg_ids"][msg_id] = sent_at
                 if track:
-                    identity_state["pending_tasks"][msg_id] = {
+                    pending_item = {
                         "cmd": command,
                         "sent_at": sent_at,
                         "retry": 0,
                         "timeout": random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC),
                         "reply_to_msg_id": int(reply_to or 0),
                     }
+                    if max_retry is not None:
+                        pending_item["max_retry"] = max(0, int(max_retry))
+                    identity_state["pending_tasks"][msg_id] = pending_item
                 mark_dirty()
             note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
             family = resolve_reply_family(command)
             if family:
                 track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
+            _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id)
             return msg
     except Exception as e:
         if account_id and _is_account_session_error(e):
@@ -1411,13 +1505,23 @@ async def run_retry_scheduler(now, send_as_id=None):
                     mark_dirty()
                     continue
 
-                if retry >= RETRY_LIMIT:
+                retry_limit = max(0, int(current_item.get("max_retry", RETRY_LIMIT) or 0))
+                if retry >= retry_limit:
                     if family == "deep_retreat":
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                         continue
+                    if retry_limit <= 0:
+                        await send_audit_log(
+                            f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 超时无响应，已停补发。",
+                            scope="identity",
+                            send_as_id=identity_id,
+                        )
+                        identity_state["pending_tasks"].pop(msg_id, None)
+                        mark_dirty()
+                        continue
                     await send_audit_log(
-                        f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 重试 {RETRY_LIMIT} 次仍无响应，已停补发。",
+                        f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 重试 {retry_limit} 次仍无响应，已停补发。",
                         scope="identity",
                         send_as_id=identity_id,
                     )
@@ -1444,8 +1548,10 @@ async def run_retry_scheduler(now, send_as_id=None):
                     identity_state["pending_tasks"].pop(msg_id, None)
                 if new_msg and new_msg.id in identity_state["pending_tasks"]:
                     identity_state["pending_tasks"][new_msg.id]["retry"] = retry + 1
+                    identity_state["pending_tasks"][new_msg.id]["max_retry"] = retry_limit
                     if _is_identity_refresh_command(cmd):
-                        _refresh_identity_info_retry_tracking(identity_state, int(new_msg.id), now)
+                        sent_at = float(getattr(new_msg, "sent_at", 0) or time.time())
+                        _refresh_identity_info_retry_tracking(identity_state, int(new_msg.id), sent_at)
                 mark_dirty()
 
 
@@ -1514,6 +1620,7 @@ __all__ = [
     "get_bot_last_seen_at",
     "get_reply_context",
     "get_reply_family_commands",
+    "is_account_session_error",
     "is_reply_to_identity_message",
     "is_script_command_text",
     "issue_ui_login_token",
@@ -1523,6 +1630,7 @@ __all__ = [
     "note_game_command_observed",
     "note_game_command_sent",
     "redeem_ui_login_token",
+    "register_game_command_sent_observer",
     "reply_log_group_message",
     "resolve_reply_family",
     "run_retry_scheduler",

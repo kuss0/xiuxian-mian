@@ -1,9 +1,11 @@
+import asyncio
 import random
 import re
+import time
 
 from ..config import CMD_TIANDAO_JUDGEMENT_PROVE
 from ..persistence import save_state
-from ..runtime import console_log, mono, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_identity_ids, get_send_as_tags, state
 from ..timing import fmt_time_after
 
@@ -14,6 +16,7 @@ TIANDAO_JUDGEMENT_DEADLINE_BUFFER_SEC = 5
 TIANDAO_JUDGEMENT_DELAY_MIN_SEC = 40
 TIANDAO_JUDGEMENT_DELAY_MAX_SEC = 60
 TIANDAO_JUDGEMENT_DEFAULT_TIMEOUT_SEC = 3 * 60
+_TIANDAO_JUDGEMENT_SCHEDULER_LOCK = asyncio.Lock()
 
 TIANDAO_JUDGEMENT_VALUE_MAP = {
     "炼制玄铁剑消耗灵石": 10,
@@ -144,6 +147,14 @@ def _format_answer(value):
             return str(int(value))
         return f"{value:.6f}".rstrip("0").rstrip(".")
     return str(value)
+
+
+def _format_judgement_detail(target, question, answer):
+    return (
+        f"{mono(target or '未知对象')}"
+        f"｜题目：{str(question or '未知题目').strip()}"
+        f"｜答案：{str(answer or '未计算').strip()}"
+    )
 
 
 def _calculate_answer(left_value, op, right_value):
@@ -288,6 +299,17 @@ def _build_pending_item(parsed, identity_id, event, now):
     }
 
 
+async def _run_tiandao_judgement_due_task(due_at):
+    await asyncio.sleep(max(0.0, float(due_at or 0) - time.time()))
+    await run_tiandao_judgement_scheduler(time.time())
+
+
+def _schedule_tiandao_judgement_due_task(due_at):
+    due_at = float(due_at or 0)
+    if due_at > 0:
+        _fire_and_forget(_run_tiandao_judgement_due_task(due_at))
+
+
 async def handle_tiandao_judgement_prompt(text, now, event=None):
     if not state.get("tiandao_judgement_enabled"):
         return False
@@ -306,7 +328,11 @@ async def handle_tiandao_judgement_prompt(text, now, event=None):
 
     identity_id = _find_target_identity_id(question.get("target"), text)
     if identity_id is None:
-        await send_audit_log(f"⚖️ 天道审判未匹配身份：{mono(question.get('target') or '未知对象')}", scope="global", limit=260)
+        await send_audit_log(
+            f"⚖️ 天道审判未匹配身份：{mono(question.get('target') or '未知对象')}｜题目：{question.get('question') or '未知题目'}",
+            scope="global",
+            limit=420,
+        )
         return True
 
     pending_key = _get_event_pending_key(event, parsed)
@@ -317,14 +343,20 @@ async def handle_tiandao_judgement_prompt(text, now, event=None):
     item = _build_pending_item(parsed, identity_id, event, now)
     pending[pending_key] = item
     _set_pending_map(pending)
+    _schedule_tiandao_judgement_due_task(item["due_at"])
     console_log(
-        f"⚖️ 天道审判排队：{parsed['target']}｜答案 {parsed['answer']}｜{fmt_time_after(item['due_at'] - now)}后",
+        f"⚖️ 天道审判排队：{parsed['target']}｜题目 {parsed['question']}｜答案 {parsed['answer']}｜{fmt_time_after(item['due_at'] - now)}后",
         scope="global",
     )
     return True
 
 
 async def run_tiandao_judgement_scheduler(now):
+    async with _TIANDAO_JUDGEMENT_SCHEDULER_LOCK:
+        await _run_tiandao_judgement_scheduler_locked(now)
+
+
+async def _run_tiandao_judgement_scheduler_locked(now):
     if not state.get("tiandao_judgement_enabled"):
         return
 
@@ -337,36 +369,44 @@ async def run_tiandao_judgement_scheduler(now):
         identity_id = int((item or {}).get("identity_id", 0) or 0)
         target = str((item or {}).get("target") or "未知对象")
         answer = str((item or {}).get("answer") or "").strip()
+        question = str((item or {}).get("question") or "未知题目")
+        detail = _format_judgement_detail(target, question, answer)
         due_at = float((item or {}).get("due_at", 0) or 0)
         deadline_at = float((item or {}).get("deadline_at", 0) or 0)
 
         if not answer or (deadline_at > 0 and now >= deadline_at):
             pending.pop(pending_key, None)
             changed = True
-            await send_audit_log(f"⚖️ 天道审判已超时：{mono(target)}", scope="global", limit=260)
+            await send_audit_log(f"⚖️ 天道审判已超时：{detail}", scope="global", limit=520)
             continue
         if due_at <= 0 or now < due_at:
             continue
         if identity_id <= 0 or identity_id not in get_identity_ids():
             pending.pop(pending_key, None)
             changed = True
-            await send_audit_log(f"⚖️ 天道审判未发送：{mono(target)} 身份不存在", scope="global", limit=260)
+            await send_audit_log(f"⚖️ 天道审判未发送：{detail}｜身份不存在", scope="global", limit=520)
             continue
 
         msg = await send_game_command(f"{CMD_TIANDAO_JUDGEMENT_PROVE} {answer}", track=False, send_as_id=identity_id)
         if msg:
             pending.pop(pending_key, None)
             changed = True
-            await send_audit_log(f"⚖️ 天道审判自证：{mono(target)}｜{answer}", scope="global", limit=260)
+            await send_audit_log(f"⚖️ 天道审判自证：{detail}", scope="global", limit=520)
             continue
 
         retry_count = int((item or {}).get("retry_count", 0) or 0) + 1
         item["retry_count"] = retry_count
-        item["due_at"] = min(now + TIANDAO_JUDGEMENT_RETRY_DELAY_SEC, max(now + 1, deadline_at - 1)) if deadline_at > now + 1 else now + 1
+        failed_at = time.time()
+        item["due_at"] = (
+            min(failed_at + TIANDAO_JUDGEMENT_RETRY_DELAY_SEC, max(failed_at + 1, deadline_at - 1))
+            if deadline_at > failed_at + 1
+            else failed_at + 1
+        )
         pending[pending_key] = item
+        _schedule_tiandao_judgement_due_task(item["due_at"])
         changed = True
         if retry_count == 1:
-            await send_audit_log(f"⚖️ 天道审判自证发送失败，稍后重试：{mono(target)}", scope="global", limit=260)
+            await send_audit_log(f"⚖️ 天道审判自证发送失败，稍后重试：{detail}", scope="global", limit=520)
 
     if changed:
         _set_pending_map(pending)

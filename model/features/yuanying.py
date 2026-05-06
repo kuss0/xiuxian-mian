@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -8,6 +9,7 @@ from ..config import (
     LAUNCHING_TIMEOUT_SEC,
     POST_SUMMARY_WAIT_SEC,
     RE_WHITESPACE,
+    RETRY_MAX_SEC,
     SUMMARY_TIMEOUT_SEC,
     YUANYING_CD,
     YUANYING_PROTECT_SEC,
@@ -18,6 +20,7 @@ from ..state import get_identity_display_name, get_identity_ids, get_send_as_tag
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
+    begin_queued_launch,
     begin_post_summary_wait,
     begin_summary_wait,
     clear_summary_flags,
@@ -26,7 +29,9 @@ from ._phaseful import (
     get_block_reason,
     get_phase_text,
     get_status_detail_text,
+    mark_launch_command_sent,
     mark_success,
+    register_phaseful_spec,
     run_phaseful_scheduler,
     set_phase,
     update_block_log_state,
@@ -46,13 +51,13 @@ YUANYING_SPEC = PhasefulSpec(
     cd_sec=YUANYING_CD,
     protect_sec=YUANYING_PROTECT_SEC,
     launching_timeout_sec=LAUNCHING_TIMEOUT_SEC,
-    post_summary_wait_sec=POST_SUMMARY_WAIT_SEC,
+    post_summary_wait_sec=25,
     summary_timeout_sec=SUMMARY_TIMEOUT_SEC,
     title="👶 元婴",
     summary_pending_label="归窍总结待触发",
     block_disabled="模块已关闭",
     block_waiting="等待归窍总结",
-    block_post_wait="归窍后30秒缓冲中",
+    block_post_wait="归窍后短缓冲中",
     block_launching="出窍指令已发出，等待回复",
     block_running="元婴执行中",
     block_protect="30秒保护中",
@@ -71,10 +76,19 @@ YUANYING_SPEC = PhasefulSpec(
     waiting_anomaly_audit="👶 归窍等待异常，已解卡继续。",
     waiting_timeout_audit="👶 归窍总结超时，按兜底继续。",
     post_wait_console="👶 归窍缓冲结束，继续元婴。",
-    running_due_console="👶 元婴归来时间到，先发 1。",
-    cd_due_console="👶 元婴 CD 到，先发 1。",
-    summary_received_console="👶 收到归窍总结，30 秒后继续。",
+    running_due_console="👶 元婴归来时间到",
+    cd_due_console="👶 元婴 CD 到",
+    summary_received_console="👶 收到归窍总结，短缓冲后继续。",
+    summary_trigger_command=CMD_YUANYING_STATUS,
+    summary_passive_triggers=("元婴状态", "1"),
+    summary_passive_timeout_sec=45,
+    summary_due_delay_min_sec=30,
+    summary_due_delay_max_sec=90,
+    summary_observe_sec=45,
+    summary_retry_min_sec=45,
+    summary_retry_max_sec=90,
 )
+register_phaseful_spec(YUANYING_SPEC)
 
 
 def set_yuanying_phase(phase):
@@ -127,7 +141,7 @@ async def schedule_yuanying_status_probe(delay=None):
         # 如果已经出窍成功（phase=running），不再多余查询
         if state.get("yuanying_phase") not in ("launching",):
             return
-        await send_game_command(CMD_YUANYING_STATUS, track=False)
+        await send_game_command(CMD_YUANYING_STATUS, track=False, priority="chain")
 
     _fire_and_forget(delayed_status())
     console_log(f"👶 元婴执行中，{delay:.1f}s 后查状态。")
@@ -202,23 +216,25 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
         return True
 
     if "窍中温养" in text:
-        set_yuanying_phase("launching")
         state["yuanying_probe_pending"] = False
         clear_yuanying_summary_flags()
-        state["next_yuanying_time"] = now + YUANYING_CD + CD_BUFFER_SEC
-        state["last_yuanying_command_time"] = now
-        save_state()
+        begin_queued_launch(YUANYING_SPEC, now)
         console_log("👶 窍中温养，直接继续元婴。")
-        msg = await send_game_command(CMD_YUANYING)
-        if not msg:
+        msg = await send_game_command(CMD_YUANYING, track=False, priority="chain")
+        if msg:
+            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+            mark_launch_command_sent(YUANYING_SPEC, sent_at)
+        else:
+            failed_at = time.time()
             set_yuanying_phase("idle")
+            state["next_yuanying_time"] = failed_at + RETRY_MAX_SEC
             save_state()
         return True
 
     return False
 
 
-def match_yuanying_summary_identity(text):
+def match_yuanying_summary_identity(text, now=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
     old_summary_kw_hit = "元神归窍总结" in compact_text
     new_summary_kw_hit = (
@@ -226,13 +242,20 @@ def match_yuanying_summary_identity(text):
     )
     if not (old_summary_kw_hit or new_summary_kw_hit):
         return None, [], old_summary_kw_hit, new_summary_kw_hit
+    now = float(now or 0)
 
     matched_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state["yuanying_enabled"]:
                 continue
-            if state.get("yuanying_phase") != "waiting_summary":
+            phase = state.get("yuanying_phase")
+            due_while_running = (
+                phase == "running"
+                and now > 0
+                and 0 < float(state.get("next_yuanying_time", 0) or 0) <= now
+            )
+            if phase not in ("summary_due", "observing_summary", "waiting_summary") and not due_while_running:
                 continue
             tags = get_send_as_tags(identity_id)
             if tags:
@@ -249,7 +272,7 @@ def match_yuanying_summary_identity(text):
 
 
 async def handle_yuanying_summary_broadcast(text, now):
-    target_id, matched_ids, old_summary_kw_hit, new_summary_kw_hit = match_yuanying_summary_identity(text)
+    target_id, matched_ids, old_summary_kw_hit, new_summary_kw_hit = match_yuanying_summary_identity(text, now=now)
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)

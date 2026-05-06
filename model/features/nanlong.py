@@ -279,9 +279,10 @@ async def run_nanlong_scheduler(now):
         clear_nanlong_state(persist=True, keep_last_error=True)
         return
     sent_msg = await _send_nanlong_command(command, reply_to_msg_id)
+    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
     if not sent_msg:
         state["nanlong_last_error"] = "南陇侯自动回复发送失败"
-        _schedule_nanlong_reply_due(now)
+        _schedule_nanlong_reply_due(sent_at)
         save_state()
         await send_audit_log("❌ 南陇侯自动回复失败，待处理已保留。")
         return
@@ -294,7 +295,7 @@ async def run_nanlong_scheduler(now):
     state["nanlong_last_command"] = command
     if is_confirmation_retry:
         state["nanlong_retry_count"] = int(state.get("nanlong_retry_count", 0) or 0) + 1
-    state["nanlong_reply_due_at"] = now + NANLONG_CONFIRM_RETRY_DELAY_SEC
+    state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
     state["nanlong_last_error"] = "等待南陇侯交易结果"
     save_state()
     if is_confirmation_retry:

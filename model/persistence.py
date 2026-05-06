@@ -3,7 +3,7 @@ import sqlite3
 import time
 import traceback
 
-from .config import DB_FILE, DB_SCHEMA_VERSION, FLUSH_INTERVAL_SEC
+from .config import DB_FILE, DB_SCHEMA_VERSION, FLUSH_INTERVAL_SEC, RETRY_LIMIT
 from .state import (
     IDENTITY_BOOL_FIELDS,
     IDENTITY_JSON_COLUMNS,
@@ -80,6 +80,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN quiz_enabled INTEGER NOT NULL DEFAULT 1")
     if "jiyin_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
+    if "pet_trial_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_trial_enabled INTEGER NOT NULL DEFAULT 0")
+    if "concubine_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_enabled INTEGER NOT NULL DEFAULT 0")
+    if "concubine_tianji_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0")
+    if "concubine_auto_reacquire" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1")
     if "nanlong_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN nanlong_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_monitor_enabled" not in module_columns:
@@ -138,6 +146,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_quiz_time REAL NOT NULL DEFAULT 0")
     if "next_jiyin_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_jiyin_time REAL NOT NULL DEFAULT 0")
+    if "next_pet_trial_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_trial_time REAL NOT NULL DEFAULT 0")
+    if "next_concubine_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_concubine_time REAL NOT NULL DEFAULT 0")
     if "next_nanlong_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_nanlong_time REAL NOT NULL DEFAULT 0")
     if "next_stargazer_panel_time" not in timer_columns:
@@ -158,8 +170,72 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_small_world_time REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+    if "tree_maturing_logged" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_maturing_logged INTEGER NOT NULL DEFAULT 0")
+    if "tree_harvest_followup_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_harvest_followup_due_at REAL NOT NULL DEFAULT 0")
+    if "tree_harvest_inflight_until" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_harvest_inflight_until REAL NOT NULL DEFAULT 0")
+    if "tree_bootstrap_check_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0")
+    if "last_tree_status_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tree_status_sent_at REAL NOT NULL DEFAULT 0")
+    if "concubine_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "concubine_availability" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_availability TEXT NOT NULL DEFAULT 'unknown'")
+    if "concubine_nanlong_strategy" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_nanlong_strategy TEXT NOT NULL DEFAULT 'reacquire_after_loss'")
+    if "concubine_status_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_dream_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_dream_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_fragment_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_puzzle_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_puzzle_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_reacquire_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_tianji_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_name" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_name TEXT NOT NULL DEFAULT ''")
+    if "concubine_kind" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_kind TEXT NOT NULL DEFAULT ''")
+    if "concubine_location" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_location TEXT NOT NULL DEFAULT ''")
+    if "concubine_affinity" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_affinity INTEGER NOT NULL DEFAULT 0")
+    if "concubine_oath" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_oath TEXT NOT NULL DEFAULT ''")
+    if "concubine_dream_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_dream_due_at REAL NOT NULL DEFAULT 0")
+    if "concubine_tianji_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_due_at REAL NOT NULL DEFAULT 0")
+    if "concubine_tianji_chain" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain TEXT NOT NULL DEFAULT ''")
+    if "concubine_tianji_chain_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0")
+    if "concubine_fragment_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_count INTEGER NOT NULL DEFAULT 0")
+    if "concubine_fragment_total" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_total INTEGER NOT NULL DEFAULT 4")
+    if "concubine_last_snapshot_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_snapshot_at REAL NOT NULL DEFAULT 0")
+    if "concubine_reacquire_blocked_until" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_blocked_until REAL NOT NULL DEFAULT 0")
+    if "concubine_reacquire_attempts" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_attempts INTEGER NOT NULL DEFAULT 0")
+    if "concubine_reacquire_command_override" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_command_override TEXT NOT NULL DEFAULT ''")
+    if "concubine_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_error TEXT NOT NULL DEFAULT ''")
+    if "concubine_tianji_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
+    if "pet_trial_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_trial_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_last_panel_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
     if "stargazer_last_action" not in runtime_columns:
@@ -302,6 +378,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_faith_value INTEGER NOT NULL DEFAULT 0")
     if "small_world_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_error TEXT NOT NULL DEFAULT ''")
+    if "resource_shortage_backoffs" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}' ")
+
+    pending_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
+    if "max_retry" not in pending_columns:
+        conn.execute(f"ALTER TABLE pending_tasks ADD COLUMN max_retry INTEGER NOT NULL DEFAULT {int(RETRY_LIMIT)}")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -324,6 +406,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_msg_id INTEGER NOT NULL DEFAULT 0")
     if "second_soul_heart_demon_notified" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_notified INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_status_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_train_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_train_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_last_train_started_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_train_started_at REAL NOT NULL DEFAULT 0")
+    if "second_soul_last_broadcast_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_broadcast_key TEXT NOT NULL DEFAULT ''")
+    if "second_soul_last_broadcast_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_broadcast_at REAL NOT NULL DEFAULT 0")
     if "second_soul_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_error TEXT NOT NULL DEFAULT ''")
     if "next_second_soul_time" not in timer_columns:
@@ -342,6 +434,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_phase TEXT NOT NULL DEFAULT 'idle'")
     if "taiyi_pending_node_name" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_pending_node_name TEXT NOT NULL DEFAULT ''")
+    if "taiyi_yindao_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_yindao_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "taiyi_node_search_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_node_search_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "taiyi_node_define_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_node_define_msg_id INTEGER NOT NULL DEFAULT 0")
     if "taiyi_freeze_reason" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_freeze_reason TEXT NOT NULL DEFAULT ''")
     if "taiyi_failure_history" not in runtime_columns:
@@ -407,6 +505,7 @@ def init_db():
             send_as_id INTEGER PRIMARY KEY,
             tree_enabled INTEGER NOT NULL,
             pet_enabled INTEGER NOT NULL,
+            pet_trial_enabled INTEGER NOT NULL DEFAULT 0,
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_enabled INTEGER NOT NULL DEFAULT 0,
@@ -415,6 +514,9 @@ def init_db():
             tianti_gangfeng_enabled INTEGER NOT NULL DEFAULT 1,
             quiz_enabled INTEGER NOT NULL,
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
+            concubine_enabled INTEGER NOT NULL DEFAULT 0,
+            concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0,
+            concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
@@ -438,6 +540,7 @@ def init_db():
             next_irr_time REAL NOT NULL,
             next_guard_time REAL NOT NULL,
             next_pet_time REAL NOT NULL,
+            next_pet_trial_time REAL NOT NULL DEFAULT 0,
             next_stargazer_panel_time REAL NOT NULL DEFAULT 0,
             stargazer_collect_due_at REAL NOT NULL DEFAULT 0,
             next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0,
@@ -450,6 +553,7 @@ def init_db():
             next_tower_time REAL NOT NULL,
             next_quiz_time REAL NOT NULL,
             next_jiyin_time REAL NOT NULL,
+            next_concubine_time REAL NOT NULL DEFAULT 0,
             next_nanlong_time REAL NOT NULL DEFAULT 0,
             next_small_world_time REAL NOT NULL DEFAULT 0,
             next_yuanying_time REAL NOT NULL,
@@ -462,8 +566,14 @@ def init_db():
             last_checkin_msg_id INTEGER NOT NULL,
             last_sect_teach_msg_id INTEGER NOT NULL,
             checkin_cleanup_msg_ids TEXT NOT NULL,
+            tree_maturing_logged INTEGER NOT NULL DEFAULT 0,
+            tree_harvest_followup_due_at REAL NOT NULL DEFAULT 0,
+            tree_harvest_inflight_until REAL NOT NULL DEFAULT 0,
+            tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0,
+            last_tree_status_sent_at REAL NOT NULL DEFAULT 0,
             last_tower_msg_id INTEGER NOT NULL,
             pet_last_error TEXT NOT NULL DEFAULT '',
+            pet_trial_last_error TEXT NOT NULL DEFAULT '',
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             stargazer_last_action TEXT NOT NULL DEFAULT '',
             stargazer_idle_slot_count INTEGER NOT NULL DEFAULT 0,
@@ -525,6 +635,32 @@ def init_db():
             quiz_last_matched_at REAL NOT NULL DEFAULT 0,
             jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             jiyin_last_error TEXT NOT NULL DEFAULT '',
+            concubine_phase TEXT NOT NULL DEFAULT 'idle',
+            concubine_availability TEXT NOT NULL DEFAULT 'unknown',
+            concubine_nanlong_strategy TEXT NOT NULL DEFAULT 'reacquire_after_loss',
+            concubine_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_dream_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_fragment_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_puzzle_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_reacquire_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_tianji_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_name TEXT NOT NULL DEFAULT '',
+            concubine_kind TEXT NOT NULL DEFAULT '',
+            concubine_location TEXT NOT NULL DEFAULT '',
+            concubine_affinity INTEGER NOT NULL DEFAULT 0,
+            concubine_oath TEXT NOT NULL DEFAULT '',
+            concubine_dream_due_at REAL NOT NULL DEFAULT 0,
+            concubine_tianji_due_at REAL NOT NULL DEFAULT 0,
+            concubine_tianji_chain TEXT NOT NULL DEFAULT '',
+            concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0,
+            concubine_fragment_count INTEGER NOT NULL DEFAULT 0,
+            concubine_fragment_total INTEGER NOT NULL DEFAULT 4,
+            concubine_last_snapshot_at REAL NOT NULL DEFAULT 0,
+            concubine_reacquire_blocked_until REAL NOT NULL DEFAULT 0,
+            concubine_reacquire_attempts INTEGER NOT NULL DEFAULT 0,
+            concubine_reacquire_command_override TEXT NOT NULL DEFAULT '',
+            concubine_last_error TEXT NOT NULL DEFAULT '',
+            concubine_tianji_last_error TEXT NOT NULL DEFAULT '',
             nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
             nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -559,7 +695,8 @@ def init_db():
             sent_at REAL NOT NULL,
             retry INTEGER NOT NULL,
             timeout REAL NOT NULL,
-            reply_to_msg_id INTEGER NOT NULL DEFAULT 0
+            reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            max_retry INTEGER NOT NULL DEFAULT 3
         );
 
         CREATE TABLE IF NOT EXISTS message_index (
@@ -581,7 +718,7 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_bot_ids", "[8388633812]"),
+        ("game_bot_ids", "[-1003983937918, 7900199668, 8388633812, 8547797815, 8757550896]"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -824,7 +961,7 @@ def upsert_identity_to_db(send_as_id):
     conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),))
     for msg_id, item in identity_state.get("pending_tasks", {}).items():
         conn.execute(
-            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, max_retry) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(msg_id),
                 int(send_as_id),
@@ -833,6 +970,7 @@ def upsert_identity_to_db(send_as_id):
                 int(item.get("retry", 0) or 0),
                 float(item.get("timeout", 0) or 0),
                 int(item.get("reply_to_msg_id", 0) or 0),
+                int(item.get("max_retry", RETRY_LIMIT) if item.get("max_retry", RETRY_LIMIT) is not None else RETRY_LIMIT),
             ),
         )
 
@@ -899,6 +1037,7 @@ def _load_identity_from_db(send_as_id):
             "retry": row["retry"],
             "timeout": row["timeout"],
             "reply_to_msg_id": row["reply_to_msg_id"],
+            "max_retry": row["max_retry"] if "max_retry" in row.keys() else RETRY_LIMIT,
         }
         for row in pending_rows
     }
