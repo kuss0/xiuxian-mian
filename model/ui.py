@@ -51,6 +51,7 @@ from .config import (
     get_registered_client,
     is_account_offline,
     register_client,
+    unregister_client,
 )
 from .control import (
     delete_identity as delete_control_identity,
@@ -96,6 +97,7 @@ from .state import (
     get_identity_enabled,
     get_identity_ids,
     get_identity_account,
+    get_identity_account_map,
     get_identity_ui_display_name,
     get_identity_state,
     get_module_window_hours_local,
@@ -105,6 +107,7 @@ from .state import (
     get_stargazer_total_slots,
     get_tianti_rank_choice,
     set_account,
+    set_accounts,
     set_auto_delete_sent_messages,
     set_tiandao_judgement_enabled,
     set_forum_topics,
@@ -115,7 +118,10 @@ from .state import (
     set_guanxing_monitor_targets,
     set_guanxing_shift_target,
     set_identity_account,
+    set_identity_account_map,
+    set_identity_enabled as set_identity_enabled_profile,
     set_pet_name,
+    set_pet_trial_name,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
     state,
@@ -207,6 +213,7 @@ def get_identity_ui_snapshot(send_as_id):
             "daohao": profile.get("daohao") or "",
             "realm": profile.get("realm") or "",
             "pet_name": profile.get("pet_name") or "",
+            "pet_trial_name": profile.get("pet_trial_name") or profile.get("pet_name") or "",
             "sect_name": profile.get("sect_name") or "",
             "xiuwei_current": int(profile.get("xiuwei_current") or 0),
             "xiuwei_max": int(profile.get("xiuwei_max") or 0),
@@ -225,6 +232,11 @@ def get_identity_ui_snapshot(send_as_id):
             "tianti_cycle_count": int(identity_state.get("tianti_cycle_count", 0) or 0),
             "tianti_wenxin_enabled": bool(identity_state.get("tianti_wenxin_enabled", True)),
             "tianti_gangfeng_enabled": bool(identity_state.get("tianti_gangfeng_enabled", True)),
+            "small_world_preach_enabled": bool(identity_state.get("small_world_preach_enabled", True)),
+            "small_world_manifest_enabled": bool(identity_state.get("small_world_manifest_enabled", False)),
+            "small_world_harvest_enabled": bool(identity_state.get("small_world_harvest_enabled", False)),
+            "small_world_refine_enabled": bool(identity_state.get("small_world_refine_enabled", False)),
+            "small_world_refresh_enabled": bool(identity_state.get("small_world_refresh_enabled", False)),
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),
             "jiyin_choice_source": _jiyin_choice_source,
@@ -332,7 +344,7 @@ def _format_module_detail_for_ui(module_name, detail_text):
             continue
         if index <= 1 and module_name and module_name in stripped:
             continue
-        if stripped.startswith("- 当前名称："):
+        if stripped.startswith("- 当前名称：") or stripped.startswith("- 抚摸名称：") or stripped.startswith("- 试炼名称："):
             continue
         if stripped.startswith("- 执行窗口："):
             continue
@@ -515,21 +527,51 @@ async def ui_set_module_enabled(send_as_id, module_name, enabled):
     return True, f"已{action_text}{module_name}[{get_identity_display_name(send_as_id)}]"
 
 
-async def ui_set_pet_name(send_as_id, pet_name):
+async def ui_set_pet_name(send_as_id, pet_name, pet_trial_name=None):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
     pet_name = (pet_name or "").strip()
     if not pet_name:
         return False, "法宝名称不能为空"
+    pet_trial_name = (pet_trial_name or "").strip() or pet_name
     set_pet_name(send_as_id, pet_name)
+    set_pet_trial_name(send_as_id, pet_trial_name)
     save_state()
     await send_audit_log(
-        f"🗡️ 已更新法宝名称：{pet_name}",
+        f"🗡️ 已更新法宝名称：抚摸={pet_name}，试炼={pet_trial_name}",
         scope="identity",
         send_as_id=send_as_id,
     )
-    return True, f"已更新法宝名称[{get_identity_display_name(send_as_id)}]：{pet_name}"
+    return True, f"已更新法宝名称[{get_identity_display_name(send_as_id)}]：抚摸={pet_name}，试炼={pet_trial_name}"
+
+
+async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    feature_name = str(feature_name or "").strip()
+    feature_map = {
+        "preach": ("small_world_preach_enabled", "浩劫布道"),
+        "manifest": ("small_world_manifest_enabled", "自动显灵"),
+        "harvest": ("small_world_harvest_enabled", "收割香火"),
+        "refine": ("small_world_refine_enabled", "神识淬炼"),
+        "refresh": ("small_world_refresh_enabled", "祈愿刷新"),
+    }
+    field_name, display_name = feature_map.get(feature_name, ("", ""))
+    if not field_name:
+        return False, f"未知小世界子功能: {feature_name}"
+    enabled = bool(enabled)
+    with use_identity(send_as_id):
+        state[field_name] = enabled
+        save_state()
+    action_text = "开启" if enabled else "关闭"
+    await send_audit_log(
+        f"🌍 已{action_text}小世界{display_name}",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已{action_text}小世界{display_name}[{get_identity_display_name(send_as_id)}]"
 
 
 async def ui_set_stargazer_star_choice(send_as_id, choice):
@@ -777,6 +819,114 @@ def _cleanup_pending_temp_session_files(session_key):
             os.remove(temp_file)
         except OSError:
             pass
+
+
+def _iter_account_session_files(account_id):
+    from .config import SESSION_DIR
+
+    account_id = int(account_id)
+    session_dir = os.path.normcase(os.path.abspath(SESSION_DIR))
+    patterns = [
+        os.path.join(SESSION_DIR, f"account_{account_id}.session*"),
+        os.path.join(SESSION_DIR, f"account_{account_id}"),
+    ]
+    seen = set()
+    for pattern in patterns:
+        for session_file in glob.glob(pattern):
+            resolved = os.path.normcase(os.path.abspath(session_file))
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            if resolved != session_dir and not resolved.startswith(session_dir + os.sep):
+                continue
+            if os.path.isfile(session_file):
+                yield session_file
+
+
+def _delete_account_session_files(account_id):
+    deleted_count = 0
+    for session_file in list(_iter_account_session_files(account_id)):
+        try:
+            os.remove(session_file)
+            deleted_count += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+    return deleted_count
+
+
+async def _logout_account_client(account_id, tc):
+    if tc is None:
+        return "未找到运行中 client，仅清理本地登录态"
+    try:
+        await asyncio.wait_for(tc.log_out(), timeout=25)
+        return "Telegram 远端已登出"
+    except Exception as exc:
+        try:
+            await tc.disconnect()
+        except Exception:
+            pass
+        return f"Telegram 远端登出未确认：{type(exc).__name__}"
+
+
+async def ui_logout_account(account_id, actor_id=None):
+    try:
+        account_id = int(account_id)
+    except (TypeError, ValueError):
+        return False, "账号 ID 无效"
+    if account_id <= 0:
+        return False, "账号 ID 无效"
+
+    accounts = dict(get_accounts())
+    if str(account_id) not in accounts and not list(_iter_account_session_files(account_id)):
+        return False, f"未知账号: {account_id}"
+
+    bound_identity_ids = []
+    identity_account_map = get_identity_account_map()
+    for raw_send_as_id, raw_account_id in list(identity_account_map.items()):
+        try:
+            send_as_id = int(raw_send_as_id or 0)
+            mapped_account_id = int(raw_account_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if send_as_id > 0 and mapped_account_id == account_id:
+            bound_identity_ids.append(send_as_id)
+
+    tc = get_all_clients().get(account_id)
+    logout_result = await _logout_account_client(account_id, tc)
+    unregister_client(account_id)
+
+    remaining_map = {}
+    for raw_send_as_id, raw_account_id in identity_account_map.items():
+        try:
+            mapped_account_id = int(raw_account_id or 0)
+        except (TypeError, ValueError):
+            mapped_account_id = 0
+        if mapped_account_id != account_id:
+            remaining_map[str(raw_send_as_id)] = raw_account_id
+    set_identity_account_map(remaining_map)
+
+    for send_as_id in bound_identity_ids:
+        if send_as_id in get_identity_ids():
+            set_identity_enabled_profile(send_as_id, False)
+            with use_identity(send_as_id) as identity_state:
+                identity_state["pending_tasks"] = {}
+
+    accounts.pop(str(account_id), None)
+    set_accounts(accounts)
+    deleted_file_count = _delete_account_session_files(account_id)
+    save_state()
+
+    actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
+    await send_audit_log(
+        (
+            f"🚪 已退出账号：{account_id}｜暂停并解绑身份 {len(bound_identity_ids)} 个｜"
+            f"session 文件 {deleted_file_count} 个｜{logout_result}{actor_suffix}"
+        ),
+        scope="global",
+    )
+    return True, f"已退出账号 {account_id}，暂停并解绑身份 {len(bound_identity_ids)} 个"
 
 
 async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_files=False):
@@ -1556,6 +1706,18 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_refresh_identity_info(send_as_id, actor_id=(session or {}).get("sender_id"))
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/account-logout":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    account_id = payload.get("account_id")
+                    if account_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 account_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_logout_account(account_id, actor_id=(session or {}).get("sender_id"))
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/identity-delete":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -1640,10 +1802,25 @@ async def handle_ui_http(reader, writer):
                 else:
                     send_as_id = payload.get("send_as_id")
                     pet_name = payload.get("pet_name")
+                    pet_trial_name = payload.get("pet_trial_name")
                     if send_as_id in {None, ""}:
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
-                        ok, message = await ui_set_pet_name(send_as_id, pet_name)
+                        ok, message = await ui_set_pet_name(send_as_id, pet_name, pet_trial_name=pet_trial_name)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/small-world-feature-toggle":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    feature_name = payload.get("feature")
+                    enabled = bool(payload.get("enabled"))
+                    if send_as_id in {None, ""} or not feature_name:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 feature 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-star-choice":
                 if session is None:
@@ -1865,6 +2042,7 @@ __all__ = [
     "render_ui_page",
     "start_ui_server",
     "ui_add_identity",
+    "ui_logout_account",
     "ui_refresh_forum_topics",
     "ui_refresh_identity_info",
     "ui_set_basic_config",
@@ -1874,6 +2052,7 @@ __all__ = [
     "ui_set_nanlong_choice",
     "ui_set_module_window",
     "ui_set_pet_name",
+    "ui_set_small_world_feature_enabled",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",
     "ui_sync_tianti_status",

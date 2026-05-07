@@ -6,7 +6,7 @@ import time
 from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_TRIAL, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import get_pet_command, get_pet_name, get_pet_trial_command, state
+from ..state import get_pet_command, get_pet_name, get_pet_trial_command, get_pet_trial_name, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 
@@ -57,7 +57,7 @@ def _is_pet_trial_reply(text, reply_to, matched_family=None):
         return True
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    pet_name = get_pet_name()
+    pet_name = get_pet_trial_name()
     trial_command = get_pet_trial_command()
     return (
         CMD_PET_TRIAL in orig_cmd
@@ -75,9 +75,10 @@ def get_pet_status_text():
     lines = [
         "🗡️ 法宝",
         f"- 已启用：{'是' if state['pet_enabled'] else '否'}",
-        f"- 当前名称：{get_pet_name()}",
+        f"- 抚摸名称：{get_pet_name()}",
         f"- 下次执行：{fmt_abs_ts(state['next_pet_time'])}（{fmt_remaining(state['next_pet_time'])}）",
         f"- 器灵试炼：{'开启' if state.get('pet_trial_enabled') else '关闭'}",
+        f"- 试炼名称：{get_pet_trial_name()}",
         f"- 试炼下次：{fmt_abs_ts(state.get('next_pet_trial_time', 0))}（{fmt_remaining(state.get('next_pet_trial_time', 0))}）",
     ]
     if state.get("pet_last_error"):
@@ -198,7 +199,7 @@ async def _run_pet_scheduler(now):
         _set_pet_trial_next_time(sent_at + trial_delay)
         state["pet_trial_last_error"] = ""
         save_state()
-        console_log(f"🗡️ 器灵试炼[{get_pet_name()}]已发送，等待回复确认。")
+        console_log(f"🗡️ 器灵试炼[{get_pet_trial_name()}]已发送，等待回复确认。")
 
 
 __all__ = [

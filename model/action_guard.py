@@ -1,0 +1,364 @@
+import random
+import time
+
+from .config import (
+    CMD_CONCUBINE_DREAM,
+    CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_PUZZLE,
+    CMD_CONCUBINE_ROMANCE,
+    CMD_CONCUBINE_SECT_MARRY,
+    CMD_CONCUBINE_TIANJI,
+    CMD_DEEP_RETREAT,
+    CMD_NODE_DEFINE,
+    CMD_NODE_SEARCH,
+    CMD_PET_TRIAL,
+    CMD_SECOND_SOUL_TRAIN,
+    CMD_SMALL_WORLD_HARVEST,
+    CMD_SMALL_WORLD_MANIFEST,
+    CMD_SMALL_WORLD_PREACH,
+    CMD_SMALL_WORLD_QUERY,
+    CMD_SMALL_WORLD_REFINE,
+    CMD_TOWER,
+    CMD_YINDAO,
+    CMD_YUANYING,
+)
+from .persistence import mark_dirty
+from .state import has_identity, state, use_identity
+
+
+ACTION_KIND_HIGH_RISK = "high_risk"
+ACTION_KIND_REFRESH = "refresh"
+ACTION_KIND_STATUS = "status"
+ACTION_KIND_CHAIN = "chain"
+
+RETRY_DELAY_RANGES_SEC = (
+    (2 * 60, 3 * 60),
+    (3 * 60, 5 * 60),
+    (10 * 60, 30 * 60),
+)
+SESSION_MAX_ATTEMPTS = 1 + len(RETRY_DELAY_RANGES_SEC)
+SESSION_TTL_SEC = 8 * 3600
+BLOCK_LOG_INTERVAL_SEC = 10 * 60
+
+
+ACTION_SPECS = {
+    "concubine_dream": {
+        "commands": (CMD_CONCUBINE_DREAM,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "入梦寻图",
+    },
+    "concubine_tianji": {
+        "commands": (CMD_CONCUBINE_TIANJI,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "天机代卜",
+    },
+    "concubine_fragment": {
+        "commands": (CMD_CONCUBINE_FRAGMENT,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "残图确认",
+    },
+    "concubine_puzzle": {
+        "commands": (CMD_CONCUBINE_PUZZLE,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "虚天拼图",
+    },
+    "concubine_reacquire": {
+        "commands": (CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "补领侍妾",
+    },
+    "pet_trial": {
+        "commands": (CMD_PET_TRIAL,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "器灵试炼",
+    },
+    "second_soul_train": {
+        "commands": (CMD_SECOND_SOUL_TRAIN,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "第二元神修炼",
+    },
+    "deep_retreat": {
+        "commands": (CMD_DEEP_RETREAT,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "深度闭关",
+    },
+    "yuanying_launch": {
+        "commands": (CMD_YUANYING,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "元婴出窍",
+    },
+    "tower": {
+        "commands": (CMD_TOWER,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "闯塔",
+    },
+    "taiyi_yindao": {
+        "commands": (CMD_YINDAO,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "太一引道",
+    },
+    "taiyi_node_search": {
+        "commands": (CMD_NODE_SEARCH,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "搜寻节点",
+    },
+    "taiyi_node_define": {
+        "commands": (CMD_NODE_DEFINE,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "定星",
+    },
+    "small_world_preach": {
+        "commands": (CMD_SMALL_WORLD_PREACH,),
+        "kind": ACTION_KIND_REFRESH,
+        "label": "小世界布道",
+        "max_attempts": 2,
+        "retry_delay_ranges": ((2 * 60, 3 * 60),),
+        "ttl_sec": 30 * 60,
+    },
+    "small_world_query": {
+        "commands": (CMD_SMALL_WORLD_QUERY,),
+        "kind": ACTION_KIND_REFRESH,
+        "label": "小世界查询/刷新",
+        "max_attempts": 10,
+        "retry_delay_ranges": ((5 * 60, 8 * 60),) * 9,
+        "ttl_sec": 90 * 60,
+    },
+    "small_world_manifest": {
+        "commands": (CMD_SMALL_WORLD_MANIFEST,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "小世界显灵",
+    },
+    "small_world_harvest": {
+        "commands": (CMD_SMALL_WORLD_HARVEST,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "收割香火",
+    },
+    "small_world_refine": {
+        "commands": (CMD_SMALL_WORLD_REFINE,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "神识淬炼",
+    },
+}
+
+COMMAND_TO_ACTION_KEY = {
+    command: action_key
+    for action_key, spec in ACTION_SPECS.items()
+    for command in spec.get("commands", ())
+}
+
+FAMILY_TO_ACTION_KEYS = {
+    "concubine_dream": ("concubine_dream",),
+    "concubine_tianji": ("concubine_tianji",),
+    "concubine_fragment": ("concubine_fragment",),
+    "concubine_puzzle": ("concubine_puzzle",),
+    "concubine_reacquire": ("concubine_reacquire",),
+    "pet_trial": ("pet_trial",),
+    "second_soul_train": ("second_soul_train",),
+    "deep_retreat": ("deep_retreat",),
+    "tower": ("tower",),
+    "yuanying": ("yuanying_launch",),
+    "taiyi_yindao": ("taiyi_yindao",),
+    "taiyi_node_search": ("taiyi_node_search",),
+    "taiyi_node_define": ("taiyi_node_define",),
+    "small_world_preach": ("small_world_preach",),
+    "small_world_query": ("small_world_query",),
+    "small_world_manifest": ("small_world_manifest",),
+    "small_world_harvest": ("small_world_harvest",),
+    "small_world_refine": ("small_world_refine",),
+}
+
+
+def normalize_command(command):
+    return str(command or "").strip()
+
+
+def resolve_action_key(command):
+    raw_command = normalize_command(command)
+    if not raw_command:
+        return ""
+    for prefix, action_key in COMMAND_TO_ACTION_KEY.items():
+        if raw_command == prefix or raw_command.startswith(f"{prefix} "):
+            return action_key
+    return ""
+
+
+def resolve_action_key_for_family(family):
+    keys = FAMILY_TO_ACTION_KEYS.get(str(family or "").strip(), ())
+    return keys[0] if keys else ""
+
+
+def resolve_action_keys_for_family(family):
+    return tuple(FAMILY_TO_ACTION_KEYS.get(str(family or "").strip(), ()))
+
+
+def _get_sessions(identity_state=None):
+    if identity_state is None:
+        identity_state = state
+    sessions = identity_state.get("action_guard_sessions")
+    if not isinstance(sessions, dict):
+        sessions = {}
+        identity_state["action_guard_sessions"] = sessions
+    return sessions
+
+
+def _spec(action_key):
+    return ACTION_SPECS.get(str(action_key or "").strip()) or {}
+
+
+def _max_attempts(spec):
+    return max(1, int(spec.get("max_attempts", SESSION_MAX_ATTEMPTS) or SESSION_MAX_ATTEMPTS))
+
+
+def _retry_ranges(spec):
+    ranges = spec.get("retry_delay_ranges") or RETRY_DELAY_RANGES_SEC
+    return tuple(ranges)
+
+
+def _ttl_sec(spec):
+    return max(60, float(spec.get("ttl_sec", SESSION_TTL_SEC) or SESSION_TTL_SEC))
+
+
+def _next_retry_delay(spec, retry_index):
+    ranges = _retry_ranges(spec)
+    if retry_index <= 0 or retry_index > len(ranges):
+        return 0.0
+    low, high = ranges[retry_index - 1]
+    return random.uniform(float(low), float(high))
+
+
+def _is_expired(session, now, spec):
+    last_sent_at = float((session or {}).get("last_sent_at", 0) or 0)
+    if last_sent_at <= 0:
+        return True
+    return now - last_sent_at >= _ttl_sec(spec)
+
+
+def _new_session(action_key, now, command):
+    spec = _spec(action_key)
+    return {
+        "action_key": action_key,
+        "kind": spec.get("kind") or ACTION_KIND_HIGH_RISK,
+        "label": spec.get("label") or action_key,
+        "attempt": 0,
+        "first_sent_at": 0,
+        "last_sent_at": 0,
+        "next_allowed_at": 0,
+        "last_msg_id": 0,
+        "last_command": normalize_command(command),
+        "last_block_log_at": 0,
+        "closed_at": 0,
+        "close_reason": "",
+    }
+
+
+def before_send(command, send_as_id=None, now=None):
+    action_key = resolve_action_key(command)
+    if not action_key:
+        return True, ""
+    now = float(now if now is not None else time.time())
+    spec = _spec(action_key)
+    max_attempts = _max_attempts(spec)
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        session = sessions.get(action_key)
+        if not isinstance(session, dict) or _is_expired(session, now, spec):
+            session = _new_session(action_key, now, command)
+            sessions[action_key] = session
+
+        attempt = int(session.get("attempt", 0) or 0)
+        if attempt >= max_attempts:
+            return False, f"{session.get('label') or action_key} 本轮已发送 {attempt}/{max_attempts} 次，等待结果或人工处理"
+
+        next_allowed_at = float(session.get("next_allowed_at", 0) or 0)
+        if attempt > 0 and now < next_allowed_at:
+            wait_sec = int(max(1, next_allowed_at - now))
+            return False, f"{session.get('label') or action_key} 安全补发等待中，剩余约 {wait_sec}s"
+
+        return True, ""
+
+
+def is_guarded_command(command):
+    return bool(resolve_action_key(command))
+
+
+def note_sent(command, send_as_id, msg_id, sent_at=None):
+    action_key = resolve_action_key(command)
+    if not action_key or not has_identity(send_as_id):
+        return
+    sent_at = float(sent_at if sent_at is not None else time.time())
+    spec = _spec(action_key)
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        session = sessions.get(action_key)
+        if not isinstance(session, dict) or _is_expired(session, sent_at, spec):
+            session = _new_session(action_key, sent_at, command)
+            sessions[action_key] = session
+        attempt = int(session.get("attempt", 0) or 0) + 1
+        session["attempt"] = attempt
+        session["last_command"] = normalize_command(command)
+        session["last_msg_id"] = int(msg_id or 0)
+        session["last_sent_at"] = sent_at
+        if float(session.get("first_sent_at", 0) or 0) <= 0:
+            session["first_sent_at"] = sent_at
+        delay = _next_retry_delay(spec, attempt)
+        session["next_allowed_at"] = sent_at + delay if delay > 0 else 0
+        session["closed_at"] = 0
+        session["close_reason"] = ""
+        mark_dirty()
+
+
+def get_next_allowed_at(command, send_as_id=None):
+    action_key = resolve_action_key(command)
+    if not action_key or not has_identity(send_as_id):
+        return 0.0
+    with use_identity(send_as_id) as identity_state:
+        session = _get_sessions(identity_state).get(action_key)
+        if not isinstance(session, dict):
+            return 0.0
+        return float(session.get("next_allowed_at", 0) or 0)
+
+
+def close_action(action_key, send_as_id=None, reason="reply", now=None):
+    action_key = str(action_key or "").strip()
+    if not action_key or not has_identity(send_as_id):
+        return False
+    now = float(now if now is not None else time.time())
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        if action_key not in sessions:
+            return False
+        sessions.pop(action_key, None)
+        mark_dirty()
+    return True
+
+
+def close_by_family(family, send_as_id=None, reason="reply", now=None):
+    closed = False
+    for action_key in resolve_action_keys_for_family(family):
+        closed = close_action(action_key, send_as_id=send_as_id, reason=reason, now=now) or closed
+    return closed
+
+
+def should_log_block(command, send_as_id=None, now=None):
+    action_key = resolve_action_key(command)
+    if not action_key or not has_identity(send_as_id):
+        return False
+    now = float(now if now is not None else time.time())
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        session = sessions.get(action_key)
+        if not isinstance(session, dict):
+            return True
+        last = float(session.get("last_block_log_at", 0) or 0)
+        if now - last < BLOCK_LOG_INTERVAL_SEC:
+            return False
+        session["last_block_log_at"] = now
+        mark_dirty()
+        return True
+
+
+def get_action_guard_sessions(send_as_id=None):
+    if not has_identity(send_as_id):
+        return {}
+    with use_identity(send_as_id) as identity_state:
+        return dict(_get_sessions(identity_state))

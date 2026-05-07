@@ -38,7 +38,11 @@ from .config import (
     CMD_TIANTI_STATUS,
     CMD_TIANTI_WENXIN,
     CMD_SECT_TEACH,
+    CMD_SMALL_WORLD_HARVEST,
+    CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
+    CMD_SMALL_WORLD_QUERY,
+    CMD_SMALL_WORLD_REFINE,
     CMD_STARGAZER_COLLECT,
     CMD_STARGAZER_GUIDE,
     CMD_STARGAZER_PANEL,
@@ -690,12 +694,12 @@ def _manual_enable_taiyi_module_state(now):
 def _disable_small_world_module_state():
     state["small_world_enabled"] = False
     clear_small_world_state(persist=False, keep_last_error=True)
-    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH})
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
 
 
 def _manual_disable_small_world_module_state():
     state["small_world_enabled"] = False
-    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH})
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
 
 
 def _manual_enable_small_world_module_state(now):
@@ -841,6 +845,10 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_NANLONG_EXCHANGE_FABAO: "南陇侯",
     CMD_NANLONG_EXCHANGE_GONGFA: "南陇侯",
     CMD_NANLONG_REJECT: "南陇侯",
+    CMD_SMALL_WORLD_QUERY: "小世界",
+    CMD_SMALL_WORLD_MANIFEST: "小世界",
+    CMD_SMALL_WORLD_HARVEST: "小世界",
+    CMD_SMALL_WORLD_REFINE: "小世界",
     CMD_SMALL_WORLD_PREACH: "小世界",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",

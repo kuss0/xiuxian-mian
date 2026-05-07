@@ -23,7 +23,7 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled",
     "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
@@ -42,12 +42,12 @@ IDENTITY_RUNTIME_COLUMNS = [
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
     "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
-    "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_retry_count", "quiz_match_mode", "quiz_last_error", "quiz_last_matched_at",
+    "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_last_error",
-    "small_world_preach_reply_to_msg_id", "small_world_faith_value", "small_world_last_error",
-    "resource_shortage_backoffs",
+    "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_last_panel_at", "small_world_last_error",
+    "resource_shortage_backoffs", "action_guard_sessions",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
@@ -55,9 +55,9 @@ IDENTITY_RUNTIME_COLUMNS = [
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_last_error",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history", "resource_shortage_backoffs"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history", "resource_shortage_backoffs", "action_guard_sessions"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "checkin_enabled", "tower_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled",
     "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
@@ -72,6 +72,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "daohao": "",
     "realm": "",
     "pet_name": DEFAULT_PET_NAME,
+    "pet_trial_name": "",
     "sect_name": "",
     "sect_updated_at": 0,
     "xiuwei_current": 0,
@@ -174,6 +175,11 @@ IDENTITY_STATE_TEMPLATE = {
     "yuanying_enabled": False,
     "deep_retreat_enabled": False,
     "small_world_enabled": False,
+    "small_world_preach_enabled": True,
+    "small_world_manifest_enabled": False,
+    "small_world_harvest_enabled": False,
+    "small_world_refine_enabled": False,
+    "small_world_refresh_enabled": False,
     "checkin_enabled": False,
     "tower_enabled": False,
     "stargazer_enabled": False,
@@ -280,6 +286,7 @@ IDENTITY_STATE_TEMPLATE = {
     "quiz_question": "",
     "quiz_options": {},
     "quiz_answer": "",
+    "quiz_phase": "",
     "quiz_retry_count": 0,
     "quiz_match_mode": "",
     "quiz_last_error": "",
@@ -347,9 +354,20 @@ IDENTITY_STATE_TEMPLATE = {
     # 小世界模块
     "next_small_world_time": 0,
     "small_world_preach_reply_to_msg_id": 0,
+    "small_world_preach_due_at": 0,
+    "small_world_phase": "idle",
+    "small_world_query_msg_id": 0,
+    "small_world_manifest_msg_id": 0,
+    "small_world_harvest_msg_id": 0,
+    "small_world_refine_msg_id": 0,
+    "small_world_refresh_count": 0,
+    "small_world_pending_incense": 0,
+    "small_world_incense_stock": 0,
     "small_world_faith_value": 0,
+    "small_world_last_panel_at": 0,
     "small_world_last_error": "",
     "resource_shortage_backoffs": {},
+    "action_guard_sessions": {},
 
     # 第二元神模块
     "second_soul_enabled": False,
@@ -534,6 +552,8 @@ def _coerce_send_as_profile_field(field_name, value):
         return normalized if normalized in TIANTI_RANK_CHOICES else TIANTI_RANK_CHOICES[0]
     if field_name == "pet_name":
         return (value or "").strip() or DEFAULT_PET_NAME
+    if field_name == "pet_trial_name":
+        return (value or "").strip()
     if field_name == "sect_updated_at":
         return float(value or 0)
     if field_name in {"xiuwei_current", "xiuwei_max", "stargazer_total_slots"}:
@@ -602,6 +622,7 @@ def set_send_as_profile(
     daohao=None,
     realm=None,
     pet_name=None,
+    pet_trial_name=None,
     sect_name=None,
     sect_updated_at=None,
     xiuwei_current=None,
@@ -624,6 +645,7 @@ def set_send_as_profile(
         daohao=daohao,
         realm=realm,
         pet_name=pet_name,
+        pet_trial_name=pet_trial_name,
         sect_name=sect_name,
         sect_updated_at=sect_updated_at,
         xiuwei_current=xiuwei_current,
@@ -684,6 +706,13 @@ def get_pet_name(send_as_id=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     return get_send_as_profile(send_as_id).get("pet_name") or DEFAULT_PET_NAME
+
+
+def get_pet_trial_name(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    profile = get_send_as_profile(send_as_id)
+    return profile.get("pet_trial_name") or profile.get("pet_name") or DEFAULT_PET_NAME
 
 
 def get_jiyin_choice(send_as_id=None):
@@ -1086,12 +1115,17 @@ def get_pet_command(send_as_id=None):
 
 
 def get_pet_trial_command(send_as_id=None):
-    return f"{CMD_PET_TRIAL} {get_pet_name(send_as_id)}"
+    return f"{CMD_PET_TRIAL} {get_pet_trial_name(send_as_id)}"
 
 
 def set_pet_name(send_as_id, pet_name):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, pet_name=pet_name)
+
+
+def set_pet_trial_name(send_as_id, pet_trial_name):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, pet_trial_name=pet_trial_name)
 
 
 def get_send_as_tags(send_as_id=None):
@@ -1284,6 +1318,7 @@ __all__ = [
     "get_nanlong_choice",
     "get_pet_command",
     "get_pet_name",
+    "get_pet_trial_name",
     "get_pet_trial_command",
     "get_stargazer_star_choice",
     "get_stargazer_total_slots",
@@ -1314,6 +1349,7 @@ __all__ = [
     "set_nanlong_choice",
     "set_module_window_hours",
     "set_pet_name",
+    "set_pet_trial_name",
     "set_stargazer_star_choice",
     "set_stargazer_total_slots",
     "set_tianti_rank_choice",

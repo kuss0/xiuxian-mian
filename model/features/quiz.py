@@ -1,4 +1,5 @@
 import json
+import random
 import re
 import time
 
@@ -39,6 +40,10 @@ RE_PUNCT_ONLY = re.compile(r"[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【
 QUIZ_RESULT_GRACE_SEC = 120
 QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC = 60
 QUIZ_ANSWER_MAX_RETRY_COUNT = 3
+QUIZ_ANSWER_DELAY_MIN_SEC = 20
+QUIZ_ANSWER_DELAY_MAX_SEC = 50
+QUIZ_PHASE_QUEUED_ANSWER = "queued_answer"
+QUIZ_PHASE_WAITING_RESULT = "waiting_result"
 
 _QUIZ_BANK = None
 _QUIZ_BANK_INDEX = None
@@ -76,6 +81,13 @@ def _format_quiz_answer_detail(answer, options):
 def _get_quiz_state_options():
     options = state.get("quiz_options", {})
     return dict(options) if isinstance(options, dict) else {}
+
+
+def _format_quiz_phase(phase):
+    return {
+        QUIZ_PHASE_QUEUED_ANSWER: "等待作答",
+        QUIZ_PHASE_WAITING_RESULT: "等待结果",
+    }.get(str(phase or "").strip(), "无")
 
 
 def _normalize_quiz_identity_id(identity_id):
@@ -351,7 +363,13 @@ def _get_quiz_retry_count():
 
 def _has_active_quiz_pending(now):
     reply_to_msg_id, deadline = _get_quiz_pending_state()
-    return reply_to_msg_id > 0 and deadline > now
+    if reply_to_msg_id <= 0:
+        return False
+    phase = str(state.get("quiz_phase") or "").strip()
+    answer = str(state.get("quiz_answer") or "").strip().upper()
+    if phase in {QUIZ_PHASE_QUEUED_ANSWER, QUIZ_PHASE_WAITING_RESULT} or answer in {"A", "B", "C", "D"}:
+        return True
+    return deadline > now
 
 
 def _match_quiz_prompt_for_current_identity(text):
@@ -364,10 +382,11 @@ def _match_quiz_prompt_for_current_identity(text):
     return parsed, identity_id
 
 
-def _set_quiz_pending(question, options, answer, reply_to_msg_id, deadline_at, *, last_error, last_matched_at, retry_count=0, match_mode=""):
+def _set_quiz_pending(question, options, answer, reply_to_msg_id, deadline_at, *, last_error, last_matched_at, retry_count=0, match_mode="", phase=""):
     state["quiz_question"] = question
     state["quiz_options"] = dict(options or {})
     state["quiz_answer"] = answer
+    state["quiz_phase"] = str(phase or "")
     state["quiz_reply_to_msg_id"] = int(reply_to_msg_id or 0)
     state["next_quiz_time"] = float(deadline_at or 0)
     state["quiz_retry_count"] = int(retry_count or 0)
@@ -407,6 +426,9 @@ def _quiz_pending_matches_result(parsed, watcher):
         return False
     pending_answer = str(state.get("quiz_answer") or "").strip().upper()
     if pending_answer not in {"A", "B", "C", "D"}:
+        return False
+    phase = str(state.get("quiz_phase") or "").strip()
+    if phase and phase != QUIZ_PHASE_WAITING_RESULT:
         return False
     submitted_answer = str((parsed or {}).get("submitted_answer") or "").strip().upper()
     if submitted_answer and submitted_answer != pending_answer:
@@ -456,6 +478,43 @@ async def _handle_quiz_pending_timeout(now):
     clear_quiz_state(persist=True, keep_last_error=True)
 
 
+async def _handle_quiz_queued_answer_due(now):
+    question = state.get("quiz_question") or "未记录题目"
+    options = _get_quiz_state_options()
+    answer = str(state.get("quiz_answer") or "").strip().upper()
+    answer_detail = _format_quiz_answer_detail(answer, options)
+    reply_to_msg_id = int(state.get("quiz_reply_to_msg_id", 0) or 0)
+    identity_id = get_current_identity_id()
+    match_mode = state.get("quiz_match_mode") or "无"
+    if answer not in {"A", "B", "C", "D"}:
+        await _handle_quiz_pending_timeout(now)
+        return
+
+    reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
+    state["quiz_phase"] = QUIZ_PHASE_WAITING_RESULT
+    if not reply_msg:
+        state["next_quiz_time"] = float(time.time() + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
+        _set_quiz_error_and_save("作答发送失败")
+        await send_audit_log(
+            f"❌ 玄骨考校作答发送失败，1 分钟后重试｜提交 {answer_detail}｜题目：{question}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=520,
+        )
+        return
+
+    sent_at = float(getattr(reply_msg, "sent_at", 0) or time.time())
+    state["next_quiz_time"] = float(sent_at + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
+    state["quiz_last_error"] = ""
+    save_state()
+    await send_audit_log(
+        f"🦴 已发送作答，等待结果确认｜{answer_detail}｜{match_mode}｜题目：{question}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=520,
+    )
+
+
 async def _handle_quiz_answer_confirmation_timeout(now):
     question = state.get("quiz_question") or "未记录题目"
     options = _get_quiz_state_options()
@@ -482,6 +541,7 @@ async def _handle_quiz_answer_confirmation_timeout(now):
 
     if reply_msg:
         sent_at = float(getattr(reply_msg, "sent_at", 0) or time.time())
+        state["quiz_phase"] = QUIZ_PHASE_WAITING_RESULT
         state["next_quiz_time"] = float(sent_at + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
         state["quiz_last_error"] = f"未收到正确/错误结果，已重试 {retry_index}/{QUIZ_ANSWER_MAX_RETRY_COUNT}"
         save_state()
@@ -505,6 +565,7 @@ async def _handle_quiz_answer_confirmation_timeout(now):
         return
 
     failed_at = time.time()
+    state["quiz_phase"] = QUIZ_PHASE_WAITING_RESULT
     state["next_quiz_time"] = float(failed_at + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
     save_state()
     await send_audit_log(
@@ -521,6 +582,7 @@ def get_quiz_status_text():
         "🦴 玄骨考校",
         f"- 当前题目：{state.get('quiz_question') or '暂无'}",
         f"- 匹配答案：{state.get('quiz_answer') or '未匹配'}",
+        f"- 当前阶段：{_format_quiz_phase(state.get('quiz_phase'))}",
         f"- 匹配方式：{state.get('quiz_match_mode') or '无'}",
         f"- 待回复消息ID：{reply_to_msg_id or '无'}",
         f"- 重试次数：{_get_quiz_retry_count()}/{QUIZ_ANSWER_MAX_RETRY_COUNT}",
@@ -536,6 +598,7 @@ def clear_quiz_state(*, persist=False, keep_last_error=False):
     state["quiz_question"] = ""
     state["quiz_options"] = {}
     state["quiz_answer"] = ""
+    state["quiz_phase"] = ""
     state["quiz_retry_count"] = 0
     state["quiz_match_mode"] = ""
     if not keep_last_error:
@@ -883,35 +946,27 @@ async def handle_quiz_prompt(text, now, event):
         )
         return True
 
+    timeout_sec = float(parsed.get("timeout_sec") or QUIZ_REPLY_TIMEOUT_SEC)
+    safe_latest = max(3.0, timeout_sec - 10.0)
+    delay_min = min(float(QUIZ_ANSWER_DELAY_MIN_SEC), safe_latest)
+    delay_max = min(float(QUIZ_ANSWER_DELAY_MAX_SEC), safe_latest)
+    delay = random.uniform(delay_min, delay_max) if delay_max > delay_min else delay_max
+
     _set_quiz_pending(
         parsed["question"],
         parsed["options"],
         answer,
         reply_to_msg_id,
-        now + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC,
+        now + delay,
         last_error="",
         last_matched_at=now,
         match_mode=match_mode,
+        phase=QUIZ_PHASE_QUEUED_ANSWER,
     )
     save_state()
 
-    reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
-    if not reply_msg:
-        state["next_quiz_time"] = float(time.time() + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
-        _set_quiz_error_and_save("作答发送失败")
-        await send_audit_log(
-            f"❌ 玄骨考校作答发送失败｜提交 {_format_quiz_answer_detail(answer, parsed['options'])}｜题目：{parsed['question']}",
-            scope="identity",
-            send_as_id=identity_id,
-            limit=520,
-        )
-        return True
-
-    sent_at = float(getattr(reply_msg, "sent_at", 0) or time.time())
-    state["next_quiz_time"] = float(sent_at + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
-    save_state()
     await send_audit_log(
-        f"🦴 已发送作答，等待结果确认｜{_format_quiz_answer_detail(answer, parsed['options'])}｜{match_mode}｜题目：{parsed['question']}",
+        f"🦴 已匹配答案，{delay:.1f}s 后作答｜{_format_quiz_answer_detail(answer, parsed['options'])}｜{match_mode}｜题目：{parsed['question']}",
         scope="identity",
         send_as_id=identity_id,
         limit=520,
@@ -944,7 +999,10 @@ async def run_quiz_scheduler(now):
     if reply_to_msg_id <= 0 or next_quiz_time <= 0 or now < next_quiz_time:
         return
     answer = str(state.get("quiz_answer") or "").strip().upper()
-    if answer in {"A", "B", "C", "D"}:
+    phase = str(state.get("quiz_phase") or "").strip()
+    if phase == QUIZ_PHASE_QUEUED_ANSWER:
+        await _handle_quiz_queued_answer_due(now)
+    elif phase == QUIZ_PHASE_WAITING_RESULT or answer in {"A", "B", "C", "D"}:
         await _handle_quiz_answer_confirmation_timeout(now)
     else:
         await _handle_quiz_pending_timeout(now)

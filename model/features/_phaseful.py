@@ -1,10 +1,11 @@
+import asyncio
 import random
 import time
 from dataclasses import dataclass
 
-from ..config import CD_BUFFER_SEC
-from ..runtime import console_log, register_game_command_sent_observer, send_audit_log, send_game_command
-from ..state import get_game_group_id, is_auto_delete_sent_messages_enabled, state
+from ..config import CD_BUFFER_SEC, CMD_TREE_GUARD, CMD_TREE_WATER
+from ..runtime import _fire_and_forget, console_log, register_game_command_sent_observer, send_audit_log, send_game_command
+from ..state import get_current_identity_id, get_game_group_id, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining
 
 
@@ -67,6 +68,12 @@ SUMMARY_DUE_PHASES = {"summary_due", "observing_summary", "waiting_summary"}
 # 日志验证显示深度闭关/元婴运行与结算期不会阻止大多数普通指令。
 SUMMARY_BLOCKING_PHASES = {"queued_launch"}
 _REGISTERED_SPECS = []
+_SUMMARY_CONSUMED_COMMANDS = {}
+
+SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD}
+SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
+SUMMARY_REPLAY_DELAY_MIN_SEC = 1
+SUMMARY_REPLAY_DELAY_MAX_SEC = 5
 
 
 def register_phaseful_spec(spec):
@@ -241,7 +248,121 @@ def mark_launch_command_sent(spec, sent_at):
     save_state()
 
 
-def observe_phaseful_identity_message(send_as_id, text, now=None, msg_id=0):
+def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
+    command = str(command or "").strip()
+    if not command:
+        return False
+    if int(reply_to or 0) > 0:
+        return False
+    summary_commands = {str(spec.summary_trigger_command or "").strip(), *tuple(spec.summary_passive_triggers or ())}
+    if command in summary_commands:
+        return False
+    return command in SUMMARY_REPLAYABLE_COMMANDS
+
+
+def _remember_summary_consumed_command(send_as_id, spec, command, now, msg_id=0, *, track=True, reply_to=0, priority=None, max_retry=None):
+    if not _is_replayable_summary_consumed_command(spec, command, reply_to=reply_to):
+        return
+    key = int(send_as_id or 0)
+    if key <= 0:
+        return
+    previous = _SUMMARY_CONSUMED_COMMANDS.get(key)
+    if previous and int(previous.get("msg_id", 0) or 0) == int(msg_id or 0):
+        specs = set(previous.get("specs") or ())
+        specs.add(spec.phase_key)
+        previous["specs"] = sorted(specs)
+        return
+    _SUMMARY_CONSUMED_COMMANDS[key] = {
+        "cmd": str(command or "").strip(),
+        "msg_id": int(msg_id or 0),
+        "sent_at": float(now or time.time()),
+        "track": bool(track),
+        "reply_to": int(reply_to or 0),
+        "priority": priority,
+        "max_retry": max_retry,
+        "specs": [spec.phase_key],
+    }
+
+
+def _has_other_summary_observation(spec=None):
+    for other in _REGISTERED_SPECS:
+        if spec is not None and other == spec:
+            continue
+        if not state.get(other.enabled_key):
+            continue
+        if _phase(other) in {"observing_summary", "waiting_summary"}:
+            return True
+    return False
+
+
+async def _replay_summary_consumed_command(send_as_id, payload):
+    await asyncio.sleep(random.uniform(SUMMARY_REPLAY_DELAY_MIN_SEC, SUMMARY_REPLAY_DELAY_MAX_SEC))
+    if not has_identity(send_as_id):
+        return
+
+    command = str((payload or {}).get("cmd") or "").strip()
+    msg_id = int((payload or {}).get("msg_id", 0) or 0)
+    sent_at = float((payload or {}).get("sent_at", 0) or 0)
+    if not command or time.time() - sent_at > SUMMARY_REPLAY_MAX_AGE_SEC:
+        return
+
+    track = bool((payload or {}).get("track", True))
+    max_retry = (payload or {}).get("max_retry")
+    priority = (payload or {}).get("priority") or "chain"
+
+    with use_identity(send_as_id):
+        if track and msg_id > 0 and msg_id not in state.get("pending_tasks", {}):
+            return
+        if msg_id > 0:
+            state.get("pending_tasks", {}).pop(msg_id, None)
+            save_state()
+
+    msg = await send_game_command(command, track=track, send_as_id=send_as_id, priority=priority, max_retry=max_retry)
+    if msg:
+        await send_audit_log(
+            f"↩️ 归位结算吃掉原指令，已补发一次：{command}",
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=180,
+        )
+
+
+async def _delayed_summary_consumed_command_replay_check(send_as_id, delay):
+    await asyncio.sleep(max(1.0, float(delay or 1)))
+    if not has_identity(send_as_id):
+        return
+    with use_identity(send_as_id):
+        if _has_other_summary_observation():
+            return
+    payload = _SUMMARY_CONSUMED_COMMANDS.pop(int(send_as_id or 0), None)
+    if payload:
+        await _replay_summary_consumed_command(send_as_id, payload)
+
+
+def _schedule_summary_consumed_command_replay(spec, now):
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return
+    payload = _SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
+    if not payload:
+        return
+    if _has_other_summary_observation(spec):
+        _fire_and_forget(
+            _delayed_summary_consumed_command_replay_check(
+                send_as_id,
+                _other_observing_remaining(spec, now) + 1,
+            )
+        )
+        return
+    sent_at = float((payload or {}).get("sent_at", 0) or 0)
+    if sent_at <= 0 or float(now or time.time()) - sent_at > SUMMARY_REPLAY_MAX_AGE_SEC:
+        _SUMMARY_CONSUMED_COMMANDS.pop(send_as_id, None)
+        return
+    _SUMMARY_CONSUMED_COMMANDS.pop(send_as_id, None)
+    _fire_and_forget(_replay_summary_consumed_command(send_as_id, payload))
+
+
+def observe_phaseful_identity_message(send_as_id, text, now=None, msg_id=0, *, track=True, reply_to=0, priority=None, max_retry=None):
     text = str(text or "").strip()
     if not text:
         return
@@ -252,8 +373,6 @@ def observe_phaseful_identity_message(send_as_id, text, now=None, msg_id=0):
         send_as_id = 0
     if send_as_id <= 0:
         return
-
-    from ..state import use_identity
 
     changed = False
     with use_identity(send_as_id):
@@ -273,6 +392,17 @@ def observe_phaseful_identity_message(send_as_id, text, now=None, msg_id=0):
             state[spec.summary_sent_at_key] = now
             state[spec.last_summary_msg_id_key] = 0
             state[spec.next_time_key] = now + spec.summary_observe_sec
+            _remember_summary_consumed_command(
+                send_as_id,
+                spec,
+                text,
+                now,
+                msg_id=msg_id,
+                track=track,
+                reply_to=reply_to,
+                priority=priority,
+                max_retry=max_retry,
+            )
             changed = True
     if changed:
         save_state()
@@ -388,6 +518,7 @@ async def finalize_summary_broadcast(spec, now):
     delay = max(float(spec.post_summary_wait_sec), _other_observing_remaining(spec, now))
     begin_post_summary_wait(spec, now, delay=delay)
     await update_block_log_state(spec, waiting=False, protect=False)
+    _schedule_summary_consumed_command_replay(spec, now)
     console_log(spec.summary_received_console)
 
 

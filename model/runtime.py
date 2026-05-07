@@ -42,7 +42,11 @@ from .config import (
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
     CMD_SECT_TEACH,
+    CMD_SMALL_WORLD_HARVEST,
+    CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
+    CMD_SMALL_WORLD_QUERY,
+    CMD_SMALL_WORLD_REFINE,
     CMD_TIANTI_CLIMB,
     CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
@@ -84,6 +88,13 @@ from .config import (
     mark_account_offline,
 )
 from .persistence import mark_dirty
+from .action_guard import (
+    before_send as action_guard_before_send,
+    get_next_allowed_at as action_guard_next_allowed_at,
+    is_guarded_command as action_guard_is_guarded_command,
+    note_sent as action_guard_note_sent,
+    should_log_block as action_guard_should_log_block,
+)
 from .state import (
     get_active_identity_id,
     get_current_identity_id,
@@ -135,12 +146,12 @@ SEND_PRIORITY_NORMAL = "normal"
 
 P0_COMMAND_PREFIXES = (".验证", CMD_TIANDAO_JUDGEMENT_PROVE, CMD_QUIZ_ANSWER)
 
-P0_SEND_GAP_MIN_SEC = 10.0
-P0_SEND_GAP_MAX_SEC = 20.0
-CHAIN_SEND_GAP_MIN_SEC = 10.0
-CHAIN_SEND_GAP_MAX_SEC = 25.0
-NORMAL_SEND_GAP_MIN_SEC = 10.0
-NORMAL_SEND_GAP_MAX_SEC = 30.0
+P0_SEND_GAP_MIN_SEC = 20.0
+P0_SEND_GAP_MAX_SEC = 30.0
+CHAIN_SEND_GAP_MIN_SEC = 20.0
+CHAIN_SEND_GAP_MAX_SEC = 35.0
+NORMAL_SEND_GAP_MIN_SEC = 20.0
+NORMAL_SEND_GAP_MAX_SEC = 40.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
@@ -158,9 +169,11 @@ def register_game_command_sent_observer(observer):
         _GAME_COMMAND_SENT_OBSERVERS.append(observer)
 
 
-def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id):
+def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **metadata):
     for observer in list(_GAME_COMMAND_SENT_OBSERVERS):
         try:
+            observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id, **metadata)
+        except TypeError:
             observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id)
         except Exception:
             traceback.print_exc()
@@ -362,14 +375,16 @@ def _build_send_not_before(priority):
 @asynccontextmanager
 async def _send_slot(priority):
     global _GAME_LAST_SEND_AT
-    min_gap, _max_gap = _get_send_gap_range(priority)
-    not_before = _build_send_not_before(priority)
+    min_gap, max_gap = _get_send_gap_range(priority)
+    slot_anchor = None
+    not_before = 0.0
     while True:
         await _GAME_SEND_LOCK.acquire()
         now_mono = time.monotonic()
+        if not_before <= 0 or slot_anchor != _GAME_LAST_SEND_AT:
+            slot_anchor = _GAME_LAST_SEND_AT
+            not_before = max(now_mono, _GAME_LAST_SEND_AT) + random.uniform(min_gap, max_gap)
         ready_at = not_before
-        if _GAME_LAST_SEND_AT > 0:
-            ready_at = max(ready_at, _GAME_LAST_SEND_AT + min_gap)
         wait = ready_at - now_mono
         if wait <= 0:
             try:
@@ -406,6 +421,10 @@ REPLY_FAMILY_COMMANDS = {
     "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
     "small_world_preach": {CMD_SMALL_WORLD_PREACH},
+    "small_world_query": {CMD_SMALL_WORLD_QUERY},
+    "small_world_manifest": {CMD_SMALL_WORLD_MANIFEST},
+    "small_world_harvest": {CMD_SMALL_WORLD_HARVEST},
+    "small_world_refine": {CMD_SMALL_WORLD_REFINE},
     "concubine_status": {CMD_CONCUBINE_STATUS},
     "concubine_dream": {CMD_CONCUBINE_DREAM},
     "concubine_fragment": {CMD_CONCUBINE_FRAGMENT},
@@ -1188,6 +1207,17 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
             return None
 
+        guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
+        if not guard_allowed:
+            if action_guard_should_log_block(command, send_as_id=send_as_id):
+                await send_audit_log(
+                    f"🧯 安全锁拦截：{_truncate_log_text(command, limit=32)}｜{guard_reason}",
+                    scope="identity",
+                    send_as_id=send_as_id,
+                    limit=260,
+                )
+            return None
+
         async with _send_slot(send_priority):
             _refresh_bot_health_timeout_before_send()
             if account_id and is_account_offline(account_id):
@@ -1212,6 +1242,16 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+                return None
+            guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
+            if not guard_allowed:
+                if action_guard_should_log_block(command, send_as_id=send_as_id):
+                    await send_audit_log(
+                        f"🧯 安全锁拦截：{_truncate_log_text(command, limit=32)}｜{guard_reason}",
+                        scope="identity",
+                        send_as_id=send_as_id,
+                        limit=260,
+                    )
                 return None
 
             if account_id:
@@ -1295,15 +1335,22 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=int(reply_to or 0))
             sent_at = time.time()
             msg = SimpleNamespace(id=msg_id, sent_at=sent_at)
+            action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
             with use_identity(send_as_id) as identity_state:
                 identity_state["my_msg_ids"][msg_id] = sent_at
                 if track:
+                    timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
+                    if action_guard_is_guarded_command(command):
+                        next_allowed_at = action_guard_next_allowed_at(command, send_as_id=send_as_id)
+                        if next_allowed_at > sent_at:
+                            timeout = max(1, int(next_allowed_at - sent_at) + 1)
                     pending_item = {
                         "cmd": command,
                         "sent_at": sent_at,
                         "retry": 0,
-                        "timeout": random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC),
+                        "timeout": timeout,
                         "reply_to_msg_id": int(reply_to or 0),
+                        "priority": send_priority,
                     }
                     if max_retry is not None:
                         pending_item["max_retry"] = max(0, int(max_retry))
@@ -1313,7 +1360,16 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             family = resolve_reply_family(command)
             if family:
                 track_reply_chain_message(msg_id, send_as_id, family, root_msg_id=msg_id)
-            _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id)
+            _notify_game_command_sent_observers(
+                command,
+                send_as_id,
+                sent_at,
+                msg_id,
+                track=track,
+                reply_to=int(reply_to or 0),
+                priority=send_priority,
+                max_retry=max_retry,
+            )
             return msg
     except Exception as e:
         if account_id and _is_account_session_error(e):
@@ -1431,14 +1487,24 @@ def _is_pending_consumed(identity_state, msg_id, family):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return True
-    if msg_id not in identity_state.get("pending_tasks", {}):
+    pending_tasks = identity_state.get("pending_tasks", {})
+    if msg_id not in pending_tasks:
         return True
     if family:
         family_commands = get_reply_family_commands(family)
-        if not any(
-            (str((pending or {}).get("cmd") or "").strip() in family_commands)
+        same_family_items = [
+            (pending_msg_id, pending)
+            for pending_msg_id, pending in pending_tasks.items()
+            if (str((pending or {}).get("cmd") or "").strip() in family_commands)
             or (resolve_reply_family((pending or {}).get("cmd")) == family)
-            for pending in identity_state.get("pending_tasks", {}).values()
+        ]
+        if not same_family_items:
+            return True
+        my_sent_at = float((pending_tasks.get(msg_id) or {}).get("sent_at", 0) or 0)
+        if any(
+            int(pending_msg_id or 0) != msg_id
+            and float((pending or {}).get("sent_at", 0) or 0) > my_sent_at + 60
+            for pending_msg_id, pending in same_family_items
         ):
             return True
     return False
@@ -1487,6 +1553,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                     continue
                 retry = int(current_item.get("retry", retry) or 0)
                 cmd = current_item.get("cmd") or cmd
+                saved_priority = current_item.get("priority") or None
 
                 if get_bot_last_seen_at() < float(send_time or 0):
                     changed = mark_bot_health_suspect(
@@ -1539,7 +1606,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                 scope="identity",
                 send_as_id=identity_id,
             )
-            new_msg = await send_game_command(cmd, send_as_id=identity_id)
+            new_msg = await send_game_command(cmd, send_as_id=identity_id, priority=saved_priority)
             if not has_identity(identity_id):
                 continue
             with use_identity(identity_id) as identity_state:

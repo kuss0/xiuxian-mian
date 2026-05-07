@@ -43,7 +43,7 @@ from ..config import (
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, mono, send_audit_log, send_game_command
 from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
 
 # 真实文本特征（来自历史日志样本扫描）：
@@ -618,7 +618,7 @@ async def run_second_soul_scheduler(now):
         state["second_soul_status_msg_id"] = 0
         state["second_soul_train_msg_id"] = 0
         save_state()
-        msg = await send_game_command(CMD_SECOND_SOUL_TRAIN, track=False)
+        msg = await send_game_command(CMD_SECOND_SOUL_TRAIN, track=False, priority="chain")
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
             _set_phase("ready_to_train")
@@ -644,7 +644,7 @@ async def run_second_soul_scheduler(now):
     state["second_soul_status_msg_id"] = 0
     state["second_soul_train_msg_id"] = 0
     save_state()
-    msg = await send_game_command(CMD_SECOND_SOUL_STATUS, track=False)
+    msg = await send_game_command(CMD_SECOND_SOUL_STATUS, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         # 发送失败：回退到 idle，下个 scheduler tick 重试

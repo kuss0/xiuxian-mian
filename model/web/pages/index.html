@@ -102,7 +102,7 @@
 </div>    <div class='stack-12'>      <label class='field-label'>选择账号<select id='identity-account-select' class='text-input'>
 <option value=''>请先登录账号</option>
 </select>
-</label>      <button type='button' class='btn btn-secondary hidden' id='fetch-send-as-btn'>获取可用身份列表</button>      <div id='send-as-peers-status' class='form-label form-label-inline hidden'>
+</label>      <button type='button' class='btn btn-secondary hidden' id='fetch-send-as-btn'>获取可用身份列表</button>      <button type='button' class='btn btn-secondary hidden' id='logout-account-btn'>退出账号</button>      <div id='send-as-peers-status' class='form-label form-label-inline hidden'>
 </div>      <div id='send-as-peers-list' class='peer-list hidden'>
 </div>      <div id='send-as-peers-actions' class='peer-actions hidden'>        <label class='checkbox-inline checkbox-inline-small'>
 <input type='checkbox' id='send-as-select-all' /> 全选</label>        <button type='button' class='btn' id='batch-add-identity-btn'>批量新增</button>      </div>      <details class='mt-4'>
@@ -134,7 +134,7 @@
 <h3 class='modal-title'>设置法宝名称</h3>
 <button class='icon-btn' type='button' data-close-modal='pet'>×</button>
 </div>    <form id='pet-name-form'>      <input type='hidden' name='send_as_id' />      <div id='pet-name-identity' class='form-label'>
-</div>      <input class='text-input' name='pet_name' placeholder='输入法宝名称' />      <div class='modal-actions'>
+</div>      <label class='field-label'>抚摸法宝名称<input class='text-input' name='pet_name' placeholder='输入抚摸法宝名称' /></label>      <label class='field-label'>器灵试炼法宝名称<input class='text-input' name='pet_trial_name' placeholder='输入器灵试炼法宝名称' /></label>      <div class='modal-actions'>
 <button class='btn btn-secondary' type='button' data-close-modal='pet'>取消</button>
 <button class='btn' type='submit'>保存</button>
 </div>    </form>  </div>
@@ -164,5 +164,6 @@
 </div>
 <script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
 <script src='/static/js/app.js'></script>
+<script src='/static/js/account_logout.js'></script>
 </body>
 </html>

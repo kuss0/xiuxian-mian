@@ -43,7 +43,15 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
-from .features.small_world import handle_small_world_disaster_broadcast, handle_small_world_preach_reply, run_small_world_scheduler
+from .features.small_world import (
+    handle_small_world_disaster_broadcast,
+    handle_small_world_harvest_reply,
+    handle_small_world_manifest_reply,
+    handle_small_world_preach_reply,
+    handle_small_world_query_reply,
+    handle_small_world_refine_reply,
+    run_small_world_scheduler,
+)
 from .features.stargazer import (
     handle_stargazer_collect_reply,
     handle_stargazer_guide_reply,
@@ -89,6 +97,7 @@ from .features.yuanying import (
     run_yuanying_scheduler,
 )
 from .persistence import flush_if_dirty, load_state, mark_dirty, save_state
+from .action_guard import close_by_family as close_action_guard_by_family
 from .runtime import (
     _fire_and_forget,
     check_bot_health_timeout,
@@ -166,6 +175,10 @@ BOT_REPLY_FAMILY_HINTS = {
     "yuanying": ("元婴", "出窍", "归窍", "法则碎片", "探寻"),
     "deep_retreat": ("深度闭关", "闭关", "神魂", "功成圆满", "总结"),
     "small_world_preach": ("小世界", "香火", "信仰", "神识", "神迹"),
+    "small_world_query": ("小世界", "香火", "祈愿", "显灵", "紫府"),
+    "small_world_manifest": ("显灵", "祈愿", "清灵丹", "灵石", "小世界"),
+    "small_world_harvest": ("收割香火", "香火", "库存", "小世界"),
+    "small_world_refine": ("神识淬炼", "香火", "神识", "小世界"),
     "concubine_status": ("侍妾", "道侣", "红尘", "情缘", "残图"),
     "concubine_dream": ("入梦寻图", "侍妾", "残图", "梦图感应"),
     "concubine_fragment": ("虚天残图", "残图", "残纹", "拼片"),
@@ -683,6 +696,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             root_msg_id = int(getattr(reply_to, "id", 0) or 0)
         if matched_family:
             track_reply_chain_message(event.id, routed_identity_id, matched_family, root_msg_id=root_msg_id)
+            close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply", now=now)
 
         handled_any = False
         await handle_tree_invasion_end(text, now, is_reply_to_me)
@@ -746,6 +760,10 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tree_exception_prompt(text) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_small_world_query_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_small_world_manifest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_small_world_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_small_world_refine_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any

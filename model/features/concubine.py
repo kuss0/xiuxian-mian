@@ -54,6 +54,7 @@ RE_TIANJI_COOLDOWN = re.compile(r"天机代卜冷却[：:]\s*([^\n]+)")
 RE_TIANJI_CHAIN = re.compile(r"天机代卜链[：:]\s*([^\n]+)")
 RE_TIANJI_CHAIN_REMAINING = re.compile(r"(?P<name>[^（(]+)[（(]\s*剩余\s*(?P<wait>[^）)]+)\s*[）)]")
 RE_TIANJI_GUA = re.compile(r"得卦【(?P<name>[^】]+)】")
+RE_TIANJI_XIUWEI_SHORTAGE = re.compile(r"修为不足[，,]\s*代卜天机需消耗\s*\d+\s*点?修为")
 RE_DREAM_PARTNER = re.compile(r"你与侍妾【(?P<name>[^】]+)】")
 RE_FRAGMENT_PROGRESS = re.compile(r"(?:虚天残图拼片|拼片进度|当前进度)\s*[：:]?\s*(\d+)\s*/\s*(\d+)")
 RE_DREAM_BROADCAST_PROGRESS = re.compile(r"残图进度已至\s*(\d+)\s*/\s*(\d+)")
@@ -264,6 +265,15 @@ def _is_partner_not_eligible_text(text):
 def _is_partner_manual_repair_text(text):
     raw_text = str(text or "")
     return "数据已损坏" in raw_text or "联系管理员" in raw_text or ".admin 补赐侍妾" in raw_text
+
+
+def _is_tianji_resource_shortage_text(text):
+    raw_text = str(text or "")
+    return bool(RE_TIANJI_XIUWEI_SHORTAGE.search(raw_text)) or (
+        "修为不足" in raw_text
+        and "代卜天机" in raw_text
+        and "消耗" in raw_text
+    )
 
 
 def _is_dream_cooldown_text(text):
@@ -1107,7 +1117,7 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
         save_state()
         return True
 
-    if "修为不足" in raw_text or "灵石不足" in raw_text or "资源不足" in raw_text:
+    if _is_tianji_resource_shortage_text(raw_text):
         await _apply_concubine_resource_backoff(
             now,
             CONCUBINE_TIANJI_RESOURCE_KEY,

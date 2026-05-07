@@ -104,10 +104,22 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianti_gangfeng_enabled INTEGER NOT NULL DEFAULT 1")
     if "small_world_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_enabled INTEGER NOT NULL DEFAULT 0")
+    if "small_world_preach_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_preach_enabled INTEGER NOT NULL DEFAULT 1")
+    if "small_world_manifest_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_manifest_enabled INTEGER NOT NULL DEFAULT 0")
+    if "small_world_harvest_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0")
+    if "small_world_refine_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refine_enabled INTEGER NOT NULL DEFAULT 0")
+    if "small_world_refresh_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN pet_name TEXT NOT NULL DEFAULT ''")
+    if "pet_trial_name" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN pet_trial_name TEXT NOT NULL DEFAULT ''")
     if "daohao" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN daohao TEXT NOT NULL DEFAULT ''")
     if "realm" not in identity_columns:
@@ -348,6 +360,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_options TEXT NOT NULL DEFAULT '{}' ")
     if "quiz_answer" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_answer TEXT NOT NULL DEFAULT ''")
+    if "quiz_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_phase TEXT NOT NULL DEFAULT ''")
     if "quiz_retry_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_retry_count INTEGER NOT NULL DEFAULT 0")
     if "quiz_match_mode" not in runtime_columns:
@@ -374,16 +388,40 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN nanlong_last_error TEXT NOT NULL DEFAULT ''")
     if "small_world_preach_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_preach_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_due_at REAL NOT NULL DEFAULT 0")
+    if "small_world_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "small_world_query_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_query_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_manifest_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_harvest_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_harvest_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_refine_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_refine_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_refresh_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_refresh_count INTEGER NOT NULL DEFAULT 0")
+    if "small_world_pending_incense" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_incense REAL NOT NULL DEFAULT 0")
+    if "small_world_incense_stock" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_incense_stock INTEGER NOT NULL DEFAULT 0")
     if "small_world_faith_value" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_faith_value INTEGER NOT NULL DEFAULT 0")
+    if "small_world_last_panel_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_panel_at REAL NOT NULL DEFAULT 0")
     if "small_world_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_error TEXT NOT NULL DEFAULT ''")
     if "resource_shortage_backoffs" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}' ")
+    if "action_guard_sessions" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN action_guard_sessions TEXT NOT NULL DEFAULT '{}' ")
 
     pending_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
     if "max_retry" not in pending_columns:
         conn.execute(f"ALTER TABLE pending_tasks ADD COLUMN max_retry INTEGER NOT NULL DEFAULT {int(RETRY_LIMIT)}")
+    if "priority" not in pending_columns:
+        conn.execute("ALTER TABLE pending_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT ''")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -483,6 +521,7 @@ def init_db():
             daohao TEXT NOT NULL DEFAULT '',
             realm TEXT NOT NULL DEFAULT '',
             pet_name TEXT NOT NULL DEFAULT '',
+            pet_trial_name TEXT NOT NULL DEFAULT '',
             sect_name TEXT NOT NULL DEFAULT '',
             sect_updated_at REAL NOT NULL DEFAULT 0,
             jiyin_choice TEXT NOT NULL DEFAULT '',
@@ -519,6 +558,11 @@ def init_db():
             concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_preach_enabled INTEGER NOT NULL DEFAULT 1,
+            small_world_manifest_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_refine_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -629,6 +673,7 @@ def init_db():
             quiz_question TEXT NOT NULL DEFAULT '',
             quiz_options TEXT NOT NULL DEFAULT '{}',
             quiz_answer TEXT NOT NULL DEFAULT '',
+            quiz_phase TEXT NOT NULL DEFAULT '',
             quiz_retry_count INTEGER NOT NULL DEFAULT 0,
             quiz_match_mode TEXT NOT NULL DEFAULT '',
             quiz_last_error TEXT NOT NULL DEFAULT '',
@@ -668,8 +713,20 @@ def init_db():
             nanlong_last_command TEXT NOT NULL DEFAULT '',
             nanlong_last_error TEXT NOT NULL DEFAULT '',
             small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_preach_due_at REAL NOT NULL DEFAULT 0,
+            small_world_phase TEXT NOT NULL DEFAULT 'idle',
+            small_world_query_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_harvest_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_refine_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_refresh_count INTEGER NOT NULL DEFAULT 0,
+            small_world_pending_incense REAL NOT NULL DEFAULT 0,
+            small_world_incense_stock INTEGER NOT NULL DEFAULT 0,
             small_world_faith_value INTEGER NOT NULL DEFAULT 0,
+            small_world_last_panel_at REAL NOT NULL DEFAULT 0,
             small_world_last_error TEXT NOT NULL DEFAULT '',
+            resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}',
+            action_guard_sessions TEXT NOT NULL DEFAULT '{}',
             yuanying_phase TEXT NOT NULL,
             yuanying_probe_pending INTEGER NOT NULL,
             yuanying_summary_sent_at REAL NOT NULL,
@@ -696,7 +753,8 @@ def init_db():
             retry INTEGER NOT NULL,
             timeout REAL NOT NULL,
             reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
-            max_retry INTEGER NOT NULL DEFAULT 3
+            max_retry INTEGER NOT NULL DEFAULT 3,
+            priority TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS message_index (
@@ -871,18 +929,19 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
+            send_as_id, username, label, daohao, realm, pet_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
             daohao=excluded.daohao,
             realm=excluded.realm,
             pet_name=excluded.pet_name,
+            pet_trial_name=excluded.pet_trial_name,
             sect_name=excluded.sect_name,
             sect_updated_at=excluded.sect_updated_at,
             jiyin_choice=excluded.jiyin_choice,
@@ -906,6 +965,7 @@ def upsert_identity_to_db(send_as_id):
             profile.get("daohao", "") or "",
             profile.get("realm", "") or "",
             profile.get("pet_name", "") or "",
+            profile.get("pet_trial_name", "") or "",
             profile.get("sect_name", "") or "",
             float(profile.get("sect_updated_at", 0) or 0),
             profile.get("jiyin_choice", "") or "",
@@ -961,7 +1021,7 @@ def upsert_identity_to_db(send_as_id):
     conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),))
     for msg_id, item in identity_state.get("pending_tasks", {}).items():
         conn.execute(
-            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, max_retry) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, max_retry, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(msg_id),
                 int(send_as_id),
@@ -971,6 +1031,7 @@ def upsert_identity_to_db(send_as_id):
                 float(item.get("timeout", 0) or 0),
                 int(item.get("reply_to_msg_id", 0) or 0),
                 int(item.get("max_retry", RETRY_LIMIT) if item.get("max_retry", RETRY_LIMIT) is not None else RETRY_LIMIT),
+                str(item.get("priority", "") or ""),
             ),
         )
 
@@ -987,7 +1048,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, pet_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, pet_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -998,6 +1059,7 @@ def _load_identity_from_db(send_as_id):
             daohao=row["daohao"],
             realm=row["realm"],
             pet_name=row["pet_name"],
+            pet_trial_name=row["pet_trial_name"],
             sect_name=row["sect_name"],
             sect_updated_at=row["sect_updated_at"],
             jiyin_choice=row["jiyin_choice"],
@@ -1038,6 +1100,7 @@ def _load_identity_from_db(send_as_id):
             "timeout": row["timeout"],
             "reply_to_msg_id": row["reply_to_msg_id"],
             "max_retry": row["max_retry"] if "max_retry" in row.keys() else RETRY_LIMIT,
+            "priority": row["priority"] if "priority" in row.keys() else "",
         }
         for row in pending_rows
     }
@@ -1323,7 +1386,7 @@ def load_state():
                 membership_initialized = bool(decoded)
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         rows = conn.execute(
-            "SELECT send_as_id, username, label, daohao, realm, pet_name, sect_name, sect_updated_at, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
+            "SELECT send_as_id, username, label, daohao, realm, pet_name, pet_trial_name, sect_name, sect_updated_at, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()
 
         _meta_state["identity_ids"] = []
