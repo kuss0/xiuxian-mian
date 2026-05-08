@@ -9,19 +9,23 @@
   overflow-y: auto;
 }
 
-.queue-card {
-  margin-top: 16px;
+.queue-button-active {
+  border-color: #f59e0b;
+  color: #fde68a;
 }
 
 .queue-list {
   display: grid;
   gap: 8px;
-  margin-top: 12px;
+}
+
+.queue-modal-card {
+  width: min(980px, 100%);
 }
 
 .queue-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) repeat(4, max-content);
+  grid-template-columns: 130px minmax(180px, 1fr) repeat(4, max-content);
   gap: 10px;
   align-items: center;
   background: #020617;
@@ -30,6 +34,12 @@
   padding: 8px 10px;
   color: #94a3b8;
   font-size: 12px;
+}
+
+.queue-identity {
+  color: #bfdbfe;
+  font-weight: 600;
+  word-break: break-word;
 }
 
 .queue-cmd {
