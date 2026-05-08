@@ -76,7 +76,7 @@ from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
-from .runtime import consume_unseen_startup_alerts, console_log, fetch_forum_topics, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -344,6 +344,14 @@ def get_ui_snapshot(session_token=None):
         "auth_idle_timeout_sec": UI_AUTH_IDLE_TIMEOUT_SEC,
         "refresh_interval_sec": UI_AUTO_REFRESH_SEC,
         "startup_alerts": startup_alerts,
+        "game_send_queue": [
+            {
+                **item,
+                "enqueued_at": fmt_abs_ts((item or {}).get("enqueued_at") or 0),
+                "not_before_at": fmt_abs_ts((item or {}).get("not_before_at") or 0),
+            }
+            for item in get_game_send_queue_snapshot()
+        ],
         "accounts": _get_runtime_accounts_snapshot(),
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),

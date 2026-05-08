@@ -157,6 +157,8 @@ NORMAL_SEND_GAP_MAX_SEC = 40.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
+_GAME_SEND_QUEUE_SEQ = 0
+_GAME_SEND_QUEUE_ITEMS = {}
 _GAME_COMMAND_SENT_OBSERVERS = []
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
 LOG_BOT_READ_TIMEOUT_SEC = 8
@@ -374,29 +376,68 @@ def _build_send_not_before(priority):
     return not_before
 
 
+def get_game_send_queue_snapshot():
+    now_wall = time.time()
+    now_mono = time.monotonic()
+    items = []
+    for token, item in sorted(
+        _GAME_SEND_QUEUE_ITEMS.items(),
+        key=lambda pair: (float((pair[1] or {}).get("enqueued_at", 0) or 0), int(pair[0] or 0)),
+    ):
+        not_before_mono = float((item or {}).get("not_before_mono", 0) or 0)
+        ready_in = max(0.0, not_before_mono - now_mono) if not_before_mono > 0 else 0.0
+        items.append({
+            "id": int(token or 0),
+            "cmd": str((item or {}).get("cmd") or ""),
+            "identity_id": int((item or {}).get("send_as_id") or 0),
+            "identity_name": get_send_as_label((item or {}).get("send_as_id") or 0),
+            "priority": str((item or {}).get("priority") or SEND_PRIORITY_NORMAL),
+            "status": str((item or {}).get("status") or "waiting"),
+            "enqueued_at": float((item or {}).get("enqueued_at") or 0),
+            "not_before_at": now_wall + ready_in if ready_in > 0 else 0,
+            "ready_in_sec": int(round(ready_in)),
+        })
+    return items
+
+
 @asynccontextmanager
-async def _send_slot(priority):
-    global _GAME_LAST_SEND_AT
+async def _send_slot(priority, command=None, send_as_id=None):
+    global _GAME_LAST_SEND_AT, _GAME_SEND_QUEUE_SEQ
     min_gap, max_gap = _get_send_gap_range(priority)
     slot_anchor = None
     not_before = 0.0
-    while True:
-        await _GAME_SEND_LOCK.acquire()
-        now_mono = time.monotonic()
-        if not_before <= 0 or slot_anchor != _GAME_LAST_SEND_AT:
-            slot_anchor = _GAME_LAST_SEND_AT
-            not_before = max(now_mono, _GAME_LAST_SEND_AT) + random.uniform(min_gap, max_gap)
-        ready_at = not_before
-        wait = ready_at - now_mono
-        if wait <= 0:
-            try:
-                yield
-            finally:
-                _GAME_LAST_SEND_AT = time.monotonic()
-                _GAME_SEND_LOCK.release()
-            return
-        _GAME_SEND_LOCK.release()
-        await asyncio.sleep(min(wait, 5.0))
+    _GAME_SEND_QUEUE_SEQ += 1
+    queue_token = _GAME_SEND_QUEUE_SEQ
+    _GAME_SEND_QUEUE_ITEMS[queue_token] = {
+        "cmd": command or "",
+        "send_as_id": int(send_as_id or 0),
+        "priority": priority or SEND_PRIORITY_NORMAL,
+        "status": "waiting",
+        "enqueued_at": time.time(),
+        "not_before_mono": 0.0,
+    }
+    try:
+        while True:
+            await _GAME_SEND_LOCK.acquire()
+            now_mono = time.monotonic()
+            if not_before <= 0 or slot_anchor != _GAME_LAST_SEND_AT:
+                slot_anchor = _GAME_LAST_SEND_AT
+                not_before = max(now_mono, _GAME_LAST_SEND_AT) + random.uniform(min_gap, max_gap)
+            ready_at = not_before
+            _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["not_before_mono"] = ready_at
+            wait = ready_at - now_mono
+            if wait <= 0:
+                _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "sending"
+                try:
+                    yield
+                finally:
+                    _GAME_LAST_SEND_AT = time.monotonic()
+                    _GAME_SEND_LOCK.release()
+                return
+            _GAME_SEND_LOCK.release()
+            await asyncio.sleep(min(wait, 5.0))
+    finally:
+        _GAME_SEND_QUEUE_ITEMS.pop(queue_token, None)
 _ui_login_tokens = {}
 _reply_chain_tracker = {}
 
@@ -1222,7 +1263,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 )
             return None
 
-        async with _send_slot(send_priority):
+        async with _send_slot(send_priority, command=command, send_as_id=send_as_id):
             _refresh_bot_health_timeout_before_send()
             if account_id and is_account_offline(account_id):
                 await _log_account_offline_blocked(
@@ -1689,6 +1730,7 @@ __all__ = [
     "gc_ui_sessions",
     "get_bot_health_snapshot",
     "get_bot_last_seen_at",
+    "get_game_send_queue_snapshot",
     "get_reply_context",
     "get_reply_family_commands",
     "is_account_session_error",
