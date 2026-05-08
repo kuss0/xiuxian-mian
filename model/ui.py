@@ -191,6 +191,21 @@ def get_identity_ui_snapshot(send_as_id):
             stargazer_next_action_time = min(stargazer_followup_due_at, stargazer_next_panel_time)
         else:
             stargazer_next_action_time = stargazer_followup_due_at or stargazer_next_panel_time
+        pending_tasks = []
+        for msg_id, item in sorted(
+            (identity_state.get("pending_tasks") or {}).items(),
+            key=lambda pair: float((pair[1] or {}).get("sent_at", 0) or 0),
+        ):
+            pending_tasks.append({
+                "msg_id": int(msg_id or 0),
+                "cmd": str((item or {}).get("cmd") or ""),
+                "retry": int((item or {}).get("retry", 0) or 0),
+                "max_retry": int((item or {}).get("max_retry", 0) or 0),
+                "priority": str((item or {}).get("priority") or ""),
+                "sent_at": fmt_abs_ts((item or {}).get("sent_at", 0) or 0),
+                "timeout_sec": int((item or {}).get("timeout", 0) or 0),
+                "reply_to_msg_id": int((item or {}).get("reply_to_msg_id", 0) or 0),
+            })
         jiyin_deadline_at = float(identity_state.get("next_jiyin_time", 0) or 0)
         nanlong_deadline_at = float(identity_state.get("next_nanlong_time", 0) or 0)
         nanlong_reply_due_at = float(identity_state.get("nanlong_reply_due_at", 0) or 0)
@@ -288,7 +303,8 @@ def get_identity_ui_snapshot(send_as_id):
             "taiyi_yindao_element": identity_state.get("taiyi_yindao_element", "水"),
             "taiyi_yindao_choices": sorted(TAIYI_VALID_ELEMENTS, key=lambda e: ["金","木","水","火","土"].index(e)),
             "taiyi_node_search_enabled": bool(identity_state.get("taiyi_node_search_enabled", False)),
-            "pending_task_count": len(identity_state.get("pending_tasks", {})),
+            "pending_tasks": pending_tasks,
+            "pending_task_count": len(pending_tasks),
             "message_count": len(identity_state.get("my_msg_ids", {})),
         }
     return snapshot

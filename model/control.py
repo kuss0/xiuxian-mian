@@ -1050,6 +1050,49 @@ def get_module_status_text(send_as_id=None):
     return "📋 模块状态总览\n\n" + "\n\n".join(blocks)
 
 
+def split_long_text(text, limit=3200):
+    raw = str(text or "")
+    if len(raw) <= limit:
+        return [raw]
+    chunks = []
+    current = ""
+    for block in raw.split("\n\n"):
+        candidate = block if not current else f"{current}\n\n{block}"
+        if len(candidate) <= limit:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        while len(block) > limit:
+            cut = block.rfind("\n", 0, limit)
+            if cut <= 0:
+                cut = limit
+            chunks.append(block[:cut])
+            block = block[cut:].lstrip("\n")
+        current = block
+    if current:
+        chunks.append(current)
+    return chunks or [raw[:limit]]
+
+
+async def reply_long_log_group_message(event, text, *, error_prefix="❌ 日志群回复失败", scope="global", limit=3200):
+    chunks = split_long_text(text, limit=limit)
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        suffix = f"\n\n({index}/{total})" if total > 1 else ""
+        ok = await reply_log_group_message(
+            event,
+            f"{chunk}{suffix}",
+            error_prefix=error_prefix,
+            scope=scope,
+            limit=limit + 32,
+        )
+        if not ok:
+            return False
+    return True
+
+
 def get_single_module_status_text(module_name, send_as_id=None):
     status_map = {
         "灵树": get_tree_status_text,
@@ -2640,12 +2683,11 @@ async def handle_log_group_command(event):
                 await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
         prefix = "✅ 已开启全部模块"
-        await reply_log_group_message(
+        await reply_long_log_group_message(
             event,
             f"{prefix}\n{get_module_status_text(explicit_identity_id)}",
             error_prefix="❌ 模块状态回复失败",
             scope="global",
-            limit=1200,
         )
         return True
 
@@ -2656,12 +2698,11 @@ async def handle_log_group_command(event):
                 await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
                 return True
         prefix = "✅ 已关闭全部模块"
-        await reply_log_group_message(
+        await reply_long_log_group_message(
             event,
             f"{prefix}\n{get_module_status_text(explicit_identity_id)}",
             error_prefix="❌ 模块状态回复失败",
             scope="global",
-            limit=1200,
         )
         return True
 
@@ -2679,12 +2720,11 @@ async def handle_log_group_command(event):
             action_text = "开启" if enabled else "关闭"
             status_text = get_module_status_text(explicit_identity_id)
             prefix = f"✅ 已{action_text}{module_name}模块"
-            await reply_log_group_message(
+            await reply_long_log_group_message(
                 event,
                 f"{prefix}\n{status_text}",
                 error_prefix="❌ 模块状态回复失败",
                 scope="global",
-                limit=1200,
             )
             return True
 
@@ -2705,23 +2745,21 @@ async def handle_log_group_command(event):
         return True
 
     if RE_CMD_STATUS.match(text):
-        await reply_log_group_message(
+        await reply_long_log_group_message(
             event,
             get_module_status_text(explicit_identity_id),
             error_prefix="❌ 模块状态发送失败",
             scope="global",
-            limit=1200,
         )
         return True
 
     for pattern, module_name in RE_CMD_SINGLE_STATUS_PATTERNS:
         if pattern.match(text):
-            await reply_log_group_message(
+            await reply_long_log_group_message(
                 event,
                 get_single_module_status_text(module_name, explicit_identity_id),
                 error_prefix=f"❌ {module_name}状态发送失败",
                 scope="global",
-                limit=1200,
             )
             return True
 
