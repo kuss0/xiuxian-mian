@@ -217,7 +217,8 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
 
     if "并未处于深度闭关" in text or "未处于深度闭关" in text:
         phase = state.get("deep_retreat_phase", "idle")
-        if phase in ("summary_due", "observing_summary", "waiting_summary", "running"):
+        is_due = float(state.get("next_deep_retreat_time", 0) or 0) <= now
+        if phase in ("summary_due", "observing_summary", "waiting_summary", "running") or (phase == "idle" and is_due):
             await delete_deep_retreat_summary_trigger_msg()
             delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC)
             begin_deep_retreat_post_summary_wait(now, delay=delay)
