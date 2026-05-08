@@ -1,3 +1,4 @@
+import asyncio
 import random
 import re
 import time
@@ -16,8 +17,8 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import get_tianti_rank_choice, state
+from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
+from ..state import get_current_identity_id, get_tianti_rank_choice, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, get_day_key, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 
@@ -101,6 +102,40 @@ def _has_pending_tianti_command(command):
         if pending_command == command or pending_command.startswith(f"{command} "):
             return True
     return False
+
+
+async def _send_due_tianti_climb_after_status(send_as_id, delay=None):
+    if delay is None:
+        delay = random.uniform(2, 5)
+    await asyncio.sleep(delay)
+    now = time.time()
+    with use_identity(send_as_id):
+        if not state.get("tianti_enabled"):
+            return
+        next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+        if next_climb_time <= 0 or now < next_climb_time:
+            return
+        if _has_pending_tianti_command(CMD_TIANTI_CLIMB):
+            return
+        should_trigger_wenxin, _wenxin_state = _should_trigger_tianti_wenxin(now)
+        should_trigger_gangfeng, _gangfeng_state = _should_trigger_tianti_gangfeng(now)
+        if should_trigger_wenxin or should_trigger_gangfeng:
+            return
+        console_log("☁️ 天阶状态显示可登，接续排队登天阶。")
+
+    msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=1, send_as_id=send_as_id, priority="chain")
+    with use_identity(send_as_id):
+        if not msg:
+            _set_tianti_next_climb_time(time.time() + RETRY_MAX_SEC, persist=True)
+            state["tianti_last_error"] = "登天阶接续发送失败"
+            await send_audit_log("❌ 登天阶接续发送失败，稍后重试。", scope="identity", send_as_id=send_as_id)
+            return
+        state["tianti_last_climb_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        _schedule_tianti_climb_retry(sent_at, persist=True)
+        _calc_tianti_wenxin_plan(sent_at)
+        _log_tianti_plan("状态接续登阶后")
+        console_log(f"☁️ 执行登天阶→{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}")
 
 
 def _reset_tianti_wenxin_daily_state(now):
@@ -496,6 +531,15 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
                         _set_tianti_next_climb_time(now, persist=False)
             _calc_tianti_wenxin_plan(now)
             _log_tianti_plan("天阶状态同步后")
+            if (
+                cooldown
+                and not has_wait_time(cooldown)
+                and float(state.get("next_tianti_climb_time", 0) or 0) <= now
+                and not _has_pending_tianti_command(CMD_TIANTI_CLIMB)
+            ):
+                send_as_id = int(get_current_identity_id() or 0)
+                if send_as_id > 0:
+                    _fire_and_forget(_send_due_tianti_climb_after_status(send_as_id))
             if cooldown and has_wait_time(cooldown):
                 await send_audit_log(f"⏳ 天阶 CD→{state.get('tianti_cooldown_text')}")
             handled = True
