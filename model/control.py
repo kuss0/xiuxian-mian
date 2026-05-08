@@ -180,6 +180,10 @@ _IMMEDIATE_ENABLE_RETRY_DELAY_SEC = 1
 RECOVERY_SPREAD_MIN_SEC = 60
 RECOVERY_SPREAD_MAX_SEC = 1200
 RECOVERY_SPREAD_DUE_GRACE_SEC = 2
+RECOVERY_READY_MIN_SEC = 30
+RECOVERY_READY_MAX_SEC = 90
+RECOVERY_PHASEFUL_IDLE_MIN_SEC = 60
+RECOVERY_PHASEFUL_IDLE_MAX_SEC = 180
 RECOVERY_SPREAD_TIMER_KEYS = (
     "next_irr_time",
     "next_guard_time",
@@ -207,6 +211,40 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_second_soul_time",
     "next_taiyi_cycle_time",
 )
+
+
+def _is_tianti_ready_to_climb_snapshot():
+    cooldown_text = str(state.get("tianti_cooldown_text") or "").strip()
+    return bool(state.get("tianti_enabled") and cooldown_text and "可立即" in cooldown_text)
+
+
+def _spread_recovery_timer_value(timer_key, now, due_cutoff):
+    if timer_key == "next_tianti_climb_time" and _is_tianti_ready_to_climb_snapshot():
+        status_time = float(state.get("next_tianti_status_time", 0) or 0)
+        if 0 < status_time <= now + RECOVERY_SPREAD_MAX_SEC:
+            state["next_tianti_status_time"] = 0
+        return now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+
+    if timer_key == "next_deep_retreat_time" and state.get("deep_retreat_enabled"):
+        phase = str(state.get("deep_retreat_phase") or "idle")
+        if phase == "post_summary_wait":
+            return now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+        if phase == "idle":
+            return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
+
+    return now + random.uniform(RECOVERY_SPREAD_MIN_SEC, RECOVERY_SPREAD_MAX_SEC)
+
+
+def _restore_tianti_ready_runtime(now):
+    if not _is_tianti_ready_to_climb_snapshot():
+        return
+    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+    if next_climb_time <= 0 or next_climb_time > now + RECOVERY_SPREAD_MAX_SEC:
+        return
+    state["next_tianti_climb_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+    status_time = float(state.get("next_tianti_status_time", 0) or 0)
+    if 0 < status_time <= now + RECOVERY_SPREAD_MAX_SEC:
+        state["next_tianti_status_time"] = 0
 
 
 def _is_within_module_window(module_name, now):
@@ -275,13 +313,13 @@ def spread_overdue_runtime_timers(now=None, *, reason="recovery"):
                 except (TypeError, ValueError):
                     continue
                 if 0 < timer_value <= due_cutoff:
-                    state[timer_key] = now + random.uniform(RECOVERY_SPREAD_MIN_SEC, RECOVERY_SPREAD_MAX_SEC)
+                    state[timer_key] = _spread_recovery_timer_value(timer_key, now, due_cutoff)
                     changed_count += 1
                     affected_identity_ids.add(int(identity_id))
     if changed_count > 0:
         mark_dirty()
         console_log(
-            f"🧯 {reason} 错峰：{len(affected_identity_ids)} 个身份 / {changed_count} 个到期计时器已摊到 1-20 分钟内",
+            f"🧯 {reason} 错峰：{len(affected_identity_ids)} 个身份 / {changed_count} 个到期计时器已按恢复策略摊开",
             scope="global",
             limit=220,
         )
@@ -1332,6 +1370,13 @@ def _restore_phaseful_runtime(module_name, now):
     if phase in ("launching", "queued_launch") and float(state.get(last_command_time_key, 0) or 0) <= 0:
         enable_handler(True, now)
         return
+    next_time = float(state.get(next_time_key, 0) or 0)
+    if module_name == "深度闭关" and phase == "post_summary_wait" and 0 < next_time <= now + RECOVERY_SPREAD_MAX_SEC:
+        state[next_time_key] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+        return
+    if module_name == "深度闭关" and phase == "idle" and 0 < next_time <= now + RECOVERY_SPREAD_MAX_SEC:
+        state[next_time_key] = now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
+        return
     if phase == "idle" and float(state.get(next_time_key, 0) or 0) <= now:
         enable_handler(True, now)
 
@@ -1379,6 +1424,7 @@ def initialize_identity_runtime(send_as_id, now=None):
             next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
             if not has_status_snapshot or (next_climb_time > 0 and now >= next_climb_time):
                 state["next_tianti_status_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+            _restore_tianti_ready_runtime(now)
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
         if state["tower_enabled"]:
