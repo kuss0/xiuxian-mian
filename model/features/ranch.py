@@ -8,8 +8,8 @@ from ..state import state
 from ..timing import fmt_abs_ts, fmt_remaining
 
 
-RANCH_CYCLE_MIN_SEC = int(8.5 * 3600)
-RANCH_CYCLE_MAX_SEC = 9 * 3600
+RANCH_CYCLE_MIN_SEC = 4 * 3600 + 10 * 60
+RANCH_CYCLE_MAX_SEC = 4 * 3600 + 30 * 60
 RANCH_REPLY_TIMEOUT_SEC = 10 * 60
 RANCH_RETRY_MIN_SEC = 2 * 60
 RANCH_RETRY_MAX_SEC = 3 * 60
