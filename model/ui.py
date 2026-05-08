@@ -73,6 +73,7 @@ from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normaliz
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.stargazer import sync_stargazer_total_slots
 from .features.tianti import sync_tianti_status
+from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yuanying import get_yuanying_phase_text
 from .persistence import save_state
 from .runtime import consume_unseen_startup_alerts, console_log, fetch_forum_topics, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
@@ -106,6 +107,7 @@ from .state import (
     get_stargazer_star_choice,
     get_stargazer_total_slots,
     get_tianti_rank_choice,
+    get_wild_training_strategy,
     set_account,
     set_accounts,
     set_auto_delete_sent_messages,
@@ -229,6 +231,8 @@ def get_identity_ui_snapshot(send_as_id):
             "stargazer_total_slots": get_stargazer_total_slots(send_as_id),
             "tianti_rank_choice": get_tianti_rank_choice(send_as_id),
             "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
+            "wild_training_strategy": get_wild_training_strategy(send_as_id),
+            "wild_training_strategy_choices": ["谨慎", "均衡", "深入"],
             "tianti_cycle_count": int(identity_state.get("tianti_cycle_count", 0) or 0),
             "tianti_wenxin_enabled": bool(identity_state.get("tianti_wenxin_enabled", True)),
             "tianti_gangfeng_enabled": bool(identity_state.get("tianti_gangfeng_enabled", True)),
@@ -606,6 +610,21 @@ async def ui_set_tianti_rank_choice(send_as_id, choice):
         send_as_id=send_as_id,
     )
     return True, f"已更新登天阶档位[{get_identity_display_name(send_as_id)}]：{choice}"
+
+
+async def ui_set_wild_training_strategy(send_as_id, choice):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    with use_identity(send_as_id):
+        ok, message = await apply_wild_training_strategy(normalize_wild_training_strategy(choice))
+    if ok:
+        await send_audit_log(
+            f"🏞️ 已更新野外历练策略：{normalize_wild_training_strategy(choice)}",
+            scope="identity",
+            send_as_id=send_as_id,
+        )
+    return ok, f"{message}[{get_identity_display_name(send_as_id)}]" if ok else message
 
 
 async def ui_sync_stargazer_total_slots(send_as_id):
@@ -1847,6 +1866,19 @@ async def handle_ui_http(reader, writer):
                         _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
                     else:
                         ok, message = await ui_set_tianti_rank_choice(send_as_id, choice)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/wild-training-strategy":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    choice = payload.get("choice")
+                    if send_as_id in {None, ""} or not choice:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_wild_training_strategy(send_as_id, choice)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-sync":
                 if session is None:

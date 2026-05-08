@@ -37,6 +37,7 @@ from .features.concubine import (
     run_concubine_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, handle_pet_trial_reply, run_pet_scheduler
+from .features.ranch import handle_ranch_reply, run_ranch_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
@@ -96,6 +97,7 @@ from .features.yuanying import (
     handle_yuanying_summary_broadcast,
     run_yuanying_scheduler,
 )
+from .features.wild_training import handle_wild_training_reply, run_wild_training_scheduler
 from .persistence import flush_if_dirty, load_state, mark_dirty, save_state
 from .action_guard import close_by_family as close_action_guard_by_family
 from .runtime import (
@@ -584,6 +586,8 @@ async def _run_identity_schedulers(now):
         run_tree_bootstrap_check,
         run_tree_scheduler,
         run_pet_scheduler,
+        run_ranch_scheduler,
+        run_wild_training_scheduler,
         run_stargazer_scheduler,
         run_tianti_scheduler,
         run_quiz_scheduler,
@@ -728,6 +732,8 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_ranch_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tower_reply(text, now, reply_to, matched_family=matched_family) or handled_any

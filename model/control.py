@@ -29,6 +29,7 @@ from .config import (
     CMD_PET,
     CMD_PET_TRIAL,
     CMD_QUIZ_ANSWER,
+    CMD_RANCH,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
     CMD_SECOND_SOUL_STATUS,
@@ -52,6 +53,7 @@ from .config import (
     CMD_TREE_HARVEST,
     CMD_TREE_STATUS,
     CMD_TREE_WATER,
+    CMD_WILD_TRAINING,
     CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
@@ -95,7 +97,8 @@ from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
-from .features.small_world import clear_small_world_state, get_small_world_status_text
+from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
+from .features.small_world import clear_small_world_state, get_small_world_status_text, schedule_small_world_initial_check
 from .features.stargazer import get_stargazer_status_text
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
@@ -103,6 +106,7 @@ from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import get_taiyi_status_text
 from .features.yuanying import get_yuanying_status_detail_text
+from .features.wild_training import clear_wild_training_state, get_wild_training_status_text, schedule_wild_training_initial_check
 from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
@@ -181,6 +185,8 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_guard_time",
     "next_pet_time",
     "next_pet_trial_time",
+    "next_ranch_time",
+    "next_wild_training_time",
     "next_stargazer_panel_time",
     "stargazer_collect_due_at",
     "stargazer_followup_due_at",
@@ -298,6 +304,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
     if module_name == "登天阶":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "太一":
+        return f"当前宗门未提供{module_name}模块"
+    if module_name == "放养":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -531,6 +539,32 @@ def _manual_enable_pet_trial_module_state(now):
     _schedule_module_immediate_retry("器灵试炼", now)
 
 
+def _manual_disable_ranch_module_state():
+    state["ranch_enabled"] = False
+    clear_ranch_state(persist=False, keep_last_error=True)
+    _clear_pending_tasks_by_commands({CMD_RANCH})
+
+
+def _manual_enable_ranch_module_state(now):
+    state["ranch_enabled"] = True
+    if float(state.get("next_ranch_time", 0) or 0) > now:
+        return
+    schedule_ranch_initial_check(now, persist=False, keep_last_error=True)
+
+
+def _manual_disable_wild_training_module_state():
+    state["wild_training_enabled"] = False
+    clear_wild_training_state(persist=False, keep_last_error=True)
+    _clear_pending_tasks_by_commands({CMD_WILD_TRAINING})
+
+
+def _manual_enable_wild_training_module_state(now):
+    state["wild_training_enabled"] = True
+    if float(state.get("next_wild_training_time", 0) or 0) > now:
+        return
+    schedule_wild_training_initial_check(now, persist=False, keep_last_error=True)
+
+
 def _disable_quiz_module_state():
     state["quiz_enabled"] = False
     clear_quiz_state(persist=False)
@@ -699,14 +733,25 @@ def _disable_small_world_module_state():
 
 def _manual_disable_small_world_module_state():
     state["small_world_enabled"] = False
+    clear_small_world_state(persist=False, keep_last_error=True)
     _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
 
 
 def _manual_enable_small_world_module_state(now):
     state["small_world_enabled"] = True
-    if float(state.get("next_small_world_time", 0) or 0) > now:
+    has_runtime = str(state.get("small_world_phase") or "idle") != "idle" or any(
+        int(state.get(key, 0) or 0) > 0
+        for key in (
+            "small_world_preach_reply_to_msg_id",
+            "small_world_query_msg_id",
+            "small_world_manifest_msg_id",
+            "small_world_harvest_msg_id",
+            "small_world_refine_msg_id",
+        )
+    )
+    if not has_runtime and float(state.get("next_small_world_time", 0) or 0) > now:
         return
-    clear_small_world_state(persist=False)
+    schedule_small_world_initial_check(now, persist=False, keep_last_error=True)
 
 
 def _manual_disable_yuanying_module_state():
@@ -850,6 +895,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_SMALL_WORLD_HARVEST: "小世界",
     CMD_SMALL_WORLD_REFINE: "小世界",
     CMD_SMALL_WORLD_PREACH: "小世界",
+    CMD_RANCH: "放养",
+    CMD_WILD_TRAINING: "野外历练",
     CMD_CHECKIN: "点卯",
     CMD_SECT_TEACH: "点卯",
     CMD_TOWER: "闯塔",
@@ -868,6 +915,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
     "器灵试炼": (_manual_enable_pet_trial_module_state, _manual_disable_pet_trial_module_state),
+    "放养": (_manual_enable_ranch_module_state, _manual_disable_ranch_module_state),
+    "野外历练": (_manual_enable_wild_training_module_state, _manual_disable_wild_training_module_state),
     "观星台": (_manual_enable_stargazer_module_state, _manual_disable_stargazer_module_state),
     "观星": (_manual_enable_guanxing_module_state, _manual_disable_guanxing_module_state),
     "观星监控": (_manual_enable_guanxing_monitor_module_state, _manual_disable_guanxing_monitor_module_state),
@@ -889,6 +938,8 @@ MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
     "器灵试炼": _manual_disable_pet_trial_module_state,
+    "放养": _manual_disable_ranch_module_state,
+    "野外历练": _manual_disable_wild_training_module_state,
     "观星台": _disable_stargazer_module_state,
     "观星": _disable_guanxing_module_state,
     "观星监控": _disable_guanxing_monitor_module_state,
@@ -1004,6 +1055,8 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
         "器灵试炼": get_pet_status_text,
+        "放养": get_ranch_status_text,
+        "野外历练": get_wild_training_status_text,
         "观星台": get_stargazer_status_text,
         "观星": get_guanxing_status_text,
         "观星监控": get_guanxing_monitor_status_text,
@@ -1254,6 +1307,10 @@ def initialize_identity_runtime(send_as_id, now=None):
             _schedule_module_immediate_retry("法宝", now)
         if state.get("pet_trial_enabled") and state.get("next_pet_trial_time", 0) <= 0:
             _schedule_module_immediate_retry("器灵试炼", now)
+        if state.get("ranch_enabled") and state.get("next_ranch_time", 0) <= 0:
+            schedule_ranch_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("wild_training_enabled") and state.get("next_wild_training_time", 0) <= 0:
+            schedule_wild_training_initial_check(now, persist=False, keep_last_error=True)
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:
@@ -1293,6 +1350,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_taiyi_runtime(now)
         if state["concubine_enabled"] or state.get("concubine_tianji_enabled"):
             restore_concubine_runtime(now)
+        if state.get("small_world_enabled") and float(state.get("next_small_world_time", 0) or 0) <= 0:
+            schedule_small_world_initial_check(now, persist=False, keep_last_error=True)
 
 
 def _get_startup_module_alerts_bucket():

@@ -82,6 +82,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
     if "pet_trial_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_trial_enabled INTEGER NOT NULL DEFAULT 0")
+    if "ranch_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN ranch_enabled INTEGER NOT NULL DEFAULT 0")
+    if "wild_training_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN wild_training_enabled INTEGER NOT NULL DEFAULT 0")
     if "concubine_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_enabled INTEGER NOT NULL DEFAULT 0")
     if "concubine_tianji_enabled" not in module_columns:
@@ -160,6 +164,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_jiyin_time REAL NOT NULL DEFAULT 0")
     if "next_pet_trial_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_trial_time REAL NOT NULL DEFAULT 0")
+    if "next_ranch_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_ranch_time REAL NOT NULL DEFAULT 0")
+    if "next_wild_training_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wild_training_time REAL NOT NULL DEFAULT 0")
     if "next_concubine_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_concubine_time REAL NOT NULL DEFAULT 0")
     if "next_nanlong_time" not in timer_columns:
@@ -248,6 +256,32 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_trial_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_trial_last_error TEXT NOT NULL DEFAULT ''")
+    if "ranch_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "ranch_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "ranch_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "ranch_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "ranch_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_result TEXT NOT NULL DEFAULT ''")
+    if "ranch_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_error TEXT NOT NULL DEFAULT ''")
+    if "wild_training_strategy" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_strategy TEXT NOT NULL DEFAULT '深入'")
+    if "wild_training_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "wild_training_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "wild_training_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "wild_training_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "wild_training_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result TEXT NOT NULL DEFAULT ''")
+    if "wild_training_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_last_panel_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
     if "stargazer_last_action" not in runtime_columns:
@@ -545,6 +579,8 @@ def init_db():
             tree_enabled INTEGER NOT NULL,
             pet_enabled INTEGER NOT NULL,
             pet_trial_enabled INTEGER NOT NULL DEFAULT 0,
+            ranch_enabled INTEGER NOT NULL DEFAULT 0,
+            wild_training_enabled INTEGER NOT NULL DEFAULT 0,
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_enabled INTEGER NOT NULL DEFAULT 0,
@@ -585,6 +621,8 @@ def init_db():
             next_guard_time REAL NOT NULL,
             next_pet_time REAL NOT NULL,
             next_pet_trial_time REAL NOT NULL DEFAULT 0,
+            next_ranch_time REAL NOT NULL DEFAULT 0,
+            next_wild_training_time REAL NOT NULL DEFAULT 0,
             next_stargazer_panel_time REAL NOT NULL DEFAULT 0,
             stargazer_collect_due_at REAL NOT NULL DEFAULT 0,
             next_guanxing_monitor_notify_time REAL NOT NULL DEFAULT 0,
@@ -618,6 +656,19 @@ def init_db():
             last_tower_msg_id INTEGER NOT NULL,
             pet_last_error TEXT NOT NULL DEFAULT '',
             pet_trial_last_error TEXT NOT NULL DEFAULT '',
+            ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            ranch_reply_due_at REAL NOT NULL DEFAULT 0,
+            ranch_retry_count INTEGER NOT NULL DEFAULT 0,
+            ranch_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            ranch_last_result TEXT NOT NULL DEFAULT '',
+            ranch_last_error TEXT NOT NULL DEFAULT '',
+            wild_training_strategy TEXT NOT NULL DEFAULT '深入',
+            wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+            wild_training_retry_count INTEGER NOT NULL DEFAULT 0,
+            wild_training_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            wild_training_last_result TEXT NOT NULL DEFAULT '',
+            wild_training_last_error TEXT NOT NULL DEFAULT '',
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             stargazer_last_action TEXT NOT NULL DEFAULT '',
             stargazer_idle_slot_count INTEGER NOT NULL DEFAULT 0,

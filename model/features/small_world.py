@@ -33,6 +33,10 @@ SMALL_WORLD_CYCLE_CD_SEC = 8 * 3600
 SMALL_WORLD_LONG_PAUSE_SEC = 8 * 3600
 SMALL_WORLD_JITTER_MIN_SEC = 60
 SMALL_WORLD_JITTER_MAX_SEC = 20 * 60
+SMALL_WORLD_INITIAL_CHECK_MIN_SEC = 10 * 60
+SMALL_WORLD_INITIAL_CHECK_MAX_SEC = 30 * 60
+SMALL_WORLD_TOOL_STEP_MIN_SEC = 120
+SMALL_WORLD_TOOL_STEP_MAX_SEC = 240
 SMALL_WORLD_MIN_HARVEST_INCENSE = 1.0
 
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
@@ -99,7 +103,7 @@ def _clear_chain_pending():
     state["small_world_manifest_msg_id"] = 0
     state["small_world_harvest_msg_id"] = 0
     state["small_world_refine_msg_id"] = 0
-    if _phase() in SMALL_WORLD_CHAIN_PENDING:
+    if _phase() in SMALL_WORLD_CHAIN_PENDING or _phase() in {"harvest_sent", "refine_sent"}:
         _set_phase("idle")
 
 
@@ -120,6 +124,14 @@ def _schedule_next_cycle(now):
 
 def _schedule_short_retry(now):
     return _schedule_after(now, 10 * 60, 30 * 60)
+
+
+def _schedule_initial_check(now):
+    return _schedule_after(now, SMALL_WORLD_INITIAL_CHECK_MIN_SEC, SMALL_WORLD_INITIAL_CHECK_MAX_SEC)
+
+
+def _schedule_tool_step(now):
+    return _schedule_after(now, SMALL_WORLD_TOOL_STEP_MIN_SEC, SMALL_WORLD_TOOL_STEP_MAX_SEC)
 
 
 def _schedule_panel_wait(now, wait_sec):
@@ -156,6 +168,24 @@ def _find_small_world_identity_id(text):
     if len(matched_ids) == 1:
         return matched_ids[0]
     return None
+
+
+def _reply_to_message_id(reply_to):
+    try:
+        return int(getattr(reply_to, "id", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_reply_to_tracked_message(reply_to, state_key):
+    expected_msg_id = int(state.get(state_key, 0) or 0)
+    return expected_msg_id > 0 and _reply_to_message_id(reply_to) == expected_msg_id
+
+
+def _is_current_query_reply(reply_to, matched_family):
+    if _is_reply_to_tracked_message(reply_to, "small_world_query_msg_id"):
+        return True
+    return matched_family == "small_world_query" and _phase() == "query_pending"
 
 
 def _get_preach_deadline():
@@ -328,7 +358,7 @@ async def _send_manifest(now):
 
 
 async def _send_harvest(now):
-    msg = await send_game_command(CMD_SMALL_WORLD_HARVEST, track=True, max_retry=1, priority="chain")
+    msg = await send_game_command(CMD_SMALL_WORLD_HARVEST, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["small_world_last_error"] = "发送 .收割香火 失败"
@@ -338,9 +368,12 @@ async def _send_harvest(now):
         await send_audit_log("❌ 小世界收割香火发送失败，稍后重试。", scope="identity")
         return False
 
-    _set_phase("harvest_pending")
+    _set_phase("harvest_sent")
     state["small_world_harvest_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_small_world_time"] = sent_at + SMALL_WORLD_PENDING_TIMEOUT_SEC
+    estimated_stock = int(state.get("small_world_incense_stock", 0) or 0) + int(float(state.get("small_world_pending_incense", 0) or 0))
+    state["small_world_incense_stock"] = max(0, estimated_stock)
+    state["small_world_pending_incense"] = 0
+    _schedule_tool_step(sent_at)
     state["small_world_last_error"] = ""
     save_state()
     return True
@@ -352,7 +385,7 @@ async def _send_refine(now, amount):
         return await _send_query(now, "淬炼数量不足，复查小世界")
 
     command = f"{CMD_SMALL_WORLD_REFINE} {amount}"
-    msg = await send_game_command(command, track=True, max_retry=1, priority="chain")
+    msg = await send_game_command(command, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["small_world_last_error"] = f"发送 {command} 失败"
@@ -362,9 +395,10 @@ async def _send_refine(now, amount):
         await send_audit_log("❌ 小世界神识淬炼发送失败，稍后重试。", scope="identity")
         return False
 
-    _set_phase("refine_pending")
+    _set_phase("refine_sent")
     state["small_world_refine_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["next_small_world_time"] = sent_at + SMALL_WORLD_PENDING_TIMEOUT_SEC
+    state["small_world_incense_stock"] = max(0, int(state.get("small_world_incense_stock", 0) or 0) - amount)
+    _schedule_tool_step(sent_at)
     state["small_world_last_error"] = ""
     save_state()
     return True
@@ -430,6 +464,9 @@ async def _handle_panel_decision(now, panel):
         save_state()
         return True
 
+    if panel.get("has_wait"):
+        return await _finish_no_prayer_panel(now, panel)
+
     if state.get("small_world_harvest_enabled") and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE:
         save_state()
         return await _send_harvest(now)
@@ -480,6 +517,18 @@ def clear_small_world_state(*, persist=False, keep_last_error=False):
         save_state()
     else:
         mark_dirty()
+
+
+def schedule_small_world_initial_check(now, *, persist=False, keep_last_error=True):
+    _clear_all_runtime_pending()
+    _schedule_initial_check(now)
+    if not keep_last_error:
+        state["small_world_last_error"] = ""
+    if persist:
+        save_state()
+    else:
+        mark_dirty()
+    return state["next_small_world_time"]
 
 
 async def handle_small_world_disaster_broadcast(text, now, event):
@@ -541,6 +590,8 @@ async def handle_small_world_query_reply(text, now, reply_to, matched_family=Non
     panel = _parse_small_world_panel(raw_text)
     if not panel:
         return False
+    if not _is_current_query_reply(reply_to, matched_family):
+        return False
 
     if panel.get("realm_blocked"):
         return await _disable_for_realm(raw_text)
@@ -593,7 +644,9 @@ async def handle_small_world_harvest_reply(text, now, reply_to, matched_family=N
 
     raw_text = str(text or "")
     orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
-    if matched_family != "small_world_harvest" and CMD_SMALL_WORLD_HARVEST not in orig_cmd:
+    if _phase() not in {"harvest_sent", "harvest_pending"}:
+        return False
+    if matched_family != "small_world_harvest" and not _is_reply_to_tracked_message(reply_to, "small_world_harvest_msg_id") and CMD_SMALL_WORLD_HARVEST not in orig_cmd:
         return False
 
     if "境界不足" in raw_text and "紫府小世界" in raw_text:
@@ -636,7 +689,9 @@ async def handle_small_world_refine_reply(text, now, reply_to, matched_family=No
 
     raw_text = str(text or "")
     orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
-    if matched_family != "small_world_refine" and CMD_SMALL_WORLD_REFINE not in orig_cmd:
+    if _phase() not in {"refine_sent", "refine_pending"}:
+        return False
+    if matched_family != "small_world_refine" and not _is_reply_to_tracked_message(reply_to, "small_world_refine_msg_id") and CMD_SMALL_WORLD_REFINE not in orig_cmd:
         return False
 
     burned_match = RE_REFINE_BURNED.search(raw_text)
@@ -712,6 +767,24 @@ async def _run_small_world_scheduler(now):
         )
         return
 
+    if phase == "harvest_sent":
+        next_time = float(state.get("next_small_world_time", 0) or 0)
+        if next_time > 0 and now < next_time:
+            return
+        refine_amount = _calc_refine_amount(state.get("small_world_incense_stock", 0))
+        if state.get("small_world_refine_enabled") and refine_amount >= 10:
+            await _send_refine(now, refine_amount)
+            return
+        await _send_query(now, "收割后复查")
+        return
+
+    if phase == "refine_sent":
+        next_time = float(state.get("next_small_world_time", 0) or 0)
+        if next_time > 0 and now < next_time:
+            return
+        await _send_query(now, "淬炼后复查")
+        return
+
     if not _chain_enabled():
         return
 
@@ -738,4 +811,5 @@ __all__ = [
     "handle_small_world_query_reply",
     "handle_small_world_refine_reply",
     "run_small_world_scheduler",
+    "schedule_small_world_initial_check",
 ]

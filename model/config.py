@@ -221,6 +221,9 @@ CMD_SMALL_WORLD_MANIFEST = ".显灵"
 CMD_SMALL_WORLD_HARVEST = ".收割香火"
 CMD_SMALL_WORLD_REFINE = ".神识淬炼"
 CMD_SMALL_WORLD_PREACH = ".神迹 布道"
+CMD_RANCH = ".一键放养"
+CMD_WILD_TRAINING = ".野外历练"
+WILD_TRAINING_STRATEGIES = ("谨慎", "均衡", "深入")
 CMD_SECOND_SOUL_STATUS = ".第二元神"
 CMD_SECOND_SOUL_TRAIN = ".元神修炼"
 CMD_SECOND_SOUL_CHOICE_BREAK = ".抉择 强行突破"
@@ -342,6 +345,8 @@ SCRIPT_COMMANDS = [
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_REFINE,
     CMD_SMALL_WORLD_PREACH,
+    CMD_RANCH,
+    CMD_WILD_TRAINING,
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
     CMD_SECOND_SOUL_CHOICE_BREAK,
@@ -351,11 +356,13 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "器灵试炼", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一"]
+MODULE_NAMES = ["灵树", "法宝", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
     "器灵试炼": "pet_trial_enabled",
+    "放养": "ranch_enabled",
+    "野外历练": "wild_training_enabled",
     "观星台": "stargazer_enabled",
     "观星": "guanxing_enabled",
     "观星监控": "guanxing_monitor_enabled",
