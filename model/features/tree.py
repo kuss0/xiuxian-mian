@@ -116,6 +116,25 @@ def _tree_bootstrap_check_is_useful():
     return True
 
 
+def _clear_redundant_tree_bootstrap_checks_after_normal_panel(now=None):
+    now = float(now if now is not None else time.time())
+    changed = False
+    for identity_id in _iter_tree_enabled_identity_ids():
+        if int(identity_id or 0) == int(get_current_identity_id() or 0):
+            continue
+        with use_identity(identity_id):
+            if not state.get("tree_bootstrap_check_needed") and not state.get("tree_bootstrap_check_due_at"):
+                continue
+            if state["is_maturing"] or state["is_invading"] or state["pending_irrigation"]:
+                continue
+            state["tree_bootstrap_check_needed"] = False
+            state["tree_bootstrap_check_due_at"] = 0
+            state["last_tree_status_sent_at"] = now
+            save_state()
+            changed = True
+    return changed
+
+
 def _iter_tree_enabled_identity_ids():
     for identity_id in get_identity_ids():
         try:
@@ -630,6 +649,9 @@ async def handle_tree_panel(text, now, is_reply_to_me):
         return True
     if is_tree_panel:
         state_changed = False
+        if current_status_snapshot and personal_panel_owned and not state["is_maturing"] and not state["is_invading"]:
+            if _clear_redundant_tree_bootstrap_checks_after_normal_panel(now):
+                console_log("🌳 已用本次灵树状态清理其他账号启动校验。", scope="global")
         if state["is_maturing"]:
             state["is_maturing"] = False
             state["tree_harvest_followup_due_at"] = 0
@@ -706,6 +728,13 @@ async def run_tree_bootstrap_check(now):
         console_log(f"🌳 启动校验已错峰，{delay / 60:.1f} 分钟后查询灵树状态。")
         return
     if now < due_at:
+        return
+    current_identity_id = int(get_current_identity_id() or 0)
+    selected_identity_id = _tree_mature_confirmation_identity_id(now)
+    if not state["is_maturing"] and selected_identity_id and current_identity_id != selected_identity_id:
+        state["tree_bootstrap_check_needed"] = False
+        state["tree_bootstrap_check_due_at"] = 0
+        save_state()
         return
 
     console_log("🌳 启动校验：查询灵树状态（无补发）。")
