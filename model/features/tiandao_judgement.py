@@ -6,11 +6,11 @@ import time
 from ..config import CMD_TIANDAO_JUDGEMENT_PROVE
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_ids, get_send_as_tags, state
+from ..state import get_identity_ids, get_send_as_tags, set_identity_enabled, state, use_identity
 from ..timing import fmt_time_after
 
 
-TIANDAO_JUDGEMENT_PROMPT_KEYWORDS = ("天道审判", "天道问心", "自证")
+TIANDAO_JUDGEMENT_PROMPT_KEYWORDS = ("天道审判", "自证")
 TIANDAO_JUDGEMENT_RETRY_DELAY_SEC = 10
 TIANDAO_JUDGEMENT_DEADLINE_BUFFER_SEC = 5
 TIANDAO_JUDGEMENT_DELAY_MIN_SEC = 40
@@ -46,7 +46,8 @@ RE_TIANDAO_TARGET = re.compile(r"对象\s*[【\[]\s*([^】\]]+?)\s*[】\]]")
 RE_TIANDAO_TIMEOUT_MIN = re.compile(r"(\d+)\s*分钟")
 RE_TIANDAO_TIMEOUT_SEC = re.compile(r"(\d+)\s*秒")
 RE_TIANDAO_QUESTION = re.compile(
-    r"天道问心\s*[:：]\s*(?P<left>.+?)\s*(?P<op>加|减|乘|除)\s*"
+    r"(?:天道问心|速答|长老考校|请问|敢问)?\s*[:：]?\s*"
+    r"(?P<left>[^\n✨?？]+?)\s*(?P<op>加|减|乘|除)\s*"
     r"(?P<right>[零〇一二两三四五六七八九十百千万萬壹贰貳叁參肆伍陆陸柒捌玖拾佰仟\d０-９]+)\s*等于\s*[?？]",
     re.S,
 )
@@ -95,8 +96,18 @@ def _is_tiandao_judgement_prompt(text):
     return all(keyword in raw_text for keyword in TIANDAO_JUDGEMENT_PROMPT_KEYWORDS)
 
 
+def _is_tiandao_judgement_punishment(text):
+    raw_text = str(text or "")
+    return "天道裁决" in raw_text and ("挂机傀儡" in raw_text or "死牢" in raw_text)
+
+
 def _normalize_question_left(text):
-    return RE_QUESTION_WHITESPACE.sub("", str(text or "")).strip("✨:： ")
+    normalized = RE_QUESTION_WHITESPACE.sub("", str(text or "")).strip("✨:： ")
+    for prefix in ("天道问心", "速答", "长老考校", "请问", "敢问"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):].strip("✨:： ")
+            break
+    return normalized
 
 
 def _normalize_identity_text(text):
@@ -264,6 +275,46 @@ def _find_target_identity_id(target, text=""):
     return None
 
 
+def _remove_identity_pending(identity_id):
+    identity_id = int(identity_id or 0)
+    pending = _get_pending_map()
+    changed = False
+    for pending_key, item in list(pending.items()):
+        if int((item or {}).get("identity_id", 0) or 0) == identity_id:
+            pending.pop(pending_key, None)
+            changed = True
+    if changed:
+        _set_pending_map(pending)
+
+
+async def handle_tiandao_judgement_punishment(text, now, event=None):
+    if not _is_tiandao_judgement_punishment(text):
+        return False
+
+    target_match = RE_TIANDAO_TARGET.search(str(text or ""))
+    target = str(target_match.group(1) or "").strip() if target_match else ""
+    identity_id = _find_target_identity_id(target, text)
+    if identity_id is None:
+        await send_audit_log(
+            f"⚖️ 天道裁决未匹配身份：{mono(target or '未知对象')}，请手动检查。",
+            scope="global",
+            limit=420,
+        )
+        return True
+
+    set_identity_enabled(identity_id, False)
+    with use_identity(identity_id):
+        state["pending_tasks"] = {}
+    _remove_identity_pending(identity_id)
+    save_state()
+    await send_audit_log(
+        f"⚖️ 天道裁决命中：{mono(target)} 已被判定挂机傀儡，已自动停用该身份并清空待发任务。",
+        scope="global",
+        limit=520,
+    )
+    return True
+
+
 async def _send_tiandao_judgement_parse_failure_log(text, question=None):
     if question is None:
         question = _extract_tiandao_judgement_question(text)
@@ -413,6 +464,7 @@ async def _run_tiandao_judgement_scheduler_locked(now):
 
 
 __all__ = [
+    "handle_tiandao_judgement_punishment",
     "handle_tiandao_judgement_prompt",
     "parse_tiandao_judgement_prompt",
     "run_tiandao_judgement_scheduler",

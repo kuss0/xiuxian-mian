@@ -42,7 +42,7 @@ from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
-from .features.tiandao_judgement import handle_tiandao_judgement_prompt, run_tiandao_judgement_scheduler
+from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
 from .features.small_world import (
     handle_small_world_disaster_broadcast,
@@ -495,6 +495,8 @@ async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None):
         await handle_tianji_quiz_result_broadcast(text, now, event, reply_to=reply_to)
     if _claim_runtime_event(event, scope="tianji_quiz_prompt"):
         await handle_tianji_quiz_prompt(text, now, event)
+    if _claim_runtime_event(event, scope="tiandao_judgement_punishment"):
+        await handle_tiandao_judgement_punishment(text, now, event)
     if _claim_runtime_event(event, scope="tiandao_judgement_prompt"):
         await handle_tiandao_judgement_prompt(text, now, event)
     if _claim_runtime_event(event, scope="guanxing_finish"):
