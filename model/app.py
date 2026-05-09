@@ -1,5 +1,6 @@
 import asyncio
 import json
+import signal
 import time
 import traceback
 from datetime import datetime
@@ -139,7 +140,7 @@ from .state import (
     use_identity,
 )
 from .timing import fmt_time_after
-from .ui import start_ui_server
+from .ui import start_ui_server, stop_ui_server
 
 _bot_silence_auto_paused = False
 _identity_scheduler_task = None
@@ -1060,8 +1061,18 @@ async def bootstrap():
     _fire_and_forget(send_audit_log("\n".join(audit_lines), scope="global", limit=1200))
 
 
-async def main_loop():
-    while True:
+async def _sleep_or_stop(stop_event, delay):
+    if stop_event is None:
+        await asyncio.sleep(delay)
+        return
+    try:
+        await asyncio.wait_for(stop_event.wait(), timeout=delay)
+    except asyncio.TimeoutError:
+        pass
+
+
+async def main_loop(stop_event=None):
+    while stop_event is None or not stop_event.is_set():
         now = time.time()
 
         gc_my_msg_ids(now)
@@ -1079,7 +1090,7 @@ async def main_loop():
             await toggle_global_enabled(False, source="bot_health_monitor")
         if not get_global_enabled():
             _cancel_identity_schedulers()
-            await asyncio.sleep(5)
+            await _sleep_or_stop(stop_event, 5)
             continue
 
         await _run_global_schedulers(now)
@@ -1087,12 +1098,44 @@ async def main_loop():
         await run_retry_scheduler(now)
         await run_identity_info_followup_scheduler(now)
         _start_identity_schedulers_if_idle(now)
-        await asyncio.sleep(5)
+        await _sleep_or_stop(stop_event, 5)
 
 
 async def main():
-    await bootstrap()
-    await main_loop()
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def request_stop():
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            loop.add_signal_handler(sig, request_stop)
+        except (NotImplementedError, RuntimeError):
+            signal.signal(sig, lambda _signum, _frame: request_stop())
+
+    try:
+        await bootstrap()
+        await main_loop(stop_event)
+    finally:
+        await shutdown()
 
 
-__all__ = ["bootstrap", "main", "main_loop", "on_message"]
+async def shutdown():
+    _cancel_identity_schedulers()
+    save_state()
+    await stop_ui_server()
+    clients = [client]
+    clients.extend(get_all_clients().values())
+    seen = set()
+    for tc in clients:
+        if tc is None or id(tc) in seen:
+            continue
+        seen.add(id(tc))
+        try:
+            await tc.disconnect()
+        except Exception:
+            traceback.print_exc()
+
+
+__all__ = ["bootstrap", "main", "main_loop", "on_message", "shutdown"]

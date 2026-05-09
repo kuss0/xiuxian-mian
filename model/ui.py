@@ -2090,6 +2090,15 @@ async def start_ui_server():
     return _ui_server
 
 
+async def stop_ui_server():
+    global _ui_server
+    if _ui_server is None:
+        return
+    _ui_server.close()
+    await _ui_server.wait_closed()
+    _ui_server = None
+
+
 __all__ = [
     "get_identity_ui_snapshot",
     "get_ui_snapshot",
@@ -2097,6 +2106,7 @@ __all__ = [
     "html_escape",
     "render_ui_page",
     "start_ui_server",
+    "stop_ui_server",
     "ui_add_identity",
     "ui_logout_account",
     "ui_refresh_forum_topics",
