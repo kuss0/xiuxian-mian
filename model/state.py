@@ -68,7 +68,7 @@ IDENTITY_BOOL_FIELDS = {
     "second_soul_heart_demon_notified",
     "tree_maturing_logged",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "storage_bag_records", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -471,6 +471,7 @@ GLOBAL_STATE_DEFAULTS = {
     "guanxing_monitor_last_seen_at": 0,
     "guanxing_monitor_last_notified_slot_key": "",
     "guanxing_round_state": {},
+    "storage_bag_records": {},
     "send_as_profiles": {},
     "identity_states": {},
     "identity_ids": [],
@@ -716,6 +717,16 @@ def set_identity_enabled(send_as_id, enabled):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, enabled=bool(enabled))
     return get_identity_enabled(send_as_id)
+
+
+def get_storage_bag_records():
+    records = _meta_state.get("storage_bag_records") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_storage_bag_records(records):
+    _meta_state["storage_bag_records"] = records if isinstance(records, dict) else {}
+    return get_storage_bag_records()
 
 
 def get_send_as_label(send_as_id=None):
@@ -1361,6 +1372,7 @@ __all__ = [
     "get_pet_trial_name",
     "get_pet_trial_command",
     "get_stargazer_star_choice",
+    "get_storage_bag_records",
     "get_stargazer_total_slots",
     "get_tianti_rank_choice",
     "get_wild_training_strategy",
@@ -1392,6 +1404,7 @@ __all__ = [
     "set_pet_name",
     "set_pet_trial_name",
     "set_stargazer_star_choice",
+    "set_storage_bag_records",
     "set_stargazer_total_slots",
     "set_tianti_rank_choice",
     "set_wild_training_strategy",

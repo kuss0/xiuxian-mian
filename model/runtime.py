@@ -483,6 +483,7 @@ REPLY_FAMILY_COMMANDS = {
     "taiyi_yindao": {CMD_YINDAO},
     "taiyi_node_search": {CMD_NODE_SEARCH},
     "taiyi_node_define": {CMD_NODE_DEFINE},
+    "storage_bag": {".储物袋"},
 }
 COMMAND_TO_REPLY_FAMILY = {
     command: family

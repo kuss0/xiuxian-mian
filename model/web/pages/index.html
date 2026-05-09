@@ -20,6 +20,7 @@
 <span id='global-switch-container'>
 </span>
 <button type='button' class='btn btn-secondary' data-open-basic-config='1'>基础配置</button>
+<button type='button' class='btn btn-secondary' data-open-storage-bag='1'>储物袋</button>
 <button type='button' class='btn btn-refresh' data-refresh-now='1'>手动刷新</button>
 <a class='btn btn-secondary' href='/api/state' target='_blank' rel='noreferrer'>JSON</a>
 </div>
@@ -163,10 +164,21 @@
 <button class='btn btn-secondary' type='button' data-close-modal='startup-alert'>知道了</button>
 </div>  </div>
 </div>
+<div id='storage-bag-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide storage-bag-modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>储物袋</h3>
+<button class='icon-btn' type='button' data-close-modal='storage-bag'>×</button>
+</div>    <div class='form-label'>只展示已解析快照；同步需要手动勾选身份，保护账号不会被读取。</div>    <div class='storage-bag-actions'>
+<label class='checkbox-inline checkbox-inline-small'><input type='checkbox' id='storage-bag-select-all' /> 全选可同步身份</label>
+<button type='button' class='btn' id='storage-bag-sync-btn'>同步</button>
+<span id='storage-bag-sync-status' class='form-label form-label-inline'></span>
+</div>    <div id='storage-bag-table-wrap' class='storage-bag-table-wrap'>
+</div>  </div>
+</div>
 <script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
 <script src='/static/js/app.js'></script>
 <script src='/static/js/queue_ui.js'></script>
 <script src='/static/js/wild_training_ui.js'></script>
 <script src='/static/js/account_logout.js'></script>
+<script src='/static/js/storage_bag_ui.js'></script>
 </body>
 </html>

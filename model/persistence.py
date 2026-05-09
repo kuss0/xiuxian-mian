@@ -27,6 +27,7 @@ from .state import (
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
+    get_storage_bag_records,
     new_identity_state,
     set_auto_delete_sent_messages,
     set_forum_topics,
@@ -42,6 +43,7 @@ from .state import (
     set_guanxing_shift_target,
     set_quiz_learning_watchers,
     set_send_as_profile,
+    set_storage_bag_records,
     get_accounts,
     set_accounts,
     get_identity_account_map,
@@ -1321,6 +1323,11 @@ _META_STATE_CODEC = {
         get_guanxing_round_state,
         _encode_meta_json,
         lambda value: set_guanxing_round_state(_decode_meta_json(value, {})),
+    ),
+    "storage_bag_records": (
+        get_storage_bag_records,
+        _encode_meta_json,
+        lambda value: set_storage_bag_records(_decode_meta_json(value, {})),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,

@@ -62,6 +62,7 @@ from .features.stargazer import (
     handle_stargazer_sync_reply,
     run_stargazer_scheduler,
 )
+from .features.storage_bag import handle_storage_bag_reply
 from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
@@ -778,6 +779,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_search_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_define_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if matched_family and handled_any and not already_consumed:
             _mark_runtime_message_consumed(event, matched_family)
@@ -849,6 +851,7 @@ async def on_message(event):
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
+        await handle_storage_bag_reply(text, now, reply_to)
 
     except Exception:
         print(traceback.format_exc())

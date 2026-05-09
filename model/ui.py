@@ -72,6 +72,7 @@ from .features.guanxing_monitor import get_guanxing_monitor_summary_text
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.stargazer import sync_stargazer_total_slots
+from .features.storage_bag import CMD_STORAGE_BAG
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yuanying import get_yuanying_phase_text
@@ -106,6 +107,7 @@ from .state import (
     get_send_as_profile,
     get_stargazer_star_choice,
     get_stargazer_total_slots,
+    get_storage_bag_records,
     get_tianti_rank_choice,
     get_wild_training_strategy,
     set_account,
@@ -140,6 +142,96 @@ UI_STATIC_CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
 }
+_storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
+
+
+def _is_storage_bag_protected_identity(send_as_id):
+    profile = get_send_as_profile(send_as_id)
+    candidates = (
+        profile.get("username"),
+        profile.get("label"),
+        profile.get("daohao"),
+        get_identity_ui_display_name(send_as_id),
+    )
+    return any("wa2000" in str(candidate or "").casefold() for candidate in candidates)
+
+
+def _format_storage_bag_updated_at(record):
+    updated_at = float((record or {}).get("updated_at") or 0)
+    if updated_at <= 0:
+        return "未解析"
+    return fmt_abs_ts(updated_at)
+
+
+def get_storage_bag_sync_snapshot():
+    return {
+        "running": bool(_storage_bag_sync_state.get("running")),
+        "pending_ids": list(_storage_bag_sync_state.get("pending_ids") or []),
+        "completed_ids": list(_storage_bag_sync_state.get("completed_ids") or []),
+    }
+
+
+async def _run_storage_bag_sync(identity_ids):
+    try:
+        for identity_id in identity_ids:
+            _storage_bag_sync_state["pending_ids"] = [
+                item for item in _storage_bag_sync_state.get("pending_ids", []) if int(item or 0) != int(identity_id)
+            ]
+            msg = await send_game_command(CMD_STORAGE_BAG, send_as_id=int(identity_id), priority="normal", max_retry=1)
+            if msg:
+                _storage_bag_sync_state.setdefault("completed_ids", []).append(int(identity_id))
+    finally:
+        _storage_bag_sync_state["running"] = False
+        _storage_bag_sync_state["pending_ids"] = []
+
+
+async def ui_start_storage_bag_sync(identity_ids):
+    if _storage_bag_sync_state.get("running"):
+        return False, "储物袋同步正在进行中"
+    normalized_ids = []
+    for raw_id in identity_ids or []:
+        try:
+            identity_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if identity_id not in get_identity_ids():
+            continue
+        if _is_storage_bag_protected_identity(identity_id):
+            continue
+        if identity_id not in normalized_ids:
+            normalized_ids.append(identity_id)
+    if not normalized_ids:
+        return False, "请至少勾选一个非保护身份"
+    _storage_bag_sync_state["running"] = True
+    _storage_bag_sync_state["pending_ids"] = list(normalized_ids)
+    _storage_bag_sync_state["completed_ids"] = []
+    asyncio.create_task(_run_storage_bag_sync(normalized_ids))
+    return True, f"已开始同步 {len(normalized_ids)} 个身份的储物袋"
+
+
+def get_storage_bag_snapshot():
+    records = get_storage_bag_records()
+    rows = []
+    item_names = set()
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        record = records.get(str(identity_id)) or {}
+        items = record.get("items") if isinstance(record, dict) else {}
+        items = items if isinstance(items, dict) else {}
+        item_names.update(str(name) for name in items.keys())
+        rows.append({
+            "identity_id": identity_id,
+            "label": get_identity_ui_display_name(identity_id),
+            "protected": _is_storage_bag_protected_identity(identity_id),
+            "updated_at": _format_storage_bag_updated_at(record),
+            "updated_at_raw": float((record or {}).get("updated_at") or 0),
+            "items": items,
+            "empty": bool((record or {}).get("empty")),
+        })
+    return {
+        "rows": rows,
+        "items": sorted(item_names),
+    }
 
 
 def get_identity_ui_snapshot(send_as_id):
@@ -352,6 +444,8 @@ def get_ui_snapshot(session_token=None):
             }
             for item in get_game_send_queue_snapshot()
         ],
+        "storage_bag": get_storage_bag_snapshot(),
+        "storage_bag_sync": get_storage_bag_sync_snapshot(),
         "accounts": _get_runtime_accounts_snapshot(),
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),
@@ -1647,6 +1741,21 @@ async def handle_ui_http(reader, writer):
                         content_type="application/json; charset=utf-8",
                         extra_headers=auth_headers,
                     )
+            elif path == "/api/storage-bag-sync":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = await ui_start_storage_bag_sync(payload.get("identity_ids"))
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(
+                        ok,
+                        message=message if ok else "",
+                        error="" if ok else message,
+                        snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                    )
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/basic-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -2101,6 +2210,8 @@ async def stop_ui_server():
 
 __all__ = [
     "get_identity_ui_snapshot",
+    "get_storage_bag_snapshot",
+    "get_storage_bag_sync_snapshot",
     "get_ui_snapshot",
     "handle_ui_http",
     "html_escape",
@@ -2109,6 +2220,7 @@ __all__ = [
     "stop_ui_server",
     "ui_add_identity",
     "ui_logout_account",
+    "ui_start_storage_bag_sync",
     "ui_refresh_forum_topics",
     "ui_refresh_identity_info",
     "ui_set_basic_config",
