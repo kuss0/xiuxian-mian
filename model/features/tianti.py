@@ -40,6 +40,7 @@ RE_TIANTI_GANGFENG_PANEL = re.compile(r"【九天罡风】")
 RE_TIANTI_GANGFENG_COST = re.compile(r"消耗了\s*(\d+)\s*点修为")
 RE_TIANTI_GANGFENG_RESULT = re.compile(r"【罡风淬体】提升至\s*(\d+)\s*/\s*(\d+)\s*层")
 RE_TIANTI_GANGFENG_FAIL = re.compile(r"九天罡风尚未再聚，请在\s*(.+?)\s*后再施展此术。")
+RE_TIANTI_GANGFENG_COOLDOWN = re.compile(r"\.引九天罡风[:：]\s*(.+)")
 TIANTI_CLIMB_RESOURCE_KEY = "tianti_climb"
 TIANTI_GANGFENG_RESOURCE_KEY = "tianti_gangfeng"
 
@@ -281,6 +282,53 @@ def _should_trigger_tianti_wenxin(now):
     return True, trigger_key
 
 
+def get_tianti_estimated_wenxin_window_text(now=None):
+    if now is None:
+        now = datetime.now(TZ_LOCAL).timestamp()
+
+    if not state.get("tianti_wenxin_enabled"):
+        return "已关闭"
+
+    if str(state.get("tianti_last_wenxin_day") or "") == get_day_key(now):
+        return "今日已问心"
+
+    remaining_count = int(state.get("tianti_remaining_climb_count", 0) or 0)
+    if remaining_count <= 0:
+        return "今日无预计窗口"
+
+    target_stage = int(state.get("tianti_theoretical_max_stage", 0) or 0)
+    trigger_stage = int(state.get("tianti_wenxin_trigger_stage", 0) or 0)
+    current_stage = int(state.get("tianti_progress_current", 0) or 0)
+    progress_total = int(state.get("tianti_progress_total", 12) or 12)
+    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+
+    if target_stage <= 0:
+        return "等待状态同步"
+    if next_climb_time <= 0:
+        return "等待下次登阶时间"
+    if current_stage >= progress_total:
+        return "当前已满阶，无需问心"
+    if trigger_stage <= 0:
+        return "当前计划无需问心"
+
+    note = ""
+    if _should_advance_tianti_wenxin_for_gangfeng(now, current_stage, trigger_stage):
+        window_end = next_climb_time
+        note = "九天罡风条件满足，预计提前一阶触发"
+    elif current_stage == trigger_stage:
+        window_end = next_climb_time
+        note = f"到达触发阶 {trigger_stage} 后，将在下一次登阶前 10 分钟触发"
+    elif current_stage < trigger_stage:
+        climbs_until_trigger = trigger_stage - current_stage
+        window_end = next_climb_time + climbs_until_trigger * _get_tianti_cd_seconds()
+        note = f"预计到达触发阶 {trigger_stage} 后，在下一次登阶前 10 分钟触发"
+    else:
+        return "当前进度已超过触发阶，等待重新规划"
+
+    window_start = max(0, window_end - 600)
+    return f"{fmt_abs_ts(window_start)} - {fmt_abs_ts(window_end)}（{note}）"
+
+
 def _apply_tianti_wenxin_result(raw_text, now, reply_to):
     handled = False
     if RE_TIANTI_WENXIN_FAIL.search(raw_text):
@@ -422,12 +470,17 @@ def _parse_tianti_panel(text):
     wenxin_match = RE_TIANTI_WENXIN.search(raw_text)
     if wenxin_match:
         payload["wenxin_status"] = str(wenxin_match.group(1) or "").strip()
+    gangfeng_cd_match = RE_TIANTI_GANGFENG_COOLDOWN.search(raw_text)
+    if gangfeng_cd_match:
+        payload["gangfeng_cooldown_text"] = str(gangfeng_cd_match.group(1) or "").strip()
     return payload or None
 
 
-def _apply_tianti_panel_payload(payload):
+def _apply_tianti_panel_payload(payload, now=None):
     if not isinstance(payload, dict):
         return False
+    if now is None:
+        now = datetime.now(TZ_LOCAL).timestamp()
     changed = False
     mapping = {
         "progress_current": "tianti_progress_current",
@@ -445,10 +498,75 @@ def _apply_tianti_panel_payload(payload):
         if state.get(state_key) != value:
             state[state_key] = value
             changed = True
+
+    cooldown_text = str(payload.get("cooldown_text") or "")
+    if cooldown_text:
+        if has_wait_time(cooldown_text):
+            wait_sec = parse_wait_time(cooldown_text)
+            if wait_sec > 0:
+                random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+                total_wait_sec = wait_sec + random_delay
+                next_climb = float(now + total_wait_sec)
+                if abs(float(state.get("next_tianti_climb_time", 0) or 0) - next_climb) > 1:
+                    _set_tianti_next_climb_time(next_climb, persist=False)
+                    changed = True
+                display_text = fmt_time_after(total_wait_sec)
+                if state.get("tianti_cooldown_text") != display_text:
+                    state["tianti_cooldown_text"] = display_text
+                    changed = True
+        else:
+            next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
+            if not _has_pending_tianti_command(CMD_TIANTI_CLIMB) and (next_climb <= 0 or next_climb > now):
+                _set_tianti_next_climb_time(now, persist=False)
+                changed = True
+
+    wenxin_text = str(payload.get("wenxin_status") or "")
+    if wenxin_text:
+        today_key = get_day_key(now)
+        if "今日尚未问心" in wenxin_text:
+            if str(state.get("tianti_last_wenxin_day") or "") == today_key:
+                state["tianti_last_wenxin_day"] = ""
+                changed = True
+            if float(state.get("next_tianti_wenxin_time", 0) or 0) > 0:
+                _set_tianti_next_wenxin_time(0, persist=False)
+                changed = True
+        elif "今日已问心" in wenxin_text or "不会再回应" in wenxin_text:
+            if str(state.get("tianti_last_wenxin_day") or "") != today_key:
+                state["tianti_last_wenxin_day"] = today_key
+                changed = True
+            if float(state.get("next_tianti_wenxin_time", 0) or 0) <= now:
+                _schedule_tianti_wenxin_retry(now, persist=False)
+                changed = True
+
+    gangfeng_cd_text = str(payload.get("gangfeng_cooldown_text") or "")
+    if gangfeng_cd_text:
+        if "未解锁" in gangfeng_cd_text:
+            pass
+        elif "可用" in gangfeng_cd_text:
+            if float(state.get("next_tianti_gangfeng_time", 0) or 0) > 0:
+                _set_tianti_next_gangfeng_time(0, persist=False)
+                changed = True
+            if state.get("tianti_gangfeng_status") != "可用":
+                state["tianti_gangfeng_status"] = "可用"
+                changed = True
+        elif has_wait_time(gangfeng_cd_text):
+            wait_sec = parse_wait_time(gangfeng_cd_text)
+            if wait_sec > 0:
+                random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+                total_wait_sec = wait_sec + random_delay
+                next_gangfeng = float(now + total_wait_sec)
+                if abs(float(state.get("next_tianti_gangfeng_time", 0) or 0) - next_gangfeng) > 1:
+                    _set_tianti_next_gangfeng_time(next_gangfeng, persist=False)
+                    changed = True
+                display_text = fmt_time_after(total_wait_sec)
+                if state.get("tianti_gangfeng_status") != display_text:
+                    state["tianti_gangfeng_status"] = display_text
+                    changed = True
     return changed
 
 
 def get_tianti_status_text():
+    now = datetime.now(TZ_LOCAL).timestamp()
     lines = [
         "☁️ 登天阶",
         f"- 当前进度：{int(state.get('tianti_progress_current', 0) or 0)} / {int(state.get('tianti_progress_total', 12) or 12)} 阶",
@@ -458,6 +576,7 @@ def get_tianti_status_text():
         f"- 今日剩余次数：{int(state.get('tianti_remaining_climb_count', 0) or 0)}",
         f"- 今日目标阶：{int(state.get('tianti_theoretical_max_stage', 0) or 0)} ｜ 触发阶：{int(state.get('tianti_wenxin_trigger_stage', 0) or 0)}",
         f"- 下次问心：{fmt_abs_ts(float(state.get('next_tianti_wenxin_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_wenxin_time', 0) or 0))}）",
+        f"- 预计问心窗口：{get_tianti_estimated_wenxin_window_text(now)}",
         f"- 下次登阶：{fmt_abs_ts(float(state.get('next_tianti_climb_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_climb_time', 0) or 0))}）",
         f"- 下次罡风：{fmt_abs_ts(float(state.get('next_tianti_gangfeng_time', 0) or 0))}（{fmt_remaining(float(state.get('next_tianti_gangfeng_time', 0) or 0))}）",
     ]
@@ -510,25 +629,13 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
 
     panel_payload = _parse_tianti_panel(raw_text)
     if panel_payload:
-        if _apply_tianti_panel_payload(panel_payload):
+        if _apply_tianti_panel_payload(panel_payload, now=now):
             handled = True
         if matched_family == "tianti_status":
             state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["next_tianti_status_time"] = 0
             cooldown = str(panel_payload.get("cooldown_text") or "")
-            if cooldown:
-                if has_wait_time(cooldown):
-                    wait_sec = parse_wait_time(cooldown)
-                    if wait_sec > 0:
-                        random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
-                        total_wait_sec = wait_sec + random_delay
-                        _set_tianti_next_climb_time(now + total_wait_sec, persist=False)
-                        state["tianti_cooldown_text"] = fmt_time_after(total_wait_sec)
-                else:
-                    next_climb = float(state.get("next_tianti_climb_time", 0) or 0)
-                    if not _has_pending_tianti_command(CMD_TIANTI_CLIMB) and (next_climb <= 0 or next_climb > now):
-                        _set_tianti_next_climb_time(now, persist=False)
             _calc_tianti_wenxin_plan(now)
             _log_tianti_plan("天阶状态同步后")
             if (
@@ -698,6 +805,7 @@ async def run_tianti_scheduler(now):
 
 
 __all__ = [
+    "get_tianti_estimated_wenxin_window_text",
     "get_tianti_status_text",
     "handle_tianti_reply",
     "run_tianti_scheduler",
