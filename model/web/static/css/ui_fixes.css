@@ -159,9 +159,22 @@
   text-align: left;
 }
 
+.form-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.form-grid-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 @media (max-width: 980px) {
   .modal-card {
     max-height: calc(100vh - 24px);
+  }
+
+  .form-grid-2 {
+    grid-template-columns: 1fr;
   }
 
   .queue-row {

@@ -439,8 +439,28 @@ prepare_storage_dirs()
 os.environ['PYTHONUNBUFFERED'] = '1'
 
 
-def _create_telegram_client(session_path):
-    return TelegramClient(session_path, API_ID, API_HASH, proxy=TELETHON_PROXY)
+def _normalize_telegram_api(api_id=None, api_hash=None):
+    api_id_value = API_ID
+    api_hash_value = API_HASH
+    if api_id not in {None, ""}:
+        try:
+            api_id_value = int(api_id)
+        except (TypeError, ValueError):
+            raise ValueError("API_ID 必须是数字") from None
+        if api_id_value <= 0:
+            raise ValueError("API_ID 必须大于 0")
+    if api_hash not in {None, ""}:
+        api_hash_value = str(api_hash or "").strip()
+        if not api_hash_value:
+            raise ValueError("API_HASH 不能为空")
+    if (api_id not in {None, ""}) != (api_hash not in {None, ""}):
+        raise ValueError("API_ID 和 API_HASH 需要同时填写")
+    return api_id_value, api_hash_value
+
+
+def _create_telegram_client(session_path, *, api_id=None, api_hash=None):
+    resolved_api_id, resolved_api_hash = _normalize_telegram_api(api_id, api_hash)
+    return TelegramClient(session_path, resolved_api_id, resolved_api_hash, proxy=TELETHON_PROXY)
 
 
 client = _create_telegram_client(SESSION_FILE)
@@ -501,9 +521,9 @@ def get_account_offline_reason(account_id):
     return str(info.get("reason") or "").strip()
 
 
-def create_account_client(account_id):
+def create_account_client(account_id, *, api_id=None, api_hash=None):
     session_path = os.path.join(SESSION_DIR, f"account_{account_id}")
-    return _create_telegram_client(session_path)
+    return _create_telegram_client(session_path, api_id=api_id, api_hash=api_hash)
 
 # ================= 预编译正则 =================
 RE_HOURS = re.compile(r'(\d+)\s*小时')

@@ -117,6 +117,9 @@
 </div>    <div class='login-mode-tabs'>
 <button class='btn' type='button' id='login-mode-phone-btn'>手机号验证码</button>
 <button class='btn btn-secondary' type='button' id='login-mode-qr-btn'>二维码登录</button>
+</div>    <div class='form-label'>Telegram API（可选）：不填则使用 .env 默认 API；给新账号单独填入后会随该账号保存。</div>      <div class='form-grid form-grid-2'>
+<label>API ID<input class='text-input' id='login-api-id' inputmode='numeric' placeholder='默认 .env API_ID' autocomplete='off' /></label>
+<label>API HASH<input class='text-input' id='login-api-hash' placeholder='默认 .env API_HASH' autocomplete='off' /></label>
 </div>    <div id='login-step-phone'>      <div class='form-label'>输入 Telegram 绑定的手机号（含国际区号，如 +86...）</div>      <input class='text-input' id='login-phone' placeholder='+8613800138000' />      <div class='modal-actions'>
 <button class='btn btn-secondary' type='button' data-close-modal='login-account'>取消</button>
 <button class='btn' type='button' id='login-send-code-btn'>发送验证码</button>

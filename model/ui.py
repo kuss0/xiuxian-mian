@@ -1022,6 +1022,8 @@ def _get_runtime_accounts_snapshot():
             continue
         account_info = dict(info or {})
         offline = is_account_offline(account_id)
+        account_info["api_source"] = "custom" if account_info.get("api_id") and account_info.get("api_hash") else "env"
+        account_info.pop("api_hash", None)
         account_info["offline"] = offline
         account_info["status"] = "offline" if offline else "online"
         if offline:
@@ -1037,6 +1039,7 @@ def _get_runtime_accounts_snapshot():
         account_info.update({
             "session": "main" if account_id == int(state.get("my_user_id") or 0) else f"account_{account_id}",
             "username": account_info.get("username") or str(account_id),
+            "api_source": account_info.get("api_source") or "env",
             "offline": False,
             "status": "online",
         })
@@ -1241,6 +1244,10 @@ async def _finalize_account_login(session_key, tc, *, flow_id=None):
             except Exception:
                 pass
             return False, "登录流程已更新，请重新发起", None
+    else:
+        pending = _pending_login.get(session_key) or {}
+    api_id = pending.get("api_id") if isinstance(pending, dict) else None
+    api_hash = pending.get("api_hash") if isinstance(pending, dict) else None
 
     await tc.disconnect()
 
@@ -1256,7 +1263,7 @@ async def _finalize_account_login(session_key, tc, *, flow_id=None):
         except OSError:
             pass
 
-    real_tc = create_account_client(account_id)
+    real_tc = create_account_client(account_id, api_id=api_id, api_hash=api_hash)
     await real_tc.connect()
     if not await real_tc.is_user_authorized():
         try:
@@ -1273,7 +1280,11 @@ async def _finalize_account_login(session_key, tc, *, flow_id=None):
     from .app import _register_event_handlers
     _register_event_handlers(real_tc)
 
-    set_account(account_id, {"session": f"account_{account_id}", "username": username})
+    account_info = {"session": f"account_{account_id}", "username": username}
+    if api_id and api_hash:
+        account_info["api_id"] = int(api_id)
+        account_info["api_hash"] = str(api_hash)
+    set_account(account_id, account_info)
 
     ok, _message, canonical_id = await register_identity(account_id, source="ui_login", account_id=account_id)
     if canonical_id:
@@ -1373,14 +1384,34 @@ async def _wait_pending_qr_login(session_key, flow_id, tc, qr_login):
         _cleanup_pending_temp_session_files(session_key)
 
 
-async def ui_account_login_start(phone, session_key):
+def _parse_account_login_api(api_id=None, api_hash=None):
+    api_id_text = str(api_id or "").strip()
+    api_hash_text = str(api_hash or "").strip()
+    if not api_id_text and not api_hash_text:
+        return None, None
+    if not api_id_text or not api_hash_text:
+        raise ValueError("API_ID 和 API_HASH 需要同时填写")
+    try:
+        parsed_api_id = int(api_id_text)
+    except (TypeError, ValueError):
+        raise ValueError("API_ID 必须是数字") from None
+    if parsed_api_id <= 0:
+        raise ValueError("API_ID 必须大于 0")
+    return parsed_api_id, api_hash_text
+
+
+async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None):
     phone = (phone or "").strip()
     if not phone:
         return False, "请输入手机号", None
+    try:
+        parsed_api_id, parsed_api_hash = _parse_account_login_api(api_id, api_hash)
+    except ValueError as e:
+        return False, str(e), None
 
     await _clear_pending_login(session_key, remove_temp_files=True)
 
-    tc = create_account_client(f"pending_{session_key}")
+    tc = create_account_client(f"pending_{session_key}", api_id=parsed_api_id, api_hash=parsed_api_hash)
     await tc.connect()
     try:
         sent = await tc.send_code_request(phone)
@@ -1396,6 +1427,8 @@ async def ui_account_login_start(phone, session_key):
             "wait_task": None,
             "flow_id": str(time.time_ns()),
             "account_id": 0,
+            "api_id": parsed_api_id,
+            "api_hash": parsed_api_hash,
         }
         return True, "验证码已发送", None
     except Exception as e:
@@ -1407,10 +1440,14 @@ async def ui_account_login_start(phone, session_key):
         return False, f"发送验证码失败: {e}", None
 
 
-async def ui_account_login_qr_start(session_key):
+async def ui_account_login_qr_start(session_key, api_id=None, api_hash=None):
+    try:
+        parsed_api_id, parsed_api_hash = _parse_account_login_api(api_id, api_hash)
+    except ValueError as e:
+        return False, str(e), None
     await _clear_pending_login(session_key, remove_temp_files=True)
 
-    tc = create_account_client(f"pending_{session_key}")
+    tc = create_account_client(f"pending_{session_key}", api_id=parsed_api_id, api_hash=parsed_api_hash)
     await tc.connect()
     try:
         ignored_ids = []
@@ -1434,6 +1471,8 @@ async def ui_account_login_qr_start(session_key):
             "wait_task": None,
             "flow_id": flow_id,
             "account_id": 0,
+            "api_id": parsed_api_id,
+            "api_hash": parsed_api_hash,
         }
         wait_task = asyncio.create_task(_wait_pending_qr_login(session_key, flow_id, tc, qr_login))
         _set_pending_login_state(session_key, flow_id, wait_task=wait_task)
@@ -2260,8 +2299,10 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     phone = payload.get("phone", "")
+                    api_id = payload.get("api_id")
+                    api_hash = payload.get("api_hash")
                     session_key = (session or {}).get("session_token", "")
-                    ok, message, _extra = await ui_account_login_start(phone, session_key)
+                    ok, message, _extra = await ui_account_login_start(phone, session_key, api_id=api_id, api_hash=api_hash)
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
@@ -2272,7 +2313,9 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     session_key = (session or {}).get("session_token", "")
-                    ok, message, qr_info = await ui_account_login_qr_start(session_key)
+                    api_id = payload.get("api_id")
+                    api_hash = payload.get("api_hash")
+                    ok, message, qr_info = await ui_account_login_qr_start(session_key, api_id=api_id, api_hash=api_hash)
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, extra=qr_info if ok else None)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)

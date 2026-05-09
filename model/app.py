@@ -924,7 +924,12 @@ async def bootstrap():
         tc = None
         try:
             acct_id = int(acct_id_str)
-            tc = create_account_client(acct_id)
+            acct_info = acct_info if isinstance(acct_info, dict) else {}
+            tc = create_account_client(
+                acct_id,
+                api_id=acct_info.get("api_id"),
+                api_hash=acct_info.get("api_hash"),
+            )
             await tc.connect()
             if not await tc.is_user_authorized():
                 error_text = "session 未授权，请通过 UI 重新登录账号"
