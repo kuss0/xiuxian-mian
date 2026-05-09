@@ -66,6 +66,7 @@ TAIYI_LINKED_SEARCH_DELAY_MAX_SEC = 25
 TAIYI_REPLY_LOST_TIMEOUT_SEC = 60
 # 补发前的 jitter：避免多身份同步爆发
 TAIYI_REPLY_LOST_RESEND_JITTER_SEC = 30
+TAIYI_SEARCH_RESEND_MAX_PER_CYCLE = 1
 TAIYI_NODE_SEARCH_RESOURCE_KEY = "taiyi_node_search"
 TAIYI_PENDING_PHASE_LABELS = {
     "yindao_pending": "引道",
@@ -153,7 +154,41 @@ def _looks_like_node_search_cd(text):
         return False
     if "请在" not in raw and "后" not in raw:
         return False
-    return any(keyword in raw for keyword in ("搜寻节点", "神游太虚", "虚空", "空间节点"))
+    return any(keyword in raw for keyword in ("搜寻节点", "神游太虚", "虚空", "空间节点", "神识尚在恢复", "再行搜寻"))
+
+
+def _get_search_resend_count():
+    try:
+        return int(state.get("taiyi_search_resend_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reset_search_resend_count():
+    state["taiyi_search_resend_count"] = 0
+
+
+def _mark_search_resend(reason):
+    count = _get_search_resend_count() + 1
+    state["taiyi_search_resend_count"] = count
+    state["taiyi_last_error"] = f"搜寻节点补发 {count}/{TAIYI_SEARCH_RESEND_MAX_PER_CYCLE}: {reason}"
+    return count
+
+
+def _search_resend_exhausted():
+    return _get_search_resend_count() >= TAIYI_SEARCH_RESEND_MAX_PER_CYCLE
+
+
+async def _defer_taiyi_search_after_resend_limit(now, elapsed, reason):
+    _set_phase("idle", now)
+    state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
+    _clear_chain_msg_ids()
+    state["taiyi_last_error"] = f"{reason}，已达本轮补发上限，1h 后校准"
+    save_state()
+    await send_audit_log(
+        f"🧯 太一搜寻{reason}（{elapsed}s），已达本轮补发上限，1h 后校准，避免搜寻节点风暴。",
+        scope="identity",
+    )
 
 
 async def _pause_taiyi_retry_if_bot_silent(stale_phase, entered_at, now, elapsed):
@@ -304,6 +339,9 @@ def get_taiyi_status_text():
     fail_count = len(state.get("taiyi_failure_history", []))
     if fail_count > 0:
         lines.append(f"- 24h 失败计数: {fail_count}/{TAIYI_FAILURE_LIMIT}")
+    resend_count = _get_search_resend_count()
+    if resend_count > 0:
+        lines.append(f"- 本轮搜寻补发: {resend_count}/{TAIYI_SEARCH_RESEND_MAX_PER_CYCLE}")
 
     last_err = state.get("taiyi_last_error", "")
     if last_err:
@@ -339,6 +377,7 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
     # 成功
     if RE_YINDAO_SUCCESS.search(text) and "100点神识" in text:
         _reset_failures()
+        _reset_search_resend_count()
         sent_at = _current_yindao_sent_at(now)
         # 引道确认成功才写 12h 节拍（不预写）
         state["next_taiyi_cycle_time"] = _next_fixed_cycle(sent_at)
@@ -359,6 +398,7 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
 
     # CD：大道感悟需循序渐进
     if RE_YINDAO_CD.search(text):
+        _reset_search_resend_count()
         wait_sec = parse_wait_time(text)
         if has_wait_time(text) and wait_sec > 0:
             state["next_taiyi_cycle_time"] = now + wait_sec + CD_BUFFER_SEC
@@ -410,6 +450,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
     # 找到节点（含"获得：【空间节点·X】"）
     m = RE_NODE_NAME.search(text)
     if m:
+        _reset_search_resend_count()
         node_name = m.group(1).strip()
         if not _is_safe_node_name(node_name):
             _set_phase("idle", now)
@@ -460,6 +501,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
 
     # 一无所获 / 击败天魔（虚空漫游、斩妖除魔）
     if "【虚空漫游】" in text or "【斩妖除魔】" in text:
+        _reset_search_resend_count()
         _set_phase("idle", now)
         _ensure_next_fixed_cycle(now)
         _clear_chain_msg_ids()
@@ -471,6 +513,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
 
     # 搜寻节点固定 CD：如果本轮实际未到点，直接尊重 bot 给出的剩余时间。
     if _looks_like_node_search_cd(text):
+        _reset_search_resend_count()
         wait_sec = parse_wait_time(text)
         if wait_sec > 0:
             state["next_taiyi_cycle_time"] = now + wait_sec + CD_BUFFER_SEC
@@ -485,6 +528,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
 
     # 修为不足
     if "修为不足" in text and "神游太虚" in text:
+        _reset_search_resend_count()
         backoff = record_resource_shortage(TAIYI_NODE_SEARCH_RESOURCE_KEY, now, reason=text)
         due_at = float(backoff.get("next_at", 0) or 0)
         _set_phase("idle", now)
@@ -500,6 +544,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
 
     # 神识不足（理论上引道刚补 100 不应该发生，记录为异常）
     if "神识不足" in text and "虚空中定位" in text:
+        _reset_search_resend_count()
         backoff = record_resource_shortage(TAIYI_NODE_SEARCH_RESOURCE_KEY, now, reason=text)
         due_at = float(backoff.get("next_at", 0) or 0)
         _set_phase("idle", now)
@@ -515,6 +560,7 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
 
     # 境界不足
     if "【境界不足】" in text and "化神期" in text:
+        _reset_search_resend_count()
         _freeze(now, "境界不足（化神期前）")
         _clear_chain_msg_ids()
         save_state()
@@ -548,6 +594,7 @@ async def handle_taiyi_node_define_reply(text, now, reply_to, matched_family=Non
         return True
 
     if RE_DEFINE_SUCCESS.search(text):
+        _reset_search_resend_count()
         # 提取额外产出做 audit
         node_name = state.get("taiyi_pending_node_name", "?")
         state["taiyi_pending_node_name"] = ""
@@ -628,13 +675,21 @@ async def run_taiyi_scheduler(now):
 
         elif stale_phase == "search_scheduled":
             # 联动延迟任务挂了（如服务重启），立即补发搜寻
-            await send_audit_log(f"🩺 太一搜寻延迟任务异常（卡 {elapsed}s），立即补发 .搜寻节点。")
+            if _search_resend_exhausted():
+                await _defer_taiyi_search_after_resend_limit(now, elapsed, "延迟任务异常")
+                return
+            _mark_search_resend("延迟任务异常")
+            await send_audit_log(f"🩺 太一搜寻延迟任务异常（卡 {elapsed}s），补发 .搜寻节点（本轮最多 {TAIYI_SEARCH_RESEND_MAX_PER_CYCLE} 次）。")
             await _send_taiyi_search(now)
             return
 
         elif stale_phase == "search_pending":
             # 搜寻 reply 漏了：补发搜寻
-            await send_audit_log(f"🩺 太一搜寻 reply {elapsed}s 未回，按吞回判定，补发 .搜寻节点。")
+            if _search_resend_exhausted():
+                await _defer_taiyi_search_after_resend_limit(now, elapsed, "reply 未回")
+                return
+            _mark_search_resend("reply 未回")
+            await send_audit_log(f"🩺 太一搜寻 reply {elapsed}s 未回，按吞回判定补发 .搜寻节点（本轮最多 {TAIYI_SEARCH_RESEND_MAX_PER_CYCLE} 次）。")
             await _send_taiyi_search(now)
             return
 
@@ -676,6 +731,7 @@ async def run_taiyi_scheduler(now):
         return
 
     cmd = _resolve_yindao_command()
+    _reset_search_resend_count()
     _set_phase("yindao_pending", now)
     state["taiyi_yindao_msg_id"] = 0
     state["taiyi_node_search_msg_id"] = 0

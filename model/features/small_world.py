@@ -621,6 +621,16 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
         )
         return True
 
+    if "当前没有凡人祈愿需要处理" in raw_text:
+        _clear_chain_pending()
+        if state.get("small_world_refresh_enabled"):
+            _schedule_refresh(now)
+        else:
+            _schedule_next_cycle(now)
+        state["small_world_last_error"] = ""
+        save_state()
+        return True
+
     if "显灵成功" in raw_text or "显灵失败" in raw_text:
         _clear_chain_pending()
         state["small_world_refresh_count"] = 0

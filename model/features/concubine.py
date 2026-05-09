@@ -175,6 +175,30 @@ def _is_current_reply(reply_to, state_key):
     return reply_to_msg_id == expected_msg_id
 
 
+def _is_strong_dream_terminal_text(text):
+    raw_text = str(text or "")
+    return (
+        _is_dream_cooldown_text(raw_text)
+        or "修为不足，共梦寻图" in raw_text
+        or "【入梦寻图】" in raw_text
+        or "【全群异闻·虚天残图】" in raw_text
+        or ("尚无侍妾" in raw_text and "共梦寻图" in raw_text)
+    )
+
+
+def _is_strong_tianji_terminal_text(text):
+    raw_text = str(text or "")
+    return (
+        "【天机代卜链】" in raw_text
+        or "天机链路尚未重铸" in raw_text
+        or _is_tianji_resource_shortage_text(raw_text)
+        or "情缘未至" in raw_text
+        or "情缘未深" in raw_text
+        or "无法为你卜算天机" in raw_text
+        or ("尚无侍妾" in raw_text and "代卜天机" in raw_text)
+    )
+
+
 def _normalize_identity_text(text):
     return RE_WHITESPACE.sub("", str(text or "").strip().lstrip("@")).casefold()
 
@@ -765,7 +789,7 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
             console_log(f"🌸 忽略非等待期入梦寻图回复（phase={phase}）。")
             return True
         console_log(f"🌸 接受手动/迟到的入梦寻图回复（phase={phase}）。")
-    elif not _is_current_reply(reply_to, "concubine_dream_msg_id"):
+    elif not _is_current_reply(reply_to, "concubine_dream_msg_id") and not _is_strong_dream_terminal_text(text):
         console_log("🌸 忽略迟到的入梦寻图回复。")
         return True
 
@@ -1067,7 +1091,7 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
             console_log(f"🌸 忽略非等待期天机代卜回复（phase={phase}）。")
             return True
         console_log(f"🌸 接受手动/迟到的天机代卜回复（phase={phase}）。")
-    elif not _is_current_reply(reply_to, "concubine_tianji_msg_id"):
+    elif not _is_current_reply(reply_to, "concubine_tianji_msg_id") and not _is_strong_tianji_terminal_text(text):
         console_log("🌸 忽略迟到的天机代卜回复。")
         return True
 

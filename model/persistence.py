@@ -516,6 +516,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_freeze_reason TEXT NOT NULL DEFAULT ''")
     if "taiyi_failure_history" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_failure_history TEXT NOT NULL DEFAULT '[]'")
+    if "taiyi_search_resend_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_search_resend_count INTEGER NOT NULL DEFAULT 0")
     if "taiyi_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_last_error TEXT NOT NULL DEFAULT ''")
     if "next_taiyi_cycle_time" not in timer_columns:
