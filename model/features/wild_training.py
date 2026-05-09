@@ -15,6 +15,11 @@ WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
 WILD_TRAINING_TITLE = "【野外历练"
+WILD_TRAINING_RESULT_TITLES = (
+    "【野外历练 · 妖兽遭遇】",
+    "【野外历练 · 负伤而归】",
+    "【野外历练 · 灵机暗藏】",
+)
 WILD_TRAINING_RESULT_MARKERS = ("【野外历练", "修为", "获得", "负伤", "妖兽", "灵机")
 WILD_TRAINING_CD_KEYWORDS = ("山中灵机未复", "冷却", "请在", "等待")
 RE_WILD_TRAINING_XIUWEI = re.compile(r"修为(?:折损)?\s*([+-]\s*[\d,]+)")
@@ -100,6 +105,16 @@ def _is_wild_training_reply(text, reply_to, matched_family=None):
     return orig_cmd == CMD_WILD_TRAINING or orig_cmd.startswith(f"{CMD_WILD_TRAINING} ") or raw_text.startswith(WILD_TRAINING_TITLE)
 
 
+def _extract_result_title(text):
+    raw_text = str(text or "").strip()
+    for title in WILD_TRAINING_RESULT_TITLES:
+        if raw_text.startswith(title):
+            return title.replace("【野外历练 · ", "").replace("】", "")
+    if raw_text.startswith("【野外历练】") and "选择【" in raw_text:
+        return "已出发"
+    return ""
+
+
 def _result_summary(text):
     raw_text = str(text or "").strip()
     parts = []
@@ -111,11 +126,7 @@ def _result_summary(text):
         parts.append("奖励:" + "、".join(rewards))
     if parts:
         return " ｜ ".join(parts)
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if line.startswith("【野外历练"):
-            return line[:40]
-    return raw_text[:60] or "已处理"
+    return _extract_result_title(raw_text) or "未知结果"
 
 
 async def handle_wild_training_reply(text, now, reply_to, matched_family=None):

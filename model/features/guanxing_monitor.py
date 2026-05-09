@@ -152,12 +152,11 @@ async def handle_guanxing_monitor_broadcast(text, now):
         return False
 
     slot_info, _changed = _sync_guanxing_monitor_slot(now)
+    if not _is_guanxing_monitor_judge_window_open(now, slot_info):
+        return True
+
     state["guanxing_monitor_seen_panel"] = True
     state["guanxing_monitor_last_seen_at"] = float(now)
-
-    if not _is_guanxing_monitor_judge_window_open(now, slot_info):
-        save_state()
-        return True
 
     evolution_value = _extract_guanxing_monitor_evolution_value(raw_text)
     if evolution_value:

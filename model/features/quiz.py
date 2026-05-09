@@ -611,8 +611,12 @@ def clear_quiz_state(*, persist=False, keep_last_error=False):
 
 
 def _find_quiz_identity_id(text, *, enabled_only=True):
-    compact_text = _normalize_text(text)
-    if not compact_text:
+    target_keys = {
+        _normalize_quiz_target_key(target_tag)
+        for target_tag in RE_QUIZ_TARGET_TAG.findall(text or "")
+    }
+    target_keys.discard("")
+    if not target_keys:
         return None
     matched_ids = []
     for identity_id in get_identity_ids():
@@ -621,8 +625,8 @@ def _find_quiz_identity_id(text, *, enabled_only=True):
         tags = get_send_as_tags(identity_id)
         if not tags:
             continue
-        normalized_tags = {_normalize_text(tag) for tag in tags if tag}
-        if any(tag and tag in compact_text for tag in normalized_tags):
+        normalized_tags = {_normalize_quiz_target_key(tag) for tag in tags if tag}
+        if target_keys & normalized_tags:
             matched_ids.append(identity_id)
     if len(matched_ids) == 1:
         return matched_ids[0]
