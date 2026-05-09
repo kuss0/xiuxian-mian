@@ -21,6 +21,7 @@
 </span>
 <button type='button' class='btn btn-secondary' data-open-basic-config='1'>基础配置</button>
 <button type='button' class='btn btn-secondary' data-open-storage-bag='1'>储物袋</button>
+<button type='button' class='btn btn-secondary' data-open-logs='1'>日志</button>
 <button type='button' class='btn btn-refresh' data-refresh-now='1'>手动刷新</button>
 <a class='btn btn-secondary' href='/api/state' target='_blank' rel='noreferrer'>JSON</a>
 </div>
@@ -174,11 +175,30 @@
 </div>    <div id='storage-bag-table-wrap' class='storage-bag-table-wrap'>
 </div>  </div>
 </div>
+<div id='logs-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide logs-modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>消息日志</h3>
+<button class='icon-btn' type='button' data-close-modal='logs'>×</button>
+</div>    <div class='logs-toolbar'>
+<select id='logs-date' class='text-input logs-date-select'></select>
+<input id='logs-search' class='text-input logs-search-input' placeholder='搜索文本、sender、msg_id' />
+<input id='logs-sender' class='text-input logs-sender-input' inputmode='numeric' placeholder='sender_id' />
+<button type='button' class='btn btn-secondary' id='logs-refresh-btn'>刷新</button>
+</div>    <div id='logs-types' class='logs-types'>
+<label class='checkbox-inline checkbox-inline-small'><input type='checkbox' data-log-type='sent' checked /> sent</label>
+<label class='checkbox-inline checkbox-inline-small'><input type='checkbox' data-log-type='message' checked /> message</label>
+<label class='checkbox-inline checkbox-inline-small'><input type='checkbox' data-log-type='edit' checked /> edit</label>
+</div>    <div id='logs-meta' class='logs-meta'></div>
+<div id='logs-list' class='logs-list'></div>
+<div id='logs-footer' class='logs-footer'>
+<button type='button' class='btn btn-secondary' id='logs-load-more-btn'>加载更多</button>
+</div>  </div>
+</div>
 <script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
 <script src='/static/js/app.js'></script>
 <script src='/static/js/queue_ui.js'></script>
 <script src='/static/js/wild_training_ui.js'></script>
 <script src='/static/js/account_logout.js'></script>
 <script src='/static/js/storage_bag_ui.js'></script>
+<script src='/static/js/logs_ui.js'></script>
 </body>
 </html>

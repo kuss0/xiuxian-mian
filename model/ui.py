@@ -4,6 +4,7 @@ import html
 import importlib.util
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -33,6 +34,7 @@ except ImportError:
 
 from .config import (
     CMD_TIANTI_GANGFENG,
+    MESSAGES_DIR,
     MODULE_KEY_MAP,
     STARGAZER_STAR_CHOICES,
     TAIYI_VALID_ELEMENTS,
@@ -143,6 +145,7 @@ UI_STATIC_CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
 }
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
+_LOG_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
 
 
 def _is_storage_bag_protected_identity(send_as_id):
@@ -243,6 +246,101 @@ def get_storage_bag_snapshot():
         "rows": rows,
         "items": sorted(item_names, key=lambda name: (name != "灵石", name)),
         "totals": totals,
+    }
+
+
+def _list_message_log_days():
+    days = []
+    try:
+        for file_name in os.listdir(MESSAGES_DIR):
+            matched = _LOG_FILE_RE.match(file_name)
+            if matched:
+                days.append(matched.group(1))
+    except OSError:
+        return []
+    return sorted(days, reverse=True)
+
+
+def _read_log_entries(date_str, q_text="", types_set=None, sender_id=0, offset=0, limit=80, newest_first=True):
+    date_str = str(date_str or "").strip()
+    if not date_str or not _LOG_FILE_RE.match(f"{date_str}.log"):
+        return {"entries": [], "total": 0, "has_more": False, "offset": 0, "limit": int(limit or 80)}
+
+    full_path = os.path.abspath(os.path.join(MESSAGES_DIR, f"{date_str}.log"))
+    messages_dir = os.path.abspath(MESSAGES_DIR)
+    if not full_path.startswith(messages_dir + os.sep) or not os.path.isfile(full_path):
+        return {"entries": [], "total": 0, "has_more": False, "offset": 0, "limit": int(limit or 80)}
+
+    q_text = str(q_text or "").strip().casefold()
+    types_set = {str(item or "").strip() for item in (types_set or []) if str(item or "").strip()}
+    try:
+        sender_id = int(sender_id or 0)
+    except (TypeError, ValueError):
+        sender_id = 0
+    try:
+        offset = max(0, int(offset or 0))
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = min(200, max(1, int(limit or 80)))
+    except (TypeError, ValueError):
+        limit = 80
+
+    entries = []
+    try:
+        with open(full_path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                event_type = str(item.get("event_type") or "")
+                text = str(item.get("text") or "")
+                if types_set and event_type not in types_set:
+                    continue
+                if sender_id and int(item.get("sender_id") or 0) != sender_id:
+                    continue
+                if q_text:
+                    haystack = "\n".join(
+                        [
+                            str(item.get("ts") or ""),
+                            event_type,
+                            str(item.get("sender_id") or ""),
+                            str(item.get("message_id") or ""),
+                            text,
+                        ]
+                    ).casefold()
+                    if q_text not in haystack:
+                        continue
+                entries.append(
+                    {
+                        "ts": str(item.get("ts") or ""),
+                        "event_type": event_type,
+                        "message_id": int(item.get("message_id") or 0),
+                        "sender_id": int(item.get("sender_id") or 0),
+                        "topic_id": int(item.get("topic_id") or 0),
+                        "reply_to_msg_id": int(item.get("reply_to_msg_id") or 0),
+                        "text": text,
+                    }
+                )
+    except OSError:
+        entries = []
+
+    if newest_first:
+        entries.reverse()
+    total = len(entries)
+    sliced = entries[offset: offset + limit]
+    return {
+        "entries": sliced,
+        "total": total,
+        "has_more": offset + limit < total,
+        "offset": offset,
+        "limit": limit,
     }
 
 
@@ -1749,6 +1847,54 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     body = _make_json_payload(True, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")))
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 200 OK",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+            elif path == "/api/logs/days":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "GET":
+                    _write_method_not_allowed(writer)
+                else:
+                    body = _make_json_payload(True, extra={"days": _list_message_log_days()})
+                    _write_response(
+                        writer,
+                        "HTTP/1.1 200 OK",
+                        body,
+                        content_type="application/json; charset=utf-8",
+                        extra_headers=auth_headers,
+                    )
+            elif path == "/api/logs/entries":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "GET":
+                    _write_method_not_allowed(writer)
+                else:
+                    date_str = query.get("date", [""])[0]
+                    q_text = query.get("q", [""])[0]
+                    types_text = query.get("types", [""])[0]
+                    types_set = {item.strip() for item in str(types_text or "").split(",") if item.strip()}
+                    sender_text = query.get("sender_id", ["0"])[0]
+                    offset_text = query.get("offset", ["0"])[0]
+                    limit_text = query.get("limit", ["80"])[0]
+                    try:
+                        sender_id_val = int(sender_text or 0)
+                    except (TypeError, ValueError):
+                        sender_id_val = 0
+                    try:
+                        offset_val = int(offset_text or 0)
+                    except (TypeError, ValueError):
+                        offset_val = 0
+                    try:
+                        limit_val = int(limit_text or 80)
+                    except (TypeError, ValueError):
+                        limit_val = 80
+                    log_data = _read_log_entries(date_str, q_text, types_set, sender_id_val, offset_val, limit_val)
+                    body = _make_json_payload(True, extra=log_data)
                     _write_response(
                         writer,
                         "HTTP/1.1 200 OK",
