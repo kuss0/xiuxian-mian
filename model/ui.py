@@ -157,10 +157,13 @@ def _is_storage_bag_protected_identity(send_as_id):
 
 
 def _format_storage_bag_updated_at(record):
-    updated_at = float((record or {}).get("updated_at") or 0)
+    try:
+        updated_at = float((record or {}).get("updated_at") or 0)
+    except (TypeError, ValueError):
+        updated_at = 0
     if updated_at <= 0:
-        return "未解析"
-    return fmt_abs_ts(updated_at)
+        return (record or {}).get("updated_at_text") or "未解析"
+    return datetime.fromtimestamp(updated_at, TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_storage_bag_sync_snapshot():
@@ -213,24 +216,33 @@ def get_storage_bag_snapshot():
     records = get_storage_bag_records()
     rows = []
     item_names = set()
+    totals = {}
     for identity_id in get_identity_ids():
         identity_id = int(identity_id)
+        profile = get_send_as_profile(identity_id)
         record = records.get(str(identity_id)) or {}
         items = record.get("items") if isinstance(record, dict) else {}
         items = items if isinstance(items, dict) else {}
         item_names.update(str(name) for name in items.keys())
+        normalized_items = {str(name): int(count or 0) for name, count in items.items()}
+        for name, count in normalized_items.items():
+            totals[name] = totals.get(name, 0) + int(count or 0)
+        label = profile.get("label") or profile.get("username") or str(identity_id)
         rows.append({
             "identity_id": identity_id,
-            "label": get_identity_ui_display_name(identity_id),
+            "label": label,
+            "display_name": get_identity_ui_display_name(identity_id),
             "protected": _is_storage_bag_protected_identity(identity_id),
             "updated_at": _format_storage_bag_updated_at(record),
             "updated_at_raw": float((record or {}).get("updated_at") or 0),
-            "items": items,
+            "items": normalized_items,
             "empty": bool((record or {}).get("empty")),
         })
+    rows.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
     return {
         "rows": rows,
-        "items": sorted(item_names),
+        "items": sorted(item_names, key=lambda name: (name != "灵石", name)),
+        "totals": totals,
     }
 
 
@@ -321,6 +333,9 @@ def get_identity_ui_snapshot(send_as_id):
             "label": profile.get("label") or "",
             "daohao": profile.get("daohao") or "",
             "realm": profile.get("realm") or "",
+            "spiritual_root_type": profile.get("spiritual_root_type") or "",
+            "spiritual_root_attrs": profile.get("spiritual_root_attrs") or "",
+            "replica_professions": profile.get("replica_professions") or "",
             "pet_name": profile.get("pet_name") or "",
             "pet_trial_name": profile.get("pet_trial_name") or profile.get("pet_name") or "",
             "sect_name": profile.get("sect_name") or "",
@@ -1108,7 +1123,7 @@ def _build_qr_svg_markup(qr_url):
     if segno is None:
         return ""
     try:
-        return segno.make(qr_url).svg_inline(scale=6)
+        return segno.make(qr_url).svg_inline(scale=6, omitsize=True)
     except Exception:
         return ""
 

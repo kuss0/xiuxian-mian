@@ -170,12 +170,14 @@ RE_IDENTITY_INFO_NAME = re.compile(r"(?:道号|修士)[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_WITH_SECT = re.compile(r"境界[:：]\s*\S+\s*\(([^)]+)\)")
 RE_IDENTITY_INFO_SECT = re.compile(r"宗门[:：]\s*【([^】]+)】")
+RE_IDENTITY_INFO_SPIRITUAL_ROOT = re.compile(r"灵根\s*[:：]\s*([^\n\r]+)")
+RE_BATTLE_POWER_SPIRITUAL_ROOT = re.compile(r"灵根【([^】]+)】")
 RE_IDENTITY_INFO_XIUWEI = re.compile(r"修为[:：]\s*([\d,]+)\s*/\s*([\d,]+)")
 RE_REALM_BREAKTHROUGH = re.compile(r"成功突破至【([^】]+)】")
 IDENTITY_INFO_REFRESH_TIMEOUT_SEC = 180
 IDENTITY_INFO_FOLLOWUP_DELAY_MIN_SEC = 20
 IDENTITY_INFO_FOLLOWUP_DELAY_MAX_SEC = 25
-IDENTITY_REFRESH_REQUIRED_FIELDS = ("daohao", "sect_name", "realm", "xiuwei")
+IDENTITY_REFRESH_REQUIRED_FIELDS = ("daohao", "sect_name", "realm", "spiritual_root_type", "xiuwei")
 _IMMEDIATE_ENABLE_RETRY_DELAY_SEC = 1
 RECOVERY_SPREAD_MIN_SEC = 60
 RECOVERY_SPREAD_MAX_SEC = 1200
@@ -1903,6 +1905,34 @@ def _get_identity_info_refresh_status(send_as_id, now=None):
         }
 
 
+def _parse_spiritual_root_text(text):
+    raw_text = str(text or "").strip()
+    raw_text = raw_text.split("\n", 1)[0].strip().strip(" !！。.,，")
+    raw_text = raw_text.replace("（", "(").replace("）", ")")
+    raw_text = raw_text.strip("【】")
+    match = re.fullmatch(r"([^()]+)\(([^()]+)\)", raw_text)
+    if match:
+        return (match.group(1) or "").strip(), (match.group(2) or "").strip()
+    raw_text = raw_text.split(",", 1)[0].split("，", 1)[0].strip()
+    return raw_text, ""
+
+
+def _infer_replica_professions(spiritual_root_attrs):
+    attrs_text = str(spiritual_root_attrs or "")
+    rules = (
+        ("破军", {"金", "雷"}),
+        ("御山", {"土"}),
+        ("灵医", {"木", "水"}),
+        ("咒师", {"火", "暗"}),
+        ("影刃", {"风", "冰"}),
+    )
+    professions = []
+    for profession, attrs in rules:
+        if any(attr in attrs_text for attr in attrs):
+            professions.append(profession)
+    return "|".join(professions)
+
+
 def _extract_identity_refresh_payload(text, *, card_pattern, require_xiuwei=False):
     raw_text = text or ""
     if not card_pattern.search(raw_text):
@@ -1926,6 +1956,14 @@ def _extract_identity_refresh_payload(text, *, card_pattern, require_xiuwei=Fals
             sect_name = (sect_from_realm.group(1) or "").strip()
             if sect_name:
                 payload["sect_name"] = sect_name
+
+    spiritual_root_match = RE_IDENTITY_INFO_SPIRITUAL_ROOT.search(raw_text) or RE_BATTLE_POWER_SPIRITUAL_ROOT.search(raw_text)
+    if spiritual_root_match:
+        spiritual_root_type, spiritual_root_attrs = _parse_spiritual_root_text(spiritual_root_match.group(1))
+        if spiritual_root_type:
+            payload["spiritual_root_type"] = spiritual_root_type
+            payload["spiritual_root_attrs"] = spiritual_root_attrs
+            payload["replica_professions"] = _infer_replica_professions(spiritual_root_attrs)
 
     xiuwei_match = RE_IDENTITY_INFO_XIUWEI.search(raw_text)
     if xiuwei_match:
@@ -1960,6 +1998,9 @@ def _normalize_identity_refresh_payload(payload):
     normalized = {
         "daohao": str(payload.get("daohao") or "").strip(),
         "realm": str(payload.get("realm") or "").strip(),
+        "spiritual_root_type": str(payload.get("spiritual_root_type") or "").strip(),
+        "spiritual_root_attrs": str(payload.get("spiritual_root_attrs") or "").strip(),
+        "replica_professions": str(payload.get("replica_professions") or "").strip(),
         "sect_name": str(payload.get("sect_name") or "").strip(),
         "xiuwei_current": int(payload.get("xiuwei_current") or 0),
         "xiuwei_max": int(payload.get("xiuwei_max") or 0),
@@ -1976,6 +2017,10 @@ def _merge_identity_refresh_payload(base_payload, overlay_payload):
         merged_payload["daohao"] = overlay_payload["daohao"]
     if overlay_payload["realm"]:
         merged_payload["realm"] = overlay_payload["realm"]
+    if overlay_payload["spiritual_root_type"]:
+        merged_payload["spiritual_root_type"] = overlay_payload["spiritual_root_type"]
+        merged_payload["spiritual_root_attrs"] = overlay_payload["spiritual_root_attrs"]
+        merged_payload["replica_professions"] = overlay_payload["replica_professions"]
     if overlay_payload["sect_name"]:
         merged_payload["sect_name"] = overlay_payload["sect_name"]
     if int(overlay_payload.get("xiuwei_max") or 0) > 0:
@@ -1990,6 +2035,9 @@ def _update_identity_profile_from_refresh_payload(send_as_id, payload, now):
         send_as_id,
         daohao=normalized_payload["daohao"],
         realm=normalized_payload["realm"],
+        spiritual_root_type=normalized_payload["spiritual_root_type"],
+        spiritual_root_attrs=normalized_payload["spiritual_root_attrs"],
+        replica_professions=normalized_payload["replica_professions"],
         sect_name=normalized_payload["sect_name"],
         xiuwei_current=normalized_payload.get("xiuwei_current", 0),
         xiuwei_max=normalized_payload.get("xiuwei_max", 0),

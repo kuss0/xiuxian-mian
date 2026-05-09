@@ -145,6 +145,12 @@
   color: #f59e0b;
 }
 
+.storage-bag-total {
+  color: #bfdbfe;
+  font-weight: 700;
+  background: #0b1220;
+}
+
 @media (max-width: 980px) {
   .modal-card {
     max-height: calc(100vh - 24px);

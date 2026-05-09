@@ -74,6 +74,9 @@ SEND_AS_PROFILE_DEFAULTS = {
     "label": "",
     "daohao": "",
     "realm": "",
+    "spiritual_root_type": "",
+    "spiritual_root_attrs": "",
+    "replica_professions": "",
     "pet_name": DEFAULT_PET_NAME,
     "pet_trial_name": "",
     "sect_name": "",
@@ -566,7 +569,7 @@ def get_identity_state(send_as_id=None):
 def _coerce_send_as_profile_field(field_name, value):
     if field_name in {"username", "label"}:
         return value or ""
-    if field_name in {"daohao", "realm", "sect_name", "jiyin_choice", "nanlong_choice"}:
+    if field_name in {"daohao", "realm", "spiritual_root_type", "spiritual_root_attrs", "replica_professions", "sect_name", "jiyin_choice", "nanlong_choice"}:
         return (value or "").strip()
     if field_name == "stargazer_star_choice":
         normalized = (value or "").strip()
@@ -645,6 +648,9 @@ def set_send_as_profile(
     label="",
     daohao=None,
     realm=None,
+    spiritual_root_type=None,
+    spiritual_root_attrs=None,
+    replica_professions=None,
     pet_name=None,
     pet_trial_name=None,
     sect_name=None,
@@ -668,6 +674,9 @@ def set_send_as_profile(
         label=label,
         daohao=daohao,
         realm=realm,
+        spiritual_root_type=spiritual_root_type,
+        spiritual_root_attrs=spiritual_root_attrs,
+        replica_professions=replica_professions,
         pet_name=pet_name,
         pet_trial_name=pet_trial_name,
         sect_name=sect_name,

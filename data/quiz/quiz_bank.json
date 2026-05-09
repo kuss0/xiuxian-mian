@@ -318,5 +318,13 @@
     "C": "大鹏",
     "D": "青鸾",
     "answer": "B"
+  },
+  {
+    "question": "Python语言的创始人，在凡人界被尊称为？",
+    "A": "龟叔 (Guido van Rossum)",
+    "B": "林纳斯 (Linus Torvalds)",
+    "C": "高斯林 (James Gosling)",
+    "D": "比尔盖茨",
+    "answer": "A"
   }
 ]

@@ -92,6 +92,7 @@
     const data = snapshot().storage_bag || {};
     const rows = Array.isArray(data.rows) ? data.rows : [];
     const items = Array.isArray(data.items) ? data.items : [];
+    const totals = data.totals || {};
     const ids = selectedIds();
     renderControls(rows);
     if (!rows.length) {
@@ -104,15 +105,15 @@
       const checkbox = row.protected
         ? ''
         : `<input type="checkbox" name="storage_bag_identity_id" value="${esc(identityId)}"${ids.has(identityId) ? ' checked' : ''} />`;
-      return `<th><label class="storage-bag-head">${checkbox}<span>${esc(row.label || identityId)}</span></label><small>${esc(row.updated_at || '未解析')} ${protectedText}</small></th>`;
+      return `<th><label class="storage-bag-head">${checkbox}<span>${esc(row.label || identityId)}</span></label><small title="${esc(row.display_name || row.label || identityId)}">${esc(row.updated_at || '未解析')} ${protectedText}</small></th>`;
     }).join('');
     const body = items.length ? items.map(function (item) {
-      return `<tr><th>${esc(item)}</th>${rows.map(function (row) {
+      return `<tr><th>${esc(item)}</th><td class="storage-bag-total">${Number(totals[item] || 0).toLocaleString()}</td>${rows.map(function (row) {
         const count = Number((row.items || {})[item] || 0);
         return `<td>${count ? esc(count.toLocaleString()) : ''}</td>`;
       }).join('')}</tr>`;
-    }).join('') : `<tr><th>暂无物品</th>${rows.map(function () { return '<td></td>'; }).join('')}</tr>`;
-    wrap.innerHTML = `<table class="storage-bag-table"><thead><tr><th>物品</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
+    }).join('') : `<tr><th>暂无物品</th><td></td>${rows.map(function () { return '<td></td>'; }).join('')}</tr>`;
+    wrap.innerHTML = `<table class="storage-bag-table"><thead><tr><th>物品</th><th>总量</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
   }
 
   function openStorageBagModal() {
