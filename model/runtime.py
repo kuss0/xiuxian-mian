@@ -941,13 +941,33 @@ def console_log(content, *, scope="auto", send_as_id=None, limit=180):
     print(f"[{ts}] {message}")
 
 
-async def reply_log_group_message(event, text, *, audit_on_error=True, error_prefix="❌ 日志群回复失败", link_preview=True, scope="global", send_as_id=None, limit=350):
+async def reply_log_group_message(
+    event,
+    text,
+    *,
+    audit_on_error=True,
+    error_prefix="❌ 日志群回复失败",
+    link_preview=True,
+    scope="global",
+    send_as_id=None,
+    limit=350,
+    parse_mode=None,
+    preformatted=False,
+):
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     # forum 群需要 message_thread_id 才能回复
     reply_header = getattr(event, "reply_to", None)
     thread_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0) or int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
-    message = _format_log_message(text, scope=scope, send_as_id=send_as_id, limit=limit)
-    ok = await _send_log_group_message(message, reply_to_msg_id=reply_to_msg_id, message_thread_id=thread_id, link_preview=link_preview)
+    message = str(text or "") if preformatted else _format_log_message(text, scope=scope, send_as_id=send_as_id, limit=limit)
+    ok = await _send_log_group_message(
+        message,
+        reply_to_msg_id=reply_to_msg_id,
+        message_thread_id=thread_id,
+        link_preview=link_preview,
+        parse_mode=parse_mode,
+    )
+    if not ok and reply_to_msg_id:
+        ok = await _send_log_group_message(message, link_preview=link_preview, parse_mode=parse_mode)
     if ok:
         return True
     print(f"reply_log_group_message failed | text={_truncate_log_text(text, limit=240)}")

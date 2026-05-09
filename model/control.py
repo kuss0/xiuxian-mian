@@ -1,4 +1,5 @@
 import asyncio
+import html
 import re
 import random
 import sys
@@ -67,6 +68,7 @@ from .config import (
     RE_CMD_ENABLE_PATTERNS,
     RE_CMD_GLOBAL_PAUSE,
     RE_CMD_GLOBAL_RESUME,
+    RE_CMD_HELP,
     RE_CMD_LOGIN,
     RE_CMD_SINGLE_STATUS_PATTERNS,
     RE_CMD_STATUS,
@@ -1116,7 +1118,17 @@ def split_long_text(text, limit=3200):
     return chunks or [raw[:limit]]
 
 
-async def reply_long_log_group_message(event, text, *, error_prefix="❌ 日志群回复失败", scope="global", limit=3200):
+async def reply_long_log_group_message(
+    event,
+    text,
+    *,
+    error_prefix="❌ 日志群回复失败",
+    scope="global",
+    limit=3200,
+    link_preview=True,
+    parse_mode=None,
+    preformatted=False,
+):
     chunks = split_long_text(text, limit=limit)
     total = len(chunks)
     for index, chunk in enumerate(chunks, start=1):
@@ -1127,6 +1139,9 @@ async def reply_long_log_group_message(event, text, *, error_prefix="❌ 日志�
             error_prefix=error_prefix,
             scope=scope,
             limit=limit + 32,
+            link_preview=link_preview,
+            parse_mode=parse_mode,
+            preformatted=preformatted,
         )
         if not ok:
             return False
@@ -1188,6 +1203,82 @@ def get_single_module_status_text(module_name, send_as_id=None):
     if len(blocks) == 1:
         return blocks[0]
     return "\n\n".join(blocks)
+
+
+def _format_log_group_card_html(title, body, *, note=None):
+    body_text = str(body or "").strip() or "-"
+    title_text = html.escape(str(title or "状态"))
+    escaped_body = html.escape(body_text)
+    lines = [f"<b>{title_text}</b>", f"<pre>{escaped_body}</pre>"]
+    if note:
+        lines.append(html.escape(str(note)))
+    return "\n".join(lines)
+
+
+async def _reply_log_group_card(event, title, body, *, error_prefix):
+    chunks = split_long_text(str(body or ""), limit=2800)
+    total = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        chunk_title = f"{title} ({index}/{total})" if total > 1 else title
+        ok = await reply_log_group_message(
+            event,
+            _format_log_group_card_html(chunk_title, chunk),
+            error_prefix=error_prefix,
+            link_preview=False,
+            scope="global",
+            parse_mode="HTML",
+            preformatted=True,
+            limit=3200,
+        )
+        if not ok:
+            return False
+    return True
+
+
+def _format_log_group_help_html(send_as_id=None):
+    suffix = ""
+    if send_as_id is not None:
+        suffix = f" @{get_identity_display_name(send_as_id)}"
+    module_commands = [
+        ".状态",
+        ".灵树状态",
+        ".法宝状态",
+        ".器灵试炼状态",
+        ".观星台状态",
+        ".观星状态",
+        ".观星监控状态",
+        ".天阶状态",
+        ".玄骨考校状态",
+        ".极阴祖师状态",
+        ".侍妾状态",
+        ".天机代卜状态",
+        ".南陇侯状态",
+        ".元婴状态",
+        ".深度闭关状态",
+        ".第二元神状态",
+        ".太一状态",
+        ".小世界状态",
+        ".点卯状态",
+        ".闯塔状态",
+    ]
+    control_commands = [
+        ".全局暂停",
+        ".全局恢复",
+        ".登录",
+        ".储物袋",
+        ".开启/关闭模块名",
+        ".开启全部 / .关闭全部",
+    ]
+    body = (
+        "日志群指令\n"
+        "身份选择：指令后可追加 @昵称 或身份 ID，例如 .状态 @竹灵1\n\n"
+        "状态查询：\n"
+        + "\n".join(f"- {cmd}{suffix}" for cmd in module_commands)
+        + "\n\n控制指令：\n"
+        + "\n".join(f"- {cmd}{suffix if cmd.startswith('.开启') or cmd.startswith('.关闭') or cmd == '.状态' else ''}" for cmd in control_commands)
+        + "\n\n说明：这里列的是日志群控制/查询指令；游戏内指令仍由模块按全局锁排队。"
+    )
+    return _format_log_group_card_html("监控指令", body)
 
 
 def hydrate_identity_profile(send_as_entity):
@@ -2752,6 +2843,19 @@ async def handle_log_group_command(event):
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
 
+    if RE_CMD_HELP.match(text):
+        await reply_log_group_message(
+            event,
+            _format_log_group_help_html(explicit_identity_id),
+            error_prefix="❌ 指令帮助发送失败",
+            link_preview=False,
+            scope="global",
+            parse_mode="HTML",
+            preformatted=True,
+            limit=1800,
+        )
+        return True
+
     if RE_CMD_GLOBAL_PAUSE.match(text):
         ok, message = await toggle_global_enabled(False, source="log_group", actor_id=sender_id)
         status_text = "🌐 全局状态：已暂停" if ok else f"❌ {message}"
@@ -2839,21 +2943,21 @@ async def handle_log_group_command(event):
         return True
 
     if RE_CMD_STATUS.match(text):
-        await reply_long_log_group_message(
+        await _reply_log_group_card(
             event,
+            "模块状态",
             get_module_status_text(explicit_identity_id),
             error_prefix="❌ 模块状态发送失败",
-            scope="global",
         )
         return True
 
     for pattern, module_name in RE_CMD_SINGLE_STATUS_PATTERNS:
         if pattern.match(text):
-            await reply_long_log_group_message(
+            await _reply_log_group_card(
                 event,
+                f"{module_name}状态",
                 get_single_module_status_text(module_name, explicit_identity_id),
                 error_prefix=f"❌ {module_name}状态发送失败",
-                scope="global",
             )
             return True
 

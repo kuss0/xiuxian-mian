@@ -57,6 +57,55 @@
     return snapshot().storage_bag_sync || {};
   }
 
+  function itemCategory(name) {
+    const text = String(name || '');
+    if (!text) {
+      return '其他';
+    }
+    if (text.indexOf('灵石') >= 0) {
+      return '货币';
+    }
+    if (text.indexOf('妖丹') >= 0 || text.indexOf('兽核') >= 0 || text.indexOf('内丹') >= 0) {
+      return '妖丹';
+    }
+    if (text.indexOf('木髓') >= 0 || text.indexOf('灵木') >= 0 || text.indexOf('神木') >= 0) {
+      return '木髓';
+    }
+    if (text.indexOf('丹') >= 0 || text.indexOf('丸') >= 0 || text.indexOf('散') >= 0) {
+      return '丹药';
+    }
+    if (text.indexOf('符') >= 0 || text.indexOf('阵') >= 0) {
+      return '符阵';
+    }
+    if (text.indexOf('草') >= 0 || text.indexOf('花') >= 0 || text.indexOf('果') >= 0 || text.indexOf('芝') >= 0 || text.indexOf('参') >= 0 || text.indexOf('药') >= 0) {
+      return '灵草';
+    }
+    if (text.indexOf('矿') >= 0 || text.indexOf('石') >= 0 || text.indexOf('晶') >= 0 || text.indexOf('砂') >= 0 || text.indexOf('铁') >= 0 || text.indexOf('铜') >= 0 || text.indexOf('金') >= 0) {
+      return '矿材';
+    }
+    if (text.indexOf('皮') >= 0 || text.indexOf('骨') >= 0 || text.indexOf('血') >= 0 || text.indexOf('角') >= 0 || text.indexOf('鳞') >= 0 || text.indexOf('羽') >= 0) {
+      return '兽材';
+    }
+    return '材料';
+  }
+
+  function groupItems(items) {
+    const order = ['货币', '材料', '妖丹', '木髓', '丹药', '灵草', '矿材', '兽材', '符阵', '其他'];
+    const grouped = {};
+    (items || []).forEach(function (item) {
+      const category = itemCategory(item);
+      if (!grouped[category]) {
+        grouped[category] = [];
+      }
+      grouped[category].push(item);
+    });
+    return order.filter(function (category) {
+      return grouped[category] && grouped[category].length;
+    }).map(function (category) {
+      return { category: category, items: grouped[category] };
+    });
+  }
+
   function renderControls(rows) {
     const btn = document.getElementById('storage-bag-sync-btn');
     const selectAll = document.getElementById('storage-bag-select-all');
@@ -107,11 +156,16 @@
         : `<input type="checkbox" name="storage_bag_identity_id" value="${esc(identityId)}"${ids.has(identityId) ? ' checked' : ''} />`;
       return `<th><label class="storage-bag-head">${checkbox}<span>${esc(row.label || identityId)}</span></label><small title="${esc(row.display_name || row.label || identityId)}">${esc(row.updated_at || '未解析')} ${protectedText}</small></th>`;
     }).join('');
-    const body = items.length ? items.map(function (item) {
-      return `<tr><th>${esc(item)}</th><td class="storage-bag-total">${Number(totals[item] || 0).toLocaleString()}</td>${rows.map(function (row) {
-        const count = Number((row.items || {})[item] || 0);
-        return `<td>${count ? esc(count.toLocaleString()) : ''}</td>`;
-      }).join('')}</tr>`;
+    const groupedItems = groupItems(items);
+    const body = groupedItems.length ? groupedItems.map(function (group) {
+      const titleRow = `<tr class="storage-bag-category"><th>${esc(group.category)}</th><td></td>${rows.map(function () { return '<td></td>'; }).join('')}</tr>`;
+      const itemRows = group.items.map(function (item) {
+        return `<tr><th>${esc(item)}</th><td class="storage-bag-total">${Number(totals[item] || 0).toLocaleString()}</td>${rows.map(function (row) {
+          const count = Number((row.items || {})[item] || 0);
+          return `<td>${count ? esc(count.toLocaleString()) : ''}</td>`;
+        }).join('')}</tr>`;
+      }).join('');
+      return titleRow + itemRows;
     }).join('') : `<tr><th>暂无物品</th><td></td>${rows.map(function () { return '<td></td>'; }).join('')}</tr>`;
     wrap.innerHTML = `<table class="storage-bag-table"><thead><tr><th>物品</th><th>总量</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
   }

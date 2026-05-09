@@ -151,6 +151,14 @@
   background: #0b1220;
 }
 
+.storage-bag-category th,
+.storage-bag-category td {
+  background: #172033;
+  color: #cbd5e1;
+  font-weight: 700;
+  text-align: left;
+}
+
 @media (max-width: 980px) {
   .modal-card {
     max-height: calc(100vh - 24px);

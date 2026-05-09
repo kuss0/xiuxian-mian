@@ -517,6 +517,7 @@ RE_CMD_DISABLE_ALL = re.compile(r'^\.(关闭|关掉)全部$')
 RE_CMD_GLOBAL_PAUSE = re.compile(r'^\.全局暂停$')
 RE_CMD_GLOBAL_RESUME = re.compile(r'^\.全局(恢复|启动)$')
 RE_CMD_LOGIN = re.compile(r'^\.登录$')
+RE_CMD_HELP = re.compile(r'^\.(指令|帮助|help)$', re.I)
 RE_CMD_STATUS = re.compile(r'^\.(状态|模块状态)$')
 RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
@@ -533,6 +534,8 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
+    (re.compile(r'^\.第二元神状态$'), "第二元神"),
+    (re.compile(r'^\.太一状态$'), "太一"),
     (re.compile(r'^\.小世界状态$'), "小世界"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
     (re.compile(r'^\.闯塔状态$'), "闯塔"),
