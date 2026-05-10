@@ -46,6 +46,7 @@ from ..runtime import (
     console_log,
     get_bot_last_seen_at,
     mark_bot_health_suspect,
+    note_identity_weakness,
     send_audit_log,
     send_game_command,
 )
@@ -155,6 +156,28 @@ def _looks_like_node_search_cd(text):
     if "请在" not in raw and "后" not in raw:
         return False
     return any(keyword in raw for keyword in ("搜寻节点", "神游太虚", "虚空", "空间节点", "神识尚在恢复", "再行搜寻"))
+
+
+def _is_node_search_disaster(text):
+    raw = str(text or "")
+    return (
+        ("【大凶之兆】" in raw or "【大凶之兆！】" in raw)
+        and ("虚空风暴" in raw or "空间乱流" in raw)
+        and ("虚弱状态" in raw or "元气大伤" in raw)
+    )
+
+
+async def _close_node_search_disaster(text, now, *, source):
+    _reset_search_resend_count()
+    _set_phase("idle", now)
+    state["next_taiyi_cycle_time"] = _next_fixed_cycle(now)
+    _clear_chain_msg_ids()
+    _reset_failures()
+    reset_resource_shortage(TAIYI_NODE_SEARCH_RESOURCE_KEY)
+    state["taiyi_last_error"] = "搜寻节点遭遇大凶，按正常 12h 周期等待"
+    save_state()
+    note_identity_weakness(text, now, source=source)
+    await send_audit_log(f"🌩️ 太一搜寻遭遇大凶，已收口；下次→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
 
 
 def _get_search_resend_count():
@@ -436,15 +459,25 @@ async def handle_taiyi_node_search_reply(text, now, reply_to, matched_family=Non
         or CMD_NODE_SEARCH in orig_cmd
         or ("修为不足" in text and "神游太虚" in text)
         or ("神识不足" in text and "虚空中定位" in text)
+        or _is_node_search_disaster(text)
     )
     if not is_relevant:
         return False
 
     if _phase() != "search_pending":
         console_log(f"⚠️ 搜寻节点 reply 迟到（phase={_phase()}），仅清 pending 不改 state。")
+        if _is_node_search_disaster(text):
+            await _close_node_search_disaster(text, now, source="taiyi_node_search_late")
         return True
     if not _is_current_reply(reply_to, "taiyi_node_search_msg_id"):
         console_log("⚠️ 忽略迟到的太一搜寻节点回复。")
+        if _is_node_search_disaster(text):
+            await _close_node_search_disaster(text, now, source="taiyi_node_search_late")
+        return True
+
+    # 大凶/虚空风暴是搜寻节点的有效结果：本轮结束，进入正常 12h 周期。
+    if _is_node_search_disaster(text):
+        await _close_node_search_disaster(text, now, source="taiyi_node_search")
         return True
 
     # 找到节点（含"获得：【空间节点·X】"）

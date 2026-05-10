@@ -111,11 +111,13 @@ from .runtime import (
     gc_ui_login_tokens,
     gc_ui_sessions,
     get_reply_context,
+    is_identity_weak,
     is_account_session_error,
     is_reply_to_identity_message,
     mark_bot_health_recovered,
     note_game_bot_message,
     note_game_command_observed,
+    note_identity_weakness,
     resolve_reply_family,
     run_retry_scheduler,
     schedule_cleanup,
@@ -613,6 +615,8 @@ async def _run_identity_schedulers(now):
         if _is_identity_account_offline(identity_id):
             continue
         with use_identity(identity_id):
+            if is_identity_weak(identity_id, now):
+                continue
             for scheduler in phaseful_schedulers:
                 await scheduler(now)
 
@@ -622,6 +626,8 @@ async def _run_identity_schedulers(now):
         if _is_identity_account_offline(identity_id):
             continue
         with use_identity(identity_id):
+            if is_identity_weak(identity_id, now):
+                continue
             if has_phaseful_summary_block(now):
                 continue
             for scheduler in ordinary_schedulers:
@@ -707,6 +713,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply", now=now)
 
         handled_any = False
+        note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
         await handle_tree_invasion_end(text, now, is_reply_to_me)
         await handle_tree_invasion_start(text, now)
         await handle_tree_rebirth_reset(text, now)

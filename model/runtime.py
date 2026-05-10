@@ -90,6 +90,7 @@ from .config import (
     mark_account_offline,
 )
 from .persistence import mark_dirty
+from .timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .action_guard import (
     before_send as action_guard_before_send,
     get_next_allowed_at as action_guard_next_allowed_at,
@@ -166,6 +167,16 @@ LOG_BOT_TOTAL_TIMEOUT_SEC = 12
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
+WEAKNESS_BLOCK_AUDIT_INTERVAL_SEC = 5 * 60
+WEAKNESS_DEFAULT_SEC = 30 * 60
+WEAKNESS_BUFFER_SEC = 60
+WEAKNESS_ALLOWED_PREFIXES = (
+    ".储物袋",
+    ".修理法宝",
+    ".验证",
+    ".自证",
+    ".作答",
+)
 
 
 def register_game_command_sent_observer(observer):
@@ -1250,6 +1261,108 @@ async def _log_account_offline_blocked(command, *, send_as_id, account_id, reaso
     )
 
 
+def _is_weakness_reply(text):
+    raw = str(text or "")
+    if "虚弱状态" not in raw:
+        return False
+    if "暂时无法运转灵力" in raw and "静养" in raw:
+        return True
+    if "陷入了" in raw and "【虚弱状态】" in raw and ("元气大伤" in raw or "修为损失" in raw):
+        return True
+    return False
+
+
+def _weakness_until_from_text(text, now=None):
+    if now is None:
+        now = time.time()
+    wait_sec = parse_wait_time(text) if has_wait_time(text) else 0
+    if wait_sec <= 0:
+        wait_sec = WEAKNESS_DEFAULT_SEC
+    return float(now + wait_sec + WEAKNESS_BUFFER_SEC)
+
+
+def note_identity_weakness(text, now=None, send_as_id=None, *, source="reply"):
+    if not _is_weakness_reply(text):
+        return False
+    if now is None:
+        now = time.time()
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    try:
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        send_as_id = 0
+    if send_as_id <= 0 or not has_identity(send_as_id):
+        return False
+
+    identity_state = get_identity_state(send_as_id)
+    until = _weakness_until_from_text(text, now)
+    if until <= float(identity_state.get("weak_until", 0) or 0):
+        return True
+    identity_state["weak_until"] = until
+    identity_state["weak_reason"] = _truncate_log_text(text, limit=120)
+    identity_state["weak_source"] = str(source or "reply")
+    identity_state["weak_last_block_log_at"] = 0
+    mark_dirty()
+    _fire_and_forget(
+        send_audit_log(
+            f"🚫 检测到虚弱状态，暂停该身份自动指令至 {fmt_abs_ts(until)}（{fmt_remaining(until)}）。",
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=260,
+        )
+    )
+    return True
+
+
+def is_identity_weak(send_as_id=None, now=None):
+    if now is None:
+        now = time.time()
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    try:
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if send_as_id <= 0 or not has_identity(send_as_id):
+        return False
+
+    identity_state = get_identity_state(send_as_id)
+    until = float(identity_state.get("weak_until", 0) or 0)
+    if until <= 0:
+        return False
+    if now < until:
+        return True
+    identity_state["weak_until"] = 0
+    identity_state["weak_reason"] = ""
+    identity_state["weak_source"] = ""
+    identity_state["weak_last_block_log_at"] = 0
+    mark_dirty()
+    return False
+
+
+def _weakness_allows_command(command):
+    raw = str(command or "").strip()
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in WEAKNESS_ALLOWED_PREFIXES)
+
+
+async def _log_weakness_blocked(command, *, send_as_id):
+    now = time.time()
+    identity_state = get_identity_state(send_as_id)
+    last_at = float(identity_state.get("weak_last_block_log_at", 0) or 0)
+    if now - last_at < WEAKNESS_BLOCK_AUDIT_INTERVAL_SEC:
+        return
+    identity_state["weak_last_block_log_at"] = now
+    mark_dirty()
+    until = float(identity_state.get("weak_until", 0) or 0)
+    await send_audit_log(
+        f"🚫 虚弱状态拦截：{_truncate_log_text(command, limit=32)}｜恢复 {fmt_abs_ts(until)}（{fmt_remaining(until)}）",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=260,
+    )
+
+
 async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None, max_retry=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
@@ -1266,6 +1379,10 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 account_id=account_id,
                 reason=get_account_offline_reason(account_id) or "账号离线",
             )
+            return None
+
+        if is_identity_weak(send_as_id) and not _weakness_allows_command(command):
+            await _log_weakness_blocked(command, send_as_id=send_as_id)
             return None
 
         _refresh_bot_health_timeout_before_send()
@@ -1293,6 +1410,9 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                     account_id=account_id,
                     reason=get_account_offline_reason(account_id) or "账号离线",
                 )
+                return None
+            if is_identity_weak(send_as_id) and not _weakness_allows_command(command):
+                await _log_weakness_blocked(command, send_as_id=send_as_id)
                 return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
@@ -1755,11 +1875,13 @@ __all__ = [
     "get_reply_context",
     "get_reply_family_commands",
     "is_account_session_error",
+    "is_identity_weak",
     "is_reply_to_identity_message",
     "is_script_command_text",
     "issue_ui_login_token",
     "mark_bot_health_recovered",
     "mark_bot_health_suspect",
+    "note_identity_weakness",
     "note_game_bot_message",
     "note_game_command_observed",
     "note_game_command_sent",

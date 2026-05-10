@@ -196,8 +196,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_gangfeng_time REAL NOT NULL DEFAULT 0")
     if "next_small_world_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_small_world_time REAL NOT NULL DEFAULT 0")
+    if "weak_until" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN weak_until REAL NOT NULL DEFAULT 0")
 
     runtime_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+    if "weak_reason" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_reason TEXT NOT NULL DEFAULT ''")
+    if "weak_source" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_source TEXT NOT NULL DEFAULT ''")
+    if "weak_last_block_log_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_last_block_log_at REAL NOT NULL DEFAULT 0")
     if "tree_maturing_logged" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_maturing_logged INTEGER NOT NULL DEFAULT 0")
     if "tree_harvest_followup_due_at" not in runtime_columns:
@@ -652,11 +660,15 @@ def init_db():
             next_nanlong_time REAL NOT NULL DEFAULT 0,
             next_small_world_time REAL NOT NULL DEFAULT 0,
             next_yuanying_time REAL NOT NULL,
-            next_deep_retreat_time REAL NOT NULL
+            next_deep_retreat_time REAL NOT NULL,
+            weak_until REAL NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS identity_runtime_state (
             send_as_id INTEGER PRIMARY KEY,
+            weak_reason TEXT NOT NULL DEFAULT '',
+            weak_source TEXT NOT NULL DEFAULT '',
+            weak_last_block_log_at REAL NOT NULL DEFAULT 0,
             sect_teach_reply_to_msg_id INTEGER NOT NULL,
             last_checkin_msg_id INTEGER NOT NULL,
             last_sect_teach_msg_id INTEGER NOT NULL,

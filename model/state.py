@@ -34,6 +34,7 @@ IDENTITY_TIMER_COLUMNS = [
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_deep_retreat_time",
     "next_second_soul_time", "second_soul_heart_demon_deadline",
     "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
+    "weak_until",
 ]
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
@@ -56,6 +57,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "second_soul_phase", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_search_resend_count", "taiyi_last_error",
+    "weak_reason", "weak_source", "weak_last_block_log_at",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history", "resource_shortage_backoffs", "action_guard_sessions"}
@@ -424,6 +426,12 @@ IDENTITY_STATE_TEMPLATE = {
     "taiyi_failure_history": [],
     "taiyi_search_resend_count": 0,
     "taiyi_last_error": "",
+
+    # 身份级异常状态
+    "weak_until": 0,
+    "weak_reason": "",
+    "weak_source": "",
+    "weak_last_block_log_at": 0,
 
     # 运行态
     "identity_info_reply_msg_ids": [],
