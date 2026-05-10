@@ -38,6 +38,7 @@ SMALL_WORLD_INITIAL_CHECK_MAX_SEC = 30 * 60
 SMALL_WORLD_TOOL_STEP_MIN_SEC = 120
 SMALL_WORLD_TOOL_STEP_MAX_SEC = 240
 SMALL_WORLD_MIN_HARVEST_INCENSE = 1.0
+SMALL_WORLD_PREACH_FAITH_THRESHOLD = 92
 
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
 RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇")
@@ -466,6 +467,14 @@ async def _handle_panel_decision(now, panel):
 
     if panel.get("has_wait"):
         return await _finish_no_prayer_panel(now, panel)
+
+    if (
+        state.get("small_world_preach_enabled", True)
+        and int(panel.get("faith", 0) or 0) < SMALL_WORLD_PREACH_FAITH_THRESHOLD
+        and not _has_active_small_world_pending(now)
+    ):
+        save_state()
+        return await _send_small_world_preach(now, f"面板信仰 {int(panel.get('faith', 0) or 0)}<{SMALL_WORLD_PREACH_FAITH_THRESHOLD}")
 
     if state.get("small_world_harvest_enabled") and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE:
         save_state()

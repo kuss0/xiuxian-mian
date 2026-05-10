@@ -535,7 +535,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
             save_state()
         if now < deadline:
             return
-        await send_audit_log(f"{spec.title} 发送前排队超时，先查状态确认，避免重复发起。")
+        await send_audit_log(f"{spec.title} 发起排队等待过久，先查询状态确认，避免重复发起。")
         await _send_active_summary_query(spec, now)
         return
 
@@ -567,7 +567,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
     if _phase(spec) == "waiting_summary" and state[spec.last_summary_msg_id_key] < 0:
         passive_elapsed = now - state[spec.summary_sent_at_key]
         if passive_elapsed >= spec.summary_passive_timeout_sec:
-            await send_audit_log(f"{spec.title} 闲聊触发未见总结，改用状态查询兜底。")
+            await send_audit_log(f"{spec.title} 顺带触发后未观察到总结，改用状态查询确认。")
             await _send_active_summary_query(spec, now)
         return
 
@@ -591,7 +591,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         if now < state[spec.next_time_key]:
             return
         _schedule_summary_trigger_retry(spec, now)
-        console_log(f"{spec.title} 顺带触发观察结束，延后主动查询。")
+        console_log(f"{spec.title} 顺带触发观察结束，稍后主动查询确认。")
         return
 
     if _phase(spec) == "summary_due":

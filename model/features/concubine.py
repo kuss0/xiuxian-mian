@@ -1,7 +1,10 @@
 import asyncio
+import json
+import os
 import random
 import re
 import time
+from datetime import datetime
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -22,6 +25,7 @@ from ..config import (
     CONCUBINE_STATUS_RECHECK_MIN_SEC,
     CONCUBINE_STATUS_STALE_SEC,
     CONCUBINE_TIANJI_CD_SEC,
+    MESSAGES_DIR,
     RE_WHITESPACE,
 )
 from ..persistence import mark_dirty, save_state
@@ -66,6 +70,8 @@ RE_IDENTITY_TAG = re.compile(rf"@({IDENTITY_TAG_PATTERN})")
 
 CONCUBINE_DREAM_RESOURCE_KEY = "concubine_dream"
 CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
+CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
+CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
 
 
 def _phase():
@@ -196,6 +202,93 @@ def _is_strong_tianji_terminal_text(text):
         or "情缘未深" in raw_text
         or "无法为你卜算天机" in raw_text
         or ("尚无侍妾" in raw_text and "代卜天机" in raw_text)
+    )
+
+
+def _is_concubine_candidate_text_for_phase(text, phase):
+    raw_text = str(text or "")
+    if not raw_text:
+        return False
+    if phase == "dream_pending":
+        return (
+            _is_strong_dream_terminal_text(raw_text)
+            or "入梦寻图" in raw_text
+            or "残图" in raw_text
+            or "掉落率" in raw_text
+        )
+    if phase == "tianji_pending":
+        return _is_strong_tianji_terminal_text(raw_text) or "天机代卜" in raw_text or "代卜天机" in raw_text
+    if phase == "fragment_pending":
+        return "虚天残图" in raw_text or "残图" in raw_text or "拼片" in raw_text
+    if phase == "puzzle_pending":
+        return "拼图" in raw_text or "虚天" in raw_text or "残图" in raw_text
+    if phase == "reacquire_pending":
+        return (
+            "新的道心侍妾" in raw_text
+            or "成为你的侍妾" in raw_text
+            or _is_no_partner_text(raw_text)
+            or "赐婚" in raw_text
+            or "红尘寻缘" in raw_text
+        )
+    return False
+
+
+def _candidate_mentions_identity_or_partner(text):
+    raw_text = str(text or "")
+    if _text_matches_current_identity(raw_text):
+        return True
+    partner_name = str(state.get("concubine_name") or "").strip()
+    return bool(partner_name and partner_name in raw_text)
+
+
+def _read_recent_message_log_candidates(now, phase):
+    log_file = os.path.join(MESSAGES_DIR, f"{datetime.fromtimestamp(float(now)).strftime('%Y-%m-%d')}.log")
+    if not os.path.exists(log_file):
+        return []
+    start = float(now) - CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC
+    candidates = []
+    try:
+        with open(log_file, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()[-CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES:]
+    except OSError:
+        return []
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except Exception:
+            continue
+        if payload.get("event_type") not in {"message", "edit"}:
+            continue
+        ts_text = str(payload.get("ts") or "")[:19]
+        try:
+            event_ts = time.mktime(datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").timetuple())
+        except Exception:
+            continue
+        if event_ts < start or event_ts > float(now) + 5:
+            continue
+        text = str(payload.get("text") or "")
+        if not _is_concubine_candidate_text_for_phase(text, phase):
+            continue
+        if not _candidate_mentions_identity_or_partner(text):
+            continue
+        candidates.append(payload)
+    return candidates[-3:]
+
+
+async def _audit_pending_timeout_candidates(now, phase):
+    if phase == "status_pending":
+        return
+    candidates = _read_recent_message_log_candidates(now, phase)
+    if not candidates:
+        return
+    parts = []
+    for item in candidates:
+        text = str(item.get("text") or "").replace("\n", " ")
+        parts.append(f"{item.get('message_id')}: {text[:90]}")
+    await send_audit_log(
+        f"🌸 侍妾 {phase} 超时旁路观察：发现疑似未匹配回复，仅记录不接管｜" + "｜".join(parts),
+        scope="identity",
+        limit=360,
     )
 
 
@@ -1205,7 +1298,8 @@ async def _run_concubine_scheduler(now):
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
             return
-        state["concubine_last_error"] = f"{phase} 等待回复超时"
+        await _audit_pending_timeout_candidates(now, phase)
+        state["concubine_last_error"] = f"{phase} 等待回复超时，已转状态校准" if phase != "status_pending" else "侍妾状态查询等待回复超时"
         if _has_available_partner():
             _set_phase("idle")
         elif state.get("concubine_availability") == "no_partner":
@@ -1215,10 +1309,17 @@ async def _run_concubine_scheduler(now):
         _clear_pending_msg_ids()
         retry_at = _backoff_after_pending_timeout(now, phase)
         save_state()
-        await send_audit_log(
-            f"⚠️ 侍妾模块 {phase} 超时，已停止当前链路；{fmt_time_after(max(0, retry_at - now))} 后再校准。",
-            scope="identity",
-        )
+        if phase != "status_pending":
+            await send_audit_log(
+                f"⚠️ 侍妾模块 {phase} 超时，已停止当前链路；改发 .我的侍妾 做保守校准。",
+                scope="identity",
+            )
+            await _send_status_command(now)
+        else:
+            await send_audit_log(
+                f"⚠️ 侍妾状态查询超时，已停止当前链路；{fmt_time_after(max(0, retry_at - now))} 后再校准。",
+                scope="identity",
+            )
         return
 
     next_time = float(state.get("next_concubine_time", 0) or 0)

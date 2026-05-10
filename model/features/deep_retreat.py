@@ -223,7 +223,7 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
             delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC)
             begin_deep_retreat_post_summary_wait(now, delay=delay)
             await update_deep_retreat_block_log_state(waiting=False, protect=False)
-            await send_audit_log(f"🧘 深闭状态为空，{int(delay / 60)}分钟后补发深度闭关。")
+            await send_audit_log(f"🧘 已确认未处于深闭，{int(delay / 60)}分钟后排队发起深度闭关。")
             return True
 
     return False
