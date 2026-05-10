@@ -49,6 +49,12 @@ REFRESH_PREFIXES = (
     ".小世界",
 )
 
+SMALL_WORLD_TOOL_PREFIXES = (
+    ".显灵",
+    ".收割香火",
+    ".神识淬炼",
+)
+
 BOT_REPLY_HARD_STOP_KEYWORDS = (
     "TG FloodWait",
     "FloodWait",
@@ -143,6 +149,11 @@ def is_refresh_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in REFRESH_PREFIXES)
 
 
+def is_small_world_tool_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in SMALL_WORLD_TOOL_PREFIXES)
+
+
 def command_key(text: str) -> str:
     raw = str(text or "").strip()
     if raw.startswith(".器灵试炼 "):
@@ -154,6 +165,22 @@ def command_key(text: str) -> str:
     if raw.startswith(".引道 "):
         return ".引道"
     return raw
+
+
+def has_intervening_small_world_tool(sent: list[dict], sender_id: int, prev: dict, cur: dict) -> bool:
+    prev_epoch = float(prev.get("_epoch", 0) or 0)
+    cur_epoch = float(cur.get("_epoch", 0) or 0)
+    if sender_id <= 0 or prev_epoch <= 0 or cur_epoch <= prev_epoch:
+        return False
+    for item in sent:
+        item_epoch = float(item.get("_epoch", 0) or 0)
+        if item_epoch <= prev_epoch or item_epoch >= cur_epoch:
+            continue
+        if int(item.get("sender_id", 0) or 0) != sender_id:
+            continue
+        if is_small_world_tool_command(str(item.get("text") or "")):
+            return True
+    return False
 
 
 def count_since(events: list[dict], now: float, seconds: float) -> int:
@@ -210,6 +237,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             min_gap = cfg.same_command_gap_sec
         for prev, cur in zip(items, items[1:]):
             gap = float(cur["_epoch"]) - float(prev["_epoch"])
+            if refresh and has_intervening_small_world_tool(sent, sender_id, prev, cur):
+                continue
             if 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
 
