@@ -32,6 +32,7 @@ GUARDED_PREFIXES = (
     ".宗门赐婚",
     ".红尘寻缘",
     ".器灵试炼",
+    ".温养器灵",
     ".元神修炼",
     ".深度闭关",
     ".元婴出窍",
@@ -54,6 +55,10 @@ SMALL_WORLD_TOOL_PREFIXES = (
     ".收割香火",
     ".神识淬炼",
 )
+
+DUNGEON_JOIN_PREFIX = ".加入副本"
+SECT_TEACH_PREFIX = ".宗门传功"
+SECT_TEACH_MAX_ATTEMPTS_10M = 3
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
     "TG FloodWait",
@@ -149,6 +154,16 @@ def is_refresh_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in REFRESH_PREFIXES)
 
 
+def is_dungeon_join_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return raw == DUNGEON_JOIN_PREFIX or raw.startswith(DUNGEON_JOIN_PREFIX + " ")
+
+
+def is_sect_teach_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return raw == SECT_TEACH_PREFIX or raw.startswith(SECT_TEACH_PREFIX + " ")
+
+
 def is_small_world_tool_command(text: str) -> bool:
     raw = str(text or "").strip()
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in SMALL_WORLD_TOOL_PREFIXES)
@@ -158,6 +173,8 @@ def command_key(text: str) -> str:
     raw = str(text or "").strip()
     if raw.startswith(".器灵试炼 "):
         return ".器灵试炼"
+    if raw.startswith(".温养器灵 "):
+        return ".温养器灵"
     if raw.startswith(".神识淬炼 "):
         return ".神识淬炼"
     if raw.startswith(".定星 "):
@@ -225,21 +242,26 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         all_items.sort(key=lambda item: float(item.get("_epoch", 0) or 0))
         guarded = is_guarded_command(text)
         refresh = is_refresh_command(text)
+        sect_teach = is_sect_teach_command(text)
         window_sec = 90 * 60 if refresh else 45 * 60
         items = [item for item in all_items if float(item.get("_epoch", 0) or 0) >= now - window_sec]
         if len(items) < 2:
             continue
-        if guarded:
+        if sect_teach:
+            min_gap = 0
+        elif guarded:
             min_gap = cfg.guarded_repeat_gap_sec
         elif refresh:
             min_gap = cfg.refresh_repeat_gap_sec
+        elif is_dungeon_join_command(text):
+            min_gap = 0
         else:
             min_gap = cfg.same_command_gap_sec
         for prev, cur in zip(items, items[1:]):
             gap = float(cur["_epoch"]) - float(prev["_epoch"])
             if refresh and has_intervening_small_world_tool(sent, sender_id, prev, cur):
                 continue
-            if 0 <= gap < min_gap:
+            if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
 
         if guarded and len(items) > cfg.guarded_max_attempts_45m:
@@ -250,6 +272,13 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"
         if refresh and len(items) > cfg.refresh_max_attempts_90m:
             return f"refresh command over attempts: {sender_id}:{text} {len(items)}/90m"
+        if sect_teach:
+            recent_sect_items = [
+                item for item in items
+                if float(item.get("_epoch", 0) or 0) >= now - 10 * 60
+            ]
+            if len(recent_sect_items) > SECT_TEACH_MAX_ATTEMPTS_10M:
+                return f"sect teach over attempts: {sender_id}:{text} {len(recent_sect_items)}/10m"
 
     return ""
 
@@ -301,6 +330,24 @@ def state_db_path(project_root: Path) -> Path:
 
 def fuse_marker_path(project_root: Path) -> Path:
     return project_root / "data" / "state" / "safety_watchdog_fused.json"
+
+
+def reset_marker_path(project_root: Path) -> Path:
+    return project_root / "data" / "state" / "safety_watchdog_reset.json"
+
+
+def get_reset_after_epoch(project_root: Path) -> float:
+    marker = reset_marker_path(project_root)
+    if not marker.exists():
+        return 0.0
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return 0.0
+    try:
+        return float(payload.get("reset_at_epoch", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def disable_global_switch(project_root: Path) -> str:
@@ -396,6 +443,12 @@ def current_log_file(project_root: Path) -> Path:
 def check_once(cfg: WatchdogConfig) -> str:
     now = time.time()
     events = read_recent_log_lines(current_log_file(cfg.project_root), cfg.max_lines)
+    reset_after = get_reset_after_epoch(cfg.project_root)
+    if reset_after > 0:
+        events = [
+            item for item in events
+            if float(item.get("_epoch", 0) or 0) >= reset_after
+        ]
     breach = find_send_breach(events, now, cfg)
     if breach:
         return breach
@@ -412,6 +465,20 @@ def reset_fuse(cfg: WatchdogConfig) -> None:
         print(f"removed {marker}")
     else:
         print(f"no marker: {marker}")
+    reset_marker = reset_marker_path(cfg.project_root)
+    reset_marker.parent.mkdir(parents=True, exist_ok=True)
+    reset_marker.write_text(
+        json.dumps(
+            {
+                "reset_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC+8"),
+                "reset_at_epoch": time.time(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"wrote {reset_marker}")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -419,7 +486,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--project-root", default="/opt/xiuxian-main")
     parser.add_argument("--service", default="xiuxian")
     parser.add_argument("--interval", type=float, default=15.0)
-    parser.add_argument("--action", choices=("soft", "stop"), default="stop")
+    parser.add_argument("--action", choices=("soft", "stop"), default="soft")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--reset", action="store_true")

@@ -1,5 +1,6 @@
 import time
 import unittest
+import tempfile
 
 from tools import safety_watchdog
 
@@ -56,6 +57,67 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         breach = safety_watchdog.find_send_breach(events, now, self._config())
         self.assertIn("same command repeat", breach)
+
+    def test_reset_marker_filters_old_sent_events(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 120, sender_id, ".加入副本 394"),
+            _event(now - 90, sender_id, ".加入副本 394"),
+            _event(now + 10, sender_id, ".小世界"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = safety_watchdog.Path(tmpdir)
+            marker_dir = root / "data" / "state"
+            marker_dir.mkdir(parents=True)
+            (marker_dir / "safety_watchdog_reset.json").write_text(
+                safety_watchdog.json.dumps({"reset_at_epoch": now}),
+                encoding="utf-8",
+            )
+            reset_after = safety_watchdog.get_reset_after_epoch(root)
+            filtered = [
+                item for item in events
+                if float(item.get("_epoch", 0) or 0) >= reset_after
+            ]
+
+        self.assertEqual(1, len(filtered))
+        self.assertEqual("", safety_watchdog.find_send_breach(filtered, now, self._config()))
+
+    def test_dungeon_join_repeat_is_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 30, sender_id, ".加入副本 394"),
+            _event(now - 28, sender_id, ".加入副本 394"),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 0
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_sect_teach_three_step_chain_is_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 120, sender_id, ".宗门传功"),
+            _event(now - 70, sender_id, ".宗门传功"),
+            _event(now - 25, sender_id, ".宗门传功"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_sect_teach_fourth_attempt_still_fuses(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 180, sender_id, ".宗门传功"),
+            _event(now - 130, sender_id, ".宗门传功"),
+            _event(now - 80, sender_id, ".宗门传功"),
+            _event(now - 30, sender_id, ".宗门传功"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+        self.assertIn("sect teach over attempts", breach)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from .config import (
     CHECKIN_WINDOW_END_HOUR_UTC,
     CHECKIN_WINDOW_START_HOUR_UTC,
+    CMD_PET_WARM,
     CMD_PET_TRIAL,
     DEFAULT_PET_NAME,
     GAME_BOT_IDS,
@@ -24,13 +25,13 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled",
-    "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled", "dungeon_join_enabled",
+    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
-    "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_trial_time", "next_ranch_time", "next_wild_training_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
+    "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_warm_time", "next_pet_trial_time", "next_ranch_time", "next_wild_training_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_deep_retreat_time",
     "next_second_soul_time", "second_soul_heart_demon_deadline",
     "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
@@ -39,8 +40,8 @@ IDENTITY_TIMER_COLUMNS = [
 IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
     "tree_maturing_logged", "tree_harvest_followup_due_at", "tree_harvest_inflight_until", "tree_bootstrap_check_due_at", "last_tree_status_sent_at",
-    "last_tower_msg_id", "pet_last_error", "pet_trial_last_error",
-    "ranch_reply_to_msg_id", "ranch_reply_due_at", "ranch_retry_count", "ranch_last_msg_id", "ranch_last_result", "ranch_last_error",
+    "last_tower_msg_id", "pet_last_error", "pet_warm_last_error", "pet_trial_last_error",
+    "ranch_reply_to_msg_id", "ranch_reply_due_at", "ranch_retry_count", "ranch_last_msg_id", "ranch_last_result", "ranch_last_error", "ranch_return_pending", "ranch_return_seen_msg_id", "ranch_return_wait_since", "ranch_return_last_notified_at",
     "wild_training_strategy", "wild_training_reply_to_msg_id", "wild_training_reply_due_at", "wild_training_retry_count", "wild_training_last_msg_id", "wild_training_last_result", "wild_training_last_error",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
@@ -54,7 +55,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "resource_shortage_backoffs", "action_guard_sessions",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
-    "second_soul_phase", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
+    "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_search_resend_count", "taiyi_last_error",
     "weak_reason", "weak_source", "weak_last_block_log_at",
@@ -62,15 +63,15 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history", "resource_shortage_backoffs", "action_guard_sessions"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled",
-    "second_soul_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled", "dungeon_join_enabled",
+    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "deep_retreat_probe_pending",
     "second_soul_heart_demon_notified",
     "tree_maturing_logged",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "storage_bag_records", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -80,6 +81,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "spiritual_root_attrs": "",
     "replica_professions": "",
     "pet_name": DEFAULT_PET_NAME,
+    "pet_warm_name": "",
     "pet_trial_name": "",
     "sect_name": "",
     "sect_updated_at": 0,
@@ -170,6 +172,7 @@ IDENTITY_STATE_TEMPLATE = {
     # 业务对象开关（新身份默认全关，需手动开启）
     "tree_enabled": False,
     "pet_enabled": False,
+    "pet_warm_enabled": False,
     "pet_trial_enabled": False,
     "ranch_enabled": False,
     "wild_training_enabled": False,
@@ -192,6 +195,7 @@ IDENTITY_STATE_TEMPLATE = {
     "small_world_refresh_enabled": False,
     "checkin_enabled": False,
     "tower_enabled": False,
+    "dungeon_join_enabled": False,
     "stargazer_enabled": False,
     "guanxing_enabled": False,
 
@@ -213,8 +217,10 @@ IDENTITY_STATE_TEMPLATE = {
 
     # 法宝模块
     "next_pet_time": 0,
+    "next_pet_warm_time": 0,
     "next_pet_trial_time": 0,
     "pet_last_error": "",
+    "pet_warm_last_error": "",
     "pet_trial_last_error": "",
 
     # 放养/野外历练模块
@@ -225,6 +231,10 @@ IDENTITY_STATE_TEMPLATE = {
     "ranch_last_msg_id": 0,
     "ranch_last_result": "",
     "ranch_last_error": "",
+    "ranch_return_pending": False,
+    "ranch_return_seen_msg_id": 0,
+    "ranch_return_wait_since": 0,
+    "ranch_return_last_notified_at": 0,
     "next_wild_training_time": 0,
     "wild_training_strategy": "深入",
     "wild_training_reply_to_msg_id": 0,
@@ -398,7 +408,9 @@ IDENTITY_STATE_TEMPLATE = {
 
     # 第二元神模块
     "second_soul_enabled": False,
+    "second_soul_auto_choice_enabled": True,
     "second_soul_phase": "idle",  # idle|status_pending|ready_to_train|train_pending|cultivating|heart_demon_pending|injured|not_unlocked
+    "second_soul_choice_strategy": "stable",
     "next_second_soul_time": 0,
     "second_soul_heart_demon_msg_id": 0,
     "second_soul_heart_demon_deadline": 0,
@@ -483,6 +495,8 @@ GLOBAL_STATE_DEFAULTS = {
     "guanxing_monitor_last_notified_slot_key": "",
     "guanxing_round_state": {},
     "storage_bag_records": {},
+    "storage_bag_item_rules": {},
+    "dungeon_join_run_state": {},
     "send_as_profiles": {},
     "identity_states": {},
     "identity_ids": [],
@@ -660,6 +674,7 @@ def set_send_as_profile(
     spiritual_root_attrs=None,
     replica_professions=None,
     pet_name=None,
+    pet_warm_name=None,
     pet_trial_name=None,
     sect_name=None,
     sect_updated_at=None,
@@ -686,6 +701,7 @@ def set_send_as_profile(
         spiritual_root_attrs=spiritual_root_attrs,
         replica_professions=replica_professions,
         pet_name=pet_name,
+        pet_warm_name=pet_warm_name,
         pet_trial_name=pet_trial_name,
         sect_name=sect_name,
         sect_updated_at=sect_updated_at,
@@ -746,6 +762,26 @@ def set_storage_bag_records(records):
     return get_storage_bag_records()
 
 
+def get_storage_bag_item_rules():
+    records = _meta_state.get("storage_bag_item_rules") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_storage_bag_item_rules(records):
+    _meta_state["storage_bag_item_rules"] = records if isinstance(records, dict) else {}
+    return get_storage_bag_item_rules()
+
+
+def get_dungeon_join_run_state():
+    records = _meta_state.get("dungeon_join_run_state") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_dungeon_join_run_state(records):
+    _meta_state["dungeon_join_run_state"] = records if isinstance(records, dict) else {}
+    return get_dungeon_join_run_state()
+
+
 def get_send_as_label(send_as_id=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
@@ -764,6 +800,13 @@ def get_pet_trial_name(send_as_id=None):
         send_as_id = get_current_identity_id()
     profile = get_send_as_profile(send_as_id)
     return profile.get("pet_trial_name") or profile.get("pet_name") or DEFAULT_PET_NAME
+
+
+def get_pet_warm_name(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    profile = get_send_as_profile(send_as_id)
+    return profile.get("pet_warm_name") or profile.get("pet_name") or DEFAULT_PET_NAME
 
 
 def get_jiyin_choice(send_as_id=None):
@@ -1182,6 +1225,10 @@ def get_pet_command(send_as_id=None):
     return f".抚摸法宝 {get_pet_name(send_as_id)}"
 
 
+def get_pet_warm_command(send_as_id=None):
+    return f"{CMD_PET_WARM} {get_pet_warm_name(send_as_id)}"
+
+
 def get_pet_trial_command(send_as_id=None):
     return f"{CMD_PET_TRIAL} {get_pet_trial_name(send_as_id)}"
 
@@ -1189,6 +1236,11 @@ def get_pet_trial_command(send_as_id=None):
 def set_pet_name(send_as_id, pet_name):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, pet_name=pet_name)
+
+
+def set_pet_warm_name(send_as_id, pet_warm_name):
+    send_as_id = int(send_as_id)
+    update_send_as_profile(send_as_id, pet_warm_name=pet_warm_name)
 
 
 def set_pet_trial_name(send_as_id, pet_trial_name):
@@ -1382,14 +1434,18 @@ __all__ = [
     "get_module_window_hours_local",
     "get_module_window_profile_keys",
     "get_available_module_names",
+    "get_dungeon_join_run_state",
     "get_jiyin_choice",
     "get_nanlong_choice",
     "get_pet_command",
     "get_pet_name",
+    "get_pet_warm_name",
+    "get_pet_warm_command",
     "get_pet_trial_name",
     "get_pet_trial_command",
     "get_stargazer_star_choice",
     "get_storage_bag_records",
+    "get_storage_bag_item_rules",
     "get_stargazer_total_slots",
     "get_tianti_rank_choice",
     "get_wild_training_strategy",
@@ -1406,6 +1462,7 @@ __all__ = [
     "set_game_group_id",
     "set_game_bot_ids",
     "set_game_topic_id",
+    "set_dungeon_join_run_state",
     "set_forum_topics",
     "set_global_enabled",
     "set_tiandao_judgement_enabled",
@@ -1419,9 +1476,11 @@ __all__ = [
     "set_nanlong_choice",
     "set_module_window_hours",
     "set_pet_name",
+    "set_pet_warm_name",
     "set_pet_trial_name",
     "set_stargazer_star_choice",
     "set_storage_bag_records",
+    "set_storage_bag_item_rules",
     "set_stargazer_total_slots",
     "set_tianti_rank_choice",
     "set_wild_training_strategy",

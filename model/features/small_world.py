@@ -37,7 +37,7 @@ SMALL_WORLD_INITIAL_CHECK_MIN_SEC = 10 * 60
 SMALL_WORLD_INITIAL_CHECK_MAX_SEC = 30 * 60
 SMALL_WORLD_TOOL_STEP_MIN_SEC = 120
 SMALL_WORLD_TOOL_STEP_MAX_SEC = 240
-SMALL_WORLD_MIN_HARVEST_INCENSE = 1.0
+SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
 SMALL_WORLD_PREACH_FAITH_THRESHOLD = 92
 
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
@@ -476,12 +476,21 @@ async def _handle_panel_decision(now, panel):
         save_state()
         return await _send_small_world_preach(now, f"面板信仰 {int(panel.get('faith', 0) or 0)}<{SMALL_WORLD_PREACH_FAITH_THRESHOLD}")
 
-    if state.get("small_world_harvest_enabled") and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE:
+    # 香火只作为本轮刷新祈愿前的工具。进入刷新轮后继续收割会导致
+    # ".小世界 -> 收割 -> 淬炼 -> 复查" 在每次刷新间重复出现。
+    allow_tool_actions = int(state.get("small_world_refresh_count", 0) or 0) <= 0
+    if (
+        allow_tool_actions
+        and
+        state.get("small_world_harvest_enabled")
+        and state.get("small_world_refine_enabled")
+        and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE
+    ):
         save_state()
         return await _send_harvest(now)
 
     refine_amount = _calc_refine_amount(panel.get("stock", 0))
-    if state.get("small_world_refine_enabled") and refine_amount >= 10:
+    if allow_tool_actions and state.get("small_world_refine_enabled") and refine_amount >= 10:
         save_state()
         return await _send_refine(now, refine_amount)
 
@@ -581,11 +590,11 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
     state["small_world_last_error"] = ""
     save_state()
 
-    if faith_value >= 100:
+    if faith_value >= SMALL_WORLD_PREACH_FAITH_THRESHOLD:
         await send_audit_log(f"🌍 小世界信仰已恢复至 {faith_value}", scope="identity")
         return True
 
-    await _send_small_world_preach(now, f"信仰值 {faith_value}<100")
+    await _send_small_world_preach(now, f"信仰值 {faith_value}<{SMALL_WORLD_PREACH_FAITH_THRESHOLD}")
     return True
 
 

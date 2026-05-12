@@ -35,6 +35,7 @@ from .config import (
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET,
+    CMD_PET_WARM,
     CMD_PET_TRIAL,
     CMD_QUIZ_ANSWER,
     CMD_RANCH,
@@ -144,6 +145,8 @@ _background_tasks = set()
 # 所有游戏群指令共用一条发送通道；P0/chain 只缩短间隔，不绕开通道。
 SEND_PRIORITY_P0 = "p0"
 SEND_PRIORITY_CHAIN = "chain"
+SEND_PRIORITY_REACTIVE = "reactive"
+SEND_PRIORITY_URGENT_REACTIVE = "urgent_reactive"
 SEND_PRIORITY_PROBE = "probe"
 SEND_PRIORITY_NORMAL = "normal"
 
@@ -153,6 +156,10 @@ P0_SEND_GAP_MIN_SEC = 20.0
 P0_SEND_GAP_MAX_SEC = 30.0
 CHAIN_SEND_GAP_MIN_SEC = 20.0
 CHAIN_SEND_GAP_MAX_SEC = 35.0
+REACTIVE_SEND_GAP_MIN_SEC = 14.0
+REACTIVE_SEND_GAP_MAX_SEC = 22.0
+URGENT_REACTIVE_SEND_GAP_MIN_SEC = 1.0
+URGENT_REACTIVE_SEND_GAP_MAX_SEC = 3.0
 NORMAL_SEND_GAP_MIN_SEC = 20.0
 NORMAL_SEND_GAP_MAX_SEC = 40.0
 
@@ -335,7 +342,7 @@ def should_pause_for_bot_health():
 
 def _normalize_send_priority(command, priority=None):
     explicit = str(priority or "").strip().lower()
-    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_CHAIN, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
+    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_CHAIN, SEND_PRIORITY_REACTIVE, SEND_PRIORITY_URGENT_REACTIVE, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
         return explicit
     cmd = str(command or "").strip()
     if any(cmd.startswith(prefix) for prefix in P0_COMMAND_PREFIXES):
@@ -373,6 +380,10 @@ async def _log_bot_health_blocked_send(command, send_as_id=None):
 def _get_send_gap_range(priority):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         return P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
+    if priority == SEND_PRIORITY_URGENT_REACTIVE:
+        return URGENT_REACTIVE_SEND_GAP_MIN_SEC, URGENT_REACTIVE_SEND_GAP_MAX_SEC
+    if priority == SEND_PRIORITY_REACTIVE:
+        return REACTIVE_SEND_GAP_MIN_SEC, REACTIVE_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_CHAIN:
         return CHAIN_SEND_GAP_MIN_SEC, CHAIN_SEND_GAP_MAX_SEC
     return NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
@@ -458,6 +469,7 @@ REPLY_FAMILY_COMMANDS = {
     "sect_teach": {CMD_SECT_TEACH},
     "tower": {CMD_TOWER},
     "pet": {CMD_PET},
+    "pet_warm": {CMD_PET_WARM},
     "pet_trial": {CMD_PET_TRIAL},
     "ranch": {CMD_RANCH},
     "wild_training": {CMD_WILD_TRAINING},

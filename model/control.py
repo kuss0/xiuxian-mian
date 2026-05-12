@@ -28,6 +28,7 @@ from .config import (
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET,
+    CMD_PET_WARM,
     CMD_PET_TRIAL,
     CMD_QUIZ_ANSWER,
     CMD_RANCH,
@@ -274,6 +275,9 @@ def _schedule_module_immediate_retry(module_name, now):
         return retry_at
     if module_name == "法宝":
         state["next_pet_time"] = retry_at
+        return retry_at
+    if module_name == "温养器灵":
+        state["next_pet_warm_time"] = retry_at
         return retry_at
     if module_name == "器灵试炼":
         state["next_pet_trial_time"] = retry_at
@@ -565,6 +569,20 @@ def _manual_enable_pet_module_state(now):
     if float(state.get("next_pet_time", 0) or 0) > now:
         return
     _schedule_module_immediate_retry("法宝", now)
+
+
+def _manual_disable_pet_warm_module_state():
+    state["pet_warm_enabled"] = False
+    state["next_pet_warm_time"] = 0
+    _clear_pending_tasks_by_commands({CMD_PET_WARM})
+
+
+def _manual_enable_pet_warm_module_state(now):
+    state["pet_warm_enabled"] = True
+    state["pet_warm_last_error"] = ""
+    if float(state.get("next_pet_warm_time", 0) or 0) > now:
+        return
+    _schedule_module_immediate_retry("温养器灵", now)
 
 
 def _manual_disable_pet_trial_module_state():
@@ -910,6 +928,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TREE_STATUS: "灵树",
     CMD_TREE_HARVEST: "灵树",
     CMD_PET: "法宝",
+    CMD_PET_WARM: "温养器灵",
     CMD_PET_TRIAL: "器灵试炼",
     CMD_STARGAZER_PANEL: "观星台",
     CMD_STARGAZER_GUIDE: "观星台",
@@ -956,6 +975,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
 }
 MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
+    "温养器灵": (_manual_enable_pet_warm_module_state, _manual_disable_pet_warm_module_state),
     "器灵试炼": (_manual_enable_pet_trial_module_state, _manual_disable_pet_trial_module_state),
     "放养": (_manual_enable_ranch_module_state, _manual_disable_ranch_module_state),
     "野外历练": (_manual_enable_wild_training_module_state, _manual_disable_wild_training_module_state),
@@ -979,6 +999,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
 MODULE_DISABLE_HANDLERS = {
     "灵树": _disable_tree_module_state,
     "法宝": _disable_pet_module_state,
+    "温养器灵": _manual_disable_pet_warm_module_state,
     "器灵试炼": _manual_disable_pet_trial_module_state,
     "放养": _manual_disable_ranch_module_state,
     "野外历练": _manual_disable_wild_training_module_state,
@@ -1152,6 +1173,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
     status_map = {
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
+        "温养器灵": get_pet_status_text,
         "器灵试炼": get_pet_status_text,
         "放养": get_ranch_status_text,
         "野外历练": get_wild_training_status_text,
@@ -1486,6 +1508,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_tree_runtime(now)
         if state["pet_enabled"] and state["next_pet_time"] <= 0:
             _schedule_module_immediate_retry("法宝", now)
+        if state.get("pet_warm_enabled") and state.get("next_pet_warm_time", 0) <= 0:
+            _schedule_module_immediate_retry("温养器灵", now)
         if state.get("pet_trial_enabled") and state.get("next_pet_trial_time", 0) <= 0:
             _schedule_module_immediate_retry("器灵试炼", now)
         if state.get("ranch_enabled") and state.get("next_ranch_time", 0) <= 0:
@@ -1586,6 +1610,8 @@ def _get_pending_task_module_name(command):
         return ""
     if raw_command == CMD_PET or raw_command.startswith(f"{CMD_PET} "):
         return "法宝"
+    if raw_command == CMD_PET_WARM or raw_command.startswith(f"{CMD_PET_WARM} "):
+        return "温养器灵"
     if raw_command == CMD_PET_TRIAL or raw_command.startswith(f"{CMD_PET_TRIAL} "):
         return "器灵试炼"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")

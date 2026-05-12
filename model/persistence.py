@@ -20,6 +20,7 @@ from .state import (
     is_auto_delete_sent_messages_enabled,
     get_global_enabled,
     get_tiandao_judgement_enabled,
+    get_dungeon_join_run_state,
     get_guanxing_monitor_enabled,
     get_guanxing_monitor_targets,
     get_guanxing_round_state,
@@ -27,9 +28,11 @@ from .state import (
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
+    get_storage_bag_item_rules,
     get_storage_bag_records,
     new_identity_state,
     set_auto_delete_sent_messages,
+    set_dungeon_join_run_state,
     set_forum_topics,
     set_global_enabled,
     set_tiandao_judgement_enabled,
@@ -43,6 +46,7 @@ from .state import (
     set_guanxing_shift_target,
     set_quiz_learning_watchers,
     set_send_as_profile,
+    set_storage_bag_item_rules,
     set_storage_bag_records,
     get_accounts,
     set_accounts,
@@ -84,6 +88,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN jiyin_enabled INTEGER NOT NULL DEFAULT 0")
     if "pet_trial_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_trial_enabled INTEGER NOT NULL DEFAULT 0")
+    if "pet_warm_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_warm_enabled INTEGER NOT NULL DEFAULT 0")
     if "ranch_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN ranch_enabled INTEGER NOT NULL DEFAULT 0")
     if "wild_training_enabled" not in module_columns:
@@ -120,12 +126,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refine_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_refresh_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
+    if "dungeon_join_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN dungeon_join_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN pet_name TEXT NOT NULL DEFAULT ''")
     if "pet_trial_name" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN pet_trial_name TEXT NOT NULL DEFAULT ''")
+    if "pet_warm_name" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN pet_warm_name TEXT NOT NULL DEFAULT ''")
     if "daohao" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN daohao TEXT NOT NULL DEFAULT ''")
     if "realm" not in identity_columns:
@@ -172,6 +182,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_jiyin_time REAL NOT NULL DEFAULT 0")
     if "next_pet_trial_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_trial_time REAL NOT NULL DEFAULT 0")
+    if "next_pet_warm_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_warm_time REAL NOT NULL DEFAULT 0")
     if "next_ranch_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_ranch_time REAL NOT NULL DEFAULT 0")
     if "next_wild_training_time" not in timer_columns:
@@ -272,6 +284,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_trial_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_trial_last_error TEXT NOT NULL DEFAULT ''")
+    if "pet_warm_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_warm_last_error TEXT NOT NULL DEFAULT ''")
     if "ranch_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "ranch_reply_due_at" not in runtime_columns:
@@ -284,6 +298,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_result TEXT NOT NULL DEFAULT ''")
     if "ranch_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_last_error TEXT NOT NULL DEFAULT ''")
+    if "ranch_return_pending" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_pending INTEGER NOT NULL DEFAULT 0")
+    if "ranch_return_seen_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_seen_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "ranch_return_wait_since" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_wait_since REAL NOT NULL DEFAULT 0")
+    if "ranch_return_last_notified_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_return_last_notified_at REAL NOT NULL DEFAULT 0")
     if "wild_training_strategy" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_strategy TEXT NOT NULL DEFAULT '深入'")
     if "wild_training_reply_to_msg_id" not in runtime_columns:
@@ -488,8 +510,12 @@ def _ensure_schema_columns(conn):
     # 第二元神模块
     if "second_soul_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_enabled INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_auto_choice_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1")
     if "second_soul_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "second_soul_choice_strategy" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_choice_strategy TEXT NOT NULL DEFAULT 'stable'")
     if "second_soul_heart_demon_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_heart_demon_msg_id INTEGER NOT NULL DEFAULT 0")
     if "second_soul_heart_demon_notified" not in runtime_columns:
@@ -576,6 +602,7 @@ def init_db():
             spiritual_root_attrs TEXT NOT NULL DEFAULT '',
             replica_professions TEXT NOT NULL DEFAULT '',
             pet_name TEXT NOT NULL DEFAULT '',
+            pet_warm_name TEXT NOT NULL DEFAULT '',
             pet_trial_name TEXT NOT NULL DEFAULT '',
             sect_name TEXT NOT NULL DEFAULT '',
             sect_updated_at REAL NOT NULL DEFAULT 0,
@@ -599,6 +626,7 @@ def init_db():
             send_as_id INTEGER PRIMARY KEY,
             tree_enabled INTEGER NOT NULL,
             pet_enabled INTEGER NOT NULL,
+            pet_warm_enabled INTEGER NOT NULL DEFAULT 0,
             pet_trial_enabled INTEGER NOT NULL DEFAULT 0,
             ranch_enabled INTEGER NOT NULL DEFAULT 0,
             wild_training_enabled INTEGER NOT NULL DEFAULT 0,
@@ -620,6 +648,9 @@ def init_db():
             small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refine_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0,
+            dungeon_join_enabled INTEGER NOT NULL DEFAULT 0,
+            second_soul_enabled INTEGER NOT NULL DEFAULT 0,
+            second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -641,6 +672,7 @@ def init_db():
             next_irr_time REAL NOT NULL,
             next_guard_time REAL NOT NULL,
             next_pet_time REAL NOT NULL,
+            next_pet_warm_time REAL NOT NULL DEFAULT 0,
             next_pet_trial_time REAL NOT NULL DEFAULT 0,
             next_ranch_time REAL NOT NULL DEFAULT 0,
             next_wild_training_time REAL NOT NULL DEFAULT 0,
@@ -680,6 +712,7 @@ def init_db():
             last_tree_status_sent_at REAL NOT NULL DEFAULT 0,
             last_tower_msg_id INTEGER NOT NULL,
             pet_last_error TEXT NOT NULL DEFAULT '',
+            pet_warm_last_error TEXT NOT NULL DEFAULT '',
             pet_trial_last_error TEXT NOT NULL DEFAULT '',
             ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             ranch_reply_due_at REAL NOT NULL DEFAULT 0,
@@ -687,6 +720,10 @@ def init_db():
             ranch_last_msg_id INTEGER NOT NULL DEFAULT 0,
             ranch_last_result TEXT NOT NULL DEFAULT '',
             ranch_last_error TEXT NOT NULL DEFAULT '',
+            ranch_return_pending INTEGER NOT NULL DEFAULT 0,
+            ranch_return_seen_msg_id INTEGER NOT NULL DEFAULT 0,
+            ranch_return_wait_since REAL NOT NULL DEFAULT 0,
+            ranch_return_last_notified_at REAL NOT NULL DEFAULT 0,
             wild_training_strategy TEXT NOT NULL DEFAULT '深入',
             wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
@@ -813,6 +850,16 @@ def init_db():
             deep_retreat_summary_sent_at REAL NOT NULL,
             last_deep_retreat_summary_msg_id INTEGER NOT NULL,
             last_deep_retreat_command_time REAL NOT NULL,
+            second_soul_phase TEXT NOT NULL DEFAULT 'idle',
+            second_soul_choice_strategy TEXT NOT NULL DEFAULT 'stable',
+            second_soul_heart_demon_msg_id INTEGER NOT NULL DEFAULT 0,
+            second_soul_heart_demon_notified INTEGER NOT NULL DEFAULT 0,
+            second_soul_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            second_soul_train_msg_id INTEGER NOT NULL DEFAULT 0,
+            second_soul_last_train_started_at REAL NOT NULL DEFAULT 0,
+            second_soul_last_broadcast_key TEXT NOT NULL DEFAULT '',
+            second_soul_last_broadcast_at REAL NOT NULL DEFAULT 0,
+            second_soul_last_error TEXT NOT NULL DEFAULT '',
             identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]',
             last_identity_info_msg_id INTEGER NOT NULL DEFAULT 0,
             identity_info_last_error TEXT NOT NULL DEFAULT '',
@@ -1005,12 +1052,12 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, pet_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
+            send_as_id, username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
             enabled, xiuwei_current, xiuwei_max, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -1020,6 +1067,7 @@ def upsert_identity_to_db(send_as_id):
             spiritual_root_attrs=excluded.spiritual_root_attrs,
             replica_professions=excluded.replica_professions,
             pet_name=excluded.pet_name,
+            pet_warm_name=excluded.pet_warm_name,
             pet_trial_name=excluded.pet_trial_name,
             sect_name=excluded.sect_name,
             sect_updated_at=excluded.sect_updated_at,
@@ -1047,6 +1095,7 @@ def upsert_identity_to_db(send_as_id):
             profile.get("spiritual_root_attrs", "") or "",
             profile.get("replica_professions", "") or "",
             profile.get("pet_name", "") or "",
+            profile.get("pet_warm_name", "") or "",
             profile.get("pet_trial_name", "") or "",
             profile.get("sect_name", "") or "",
             float(profile.get("sect_updated_at", 0) or 0),
@@ -1130,7 +1179,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, pet_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -1144,6 +1193,7 @@ def _load_identity_from_db(send_as_id):
             spiritual_root_attrs=row["spiritual_root_attrs"],
             replica_professions=row["replica_professions"],
             pet_name=row["pet_name"],
+            pet_warm_name=row["pet_warm_name"],
             pet_trial_name=row["pet_trial_name"],
             sect_name=row["sect_name"],
             sect_updated_at=row["sect_updated_at"],
@@ -1359,6 +1409,16 @@ _META_STATE_CODEC = {
         _encode_meta_json,
         lambda value: set_storage_bag_records(_decode_meta_json(value, {})),
     ),
+    "storage_bag_item_rules": (
+        get_storage_bag_item_rules,
+        _encode_meta_json,
+        lambda value: set_storage_bag_item_rules(_decode_meta_json(value, {})),
+    ),
+    "dungeon_join_run_state": (
+        get_dungeon_join_run_state,
+        _encode_meta_json,
+        lambda value: set_dungeon_join_run_state(_decode_meta_json(value, {})),
+    ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,
         _encode_meta_json,
@@ -1476,7 +1536,7 @@ def load_state():
                 membership_initialized = bool(decoded)
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         rows = conn.execute(
-            "SELECT send_as_id, username, label, daohao, realm, pet_name, pet_trial_name, sect_name, sect_updated_at, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
+            "SELECT send_as_id, username, label, daohao, realm, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
         ).fetchall()
 
         _meta_state["identity_ids"] = []

@@ -43,6 +43,9 @@ RE_TIANTI_GANGFENG_FAIL = re.compile(r"九天罡风尚未再聚，请在\s*(.+?)
 RE_TIANTI_GANGFENG_COOLDOWN = re.compile(r"\.引九天罡风[:：]\s*(.+)")
 TIANTI_CLIMB_RESOURCE_KEY = "tianti_climb"
 TIANTI_GANGFENG_RESOURCE_KEY = "tianti_gangfeng"
+TIANTI_CLIMB_INFLIGHT_SEC = 180
+TIANTI_WENXIN_DAY_END_FALLBACK_SEC = 45 * 60
+_TIANTI_CLIMB_INFLIGHT_UNTIL = {}
 
 
 def _set_tianti_next_wenxin_time(next_time, *, persist=False):
@@ -70,7 +73,7 @@ def _set_tianti_next_gangfeng_time(next_time, *, persist=False):
 
 
 def _schedule_tianti_wenxin_retry(now, *, persist=False):
-    next_time = float(now) + 86400 + random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
+    next_time = _get_tianti_day_end_ts(now) + random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
     _set_tianti_next_wenxin_time(next_time, persist=persist)
     return next_time
 
@@ -105,7 +108,43 @@ def _has_pending_tianti_command(command):
     return False
 
 
-async def _send_due_tianti_climb_after_status(send_as_id, delay=None):
+def _tianti_inflight_key(send_as_id=None):
+    identity_id = int(send_as_id or get_current_identity_id() or 0)
+    return identity_id
+
+
+def _has_tianti_climb_send_inflight(now=None, send_as_id=None):
+    now = float(now or time.time())
+    key = _tianti_inflight_key(send_as_id)
+    if key <= 0:
+        return False
+    until = float(_TIANTI_CLIMB_INFLIGHT_UNTIL.get(key, 0) or 0)
+    if until <= now:
+        _TIANTI_CLIMB_INFLIGHT_UNTIL.pop(key, None)
+        return False
+    return True
+
+
+def _reserve_tianti_climb_send(now=None, send_as_id=None):
+    now = float(now or time.time())
+    key = _tianti_inflight_key(send_as_id)
+    if key <= 0:
+        return False
+    if _has_tianti_climb_send_inflight(now, send_as_id=key):
+        return False
+    if _has_pending_tianti_command(CMD_TIANTI_CLIMB):
+        return False
+    _TIANTI_CLIMB_INFLIGHT_UNTIL[key] = now + TIANTI_CLIMB_INFLIGHT_SEC
+    return True
+
+
+def _clear_tianti_climb_send_inflight(send_as_id=None):
+    key = _tianti_inflight_key(send_as_id)
+    if key > 0:
+        _TIANTI_CLIMB_INFLIGHT_UNTIL.pop(key, None)
+
+
+async def _send_due_tianti_climb_after_status(send_as_id, delay=None, reserved=False):
     if delay is None:
         delay = random.uniform(2, 5)
     await asyncio.sleep(delay)
@@ -115,18 +154,22 @@ async def _send_due_tianti_climb_after_status(send_as_id, delay=None):
             return
         next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
         if next_climb_time <= 0 or now < next_climb_time:
+            if reserved:
+                _clear_tianti_climb_send_inflight(send_as_id)
             return
-        if _has_pending_tianti_command(CMD_TIANTI_CLIMB):
+        if not reserved and not _reserve_tianti_climb_send(now, send_as_id=send_as_id):
             return
         should_trigger_wenxin, _wenxin_state = _should_trigger_tianti_wenxin(now)
         should_trigger_gangfeng, _gangfeng_state = _should_trigger_tianti_gangfeng(now)
         if should_trigger_wenxin or should_trigger_gangfeng:
+            _clear_tianti_climb_send_inflight(send_as_id)
             return
         console_log("☁️ 天阶状态显示可登，接续排队登天阶。")
 
     msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=1, send_as_id=send_as_id, priority="chain")
     with use_identity(send_as_id):
         if not msg:
+            _clear_tianti_climb_send_inflight(send_as_id)
             _set_tianti_next_climb_time(time.time() + RETRY_MAX_SEC, persist=True)
             state["tianti_last_error"] = "登天阶接续发送失败"
             await send_audit_log("❌ 登天阶接续发送失败，稍后重试。", scope="identity", send_as_id=send_as_id)
@@ -231,6 +274,18 @@ def _build_tianti_wenxin_trigger_key(now):
     return f"{get_day_key(now)}|{current_stage}|{target_stage}|{next_climb_time}"
 
 
+def _should_defer_wenxin_by_timer(now, today_key):
+    next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
+    if next_wenxin_time <= 0 or now >= next_wenxin_time:
+        return False
+    if str(state.get("tianti_last_error") or "") == "问心台发送失败":
+        return True
+    if next_wenxin_time - now <= RETRY_MAX_SEC + 60:
+        return True
+    next_day_key = get_day_key(next_wenxin_time)
+    return bool(next_day_key and next_day_key > today_key)
+
+
 def _should_advance_tianti_wenxin_for_gangfeng(now, current_stage, trigger_stage):
     if trigger_stage <= 0 or current_stage != trigger_stage - 1:
         return False
@@ -253,30 +308,41 @@ def _should_trigger_tianti_wenxin(now):
     today_key = get_day_key(now)
     if str(state.get("tianti_last_wenxin_day") or "") == today_key:
         return False, "already_done"
-    if int(state.get("tianti_remaining_climb_count", 0) or 0) <= 0:
+    if _should_defer_wenxin_by_timer(now, today_key):
+        return False, "wenxin_not_today"
+
+    remaining_count = int(state.get("tianti_remaining_climb_count", 0) or 0)
+    day_end_ts = _get_tianti_day_end_ts(now)
+    if remaining_count <= 0:
+        if 0 < day_end_ts - now <= TIANTI_WENXIN_DAY_END_FALLBACK_SEC:
+            trigger_key = f"{today_key}|day_end_fallback"
+            if str(state.get("tianti_wenxin_last_trigger_key") or "") == trigger_key:
+                return False, "trigger_key_hit"
+            return True, trigger_key
         return False, "remain=0"
+
     target_stage = int(state.get("tianti_theoretical_max_stage", 0) or 0)
-    trigger_stage = int(state.get("tianti_wenxin_trigger_stage", 0) or 0)
     current_stage = int(state.get("tianti_progress_current", 0) or 0)
+    progress_total = int(state.get("tianti_progress_total", 12) or 12)
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
-    next_wenxin_time = float(state.get("next_tianti_wenxin_time", 0) or 0)
     if target_stage <= 0:
         return False, "target=0"
-    advance_for_gangfeng = _should_advance_tianti_wenxin_for_gangfeng(now, current_stage, trigger_stage)
-    if current_stage != trigger_stage and not advance_for_gangfeng:
-        return False, f"stage_mismatch {current_stage}!={trigger_stage}"
     if next_climb_time <= 0:
         return False, "next_climb=0"
-    if next_wenxin_time > 0 and now < next_wenxin_time:
-        return False, "wenxin_cd"
+
+    if target_stage >= progress_total:
+        should_use = current_stage == progress_total - 1
+        trigger_reason = "final_stage"
+    else:
+        should_use = remaining_count == 1
+        trigger_reason = "last_climb_today"
+    if not should_use:
+        return False, f"wait_{trigger_reason}"
+
     window_start = next_climb_time - 600
     if not (window_start <= now < next_climb_time):
         return False, "window_closed"
-    trigger_key = _build_tianti_wenxin_trigger_key(now)
-    if not trigger_key:
-        return False, "trigger_key_empty"
-    if advance_for_gangfeng:
-        trigger_key = f"{trigger_key}|advance_gangfeng"
+    trigger_key = f"{today_key}|{current_stage}|{target_stage}|{int(next_climb_time)}|{trigger_reason}"
     if str(state.get("tianti_wenxin_last_trigger_key") or "") == trigger_key:
         return False, "trigger_key_hit"
     return True, trigger_key
@@ -294,7 +360,10 @@ def get_tianti_estimated_wenxin_window_text(now=None):
 
     remaining_count = int(state.get("tianti_remaining_climb_count", 0) or 0)
     if remaining_count <= 0:
-        return "今日无预计窗口"
+        day_end_ts = _get_tianti_day_end_ts(now)
+        if 0 < day_end_ts - now <= TIANTI_WENXIN_DAY_END_FALLBACK_SEC:
+            return f"日切前兜底：{fmt_abs_ts(now)} - {fmt_abs_ts(day_end_ts)}"
+        return f"今日无预计登阶，日切前 {int(TIANTI_WENXIN_DAY_END_FALLBACK_SEC // 60)} 分钟兜底"
 
     target_stage = int(state.get("tianti_theoretical_max_stage", 0) or 0)
     trigger_stage = int(state.get("tianti_wenxin_trigger_stage", 0) or 0)
@@ -308,22 +377,26 @@ def get_tianti_estimated_wenxin_window_text(now=None):
         return "等待下次登阶时间"
     if current_stage >= progress_total:
         return "当前已满阶，无需问心"
-    if trigger_stage <= 0:
-        return "当前计划无需问心"
 
     note = ""
-    if _should_advance_tianti_wenxin_for_gangfeng(now, current_stage, trigger_stage):
+    if target_stage >= progress_total:
+        trigger_stage = progress_total - 1
+        if current_stage == trigger_stage:
+            window_end = next_climb_time
+            note = "下一次登第12阶，优先使用问心台"
+        elif current_stage < trigger_stage:
+            climbs_until_trigger = trigger_stage - current_stage
+            window_end = next_climb_time + climbs_until_trigger * _get_tianti_cd_seconds()
+            note = f"预计到达 {trigger_stage}/{progress_total} 后，留给第12阶"
+        else:
+            return "当前进度已超过第12阶触发点，等待重新规划"
+    elif remaining_count == 1:
         window_end = next_climb_time
-        note = "九天罡风条件满足，预计提前一阶触发"
-    elif current_stage == trigger_stage:
-        window_end = next_climb_time
-        note = f"到达触发阶 {trigger_stage} 后，将在下一次登阶前 10 分钟触发"
-    elif current_stage < trigger_stage:
-        climbs_until_trigger = trigger_stage - current_stage
-        window_end = next_climb_time + climbs_until_trigger * _get_tianti_cd_seconds()
-        note = f"预计到达触发阶 {trigger_stage} 后，在下一次登阶前 10 分钟触发"
+        note = "今日到不了第12阶，留给今日最后一次登阶"
     else:
-        return "当前进度已超过触发阶，等待重新规划"
+        climbs_until_last = max(0, remaining_count - 1)
+        window_end = next_climb_time + climbs_until_last * _get_tianti_cd_seconds()
+        note = "今日到不了第12阶，留给今日最后一次登阶"
 
     window_start = max(0, window_end - 600)
     return f"{fmt_abs_ts(window_start)} - {fmt_abs_ts(window_end)}（{note}）"
@@ -603,6 +676,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
     handled = False
 
     if matched_family == "tianti_climb" and ("修为不足" in raw_text or "资源不足" in raw_text):
+        _clear_tianti_climb_send_inflight()
         backoff = record_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY, now, reason=raw_text)
         due_at = float(backoff.get("next_at", 0) or 0)
         _set_tianti_next_climb_time(due_at, persist=False)
@@ -642,11 +716,10 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
                 cooldown
                 and not has_wait_time(cooldown)
                 and float(state.get("next_tianti_climb_time", 0) or 0) <= now
-                and not _has_pending_tianti_command(CMD_TIANTI_CLIMB)
             ):
                 send_as_id = int(get_current_identity_id() or 0)
-                if send_as_id > 0:
-                    _fire_and_forget(_send_due_tianti_climb_after_status(send_as_id))
+                if send_as_id > 0 and _reserve_tianti_climb_send(now, send_as_id=send_as_id):
+                    _fire_and_forget(_send_due_tianti_climb_after_status(send_as_id, reserved=True))
             if cooldown and has_wait_time(cooldown):
                 await send_audit_log(f"⏳ 天阶 CD→{state.get('tianti_cooldown_text')}")
             handled = True
@@ -687,6 +760,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
     climb_cycle_match = RE_TIANTI_CLIMB_CYCLE.search(raw_text)
     climb_result_match = RE_TIANTI_CLIMB_RESULT.search(raw_text)
     if climb_cost_match and climb_gain_match and climb_result_match:
+        _clear_tianti_climb_send_inflight()
         state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
         state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
         state["tianti_last_gain_xiuwei"] = int(climb_gain_match.group(1) or 0)
@@ -710,6 +784,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
     if has_wait_time(raw_text) and matched_family == "tianti_climb" and not (climb_cost_match and climb_gain_match and climb_result_match):
         wait_sec = parse_wait_time(raw_text)
         if wait_sec > 0:
+            _clear_tianti_climb_send_inflight()
             random_delay = random.randint(TIANTI_CD_RANDOM_MIN_SEC, TIANTI_CD_RANDOM_MAX_SEC)
             total_wait_sec = wait_sec + random_delay
             state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
@@ -788,10 +863,12 @@ async def run_tianti_scheduler(now):
 
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
     if next_climb_time > 0 and now >= next_climb_time:
-        if _has_pending_tianti_command(CMD_TIANTI_CLIMB):
+        send_as_id = int(get_current_identity_id() or 0)
+        if not _reserve_tianti_climb_send(now, send_as_id=send_as_id):
             return
         msg = await send_game_command(CMD_TIANTI_CLIMB, max_retry=1)
         if not msg:
+            _clear_tianti_climb_send_inflight(send_as_id)
             _set_tianti_next_climb_time(time.time() + RETRY_MAX_SEC, persist=True)
             state["tianti_last_error"] = "登天阶发送失败"
             await send_audit_log("❌ 登天阶发送失败，稍后重试。")

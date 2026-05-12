@@ -37,9 +37,10 @@ from .features.concubine import (
     restore_concubine_runtime,
     run_concubine_scheduler,
 )
-from .features.pet import handle_pet_cd_fix, handle_pet_trial_reply, run_pet_scheduler
-from .features.ranch import handle_ranch_reply, run_ranch_scheduler
+from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, run_pet_scheduler
+from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
+from .features.join_dungeon import handle_dungeon_join_bot_message, handle_dungeon_join_mention, record_game_group_message
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
@@ -163,6 +164,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "sect_teach": ("传功", "宗门", "贡献"),
     "tower": ("闯塔", "古塔", "塔灵", "挑战", "道心受挫"),
     "pet": ("器灵", "法宝", "默契", "经验", "休息"),
+    "pet_warm": ("温养器灵", "温养", "灵光大振", "吞纳过灵机"),
     "pet_trial": ("器灵试炼", "试炼", "共鸣", "灵潮", "反噬"),
     "tree_panel": ("灵眼之树", "灵树", "果实", "采摘", "成熟"),
     "tree_guard": ("守山", "护山", "攻山", "灵树"),
@@ -485,28 +487,46 @@ def _is_concubine_loss_broadcast_candidate(text):
 
 
 async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None):
-    if _claim_runtime_event(event, scope="deep_retreat_summary"):
-        await handle_deep_retreat_summary_broadcast(text, now)
-    if _claim_runtime_event(event, scope="yuanying_summary"):
-        await handle_yuanying_summary_broadcast(text, now)
-    if _claim_runtime_event(event, scope="realm_breakthrough"):
-        await handle_realm_breakthrough_broadcast(text, now)
-    if _claim_runtime_event(event, scope="quiz_result"):
-        await handle_quiz_result_broadcast(text, now)
-    if _claim_runtime_event(event, scope="quiz_learning_prompt"):
-        await handle_quiz_learning_prompt(text, now, event)
-    if _claim_runtime_event(event, scope="tianji_quiz_result"):
-        await handle_tianji_quiz_result_broadcast(text, now, event, reply_to=reply_to)
-    if _claim_runtime_event(event, scope="tianji_quiz_prompt"):
-        await handle_tianji_quiz_prompt(text, now, event)
-    if _claim_runtime_event(event, scope="tiandao_judgement_punishment"):
-        await handle_tiandao_judgement_punishment(text, now, event)
-    if _claim_runtime_event(event, scope="tiandao_judgement_prompt"):
-        await handle_tiandao_judgement_prompt(text, now, event)
-    if _claim_runtime_event(event, scope="guanxing_finish"):
-        await handle_guanxing_finish_broadcast(text, now)
+    await _dispatch_broadcast_handlers(event, text, now, _NEW_MESSAGE_BROADCAST_HANDLERS, reply_to=reply_to)
     if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
         await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
+
+
+_NEW_MESSAGE_BROADCAST_HANDLERS = (
+    ("deep_retreat_summary", handle_deep_retreat_summary_broadcast),
+    ("yuanying_summary", handle_yuanying_summary_broadcast),
+    ("realm_breakthrough", handle_realm_breakthrough_broadcast),
+    ("quiz_result", handle_quiz_result_broadcast),
+    ("quiz_learning_prompt", handle_quiz_learning_prompt),
+    ("tianji_quiz_result", handle_tianji_quiz_result_broadcast),
+    ("tianji_quiz_prompt", handle_tianji_quiz_prompt),
+    ("tiandao_judgement_punishment", handle_tiandao_judgement_punishment),
+    ("tiandao_judgement_prompt", handle_tiandao_judgement_prompt),
+    ("guanxing_finish", handle_guanxing_finish_broadcast),
+    ("ranch_return", handle_ranch_return_broadcast),
+)
+_BROADCAST_EVENT_HANDLERS = {
+    handle_quiz_learning_prompt,
+    handle_tianji_quiz_prompt,
+    handle_tiandao_judgement_punishment,
+    handle_tiandao_judgement_prompt,
+    handle_ranch_return_broadcast,
+}
+_BROADCAST_REPLY_CONTEXT_HANDLERS = {
+    handle_tianji_quiz_result_broadcast,
+}
+
+
+async def _dispatch_broadcast_handlers(event, text, now, handlers, *, reply_to=None):
+    for scope, handler in handlers:
+        if not _claim_runtime_event(event, scope=scope):
+            continue
+        if handler in _BROADCAST_REPLY_CONTEXT_HANDLERS:
+            await handler(text, now, event, reply_to=reply_to)
+        elif handler in _BROADCAST_EVENT_HANDLERS:
+            await handler(text, now, event)
+        else:
+            await handler(text, now)
 
 
 async def _dispatch_tree_broadcast_fallbacks(event, text, now):
@@ -552,23 +572,19 @@ async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
 
 
 async def _dispatch_message_edited_realm_breakthrough(event, text, now):
-    if _claim_runtime_event(event, scope="realm_breakthrough_edit"):
-        await handle_realm_breakthrough_broadcast(text, now)
+    await _dispatch_message_edited_broadcasts(event, text, now, _EARLY_MESSAGE_EDIT_BROADCAST_HANDLERS)
 
 
 async def _dispatch_message_edited_tree_panel(event, text, now):
-    if _claim_runtime_event(event, scope="tree_panel_edit"):
-        await _run_for_all_identities(handle_tree_panel, text, now, False)
+    await _dispatch_message_edited_broadcasts(event, text, now, (("tree_panel_edit", handle_tree_panel),))
 
 
 async def _dispatch_message_edited_stargazer_panel(event, text, now):
-    if _claim_runtime_event(event, scope="stargazer_panel_edit"):
-        await _run_for_all_identities(handle_stargazer_panel, text, now, False)
+    await _dispatch_message_edited_broadcasts(event, text, now, (("stargazer_panel_edit", handle_stargazer_panel),))
 
 
 async def _dispatch_message_edited_guanxing_monitor(event, text, now):
-    if _claim_runtime_event(event, scope="guanxing_monitor_broadcast_edit"):
-        await handle_guanxing_monitor_broadcast(text, now)
+    await _dispatch_message_edited_broadcasts(event, text, now, (("guanxing_monitor_broadcast_edit", handle_guanxing_monitor_broadcast),))
 
 
 async def _dispatch_message_edited_concubine_loss(event, text, now):
@@ -577,10 +593,35 @@ async def _dispatch_message_edited_concubine_loss(event, text, now):
 
 
 async def _dispatch_message_edited_phaseful_summaries(event, text, now):
-    if _claim_runtime_event(event, scope="deep_retreat_summary_edit"):
-        await handle_deep_retreat_summary_broadcast(text, now)
-    if _claim_runtime_event(event, scope="yuanying_summary_edit"):
-        await handle_yuanying_summary_broadcast(text, now)
+    await _dispatch_message_edited_broadcasts(event, text, now, _PHASEFUL_MESSAGE_EDIT_BROADCAST_HANDLERS)
+
+
+_EARLY_MESSAGE_EDIT_BROADCAST_HANDLERS = (
+    ("realm_breakthrough_edit", handle_realm_breakthrough_broadcast),
+)
+_PHASEFUL_MESSAGE_EDIT_BROADCAST_HANDLERS = (
+    ("deep_retreat_summary_edit", handle_deep_retreat_summary_broadcast),
+    ("yuanying_summary_edit", handle_yuanying_summary_broadcast),
+)
+_MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS = {
+    handle_tree_panel,
+    handle_stargazer_panel,
+}
+_MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS = {
+    handle_ranch_return_broadcast,
+}
+
+
+async def _dispatch_message_edited_broadcasts(event, text, now, handlers):
+    for scope, handler in handlers:
+        if not _claim_runtime_event(event, scope=scope):
+            continue
+        if handler in _MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS:
+            await _run_for_all_identities(handler, text, now, False)
+        elif handler in _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS:
+            await handler(text, now, event)
+        else:
+            await handler(text, now)
 
 
 async def _run_identity_schedulers(now):
@@ -742,6 +783,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
         if not already_consumed and matched_family != "stargazer_sync":
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_pet_warm_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_ranch_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -805,6 +847,8 @@ async def on_message(event):
 
     if event.chat_id != get_game_group_id():
         return
+    now = time.time()
+    record_game_group_message(event, now=now, event_type="message")
 
     # bot 健康监测：记录 . 开头指令的触发时间
     raw_text = (event.raw_text or "").strip()
@@ -813,12 +857,12 @@ async def on_message(event):
         note_game_command_observed(raw_text)
 
     if event.sender_id not in set(get_game_bot_ids()):
-        now = time.time()
         text = event.raw_text or ""
         if sender_id in set(int(identity_id) for identity_id in get_identity_ids()):
             observe_phaseful_identity_message(sender_id, text, now=now, msg_id=event.id)
             _track_manual_game_command(sender_id, text, event.id)
         try:
+            await handle_dungeon_join_mention(event, text, now)
             if await _handle_suspected_game_bot_reply(event, text, now):
                 return
             if _claim_runtime_event(event, scope="guanxing_external_shift"):
@@ -830,13 +874,13 @@ async def on_message(event):
     # bot 健康监测：bot 有发言后，暂停态先探测，再恢复
     await _note_game_bot_activity()
 
-    now = time.time()
     text = event.raw_text or ""
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
 
         await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to)
+        await handle_dungeon_join_bot_message(event, text, now)
 
         if await _run_claimed_prompt_handler("quiz_prompt", handle_quiz_prompt, text, now, event):
             return
@@ -890,6 +934,7 @@ async def on_message_edited(event):
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
         await _dispatch_message_edited_concubine_loss(event, text, now)
         await _dispatch_message_edited_phaseful_summaries(event, text, now)
+        await handle_dungeon_join_bot_message(event, text, now)
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(
@@ -906,6 +951,8 @@ async def on_message_edited(event):
         await _dispatch_message_edited_tree_panel(event, text, now)
         await _dispatch_message_edited_stargazer_panel(event, text, now)
         await _dispatch_message_edited_guanxing_monitor(event, text, now)
+        await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
+        await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
     except Exception:
         print(traceback.format_exc())
 

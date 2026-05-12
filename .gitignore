@@ -1,5 +1,6 @@
 # 运行时数据
 data/*
+!data/storage_bag_item_rules.json
 !data/quiz/
 data/quiz/*
 !data/quiz/quiz_bank.json

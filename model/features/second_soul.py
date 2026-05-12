@@ -10,13 +10,13 @@ phase 状态机:
     ready_to_train    - 已确认窍中温养，等待 scheduler 安全发送 .元神修炼
     train_pending     - 已发 .元神修炼，等回复
     cultivating       - 修炼中，next_second_soul_time = 修炼结束时间 + buffer
-    heart_demon_pending - 心魔试炼，等用户手动抉择，scheduler 不发任何命令
+    heart_demon_pending - 心魔试炼，已自动稳固道心，等结算 edit/broadcast
     injured           - 受伤，next_second_soul_time = 恢复时间 + buffer
     not_unlocked      - 尚未凝练第二元神，长冻结 7 天后重试
 
 设计原则:
 1. 未知状态先发 .第二元神 查状态；明确归位/窍中温养后，才进入修炼发送队列
-2. heart_demon_pending 永不自动 .抉择（破而后立失败会受伤 24h，保守）
+2. heart_demon_pending 默认自动 .抉择 稳固道心；结算成功后进入安全修炼队列
 3. heart_demon_pending 有 deadline 兜底（防 broadcast 漏接死锁）
 4. 不使用 fire-and-forget 延迟调度（避开 tree 模块的 guard 漏洞）
 """
@@ -50,6 +50,10 @@ from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 RE_SECOND_SOUL_PANEL_HEAD = re.compile(r"【你的第二元神[：:]")
 RE_SECOND_SOUL_STATUS_LINE = re.compile(r"状态[：:]\s*([^\n)]+?)(?:\s*[(（]剩余[：:]\s*([^)）\n]+)[)）])?\s*(?:\n|$)")
 RE_AT_USERNAME = re.compile(r"@([A-Za-z0-9_]+)")
+SECOND_SOUL_CHOICE_STRATEGIES = {
+    "stable": ("稳固道心", CMD_SECOND_SOUL_CHOICE_STABLE),
+    "break": ("强行突破", CMD_SECOND_SOUL_CHOICE_BREAK),
+}
 
 
 def _phase():
@@ -65,6 +69,19 @@ def _clear_heart_demon():
     state["second_soul_heart_demon_msg_id"] = 0
     state["second_soul_heart_demon_deadline"] = 0.0
     state["second_soul_heart_demon_notified"] = False
+
+
+def _choice_strategy():
+    strategy = str(state.get("second_soul_choice_strategy") or "stable").strip().lower()
+    return strategy if strategy in SECOND_SOUL_CHOICE_STRATEGIES else "stable"
+
+
+def _choice_command():
+    return SECOND_SOUL_CHOICE_STRATEGIES[_choice_strategy()][1]
+
+
+def _choice_label():
+    return SECOND_SOUL_CHOICE_STRATEGIES[_choice_strategy()][0]
 
 
 def _next_pending_timeout(now):
@@ -155,12 +172,15 @@ def get_second_soul_status_text():
         lines.append(f"- 恢复后：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
     elif phase == "heart_demon_pending":
         deadline = state.get("second_soul_heart_demon_deadline", 0)
-        lines.append("- ⚠️ 心魔试炼中，需人工抉择！")
+        if state.get("second_soul_auto_choice_enabled", True):
+            lines.append(f"- ⚠️ 心魔试炼中，自动抉择：{_choice_label()}")
+        else:
+            lines.append("- ⚠️ 心魔试炼中，自动抉择关闭")
         if deadline > 0:
             lines.append(f"- 抉择截止：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）")
         msg_id = state.get("second_soul_heart_demon_msg_id", 0)
         if msg_id:
-            lines.append(f"- 警示消息：{msg_id}（回复 .抉择 强行突破/稳固道心）")
+            lines.append(f"- 警示消息：{msg_id}")
     elif phase == "not_unlocked":
         lines.append("- 未凝练第二元神")
         if next_time > 0:
@@ -169,6 +189,8 @@ def get_second_soul_status_text():
     last_err = state.get("second_soul_last_error", "")
     if last_err:
         lines.append(f"- 最近异常：{last_err}")
+    if phase != "heart_demon_pending":
+        lines.append(f"- 心魔抉择：{'自动' if state.get('second_soul_auto_choice_enabled', True) else '手动'} / {_choice_label()}")
     return "\n".join(lines)
 
 
@@ -408,6 +430,7 @@ async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_
             )
         return False
 
+    should_send_choice = False
     with use_identity(target_id):
         if _phase() == "heart_demon_pending":
             # 已经标记过（可能广播重复），不重复通知
@@ -418,12 +441,40 @@ async def handle_second_soul_heart_demon_warning_broadcast(text, now, event_msg_
         state["second_soul_heart_demon_notified"] = True
         _clear_pending_msg_ids()
         save_state()
+        should_send_choice = int(event_msg_id or 0) > 0 and bool(state.get("second_soul_auto_choice_enabled", True))
+        choice_command = _choice_command()
+        choice_label = _choice_label()
         await send_audit_log(
-            f"🔥 第二元神心魔试炼来袭！1 小时内回复警示消息 {event_msg_id}：\n"
-            f"  .抉择 强行突破  (高风险高回报，失败受伤 24h)\n"
-            f"  .抉择 稳固道心  (低风险低回报，几乎稳过)",
+            (
+                f"🔥 第二元神心魔试炼来袭，自动回复警示消息 {event_msg_id}：\n  {choice_command}"
+                if should_send_choice
+                else f"🔥 第二元神心魔试炼来袭，自动抉择已关闭，请人工回复警示消息 {event_msg_id}。"
+            ),
             scope="identity", send_as_id=target_id, limit=280,
         )
+    if should_send_choice:
+        msg = await send_game_command(
+            choice_command,
+            track=False,
+            reply_to=int(event_msg_id or 0),
+            send_as_id=target_id,
+            priority="reactive",
+        )
+        with use_identity(target_id):
+            if msg:
+                state["second_soul_last_error"] = ""
+                save_state()
+                await send_audit_log(
+                    f"🔥 第二元神已自动抉择{choice_label}，等待结算编辑消息 {event_msg_id}。",
+                    scope="identity", send_as_id=target_id, limit=220,
+                )
+            else:
+                state["second_soul_last_error"] = f"自动抉择{choice_label}发送失败，等待人工或 deadline 自检"
+                save_state()
+                await send_audit_log(
+                    f"⚠️ 第二元神自动抉择{choice_label}发送失败，请人工回复警示消息 {event_msg_id}。",
+                    scope="identity", send_as_id=target_id, limit=260,
+                )
     return True
 
 

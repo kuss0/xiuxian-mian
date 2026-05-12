@@ -1,0 +1,942 @@
+{
+  "version": 1,
+  "methods": {
+    "basic": "买卖",
+    "gift": "赠送",
+    "blocked": "不可转移",
+    "unknown": "未知"
+  },
+  "items": {
+    "灵石": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "一小段养魂木根部": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "一小节天雷竹根部": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "一截灵眼之树": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "一阶妖丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "七焰扇图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "三级妖丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "三级妖单": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "三转重元丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "三转重元丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "乌龙幡": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "乌龙幡图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九天息壤": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九天神雷木": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九曲灵参丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九曲灵参丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九转凝魂丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九转凝魂丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九转解厄丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "九转解厄丹丹方": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【九转解厄丹丹方】乃宗门专属信物，天道法则禁止其作为交易货币流通。"
+    },
+    "九转还魂丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "乱星海炼体第一人": {
+      "method": "unknown",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "乾坤财气引": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "二级妖丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "佑天神盾": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "佑天神盾图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "元磁山核·丁": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "元磁山核·丙": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【元磁山核·丙】不可作为万宝楼交易货币流通。"
+    },
+    "元磁山核·乙": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "元磁山核·甲": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "养魂木": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "冰凤之翎": {
+      "method": "unknown",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "净髓丹丹方": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "净髓露丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "凝气散": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "凝神露": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "凝神露丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "凝血草": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "凝血草种子": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "【天道禁制】"
+    },
+    "凝魂丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "凝魂丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "合气丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "合气丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "咸鱼的残魂": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "四级妖丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "坠魔谷禁制令": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【坠魔谷禁制令】不可作为万宝楼交易货币流通。"
+    },
+    "增元丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "增元丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "大挪移令": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【大挪移令】不可作为万宝楼交易货币流通。"
+    },
+    "天凤之翎": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "天南第一修士": {
+      "method": "unknown",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "天火液": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "天火液丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "天雷族": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "天雷竹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "太虚丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "太虚丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "太虚仙露": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "夺天造化丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "始皇的新衣": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【始皇的新衣】不可作为万宝楼交易货币流通。"
+    },
+    "宋玉使用过的茶杯": {
+      "method": "unknown",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "宋玉对你产生了疑问": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【宋玉对你产生了疑问】不可作为万宝楼交易货币流通。"
+    },
+    "宋玉的靓影": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【宋玉的靓影】乃宗门专属信物，天道法则禁止其作为交易货币流通。"
+    },
+    "封灵匣": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "尘封的储物袋": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "庚金": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "护脉散丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "掌天瓶的仿制品": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "昆吾通行令": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【昆吾通行令】不可作为万宝楼交易货币流通。"
+    },
+    "梅凝的灵气": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【梅凝的灵气】不可作为万宝楼交易货币流通。"
+    },
+    "残破的古传送阵盘": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "法则源晶·金": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "法则碎片·土": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·土】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·暗": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·暗】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·木": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·木】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·水": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·水】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·火": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·火】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·空间": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·空间】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·金": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·金】不可作为万宝楼交易货币流通。"
+    },
+    "法则碎片·雷": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "法则碎片·风": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【法则碎片·风】不可作为万宝楼交易货币流通。"
+    },
+    "清灵丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "清灵草": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "清灵草种子": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "火鹤之羽": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "灵眼之液": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【灵眼之液】乃宗门专属信物，天道法则禁止其作为交易货币流通。"
+    },
+    "灵眼木髓碎片": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "特制爆竹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "玄天斩灵剑": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "玄牡化婴·灵傀": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "玄铁剑": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "【天道禁制】"
+    },
+    "玄铁剑图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "玉髓芝": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "百年铁木": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "皇鳞甲图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "神行符": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "此物不可交易。"
+    },
+    "禁地药篓": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "秘宝线索·甲": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【秘宝线索·甲】不可作为万宝楼交易货币流通。"
+    },
+    "空间之核": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "第二元神残篇": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【第二元神残篇】不可作为万宝楼交易货币流通。"
+    },
+    "筑基丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "紫灵的轻吻": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【紫灵的轻吻】不可作为万宝楼交易货币流通。"
+    },
+    "虚天残图": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【虚天残图】不可作为万宝楼交易货币流通。"
+    },
+    "虚灵丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "虚空尘埃": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "血手人屠": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "血线草": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "赤炼金骨": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "赤精果": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "迷情符": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【迷情符】乃宗门专属信物，天道法则禁止其作为交易货币流通。"
+    },
+    "金光砖": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "【天道禁制】"
+    },
+    "金光砖图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "金精矿": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "金蚨子母刃": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "【天道禁制】"
+    },
+    "金蚨子母刃图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "阴凝之晶": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "阴魂丝": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "降伏年兽": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【降伏年兽】不可作为万宝楼交易货币流通。"
+    },
+    "雷鹏之羽": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "青元剑诀（上）": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【青元剑诀（上）】不可作为万宝楼交易货币流通。"
+    },
+    "青元剑诀（下）": {
+      "method": "blocked",
+      "tags": [
+        "未知"
+      ],
+      "reason": "上架失败！【青元剑诀（下）】不可作为万宝楼交易货币流通。"
+    },
+    "青元剑诀（中）": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "青竹蜂云剑": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "青竹蜂云剑图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "青竹蜂云剑（庚金版）": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "青鸾天盾": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "青鸾天盾图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "风行丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "风雷翅": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "风雷翅图纸": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "鲲鹏之羽": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "黄芽丹": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    },
+    "黄芽丹丹方": {
+      "method": "basic",
+      "tags": [
+        "未知"
+      ],
+      "reason": ""
+    }
+  }
+}

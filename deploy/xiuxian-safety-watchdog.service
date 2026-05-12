@@ -6,7 +6,7 @@ Wants=xiuxian.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/xiuxian-main
-ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/tools/safety_watchdog.py --project-root /opt/xiuxian-main --service xiuxian --interval 15 --action stop
+ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/tools/safety_watchdog.py --project-root /opt/xiuxian-main --service xiuxian --interval 15 --action soft
 Restart=always
 RestartSec=10
 

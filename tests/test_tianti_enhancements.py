@@ -3,6 +3,7 @@ import copy
 import os
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -111,8 +112,111 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
 
             text = tianti.get_tianti_estimated_wenxin_window_text(now)
 
-            self.assertIn("触发阶 4", text)
-            self.assertIn("10 分钟", text)
+            self.assertIn("今日到不了第12阶", text)
+            self.assertIn("最后一次登阶", text)
+
+    def test_wenxin_waits_for_final_stage_when_reachable_today(self):
+        send_as_id = 95004
+        now = 4000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_progress_current"] = 10
+            state_module.state["tianti_progress_total"] = 12
+            state_module.state["tianti_remaining_climb_count"] = 2
+            state_module.state["tianti_theoretical_max_stage"] = 12
+            state_module.state["next_tianti_climb_time"] = now + 300
+
+            should_trigger, reason = tianti._should_trigger_tianti_wenxin(now)
+
+            self.assertFalse(should_trigger)
+            self.assertEqual("wait_final_stage", reason)
+
+    def test_wenxin_triggers_before_final_stage_climb(self):
+        send_as_id = 95005
+        now = 5000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_progress_current"] = 11
+            state_module.state["tianti_progress_total"] = 12
+            state_module.state["tianti_remaining_climb_count"] = 1
+            state_module.state["tianti_theoretical_max_stage"] = 12
+            state_module.state["next_tianti_climb_time"] = now + 300
+
+            should_trigger, reason = tianti._should_trigger_tianti_wenxin(now)
+
+            self.assertTrue(should_trigger)
+            self.assertIn("final_stage", reason)
+
+    def test_wenxin_triggers_on_last_climb_when_final_unreachable(self):
+        send_as_id = 95006
+        now = 6000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_progress_current"] = 10
+            state_module.state["tianti_progress_total"] = 12
+            state_module.state["tianti_remaining_climb_count"] = 1
+            state_module.state["tianti_theoretical_max_stage"] = 11
+            state_module.state["next_tianti_climb_time"] = now + 300
+
+            should_trigger, reason = tianti._should_trigger_tianti_wenxin(now)
+
+            self.assertTrue(should_trigger)
+            self.assertIn("last_climb_today", reason)
+
+    def test_wenxin_day_end_fallback_when_no_climb_left(self):
+        send_as_id = 95007
+        now = datetime(2026, 5, 12, 23, 30, tzinfo=tianti.TZ_LOCAL).timestamp()
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_remaining_climb_count"] = 0
+
+            should_trigger, reason = tianti._should_trigger_tianti_wenxin(now)
+
+            self.assertTrue(should_trigger)
+            self.assertIn("day_end_fallback", reason)
+
+    def test_wenxin_day_end_fallback_does_not_repeat_after_send(self):
+        send_as_id = 95008
+        now = datetime(2026, 5, 12, 23, 30, tzinfo=tianti.TZ_LOCAL).timestamp()
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_remaining_climb_count"] = 0
+            state_module.state["tianti_wenxin_last_trigger_key"] = "2026-05-12|day_end_fallback"
+
+            should_trigger, reason = tianti._should_trigger_tianti_wenxin(now)
+
+            self.assertFalse(should_trigger)
+            self.assertEqual("trigger_key_hit", reason)
+
+    def test_wenxin_ignores_stale_24h_timer_after_day_change(self):
+        send_as_id = 95009
+        now = datetime(2026, 5, 12, 8, 0, tzinfo=tianti.TZ_LOCAL).timestamp()
+        stale_next = datetime(2026, 5, 12, 12, 0, tzinfo=tianti.TZ_LOCAL).timestamp()
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_progress_current"] = 11
+            state_module.state["tianti_progress_total"] = 12
+            state_module.state["tianti_remaining_climb_count"] = 1
+            state_module.state["tianti_theoretical_max_stage"] = 12
+            state_module.state["next_tianti_climb_time"] = now + 300
+            state_module.state["next_tianti_wenxin_time"] = stale_next
+
+            should_trigger, reason = tianti._should_trigger_tianti_wenxin(now)
+
+            self.assertTrue(should_trigger)
+            self.assertIn("final_stage", reason)
 
 
 if __name__ == "__main__":

@@ -159,6 +159,7 @@ CMD_TREE_GUARD = ".协同守山"
 CMD_TREE_STATUS = ".灵树状态"
 CMD_TREE_HARVEST = ".采摘灵果"
 CMD_PET = ".抚摸法宝"
+CMD_PET_WARM = ".温养器灵"
 CMD_PET_TRIAL = ".器灵试炼"
 DEFAULT_PET_NAME = "玄天斩灵剑"
 CMD_STARGAZER_PANEL = ".观星台"
@@ -356,10 +357,11 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
+    "温养器灵": "pet_warm_enabled",
     "器灵试炼": "pet_trial_enabled",
     "放养": "ranch_enabled",
     "野外历练": "wild_training_enabled",
@@ -379,7 +381,9 @@ MODULE_KEY_MAP = {
     "闯塔": "tower_enabled",
     "第二元神": "second_soul_enabled",
     "太一": "taiyi_enabled",
+    "自动副本": "dungeon_join_enabled",
 }
+CMD_DUNGEON_JOIN = ".加入副本"
 UI_HOST = os.environ.get("CHAOGU_UI_HOST", "0.0.0.0")
 try:
     UI_PORT = int(os.environ.get("CHAOGU_UI_PORT", "3030"))
@@ -542,6 +546,7 @@ RE_CMD_STATUS = re.compile(r'^\.(状态|模块状态)$')
 RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
+    (re.compile(r'^\.温养器灵状态$'), "温养器灵"),
     (re.compile(r'^\.器灵试炼状态$'), "器灵试炼"),
     (re.compile(r'^\.观星台状态$'), "观星台"),
     (re.compile(r'^\.观星状态$'), "观星"),
@@ -565,6 +570,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)灵树$'), "灵树", False),
     (re.compile(r'^\.(开启|打开)法宝$'), "法宝", True),
     (re.compile(r'^\.(关闭|关掉)法宝$'), "法宝", False),
+    (re.compile(r'^\.(开启|打开)温养器灵$'), "温养器灵", True),
+    (re.compile(r'^\.(关闭|关掉)温养器灵$'), "温养器灵", False),
     (re.compile(r'^\.(开启|打开)器灵试炼$'), "器灵试炼", True),
     (re.compile(r'^\.(关闭|关掉)器灵试炼$'), "器灵试炼", False),
     (re.compile(r'^\.(开启|打开)观星台$'), "观星台", True),

@@ -109,6 +109,7 @@ from .state import (
     get_send_as_profile,
     get_stargazer_star_choice,
     get_stargazer_total_slots,
+    get_storage_bag_item_rules,
     get_storage_bag_records,
     get_tianti_rank_choice,
     get_wild_training_strategy,
@@ -127,7 +128,9 @@ from .state import (
     set_identity_account_map,
     set_identity_enabled as set_identity_enabled_profile,
     set_pet_name,
+    set_pet_warm_name,
     set_pet_trial_name,
+    set_storage_bag_item_rules,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
     state,
@@ -136,7 +139,12 @@ from .state import (
 from .timing import fmt_abs_ts
 
 _ui_server = None
-UI_FAVICON_PNG_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "favicon.png")
+_STORAGE_BAG_TRANSFER_METHODS = {"basic", "gift", "blocked", "unknown"}
+_STORAGE_BAG_DEFAULT_TAG = "未知"
+_STORAGE_BAG_DEFAULT_TAGS = ["未知", "灵草", "种子", "丹药", "材料", "装备", "特殊"]
+UI_PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+UI_FAVICON_PNG_PATH = os.path.join(UI_PROJECT_ROOT, "favicon.png")
+UI_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(UI_PROJECT_ROOT, "data", "storage_bag_item_rules.json")
 UI_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 UI_TEMPLATE_DIR = os.path.join(UI_WEB_DIR, "pages")
 UI_STATIC_DIR = os.path.join(UI_WEB_DIR, "static")
@@ -167,6 +175,104 @@ def _format_storage_bag_updated_at(record):
     if updated_at <= 0:
         return (record or {}).get("updated_at_text") or "未解析"
     return datetime.fromtimestamp(updated_at, TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+
+
+_storage_bag_base_item_rules_cache = None
+_storage_bag_base_item_rules_mtime = None
+
+
+def _normalize_storage_bag_item_rule(item_name, raw_rule=None):
+    rule = raw_rule if isinstance(raw_rule, dict) else {}
+    method = str(rule.get("method") or "unknown").strip().lower()
+    if method not in _STORAGE_BAG_TRANSFER_METHODS:
+        method = "unknown"
+    tags = rule.get("tags") if isinstance(rule.get("tags"), list) else []
+    normalized_tags = []
+    seen = set()
+    for raw_tag in tags:
+        tag = str(raw_tag or "").strip()
+        if tag and tag not in seen:
+            seen.add(tag)
+            normalized_tags.append(tag)
+    if not normalized_tags:
+        normalized_tags = [_STORAGE_BAG_DEFAULT_TAG]
+    return {
+        "item_name": str(item_name or ""),
+        "method": method,
+        "tags": normalized_tags,
+        "reason": str(rule.get("reason") or "").strip(),
+    }
+
+
+def _load_storage_bag_base_item_rules():
+    global _storage_bag_base_item_rules_cache, _storage_bag_base_item_rules_mtime
+    try:
+        stat = os.stat(UI_STORAGE_BAG_ITEM_RULES_PATH)
+    except OSError:
+        _storage_bag_base_item_rules_cache = {}
+        _storage_bag_base_item_rules_mtime = None
+        return {}
+    if _storage_bag_base_item_rules_cache is not None and _storage_bag_base_item_rules_mtime == stat.st_mtime:
+        return _storage_bag_base_item_rules_cache
+    try:
+        with open(UI_STORAGE_BAG_ITEM_RULES_PATH, "r", encoding="utf-8") as fp:
+            raw_data = json.load(fp)
+    except Exception:
+        _storage_bag_base_item_rules_cache = {}
+        _storage_bag_base_item_rules_mtime = stat.st_mtime
+        return {}
+    raw_items = raw_data.get("items") if isinstance(raw_data, dict) and isinstance(raw_data.get("items"), dict) else {}
+    rules = {}
+    for raw_item_name, raw_rule in raw_items.items():
+        item_name = str(raw_item_name or "").strip()
+        if item_name:
+            rules[item_name] = _normalize_storage_bag_item_rule(item_name, raw_rule)
+    _storage_bag_base_item_rules_cache = rules
+    _storage_bag_base_item_rules_mtime = stat.st_mtime
+    return rules
+
+
+def _get_storage_bag_item_rule(item_name):
+    item_name = str(item_name or "").strip()
+    base_rule = _load_storage_bag_base_item_rules().get(item_name)
+    saved_rule = get_storage_bag_item_rules().get(item_name)
+    if isinstance(base_rule, dict) and isinstance(saved_rule, dict):
+        raw_rule = {**base_rule, **saved_rule}
+    elif isinstance(saved_rule, dict):
+        raw_rule = saved_rule
+    else:
+        raw_rule = base_rule
+    return _normalize_storage_bag_item_rule(item_name, raw_rule)
+
+
+def _storage_bag_transfer_method_label(method):
+    return {
+        "basic": "买卖",
+        "gift": "赠送",
+        "blocked": "不可转移",
+        "unknown": "未知",
+    }.get(str(method or "unknown"), "未知")
+
+
+def _format_storage_bag_identity_options(rows):
+    return [
+        {
+            "identity_id": int(row.get("identity_id") or 0),
+            "label": row.get("label") or row.get("display_name") or str(row.get("identity_id") or ""),
+            "protected": bool(row.get("protected")),
+        }
+        for row in rows or []
+    ]
+
+
+def _get_storage_bag_item_count(rows, identity_id, item_name):
+    identity_id = int(identity_id or 0)
+    item_name = str(item_name or "")
+    for row in rows or []:
+        if int(row.get("identity_id") or 0) != identity_id:
+            continue
+        return int((row.get("items") or {}).get(item_name) or 0)
+    return 0
 
 
 def get_storage_bag_sync_snapshot():
@@ -215,6 +321,146 @@ async def ui_start_storage_bag_sync(identity_ids):
     return True, f"已开始同步 {len(normalized_ids)} 个身份的储物袋"
 
 
+def ui_set_storage_bag_item_rule(item_name, method, tags=None, reason=""):
+    item_name = str(item_name or "").strip()
+    if not item_name:
+        return False, "物品名不能为空"
+    method = str(method or "unknown").strip().lower()
+    if method not in _STORAGE_BAG_TRANSFER_METHODS:
+        return False, "无效的转移方式"
+    rules = dict(get_storage_bag_item_rules())
+    previous_rule = _normalize_storage_bag_item_rule(item_name, rules.get(item_name))
+    if tags is None:
+        normalized_tags = previous_rule.get("tags") or [_STORAGE_BAG_DEFAULT_TAG]
+    else:
+        raw_tags = tags.replace("，", ",").split(",") if isinstance(tags, str) else tags or []
+        normalized_tags = []
+        seen = set()
+        for raw_tag in raw_tags:
+            tag = str(raw_tag or "").strip()
+            if tag and tag not in seen:
+                seen.add(tag)
+                normalized_tags.append(tag)
+        if not normalized_tags:
+            normalized_tags = [_STORAGE_BAG_DEFAULT_TAG]
+    normalized_reason = previous_rule.get("reason") or "" if reason is None else str(reason or "").strip()
+    rules[item_name] = {
+        "method": method,
+        "tags": normalized_tags,
+        "reason": normalized_reason,
+        "updated_at": time.time(),
+    }
+    set_storage_bag_item_rules(rules)
+    save_state()
+    return True, f"已更新物品规则：{item_name}"
+
+
+def ui_preview_storage_bag_transfer(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        source_identity_id = int(payload.get("source_identity_id") or 0)
+        target_identity_id = int(payload.get("target_identity_id") or 0)
+    except (TypeError, ValueError):
+        return False, "身份参数无效", None
+    known_ids = set(int(item) for item in get_identity_ids())
+    if source_identity_id not in known_ids:
+        return False, "来源身份无效", None
+    if target_identity_id not in known_ids:
+        return False, "目标身份无效", None
+    if source_identity_id == target_identity_id:
+        return False, "来源和目标身份不能相同", None
+
+    storage_bag = get_storage_bag_snapshot()
+    rows = storage_bag.get("rows") or []
+    selected_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    if not selected_items:
+        return False, "请至少选择一个转移物品", None
+
+    normalized_items = []
+    exchange_parts = []
+    gift_items = []
+    for raw_item in selected_items:
+        if not isinstance(raw_item, dict):
+            continue
+        item_name = str(raw_item.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        try:
+            quantity = int(raw_item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        source_count = _get_storage_bag_item_count(rows, source_identity_id, item_name)
+        target_count = _get_storage_bag_item_count(rows, target_identity_id, item_name)
+        rule = _get_storage_bag_item_rule(item_name)
+        method = rule.get("method") or "unknown"
+        if method == "blocked":
+            return False, f"{item_name} 不可转移", None
+        if quantity <= 0 or quantity > source_count:
+            return False, f"{item_name} 数量必须在 1 到 {source_count} 之间", None
+        item = {
+            "item_name": item_name,
+            "quantity": quantity,
+            "source_count": source_count,
+            "target_count": target_count,
+            "method": method,
+            "method_label": _storage_bag_transfer_method_label(method),
+            "tags": rule.get("tags") or [_STORAGE_BAG_DEFAULT_TAG],
+        }
+        normalized_items.append(item)
+        if method == "gift":
+            gift_items.append(item)
+        else:
+            exchange_parts.append(f"{item_name}*{quantity}")
+
+    if not normalized_items:
+        return False, "请至少选择一个有效物品", None
+
+    listing_item = str(payload.get("listing_item") or "").strip()
+    listing_count = 0
+    commands = []
+    if exchange_parts:
+        if not listing_item:
+            return False, "请选择目标身份用于上架的物品", None
+        listing_count = _get_storage_bag_item_count(rows, target_identity_id, listing_item)
+        if listing_count <= 0:
+            return False, "目标身份没有该上架物", None
+        commands.extend([
+            {
+                "identity_id": target_identity_id,
+                "command": f".上架 {listing_item} 1 换 {' '.join(exchange_parts)}",
+                "note": "目标身份上架换购物品",
+            },
+            {
+                "identity_id": source_identity_id,
+                "command": ".购买 <挂单ID>",
+                "note": "上架成功后来源身份购买挂单",
+            },
+        ])
+    if gift_items:
+        commands.append({
+            "identity_id": target_identity_id,
+            "command": "转移标记 <本次转移ID>",
+            "note": "目标身份先发送一条可回复的标记消息",
+        })
+        for item in gift_items:
+            commands.append({
+                "identity_id": source_identity_id,
+                "command": f".赠送 {item['item_name']} {item['quantity']}",
+                "note": "来源身份回复目标身份标记消息发送",
+            })
+
+    preview = {
+        "source_identity_id": source_identity_id,
+        "target_identity_id": target_identity_id,
+        "listing_item": listing_item,
+        "listing_count": listing_count,
+        "items": normalized_items,
+        "commands": commands,
+        "summary": f"预览 {len(normalized_items)} 个物品，当前只生成命令，不会自动发送",
+    }
+    return True, "已生成转移预览", preview
+
+
 def get_storage_bag_snapshot():
     records = get_storage_bag_records()
     rows = []
@@ -242,10 +488,24 @@ def get_storage_bag_snapshot():
             "empty": bool((record or {}).get("empty")),
         })
     rows.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
+    sorted_item_names = sorted(item_names, key=lambda name: (name != "灵石", name))
+    item_rules = {}
+    for item_name in sorted_item_names:
+        rule = _get_storage_bag_item_rule(item_name)
+        item_rules[item_name] = {
+            **rule,
+            "method_label": _storage_bag_transfer_method_label(rule.get("method")),
+            "transfer_visible": rule.get("method") != "blocked",
+            "transfer_selectable": rule.get("method") != "blocked",
+        }
     return {
         "rows": rows,
-        "items": sorted(item_names, key=lambda name: (name != "灵石", name)),
+        "items": sorted_item_names,
         "totals": totals,
+        "item_rules": item_rules,
+        "rule_methods": ["basic", "gift", "blocked", "unknown"],
+        "default_tags": list(_STORAGE_BAG_DEFAULT_TAGS),
+        "transfer_identities": _format_storage_bag_identity_options(rows),
     }
 
 
@@ -435,6 +695,7 @@ def get_identity_ui_snapshot(send_as_id):
             "spiritual_root_attrs": profile.get("spiritual_root_attrs") or "",
             "replica_professions": profile.get("replica_professions") or "",
             "pet_name": profile.get("pet_name") or "",
+            "pet_warm_name": profile.get("pet_warm_name") or profile.get("pet_name") or "",
             "pet_trial_name": profile.get("pet_trial_name") or profile.get("pet_name") or "",
             "sect_name": profile.get("sect_name") or "",
             "xiuwei_current": int(profile.get("xiuwei_current") or 0),
@@ -453,6 +714,12 @@ def get_identity_ui_snapshot(send_as_id):
             "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
             "wild_training_strategy": get_wild_training_strategy(send_as_id),
             "wild_training_strategy_choices": ["谨慎", "均衡", "深入"],
+            "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
+            "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
+            "second_soul_choice_strategy_choices": [
+                {"value": "stable", "label": "稳固道心"},
+                {"value": "break", "label": "强行突破"},
+            ],
             "tianti_cycle_count": int(identity_state.get("tianti_cycle_count", 0) or 0),
             "tianti_wenxin_enabled": bool(identity_state.get("tianti_wenxin_enabled", True)),
             "tianti_gangfeng_enabled": bool(identity_state.get("tianti_gangfeng_enabled", True)),
@@ -579,7 +846,7 @@ def _format_module_detail_for_ui(module_name, detail_text):
             continue
         if index <= 1 and module_name and module_name in stripped:
             continue
-        if stripped.startswith("- 当前名称：") or stripped.startswith("- 抚摸名称：") or stripped.startswith("- 试炼名称："):
+        if stripped.startswith("- 当前名称：") or stripped.startswith("- 抚摸名称：") or stripped.startswith("- 温养名称：") or stripped.startswith("- 试炼名称："):
             continue
         if stripped.startswith("- 执行窗口："):
             continue
@@ -762,23 +1029,25 @@ async def ui_set_module_enabled(send_as_id, module_name, enabled):
     return True, f"已{action_text}{module_name}[{get_identity_display_name(send_as_id)}]"
 
 
-async def ui_set_pet_name(send_as_id, pet_name, pet_trial_name=None):
+async def ui_set_pet_name(send_as_id, pet_name, pet_warm_name=None, pet_trial_name=None):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
     pet_name = (pet_name or "").strip()
     if not pet_name:
         return False, "法宝名称不能为空"
+    pet_warm_name = (pet_warm_name or "").strip() or pet_name
     pet_trial_name = (pet_trial_name or "").strip() or pet_name
     set_pet_name(send_as_id, pet_name)
+    set_pet_warm_name(send_as_id, pet_warm_name)
     set_pet_trial_name(send_as_id, pet_trial_name)
     save_state()
     await send_audit_log(
-        f"🗡️ 已更新法宝名称：抚摸={pet_name}，试炼={pet_trial_name}",
+        f"🗡️ 已更新法宝名称：抚摸={pet_name}，温养={pet_warm_name}，试炼={pet_trial_name}",
         scope="identity",
         send_as_id=send_as_id,
     )
-    return True, f"已更新法宝名称[{get_identity_display_name(send_as_id)}]：抚摸={pet_name}，试炼={pet_trial_name}"
+    return True, f"已更新法宝名称[{get_identity_display_name(send_as_id)}]：抚摸={pet_name}，温养={pet_warm_name}，试炼={pet_trial_name}"
 
 
 async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
@@ -856,6 +1125,34 @@ async def ui_set_wild_training_strategy(send_as_id, choice):
             send_as_id=send_as_id,
         )
     return ok, f"{message}[{get_identity_display_name(send_as_id)}]" if ok else message
+
+
+async def ui_set_second_soul_choice_config(send_as_id, *, auto_choice_enabled=None, strategy=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    strategy = str(strategy or "").strip().lower()
+    if strategy and strategy not in {"stable", "break"}:
+        return False, "无效的第二元神心魔抉择策略"
+    changed = []
+    with use_identity(send_as_id):
+        if auto_choice_enabled is not None:
+            enabled = bool(auto_choice_enabled)
+            state["second_soul_auto_choice_enabled"] = enabled
+            changed.append(f"自动抉择={'开' if enabled else '关'}")
+        if strategy:
+            state["second_soul_choice_strategy"] = strategy
+            changed.append(f"策略={'稳固道心' if strategy == 'stable' else '强行突破'}")
+        save_state()
+    if not changed:
+        return False, "没有可更新的第二元神心魔抉择配置"
+    await send_audit_log(
+        f"🌀 已更新第二元神心魔抉择配置：{'，'.join(changed)}",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=220,
+    )
+    return True, f"已更新第二元神心魔抉择[{get_identity_display_name(send_as_id)}]：{'，'.join(changed)}"
 
 
 async def ui_sync_stargazer_total_slots(send_as_id):
@@ -1956,6 +2253,22 @@ async def handle_ui_http(reader, writer):
                         snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/storage-bag-item-rule":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = ui_set_storage_bag_item_rule(payload.get("item_name"), payload.get("method"), payload.get("tags"), payload.get("reason"))
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/storage-bag-transfer-preview":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, preview = ui_preview_storage_bag_transfer(payload)
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"preview": preview} if preview else None)
             elif path == "/api/basic-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -2154,11 +2467,12 @@ async def handle_ui_http(reader, writer):
                 else:
                     send_as_id = payload.get("send_as_id")
                     pet_name = payload.get("pet_name")
+                    pet_warm_name = payload.get("pet_warm_name")
                     pet_trial_name = payload.get("pet_trial_name")
                     if send_as_id in {None, ""}:
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
-                        ok, message = await ui_set_pet_name(send_as_id, pet_name, pet_trial_name=pet_trial_name)
+                        ok, message = await ui_set_pet_name(send_as_id, pet_name, pet_warm_name=pet_warm_name, pet_trial_name=pet_trial_name)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/small-world-feature-toggle":
                 if session is None:
@@ -2212,6 +2526,22 @@ async def handle_ui_http(reader, writer):
                         _write_json_bad_request(writer, "缺少 send_as_id 或 choice 参数", auth_headers)
                     else:
                         ok, message = await ui_set_wild_training_strategy(send_as_id, choice)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/second-soul-choice-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_second_soul_choice_config(
+                            send_as_id,
+                            auto_choice_enabled=payload.get("auto_choice_enabled") if "auto_choice_enabled" in payload else None,
+                            strategy=payload.get("strategy"),
+                        )
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-sync":
                 if session is None:
@@ -2424,7 +2754,9 @@ __all__ = [
     "stop_ui_server",
     "ui_add_identity",
     "ui_logout_account",
+    "ui_preview_storage_bag_transfer",
     "ui_start_storage_bag_sync",
+    "ui_set_storage_bag_item_rule",
     "ui_refresh_forum_topics",
     "ui_refresh_identity_info",
     "ui_set_basic_config",
