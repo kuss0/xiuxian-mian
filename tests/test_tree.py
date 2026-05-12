@@ -60,6 +60,5 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(state_module.state["is_maturing"])
                 self.assertFalse(state_module.state["is_harvested"])
                 self.assertFalse(state_module.state["pending_irrigation"])
-                self.assertGreaterEqual(state_module.state["next_irr_time"], now + 60)
-                self.assertLessEqual(state_module.state["next_irr_time"], now + 20 * 60)
-
+                self.assertGreaterEqual(state_module.state["next_irr_time"], now + 45 * 60)
+                self.assertLessEqual(state_module.state["next_irr_time"], now + 75 * 60)

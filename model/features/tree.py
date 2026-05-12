@@ -44,8 +44,8 @@ TREE_MATURE_CONFIRM_DELAY_MAX_SEC = 30
 TREE_HARVEST_ABNORMAL_CHECK_MIN_SEC = 60
 TREE_HARVEST_ABNORMAL_CHECK_MAX_SEC = 180
 TREE_HARVEST_RETRY_LIMIT = 1
-TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 60
-TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 20 * 60
+TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 45 * 60
+TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 75 * 60
 TREE_IRRIGATION_RESOURCE_KEY = "tree_irrigation"
 TREE_GUARD_RESOURCE_KEY = "tree_guard"
 
@@ -270,7 +270,7 @@ async def recover_tree_normal_round_for_all_enabled(now=None, *, reason="普通�
 
     if changed_ids:
         await send_audit_log(
-            f"🌳 {reason}确认当前不是成熟期，已释放 {len(changed_ids)} 个卡住的灵树状态，灌溉错峰 1-20 分钟恢复。",
+            f"🌳 {reason}确认当前不是成熟期，已释放 {len(changed_ids)} 个卡住的灵树状态，灌溉错峰 45-75 分钟恢复。",
             scope="global",
             limit=240,
         )
