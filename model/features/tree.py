@@ -44,6 +44,8 @@ TREE_MATURE_CONFIRM_DELAY_MAX_SEC = 30
 TREE_HARVEST_ABNORMAL_CHECK_MIN_SEC = 60
 TREE_HARVEST_ABNORMAL_CHECK_MAX_SEC = 180
 TREE_HARVEST_RETRY_LIMIT = 1
+TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 60
+TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 20 * 60
 TREE_IRRIGATION_RESOURCE_KEY = "tree_irrigation"
 TREE_GUARD_RESOURCE_KEY = "tree_guard"
 
@@ -232,6 +234,47 @@ async def queue_tree_harvest_for_all_enabled(now=None, *, reason="成熟采摘�
             limit=220,
         )
     return queued
+
+
+async def recover_tree_normal_round_for_all_enabled(now=None, *, reason="普通灵树面板"):
+    now = float(now if now is not None else time.time())
+    changed_ids = []
+    target_ids = list(_iter_tree_enabled_identity_ids())
+    if not target_ids:
+        return 0
+
+    ordered_ids = sorted(target_ids)
+    for index, identity_id in enumerate(ordered_ids):
+        with use_identity(identity_id):
+            should_recover = (
+                bool(state.get("is_maturing"))
+                or bool(state.get("is_harvested"))
+                or bool(state.get("pending_irrigation"))
+                or float(state.get("next_irr_time", 0) or 0) > now + 24 * 3600
+            )
+            if not should_recover:
+                continue
+            rng = random.Random(f"tree-normal-recover:{int(now // 300)}:{identity_id}")
+            spread = rng.uniform(TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC, TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC)
+            state["is_maturing"] = False
+            state["is_harvested"] = False
+            state["pending_irrigation"] = False
+            state["tree_maturing_logged"] = False
+            state["tree_harvest_followup_due_at"] = 0
+            state["tree_harvest_inflight_until"] = 0
+            state["tree_bootstrap_check_needed"] = False
+            state["tree_bootstrap_check_due_at"] = 0
+            state["next_irr_time"] = now + spread
+            save_state()
+            changed_ids.append(identity_id)
+
+    if changed_ids:
+        await send_audit_log(
+            f"🌳 {reason}确认当前不是成熟期，已释放 {len(changed_ids)} 个卡住的灵树状态，灌溉错峰 1-20 分钟恢复。",
+            scope="global",
+            limit=240,
+        )
+    return len(changed_ids)
 
 
 def _schedule_tree_bootstrap_check(now=None, *, retry=False, min_sec=None, max_sec=None):
@@ -550,6 +593,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
 
     current_status_snapshot = "你的当前状态:" in text or "你的当前状态：" in text
     personal_panel_owned = is_reply_to_me or _tree_panel_matches_current_identity(text)
+    if is_tree_panel and current_status_snapshot and "成熟采摘期" not in text:
+        await recover_tree_normal_round_for_all_enabled(now, reason="灵树状态")
     if is_tree_panel and current_status_snapshot and not personal_panel_owned:
         return False
     clear_status_pending = is_tree_panel and current_status_snapshot and not is_reply_to_me and personal_panel_owned
