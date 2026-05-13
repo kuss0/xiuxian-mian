@@ -226,6 +226,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_harvest_followup_due_at REAL NOT NULL DEFAULT 0")
     if "tree_harvest_inflight_until" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_harvest_inflight_until REAL NOT NULL DEFAULT 0")
+    if "tree_last_harvest_result_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_last_harvest_result_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "tree_last_harvest_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_last_harvest_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "tree_bootstrap_check_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0")
     if "last_tree_status_sent_at" not in runtime_columns:
@@ -723,6 +727,8 @@ def init_db():
             tree_maturing_logged INTEGER NOT NULL DEFAULT 0,
             tree_harvest_followup_due_at REAL NOT NULL DEFAULT 0,
             tree_harvest_inflight_until REAL NOT NULL DEFAULT 0,
+            tree_last_harvest_result_msg_id INTEGER NOT NULL DEFAULT 0,
+            tree_last_harvest_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0,
             last_tree_status_sent_at REAL NOT NULL DEFAULT 0,
             last_tower_msg_id INTEGER NOT NULL,

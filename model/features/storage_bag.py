@@ -106,6 +106,54 @@ def _get_storage_bag_identity_label(identity_id, parsed):
     return parsed.get("owner_username") or parsed.get("owner") or "未知账号"
 
 
+def _adjust_storage_bag_identity_item(records, identity_id, item_name, delta):
+    identity_id = int(identity_id or 0)
+    item_name = str(item_name or "").strip()
+    delta = int(delta or 0)
+    if identity_id <= 0 or not item_name or delta == 0:
+        return False
+    key = str(identity_id)
+    record = records.setdefault(
+        key,
+        {
+            "identity_id": identity_id,
+            "label": _get_storage_bag_identity_label(identity_id, {}),
+            "owner": "",
+            "owner_username": "",
+            "updated_at": 0,
+            "updated_at_text": "",
+            "items": {},
+            "sections": {},
+            "empty": False,
+        },
+    )
+    items = record.setdefault("items", {})
+    old_value = int(items.get(item_name, 0) or 0)
+    new_value = max(0, old_value + delta)
+    if new_value == old_value:
+        return False
+    if new_value > 0:
+        items[item_name] = new_value
+    else:
+        items.pop(item_name, None)
+    record["empty"] = not bool(items)
+    return True
+
+
+def apply_storage_bag_item_deltas(identity_id, item_deltas):
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0 or not isinstance(item_deltas, dict):
+        return False
+    records = get_storage_bag_records()
+    changed = False
+    for item_name, delta in item_deltas.items():
+        changed = _adjust_storage_bag_identity_item(records, identity_id, item_name, delta) or changed
+    if changed:
+        set_storage_bag_records(records)
+        save_state()
+    return changed
+
+
 async def handle_storage_bag_reply(text, now, reply_to=None, matched_family=None):
     parsed = parse_storage_bag_reply(text)
     if not parsed:
@@ -132,6 +180,7 @@ async def handle_storage_bag_reply(text, now, reply_to=None, matched_family=None
 
 __all__ = [
     "CMD_STORAGE_BAG",
+    "apply_storage_bag_item_deltas",
     "handle_storage_bag_reply",
     "parse_storage_bag_reply",
     "resolve_storage_bag_identity_id",

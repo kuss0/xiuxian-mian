@@ -780,7 +780,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = handled_any or tree_panel_done
             stargazer_panel_done = await handle_stargazer_panel(text, now, is_reply_to_me, matched_family=matched_family)
             handled_any = handled_any or stargazer_panel_done
-            handled_any = await handle_tree_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_tree_harvest_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
 
         if not already_consumed and matched_family != "stargazer_sync":
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any

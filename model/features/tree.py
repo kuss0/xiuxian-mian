@@ -1,5 +1,6 @@
 import asyncio
 import random
+import re
 import time
 
 from ..config import (
@@ -26,6 +27,7 @@ from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_c
 from ..state import get_current_identity_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
+from .storage_bag import apply_storage_bag_item_deltas
 
 
 TREE_MATURING_FIRST_STATUS_MIN_SEC = 10 * 60
@@ -48,6 +50,77 @@ TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 45 * 60
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 75 * 60
 TREE_IRRIGATION_RESOURCE_KEY = "tree_irrigation"
 TREE_GUARD_RESOURCE_KEY = "tree_guard"
+RE_TREE_HARVEST_FRUIT = re.compile(r"你摘下一枚【([^】]+)】")
+RE_TREE_HARVEST_XIUWEI = re.compile(r"修为增长[:：]\s*\+?\s*([\d,]+)")
+RE_TREE_HARVEST_LINGWEN = re.compile(r"灵纹回馈[:：].*?\+\s*([\d,]+)\s*点修为")
+RE_TREE_HARVEST_REWARD_ITEM = re.compile(r"【([^】]+)】\s*(?:[xX×]\s*([\d,]+))?")
+TREE_HARVEST_REWARD_KEYWORDS = ("获得【", "分得【", "稳定分得【")
+
+
+def _parse_tree_int(text):
+    return int(str(text or "0").replace(",", "") or 0)
+
+
+def _parse_tree_harvest_items(raw_text):
+    items = {}
+    for raw_line in str(raw_text or "").splitlines():
+        line = raw_line.strip()
+        if not any(keyword in line for keyword in TREE_HARVEST_REWARD_KEYWORDS):
+            continue
+        for item_name, raw_count in RE_TREE_HARVEST_REWARD_ITEM.findall(line):
+            item_name = item_name.strip()
+            count = _parse_tree_int(raw_count or 1)
+            if item_name and count > 0:
+                items[item_name] = items.get(item_name, 0) + count
+    return items
+
+
+def _parse_tree_harvest_result(text):
+    raw_text = str(text or "")
+    fruit_match = RE_TREE_HARVEST_FRUIT.search(raw_text)
+    xiuwei_match = RE_TREE_HARVEST_XIUWEI.search(raw_text)
+    lingwen_match = RE_TREE_HARVEST_LINGWEN.search(raw_text)
+    return {
+        "fruit": fruit_match.group(1).strip() if fruit_match else "",
+        "xiuwei": _parse_tree_int(xiuwei_match.group(1)) if xiuwei_match else 0,
+        "lingwen_xiuwei": _parse_tree_int(lingwen_match.group(1)) if lingwen_match else 0,
+        "items": _parse_tree_harvest_items(raw_text),
+    }
+
+
+def _format_tree_harvest_items(items):
+    return "、".join(f"{name}x{count}" for name, count in (items or {}).items())
+
+
+def _format_tree_harvest_audit(parsed, storage_changed):
+    parsed = parsed if isinstance(parsed, dict) else {}
+    parts = ["🍒 灵果采摘已确认"]
+    fruit = str(parsed.get("fruit") or "").strip()
+    if fruit:
+        parts[0] = f"🍒 灵果采摘已确认：{fruit}"
+    xiuwei = int(parsed.get("xiuwei") or 0)
+    lingwen_xiuwei = int(parsed.get("lingwen_xiuwei") or 0)
+    if xiuwei > 0:
+        parts.append(f"修为 +{xiuwei}")
+    if lingwen_xiuwei > 0:
+        parts.append(f"灵纹 +{lingwen_xiuwei}")
+    items = parsed.get("items") or {}
+    if items:
+        sync_text = "已同步" if storage_changed else "未变更"
+        parts.append(f"储物袋 +{_format_tree_harvest_items(items)}（{sync_text}）")
+    return "｜".join(parts)
+
+
+def _is_duplicate_tree_harvest_result(result_msg_id, reply_to_msg_id):
+    result_msg_id = int(result_msg_id or 0)
+    reply_to_msg_id = int(reply_to_msg_id or 0)
+    return (
+        result_msg_id > 0
+        and result_msg_id == int(state.get("tree_last_harvest_result_msg_id", 0) or 0)
+    ) or (
+        reply_to_msg_id > 0
+        and reply_to_msg_id == int(state.get("tree_last_harvest_reply_to_msg_id", 0) or 0)
+    )
 
 
 def _is_tree_irrigation_insufficient_power(text):
@@ -724,7 +797,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
     return False
 
 
-async def handle_tree_harvest_reply(text, now, reply_to, matched_family=None):
+async def handle_tree_harvest_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
     if not state["tree_enabled"]:
         return False
 
@@ -739,10 +812,18 @@ async def handle_tree_harvest_reply(text, now, reply_to, matched_family=None):
     is_success = "【灵果入腹" in raw_text or "你摘下一枚" in raw_text
     is_already_done = "已经采摘过灵果" in raw_text or "不可贪得无厌" in raw_text
     if is_success or is_already_done:
+        reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0)
+        if _is_duplicate_tree_harvest_result(current_msg_id, reply_to_msg_id):
+            return True
+        parsed = _parse_tree_harvest_result(raw_text) if is_success else {}
+        items = parsed.get("items") or {}
+        storage_changed = apply_storage_bag_item_deltas(get_current_identity_id(), items) if items else False
         state["is_harvested"] = True
         state["tree_harvest_inflight_until"] = 0
+        state["tree_last_harvest_result_msg_id"] = int(current_msg_id or 0)
+        state["tree_last_harvest_reply_to_msg_id"] = reply_to_msg_id
         save_state()
-        await send_audit_log("🍒 灵果采摘已确认。")
+        await send_audit_log(_format_tree_harvest_audit(parsed, storage_changed))
         return True
 
     if "尚未成熟" in raw_text or "无法采摘" in raw_text or "不能采摘" in raw_text:

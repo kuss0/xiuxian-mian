@@ -1,4 +1,6 @@
 import asyncio
+import ast
+import operator
 import random
 import re
 import time
@@ -43,6 +45,7 @@ TIANDAO_JUDGEMENT_VALUE_MAP = {
 }
 
 RE_TIANDAO_TARGET = re.compile(r"对象\s*[【\[]\s*([^】\]]+?)\s*[】\]]")
+RE_TIANDAO_TOKEN = re.compile(r"阵眼口令\s*[:：]\s*([A-Za-z0-9_-]+)")
 RE_TIANDAO_TIMEOUT_MIN = re.compile(r"(\d+)\s*分钟")
 RE_TIANDAO_TIMEOUT_SEC = re.compile(r"(\d+)\s*秒")
 RE_TIANDAO_QUESTION = re.compile(
@@ -51,8 +54,30 @@ RE_TIANDAO_QUESTION = re.compile(
     r"(?P<right>[零〇一二两三四五六七八九十百千万萬壹贰貳叁參肆伍陆陸柒捌玖拾佰仟\d０-９]+)\s*等于\s*[?？]",
     re.S,
 )
+RE_TIANDAO_MOD_QUESTION = re.compile(
+    r"(?:文本题面\s*[:：]\s*)?"
+    r"(?:请直接计算\s*[:：]\s*)?"
+    r"(?:计算\s*[:：]\s*)?"
+    r"(?P<expr>[^\n=？?]+?)\s*除以\s*"
+    r"(?P<mod>[零〇一二两三四五六七八九十百千万萬壹贰貳叁參肆伍陆陸柒捌玖拾佰仟\d０-９]+)\s*的余数",
+    re.S,
+)
 RE_IDENTITY_SEPARATORS = re.compile(r"[\s@，。！？、；：:,.!?\[\]【】()（）<>《》“”\"'`]+")
 RE_QUESTION_WHITESPACE = re.compile(r"\s+")
+RE_SAFE_ARITHMETIC_CHARS = re.compile(r"^[\d\s+\-*/%().]+$")
+
+SAFE_ARITHMETIC_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.floordiv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+}
+SAFE_ARITHMETIC_UNARY_OPERATORS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
 
 CHINESE_DIGIT_VALUES = {
     "零": 0,
@@ -141,6 +166,48 @@ def _parse_chinese_integer(text):
     return total + section + number
 
 
+def _normalize_arithmetic_expr(text):
+    return (
+        str(text or "")
+        .strip()
+        .translate(FULL_WIDTH_DIGITS)
+        .replace("×", "*")
+        .replace("＊", "*")
+        .replace("x", "*")
+        .replace("X", "*")
+        .replace("÷", "/")
+        .replace("／", "/")
+        .replace("（", "(")
+        .replace("）", ")")
+    )
+
+
+def _safe_eval_arithmetic_node(node):
+    if isinstance(node, ast.Expression):
+        return _safe_eval_arithmetic_node(node.body)
+    if isinstance(node, ast.Constant) and isinstance(node.value, int):
+        return int(node.value)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in SAFE_ARITHMETIC_UNARY_OPERATORS:
+        return SAFE_ARITHMETIC_UNARY_OPERATORS[type(node.op)](_safe_eval_arithmetic_node(node.operand))
+    if isinstance(node, ast.BinOp) and type(node.op) in SAFE_ARITHMETIC_OPERATORS:
+        left_value = _safe_eval_arithmetic_node(node.left)
+        right_value = _safe_eval_arithmetic_node(node.right)
+        if right_value == 0 and isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)):
+            raise ValueError("division by zero")
+        return SAFE_ARITHMETIC_OPERATORS[type(node.op)](left_value, right_value)
+    raise ValueError("unsupported arithmetic expression")
+
+
+def _safe_eval_arithmetic_expr(text):
+    expr = _normalize_arithmetic_expr(text)
+    if not expr or not RE_SAFE_ARITHMETIC_CHARS.match(expr):
+        return None
+    try:
+        return int(_safe_eval_arithmetic_node(ast.parse(expr, mode="eval")))
+    except Exception:
+        return None
+
+
 def _parse_timeout_sec(text):
     raw_text = str(text or "")
     minute_match = RE_TIANDAO_TIMEOUT_MIN.search(raw_text)
@@ -189,6 +256,25 @@ def _extract_tiandao_judgement_question(text):
         return None
 
     raw_text = str(text or "")
+    target_match = RE_TIANDAO_TARGET.search(raw_text)
+    target = str(target_match.group(1) or "").strip() if target_match else ""
+    token_match = RE_TIANDAO_TOKEN.search(raw_text)
+    token = str(token_match.group(1) or "").strip() if token_match else ""
+
+    mod_match = RE_TIANDAO_MOD_QUESTION.search(raw_text)
+    if mod_match:
+        expr_text = _normalize_arithmetic_expr(mod_match.group("expr"))
+        mod_text = str(mod_match.group("mod") or "").strip()
+        return {
+            "kind": "mod",
+            "target": target,
+            "token": token,
+            "question": f"{expr_text} mod {mod_text}",
+            "expr_text": expr_text,
+            "mod_text": mod_text,
+            "timeout_sec": _parse_timeout_sec(raw_text),
+        }
+
     question_match = RE_TIANDAO_QUESTION.search(raw_text)
     if not question_match:
         return None
@@ -196,10 +282,10 @@ def _extract_tiandao_judgement_question(text):
     left_text = _normalize_question_left(question_match.group("left"))
     right_text = str(question_match.group("right") or "").strip()
     op = str(question_match.group("op") or "").strip()
-    target_match = RE_TIANDAO_TARGET.search(raw_text)
-    target = str(target_match.group(1) or "").strip() if target_match else ""
     return {
+        "kind": "knowledge",
         "target": target,
+        "token": token,
         "question": f"{left_text}{op}{right_text}",
         "left_text": left_text,
         "op": op,
@@ -213,6 +299,18 @@ def _complete_tiandao_judgement_question(question):
         return None
 
     parsed = dict(question)
+    if parsed.get("kind") == "mod":
+        expr_value = _safe_eval_arithmetic_expr(parsed.get("expr_text"))
+        mod_value = _parse_chinese_integer(parsed.get("mod_text"))
+        if expr_value is None or mod_value is None or mod_value == 0:
+            return None
+        parsed.update({
+            "expr_value": expr_value,
+            "mod_value": mod_value,
+            "answer": str(expr_value % mod_value),
+        })
+        return parsed
+
     left_value = TIANDAO_JUDGEMENT_VALUE_MAP.get(parsed["left_text"])
     right_value = _parse_chinese_integer(parsed["right_text"])
     if left_value is None or right_value is None:
@@ -321,6 +419,9 @@ async def _send_tiandao_judgement_parse_failure_log(text, question=None):
     if question:
         left_text = question.get("left_text") or ""
         question_text = question.get("question") or ""
+        if question.get("kind") == "mod":
+            await send_audit_log(f"⚖️ 天道审判算术题解析失败：{mono(question_text or '未知题目')}", scope="global", limit=360)
+            return
         if left_text and left_text not in TIANDAO_JUDGEMENT_VALUE_MAP:
             await send_audit_log(f"⚖️ 天道审判题目未匹配：{mono(question_text)}", scope="global", limit=360)
             return
@@ -338,6 +439,7 @@ def _build_pending_item(parsed, identity_id, event, now):
         due_at = max(float(now) + 1, deadline_at - TIANDAO_JUDGEMENT_DEADLINE_BUFFER_SEC)
     return {
         "target": parsed.get("target") or "",
+        "token": parsed.get("token") or "",
         "identity_id": int(identity_id),
         "question": parsed.get("question") or "",
         "answer": parsed.get("answer") or "",
@@ -419,6 +521,7 @@ async def _run_tiandao_judgement_scheduler_locked(now):
     for pending_key, item in list(pending.items()):
         identity_id = int((item or {}).get("identity_id", 0) or 0)
         target = str((item or {}).get("target") or "未知对象")
+        token = str((item or {}).get("token") or "").strip()
         answer = str((item or {}).get("answer") or "").strip()
         question = str((item or {}).get("question") or "未知题目")
         detail = _format_judgement_detail(target, question, answer)
@@ -438,7 +541,15 @@ async def _run_tiandao_judgement_scheduler_locked(now):
             await send_audit_log(f"⚖️ 天道审判未发送：{detail}｜身份不存在", scope="global", limit=520)
             continue
 
-        msg = await send_game_command(f"{CMD_TIANDAO_JUDGEMENT_PROVE} {answer}", track=False, send_as_id=identity_id)
+        command = f"{CMD_TIANDAO_JUDGEMENT_PROVE} {token} {answer}" if token else f"{CMD_TIANDAO_JUDGEMENT_PROVE} {answer}"
+        reply_to_msg_id = int((item or {}).get("msg_id", 0) or 0)
+        msg = await send_game_command(
+            command,
+            track=False,
+            reply_to=reply_to_msg_id or None,
+            send_as_id=identity_id,
+            priority="p0",
+        )
         if msg:
             pending.pop(pending_key, None)
             changed = True
