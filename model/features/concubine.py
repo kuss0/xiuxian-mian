@@ -10,6 +10,8 @@ from ..config import (
     CD_BUFFER_SEC,
     CMD_CONCUBINE_DREAM,
     CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_HEART,
+    CMD_CONCUBINE_HEART_STEADY,
     CMD_CONCUBINE_PUZZLE,
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_SECT_MARRY,
@@ -18,6 +20,9 @@ from ..config import (
     CONCUBINE_CHAIN_DELAY_MAX_SEC,
     CONCUBINE_CHAIN_DELAY_MIN_SEC,
     CONCUBINE_DREAM_CD_SEC,
+    CONCUBINE_HEART_CD_SEC,
+    CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC,
+    CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC,
     CONCUBINE_NO_PARTNER_RETRY_SEC,
     CONCUBINE_PHASE_TIMEOUT_SEC,
     CONCUBINE_REACQUIRE_RETRY_SEC,
@@ -43,6 +48,8 @@ CONCUBINE_PENDING_COMMANDS = {
     CMD_CONCUBINE_SECT_MARRY,
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_TIANJI,
+    CMD_CONCUBINE_HEART,
+    CMD_CONCUBINE_HEART_STEADY,
 }
 
 _CONCUBINE_SCHEDULER_LOCK = asyncio.Lock()
@@ -55,6 +62,7 @@ RE_CONCUBINE_AFFINITY = re.compile(r"情缘值[：:]\s*(\d+)")
 RE_CONCUBINE_OATH = re.compile(r"当前誓约[：:]\s*([^\s(（\n]+)")
 RE_DREAM_COOLDOWN = re.compile(r"入梦寻图冷却[：:]\s*([^\n]+)")
 RE_TIANJI_COOLDOWN = re.compile(r"天机代卜冷却[：:]\s*([^\n]+)")
+RE_HEART_COOLDOWN = re.compile(r"共历心劫冷却[：:]\s*([^\n]+)")
 RE_TIANJI_CHAIN = re.compile(r"天机代卜链[：:]\s*([^\n]+)")
 RE_TIANJI_CHAIN_REMAINING = re.compile(r"(?P<name>[^（(]+)[（(]\s*剩余\s*(?P<wait>[^）)]+)\s*[）)]")
 RE_TIANJI_GUA = re.compile(r"得卦【(?P<name>[^】]+)】")
@@ -70,8 +78,10 @@ RE_IDENTITY_TAG = re.compile(rf"@({IDENTITY_TAG_PATTERN})")
 
 CONCUBINE_DREAM_RESOURCE_KEY = "concubine_dream"
 CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
+CONCUBINE_HEART_RESOURCE_KEY = "concubine_heart"
 CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
 CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
+CONCUBINE_HEART_PANEL_MAX_AGE_SEC = 10 * 60
 
 
 def _phase():
@@ -93,6 +103,9 @@ def _clear_pending_msg_ids():
     state["concubine_puzzle_msg_id"] = 0
     state["concubine_reacquire_msg_id"] = 0
     state["concubine_tianji_msg_id"] = 0
+    state["concubine_heart_msg_id"] = 0
+    state["concubine_heart_prompt_msg_id"] = 0
+    state["concubine_heart_round"] = 0
 
 
 def _schedule_after(now, min_sec, max_sec):
@@ -121,6 +134,9 @@ def _schedule_after_tianji(now):
     tianji_due_at = float(state.get("concubine_tianji_due_at", 0) or 0)
     if tianji_due_at > now:
         due_times.append(tianji_due_at)
+    heart_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
+    if state.get("concubine_heart_enabled") and heart_due_at > now:
+        due_times.append(heart_due_at)
     dream_due_at = float(state.get("concubine_dream_due_at", 0) or 0)
     if state.get("concubine_enabled") and dream_due_at > now:
         due_times.append(dream_due_at)
@@ -139,10 +155,14 @@ def _backoff_after_pending_timeout(now, phase):
             state["concubine_dream_due_at"] = retry_at
         if state.get("concubine_tianji_enabled") and float(state.get("concubine_tianji_due_at", 0) or 0) <= now:
             state["concubine_tianji_due_at"] = retry_at
+        if state.get("concubine_heart_enabled") and float(state.get("concubine_heart_due_at", 0) or 0) <= now:
+            state["concubine_heart_due_at"] = retry_at
     elif phase == "dream_pending":
         state["concubine_dream_due_at"] = retry_at
     elif phase == "tianji_pending":
         state["concubine_tianji_due_at"] = retry_at
+    elif phase in {"heart_pending", "heart_choice_pending"}:
+        state["concubine_heart_due_at"] = retry_at
     elif phase in {"fragment_pending", "puzzle_pending"}:
         total = max(1, int(state.get("concubine_fragment_total", 4) or 4))
         count = int(state.get("concubine_fragment_count", 0) or 0)
@@ -218,6 +238,14 @@ def _is_concubine_candidate_text_for_phase(text, phase):
         )
     if phase == "tianji_pending":
         return _is_strong_tianji_terminal_text(raw_text) or "天机代卜" in raw_text or "代卜天机" in raw_text
+    if phase in {"heart_pending", "heart_choice_pending"}:
+        return (
+            "坠魔心劫" in raw_text
+            or "共历心劫" in raw_text
+            or "心劫余波" in raw_text
+            or "心劫抉择正在进行" in raw_text
+            or "开启共历心劫" in raw_text
+        )
     if phase == "fragment_pending":
         return "虚天残图" in raw_text or "残图" in raw_text or "拼片" in raw_text
     if phase == "puzzle_pending":
@@ -418,6 +446,7 @@ def _parse_status_panel(text, now):
     oath_match = RE_CONCUBINE_OATH.search(raw_text)
     dream_match = RE_DREAM_COOLDOWN.search(raw_text)
     tianji_match = RE_TIANJI_COOLDOWN.search(raw_text)
+    heart_match = RE_HEART_COOLDOWN.search(raw_text)
     tianji_chain_match = RE_TIANJI_CHAIN.search(raw_text)
     tianji_chain, tianji_chain_due_at = _parse_tianji_chain(tianji_chain_match.group(1), now) if tianji_chain_match else ("", 0.0)
     progress = _parse_fragment_progress(raw_text)
@@ -431,6 +460,7 @@ def _parse_status_panel(text, now):
         "oath": oath_match.group(1).strip() if oath_match else "",
         "dream_due_at": _parse_wait_due_at(dream_match.group(1), now) if dream_match else 0.0,
         "tianji_due_at": _parse_wait_due_at(tianji_match.group(1), now) if tianji_match else 0.0,
+        "heart_due_at": _parse_wait_due_at(heart_match.group(1), now) if heart_match else 0.0,
         "tianji_chain": tianji_chain,
         "tianji_chain_due_at": tianji_chain_due_at,
         "fragment_count": progress[0] if progress else int(state.get("concubine_fragment_count", 0) or 0),
@@ -468,8 +498,16 @@ def _has_tianji_due_action(now):
     return float(state.get("concubine_tianji_due_at", 0) or 0) <= float(now)
 
 
+def _has_heart_due_action(now):
+    if not state.get("concubine_heart_enabled"):
+        return False
+    if not _has_available_partner():
+        return False
+    return float(state.get("concubine_heart_due_at", 0) or 0) <= float(now)
+
+
 def _has_due_action(now):
-    return (state.get("concubine_enabled") and _has_main_due_action(now)) or _has_tianji_due_action(now)
+    return (state.get("concubine_enabled") and _has_main_due_action(now)) or _has_tianji_due_action(now) or _has_heart_due_action(now)
 
 
 def _has_active_nanlong_pending(now):
@@ -489,6 +527,7 @@ def _clear_partner_snapshot():
     state["concubine_oath"] = ""
     state["concubine_dream_due_at"] = 0
     state["concubine_tianji_due_at"] = 0
+    state["concubine_heart_due_at"] = 0
     state["concubine_tianji_chain"] = ""
     state["concubine_tianji_chain_due_at"] = 0
     state["concubine_fragment_count"] = 0
@@ -534,6 +573,7 @@ def _apply_partner_acquired(name, now, *, kind="侍妾"):
     state["concubine_oath"] = ""
     state["concubine_dream_due_at"] = 0
     state["concubine_tianji_due_at"] = 0
+    state["concubine_heart_due_at"] = 0
     state["concubine_tianji_chain"] = ""
     state["concubine_tianji_chain_due_at"] = 0
     state["concubine_fragment_count"] = 0
@@ -568,6 +608,7 @@ def _apply_status_snapshot(parsed, now):
     state["concubine_oath"] = parsed.get("oath", "")
     state["concubine_dream_due_at"] = float(parsed.get("dream_due_at", 0) or 0)
     state["concubine_tianji_due_at"] = float(parsed.get("tianji_due_at", 0) or 0)
+    state["concubine_heart_due_at"] = float(parsed.get("heart_due_at", 0) or 0)
     state["concubine_tianji_chain"] = parsed.get("tianji_chain", "")
     state["concubine_tianji_chain_due_at"] = float(parsed.get("tianji_chain_due_at", 0) or 0)
     state["concubine_fragment_count"] = int(parsed.get("fragment_count", 0) or 0)
@@ -589,6 +630,8 @@ def _apply_status_snapshot(parsed, now):
             due_times.append(float(state.get("concubine_dream_due_at", 0) or 0))
         if state.get("concubine_tianji_enabled") and not _is_tianji_affinity_blocked():
             due_times.append(float(state.get("concubine_tianji_due_at", 0) or 0))
+        if state.get("concubine_heart_enabled"):
+            due_times.append(float(state.get("concubine_heart_due_at", 0) or 0))
         due_at = min(due_times) if due_times else now + CONCUBINE_STATUS_STALE_SEC
         _schedule_at_due_or_chain(now, due_at)
     return True
@@ -611,7 +654,7 @@ def _switch_reacquire_command(now, command, reason):
 
 
 def get_concubine_status_text():
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False):
+    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
         return "🌸 侍妾 - 未启用"
 
     phase_label = {
@@ -623,6 +666,8 @@ def get_concubine_status_text():
         "puzzle_pending": "虚天残图拼合中...",
         "reacquire_pending": "补领侍妾中...",
         "tianji_pending": "天机代卜中...",
+        "heart_pending": "共历心劫发起中...",
+        "heart_choice_pending": "共历心劫抉择中...",
         "no_partner": "暂无侍妾",
     }.get(_phase(), _phase())
     strategy_label = {
@@ -635,6 +680,7 @@ def get_concubine_status_text():
         f"- 当前阶段: {phase_label}",
         f"- 入梦寻图: {'开启' if state.get('concubine_enabled') else '关闭'}",
         f"- 天机代卜: {'开启' if state.get('concubine_tianji_enabled') else '关闭'}",
+        f"- 共历心劫: {'开启' if state.get('concubine_heart_enabled') else '关闭'}",
         f"- 自动补领: {'开启' if state.get('concubine_auto_reacquire') else '关闭'}",
         f"- 南陇侯策略: {strategy_label}",
     ]
@@ -661,6 +707,13 @@ def get_concubine_status_text():
         lines.append(f"- 天机代卜: {fmt_abs_ts(tianji_due_at)}（{fmt_remaining(tianji_due_at)}）")
     else:
         lines.append("- 天机代卜: 可施展/待确认")
+    heart_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
+    if heart_due_at > 0:
+        lines.append(f"- 共历心劫: {fmt_abs_ts(heart_due_at)}（{fmt_remaining(heart_due_at)}）")
+    else:
+        lines.append("- 共历心劫: 可施展/待确认")
+    if state.get("concubine_heart_round"):
+        lines.append(f"- 心劫抉择: 第 {int(state.get('concubine_heart_round', 0) or 0)}/3 轮")
     if state.get("concubine_tianji_chain"):
         chain_due_at = float(state.get("concubine_tianji_chain_due_at", 0) or 0)
         suffix = f"（{fmt_remaining(chain_due_at)}）" if chain_due_at > 0 else ""
@@ -675,6 +728,8 @@ def get_concubine_status_text():
         lines.append(f"- 最近异常: {state.get('concubine_last_error')}")
     if state.get("concubine_tianji_last_error"):
         lines.append(f"- 代卜异常: {state.get('concubine_tianji_last_error')}")
+    if state.get("concubine_heart_last_error"):
+        lines.append(f"- 心劫异常: {state.get('concubine_heart_last_error')}")
     return "\n".join(lines)
 
 
@@ -684,6 +739,10 @@ def clear_concubine_state(*, persist=False, keep_last_error=False, include_tianj
         "concubine_tianji_chain": state.get("concubine_tianji_chain", ""),
         "concubine_tianji_chain_due_at": state.get("concubine_tianji_chain_due_at", 0),
         "concubine_tianji_last_error": state.get("concubine_tianji_last_error", ""),
+    }
+    heart_snapshot = {
+        "concubine_heart_due_at": state.get("concubine_heart_due_at", 0),
+        "concubine_heart_last_error": state.get("concubine_heart_last_error", ""),
     }
     state["next_concubine_time"] = 0
     state["concubine_phase"] = "idle"
@@ -697,9 +756,13 @@ def clear_concubine_state(*, persist=False, keep_last_error=False, include_tianj
         state["concubine_tianji_chain"] = ""
         state["concubine_tianji_chain_due_at"] = 0
         state["concubine_tianji_last_error"] = ""
+        state["concubine_heart_due_at"] = 0
+        state["concubine_heart_last_error"] = ""
     else:
         clear_pending_tasks_by_commands(CONCUBINE_MAIN_PENDING_COMMANDS, send_as_id=get_current_identity_id())
         for key, value in tianji_snapshot.items():
+            state[key] = value
+        for key, value in heart_snapshot.items():
             state[key] = value
     if not keep_last_error:
         state["concubine_last_error"] = ""
@@ -727,7 +790,7 @@ def clear_concubine_tianji_state(*, persist=False, keep_last_error=False):
 
 
 def restore_concubine_runtime(now):
-    if _phase() in {"status_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending"}:
+    if _phase() in {"status_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending"}:
         if _has_available_partner():
             _set_phase("idle")
         elif state.get("concubine_availability") == "no_partner":
@@ -838,15 +901,59 @@ async def _send_tianji_command(now):
     return True
 
 
-async def handle_concubine_status_reply(text, now, reply_to, matched_family=None):
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False):
+async def _send_heart_command(now):
+    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+    if panel_msg_id <= 0 or panel_seen_at <= 0 or now - panel_seen_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
+        state["concubine_heart_last_error"] = "共历心劫需先刷新侍妾面板"
+        await _send_status_command(now)
+        return False
+    msg = await send_game_command(CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        state["concubine_heart_last_error"] = "发送 .共历心劫 失败"
+        _set_phase("idle")
+        _backoff_after_pending_timeout(sent_at, "heart_pending")
+        save_state()
+        return False
+    _set_phase("heart_pending")
+    state["concubine_heart_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    state["concubine_heart_prompt_msg_id"] = 0
+    state["concubine_heart_round"] = 0
+    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    save_state()
+    return True
+
+
+async def _send_heart_choice(now):
+    prompt_msg_id = int(state.get("concubine_heart_prompt_msg_id", 0) or 0)
+    if prompt_msg_id <= 0:
+        state["concubine_heart_last_error"] = "心劫抉择缺少提示消息ID"
+        _set_phase("idle")
+        _backoff_after_pending_timeout(now, "heart_choice_pending")
+        save_state()
+        return False
+    msg = await send_game_command(CMD_CONCUBINE_HEART_STEADY, track=False, reply_to=prompt_msg_id, priority="chain")
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        state["concubine_heart_last_error"] = "发送 .稳 失败"
+        state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
+        save_state()
+        return False
+    state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    save_state()
+    return True
+
+
+async def handle_concubine_status_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
+    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
         return False
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "concubine_status" and CMD_CONCUBINE_STATUS not in orig_cmd:
         return False
     phase = _phase()
     if phase != "status_pending":
-        if phase in {"dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending"}:
+        if phase in {"dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending"}:
             console_log(f"🌸 忽略非等待期侍妾状态回复（phase={phase}）。")
             return True
         console_log(f"🌸 接受迟到的侍妾状态回复（phase={phase}）。")
@@ -864,6 +971,7 @@ async def handle_concubine_status_reply(text, now, reply_to, matched_family=None
         return False
 
     _apply_status_snapshot(parsed, now)
+    state["concubine_last_panel_msg_id"] = int(current_msg_id or 0)
     save_state()
     if _is_puzzle_ready():
         await send_audit_log("🌸 虚天残图已凑齐，先自动 .残图 确认后再拼图。", scope="identity")
@@ -878,7 +986,7 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
         return False
     phase = _phase()
     if phase != "dream_pending":
-        if phase in {"fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending"}:
+        if phase in {"fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending"}:
             console_log(f"🌸 忽略非等待期入梦寻图回复（phase={phase}）。")
             return True
         console_log(f"🌸 接受手动/迟到的入梦寻图回复（phase={phase}）。")
@@ -1180,7 +1288,7 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
         return False
     phase = _phase()
     if phase != "tianji_pending":
-        if phase in {"status_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending"}:
+        if phase in {"status_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "heart_pending", "heart_choice_pending"}:
             console_log(f"🌸 忽略非等待期天机代卜回复（phase={phase}）。")
             return True
         console_log(f"🌸 接受手动/迟到的天机代卜回复（phase={phase}）。")
@@ -1254,8 +1362,119 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
     return False
 
 
+def _is_heart_resource_shortage_text(text):
+    raw_text = str(text or "")
+    return "修为不足" in raw_text and "开启共历心劫" in raw_text
+
+
+def _is_heart_cd_text(text):
+    return "心劫余波未散" in str(text or "")
+
+
+def _heart_next_choice_delay():
+    return random.uniform(CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC, CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC)
+
+
+async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
+    if not state.get("concubine_heart_enabled", False):
+        return False
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    if matched_family != "concubine_heart" and CMD_CONCUBINE_HEART not in orig_cmd and CMD_CONCUBINE_HEART_STEADY not in orig_cmd:
+        return False
+
+    raw_text = text or ""
+    if _is_heart_cd_text(raw_text):
+        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_HEART_CD_SEC
+        state["concubine_heart_due_at"] = now + wait_sec + CD_BUFFER_SEC
+        state["concubine_heart_last_error"] = ""
+        reset_resource_shortage(CONCUBINE_HEART_RESOURCE_KEY)
+        _set_phase("idle")
+        _clear_pending_msg_ids()
+        _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
+        save_state()
+        return True
+
+    if _is_heart_resource_shortage_text(raw_text):
+        await _apply_concubine_resource_backoff(
+            now,
+            CONCUBINE_HEART_RESOURCE_KEY,
+            "concubine_heart_due_at",
+            "concubine_heart_last_error",
+            "共历心劫",
+            raw_text,
+        )
+        save_state()
+        return True
+
+    if "请回复一条包含侍妾/道侣内容的消息" in raw_text:
+        state["concubine_heart_last_error"] = "共历心劫需要回复侍妾面板，已改为状态校准"
+        state["concubine_last_panel_msg_id"] = 0
+        _set_phase("idle")
+        _clear_pending_msg_ids()
+        _schedule_chain_action(now)
+        save_state()
+        return True
+
+    if "你已有一场心劫抉择正在进行" in raw_text:
+        state["concubine_heart_last_error"] = "已有心劫抉择进行中，暂停自动补发"
+        _set_phase("idle")
+        _clear_pending_msg_ids()
+        state["concubine_heart_due_at"] = now + random.uniform(30 * 60, 60 * 60)
+        _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
+        save_state()
+        await send_audit_log("🌸 共历心劫已有抉择进行中，已暂停补发并稍后校准。", scope="identity")
+        return True
+
+    if "【坠魔心劫·结算】" in raw_text:
+        state["concubine_heart_due_at"] = now + CONCUBINE_HEART_CD_SEC + random.uniform(10 * 60, 40 * 60)
+        state["concubine_heart_last_error"] = ""
+        state["concubine_heart_prompt_msg_id"] = 0
+        state["concubine_heart_round"] = 0
+        reset_resource_shortage(CONCUBINE_HEART_RESOURCE_KEY)
+        _set_phase("idle")
+        _clear_pending_msg_ids()
+        _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
+        save_state()
+        await send_audit_log("🌸 共历心劫已结算，按 12h+缓冲等待下一轮。", scope="identity")
+        return True
+
+    if "【坠魔心劫·第一轮】" in raw_text:
+        state["concubine_heart_prompt_msg_id"] = int(current_msg_id or getattr(reply_to, "id", 0) or 0)
+        state["concubine_heart_round"] = 1
+        state["concubine_heart_last_error"] = ""
+        _set_phase("heart_choice_pending")
+        state["next_concubine_time"] = now + _heart_next_choice_delay()
+        save_state()
+        return True
+
+    if "【坠魔心劫·第1轮已定】" in raw_text and "【坠魔心劫·第2轮】" in raw_text:
+        state["concubine_heart_prompt_msg_id"] = int(current_msg_id or state.get("concubine_heart_prompt_msg_id", 0) or 0)
+        state["concubine_heart_round"] = 2
+        state["concubine_heart_last_error"] = ""
+        _set_phase("heart_choice_pending")
+        state["next_concubine_time"] = now + _heart_next_choice_delay()
+        save_state()
+        return True
+
+    if "【坠魔心劫·第2轮已定】" in raw_text and "【坠魔心劫·第3轮】" in raw_text:
+        state["concubine_heart_prompt_msg_id"] = int(current_msg_id or state.get("concubine_heart_prompt_msg_id", 0) or 0)
+        state["concubine_heart_round"] = 3
+        state["concubine_heart_last_error"] = ""
+        _set_phase("heart_choice_pending")
+        state["next_concubine_time"] = now + _heart_next_choice_delay()
+        save_state()
+        return True
+
+    state["concubine_heart_last_error"] = f"未识别的共历心劫回复: {raw_text[:60]}"
+    _set_phase("idle")
+    _clear_pending_msg_ids()
+    _backoff_after_pending_timeout(now, "heart_pending")
+    save_state()
+    return False
+
+
 async def handle_concubine_loss_broadcast(text, now, event):
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False):
+    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
         return False
     raw_text = text or ""
     if "南陇侯" not in raw_text or "侍妾" not in raw_text:
@@ -1284,7 +1503,7 @@ async def run_concubine_scheduler(now):
 
 
 async def _run_concubine_scheduler(now):
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False):
+    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
         return
 
     if _has_active_nanlong_pending(now):
@@ -1294,7 +1513,20 @@ async def _run_concubine_scheduler(now):
         return
 
     phase = _phase()
-    if phase in {"status_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending"}:
+    if phase == "heart_choice_pending":
+        next_time = float(state.get("next_concubine_time", 0) or 0)
+        if next_time > now:
+            return
+        if int(state.get("concubine_heart_round", 0) or 0) in {1, 2, 3}:
+            await _send_heart_choice(now)
+            return
+        state["concubine_heart_last_error"] = "心劫抉择轮次异常，暂停自动处理"
+        _set_phase("idle")
+        _backoff_after_pending_timeout(now, "heart_choice_pending")
+        save_state()
+        return
+
+    if phase in {"status_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending"}:
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
             return
@@ -1344,7 +1576,7 @@ async def _run_concubine_scheduler(now):
         return
 
     if not _has_available_partner():
-        if state.get("concubine_tianji_enabled"):
+        if state.get("concubine_tianji_enabled") or state.get("concubine_heart_enabled"):
             await _send_status_command(now)
         else:
             await _send_dream_command(now)
@@ -1372,11 +1604,23 @@ async def _run_concubine_scheduler(now):
             await _send_tianji_command(now)
             return
 
+    if state.get("concubine_heart_enabled"):
+        heart_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
+        if heart_due_at <= now:
+            panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+            if int(state.get("concubine_last_panel_msg_id", 0) or 0) <= 0 or panel_seen_at <= 0 or now - panel_seen_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
+                await _send_status_command(now)
+                return
+            await _send_heart_command(now)
+            return
+
     due_times = []
     if state.get("concubine_enabled"):
         due_times.append(float(state.get("concubine_dream_due_at", 0) or 0))
     if state.get("concubine_tianji_enabled") and not _is_tianji_affinity_blocked():
         due_times.append(float(state.get("concubine_tianji_due_at", 0) or 0))
+    if state.get("concubine_heart_enabled"):
+        due_times.append(float(state.get("concubine_heart_due_at", 0) or 0))
     due_times = [due_at for due_at in due_times if due_at > now]
     if due_times:
         state["next_concubine_time"] = min(due_times) + random.uniform(60, 600)
@@ -1396,6 +1640,7 @@ __all__ = [
     "handle_concubine_puzzle_reply",
     "handle_concubine_reacquire_reply",
     "handle_concubine_status_reply",
+    "handle_concubine_heart_reply",
     "handle_concubine_tianji_reply",
     "restore_concubine_runtime",
     "run_concubine_scheduler",

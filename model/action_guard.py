@@ -4,6 +4,7 @@ import time
 from .config import (
     CMD_CONCUBINE_DREAM,
     CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_HEART,
     CMD_CONCUBINE_PUZZLE,
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_SECT_MARRY,
@@ -54,6 +55,14 @@ ACTION_SPECS = {
         "commands": (CMD_CONCUBINE_TIANJI,),
         "kind": ACTION_KIND_HIGH_RISK,
         "label": "天机代卜",
+    },
+    "concubine_heart": {
+        "commands": (CMD_CONCUBINE_HEART,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "共历心劫",
+        "max_attempts": 2,
+        "retry_delay_ranges": ((10 * 60, 30 * 60),),
+        "ttl_sec": 12 * 3600,
     },
     "concubine_fragment": {
         "commands": (CMD_CONCUBINE_FRAGMENT,),

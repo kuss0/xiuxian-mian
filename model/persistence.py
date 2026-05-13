@@ -98,6 +98,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_enabled INTEGER NOT NULL DEFAULT 0")
     if "concubine_tianji_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0")
+    if "concubine_heart_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_heart_enabled INTEGER NOT NULL DEFAULT 0")
     if "concubine_auto_reacquire" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1")
     if "nanlong_enabled" not in module_columns:
@@ -246,6 +248,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_reacquire_msg_id INTEGER NOT NULL DEFAULT 0")
     if "concubine_tianji_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_heart_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_heart_prompt_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_last_panel_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
     if "concubine_name" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_name TEXT NOT NULL DEFAULT ''")
     if "concubine_kind" not in runtime_columns:
@@ -260,10 +268,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_dream_due_at REAL NOT NULL DEFAULT 0")
     if "concubine_tianji_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_due_at REAL NOT NULL DEFAULT 0")
+    if "concubine_heart_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_due_at REAL NOT NULL DEFAULT 0")
     if "concubine_tianji_chain" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain TEXT NOT NULL DEFAULT ''")
     if "concubine_tianji_chain_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0")
+    if "concubine_heart_round" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_round INTEGER NOT NULL DEFAULT 0")
     if "concubine_fragment_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_count INTEGER NOT NULL DEFAULT 0")
     if "concubine_fragment_total" not in runtime_columns:
@@ -280,6 +292,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_error TEXT NOT NULL DEFAULT ''")
     if "concubine_tianji_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_last_error TEXT NOT NULL DEFAULT ''")
+    if "concubine_heart_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_trial_last_error" not in runtime_columns:
@@ -640,6 +654,7 @@ def init_db():
             jiyin_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0,
+            concubine_heart_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
@@ -802,6 +817,9 @@ def init_db():
             concubine_puzzle_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_reacquire_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_tianji_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_name TEXT NOT NULL DEFAULT '',
             concubine_kind TEXT NOT NULL DEFAULT '',
             concubine_location TEXT NOT NULL DEFAULT '',
@@ -809,8 +827,10 @@ def init_db():
             concubine_oath TEXT NOT NULL DEFAULT '',
             concubine_dream_due_at REAL NOT NULL DEFAULT 0,
             concubine_tianji_due_at REAL NOT NULL DEFAULT 0,
+            concubine_heart_due_at REAL NOT NULL DEFAULT 0,
             concubine_tianji_chain TEXT NOT NULL DEFAULT '',
             concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0,
+            concubine_heart_round INTEGER NOT NULL DEFAULT 0,
             concubine_fragment_count INTEGER NOT NULL DEFAULT 0,
             concubine_fragment_total INTEGER NOT NULL DEFAULT 4,
             concubine_last_snapshot_at REAL NOT NULL DEFAULT 0,
@@ -819,6 +839,7 @@ def init_db():
             concubine_reacquire_command_override TEXT NOT NULL DEFAULT '',
             concubine_last_error TEXT NOT NULL DEFAULT '',
             concubine_tianji_last_error TEXT NOT NULL DEFAULT '',
+            concubine_heart_last_error TEXT NOT NULL DEFAULT '',
             nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
             nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0,

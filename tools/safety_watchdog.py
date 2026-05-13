@@ -59,6 +59,7 @@ SMALL_WORLD_TOOL_PREFIXES = (
 DUNGEON_JOIN_PREFIX = ".加入副本"
 SECT_TEACH_PREFIX = ".宗门传功"
 SECT_TEACH_MAX_ATTEMPTS_10M = 3
+HEART_CHOICE_COMMANDS = {".稳", ".狠", ".骗"}
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
     "TG FloodWait",
@@ -164,6 +165,21 @@ def is_sect_teach_command(text: str) -> bool:
     return raw == SECT_TEACH_PREFIX or raw.startswith(SECT_TEACH_PREFIX + " ")
 
 
+def is_heart_choice_command(text: str) -> bool:
+    return command_key(text) in HEART_CHOICE_COMMANDS
+
+
+def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
+    if len(items) > 3:
+        return False
+    reply_ids = {
+        int(item.get("reply_to_msg_id", 0) or 0)
+        for item in items
+    }
+    reply_ids.discard(0)
+    return len(reply_ids) == 1
+
+
 def is_small_world_tool_command(text: str) -> bool:
     raw = str(text or "").strip()
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in SMALL_WORLD_TOOL_PREFIXES)
@@ -247,7 +263,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         items = [item for item in all_items if float(item.get("_epoch", 0) or 0) >= now - window_sec]
         if len(items) < 2:
             continue
-        if sect_teach:
+        heart_choice = is_heart_choice_command(text) and is_safe_heart_choice_repeat(items)
+        if sect_teach or heart_choice:
             min_gap = 0
         elif guarded:
             min_gap = cfg.guarded_repeat_gap_sec

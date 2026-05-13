@@ -33,6 +33,7 @@ from .features.concubine import (
     handle_concubine_puzzle_reply,
     handle_concubine_reacquire_reply,
     handle_concubine_status_reply,
+    handle_concubine_heart_reply,
     handle_concubine_tianji_reply,
     restore_concubine_runtime,
     run_concubine_scheduler,
@@ -193,6 +194,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "concubine_puzzle": ("拼图", "虚天残图", "拼合", "残纹"),
     "concubine_reacquire": ("侍妾", "道侣", "红尘寻缘", "宗门赐婚", "红颜"),
     "concubine_tianji": ("天机代卜", "天机链路", "卜算天机", "代卜"),
+    "concubine_heart": ("共历心劫", "坠魔心劫", "心劫余波", "心劫抉择"),
     "nanlong": ("南陇侯", "交易", "侍妾", "法宝", "功法"),
     "second_soul_status": ("第二元神", "元神", "心魔", "修炼"),
     "second_soul_train": ("第二元神", "元神", "修炼", "闭关"),
@@ -794,12 +796,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_stargazer_soothe_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_stargazer_collect_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tianti_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_concubine_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_status_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
             handled_any = await handle_concubine_dream_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_concubine_fragment_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_concubine_puzzle_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_concubine_reacquire_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_concubine_tianji_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_heart_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
             handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any

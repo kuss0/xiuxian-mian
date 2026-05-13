@@ -18,6 +18,7 @@ from .config import (
     CMD_CONCUBINE_SECT_MARRY,
     CMD_CONCUBINE_STATUS,
     CMD_CONCUBINE_TIANJI,
+    CMD_CONCUBINE_HEART,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_GUANXING,
@@ -282,7 +283,7 @@ def _schedule_module_immediate_retry(module_name, now):
     if module_name == "器灵试炼":
         state["next_pet_trial_time"] = retry_at
         return retry_at
-    if module_name in {"侍妾", "天机代卜"}:
+    if module_name in {"侍妾", "天机代卜", "共历心劫"}:
         state["next_concubine_time"] = retry_at
         return retry_at
     if module_name == "观星台":
@@ -765,6 +766,24 @@ def _manual_enable_concubine_tianji_module_state(now):
     restore_concubine_runtime(now)
 
 
+def _manual_disable_concubine_heart_module_state():
+    state["concubine_heart_enabled"] = False
+    state["concubine_heart_msg_id"] = 0
+    state["concubine_heart_prompt_msg_id"] = 0
+    state["concubine_heart_round"] = 0
+    if state.get("concubine_phase") in {"heart_pending", "heart_choice_pending"}:
+        state["concubine_phase"] = "idle"
+
+
+def _manual_enable_concubine_heart_module_state(now):
+    state["concubine_heart_enabled"] = True
+    state["concubine_heart_last_error"] = ""
+    next_time = float(state.get("next_concubine_time", 0) or 0)
+    if next_time <= 0 or next_time > now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC:
+        state["next_concubine_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+    restore_concubine_runtime(now)
+
+
 def _manual_disable_second_soul_module_state():
     _disable_second_soul_module_state()
 
@@ -948,6 +967,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_CONCUBINE_SECT_MARRY: "侍妾",
     CMD_CONCUBINE_ROMANCE: "侍妾",
     CMD_CONCUBINE_TIANJI: "天机代卜",
+    CMD_CONCUBINE_HEART: "共历心劫",
     CMD_NANLONG_EXCHANGE_FABAO: "南陇侯",
     CMD_NANLONG_EXCHANGE_GONGFA: "南陇侯",
     CMD_NANLONG_REJECT: "南陇侯",
@@ -987,6 +1007,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
     "侍妾": (_manual_enable_concubine_module_state, _manual_disable_concubine_module_state),
     "天机代卜": (_manual_enable_concubine_tianji_module_state, _manual_disable_concubine_tianji_module_state),
+    "共历心劫": (_manual_enable_concubine_heart_module_state, _manual_disable_concubine_heart_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
@@ -1011,6 +1032,7 @@ MODULE_DISABLE_HANDLERS = {
     "极阴祖师": _disable_jiyin_module_state,
     "侍妾": _disable_concubine_module_state,
     "天机代卜": _manual_disable_concubine_tianji_module_state,
+    "共历心劫": _manual_disable_concubine_heart_module_state,
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
     "元婴": _disable_yuanying_module_state,
@@ -1185,6 +1207,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "极阴祖师": get_jiyin_status_text,
         "侍妾": get_concubine_status_text,
         "天机代卜": get_concubine_status_text,
+        "共历心劫": get_concubine_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -1274,6 +1297,7 @@ def _format_log_group_help_html(send_as_id=None):
         ".极阴祖师状态",
         ".侍妾状态",
         ".天机代卜状态",
+        ".共历心劫状态",
         ".南陇侯状态",
         ".元婴状态",
         ".深度闭关状态",

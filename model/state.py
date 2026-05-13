@@ -25,7 +25,7 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
@@ -49,7 +49,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
-    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error",
+    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_fragment_count", "concubine_fragment_total", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_last_error",
     "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_last_panel_at", "small_world_last_error",
     "resource_shortage_backoffs", "action_guard_sessions",
@@ -63,7 +63,7 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "taiyi_failure_history", "resource_shortage_backoffs", "action_guard_sessions"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_auto_reacquire", "nanlong_enabled", "yuanying_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "checkin_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
@@ -180,6 +180,7 @@ IDENTITY_STATE_TEMPLATE = {
     "jiyin_enabled": False,
     "concubine_enabled": False,
     "concubine_tianji_enabled": False,
+    "concubine_heart_enabled": False,
     "concubine_auto_reacquire": True,
     "nanlong_enabled": False,
     "tianti_enabled": False,
@@ -336,7 +337,7 @@ IDENTITY_STATE_TEMPLATE = {
 
     # 侍妾模块
     "next_concubine_time": 0,
-    "concubine_phase": "idle",  # idle|status_pending|dream_pending|fragment_pending|puzzle_ready|puzzle_pending|reacquire_pending|no_partner
+    "concubine_phase": "idle",  # idle|status_pending|dream_pending|fragment_pending|puzzle_ready|puzzle_pending|reacquire_pending|tianji_pending|heart_pending|heart_choice_pending|no_partner
     "concubine_availability": "unknown",
     "concubine_nanlong_strategy": "reacquire_after_loss",
     "concubine_status_msg_id": 0,
@@ -345,6 +346,9 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_puzzle_msg_id": 0,
     "concubine_reacquire_msg_id": 0,
     "concubine_tianji_msg_id": 0,
+    "concubine_heart_msg_id": 0,
+    "concubine_heart_prompt_msg_id": 0,
+    "concubine_last_panel_msg_id": 0,
     "concubine_name": "",
     "concubine_kind": "",
     "concubine_location": "",
@@ -352,8 +356,10 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_oath": "",
     "concubine_dream_due_at": 0,
     "concubine_tianji_due_at": 0,
+    "concubine_heart_due_at": 0,
     "concubine_tianji_chain": "",
     "concubine_tianji_chain_due_at": 0,
+    "concubine_heart_round": 0,
     "concubine_fragment_count": 0,
     "concubine_fragment_total": 4,
     "concubine_last_snapshot_at": 0,
@@ -362,6 +368,7 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_reacquire_command_override": "",
     "concubine_last_error": "",
     "concubine_tianji_last_error": "",
+    "concubine_heart_last_error": "",
 
     # 南陇侯模块
     "next_nanlong_time": 0,

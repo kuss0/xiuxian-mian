@@ -217,6 +217,8 @@ CMD_CONCUBINE_PUZZLE = ".拼图"
 CMD_CONCUBINE_SECT_MARRY = ".宗门赐婚"
 CMD_CONCUBINE_ROMANCE = ".红尘寻缘"
 CMD_CONCUBINE_TIANJI = ".天机代卜"
+CMD_CONCUBINE_HEART = ".共历心劫"
+CMD_CONCUBINE_HEART_STEADY = ".稳"
 CMD_SMALL_WORLD_QUERY = ".小世界"
 CMD_SMALL_WORLD_MANIFEST = ".显灵"
 CMD_SMALL_WORLD_HARVEST = ".收割香火"
@@ -249,6 +251,9 @@ CONCUBINE_CHAIN_DELAY_MIN_SEC = 10
 CONCUBINE_CHAIN_DELAY_MAX_SEC = 30
 CONCUBINE_REACQUIRE_RETRY_SEC = 12 * 3600
 CONCUBINE_TIANJI_CD_SEC = 12 * 3600
+CONCUBINE_HEART_CD_SEC = 12 * 3600
+CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC = 60
+CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC = 150
 SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC = 60
 
 
@@ -341,6 +346,7 @@ SCRIPT_COMMANDS = [
     CMD_CONCUBINE_SECT_MARRY,
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_TIANJI,
+    CMD_CONCUBINE_HEART,
     CMD_SMALL_WORLD_QUERY,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_HARVEST,
@@ -357,7 +363,7 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -373,6 +379,7 @@ MODULE_KEY_MAP = {
     "极阴祖师": "jiyin_enabled",
     "侍妾": "concubine_enabled",
     "天机代卜": "concubine_tianji_enabled",
+    "共历心劫": "concubine_heart_enabled",
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
     "深度闭关": "deep_retreat_enabled",
@@ -556,6 +563,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
     (re.compile(r'^\.侍妾状态$'), "侍妾"),
     (re.compile(r'^\.天机代卜状态$'), "天机代卜"),
+    (re.compile(r'^\.共历心劫状态$'), "共历心劫"),
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
@@ -590,6 +598,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)侍妾$'), "侍妾", False),
     (re.compile(r'^\.(开启|打开)天机代卜$'), "天机代卜", True),
     (re.compile(r'^\.(关闭|关掉)天机代卜$'), "天机代卜", False),
+    (re.compile(r'^\.(开启|打开)共历心劫$'), "共历心劫", True),
+    (re.compile(r'^\.(关闭|关掉)共历心劫$'), "共历心劫", False),
     (re.compile(r'^\.(开启|打开)南陇侯$'), "南陇侯", True),
     (re.compile(r'^\.(关闭|关掉)南陇侯$'), "南陇侯", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),
