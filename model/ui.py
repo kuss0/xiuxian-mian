@@ -78,6 +78,13 @@ from .features.storage_bag import CMD_STORAGE_BAG
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yuanying import get_yuanying_phase_text
+from .official_schedule import (
+    build_preset_plan as build_official_schedule_preset_plan,
+    create_official_messages_for_batch,
+    delete_local_schedule_records as delete_official_schedule_records,
+    list_local_schedules as list_local_official_schedules,
+    replace_planned_batch as replace_official_schedule_planned_batch,
+)
 from .persistence import save_state
 from .runtime import consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .state import (
@@ -824,12 +831,90 @@ def get_ui_snapshot(session_token=None):
             }
             for item in get_game_send_queue_snapshot()
         ],
+        "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
         "storage_bag_sync": get_storage_bag_sync_snapshot(),
         "accounts": _get_runtime_accounts_snapshot(),
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),
     }
+
+
+def ui_preview_official_schedule(payload):
+    send_as_id = payload.get("send_as_id")
+    template_key = str(payload.get("template_key") or "").strip()
+    if send_as_id in {None, ""}:
+        return False, "缺少 send_as_id", None
+    if not template_key:
+        return False, "缺少 template_key", None
+    try:
+        send_as_id = int(send_as_id)
+    except (TypeError, ValueError):
+        return False, "send_as_id 无效", None
+    profile = get_send_as_profile(send_as_id)
+    with use_identity(send_as_id):
+        identity_state = get_identity_state(send_as_id)
+        inferred_anchor_at = None
+        now = time.time()
+        if template_key == "deep_retreat":
+            next_time = float(identity_state.get("next_deep_retreat_time", 0) or 0)
+            inferred_anchor_at = next_time - 8 * 3600 if next_time > now else now
+        elif template_key == "pet_touch":
+            next_time = float(identity_state.get("next_pet_time", 0) or 0)
+            inferred_anchor_at = next_time - 2 * 3600 if next_time > now else now
+        elif template_key == "pet_warm":
+            next_time = float(identity_state.get("next_pet_warm_time", 0) or 0)
+            inferred_anchor_at = next_time - 6 * 3600 if next_time > now else now
+        elif template_key == "pet_trial":
+            next_time = float(identity_state.get("next_pet_trial_time", 0) or 0)
+            inferred_anchor_at = next_time - 8 * 3600 if next_time > now else now
+    pet_name = str(payload.get("pet_name") or "").strip()
+    if not pet_name:
+        if template_key == "pet_warm":
+            pet_name = profile.get("pet_warm_name") or profile.get("pet_name") or ""
+        elif template_key == "pet_trial":
+            pet_name = profile.get("pet_trial_name") or profile.get("pet_name") or ""
+        else:
+            pet_name = profile.get("pet_name") or ""
+    plan = build_official_schedule_preset_plan(
+        template_key,
+        anchor_at=payload.get("anchor_at") or inferred_anchor_at,
+        horizon_days=payload.get("horizon_days") or 3,
+        pet_name=pet_name,
+    )
+    if not plan.get("template_key"):
+        return False, "未知官方定时预设", None
+    return True, f"已生成 {len(plan.get('items') or [])} 条官方定时预览", plan
+
+
+def ui_prepare_official_schedule(payload):
+    ok, message, plan = ui_preview_official_schedule(payload)
+    if not ok:
+        return ok, message, None
+    send_as_id = int(payload.get("send_as_id"))
+    items = plan.get("items") or []
+    if not items:
+        return False, "预设没有生成任何定时消息", None
+    existing = [
+        item for item in list_local_official_schedules(send_as_id=send_as_id, include_inactive=False, limit=300)
+        if item.get("template_key") == plan.get("template_key") and int(item.get("scheduled_msg_id") or 0) > 0
+    ]
+    if existing:
+        return False, "该身份/预设已有 Telegram 官方定时消息，请先在排班器中删除旧批次再重新准备", None
+    batch_id = replace_official_schedule_planned_batch(
+        send_as_id,
+        plan.get("template_key"),
+        items,
+        anchor_at=plan.get("anchor_at"),
+        horizon_days=plan.get("horizon_days") or 3,
+        options={
+            "prepared_only": True,
+            "pet_name": str(payload.get("pet_name") or "").strip(),
+        },
+        source="ui_prepare",
+    )
+    plan["batch_id"] = batch_id
+    return True, f"已准备官方定时排班 {batch_id}，尚未创建 Telegram 官方定时消息", plan
 
 
 def html_escape(value):
@@ -2238,6 +2323,115 @@ async def handle_ui_http(reader, writer):
                         content_type="application/json; charset=utf-8",
                         extra_headers=auth_headers,
                     )
+            elif path == "/api/official-schedules":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "GET":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = query.get("send_as_id", [None])[0]
+                    schedules = list_local_official_schedules(send_as_id=send_as_id, include_inactive=True, limit=300)
+                    body = _make_json_payload(True, extra={"official_schedules": schedules})
+                    _write_response(writer, "HTTP/1.1 200 OK", body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/official-schedule-preview":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, plan = ui_preview_official_schedule(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"plan": plan} if plan else None,
+                        include_snapshot=False,
+                    )
+            elif path == "/api/official-schedule-prepare":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, plan = ui_prepare_official_schedule(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"plan": plan} if plan else None,
+                    )
+            elif path == "/api/official-schedule-create":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    if str(payload.get("confirm") or "") != "CREATE_OFFICIAL_SCHEDULE":
+                        _write_json_result(
+                            writer,
+                            False,
+                            "缺少确认串 CREATE_OFFICIAL_SCHEDULE，已拒绝创建官方定时消息",
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                            include_snapshot=False,
+                        )
+                    else:
+                        try:
+                            result = await create_official_messages_for_batch(payload.get("batch_id"))
+                            ok = result.get("failed", 0) == 0
+                            body = _make_json_payload(
+                                ok,
+                                message=f"官方定时创建：成功 {result.get('created', 0)} / {result.get('total', 0)}" if ok else "",
+                                error="" if ok else f"官方定时部分失败：成功 {result.get('created', 0)} / {result.get('total', 0)}",
+                                snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")),
+                                extra={"result": result},
+                            )
+                            _write_response(
+                                writer,
+                                "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request",
+                                body,
+                                content_type="application/json; charset=utf-8",
+                                extra_headers=auth_headers,
+                            )
+                        except Exception as e:
+                            _write_json_result(
+                                writer,
+                                False,
+                                f"创建失败: {e}",
+                                session_token=(session or {}).get("session_token"),
+                                extra_headers=auth_headers,
+                            )
+            elif path == "/api/official-schedule-delete":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    try:
+                        result = await delete_official_schedule_records(
+                            record_ids=payload.get("record_ids"),
+                            batch_id=payload.get("batch_id"),
+                            delete_official=bool(payload.get("delete_official")),
+                        )
+                        _write_json_result(
+                            writer,
+                            True,
+                            f"已删除本地排班记录 {result.get('records', 0)} 条，官方定时 {result.get('official', 0)} 条",
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                        )
+                    except Exception as e:
+                        _write_json_result(
+                            writer,
+                            False,
+                            f"删除失败: {e}",
+                            session_token=(session or {}).get("session_token"),
+                            extra_headers=auth_headers,
+                        )
             elif path == "/api/storage-bag-sync":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)

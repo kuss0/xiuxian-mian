@@ -907,6 +907,42 @@ def init_db():
             sent_at REAL NOT NULL,
             kind TEXT NOT NULL DEFAULT 'command'
         );
+
+        CREATE TABLE IF NOT EXISTS official_schedule_batches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            send_as_id INTEGER NOT NULL,
+            template_key TEXT NOT NULL DEFAULT '',
+            name TEXT NOT NULL DEFAULT '',
+            anchor_at REAL NOT NULL DEFAULT 0,
+            horizon_days INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            source TEXT NOT NULL DEFAULT '',
+            options_json TEXT NOT NULL DEFAULT '{}',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS official_scheduled_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id INTEGER NOT NULL DEFAULT 0,
+            send_as_id INTEGER NOT NULL,
+            template_key TEXT NOT NULL DEFAULT '',
+            command TEXT NOT NULL,
+            schedule_at REAL NOT NULL,
+            scheduled_msg_id INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'planned',
+            source TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_official_schedule_batches_identity_template
+            ON official_schedule_batches(send_as_id, template_key, status);
+        CREATE INDEX IF NOT EXISTS idx_official_scheduled_messages_batch
+            ON official_scheduled_messages(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_official_scheduled_messages_identity_time
+            ON official_scheduled_messages(send_as_id, schedule_at);
         """
     )
     current_schema_version = _get_schema_version(conn)
