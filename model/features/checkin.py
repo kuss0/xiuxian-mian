@@ -2,10 +2,45 @@ import random
 import time
 from datetime import datetime, timezone
 
-from ..config import CMD_CHECKIN, CMD_SECT_TEACH, RETRY_MAX_SEC, SECT_TEACH_DELAY_MAX_SEC, SECT_TEACH_DELAY_MIN_SEC
+from ..config import (
+    CMD_CHECKIN,
+    CMD_GUANXING,
+    CMD_GUANXING_SHIFT,
+    CMD_NODE_DEFINE,
+    CMD_NODE_SEARCH,
+    CMD_RANCH,
+    CMD_SECT_TEACH,
+    CMD_STARGAZER_COLLECT,
+    CMD_STARGAZER_GUIDE,
+    CMD_STARGAZER_PANEL,
+    CMD_STARGAZER_SOOTHE,
+    CMD_TIANTI_CLIMB,
+    CMD_TIANTI_GANGFENG,
+    CMD_TIANTI_STATUS,
+    CMD_TIANTI_WENXIN,
+    CMD_TOWER,
+    CMD_TREE_GUARD,
+    CMD_TREE_HARVEST,
+    CMD_TREE_STATUS,
+    CMD_TREE_WATER,
+    CMD_YINDAO,
+    RETRY_MAX_SEC,
+    SECT_TEACH_DELAY_MAX_SEC,
+    SECT_TEACH_DELAY_MIN_SEC,
+)
 from ..persistence import mark_dirty, save_state
 from ..runtime import _get_identity_client, console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_game_group_id, get_module_window_hours, is_auto_delete_sent_messages_enabled, state
+from ..state import (
+    format_window_text,
+    get_current_identity_id,
+    get_game_group_id,
+    get_identity_state,
+    get_module_window_hours,
+    get_pending_command,
+    is_auto_delete_sent_messages_enabled,
+    state,
+    update_send_as_profile,
+)
 from ..timing import (
     fmt_abs_ts,
     fmt_remaining,
@@ -17,6 +52,30 @@ from ..timing import (
 
 
 CHECKIN_DONE_HINTS = ("已点卯", "已经点过")
+NO_SECT_CHECKIN_HINTS = ("散修无需点卯", "速速寻一宗门拜入")
+SECT_DEPENDENT_PENDING_COMMANDS = {
+    CMD_CHECKIN,
+    CMD_SECT_TEACH,
+    CMD_TOWER,
+    CMD_TREE_WATER,
+    CMD_TREE_GUARD,
+    CMD_TREE_STATUS,
+    CMD_TREE_HARVEST,
+    CMD_STARGAZER_PANEL,
+    CMD_STARGAZER_GUIDE,
+    CMD_STARGAZER_SOOTHE,
+    CMD_STARGAZER_COLLECT,
+    CMD_GUANXING,
+    CMD_GUANXING_SHIFT,
+    CMD_TIANTI_STATUS,
+    CMD_TIANTI_WENXIN,
+    CMD_TIANTI_CLIMB,
+    CMD_TIANTI_GANGFENG,
+    CMD_RANCH,
+    CMD_YINDAO,
+    CMD_NODE_SEARCH,
+    CMD_NODE_DEFINE,
+}
 
 
 def _is_checkin_reply(reply_to, matched_family=None):
@@ -45,9 +104,139 @@ def _has_checkin_pending():
     if last_msg_id > 0 and last_msg_id in pending_tasks:
         return True
     for pending in pending_tasks.values():
-        if str((pending or {}).get("cmd") or "").strip() == CMD_CHECKIN:
+        if get_pending_command(pending) == CMD_CHECKIN:
             return True
     return False
+
+
+def is_no_sect_checkin_text(text):
+    raw_text = str(text or "")
+    return any(keyword in raw_text for keyword in NO_SECT_CHECKIN_HINTS)
+
+
+def _clear_pending_tasks_by_commands(identity_state, commands):
+    pending_tasks = identity_state.get("pending_tasks", {})
+    if not isinstance(pending_tasks, dict):
+        return False
+    changed = False
+    normalized_commands = {str(command or "").strip() for command in commands}
+    for msg_id, pending in list(pending_tasks.items()):
+        command = get_pending_command(pending)
+        if command in normalized_commands:
+            pending_tasks.pop(msg_id, None)
+            identity_state.get("my_msg_ids", {}).pop(msg_id, None)
+            changed = True
+    return changed
+
+
+def disable_sect_modules_for_current_identity(now=None):
+    identity_state = get_identity_state()
+    send_as_id = get_current_identity_id()
+    changed = False
+
+    def set_field(name, value):
+        nonlocal changed
+        if identity_state.get(name) != value:
+            identity_state[name] = value
+            changed = True
+
+    for field_name in (
+        "checkin_enabled",
+        "tower_enabled",
+        "tree_enabled",
+        "ranch_enabled",
+        "stargazer_enabled",
+        "guanxing_enabled",
+        "tianti_enabled",
+        "taiyi_enabled",
+        "taiyi_node_search_enabled",
+    ):
+        set_field(field_name, False)
+
+    for field_name in (
+        "next_checkin_time",
+        "next_sect_teach_time",
+        "sect_teach_reply_to_msg_id",
+        "last_checkin_msg_id",
+        "last_sect_teach_msg_id",
+        "next_tower_time",
+        "last_tower_msg_id",
+        "next_irr_time",
+        "next_guard_time",
+        "next_ranch_time",
+        "ranch_reply_to_msg_id",
+        "ranch_reply_due_at",
+        "ranch_last_msg_id",
+        "next_stargazer_panel_time",
+        "stargazer_collect_due_at",
+        "stargazer_last_panel_msg_id",
+        "stargazer_followup_due_at",
+        "guanxing_last_query_msg_id",
+        "guanxing_last_panel_msg_id",
+        "guanxing_last_shift_msg_id",
+        "next_tianti_status_time",
+        "next_tianti_wenxin_time",
+        "next_tianti_climb_time",
+        "next_tianti_gangfeng_time",
+        "tianti_status_reply_to_msg_id",
+        "tianti_last_status_msg_id",
+        "tianti_last_wenxin_msg_id",
+        "tianti_last_climb_msg_id",
+        "tianti_last_gangfeng_msg_id",
+        "next_taiyi_cycle_time",
+        "taiyi_phase_entered_at",
+        "taiyi_freeze_until",
+        "taiyi_yindao_msg_id",
+        "taiyi_node_search_msg_id",
+        "taiyi_node_define_msg_id",
+    ):
+        set_field(field_name, 0)
+
+    for field_name in (
+        "checkin_cleanup_msg_ids",
+        "ranch_return_pending",
+        "is_maturing",
+        "is_invading",
+        "is_harvested",
+        "pending_irrigation",
+        "tree_bootstrap_check_needed",
+        "stargazer_wait_full_collect",
+        "stargazer_collect_ready",
+        "stargazer_soothe_before_collect",
+    ):
+        empty_value = [] if field_name == "checkin_cleanup_msg_ids" else False
+        set_field(field_name, empty_value)
+
+    for field_name, value in (
+        ("ranch_last_result", ""),
+        ("ranch_last_error", "散修无宗门，已停止放养"),
+        ("stargazer_last_action", ""),
+        ("guanxing_panel_slot_key", ""),
+        ("guanxing_last_shift_slot_key", ""),
+        ("guanxing_last_shift_target", ""),
+        ("guanxing_last_error", "散修无宗门，已停止观星"),
+        ("tianti_cooldown_text", "散修无宗门"),
+        ("tianti_wenxin_status", "散修无宗门"),
+        ("tianti_gangfeng_status", "散修无宗门"),
+        ("tianti_last_skip_reason", "散修无宗门"),
+        ("tianti_last_error", "散修无宗门，已停止登天阶"),
+        ("taiyi_phase", "idle"),
+        ("taiyi_pending_node_name", ""),
+        ("taiyi_freeze_reason", "散修无宗门"),
+        ("taiyi_last_error", "散修无宗门，已停止太一"),
+    ):
+        set_field(field_name, value)
+
+    if _clear_pending_tasks_by_commands(identity_state, SECT_DEPENDENT_PENDING_COMMANDS):
+        changed = True
+
+    profile = update_send_as_profile(send_as_id, sect_name="散修", sect_updated_at=float(now or time.time()))
+    if profile.get("sect_name") == "散修":
+        changed = True
+
+    if changed:
+        mark_dirty()
+    return changed
 
 
 
@@ -177,10 +366,19 @@ async def _notify_sect_teach_completed():
 
 
 async def handle_checkin_reply(text, now, reply_to, matched_family=None):
-    if not state["checkin_enabled"]:
+    if not _is_checkin_reply(reply_to, matched_family=matched_family):
         return False
 
-    if not _is_checkin_reply(reply_to, matched_family=matched_family):
+    if is_no_sect_checkin_text(text):
+        state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
+        remember_checkin_cleanup_msg_id(state["last_checkin_msg_id"])
+        disable_sect_modules_for_current_identity(now)
+        save_state()
+        await send_audit_log("⚠️ 当前身份无宗门，已关闭点卯、传功及宗门限定模块。", scope="identity")
+        console_log("⚠️ 散修无需点卯，已停止宗门功能。")
+        return True
+
+    if not state["checkin_enabled"]:
         return False
 
     state["last_checkin_msg_id"] = reply_to.id if reply_to else 0
@@ -296,8 +494,10 @@ __all__ = [
     "handle_checkin_reply",
     "handle_sect_teach_reply",
     "is_checkin_already_done_text",
+    "is_no_sect_checkin_text",
     "is_sect_teach_already_done_text",
     "remember_checkin_cleanup_msg_id",
     "run_checkin_scheduler",
     "schedule_sect_teach_chain",
+    "disable_sect_modules_for_current_identity",
 ]

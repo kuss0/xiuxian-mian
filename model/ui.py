@@ -33,6 +33,10 @@ except ImportError:
             segno = None
 
 from .config import (
+    CMD_DUNGEON_HUANGLONG_JOIN,
+    CMD_DUNGEON_JOIN,
+    CMD_DUNGEON_ZHUIMO_JOIN,
+    CMD_REPLICA_CANGKUN_JOIN,
     CMD_TIANTI_GANGFENG,
     MESSAGES_DIR,
     MODULE_KEY_MAP,
@@ -71,10 +75,12 @@ from .control import (
 from .features.deep_retreat import get_deep_retreat_phase_text
 from .features.guanxing import get_guanxing_round_summary_text
 from .features.guanxing_monitor import get_guanxing_monitor_summary_text
+from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
+from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.stargazer import sync_stargazer_total_slots
-from .features.storage_bag import CMD_STORAGE_BAG
+from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, get_storage_bag_transfer_snapshot, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yuanying import get_yuanying_phase_text
@@ -86,7 +92,7 @@ from .official_schedule import (
     replace_planned_batch as replace_official_schedule_planned_batch,
 )
 from .persistence import save_state
-from .runtime import consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .runtime import _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -98,6 +104,12 @@ from .state import (
     get_game_group_id,
     get_game_topic_id,
     get_global_enabled,
+    get_dungeon_join_run_state,
+    get_replica_gold_dps_enabled,
+    get_replica_group_ids,
+    get_replica_listener_account_map,
+    get_replica_participant_identity_ids,
+    get_replica_virtual_hall_match_enabled_map,
     get_tiandao_judgement_enabled,
     get_guanxing_monitor_enabled,
     get_guanxing_monitor_target_options,
@@ -112,8 +124,10 @@ from .state import (
     get_identity_ui_display_name,
     get_identity_state,
     get_module_window_hours_local,
+    get_pending_command,
     get_realm_sort_key,
     get_send_as_profile,
+    is_replica_gold_dps_allowed,
     get_stargazer_star_choice,
     get_stargazer_total_slots,
     get_storage_bag_item_rules,
@@ -137,6 +151,11 @@ from .state import (
     set_pet_name,
     set_pet_warm_name,
     set_pet_trial_name,
+    set_replica_gold_dps_enabled,
+    set_replica_group_ids,
+    set_replica_listener_account_map,
+    set_replica_participant_identity_ids,
+    set_replica_virtual_hall_match_enabled_map,
     set_storage_bag_item_rules,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
@@ -161,6 +180,22 @@ UI_STATIC_CONTENT_TYPES = {
 }
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
 _LOG_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
+_REPLICA_UI_KIND_VIRTUAL_HALL = "virtual_hall"
+_REPLICA_UI_KIND_CANGKUN = "cangkun"
+_REPLICA_UI_KIND_ZHUIMO = "zhuimo"
+_REPLICA_UI_KIND_HUANGLONG = "huanglong"
+_REPLICA_UI_OPEN_PRIORITY = (
+    _REPLICA_UI_KIND_VIRTUAL_HALL,
+    _REPLICA_UI_KIND_CANGKUN,
+    _REPLICA_UI_KIND_ZHUIMO,
+    _REPLICA_UI_KIND_HUANGLONG,
+)
+_REPLICA_UI_TICKET_META = {
+    _REPLICA_UI_KIND_VIRTUAL_HALL: {"name": "虚天殿", "short": "虚", "items": ("虚天残图",)},
+    _REPLICA_UI_KIND_CANGKUN: {"name": "苍坤洞府", "short": "苍", "items": ("苍坤残图",)},
+    _REPLICA_UI_KIND_ZHUIMO: {"name": "坠魔谷", "short": "坠", "items": ("坠魔谷禁制令",)},
+    _REPLICA_UI_KIND_HUANGLONG: {"name": "黄龙山", "short": "黄", "items": ("黄龙急援令", "黄龙急援令（宗门版）")},
+}
 
 
 def _is_storage_bag_protected_identity(send_as_id):
@@ -324,7 +359,7 @@ async def ui_start_storage_bag_sync(identity_ids):
     _storage_bag_sync_state["running"] = True
     _storage_bag_sync_state["pending_ids"] = list(normalized_ids)
     _storage_bag_sync_state["completed_ids"] = []
-    asyncio.create_task(_run_storage_bag_sync(normalized_ids))
+    _fire_and_forget(_run_storage_bag_sync(normalized_ids))
     return True, f"已开始同步 {len(normalized_ids)} 个身份的储物袋"
 
 
@@ -386,6 +421,7 @@ def ui_preview_storage_bag_transfer(payload):
     normalized_items = []
     exchange_parts = []
     gift_items = []
+    warnings = []
     for raw_item in selected_items:
         if not isinstance(raw_item, dict):
             continue
@@ -402,8 +438,12 @@ def ui_preview_storage_bag_transfer(payload):
         method = rule.get("method") or "unknown"
         if method == "blocked":
             return False, f"{item_name} 不可转移", None
-        if quantity <= 0 or quantity > source_count:
-            return False, f"{item_name} 数量必须在 1 到 {source_count} 之间", None
+        if quantity <= 0:
+            return False, f"{item_name} 数量必须大于 0", None
+        if source_count <= 0:
+            warnings.append(f"{item_name} 未在来源快照中确认库存")
+        elif quantity > source_count:
+            warnings.append(f"{item_name} 计划 {quantity}，来源快照仅 {source_count}")
         item = {
             "item_name": item_name,
             "quantity": quantity,
@@ -430,7 +470,7 @@ def ui_preview_storage_bag_transfer(payload):
             return False, "请选择目标身份用于上架的物品", None
         listing_count = _get_storage_bag_item_count(rows, target_identity_id, listing_item)
         if listing_count <= 0:
-            return False, "目标身份没有该上架物", None
+            warnings.append(f"上架物 {listing_item} 未在目标快照中确认库存")
         commands.extend([
             {
                 "identity_id": target_identity_id,
@@ -463,9 +503,26 @@ def ui_preview_storage_bag_transfer(payload):
         "listing_count": listing_count,
         "items": normalized_items,
         "commands": commands,
-        "summary": f"预览 {len(normalized_items)} 个物品，当前只生成命令，不会自动发送",
+        "warnings": warnings,
+        "summary": f"预览 {len(normalized_items)} 个物品，可手动开始执行",
     }
     return True, "已生成转移预览", preview
+
+
+async def ui_start_storage_bag_transfer(payload):
+    ok, message, preview = ui_preview_storage_bag_transfer(payload)
+    if not ok:
+        return False, message, None
+    return await start_storage_bag_transfer_task(
+        preview["source_identity_id"],
+        preview["target_identity_id"],
+        preview.get("items") or [],
+        preview.get("listing_item") or "",
+    )
+
+
+async def ui_cancel_storage_bag_transfer():
+    return await cancel_storage_bag_transfer_task()
 
 
 def get_storage_bag_snapshot():
@@ -516,6 +573,274 @@ def get_storage_bag_snapshot():
     }
 
 
+def _to_float(value, default=0.0):
+    try:
+        return float(value or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _dungeon_join_status_text(record, now):
+    record = record if isinstance(record, dict) else {}
+    pending_until = _to_float(record.get("pending_until"))
+    cooldown_until = _to_float(record.get("cooldown_until"))
+    active_until = _to_float(record.get("active_until"))
+    if pending_until > now:
+        return "等待回复"
+    if cooldown_until > now:
+        return "冷却中"
+    if record.get("participating") and active_until > now:
+        return "副本中"
+    result = str(record.get("last_result") or "").strip()
+    if result == "joined":
+        return "已加入"
+    if result == "success_cooldown":
+        return "通关冷却"
+    if result == "cooldown":
+        return "冷却"
+    if result == "failed":
+        return "失败"
+    return "空闲"
+
+
+def get_dungeon_join_snapshot():
+    now = time.time()
+    records = get_dungeon_join_run_state()
+    records = records if isinstance(records, dict) else {}
+    rows = []
+    enabled_count = 0
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        identity_state = get_identity_state(identity_id)
+        module_enabled = bool(identity_state.get("dungeon_join_enabled"))
+        if module_enabled:
+            enabled_count += 1
+        record = records.get(str(identity_id)) if isinstance(records, dict) else {}
+        record = record if isinstance(record, dict) else {}
+        pending_until = _to_float(record.get("pending_until"))
+        cooldown_until = _to_float(record.get("cooldown_until"))
+        active_until = _to_float(record.get("active_until"))
+        updated_at = _to_float(record.get("updated_at"))
+        rows.append({
+            "identity_id": identity_id,
+            "display_name": get_identity_ui_display_name(identity_id),
+            "identity_enabled": get_identity_enabled(identity_id),
+            "module_enabled": module_enabled,
+            "status_text": _dungeon_join_status_text(record, now),
+            "room_id": str(record.get("room_id") or ""),
+            "pending_room_id": str(record.get("pending_room_id") or ""),
+            "pending_msg_id": int(record.get("pending_msg_id", 0) or 0),
+            "last_result": str(record.get("last_result") or ""),
+            "last_error": str(record.get("last_error") or ""),
+            "joined_at": fmt_abs_ts(record.get("joined_at", 0) or 0),
+            "active_until": fmt_abs_ts(active_until),
+            "cooldown_until": fmt_abs_ts(cooldown_until),
+            "pending_until": fmt_abs_ts(pending_until),
+            "updated_at": fmt_abs_ts(updated_at),
+        })
+    rows.sort(key=lambda row: (
+        0 if row["module_enabled"] else 1,
+        get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]),
+    ))
+    return {
+        "enabled_count": enabled_count,
+        "identity_count": len(rows),
+        "commands": [
+            {"name": "虚天殿", "join_command": CMD_DUNGEON_JOIN},
+            {"name": "坠魔谷", "join_command": CMD_DUNGEON_ZHUIMO_JOIN},
+            {"name": "黄龙山", "join_command": CMD_DUNGEON_HUANGLONG_JOIN},
+            {"name": "苍坤洞府", "join_command": CMD_REPLICA_CANGKUN_JOIN},
+        ],
+        "recent_announcements": get_dungeon_join_inbox_snapshot(limit=20),
+        "rows": rows,
+    }
+
+
+def _normalize_ui_int_list(raw_value, *, allow_negative=False):
+    if isinstance(raw_value, str):
+        candidates = raw_value.replace("，", ",").replace("\n", ",").split(",")
+    elif isinstance(raw_value, (list, tuple, set)):
+        candidates = raw_value
+    else:
+        candidates = []
+    normalized = []
+    seen = set()
+    for raw_item in candidates:
+        try:
+            item = int(raw_item)
+        except (TypeError, ValueError):
+            continue
+        if item == 0 or (item < 0 and not allow_negative) or item in seen:
+            continue
+        seen.add(item)
+        normalized.append(item)
+    return normalized
+
+
+def _coerce_ui_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
+        return True
+    if text in {"", "0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "禁用"}:
+        return False
+    return bool(default)
+
+
+def _get_replica_account_options():
+    account_options = []
+    runtime_accounts = _get_runtime_accounts_snapshot()
+    for raw_account_id, account in runtime_accounts.items():
+        try:
+            account_id = int(raw_account_id)
+        except (TypeError, ValueError):
+            continue
+        label = str((account or {}).get("username") or (account or {}).get("session") or account_id)
+        status = str((account or {}).get("status") or "")
+        account_options.append({
+            "account_id": account_id,
+            "label": label,
+            "status": status,
+            "offline": bool((account or {}).get("offline")),
+        })
+    account_options.sort(key=lambda item: (item["offline"], item["account_id"]))
+    return account_options
+
+
+def _get_replica_ui_storage_item_count(records, identity_id, item_name):
+    record = records.get(str(identity_id)) if isinstance(records, dict) else {}
+    if not isinstance(record, dict):
+        return 0
+    items = record.get("items")
+    if not isinstance(items, dict):
+        return 0
+    try:
+        return max(0, int(items.get(str(item_name or "").strip()) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _get_replica_ui_ticket_counts(records, identity_id):
+    counts = {}
+    for replica_kind, meta in _REPLICA_UI_TICKET_META.items():
+        counts[replica_kind] = sum(
+            _get_replica_ui_storage_item_count(records, identity_id, item_name)
+            for item_name in meta.get("items", ())
+        )
+    return counts
+
+
+def _format_replica_ui_ticket_summary(counts):
+    parts = []
+    for replica_kind in _REPLICA_UI_OPEN_PRIORITY:
+        count = int((counts or {}).get(replica_kind) or 0)
+        if count > 0:
+            parts.append(f"{_REPLICA_UI_TICKET_META[replica_kind]['short']}x{count}")
+    return " ".join(parts)
+
+
+def _select_replica_ui_open_kind(counts):
+    for replica_kind in _REPLICA_UI_OPEN_PRIORITY:
+        if int((counts or {}).get(replica_kind) or 0) > 0:
+            return replica_kind
+    return ""
+
+
+def get_replica_config_snapshot():
+    group_ids = get_replica_group_ids()
+    listener_map = get_replica_listener_account_map()
+    participant_ids = get_replica_participant_identity_ids()
+    match_map = get_replica_virtual_hall_match_enabled_map()
+    storage_records = get_storage_bag_records()
+    identity_options = []
+    participant_set = {int(identity_id) for identity_id in participant_ids}
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        profile = get_send_as_profile(identity_id)
+        ticket_counts = _get_replica_ui_ticket_counts(storage_records, identity_id)
+        preferred_open_kind = _select_replica_ui_open_kind(ticket_counts)
+        identity_options.append({
+            "identity_id": identity_id,
+            "display_name": get_identity_ui_display_name(identity_id),
+            "username": profile.get("username") or "",
+            "label": profile.get("label") or "",
+            "realm": profile.get("realm") or "",
+            "spiritual_root_attrs": profile.get("spiritual_root_attrs") or "",
+            "replica_professions": profile.get("replica_professions") or "",
+            "account_id": int(get_identity_account(identity_id) or 0),
+            "identity_enabled": get_identity_enabled(identity_id),
+            "participant": identity_id in participant_set,
+            "gold_dps_allowed": is_replica_gold_dps_allowed(identity_id),
+            "gold_dps_enabled": get_replica_gold_dps_enabled(identity_id),
+            "ticket_counts": ticket_counts,
+            "ticket_summary": _format_replica_ui_ticket_summary(ticket_counts),
+            "can_open": bool(preferred_open_kind),
+            "preferred_open_kind": preferred_open_kind,
+            "preferred_open_label": (_REPLICA_UI_TICKET_META.get(preferred_open_kind) or {}).get("name", ""),
+        })
+    identity_options.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
+    return {
+        "group_ids": group_ids,
+        "listener_account_map": {str(group_id): int(listener_map.get(str(group_id)) or 0) for group_id in group_ids},
+        "participant_identity_ids": participant_ids,
+        "virtual_hall_match_enabled_map": {str(group_id): bool(match_map.get(str(group_id), False)) for group_id in group_ids},
+        "account_options": _get_replica_account_options(),
+        "identity_options": identity_options,
+        "commands": [
+            {"name": "轻量副本", "query_command": ".查询副本", "auto_open_command": ".开启副本 @用户名 [类型]", "join_command": ".加入副本 @用户名...", "dissolve_command": ".解散副本"},
+        ],
+    }
+
+
+def ui_set_replica_config(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    group_ids = _normalize_ui_int_list(payload.get("group_ids"), allow_negative=True)
+    listener_input = payload.get("listener_account_map") if isinstance(payload.get("listener_account_map"), dict) else {}
+    listener_map = {}
+    for group_id in group_ids:
+        try:
+            account_id = int(listener_input.get(str(group_id)) or listener_input.get(group_id) or 0)
+        except (TypeError, ValueError):
+            account_id = 0
+        if account_id > 0:
+            listener_map[str(group_id)] = account_id
+
+    participant_ids = _normalize_ui_int_list(payload.get("participant_identity_ids"))
+    match_input = payload.get("virtual_hall_match_enabled_map") if isinstance(payload.get("virtual_hall_match_enabled_map"), dict) else {}
+    match_map = {
+        str(group_id): _coerce_ui_bool(match_input.get(str(group_id), match_input.get(group_id)))
+        for group_id in group_ids
+    }
+
+    set_replica_group_ids(group_ids)
+    set_replica_listener_account_map(listener_map)
+    set_replica_participant_identity_ids(participant_ids)
+    set_replica_virtual_hall_match_enabled_map(match_map)
+    save_state()
+    return True, f"已更新副本群配置：群 {len(group_ids)} 个，参与身份 {len(get_replica_participant_identity_ids())} 个"
+
+
+def ui_set_replica_gold_dps_enabled(send_as_id, enabled):
+    try:
+        send_as_id = int(send_as_id)
+    except (TypeError, ValueError):
+        return False, "身份参数无效"
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    enabled = _coerce_ui_bool(enabled)
+    if enabled and not is_replica_gold_dps_allowed(send_as_id):
+        return False, "该身份灵根不满足金/雷 DPS 条件"
+    set_replica_gold_dps_enabled(send_as_id, enabled)
+    save_state()
+    action_text = "开启" if get_replica_gold_dps_enabled(send_as_id) else "关闭"
+    return True, f"已{action_text}金/雷 DPS：{get_identity_ui_display_name(send_as_id)}"
+
+
 def _list_message_log_days():
     days = []
     try:
@@ -528,6 +853,71 @@ def _list_message_log_days():
     return sorted(days, reverse=True)
 
 
+def _split_log_query_terms(q_text):
+    terms = []
+    seen = set()
+    for term in re.split(r"\s+", str(q_text or "").strip()):
+        normalized = term.casefold()
+        if normalized and normalized not in seen:
+            terms.append(normalized)
+            seen.add(normalized)
+    return terms
+
+
+def _iter_log_button_texts(entry):
+    for row in entry.get("buttons") or []:
+        if not isinstance(row, list):
+            continue
+        for button in row:
+            if isinstance(button, dict):
+                text = str(button.get("text") or "")
+                if text:
+                    yield text
+
+
+def _log_entry_matches_query(item, query_terms):
+    if not query_terms:
+        return True
+    haystacks = [
+        "\n".join(
+            [
+                str(item.get("ts") or ""),
+                str(item.get("event_type") or ""),
+                str(item.get("sender_id") or ""),
+                str(item.get("message_id") or ""),
+                str(item.get("text") or ""),
+            ]
+        ).casefold()
+    ]
+    haystacks.extend(text.casefold() for text in _iter_log_button_texts(item))
+    return all(any(term in haystack for haystack in haystacks) for term in query_terms)
+
+
+def _iter_log_lines(full_path, newest_first=True):
+    with open(full_path, "rb") as fp:
+        if not newest_first:
+            for raw_line in fp:
+                yield raw_line.decode("utf-8", errors="ignore")
+            return
+
+        fp.seek(0, os.SEEK_END)
+        position = fp.tell()
+        buffer = b""
+        while position > 0:
+            read_size = min(8192, position)
+            position -= read_size
+            fp.seek(position)
+            chunk = fp.read(read_size)
+            buffer = chunk + buffer
+            lines = buffer.split(b"\n")
+            buffer = lines[0]
+            for raw_line in reversed(lines[1:]):
+                if raw_line:
+                    yield raw_line.decode("utf-8", errors="ignore")
+        if buffer:
+            yield buffer.decode("utf-8", errors="ignore")
+
+
 def _read_log_entries(date_str, q_text="", types_set=None, sender_id=0, offset=0, limit=80, newest_first=True):
     date_str = str(date_str or "").strip()
     if not date_str or not _LOG_FILE_RE.match(f"{date_str}.log"):
@@ -538,7 +928,7 @@ def _read_log_entries(date_str, q_text="", types_set=None, sender_id=0, offset=0
     if not full_path.startswith(messages_dir + os.sep) or not os.path.isfile(full_path):
         return {"entries": [], "total": 0, "has_more": False, "offset": 0, "limit": int(limit or 80)}
 
-    q_text = str(q_text or "").strip().casefold()
+    query_terms = _split_log_query_terms(q_text)
     types_set = {str(item or "").strip() for item in (types_set or []) if str(item or "").strip()}
     try:
         sender_id = int(sender_id or 0)
@@ -555,51 +945,39 @@ def _read_log_entries(date_str, q_text="", types_set=None, sender_id=0, offset=0
 
     entries = []
     try:
-        with open(full_path, "r", encoding="utf-8") as fp:
-            for line in fp:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    item = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(item, dict):
-                    continue
-                event_type = str(item.get("event_type") or "")
-                text = str(item.get("text") or "")
-                if types_set and event_type not in types_set:
-                    continue
-                if sender_id and int(item.get("sender_id") or 0) != sender_id:
-                    continue
-                if q_text:
-                    haystack = "\n".join(
-                        [
-                            str(item.get("ts") or ""),
-                            event_type,
-                            str(item.get("sender_id") or ""),
-                            str(item.get("message_id") or ""),
-                            text,
-                        ]
-                    ).casefold()
-                    if q_text not in haystack:
-                        continue
-                entries.append(
-                    {
-                        "ts": str(item.get("ts") or ""),
-                        "event_type": event_type,
-                        "message_id": int(item.get("message_id") or 0),
-                        "sender_id": int(item.get("sender_id") or 0),
-                        "topic_id": int(item.get("topic_id") or 0),
-                        "reply_to_msg_id": int(item.get("reply_to_msg_id") or 0),
-                        "text": text,
-                    }
-                )
+        for line in _iter_log_lines(full_path, newest_first=newest_first):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(item, dict):
+                continue
+            event_type = str(item.get("event_type") or "")
+            text = str(item.get("text") or "")
+            if types_set and event_type not in types_set:
+                continue
+            if sender_id and int(item.get("sender_id") or 0) != sender_id:
+                continue
+            if not _log_entry_matches_query(item, query_terms):
+                continue
+            entries.append(
+                {
+                    "ts": str(item.get("ts") or ""),
+                    "event_type": event_type,
+                    "message_id": int(item.get("message_id") or 0),
+                    "sender_id": int(item.get("sender_id") or 0),
+                    "topic_id": int(item.get("topic_id") or 0),
+                    "reply_to_msg_id": int(item.get("reply_to_msg_id") or 0),
+                    "text": text,
+                    "buttons": item.get("buttons") if isinstance(item.get("buttons"), list) else [],
+                }
+            )
     except OSError:
         entries = []
 
-    if newest_first:
-        entries.reverse()
     total = len(entries)
     sliced = entries[offset: offset + limit]
     return {
@@ -667,7 +1045,7 @@ def get_identity_ui_snapshot(send_as_id):
         ):
             pending_tasks.append({
                 "msg_id": int(msg_id or 0),
-                "cmd": str((item or {}).get("cmd") or ""),
+                "cmd": get_pending_command(item),
                 "retry": int((item or {}).get("retry", 0) or 0),
                 "max_retry": int((item or {}).get("max_retry", 0) or 0),
                 "priority": str((item or {}).get("priority") or ""),
@@ -701,12 +1079,16 @@ def get_identity_ui_snapshot(send_as_id):
             "spiritual_root_type": profile.get("spiritual_root_type") or "",
             "spiritual_root_attrs": profile.get("spiritual_root_attrs") or "",
             "replica_professions": profile.get("replica_professions") or "",
+            "replica_gold_dps_allowed": is_replica_gold_dps_allowed(send_as_id),
+            "replica_gold_dps_enabled": get_replica_gold_dps_enabled(send_as_id),
             "pet_name": profile.get("pet_name") or "",
             "pet_warm_name": profile.get("pet_warm_name") or profile.get("pet_name") or "",
             "pet_trial_name": profile.get("pet_trial_name") or profile.get("pet_name") or "",
             "sect_name": profile.get("sect_name") or "",
             "xiuwei_current": int(profile.get("xiuwei_current") or 0),
             "xiuwei_max": int(profile.get("xiuwei_max") or 0),
+            "battle_power_text": profile.get("battle_power_text") or "",
+            "battle_power_value": int(profile.get("battle_power_value") or 0),
             "sect_updated_at": fmt_abs_ts(profile.get("sect_updated_at") or 0),
             "sect_refresh_pending": sect_refresh_pending,
             "sect_refresh_error": sect_refresh_error,
@@ -831,9 +1213,13 @@ def get_ui_snapshot(session_token=None):
             }
             for item in get_game_send_queue_snapshot()
         ],
+        "passive_inbox": get_passive_inbox_snapshot(),
         "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
         "storage_bag_sync": get_storage_bag_sync_snapshot(),
+        "storage_bag_transfer": get_storage_bag_transfer_snapshot(),
+        "dungeon_join": get_dungeon_join_snapshot(),
+        "replica": get_replica_config_snapshot(),
         "accounts": _get_runtime_accounts_snapshot(),
         "identities": identities,
         "config_needed": not get_game_group_id() or not get_game_bot_ids(),
@@ -1107,6 +1493,7 @@ async def ui_set_module_enabled(send_as_id, module_name, enabled):
         return False, f"未知身份: {send_as_id}"
     if module_name not in MODULE_KEY_MAP:
         return False, f"未知模块: {module_name}"
+    enabled = _coerce_ui_bool(enabled)
     ok, message = await set_module_enabled(module_name, enabled, send_as_id=send_as_id)
     if not ok:
         return False, message or f"切换失败: {module_name}"
@@ -1150,7 +1537,7 @@ async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
     field_name, display_name = feature_map.get(feature_name, ("", ""))
     if not field_name:
         return False, f"未知小世界子功能: {feature_name}"
-    enabled = bool(enabled)
+    enabled = _coerce_ui_bool(enabled)
     with use_identity(send_as_id):
         state[field_name] = enabled
         save_state()
@@ -1222,7 +1609,7 @@ async def ui_set_second_soul_choice_config(send_as_id, *, auto_choice_enabled=No
     changed = []
     with use_identity(send_as_id):
         if auto_choice_enabled is not None:
-            enabled = bool(auto_choice_enabled)
+            enabled = _coerce_ui_bool(auto_choice_enabled)
             state["second_soul_auto_choice_enabled"] = enabled
             changed.append(f"自动抉择={'开' if enabled else '关'}")
         if strategy:
@@ -1271,7 +1658,7 @@ async def ui_set_tianti_feature_enabled(send_as_id, feature_name, enabled):
 
     should_prime_gangfeng = False
     with use_identity(send_as_id):
-        enabled = bool(enabled)
+        enabled = _coerce_ui_bool(enabled)
         state[field_name] = enabled
         if feature_name == "gangfeng" and enabled and int(state.get("tianti_cycle_count", 0) or 0) >= 1:
             next_gangfeng_time = float(state.get("next_tianti_gangfeng_time", 0) or 0)
@@ -1319,7 +1706,7 @@ async def ui_set_taiyi_node_search_enabled(send_as_id, enabled):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
-    enabled = bool(enabled)
+    enabled = _coerce_ui_bool(enabled)
     with use_identity(send_as_id):
         state["taiyi_node_search_enabled"] = enabled
         save_state()
@@ -2006,7 +2393,7 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
     return True, message, topics
 
 
-async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target="", guanxing_monitor_targets=None, actor_id=None):
+async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target=None, guanxing_monitor_targets=None, actor_id=None):
     raw_group_id = (str(game_group_id or "")).strip()
     if not raw_group_id:
         return False, "游戏群聊 ID 不能为空"
@@ -2048,16 +2435,19 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
         if topic_id < 0:
             return False, "话题 ID 不能为负数"
 
-    auto_delete_enabled = bool(auto_delete_sent_messages)
-    tiandao_judgement_switch_enabled = bool(tiandao_judgement_enabled)
-    guanxing_monitor_switch_enabled = bool(guanxing_monitor_enabled)
-    raw_shift_target = str(guanxing_shift_target or "").strip()
+    auto_delete_enabled = _coerce_ui_bool(auto_delete_sent_messages)
+    tiandao_judgement_switch_enabled = _coerce_ui_bool(tiandao_judgement_enabled)
+    guanxing_monitor_switch_enabled = _coerce_ui_bool(guanxing_monitor_enabled)
+    shift_target_value = get_guanxing_shift_target() if guanxing_shift_target is None else guanxing_shift_target
+    raw_shift_target = str(shift_target_value or "").strip()
     if any(char.isspace() for char in raw_shift_target):
         return False, "观星改换目标不能包含空白字符"
     if raw_shift_target == "@":
         return False, "观星改换目标需填写用户名或 @用户名"
     if isinstance(guanxing_monitor_targets, str):
         raw_monitor_targets = [guanxing_monitor_targets]
+    elif guanxing_monitor_targets is None:
+        raw_monitor_targets = get_guanxing_monitor_targets()
     else:
         try:
             raw_monitor_targets = list(guanxing_monitor_targets or [])
@@ -2079,7 +2469,7 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     set_tiandao_judgement_enabled(tiandao_judgement_switch_enabled)
     set_guanxing_monitor_enabled(guanxing_monitor_switch_enabled)
     set_guanxing_monitor_targets(normalized_monitor_targets)
-    normalized_shift_target = set_guanxing_shift_target(guanxing_shift_target)
+    normalized_shift_target = set_guanxing_shift_target(shift_target_value)
     save_state()
     actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
     display_topic = str(topic_id) if topic_id > 0 else "未启用"
@@ -2415,7 +2805,7 @@ async def handle_ui_http(reader, writer):
                         result = await delete_official_schedule_records(
                             record_ids=payload.get("record_ids"),
                             batch_id=payload.get("batch_id"),
-                            delete_official=bool(payload.get("delete_official")),
+                            delete_official=_coerce_ui_bool(payload.get("delete_official")),
                         )
                         _write_json_result(
                             writer,
@@ -2462,7 +2852,51 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     ok, message, preview = ui_preview_storage_bag_transfer(payload)
-                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"preview": preview} if preview else None)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"preview": preview} if preview else None,
+                        include_snapshot=False,
+                    )
+            elif path == "/api/storage-bag-transfer-start":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, transfer = await ui_start_storage_bag_transfer(payload)
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
+            elif path == "/api/storage-bag-transfer-cancel":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, transfer = await ui_cancel_storage_bag_transfer()
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
+            elif path == "/api/replica-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = ui_set_replica_config(payload)
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/replica-gold-dps-toggle":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = ui_set_replica_gold_dps_enabled(send_as_id, _coerce_ui_bool(payload.get("enabled")))
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/basic-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -2595,7 +3029,7 @@ async def handle_ui_http(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    enabled = bool(payload.get("enabled"))
+                    enabled = _coerce_ui_bool(payload.get("enabled"))
                     ok, message = await toggle_global_enabled(enabled, source="ui", actor_id=(session or {}).get("sender_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
@@ -2607,7 +3041,7 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
-                    enabled = bool(payload.get("enabled"))
+                    enabled = _coerce_ui_bool(payload.get("enabled"))
                     if send_as_id in {None, ""}:
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
@@ -2621,7 +3055,7 @@ async def handle_ui_http(reader, writer):
                 else:
                     send_as_id = payload.get("send_as_id")
                     module_name = payload.get("module")
-                    enabled = bool(payload.get("enabled"))
+                    enabled = _coerce_ui_bool(payload.get("enabled"))
                     if send_as_id in {None, ""} or not module_name:
                         _write_json_bad_request(writer, "缺少 send_as_id 或 module 参数", auth_headers)
                     else:
@@ -2676,7 +3110,7 @@ async def handle_ui_http(reader, writer):
                 else:
                     send_as_id = payload.get("send_as_id")
                     feature_name = payload.get("feature")
-                    enabled = bool(payload.get("enabled"))
+                    enabled = _coerce_ui_bool(payload.get("enabled"))
                     if send_as_id in {None, ""} or not feature_name:
                         _write_json_bad_request(writer, "缺少 send_as_id 或 feature 参数", auth_headers)
                     else:
@@ -2769,7 +3203,7 @@ async def handle_ui_http(reader, writer):
                 else:
                     send_as_id = payload.get("send_as_id")
                     feature_name = payload.get("feature")
-                    enabled = bool(payload.get("enabled"))
+                    enabled = _coerce_ui_bool(payload.get("enabled"))
                     if send_as_id in {None, ""} or not feature_name:
                         _write_json_bad_request(writer, "缺少 send_as_id 或 feature 参数", auth_headers)
                     else:
@@ -2795,7 +3229,7 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     send_as_id = payload.get("send_as_id")
-                    enabled = bool(payload.get("enabled"))
+                    enabled = _coerce_ui_bool(payload.get("enabled"))
                     if send_as_id in {None, ""}:
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
@@ -2899,7 +3333,7 @@ async def handle_ui_http(reader, writer):
     except Exception as e:
         traceback.print_exc()
         try:
-            _write_response(writer, "HTTP/1.1 500 Internal Server Error", f"Internal Server Error\n{e}\n", content_type="text/plain; charset=utf-8")
+            _write_response(writer, "HTTP/1.1 500 Internal Server Error", "Internal Server Error\n", content_type="text/plain; charset=utf-8")
         except (ConnectionResetError, BrokenPipeError, OSError):
             pass
     finally:
@@ -2940,6 +3374,7 @@ __all__ = [
     "get_identity_ui_snapshot",
     "get_storage_bag_snapshot",
     "get_storage_bag_sync_snapshot",
+    "get_replica_config_snapshot",
     "get_ui_snapshot",
     "handle_ui_http",
     "html_escape",
@@ -2948,9 +3383,13 @@ __all__ = [
     "stop_ui_server",
     "ui_add_identity",
     "ui_logout_account",
+    "ui_cancel_storage_bag_transfer",
     "ui_preview_storage_bag_transfer",
+    "ui_start_storage_bag_transfer",
     "ui_start_storage_bag_sync",
     "ui_set_storage_bag_item_rule",
+    "ui_set_replica_config",
+    "ui_set_replica_gold_dps_enabled",
     "ui_refresh_forum_topics",
     "ui_refresh_identity_info",
     "ui_set_basic_config",

@@ -1,14 +1,27 @@
 import asyncio
-import json
 import signal
 import time
 import traceback
-from datetime import datetime
+from types import SimpleNamespace
 
 from telethon import events
 
-from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, MESSAGES_DIR, TZ_LOCAL, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
-from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
+from .app_message_log import _append_game_group_message_log, _append_replica_group_message_log
+from .app_runtime import (
+    _claim_runtime_event,
+    _get_event_reply_header_msg_id,
+    _has_runtime_message_consumed,
+    _mark_runtime_message_consumed,
+)
+from .app_replica import (
+    _handle_replica_group_command,
+    _handle_replica_join_reply,
+    _handle_replica_progress_event,
+    _handle_virtual_hall_auto_game_event,
+    _mark_replica_team_joined_from_text,
+)
+from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
+from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
 from .features.deep_retreat import (
@@ -18,6 +31,7 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
+from .features.dungeon_quiet import observe_dungeon_quiet_text
 from .features.guanxing import (
     handle_guanxing_external_shift_command,
     handle_guanxing_finish_broadcast,
@@ -27,18 +41,24 @@ from .features.guanxing import (
 )
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.concubine import (
+    handle_concubine_affinity_event,
     handle_concubine_dream_reply,
     handle_concubine_fragment_reply,
+    handle_concubine_gift_reply,
+    handle_concubine_greet_reply,
     handle_concubine_loss_broadcast,
     handle_concubine_puzzle_reply,
     handle_concubine_reacquire_reply,
     handle_concubine_status_reply,
+    handle_concubine_storage_bag_reply,
     handle_concubine_heart_reply,
     handle_concubine_tianji_reply,
+    is_concubine_affinity_event_candidate,
     restore_concubine_runtime,
     run_concubine_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, run_pet_scheduler
+from .features.passive_inbox import handle_passive_module_card
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.join_dungeon import handle_dungeon_join_bot_message, handle_dungeon_join_mention, record_game_group_message
@@ -64,7 +84,7 @@ from .features.stargazer import (
     handle_stargazer_sync_reply,
     run_stargazer_scheduler,
 )
-from .features.storage_bag import handle_storage_bag_reply
+from .features.storage_bag import handle_storage_bag_reply, handle_storage_bag_transfer_reply, is_storage_transfer_waiting_reply, run_storage_bag_transfer_scheduler
 from .features.tower import handle_tower_reply, run_tower_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
@@ -151,14 +171,12 @@ _bot_silence_auto_paused = False
 _identity_scheduler_task = None
 _identity_scheduler_started_at = 0.0
 _identity_scheduler_last_warn_at = 0.0
-_runtime_event_claims = {}
-_runtime_message_consumed = {}
-_runtime_log_claims = {}
 _suspected_game_bot_hits = {}
 
 IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
 UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
 UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
+HAN_TIANZUN_BOT_NAME = "韩天尊"
 
 BOT_REPLY_FAMILY_HINTS = {
     "checkin": ("点卯", "已点卯", "已经点过", "宗门"),
@@ -170,6 +188,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "tree_panel": ("灵眼之树", "灵树", "果实", "采摘", "成熟"),
     "tree_guard": ("守山", "护山", "攻山", "灵树"),
     "tree_harvest": ("采摘", "灵果", "木髓", "灵树"),
+    "wild_training": ("野外历练", "荒野深处", "山中灵机未复", "妖兽遭遇", "负伤而归", "灵机暗藏"),
     "stargazer_panel": ("观星台", "引星盘", "星辰"),
     "stargazer_guide": ("牵引", "星辰", "引星盘", "星力"),
     "stargazer_soothe": ("安抚", "狂暴星力", "引星盘"),
@@ -189,6 +208,8 @@ BOT_REPLY_FAMILY_HINTS = {
     "small_world_harvest": ("收割香火", "香火", "库存", "小世界"),
     "small_world_refine": ("神识淬炼", "香火", "神识", "小世界"),
     "concubine_status": ("侍妾", "道侣", "红尘", "情缘", "残图"),
+    "concubine_greet": ("侍妾", "情缘", "问安", "心意"),
+    "concubine_gift": ("侍妾", "情缘", "赠予", "灵石"),
     "concubine_dream": ("入梦寻图", "侍妾", "残图", "梦图感应"),
     "concubine_fragment": ("虚天残图", "残图", "残纹", "拼片"),
     "concubine_puzzle": ("拼图", "虚天残图", "拼合", "残纹"),
@@ -222,12 +243,65 @@ def _looks_like_game_bot_reply(text, family):
     return any(hint in raw_text for hint in hints)
 
 
+def _normalize_sender_display_name(text):
+    return "".join(str(text or "").split())
+
+
+def _entity_is_han_tianzun_bot(entity):
+    if entity is None or not bool(getattr(entity, "bot", False)):
+        return False
+    candidates = []
+    first_name = str(getattr(entity, "first_name", "") or "")
+    last_name = str(getattr(entity, "last_name", "") or "")
+    title = str(getattr(entity, "title", "") or "")
+    if first_name or last_name:
+        candidates.append(f"{first_name}{last_name}")
+        candidates.append(f"{first_name} {last_name}")
+    candidates.extend([first_name, title])
+    return any(_normalize_sender_display_name(name) == HAN_TIANZUN_BOT_NAME for name in candidates)
+
+
+async def _learn_game_bot_id(sender_id, reason):
+    sender_id = int(sender_id or 0)
+    if sender_id <= 0 or sender_id in set(get_game_bot_ids()):
+        return False
+    known_ids = set(get_game_bot_ids())
+    known_ids.add(sender_id)
+    set_game_bot_ids(sorted(known_ids))
+    save_state()
+    await send_audit_log(
+        f"🧩 识别到游戏 bot：{sender_id}｜{reason}，已加入 game_bot_ids。",
+        scope="global",
+        limit=220,
+    )
+    return True
+
+
+async def _is_game_bot_event(event):
+    sender_id = int(getattr(event, "sender_id", 0) or 0)
+    if sender_id in set(get_game_bot_ids()):
+        setattr(event, "_xiuxian_sender_is_game_bot", True)
+        return True
+    sender = getattr(event, "sender", None)
+    if sender is None:
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            sender = None
+    if _entity_is_han_tianzun_bot(sender):
+        setattr(event, "_xiuxian_sender_is_game_bot", True)
+        await _learn_game_bot_id(sender_id, "bot 名称=韩天尊")
+        return True
+    setattr(event, "_xiuxian_sender_is_game_bot", False)
+    return False
+
+
 async def _note_game_bot_activity():
     global _bot_silence_auto_paused
     bot_health_action = note_game_bot_message(time.time())
     if bot_health_action == "probe":
         if _bot_silence_auto_paused:
-            asyncio.create_task(_send_bot_health_probe())
+            _fire_and_forget(_send_bot_health_probe())
     elif bot_health_action == "recover":
         if _bot_silence_auto_paused and not get_global_enabled():
             await toggle_global_enabled(True, source="bot_health_recovery")
@@ -255,16 +329,8 @@ async def _record_suspected_game_bot(sender_id, family, text):
         )
 
     if int(item.get("count", 0) or 0) >= UNKNOWN_GAME_BOT_LEARN_THRESHOLD and not item.get("learned"):
-        known_ids = set(get_game_bot_ids())
-        known_ids.add(sender_id)
-        set_game_bot_ids(sorted(known_ids))
         item["learned"] = True
-        save_state()
-        await send_audit_log(
-            f"🧩 未登记游戏 bot {sender_id} 连续命中 {item['count']} 次，已自动加入 game_bot_ids。",
-            scope="global",
-            limit=220,
-        )
+        await _learn_game_bot_id(sender_id, f"连续命中 {item['count']} 次")
 
 
 async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
@@ -308,83 +374,6 @@ async def _send_bot_health_probe():
         await send_audit_log("🩺 天尊恢复探测已发送，等待确认回复后恢复普通调度。", scope="identity", send_as_id=identity_id, limit=220)
 
 
-def _gc_runtime_event_claims(now=None):
-    now = float(now if now is not None else time.time())
-    expired_keys = [key for key, expires_at in _runtime_event_claims.items() if float(expires_at or 0) <= now]
-    for key in expired_keys:
-        _runtime_event_claims.pop(key, None)
-
-
-def _claim_runtime_event(event, *, scope, ttl=120.0):
-    msg_id = int(getattr(event, "id", 0) or 0)
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    if msg_id <= 0 or chat_id == 0:
-        return True
-    now = time.time()
-    _gc_runtime_event_claims(now)
-    claim_key = f"{scope}:{chat_id}:{msg_id}"
-    if float(_runtime_event_claims.get(claim_key, 0) or 0) > now:
-        return False
-    _runtime_event_claims[claim_key] = now + float(ttl or 0)
-    return True
-
-
-def _gc_runtime_message_consumed(now=None):
-    now = float(now if now is not None else time.time())
-    expired_keys = [key for key, expires_at in _runtime_message_consumed.items() if float(expires_at or 0) <= now]
-    for key in expired_keys:
-        _runtime_message_consumed.pop(key, None)
-
-
-def _gc_runtime_log_claims(now=None):
-    now = float(now if now is not None else time.time())
-    expired_keys = [key for key, expires_at in _runtime_log_claims.items() if float(expires_at or 0) <= now]
-    for key in expired_keys:
-        _runtime_log_claims.pop(key, None)
-
-
-def _claim_runtime_log_event(event, *, event_type, ttl=120.0):
-    msg_id = int(getattr(event, "id", 0) or 0)
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    event_type = str(event_type or "message").strip() or "message"
-    if msg_id <= 0 or chat_id == 0:
-        return True
-    now = time.time()
-    _gc_runtime_log_claims(now)
-    claim_key = f"{event_type}:{chat_id}:{msg_id}"
-    if float(_runtime_log_claims.get(claim_key, 0) or 0) > now:
-        return False
-    _runtime_log_claims[claim_key] = now + float(ttl or 0)
-    return True
-
-
-def _get_runtime_message_consumed_key(event, family):
-    msg_id = int(getattr(event, "id", 0) or 0)
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    family = str(family or "").strip()
-    if msg_id <= 0 or chat_id == 0 or not family:
-        return ""
-    return f"{family}:{chat_id}:{msg_id}"
-
-
-def _has_runtime_message_consumed(event, family):
-    claim_key = _get_runtime_message_consumed_key(event, family)
-    if not claim_key:
-        return False
-    now = time.time()
-    _gc_runtime_message_consumed(now)
-    return float(_runtime_message_consumed.get(claim_key, 0) or 0) > now
-
-
-def _mark_runtime_message_consumed(event, family, *, ttl=120.0):
-    claim_key = _get_runtime_message_consumed_key(event, family)
-    if not claim_key:
-        return
-    now = time.time()
-    _gc_runtime_message_consumed(now)
-    _runtime_message_consumed[claim_key] = now + float(ttl or 0)
-
-
 def _is_identity_owner_event(event, send_as_id):
     send_as_id = int(send_as_id or 0)
     if send_as_id <= 0:
@@ -406,38 +395,6 @@ def _is_identity_owner_event(event, send_as_id):
     return getattr(event, "client", None) is expected_client
 
 
-def _append_game_group_message_log(event, *, event_type="message"):
-    if event.chat_id != get_game_group_id():
-        return
-    if not _claim_runtime_log_event(event, event_type=event_type):
-        return
-    now = datetime.now(TZ_LOCAL)
-    log_file = f"{MESSAGES_DIR}/{now.strftime('%Y-%m-%d')}.log"
-    reply_header = getattr(event, "reply_to", None)
-    reply_to_msg_id = int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
-    topic_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0)
-    payload = {
-        "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
-        "event_type": event_type,
-        "message_id": int(getattr(event, "id", 0) or 0),
-        "chat_id": int(getattr(event, "chat_id", 0) or 0),
-        "sender_id": int(getattr(event, "sender_id", 0) or 0),
-        "topic_id": topic_id,
-        "reply_to_msg_id": reply_to_msg_id,
-        "text": event.raw_text or "",
-    }
-    try:
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        print(traceback.format_exc())
-
-
-def _get_event_reply_header_msg_id(event):
-    reply_header = getattr(event, "reply_to", None)
-    return int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
-
-
 async def _resolve_event_reply(event):
     try:
         reply_to = await event.get_reply_message()
@@ -451,7 +408,10 @@ async def _resolve_event_reply(event):
             reply_to = None
         else:
             raise
-    reply_context = get_reply_context(reply_to, reply_to_msg_id=_get_event_reply_header_msg_id(event))
+    reply_header_msg_id = _get_event_reply_header_msg_id(event)
+    reply_context = get_reply_context(reply_to, reply_to_msg_id=reply_header_msg_id)
+    if reply_to is None and reply_header_msg_id > 0:
+        reply_to = SimpleNamespace(id=reply_header_msg_id, raw_text="")
     return reply_to, reply_context
 
 
@@ -562,6 +522,13 @@ async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
         await _run_until_handled_for_enabled_identities(handle_nanlong_result_broadcast, text, now, event)
 
 
+async def _dispatch_concubine_affinity_fallbacks(event, text, now):
+    if not is_concubine_affinity_event_candidate(text):
+        return
+    if _claim_runtime_event(event, scope="concubine_affinity"):
+        await _run_until_handled_for_enabled_identities(handle_concubine_affinity_event, text, now, event)
+
+
 async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="second_soul_return"):
         await handle_second_soul_return_broadcast(text, now)
@@ -589,6 +556,10 @@ async def _dispatch_message_edited_guanxing_monitor(event, text, now):
     await _dispatch_message_edited_broadcasts(event, text, now, (("guanxing_monitor_broadcast_edit", handle_guanxing_monitor_broadcast),))
 
 
+async def _dispatch_message_edited_tiandao_judgement_prompt(event, text, now):
+    await _dispatch_message_edited_broadcasts(event, text, now, (("tiandao_judgement_prompt_edit", handle_tiandao_judgement_prompt),))
+
+
 async def _dispatch_message_edited_concubine_loss(event, text, now):
     if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
         await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
@@ -611,6 +582,7 @@ _MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS = {
 }
 _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS = {
     handle_ranch_return_broadcast,
+    handle_tiandao_judgement_prompt,
 }
 
 
@@ -670,8 +642,10 @@ async def _run_identity_schedulers(now):
             continue
         with use_identity(identity_id):
             if is_identity_weak(identity_id, now):
+                await run_tree_bootstrap_check(now)
                 continue
             if has_phaseful_summary_block(now):
+                await run_tree_bootstrap_check(now)
                 continue
             for scheduler in ordinary_schedulers:
                 await scheduler(now)
@@ -680,6 +654,7 @@ async def _run_identity_schedulers(now):
 async def _run_global_schedulers(now):
     await run_guanxing_monitor_scheduler(now)
     await run_guanxing_scheduler(now)
+    await run_storage_bag_transfer_scheduler(now)
     await run_tiandao_judgement_scheduler(now)
     await run_tianji_quiz_scheduler(now)
 
@@ -737,23 +712,33 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 
     family_scope = str(matched_family or "unknown").strip() or "unknown"
     kind_scope = str(event_kind or "message").strip() or "message"
-    if not _claim_runtime_event(event, scope=f"routed_reply:{kind_scope}:{routed_identity_id}:{family_scope}"):
+    edit_text_scope = f":{hash(str(text or ''))}" if kind_scope == "edit" else ""
+    if not _claim_runtime_event(event, scope=f"routed_reply:{kind_scope}:{routed_identity_id}:{family_scope}{edit_text_scope}"):
         return False
 
     # In multi-client mode a bot reply can be delivered to a different account
     # client than the one that sent the command. The reply_to message id is the
     # authoritative owner here; requiring the owner client would leave pending
     # tasks uncleared and trigger retry storms.
-    already_consumed = bool(matched_family) and _has_runtime_message_consumed(event, matched_family)
+    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {"concubine_heart", "wild_training"}
+    already_consumed = bool(matched_family) and not allow_reprocessed_edit and _has_runtime_message_consumed(event, matched_family)
     with use_identity(routed_identity_id):
-        is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id)
-        clear_result = clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
+        is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id) or (
+            int((reply_context or {}).get("reply_to_msg_id") or 0) > 0
+            and int((reply_context or {}).get("send_as_id") or 0) == routed_identity_id
+        )
+        is_nonterminal_waiting_reply = (
+            matched_family in {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift"}
+            and is_storage_transfer_waiting_reply(text)
+        )
+        clear_result = None if is_nonterminal_waiting_reply else clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
         root_msg_id = int((reply_context or {}).get("root_msg_id") or (clear_result or {}).get("reply_to_msg_id") or 0)
         if root_msg_id <= 0:
             root_msg_id = int(getattr(reply_to, "id", 0) or 0)
         if matched_family:
             track_reply_chain_message(event.id, routed_identity_id, matched_family, root_msg_id=root_msg_id)
-            close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply", now=now)
+            if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
+                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply", now=now)
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
@@ -783,12 +768,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_tree_harvest_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
 
         if not already_consumed and matched_family != "stargazer_sync":
+            handled_any = await _handle_replica_join_reply(text, now, reply_to, matched_family=matched_family, event=event) or handled_any
             handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_warm_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_ranch_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_sect_teach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_tower_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -803,6 +789,10 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_concubine_reacquire_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_concubine_tianji_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_concubine_heart_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
+            handled_any = await handle_concubine_greet_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_gift_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_concubine_affinity_event(text, now, event, matched_family=matched_family) or handled_any
             handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
@@ -820,7 +810,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 handled_any = handled_any or yuanying_done
             if not yuanying_done:
                 handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_tree_exception_prompt(text) or handled_any
+            handled_any = await handle_tree_exception_prompt(text, now) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_query_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_manifest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -831,6 +821,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_search_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_define_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_storage_bag_transfer_reply(text, now, reply_to, matched_family=matched_family, reply_context=reply_context) or handled_any
             handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if matched_family and handled_any and not already_consumed:
@@ -842,6 +833,10 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 
 @client.on(events.NewMessage())
 async def on_message(event):
+    if _append_replica_group_message_log(event, event_type="message"):
+        await _handle_replica_group_command(event)
+        return
+
     _append_game_group_message_log(event, event_type="message")
 
     if _claim_runtime_event(event, scope="log_group_command"):
@@ -851,6 +846,7 @@ async def on_message(event):
     if event.chat_id != get_game_group_id():
         return
     now = time.time()
+    sender_is_game_bot = await _is_game_bot_event(event)
     record_game_group_message(event, now=now, event_type="message")
 
     # bot 健康监测：记录 . 开头指令的触发时间
@@ -859,13 +855,14 @@ async def on_message(event):
     if raw_text.startswith(".") and sender_id in set(int(identity_id) for identity_id in get_identity_ids()) and get_global_enabled():
         note_game_command_observed(raw_text)
 
-    if event.sender_id not in set(get_game_bot_ids()):
+    if not sender_is_game_bot:
         text = event.raw_text or ""
         if sender_id in set(int(identity_id) for identity_id in get_identity_ids()):
             observe_phaseful_identity_message(sender_id, text, now=now, msg_id=event.id)
             _track_manual_game_command(sender_id, text, event.id)
         try:
             await handle_dungeon_join_mention(event, text, now)
+            await _handle_replica_progress_event(event, now, event_type="message")
             if await _handle_suspected_game_bot_reply(event, text, now):
                 return
             if _claim_runtime_event(event, scope="guanxing_external_shift"):
@@ -878,12 +875,16 @@ async def on_message(event):
     await _note_game_bot_activity()
 
     text = event.raw_text or ""
+    observe_dungeon_quiet_text(text, now=now)
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
 
         await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to)
         await handle_dungeon_join_bot_message(event, text, now)
+        _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
+        await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="message")
+        await _handle_replica_progress_event(event, now, event_type="message")
 
         if await _run_claimed_prompt_handler("quiz_prompt", handle_quiz_prompt, text, now, event):
             return
@@ -897,6 +898,7 @@ async def on_message(event):
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
             if handled_reply:
+                await handle_passive_module_card(text, now, reply_context=reply_context)
                 return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
@@ -904,7 +906,10 @@ async def on_message(event):
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
+        await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
+        await handle_passive_identity_profile_card(text, now)
+        await handle_passive_module_card(text, now, reply_context=reply_context)
         await handle_storage_bag_reply(text, now, reply_to)
 
     except Exception:
@@ -913,11 +918,15 @@ async def on_message(event):
 
 @client.on(events.MessageEdited())
 async def on_message_edited(event):
+    if _append_replica_group_message_log(event, event_type="edit"):
+        return
+
     _append_game_group_message_log(event, event_type="edit")
 
     if event.chat_id != get_game_group_id():
         return
-    if event.sender_id not in set(get_game_bot_ids()):
+    sender_is_game_bot = await _is_game_bot_event(event)
+    if not sender_is_game_bot:
         try:
             now = time.time()
             text = event.raw_text or ""
@@ -930,6 +939,7 @@ async def on_message_edited(event):
 
     now = time.time()
     text = event.raw_text or ""
+    observe_dungeon_quiet_text(text, now=now)
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
@@ -938,6 +948,9 @@ async def on_message_edited(event):
         await _dispatch_message_edited_concubine_loss(event, text, now)
         await _dispatch_message_edited_phaseful_summaries(event, text, now)
         await handle_dungeon_join_bot_message(event, text, now)
+        _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
+        await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")
+        await _handle_replica_progress_event(event, now, event_type="edit")
 
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(
@@ -949,13 +962,18 @@ async def on_message_edited(event):
                 event_kind="edit",
             )
             if handled_reply:
+                await handle_passive_module_card(text, now, reply_context=reply_context)
                 return
 
         await _dispatch_message_edited_tree_panel(event, text, now)
         await _dispatch_message_edited_stargazer_panel(event, text, now)
         await _dispatch_message_edited_guanxing_monitor(event, text, now)
+        await _dispatch_message_edited_tiandao_judgement_prompt(event, text, now)
         await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
+        await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
+        await handle_passive_identity_profile_card(text, now)
+        await handle_passive_module_card(text, now, reply_context=reply_context)
     except Exception:
         print(traceback.format_exc())
 

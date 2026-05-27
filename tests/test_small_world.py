@@ -20,7 +20,7 @@ if not ENV_PATH.exists():
                 "TG_PROXY_HOST=127.0.0.1:7890",
                 "LOG_GROUP_ID=0",
                 "LOG_SEND_MODE=account",
-                "ADMIN_ID=0",
+                "ADMIN_ID=1",
                 "CHAOGU_UI_HOST=127.0.0.1",
                 "CHAOGU_UI_PORT=3030",
             ]
@@ -36,7 +36,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import small_world
+from model.features import small_world, storage_bag
 
 
 class _StateIsolationMixin:
@@ -191,6 +191,125 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             preach_mock.assert_not_awaited()
             audit_mock.assert_awaited_once()
+
+    async def test_incense_theft_broadcast_backs_off_chain(self):
+        send_as_id = 8659059195
+        now = 5000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="wxjerry", label="wxjerry")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_phase"] = "refine_sent"
+            state_module.state["small_world_refine_msg_id"] = 123
+            state_module.state["small_world_incense_stock"] = 8
+            state_module.state["next_small_world_time"] = now + 60
+
+            with (
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+                patch.object(small_world.random, "uniform", return_value=600),
+            ):
+                handled = await small_world.handle_small_world_disaster_broadcast(
+                    "⚡ 【小世界·天降浩劫】 ⚡\n"
+                    "道友 @wxjerry 的小世界遭遇 【邪神蛊惑】！\n"
+                    "有域外邪神潜入小世界传播伪教，窃取了你的香火！\n"
+                    "❌ 惨重代价: 库存香火损失 3 点\n"
+                    "请速速查看 .小世界 并安抚信徒！",
+                    now,
+                    event=None,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_refine_msg_id"])
+            self.assertEqual(5, state_module.state["small_world_incense_stock"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+            self.assertIn("库存香火失窃 3 点", state_module.state["small_world_last_error"])
+            audit_mock.assert_awaited_once()
+
+    async def test_incense_theft_for_other_identity_is_ignored(self):
+        send_as_id = 8659059196
+        now = 6000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="wxjerry", label="wxjerry")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_incense_stock"] = 8
+
+            with (
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_disaster_broadcast(
+                    "⚡ 【小世界·天降浩劫】 ⚡\n"
+                    "道友 @someone_else 的小世界遭遇 【邪神蛊惑】！\n"
+                    "有域外邪神潜入小世界传播伪教，窃取了你的香火！\n"
+                    "❌ 惨重代价: 库存香火损失 3 点\n"
+                    "请速速查看 .小世界 并安抚信徒！",
+                    now,
+                    event=None,
+                )
+
+            self.assertFalse(handled)
+            self.assertEqual(8, state_module.state["small_world_incense_stock"])
+            audit_mock.assert_not_awaited()
+
+    async def test_manifest_success_deducts_cached_storage_cost_from_panel(self):
+        send_as_id = 8659059197
+        now = 7000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【清源子的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 815.83\n"
+            "🏺 香火库存: 4\n\n"
+            "🔥 凡人祈愿：瘟疫\n"
+            "⚡ 显灵消耗: 清灵丹x2\n"
+            "请使用 .显灵 响应祈愿，或忽略之。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.set_storage_bag_records({
+                str(send_as_id): {
+                    "updated_at": 6900,
+                    "items": {"清灵丹": 5},
+                    "sections": {"法宝/丹药/杂物": {"清灵丹": 5}},
+                }
+            })
+
+            with (
+                patch.object(small_world, "_send_manifest", new=AsyncMock(return_value=True)) as manifest_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled_panel = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled_panel)
+            manifest_mock.assert_awaited_once()
+            self.assertEqual("清灵丹x2", state_module.state["small_world_manifest_cost_text"])
+
+            with (
+                patch.object(small_world, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(small_world.random, "uniform", return_value=60),
+            ):
+                handled_manifest = await small_world.handle_small_world_manifest_reply(
+                    "显灵成功，凡人祈愿已平息。",
+                    now + 1,
+                    reply_to=None,
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled_manifest)
+            record = state_module.get_storage_bag_records()[str(send_as_id)]
+            self.assertEqual(3, record["items"]["清灵丹"])
+            self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
 
 
 if __name__ == "__main__":

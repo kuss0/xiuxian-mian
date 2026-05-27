@@ -21,6 +21,10 @@ RANCH_RETURN_SUMMARY_PREFIX = "【灵兽归来】"
 RANCH_RETURN_INITIAL_TEXT = "已自行归来"
 RANCH_RETURN_READY_GRACE_SEC = 30 * 60
 RANCH_RETURN_WAIT_LOG_INTERVAL_SEC = 15 * 60
+RANCH_RETURN_MAX_WAIT_SEC = 6 * 3600
+RANCH_RETURN_STALE_REPROBE_MIN_SEC = 2 * 60
+RANCH_RETURN_STALE_REPROBE_MAX_SEC = 3 * 60
+RANCH_STALE_RETURN_ERROR_PREFIX = "灵兽归来广播等待超时"
 RE_WHITESPACE = re.compile(r"\s+")
 
 
@@ -61,6 +65,29 @@ def _is_ranch_return_ready(now):
         return False
     next_ranch_time = float(state.get("next_ranch_time", 0) or 0)
     return next_ranch_time <= 0 or float(now or 0) >= next_ranch_time - RANCH_RETURN_READY_GRACE_SEC
+
+
+def _is_ranch_return_wait_stale(now):
+    if not state.get("ranch_return_pending"):
+        return False
+    wait_since = float(state.get("ranch_return_wait_since", 0) or 0)
+    if wait_since > 0 and float(now or 0) - wait_since >= RANCH_RETURN_MAX_WAIT_SEC:
+        return True
+    next_ranch_time = float(state.get("next_ranch_time", 0) or 0)
+    return next_ranch_time > 0 and float(now or 0) - next_ranch_time >= 2 * 3600
+
+
+def _schedule_ranch_return_reprobe(now):
+    state["next_ranch_time"] = float(now + random.uniform(RANCH_RETURN_STALE_REPROBE_MIN_SEC, RANCH_RETURN_STALE_REPROBE_MAX_SEC))
+    return state["next_ranch_time"]
+
+
+def _is_ranch_wrong_sect_text(text):
+    raw_text = str(text or "")
+    return (
+        RANCH_WRONG_SECT_TEXT in raw_text
+        or ("并非万灵宗弟子" in raw_text and ("御兽" in raw_text or "灵兽" in raw_text or "万兽谷" in raw_text))
+    )
 
 
 def _match_ranch_return_identity_ids(text, now):
@@ -146,7 +173,10 @@ async def handle_ranch_reply(text, now, reply_to, matched_family=None):
         state["ranch_last_result"] = "放养成功，等待灵兽归来"
         _set_ranch_return_pending(now)
     elif RANCH_NO_IDLE_PET_TEXT in raw_text:
-        if state.get("ranch_return_pending"):
+        stale_return_probe = str(state.get("ranch_last_error") or "").startswith(RANCH_STALE_RETURN_ERROR_PREFIX)
+        if state.get("ranch_return_pending") or stale_return_probe:
+            if not state.get("ranch_return_pending"):
+                _set_ranch_return_pending(now)
             state["ranch_reply_to_msg_id"] = 0
             state["ranch_reply_due_at"] = 0
             state["ranch_last_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
@@ -157,11 +187,11 @@ async def handle_ranch_reply(text, now, reply_to, matched_family=None):
             return True
         state["ranch_last_result"] = "无休息中灵兽"
         _clear_ranch_return_wait()
-    elif RANCH_WRONG_SECT_TEXT in raw_text:
+    elif _is_ranch_wrong_sect_text(raw_text):
         state["ranch_enabled"] = False
         clear_ranch_state(persist=False, keep_last_error=False)
         state["ranch_last_result"] = "非万灵宗弟子"
-        state["ranch_last_error"] = RANCH_WRONG_SECT_TEXT
+        state["ranch_last_error"] = raw_text[:120] or RANCH_WRONG_SECT_TEXT
         _clear_ranch_return_wait()
         save_state()
         await send_audit_log("⚠️ 当前身份并非万灵宗弟子，已暂停放养模块。", scope="identity")
@@ -233,6 +263,18 @@ async def run_ranch_scheduler(now):
     if now < float(state.get("next_ranch_time", 0) or 0):
         return
     if state.get("ranch_return_pending"):
+        if _is_ranch_return_wait_stale(now):
+            wait_since = float(state.get("ranch_return_wait_since", 0) or 0)
+            _clear_ranch_return_wait()
+            state["ranch_last_result"] = "归来广播失联，准备重新探测"
+            state["ranch_last_error"] = f"{RANCH_STALE_RETURN_ERROR_PREFIX}，等待起点={fmt_abs_ts(wait_since)}"
+            next_time = _schedule_ranch_return_reprobe(now)
+            save_state()
+            await send_audit_log(
+                f"⚠️ 放养归来广播等待超过 {int(RANCH_RETURN_MAX_WAIT_SEC // 3600)} 小时，{fmt_remaining(next_time)} 后重新探测 .一键放养。",
+                scope="identity",
+            )
+            return
         last_notified_at = float(state.get("ranch_return_last_notified_at", 0) or 0)
         if last_notified_at <= 0 or now - last_notified_at >= RANCH_RETURN_WAIT_LOG_INTERVAL_SEC:
             state["ranch_return_last_notified_at"] = now

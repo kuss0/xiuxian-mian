@@ -21,7 +21,7 @@ if not ENV_PATH.exists():
                 "TG_PROXY_HOST=127.0.0.1:7890",
                 "LOG_GROUP_ID=0",
                 "LOG_SEND_MODE=account",
-                "ADMIN_ID=0",
+                "ADMIN_ID=1",
                 "CHAOGU_UI_HOST=127.0.0.1",
                 "CHAOGU_UI_PORT=3030",
             ]
@@ -37,7 +37,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import pet
+from model.features import pet, storage_bag
 
 
 class _StateIsolationMixin:
@@ -66,12 +66,26 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(send_as_id):
             state_module.state["pet_warm_enabled"] = True
-            with patch.object(pet.random, "uniform", return_value=120), patch.object(pet, "save_state"):
+            state_module.set_storage_bag_records({
+                str(send_as_id): {
+                    "updated_at": 900,
+                    "items": {"灵石": 5000, "养魂木": 5},
+                    "sections": {"材料": {"灵石": 5000, "养魂木": 5}},
+                }
+            })
+            with (
+                patch.object(pet.random, "uniform", return_value=120),
+                patch.object(pet, "save_state"),
+                patch.object(storage_bag, "save_state"),
+            ):
                 handled = await pet.handle_pet_warm_reply(text, now, None, matched_family="pet_warm")
 
             self.assertTrue(handled)
             self.assertEqual(now + pet.PET_WARM_CD + 120, state_module.state["next_pet_warm_time"])
             self.assertEqual("", state_module.state["pet_warm_last_error"])
+            record = state_module.get_storage_bag_records()[str(send_as_id)]
+            self.assertEqual(2000, record["items"]["灵石"])
+            self.assertEqual(2, record["items"]["养魂木"])
 
     async def test_warm_cd_reply_uses_wait_time(self):
         send_as_id = 8659059192

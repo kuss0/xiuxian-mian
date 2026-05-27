@@ -16,6 +16,7 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from .storage_bag import apply_storage_bag_item_text_delta
 
 SMALL_WORLD_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 SMALL_WORLD_CHAIN_COMMANDS = {
@@ -43,6 +44,7 @@ SMALL_WORLD_PREACH_FAITH_THRESHOLD = 92
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
 RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇")
 RE_SMALL_WORLD_FAITH_DAMAGE = re.compile(r"惨重代价\s*[:：]\s*信仰(?:崩塌|动摇)\s*-\s*\d+\s*点")
+RE_SMALL_WORLD_INCENSE_LOSS = re.compile(r"惨重代价\s*[:：]\s*库存香火损失\s*(\d+)\s*点")
 RE_SMALL_WORLD_PREACH_PANEL = re.compile(r"【神音浩荡】")
 RE_SMALL_WORLD_FAITH_VALUE = re.compile(r"信仰值大幅提升至\s*(\d+)\s*[！!]")
 
@@ -102,6 +104,7 @@ def _clear_preach_pending():
 def _clear_chain_pending():
     state["small_world_query_msg_id"] = 0
     state["small_world_manifest_msg_id"] = 0
+    state["small_world_manifest_cost_text"] = ""
     state["small_world_harvest_msg_id"] = 0
     state["small_world_refine_msg_id"] = 0
     if _phase() in SMALL_WORLD_CHAIN_PENDING or _phase() in {"harvest_sent", "refine_sent"}:
@@ -125,6 +128,15 @@ def _schedule_next_cycle(now):
 
 def _schedule_short_retry(now):
     return _schedule_after(now, 10 * 60, 30 * 60)
+
+
+def _schedule_theft_backoff(now, loss_amount):
+    _clear_chain_pending()
+    stock = max(0, int(state.get("small_world_incense_stock", 0) or 0) - max(0, int(loss_amount or 0)))
+    state["small_world_incense_stock"] = stock
+    due_at = _schedule_short_retry(now)
+    state["small_world_last_error"] = f"库存香火失窃 {int(loss_amount or 0)} 点，暂停链路后复查"
+    return due_at
 
 
 def _schedule_initial_check(now):
@@ -458,6 +470,7 @@ async def _handle_panel_decision(now, panel):
         state["small_world_refresh_count"] = 0
         _clear_chain_pending()
         if state.get("small_world_manifest_enabled"):
+            state["small_world_manifest_cost_text"] = str(panel.get("manifest_cost") or "").strip()
             save_state()
             return await _send_manifest(now)
         _schedule_next_cycle(now)
@@ -554,11 +567,26 @@ async def handle_small_world_disaster_broadcast(text, now, event):
         return False
 
     raw_text = text or ""
-    if not RE_SMALL_WORLD_DISASTER.search(raw_text) or not RE_SMALL_WORLD_FAITH_DAMAGE.search(raw_text):
+    if not RE_SMALL_WORLD_DISASTER.search(raw_text):
         return False
 
     identity_id = _find_small_world_identity_id(raw_text)
     if identity_id is None or identity_id != get_current_identity_id():
+        return False
+
+    incense_loss = RE_SMALL_WORLD_INCENSE_LOSS.search(raw_text)
+    if incense_loss:
+        loss_amount = int(incense_loss.group(1))
+        due_at = _schedule_theft_backoff(now, loss_amount)
+        save_state()
+        await send_audit_log(
+            f"⚠️ 小世界库存香火失窃 {loss_amount} 点，已暂停当前链路，{fmt_time_after(max(0, due_at - now))} 后复查。",
+            scope="identity",
+            limit=240,
+        )
+        return True
+
+    if not RE_SMALL_WORLD_FAITH_DAMAGE.search(raw_text):
         return False
 
     if _has_active_small_world_pending(now):
@@ -650,6 +678,13 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
         return True
 
     if "显灵成功" in raw_text or "显灵失败" in raw_text:
+        if "显灵成功" in raw_text:
+            apply_storage_bag_item_text_delta(
+                get_current_identity_id(),
+                state.get("small_world_manifest_cost_text"),
+                sign=-1,
+                allow_plain=True,
+            )
         _clear_chain_pending()
         state["small_world_refresh_count"] = 0
         state["small_world_last_error"] = "" if "显灵成功" in raw_text else "显灵失败，停止本轮"

@@ -22,7 +22,7 @@ from urllib import parse, request
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RUNTIME_ROOT = Path("/opt/xiuxian-main")
+DEFAULT_RUNTIME_ROOT = PROJECT_ROOT
 DEFAULT_PROTECTED_NAMES = ("WalterWA2000", "WA2000", "wa2000")
 DEFAULT_TOP_HOLDERS = 4
 DEFAULT_CHUNK_LIMIT = 3500

@@ -2,7 +2,7 @@ import re
 import time
 from collections import deque
 
-from ..config import CMD_DUNGEON_JOIN
+from ..config import CMD_DUNGEON_HUANGLONG_JOIN, CMD_DUNGEON_JOIN, CMD_DUNGEON_ZHUIMO_JOIN
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
@@ -18,8 +18,16 @@ from ..state import (
 from ..timing import has_wait_time, parse_wait_time
 
 
-# 自动副本只允许向游戏群发 ".加入副本 <id>"。
+# 自动副本只允许向游戏群发加入副本类指令，不能在游戏群补充说明。
 # CD、状态、查询、满员/失败统计都必须留在日志群或 UI，不能在游戏群补充说明。
+DUNGEON_KIND_VIRTUAL_HALL = "virtual_hall"
+DUNGEON_KIND_ZHUIMO = "zhuimo"
+DUNGEON_KIND_HUANGLONG = "huanglong"
+DUNGEON_KIND_META = {
+    DUNGEON_KIND_VIRTUAL_HALL: {"name": "虚天殿", "join_command": CMD_DUNGEON_JOIN},
+    DUNGEON_KIND_ZHUIMO: {"name": "坠魔谷", "join_command": CMD_DUNGEON_ZHUIMO_JOIN},
+    DUNGEON_KIND_HUANGLONG: {"name": "黄龙山", "join_command": CMD_DUNGEON_HUANGLONG_JOIN},
+}
 DUNGEON_INBOX_TTL_SEC = 5 * 60
 DUNGEON_MATCH_WINDOW_SEC = 60
 DUNGEON_INBOX_MAX_ITEMS = 3000
@@ -31,9 +39,11 @@ DUNGEON_SUCCESS_COOLDOWN_SEC = 125 * 60
 DUNGEON_COOLDOWN_BUFFER_SEC = 30
 DUNGEON_FAILURE_GRACE_SEC = 3 * 60
 
-_DUNGEON_ID_RE = re.compile(r"(?:副本ID\s*[:：]\s*|\.加入副本\s+)(\d+)")
-_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{3,32}")
-_JOINED_RE = re.compile(r"(@[A-Za-z0-9_]{3,32})\s*已成功加入副本\s*(\d+)")
+_JOIN_COMMANDS_RE = "|".join(re.escape(meta["join_command"]) for meta in DUNGEON_KIND_META.values())
+_DUNGEON_ID_RE = re.compile(rf"(?:(?:副本|房间)ID\s*[:：]\s*|(?:{_JOIN_COMMANDS_RE})\s+)(\d+)")
+_USERNAME_PATTERN = r"@[^\s，。！？、；：:,.!?()（）【】\[\]]+"
+_USERNAME_RE = re.compile(_USERNAME_PATTERN)
+_JOINED_RE = re.compile(rf"({_USERNAME_PATTERN})\s*已成功加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?)")
 _ROOM_DISSOLVED_RE = re.compile(r"已将副本房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]\s*解散")
 _inbox = deque()
 _by_msg_id = {}
@@ -123,7 +133,8 @@ def record_game_group_message(event, *, now=None, event_type="message"):
         "reply_to_msg_id": _get_reply_to_msg_id(event),
         "text": getattr(event, "raw_text", "") or "",
         "date": now,
-        "sender_is_game_bot": int(getattr(event, "sender_id", 0) or 0) in set(get_game_bot_ids()),
+        "sender_is_game_bot": bool(getattr(event, "_xiuxian_sender_is_game_bot", False))
+        or int(getattr(event, "sender_id", 0) or 0) in set(get_game_bot_ids()),
     }
     existing = _by_msg_id.get(msg_id)
     if existing:
@@ -137,10 +148,33 @@ def record_game_group_message(event, *, now=None, event_type="message"):
 
 def _parse_dungeon_id(text):
     raw = str(text or "")
-    if "虚天殿" not in raw and "加入副本" not in raw and "副本ID" not in raw:
+    if (
+        "虚天殿" not in raw
+        and "坠魔谷" not in raw
+        and "黄龙山" not in raw
+        and "加入副本" not in raw
+        and "副本ID" not in raw
+        and "房间ID" not in raw
+    ):
         return ""
     match = _DUNGEON_ID_RE.search(raw)
     return str(match.group(1) or "").strip() if match else ""
+
+
+def _infer_dungeon_kind(text):
+    raw = str(text or "")
+    for kind, meta in DUNGEON_KIND_META.items():
+        if meta["name"] in raw or meta["join_command"] in raw:
+            return kind
+    if "副本ID" in raw or "加入副本" in raw:
+        return DUNGEON_KIND_VIRTUAL_HALL
+    return DUNGEON_KIND_VIRTUAL_HALL
+
+
+def _format_dungeon_join_command(dungeon_id, dungeon_kind=""):
+    kind = dungeon_kind if dungeon_kind in DUNGEON_KIND_META else DUNGEON_KIND_VIRTUAL_HALL
+    command = DUNGEON_KIND_META[kind]["join_command"]
+    return f"{command} {str(dungeon_id or '').strip()}"
 
 
 def _identity_usernames(identity_id):
@@ -167,6 +201,24 @@ def _extract_usernames(text):
         if username and username not in usernames:
             usernames.append(username)
     return usernames
+
+
+def _extract_team_section(text):
+    raw_text = str(text or "")
+    if "当前队伍" not in raw_text:
+        return ""
+    team_section = raw_text.split("当前队伍", 1)[1]
+    for marker in ("【卦象词条】", "【", "当前契合", "断术", "行运", "爻意"):
+        if marker in team_section:
+            team_section = team_section.split(marker, 1)[0]
+    return team_section
+
+
+def _extract_team_usernames(text):
+    team_section = _extract_team_section(text)
+    if not team_section:
+        return []
+    return _extract_usernames(team_section)
 
 
 def _identity_id_by_username(username):
@@ -329,6 +381,28 @@ def _identity_ids_from_text_usernames(text):
         if identity_id > 0 and identity_id not in identity_ids:
             identity_ids.append(identity_id)
     return identity_ids
+
+
+def _identity_ids_from_team_usernames(text):
+    identity_ids = []
+    for username in _extract_team_usernames(text):
+        identity_id = _identity_id_by_username(username)
+        if identity_id > 0 and identity_id not in identity_ids:
+            identity_ids.append(identity_id)
+    return identity_ids
+
+
+def _identity_ids_from_progress_usernames(text):
+    if _extract_team_section(text):
+        return _identity_ids_from_team_usernames(text)
+    return _identity_ids_from_text_usernames(text)
+
+
+def _resolve_progress_identity_ids(text, now):
+    identity_ids = _identity_ids_from_progress_usernames(text)
+    if identity_ids or _extract_team_section(text):
+        return identity_ids
+    return _active_identity_ids(now)
 
 
 def _mark_success_cooldown(identity_ids, now):
@@ -507,7 +581,7 @@ def _find_matching_dungeon(at_item, *, now=None):
             break
         if int((item or {}).get("topic_id", 0) or 0) != at_topic_id:
             continue
-        if int((item or {}).get("sender_id", 0) or 0) not in game_bot_ids:
+        if not (bool((item or {}).get("sender_is_game_bot")) or int((item or {}).get("sender_id", 0) or 0) in game_bot_ids):
             continue
         dungeon_id = _parse_dungeon_id((item or {}).get("text") or "")
         if not dungeon_id:
@@ -522,6 +596,7 @@ def _find_matching_dungeon(at_item, *, now=None):
             continue
         return {
             "dungeon_id": dungeon_id,
+            "dungeon_kind": _infer_dungeon_kind((item or {}).get("text") or ""),
             "announcement_msg_id": int((item or {}).get("msg_id", 0) or 0),
             "opener_msg_id": parent_msg_id,
         }
@@ -585,6 +660,8 @@ async def handle_dungeon_join_mention(event, text, now=None):
         return False
 
     dungeon_id = matched["dungeon_id"]
+    dungeon_kind = matched.get("dungeon_kind") or DUNGEON_KIND_VIRTUAL_HALL
+    join_command = _format_dungeon_join_command(dungeon_id, dungeon_kind)
     handled = False
     for identity_id in identity_ids:
         allowed, reason = _allow_join(identity_id, dungeon_id, now)
@@ -596,7 +673,7 @@ async def handle_dungeon_join_mention(event, text, now=None):
             continue
         _reserve_join(identity_id, dungeon_id, now)
         msg = await send_game_command(
-            f"{CMD_DUNGEON_JOIN} {dungeon_id}",
+            join_command,
             track=False,
             send_as_id=identity_id,
             priority="urgent_reactive",
@@ -608,7 +685,7 @@ async def handle_dungeon_join_mention(event, text, now=None):
         _mark_join_sent(identity_id, dungeon_id, sent_at, msg_id=int(getattr(msg, "id", 0) or 0))
         _join_throttle.setdefault(int(identity_id), []).append(now)
         await send_audit_log(
-            f"🧩 自动副本已发出：.加入副本 {dungeon_id}｜公告={matched['announcement_msg_id']}｜开门={matched['opener_msg_id']}",
+            f"🧩 自动副本已发出：{join_command}｜公告={matched['announcement_msg_id']}｜开门={matched['opener_msg_id']}",
             scope="identity",
             send_as_id=identity_id,
             limit=220,
@@ -625,10 +702,10 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
         return False
 
     if "【鼎前抉择】" in raw:
-        identity_ids = _identity_ids_from_text_usernames(raw) or _active_identity_ids(now)
+        identity_ids = _resolve_progress_identity_ids(raw, now)
         return _mark_success_cooldown(identity_ids, now)
     if "挑战失败！" in raw:
-        identity_ids = _identity_ids_from_text_usernames(raw) or _active_identity_ids(now)
+        identity_ids = _resolve_progress_identity_ids(raw, now)
         return _mark_failure_pending(identity_ids, now)
     dissolved_match = _ROOM_DISSOLVED_RE.search(raw)
     if dissolved_match:
@@ -639,13 +716,13 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
     joined_match = _JOINED_RE.search(raw)
     if identity_id <= 0 and joined_match:
         identity_id = _identity_id_by_username(joined_match.group(1))
-        dungeon_id = str(joined_match.group(2) or "").strip()
+        dungeon_id = next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
     if identity_id <= 0:
         return False
 
     if joined_match:
-        dungeon_id = dungeon_id or str(joined_match.group(2) or "").strip()
-    if "已成功加入副本" in raw or "你已在队伍中" in raw:
+        dungeon_id = dungeon_id or next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
+    if "你已在队伍中" in raw or any(keyword in raw for keyword in ("已成功加入副本", "已成功加入坠魔谷", "已成功加入黄龙山")):
         _mark_join_success(identity_id, dungeon_id, now, msg_id=int(getattr(event, "id", 0) or 0))
         return True
 
@@ -668,11 +745,17 @@ def get_dungeon_join_inbox_snapshot(limit=20):
     _cleanup(time.time())
     items = []
     for item in list(_inbox)[-int(limit or 20):]:
-        dungeon_id = _parse_dungeon_id((item or {}).get("text") or "")
+        text = (item or {}).get("text") or ""
+        dungeon_id = _parse_dungeon_id(text)
         if not dungeon_id:
             continue
+        dungeon_kind = _infer_dungeon_kind(text)
+        kind_meta = DUNGEON_KIND_META.get(dungeon_kind) or DUNGEON_KIND_META[DUNGEON_KIND_VIRTUAL_HALL]
         items.append({
             "dungeon_id": dungeon_id,
+            "dungeon_kind": dungeon_kind,
+            "dungeon_name": kind_meta["name"],
+            "join_command": _format_dungeon_join_command(dungeon_id, dungeon_kind),
             "msg_id": int((item or {}).get("msg_id", 0) or 0),
             "reply_to_msg_id": int((item or {}).get("reply_to_msg_id", 0) or 0),
             "topic_id": int((item or {}).get("topic_id", 0) or 0),

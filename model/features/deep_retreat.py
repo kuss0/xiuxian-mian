@@ -69,8 +69,8 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     protect_on_log="🧘 深度闭关时间已到，但当前处于 30 秒保护中，暂不重复执行。",
     protect_off_log="🧘 深度闭关 30 秒保护状态已结束。",
     launching_timeout_audit="🧘 launching 超时，已回退。",
-    waiting_anomaly_audit="🧘 闭关等待异常，已解卡继续。",
-    waiting_timeout_audit="🧘 闭关总结超时，按兜底继续。",
+    waiting_anomaly_audit="🧘 闭关等待异常，已解卡",
+    waiting_timeout_audit="🧘 闭关总结超时",
     post_wait_console="🧘 闭关缓冲结束，继续深闭。",
     running_due_console="🧘 深闭时间到",
     cd_due_console="🧘 深闭 CD 到",
@@ -87,6 +87,11 @@ register_phaseful_spec(DEEP_RETREAT_SPEC)
 
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
+
+
+def _is_deep_retreat_short_cd_text(text):
+    raw_text = str(text or "")
+    return "灵气尚未平复" in raw_text and "无法立即再次闭关" in raw_text and has_wait_time(raw_text)
 
 
 def set_deep_retreat_phase(phase):
@@ -202,10 +207,22 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
     is_status_reply = matched_family == "deep_retreat" or CMD_DEEP_RETREAT_QUERY in orig_cmd
     is_retreat_cmd_status_like = (
         matched_family == "deep_retreat"
-        or (CMD_DEEP_RETREAT in orig_cmd and any(k in text for k in ["预计还需", "尚未恢复", "冷却", "等待", "不足", "休息", "功成圆满"]))
+        or (CMD_DEEP_RETREAT in orig_cmd and any(k in text for k in ["预计还需", "尚未恢复", "尚未平复", "冷却", "等待", "不足", "休息", "功成圆满"]))
     )
     if not (is_status_reply or is_retreat_cmd_status_like):
         return False
+
+    if _is_deep_retreat_short_cd_text(text):
+        wait_sec = parse_wait_time(text)
+        clear_deep_retreat_summary_flags()
+        set_deep_retreat_phase("idle")
+        state["deep_retreat_probe_pending"] = False
+        state["last_deep_retreat_command_time"] = now
+        state["next_deep_retreat_time"] = now + wait_sec + CD_BUFFER_SEC
+        save_state()
+        await update_deep_retreat_block_log_state(waiting=False, protect=False)
+        await send_audit_log(f"⏳ 深闭短冷却→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
+        return True
 
     if "预计还需" in text and "即可功成圆满" in text:
         wait_sec = parse_wait_time(text)
@@ -231,12 +248,17 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
 
 def match_deep_retreat_summary_identity(text, now=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
-    summary_kw_hit = "天道感应：检测到" in compact_text and "功成圆满，神魂正在归位" in compact_text
+    summary_kw_hit = (
+        ("天道感应：检测到" in compact_text and "功成圆满，神魂正在归位" in compact_text)
+        or ("深度闭关总结" in compact_text and "本次结算时长" in compact_text and "神魂吐纳次数" in compact_text)
+    )
     if not summary_kw_hit:
         return None, []
     now = float(now or 0)
+    has_explicit_at = "@" in compact_text
 
     matched_ids = []
+    fallback_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state["deep_retreat_enabled"]:
@@ -254,11 +276,17 @@ def match_deep_retreat_summary_identity(text, now=None):
                 compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
                 if any(tag in compact_text for tag in compact_tags):
                     matched_ids.append(identity_id)
-            else:
-                matched_ids.append(identity_id)
+                elif not has_explicit_at:
+                    fallback_ids.append(identity_id)
+            elif not has_explicit_at:
+                fallback_ids.append(identity_id)
 
     if len(matched_ids) == 1:
         return matched_ids[0], matched_ids
+    if not matched_ids and len(fallback_ids) == 1:
+        return fallback_ids[0], fallback_ids
+    if not matched_ids:
+        matched_ids = fallback_ids
     return None, matched_ids
 
 

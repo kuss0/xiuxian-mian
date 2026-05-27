@@ -13,9 +13,10 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log, send_game_command, track_reply_chain_message
-from ..state import get_current_identity_id, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
+from ..state import get_current_identity_id, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
+from .storage_bag import apply_storage_bag_item_text_delta
 
 
 RE_STARGAZER_SLOT_LINE = re.compile(r"^\s*(\d+)号引星盘[:：]\s*(.+)$")
@@ -26,6 +27,7 @@ STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS = ("灵力不足", "安抚", "座�
 STARGAZER_SOOTHE_NO_NEED_KEYWORDS = ("观星台", "没有需要安抚", "星辰")
 STARGAZER_GUIDE_INSUFFICIENT_POWER_KEYWORDS = ("修为不足", "同时牵引", "座引星盘")
 STARGAZER_AFTER_DEEP_RETREAT_DELAY_SEC = 3 * 60
+STARGAZER_LOST_FOLLOWUP_BACKOFF_SEC = 60 * 60
 STARGAZER_PENDING_COMMANDS = (
     CMD_STARGAZER_PANEL,
     CMD_STARGAZER_SOOTHE,
@@ -38,7 +40,7 @@ STARGAZER_SOOTHE_RESOURCE_KEY = "stargazer_soothe"
 
 def _has_pending_stargazer_command():
     for pending in state.get("pending_tasks", {}).values():
-        pending_command = str((pending or {}).get("cmd") or "").strip()
+        pending_command = get_pending_command(pending)
         if any(
             pending_command == command or pending_command.startswith(f"{command} ")
             for command in STARGAZER_PENDING_COMMANDS
@@ -142,6 +144,9 @@ def _schedule_next_stargazer_action(next_time):
 
 
 def _get_queued_stargazer_action():
+    queued_action = str(state.get("stargazer_queued_action") or "").strip()
+    if queued_action:
+        return queued_action
     last_action = str(state.get("stargazer_last_action") or "")
     if not last_action.startswith("queue_"):
         return ""
@@ -150,7 +155,9 @@ def _get_queued_stargazer_action():
 
 def _queue_stargazer_followup_action(now, action, delay):
     state["stargazer_followup_due_at"] = float(now + max(1, delay))
+    state["stargazer_queued_action"] = str(action or "").strip()
     state["stargazer_last_action"] = f"queue_{action}"
+    state["next_stargazer_panel_time"] = 0
 
 
 def _clear_stargazer_collect_flags():
@@ -424,6 +431,10 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
     if not state.get("stargazer_enabled"):
         return False
 
+    raw_text = str(text or "").strip()
+    if raw_text.startswith(CMD_STARGAZER_SOOTHE):
+        return False
+
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "stargazer_soothe" and CMD_STARGAZER_SOOTHE not in orig_cmd:
         return False
@@ -441,7 +452,7 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
     if _is_stargazer_soothe_no_need(text):
         _clear_stargazer_collect_flags()
         reset_resource_shortage(STARGAZER_SOOTHE_RESOURCE_KEY)
-        await _queue_stargazer_action(now, "collect", audit_text="🌠 无需安抚，收集")
+        await _queue_stargazer_action(now, "panel", audit_text="🌠 无需安抚，回查观星台")
         return True
 
     soothe_before_collect = bool(state.get("stargazer_soothe_before_collect"))
@@ -475,6 +486,10 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
     if not state.get("stargazer_enabled"):
         return False
 
+    raw_text = str(text or "").strip()
+    if raw_text.startswith(CMD_STARGAZER_COLLECT):
+        return False
+
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "stargazer_collect" and CMD_STARGAZER_COLLECT not in orig_cmd:
         return False
@@ -491,6 +506,7 @@ async def handle_stargazer_collect_reply(text, now, reply_to, matched_family=Non
     if "收集完成" in text:
         collected_slot_count = _extract_stargazer_collected_slot_count(text)
         total_slots = get_stargazer_total_slots()
+        apply_storage_bag_item_text_delta(get_current_identity_id(), raw_text)
         _clear_stargazer_collect_flags()
         state["stargazer_collect_due_at"] = 0
         state["stargazer_busy_until"] = 0
@@ -545,8 +561,9 @@ async def run_stargazer_scheduler(now):
     if followup_due_at > 0:
         if now < followup_due_at:
             return
-        queued_action = _get_queued_stargazer_action() or "panel"
+        queued_action = _get_queued_stargazer_action()
         state["stargazer_followup_due_at"] = 0
+        state["stargazer_queued_action"] = ""
         save_state()
         if queued_action == "collect":
             await _send_stargazer_collect(now)
@@ -557,7 +574,16 @@ async def run_stargazer_scheduler(now):
         if queued_action == "guide":
             await _send_stargazer_guide(now)
             return
-        await _send_stargazer_soothe(now)
+        if queued_action == "soothe":
+            await _send_stargazer_soothe(now)
+            return
+        next_panel_time = now + STARGAZER_LOST_FOLLOWUP_BACKOFF_SEC + random.uniform(30, 90)
+        _schedule_next_stargazer_action(next_panel_time)
+        state["stargazer_last_action"] = "lost_followup_action"
+        save_state()
+        await send_audit_log(
+            f"🧯 观星台队列动作丢失，停止立即回查，延后→{fmt_time_after(max(1, next_panel_time - now))}"
+        )
         return
 
     next_panel_time = float(state.get("next_stargazer_panel_time", 0) or 0)
@@ -567,8 +593,8 @@ async def run_stargazer_scheduler(now):
         next_panel_time = now
 
     if now >= next_panel_time:
-        state["stargazer_soothe_before_collect"] = True
-        await _queue_stargazer_action(now, "soothe", audit_text="🌠 观星台到时，安抚")
+        state["stargazer_soothe_before_collect"] = False
+        await _queue_stargazer_action(now, "panel", audit_text="🌠 观星台到时，查面板")
 
 
 async def sync_stargazer_total_slots(send_as_id):

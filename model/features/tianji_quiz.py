@@ -20,7 +20,7 @@ TIANJI_QUIZ_DEADLINE_BUFFER_SEC = 5
 TIANJI_QUIZ_RESULT_TIMEOUT_SEC = 20
 TIANJI_QUIZ_RETRY_DELAY_MIN_SEC = 5
 TIANJI_QUIZ_RETRY_DELAY_MAX_SEC = 15
-TIANJI_QUIZ_MAX_RETRY_COUNT = 2
+TIANJI_QUIZ_MAX_RETRY_COUNT = 1
 RE_TIANJI_TARGET = re.compile(r"@([^\s，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+)")
 RE_TIANJI_OPTION = re.compile(r"^\s*([A-D])\.\s*(.+?)\s*$", re.M)
 RE_TIANJI_TIMEOUT_MIN = re.compile(r"请在\s*(\d+)\s*分钟")
@@ -355,6 +355,8 @@ def _parse_tianji_quiz_result(text):
     target = _extract_tianji_target(raw_text)
     if "考验通过" in raw_text and "气息已恢复正常" in raw_text:
         return {"status": "passed", "label": "考验通过", "target": target, "raw_text": raw_text}
+    if "考验超时" in raw_text and "嫌疑更重" in raw_text:
+        return {"status": "timeout", "label": "考验超时", "target": target, "raw_text": raw_text}
     if "回答错误" in raw_text and "嫌疑更重" in raw_text:
         return {"status": "wrong", "label": "回答错误", "target": target, "raw_text": raw_text}
     if "【天道示警】" in raw_text and "未能通过天机考验" in raw_text:

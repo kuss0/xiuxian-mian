@@ -9,59 +9,77 @@
 <link rel='stylesheet' href='/static/css/ui_fixes.css' />
 </head>
 <body>
-<div class='topbar'>
-<div>
-<h1 class='topbar-title'>Xiuxian 控制台</h1>
-<div class='topbar-meta'>生成时间：<span id='generated-at'>-</span> ｜ 自动轮询：{{ui_auto_refresh_sec}}s</div>
-</div>
-<div class='topbar-actions'>
-<span id='guanxing-summary' class='form-label form-label-inline text-nowrap'>
-</span>
-<span id='global-switch-container'>
-</span>
-<button type='button' class='btn btn-secondary' data-open-basic-config='1'>基础配置</button>
-<button type='button' class='btn btn-secondary' data-open-storage-bag='1'>储物袋</button>
-<button type='button' class='btn btn-secondary' data-open-logs='1'>日志</button>
-<button type='button' class='btn btn-refresh' data-refresh-now='1'>手动刷新</button>
-<a class='btn btn-secondary' href='/api/state' target='_blank' rel='noreferrer'>JSON</a>
-</div>
-</div>
 <div id='flash' class='flash hidden'>
 </div>
-<div class='layout'>
-<aside class='sidebar'>
-<section class='card'>
-<h2 class='section-title-with-action'>账号与身份<button type='button' class='btn btn-secondary btn-compact' data-open-login-account='1'>登录账号</button>
-</h2>
-<div class='meta'>当前登录账号：<span id='account-user-id'>-</span>
+<header class='topbar app-topbar'>
+<div class='topbar-brand'>
+<img class='topbar-logo-img' src='/favicon.png' alt='' width='28' height='28' />
+<div>
+<div class='topbar-title'>Xiuxian</div>
+<div class='topbar-meta'>生成 <span id='generated-at'>-</span> ｜ {{ui_auto_refresh_sec}}s</div>
 </div>
-<div class='sidebar-actions'>
-<span class='form-label form-label-inline'>管理身份</span>
-<button type='button' class='btn btn-secondary' data-open-add-identity='1'>新增身份</button>
 </div>
+<div class='topbar-spacer'></div>
+<div class='topbar-actions'>
+<button type='button' class='topbar-btn' data-open-logs='1' title='日志'>日志</button>
+<button type='button' class='topbar-btn' data-open-passive-inbox='1' title='消息盒子'>消息盒子</button>
+<button type='button' class='topbar-btn' data-open-basic-config='1' title='基础配置'>配置</button>
+<button type='button' class='topbar-btn' data-open-dungeon='1' title='副本'>副本</button>
+<button type='button' class='topbar-btn' data-open-storage-bag='1' title='储物袋'>储物袋</button>
+<button type='button' class='topbar-btn' data-refresh-now='1' title='手动刷新'>刷新</button>
+<a class='topbar-btn' href='/api/state' target='_blank' rel='noreferrer' title='JSON'>JSON</a>
+</div>
+</header>
+<div class='app-body'>
+<aside class='sidebar app-sidebar'>
+<div class='sidebar-section'>
+<div class='sidebar-section-label'>全局控制</div>
+<div class='sidebar-global'>
+<span class='sidebar-global-label'>全局开关</span>
+<span id='global-switch-container'></span>
+</div>
+<div id='guanxing-summary' class='sidebar-global-meta'></div>
+</div>
+<div class='sidebar-divider'></div>
+<div class='sidebar-section sidebar-identity-section'>
+<div class='sidebar-identity-header'>
+<span class='sidebar-section-label'>身份列表</span>
+<button type='button' class='btn btn-secondary btn-compact' data-open-login-account='1'>登录账号</button>
+</div>
+<div class='sidebar-account-info'>当前账号：<span id='account-user-id'>-</span></div>
 <div class='identity-mobile-picker'>
-<label class='form-label form-label-inline' for='identity-select-mobile'>切换身份</label>
-<select id='identity-select-mobile' class='text-input'>
-</select>
+<select id='identity-select-mobile' class='text-input'></select>
 </div>
-<div id='identity-list' class='identity-list'>
+<div id='identity-list' class='identity-list'></div>
 </div>
-</section>
+<div class='sidebar-divider'></div>
+<div class='sidebar-footer'>
+<button type='button' class='btn btn-secondary btn-compact' data-open-add-identity='1'>新增身份</button>
+<button type='button' class='btn btn-secondary btn-compact' data-open-logout-account='1'>登出账户</button>
+</div>
 </aside>
-<main class='main'>
-<section id='summary-panel'>
-</section>
-<section class='card'>
+<main class='main app-main'>
+<div class='main-inner'>
+<section id='summary-panel'></section>
+<section class='card module-section-card'>
+<div class='section-head-row'>
 <h2>模块详情</h2>
-<div id='module-grid' class='module-grid'>
+<span class='section-subtitle'>当前身份的自动化模块</span>
 </div>
+<div id='module-grid' class='module-grid'></div>
 </section>
+</div>
 </main>
+</div>
+<div id='passive-inbox-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide passive-inbox-modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>消息盒子</h3>
+<button class='icon-btn' type='button' data-close-modal='passive-inbox'>×</button>
+</div>    <div id='passive-inbox-modal-body'></div>  </div>
 </div>
 <div id='basic-config-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
 <h3 class='modal-title'>基础配置</h3>
 <button class='icon-btn' type='button' data-close-modal='basic'>×</button>
-</div>    <form id='basic-config-form'>      <div class='form-label'>配置游戏群聊、游戏 BOT ID，以及固定话题 ID。支持自动读取话题列表，也支持手动输入后强制保存。话题留空或填 0 表示不使用。</div>      <label class='field-label'>游戏群聊 ID<input class='text-input' name='game_group_id' inputmode='numeric' placeholder='例如 -1001234567890' />
+</div>    <form id='basic-config-form'>      <div class='basic-config-scroll'><div class='form-label'>配置游戏群聊、游戏 BOT ID，以及固定话题 ID。支持自动读取话题列表，也支持手动输入后强制保存。话题留空或填 0 表示不使用。</div>      <label class='field-label'>游戏群聊 ID<input class='text-input' name='game_group_id' inputmode='numeric' placeholder='例如 -1001234567890' />
 </label>      <label class='field-label'>游戏 BOT ID<input class='text-input' name='game_bot_ids' placeholder='多个请用逗号分隔' />
 </label>      <label class='field-label'>话题 ID<input class='text-input' name='game_topic_id' inputmode='numeric' placeholder='例如 12345' />
 </label>      <div class='topic-picker'>
@@ -94,7 +112,7 @@
 </label>      <div class='field-label'>
 <span>观星监控命中结果</span>
 <div id='guanxing-monitor-target-options' class='checkbox-grid'></div>
-</div>      <div class='modal-actions'>
+</div>      </div><div class='modal-actions'>
 <button class='btn btn-secondary' type='button' data-close-modal='basic'>取消</button>
 <button class='btn' type='submit'>保存</button>
 </div>    </form>  </div>
@@ -136,6 +154,18 @@
 </div>    </div>    <div id='login-status' class='form-label login-status-text'>
 </div>  </div>
 </div>
+<div id='account-logout-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>退出 Telegram 账号</h3>
+<button class='icon-btn' type='button' data-close-modal='account-logout'>×</button>
+</div>    <div class='stack-12'>      <label class='field-label'>选择账号<select id='logout-account-select' class='text-input'>
+<option value=''>当前没有可退出的登录账号</option>
+</select>
+</label>      <div id='logout-account-summary' class='form-label form-label-inline'>
+</div>      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='account-logout'>取消</button>
+<button class='btn' type='button' id='confirm-logout-account-btn'>退出账号</button>
+</div>    </div>  </div>
+</div>
 <div id='pet-name-modal' class='modal-backdrop'>  <div class='modal-card'>    <div class='modal-header'>
 <h3 class='modal-title'>设置法宝名称</h3>
 <button class='icon-btn' type='button' data-close-modal='pet'>×</button>
@@ -168,14 +198,28 @@
 <button class='btn btn-secondary' type='button' data-close-modal='startup-alert'>知道了</button>
 </div>  </div>
 </div>
+<div id='dungeon-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide dungeon-modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>副本</h3>
+<button class='icon-btn' type='button' data-close-modal='dungeon'>×</button>
+</div>    <div id='dungeon-modal-body'></div>  </div>
+</div>
 <div id='storage-bag-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide storage-bag-modal-card'>    <div class='modal-header'>
 <h3 class='modal-title'>储物袋</h3>
 <button class='icon-btn' type='button' data-close-modal='storage-bag'>×</button>
 </div>    <div class='form-label'>只展示已解析快照；同步需要手动勾选身份，保护账号不会被读取。</div>    <div class='storage-bag-actions'>
 <label class='checkbox-inline checkbox-inline-small'><input type='checkbox' id='storage-bag-select-all' /> 全选可同步身份</label>
+<button type='button' class='btn btn-secondary' id='storage-bag-transfer-open-btn'>转移</button>
 <button type='button' class='btn' id='storage-bag-sync-btn'>同步</button>
 <span id='storage-bag-sync-status' class='form-label form-label-inline'></span>
 </div>    <div id='storage-bag-table-wrap' class='storage-bag-table-wrap'>
+</div>  </div>
+</div>
+<div id='storage-bag-transfer-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide storage-bag-transfer-modal-card'>    <div class='modal-header'>
+<h3 class='modal-title'>储物袋转移</h3>
+<button class='icon-btn' type='button' data-close-modal='storage-bag-transfer'>×</button>
+</div>    <div class='form-label'>来源号提供物品，集中号上架小物；可用快照批量勾选，也可手填清单，快照只作辅助提示。</div>    <div id='storage-bag-transfer-panel' class='storage-bag-transfer-panel'>
+</div>    <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='storage-bag-transfer'>关闭</button>
 </div>  </div>
 </div>
 <div id='logs-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide logs-modal-card'>    <div class='modal-header'>
@@ -198,9 +242,11 @@
 </div>
 <script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
 <script src='/static/js/app.js'></script>
+<script src='/static/js/passive_inbox_ui.js'></script>
 <script src='/static/js/queue_ui.js'></script>
 <script src='/static/js/official_schedule_ui.js'></script>
 <script src='/static/js/wild_training_ui.js'></script>
+<script src='/static/js/dungeon_ui.js'></script>
 <script src='/static/js/account_logout.js'></script>
 <script src='/static/js/storage_bag_ui.js'></script>
 <script src='/static/js/logs_ui.js'></script>

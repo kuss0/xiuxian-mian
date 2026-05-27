@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import sqlite3
 import time
 import traceback
@@ -27,6 +29,15 @@ from .state import (
     get_guanxing_shift_target,
     get_identity_ids,
     get_identity_state,
+    get_pending_command,
+    get_replica_group_id,
+    get_replica_group_ids,
+    get_replica_listener_account_id,
+    get_replica_listener_account_map,
+    get_replica_participant_identity_ids,
+    get_replica_query_aggregator_config,
+    get_replica_run_state,
+    get_replica_virtual_hall_match_enabled_map,
     get_send_as_profile,
     get_storage_bag_item_rules,
     get_storage_bag_records,
@@ -45,6 +56,14 @@ from .state import (
     set_guanxing_round_state,
     set_guanxing_shift_target,
     set_quiz_learning_watchers,
+    set_replica_group_id,
+    set_replica_group_ids,
+    set_replica_listener_account_id,
+    set_replica_listener_account_map,
+    set_replica_participant_identity_ids,
+    set_replica_query_aggregator_config,
+    set_replica_run_state,
+    set_replica_virtual_hall_match_enabled_map,
     set_send_as_profile,
     set_storage_bag_item_rules,
     set_storage_bag_records,
@@ -60,6 +79,10 @@ _db_conn = None
 _db_initialized = False
 _state_dirty = False
 _last_flush_time = 0
+
+LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
+LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
+LIVE_GUARD_MANIFEST_FILE = os.path.join(LIVE_GUARD_DIR, "manifest.json")
 
 
 def get_db_conn():
@@ -148,6 +171,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identities ADD COLUMN spiritual_root_attrs TEXT NOT NULL DEFAULT ''")
     if "replica_professions" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN replica_professions TEXT NOT NULL DEFAULT ''")
+    if "replica_gold_dps_enabled" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN replica_gold_dps_enabled INTEGER NOT NULL DEFAULT 0")
     if "sect_name" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN sect_name TEXT NOT NULL DEFAULT ''")
     if "sect_updated_at" not in identity_columns:
@@ -176,6 +201,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_current INTEGER NOT NULL DEFAULT 0")
     if "xiuwei_max" not in identity_columns:
         conn.execute("ALTER TABLE identities ADD COLUMN xiuwei_max INTEGER NOT NULL DEFAULT 0")
+    if "battle_power_text" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN battle_power_text TEXT NOT NULL DEFAULT ''")
+    if "battle_power_value" not in identity_columns:
+        conn.execute("ALTER TABLE identities ADD COLUMN battle_power_value INTEGER NOT NULL DEFAULT 0")
 
     timer_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_timers)").fetchall()}
     if "next_quiz_time" not in timer_columns:
@@ -220,6 +249,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_source TEXT NOT NULL DEFAULT ''")
     if "weak_last_block_log_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_last_block_log_at REAL NOT NULL DEFAULT 0")
+    if "yuanying_waiting_logged" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yuanying_waiting_logged INTEGER NOT NULL DEFAULT 0")
+    if "yuanying_protect_logged" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yuanying_protect_logged INTEGER NOT NULL DEFAULT 0")
+    if "deep_retreat_waiting_logged" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN deep_retreat_waiting_logged INTEGER NOT NULL DEFAULT 0")
+    if "deep_retreat_protect_logged" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN deep_retreat_protect_logged INTEGER NOT NULL DEFAULT 0")
     if "tree_maturing_logged" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_maturing_logged INTEGER NOT NULL DEFAULT 0")
     if "tree_harvest_followup_due_at" not in runtime_columns:
@@ -242,6 +279,28 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_nanlong_strategy TEXT NOT NULL DEFAULT 'reacquire_after_loss'")
     if "concubine_status_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_greet_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_greet_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_last_greet_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_greet_day TEXT NOT NULL DEFAULT ''")
+    if "concubine_greet_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_greet_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "concubine_greet_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_greet_last_error TEXT NOT NULL DEFAULT ''")
+    if "concubine_gift_status_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_gift_bag_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_bag_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_gift_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_gift_amount" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_amount INTEGER NOT NULL DEFAULT 0")
+    if "concubine_last_gift_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_gift_day TEXT NOT NULL DEFAULT ''")
+    if "concubine_gift_attempt_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_attempt_day TEXT NOT NULL DEFAULT ''")
+    if "concubine_gift_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_gift_last_error TEXT NOT NULL DEFAULT ''")
     if "concubine_dream_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_dream_msg_id INTEGER NOT NULL DEFAULT 0")
     if "concubine_fragment_msg_id" not in runtime_columns:
@@ -280,10 +339,31 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0")
     if "concubine_heart_round" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_round INTEGER NOT NULL DEFAULT 0")
+    if "concubine_heart_choice_prompt_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_prompt_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_heart_choice_round" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_round INTEGER NOT NULL DEFAULT 0")
+    if "concubine_heart_choice_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_sent_at REAL NOT NULL DEFAULT 0")
     if "concubine_fragment_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_count INTEGER NOT NULL DEFAULT 0")
     if "concubine_fragment_total" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_total INTEGER NOT NULL DEFAULT 4")
+    if "concubine_fragment_xutian_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_xutian_count INTEGER NOT NULL DEFAULT 0")
+    if "concubine_fragment_xutian_total" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_xutian_total INTEGER NOT NULL DEFAULT 4")
+    if "concubine_fragment_cangkun_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_cangkun_count INTEGER NOT NULL DEFAULT 0")
+    if "concubine_fragment_cangkun_total" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4")
+    conn.execute("""
+        UPDATE identity_runtime_state
+           SET concubine_fragment_xutian_count = concubine_fragment_count,
+               concubine_fragment_xutian_total = concubine_fragment_total
+         WHERE COALESCE(concubine_fragment_xutian_count, 0) = 0
+           AND COALESCE(concubine_fragment_count, 0) != 0
+    """)
     if "concubine_last_snapshot_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_snapshot_at REAL NOT NULL DEFAULT 0")
     if "concubine_reacquire_blocked_until" not in runtime_columns:
@@ -342,6 +422,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
     if "stargazer_last_action" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_last_action TEXT NOT NULL DEFAULT ''")
+    if "stargazer_queued_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_queued_action TEXT NOT NULL DEFAULT ''")
     if "stargazer_idle_slot_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN stargazer_idle_slot_count INTEGER NOT NULL DEFAULT 0")
     if "stargazer_dim_slot_count" not in runtime_columns:
@@ -396,6 +478,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "tianti_last_status_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "tianti_last_status_seen_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_status_seen_at REAL NOT NULL DEFAULT 0")
     if "tianti_last_wenxin_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_last_wenxin_msg_id INTEGER NOT NULL DEFAULT 0")
     if "tianti_last_climb_msg_id" not in runtime_columns:
@@ -444,6 +528,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN stargazer_enabled INTEGER NOT NULL DEFAULT 0")
     if "quiz_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "quiz_chat_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_chat_id INTEGER NOT NULL DEFAULT 0")
     if "quiz_question" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_question TEXT NOT NULL DEFAULT ''")
     if "quiz_options" not in runtime_columns:
@@ -456,6 +542,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_retry_count INTEGER NOT NULL DEFAULT 0")
     if "quiz_match_mode" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_match_mode TEXT NOT NULL DEFAULT ''")
+    if "quiz_answer_method" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_answer_method TEXT NOT NULL DEFAULT ''")
     if "quiz_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_error TEXT NOT NULL DEFAULT ''")
     if "quiz_last_matched_at" not in runtime_columns:
@@ -486,6 +574,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_query_msg_id INTEGER NOT NULL DEFAULT 0")
     if "small_world_manifest_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_manifest_cost_text" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_manifest_cost_text TEXT NOT NULL DEFAULT ''")
     if "small_world_harvest_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_harvest_msg_id INTEGER NOT NULL DEFAULT 0")
     if "small_world_refine_msg_id" not in runtime_columns:
@@ -619,6 +709,7 @@ def init_db():
             spiritual_root_type TEXT NOT NULL DEFAULT '',
             spiritual_root_attrs TEXT NOT NULL DEFAULT '',
             replica_professions TEXT NOT NULL DEFAULT '',
+            replica_gold_dps_enabled INTEGER NOT NULL DEFAULT 0,
             pet_name TEXT NOT NULL DEFAULT '',
             pet_warm_name TEXT NOT NULL DEFAULT '',
             pet_trial_name TEXT NOT NULL DEFAULT '',
@@ -636,6 +727,8 @@ def init_db():
             enabled INTEGER NOT NULL DEFAULT 1,
             xiuwei_current INTEGER NOT NULL DEFAULT 0,
             xiuwei_max INTEGER NOT NULL DEFAULT 0,
+            battle_power_text TEXT NOT NULL DEFAULT '',
+            battle_power_value INTEGER NOT NULL DEFAULT 0,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
         );
@@ -754,6 +847,7 @@ def init_db():
             wild_training_last_error TEXT NOT NULL DEFAULT '',
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             stargazer_last_action TEXT NOT NULL DEFAULT '',
+            stargazer_queued_action TEXT NOT NULL DEFAULT '',
             stargazer_idle_slot_count INTEGER NOT NULL DEFAULT 0,
             stargazer_dim_slot_count INTEGER NOT NULL DEFAULT 0,
             stargazer_ready_slot_count INTEGER NOT NULL DEFAULT 0,
@@ -772,6 +866,7 @@ def init_db():
             guanxing_last_error TEXT NOT NULL DEFAULT '',
             tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            tianti_last_status_seen_at REAL NOT NULL DEFAULT 0,
             tianti_last_wenxin_msg_id INTEGER NOT NULL DEFAULT 0,
             tianti_last_climb_msg_id INTEGER NOT NULL DEFAULT 0,
             tianti_last_gangfeng_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -804,12 +899,14 @@ def init_db():
             guanxing_monitor_last_seen_at REAL NOT NULL DEFAULT 0,
             guanxing_monitor_last_notified_slot_key TEXT NOT NULL DEFAULT '',
             quiz_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            quiz_chat_id INTEGER NOT NULL DEFAULT 0,
             quiz_question TEXT NOT NULL DEFAULT '',
             quiz_options TEXT NOT NULL DEFAULT '{}',
             quiz_answer TEXT NOT NULL DEFAULT '',
             quiz_phase TEXT NOT NULL DEFAULT '',
             quiz_retry_count INTEGER NOT NULL DEFAULT 0,
             quiz_match_mode TEXT NOT NULL DEFAULT '',
+            quiz_answer_method TEXT NOT NULL DEFAULT '',
             quiz_last_error TEXT NOT NULL DEFAULT '',
             quiz_last_matched_at REAL NOT NULL DEFAULT 0,
             jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -818,6 +915,17 @@ def init_db():
             concubine_availability TEXT NOT NULL DEFAULT 'unknown',
             concubine_nanlong_strategy TEXT NOT NULL DEFAULT 'reacquire_after_loss',
             concubine_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_greet_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_last_greet_day TEXT NOT NULL DEFAULT '',
+            concubine_greet_retry_count INTEGER NOT NULL DEFAULT 0,
+            concubine_greet_last_error TEXT NOT NULL DEFAULT '',
+            concubine_gift_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_gift_bag_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_gift_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_gift_amount INTEGER NOT NULL DEFAULT 0,
+            concubine_last_gift_day TEXT NOT NULL DEFAULT '',
+            concubine_gift_attempt_day TEXT NOT NULL DEFAULT '',
+            concubine_gift_last_error TEXT NOT NULL DEFAULT '',
             concubine_dream_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_fragment_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_puzzle_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -837,8 +945,15 @@ def init_db():
             concubine_tianji_chain TEXT NOT NULL DEFAULT '',
             concubine_tianji_chain_due_at REAL NOT NULL DEFAULT 0,
             concubine_heart_round INTEGER NOT NULL DEFAULT 0,
+            concubine_heart_choice_prompt_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_heart_choice_round INTEGER NOT NULL DEFAULT 0,
+            concubine_heart_choice_sent_at REAL NOT NULL DEFAULT 0,
             concubine_fragment_count INTEGER NOT NULL DEFAULT 0,
             concubine_fragment_total INTEGER NOT NULL DEFAULT 4,
+            concubine_fragment_xutian_count INTEGER NOT NULL DEFAULT 0,
+            concubine_fragment_xutian_total INTEGER NOT NULL DEFAULT 4,
+            concubine_fragment_cangkun_count INTEGER NOT NULL DEFAULT 0,
+            concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4,
             concubine_last_snapshot_at REAL NOT NULL DEFAULT 0,
             concubine_reacquire_blocked_until REAL NOT NULL DEFAULT 0,
             concubine_reacquire_attempts INTEGER NOT NULL DEFAULT 0,
@@ -857,6 +972,7 @@ def init_db():
             small_world_phase TEXT NOT NULL DEFAULT 'idle',
             small_world_query_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_manifest_cost_text TEXT NOT NULL DEFAULT '',
             small_world_harvest_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_refine_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_refresh_count INTEGER NOT NULL DEFAULT 0,
@@ -869,11 +985,15 @@ def init_db():
             action_guard_sessions TEXT NOT NULL DEFAULT '{}',
             yuanying_phase TEXT NOT NULL,
             yuanying_probe_pending INTEGER NOT NULL,
+            yuanying_waiting_logged INTEGER NOT NULL DEFAULT 0,
+            yuanying_protect_logged INTEGER NOT NULL DEFAULT 0,
             yuanying_summary_sent_at REAL NOT NULL,
             last_yuanying_summary_msg_id INTEGER NOT NULL,
             last_yuanying_command_time REAL NOT NULL,
             deep_retreat_phase TEXT NOT NULL,
             deep_retreat_probe_pending INTEGER NOT NULL,
+            deep_retreat_waiting_logged INTEGER NOT NULL DEFAULT 0,
+            deep_retreat_protect_logged INTEGER NOT NULL DEFAULT 0,
             deep_retreat_summary_sent_at REAL NOT NULL,
             last_deep_retreat_summary_msg_id INTEGER NOT NULL,
             last_deep_retreat_command_time REAL NOT NULL,
@@ -903,7 +1023,7 @@ def init_db():
             retry INTEGER NOT NULL,
             timeout REAL NOT NULL,
             reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
-            max_retry INTEGER NOT NULL DEFAULT 3,
+            max_retry INTEGER NOT NULL DEFAULT 1,
             priority TEXT NOT NULL DEFAULT ''
         );
 
@@ -962,7 +1082,7 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
-        ("game_bot_ids", "[-1003983937918, 7900199668, 8388633812, 8547797815, 8757550896]"),
+        ("game_bot_ids", "[-1003983937918, 7900199668, 8349385938, 8388633812, 8400307678, 8547797815, 8567800706, 8609885831, 8757550896]"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -1115,12 +1235,12 @@ def upsert_identity_to_db(send_as_id):
     conn.execute(
         """
         INSERT INTO identities(
-            send_as_id, username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
+            send_as_id, username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, replica_gold_dps_enabled, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots,
             checkin_window_start_hour_utc, checkin_window_end_hour_utc,
             tower_window_start_hour_utc, tower_window_end_hour_utc,
-            enabled, xiuwei_current, xiuwei_max, created_at, updated_at
+            enabled, xiuwei_current, xiuwei_max, battle_power_text, battle_power_value, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(send_as_id) DO UPDATE SET
             username=excluded.username,
             label=excluded.label,
@@ -1129,6 +1249,7 @@ def upsert_identity_to_db(send_as_id):
             spiritual_root_type=excluded.spiritual_root_type,
             spiritual_root_attrs=excluded.spiritual_root_attrs,
             replica_professions=excluded.replica_professions,
+            replica_gold_dps_enabled=excluded.replica_gold_dps_enabled,
             pet_name=excluded.pet_name,
             pet_warm_name=excluded.pet_warm_name,
             pet_trial_name=excluded.pet_trial_name,
@@ -1146,6 +1267,8 @@ def upsert_identity_to_db(send_as_id):
             enabled=excluded.enabled,
             xiuwei_current=excluded.xiuwei_current,
             xiuwei_max=excluded.xiuwei_max,
+            battle_power_text=excluded.battle_power_text,
+            battle_power_value=excluded.battle_power_value,
             updated_at=excluded.updated_at
         """,
         (
@@ -1157,6 +1280,7 @@ def upsert_identity_to_db(send_as_id):
             profile.get("spiritual_root_type", "") or "",
             profile.get("spiritual_root_attrs", "") or "",
             profile.get("replica_professions", "") or "",
+            1 if profile.get("replica_gold_dps_enabled", False) else 0,
             profile.get("pet_name", "") or "",
             profile.get("pet_warm_name", "") or "",
             profile.get("pet_trial_name", "") or "",
@@ -1174,6 +1298,8 @@ def upsert_identity_to_db(send_as_id):
             1 if profile.get("enabled", True) else 0,
             int(profile.get("xiuwei_current", 0) or 0),
             int(profile.get("xiuwei_max", 0) or 0),
+            profile.get("battle_power_text", "") or "",
+            int(profile.get("battle_power_value", 0) or 0),
             now_ts,
             now_ts,
         ),
@@ -1219,7 +1345,7 @@ def upsert_identity_to_db(send_as_id):
             (
                 int(msg_id),
                 int(send_as_id),
-                item.get("cmd", ""),
+                get_pending_command(item),
                 float(item.get("sent_at", 0) or 0),
                 int(item.get("retry", 0) or 0),
                 float(item.get("timeout", 0) or 0),
@@ -1242,7 +1368,7 @@ def _load_identity_from_db(send_as_id):
     identity_state = new_identity_state()
 
     row = conn.execute(
-        "SELECT username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities WHERE send_as_id = ?",
+        "SELECT username, label, daohao, realm, spiritual_root_type, spiritual_root_attrs, replica_professions, replica_gold_dps_enabled, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, jiyin_choice, nanlong_choice, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max, battle_power_text, battle_power_value FROM identities WHERE send_as_id = ?",
         (int(send_as_id),),
     ).fetchone()
     if row:
@@ -1255,6 +1381,7 @@ def _load_identity_from_db(send_as_id):
             spiritual_root_type=row["spiritual_root_type"],
             spiritual_root_attrs=row["spiritual_root_attrs"],
             replica_professions=row["replica_professions"],
+            replica_gold_dps_enabled=bool(row["replica_gold_dps_enabled"]),
             pet_name=row["pet_name"],
             pet_warm_name=row["pet_warm_name"],
             pet_trial_name=row["pet_trial_name"],
@@ -1272,6 +1399,8 @@ def _load_identity_from_db(send_as_id):
             enabled=bool(row["enabled"]),
             xiuwei_current=int(row["xiuwei_current"] or 0),
             xiuwei_max=int(row["xiuwei_max"] or 0),
+            battle_power_text=row["battle_power_text"],
+            battle_power_value=int(row["battle_power_value"] or 0),
         )
 
     row = conn.execute("SELECT * FROM identity_module_state WHERE send_as_id = ?", (int(send_as_id),)).fetchone()
@@ -1467,6 +1596,46 @@ _META_STATE_CODEC = {
         _encode_meta_json,
         lambda value: set_guanxing_round_state(_decode_meta_json(value, {})),
     ),
+    "replica_group_id": (
+        get_replica_group_id,
+        lambda value: str(value),
+        lambda value: set_replica_group_id(_decode_meta_int(value, 0)),
+    ),
+    "replica_group_ids": (
+        get_replica_group_ids,
+        _encode_meta_json,
+        lambda value: set_replica_group_ids(_decode_meta_json(value, [])),
+    ),
+    "replica_listener_account_id": (
+        get_replica_listener_account_id,
+        lambda value: str(value),
+        lambda value: set_replica_listener_account_id(_decode_meta_int(value, 0)),
+    ),
+    "replica_listener_account_map": (
+        get_replica_listener_account_map,
+        _encode_meta_json,
+        lambda value: set_replica_listener_account_map(_decode_meta_json(value, {})),
+    ),
+    "replica_participant_identity_ids": (
+        get_replica_participant_identity_ids,
+        _encode_meta_json,
+        lambda value: set_replica_participant_identity_ids(_decode_meta_json(value, [])),
+    ),
+    "replica_run_state": (
+        get_replica_run_state,
+        _encode_meta_json,
+        lambda value: set_replica_run_state(_decode_meta_json(value, {})),
+    ),
+    "replica_virtual_hall_match_enabled_map": (
+        get_replica_virtual_hall_match_enabled_map,
+        _encode_meta_json,
+        lambda value: set_replica_virtual_hall_match_enabled_map(_decode_meta_json(value, {})),
+    ),
+    "replica_query_aggregator_config": (
+        get_replica_query_aggregator_config,
+        _encode_meta_json,
+        lambda value: set_replica_query_aggregator_config(_decode_meta_json(value, {})),
+    ),
     "storage_bag_records": (
         get_storage_bag_records,
         _encode_meta_json,
@@ -1481,6 +1650,21 @@ _META_STATE_CODEC = {
         get_dungeon_join_run_state,
         _encode_meta_json,
         lambda value: set_dungeon_join_run_state(_decode_meta_json(value, {})),
+    ),
+    "dungeon_quiet_until": (
+        lambda: float(_meta_state.get("dungeon_quiet_until", 0) or 0),
+        lambda value: str(value),
+        lambda value: _set_meta_value("dungeon_quiet_until", _decode_meta_float(value, 0)),
+    ),
+    "dungeon_quiet_reason": (
+        lambda: str(_meta_state.get("dungeon_quiet_reason") or ""),
+        lambda value: str(value or ""),
+        lambda value: _set_meta_value("dungeon_quiet_reason", str(value or "")),
+    ),
+    "dungeon_quiet_last_log_at": (
+        lambda: float(_meta_state.get("dungeon_quiet_last_log_at", 0) or 0),
+        lambda value: str(value),
+        lambda value: _set_meta_value("dungeon_quiet_last_log_at", _decode_meta_float(value, 0)),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,
@@ -1529,6 +1713,152 @@ def _save_meta_state(conn):
         )
 
 
+def _identity_collapse_guard_enabled():
+    if os.environ.get("XIUXIAN_ALLOW_IDENTITY_COLLAPSE") == "1":
+        return False
+    if os.environ.get("XIUXIAN_TESTING") == "1" and os.environ.get("XIUXIAN_ENFORCE_IDENTITY_GUARD") != "1":
+        return False
+    return True
+
+
+def _looks_like_demo_identity_set(identity_ids, profiles):
+    current_ids = {int(send_as_id) for send_as_id in identity_ids}
+    if current_ids == {991201}:
+        return True
+    if len(current_ids) > 3:
+        return False
+    usernames = {
+        str((profiles.get(send_as_id) or profiles.get(str(send_as_id)) or {}).get("username") or "").strip().lower()
+        for send_as_id in current_ids
+    }
+    usernames.discard("")
+    return bool(usernames & {"leader", "@leader", "test", "@test"})
+
+
+def _should_block_identity_collapse(existing_ids, current_ids):
+    if not _identity_collapse_guard_enabled():
+        return False
+    existing_ids = {int(send_as_id) for send_as_id in existing_ids}
+    current_ids = {int(send_as_id) for send_as_id in current_ids}
+    if len(existing_ids) < 10:
+        return False
+    if len(current_ids) >= max(4, len(existing_ids) // 2):
+        return False
+    deleted_ids = existing_ids - current_ids
+    if len(deleted_ids) < 3:
+        return False
+    profiles = _meta_state.get("send_as_profiles") if isinstance(_meta_state.get("send_as_profiles"), dict) else {}
+    if _looks_like_demo_identity_set(current_ids, profiles):
+        return True
+    return len(current_ids) <= 2 and len(current_ids & existing_ids) <= 1
+
+
+def _read_identity_roster_from_conn(conn):
+    try:
+        rows = conn.execute("SELECT send_as_id, username FROM identities ORDER BY send_as_id").fetchall()
+    except Exception:
+        return []
+    roster = []
+    for row in rows:
+        try:
+            send_as_id = int(row["send_as_id"])
+        except Exception:
+            continue
+        try:
+            username = str(row["username"] or "")
+        except Exception:
+            username = ""
+        roster.append((send_as_id, username))
+    return roster
+
+
+def _read_identity_roster_from_db_file(db_file):
+    if not db_file or not os.path.exists(db_file):
+        return []
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+        conn.row_factory = sqlite3.Row
+        return _read_identity_roster_from_conn(conn)
+    except Exception:
+        return []
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _roster_looks_like_live(roster):
+    return len(roster or []) >= 10
+
+
+def _roster_looks_suspicious(roster):
+    if not roster:
+        return False
+    ids = [int(item[0]) for item in roster]
+    profiles = {int(send_as_id): {"username": username} for send_as_id, username in roster}
+    if _looks_like_demo_identity_set(ids, profiles):
+        return True
+    return len(roster) <= 2
+
+
+def _write_live_guard_backup(conn):
+    if not _identity_collapse_guard_enabled():
+        return
+    if os.environ.get("XIUXIAN_DISABLE_LIVE_DB_BACKUP") == "1":
+        return
+    roster = _read_identity_roster_from_conn(conn)
+    if not _roster_looks_like_live(roster):
+        return
+    try:
+        os.makedirs(LIVE_GUARD_DIR, exist_ok=True)
+        backup_conn = sqlite3.connect(LIVE_GUARD_DB_FILE)
+        try:
+            conn.backup(backup_conn)
+        finally:
+            backup_conn.close()
+        manifest = {
+            "saved_at": time.time(),
+            "identity_count": len(roster),
+            "identity_ids": [send_as_id for send_as_id, _username in roster],
+        }
+        tmp_manifest = LIVE_GUARD_MANIFEST_FILE + ".tmp"
+        with open(tmp_manifest, "w", encoding="utf-8") as f:
+            json.dump(manifest, f, ensure_ascii=False, sort_keys=True)
+        os.replace(tmp_manifest, LIVE_GUARD_MANIFEST_FILE)
+    except Exception:
+        traceback.print_exc()
+
+
+def _maybe_restore_live_guard_backup():
+    if not _identity_collapse_guard_enabled():
+        return False
+    if os.environ.get("XIUXIAN_DISABLE_LIVE_DB_RESTORE") == "1":
+        return False
+    if os.environ.get("XIUXIAN_ALLOW_IDENTITY_COLLAPSE") == "1":
+        return False
+    current_roster = _read_identity_roster_from_db_file(DB_FILE)
+    if not _roster_looks_suspicious(current_roster):
+        return False
+    backup_roster = _read_identity_roster_from_db_file(LIVE_GUARD_DB_FILE)
+    if not _roster_looks_like_live(backup_roster):
+        return False
+    try:
+        if _db_conn is not None:
+            _db_conn.close()
+        backup_name = f"{DB_FILE}.suspicious-{int(time.time())}"
+        if os.path.exists(DB_FILE):
+            shutil.copy2(DB_FILE, backup_name)
+        shutil.copy2(LIVE_GUARD_DB_FILE, DB_FILE)
+        print(
+            "Restored live state DB from guard backup after suspicious roster: "
+            f"current={len(current_roster)} backup={len(backup_roster)} saved_bad={backup_name}"
+        )
+        return True
+    except Exception:
+        traceback.print_exc()
+        return False
+
+
 
 def delete_identity_from_db(send_as_id):
     init_db()
@@ -1548,21 +1878,33 @@ def save_state():
     try:
         init_db()
         conn = get_db_conn()
+        _ensure_schema_columns(conn)
         _save_meta_state(conn)
         existing_ids = {
             int(row["send_as_id"])
             for row in conn.execute("SELECT send_as_id FROM identities").fetchall()
         }
         current_ids = {int(send_as_id) for send_as_id in get_identity_ids()}
+        if _should_block_identity_collapse(existing_ids, current_ids):
+            print(
+                "Refusing to save suspicious identity collapse: "
+                f"existing={len(existing_ids)} current={len(current_ids)} "
+                f"deleted={sorted(existing_ids - current_ids)}"
+            )
+            conn.rollback()
+            return False
         for send_as_id in sorted(existing_ids - current_ids):
             delete_identity_from_db(send_as_id)
         for send_as_id in get_identity_ids():
             upsert_identity_to_db(send_as_id)
         conn.commit()
+        _write_live_guard_backup(conn)
         _state_dirty = False
         _last_flush_time = time.time()
+        return True
     except Exception:
         traceback.print_exc()
+        return False
 
 
 def mark_dirty():
@@ -1581,15 +1923,38 @@ def flush_if_dirty(now=None):
 
 def load_state():
     try:
+        restored_db = _maybe_restore_live_guard_backup()
+        if restored_db:
+            global _db_conn, _db_initialized
+            _db_conn = None
+            _db_initialized = False
         init_db()
         conn = get_db_conn()
+        _ensure_schema_columns(conn)
+        conn.commit()
 
         meta_rows = conn.execute("SELECT key, value FROM meta").fetchall()
         meta_map = {str(row["key"] or ""): row["value"] for row in meta_rows}
         forum_topics = []
         forum_topics_updated_at = 0
         membership_initialized = False
+        replica_participant_identity_ids = []
+        replica_group_ids = []
+        replica_listener_account_map = {}
+        replica_virtual_hall_match_enabled_map = {}
         for key, (_, _, decoder) in _META_STATE_CODEC.items():
+            if key == "replica_group_ids":
+                replica_group_ids = _decode_meta_json(meta_map.get(key), [])
+                continue
+            if key == "replica_listener_account_map":
+                replica_listener_account_map = _decode_meta_json(meta_map.get(key), {})
+                continue
+            if key == "replica_participant_identity_ids":
+                replica_participant_identity_ids = _decode_meta_json(meta_map.get(key), [])
+                continue
+            if key == "replica_virtual_hall_match_enabled_map":
+                replica_virtual_hall_match_enabled_map = _decode_meta_json(meta_map.get(key), {})
+                continue
             decoded = decoder(meta_map.get(key))
             if key == "forum_topics":
                 forum_topics = decoded
@@ -1597,6 +1962,17 @@ def load_state():
                 forum_topics_updated_at = decoded
             elif key == "identity_membership_initialized":
                 membership_initialized = bool(decoded)
+        if not replica_group_ids:
+            legacy_group_id = _decode_meta_int(meta_map.get("replica_group_id"), 0)
+            replica_group_ids = [legacy_group_id] if legacy_group_id else []
+        if not replica_listener_account_map:
+            legacy_group_id = _decode_meta_int(meta_map.get("replica_group_id"), 0)
+            legacy_account_id = _decode_meta_int(meta_map.get("replica_listener_account_id"), 0)
+            if legacy_group_id and legacy_account_id:
+                replica_listener_account_map = {str(legacy_group_id): legacy_account_id}
+        set_replica_group_ids(replica_group_ids)
+        set_replica_listener_account_map(replica_listener_account_map)
+        set_replica_virtual_hall_match_enabled_map(replica_virtual_hall_match_enabled_map)
         set_forum_topics(forum_topics, updated_at=forum_topics_updated_at)
         rows = conn.execute(
             "SELECT send_as_id, username, label, daohao, realm, pet_name, pet_warm_name, pet_trial_name, sect_name, sect_updated_at, stargazer_star_choice, tianti_rank_choice, stargazer_total_slots, checkin_window_start_hour_utc, checkin_window_end_hour_utc, tower_window_start_hour_utc, tower_window_end_hour_utc, enabled, xiuwei_current, xiuwei_max FROM identities ORDER BY send_as_id"
@@ -1608,6 +1984,7 @@ def load_state():
             send_as_id = int(row["send_as_id"])
             _meta_state["identity_ids"].append(send_as_id)
             _load_identity_from_db(send_as_id)
+        set_replica_participant_identity_ids(replica_participant_identity_ids)
 
         if not membership_initialized:
             _save_meta_state(conn)

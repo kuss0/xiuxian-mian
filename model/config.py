@@ -9,17 +9,20 @@ from telethon import TelegramClient
 
 APP_DIR = os.path.dirname(__file__)
 PROJECT_ROOT_DIR = os.path.dirname(APP_DIR)
-DATA_DIR = os.path.join(PROJECT_ROOT_DIR, "data")
-SESSION_DIR = os.path.join(DATA_DIR, "session")
-STATE_DIR = os.path.join(DATA_DIR, "state")
-MESSAGES_DIR = os.path.join(DATA_DIR, "messages")
+DATA_DIR = os.path.abspath(os.environ.get("XIUXIAN_DATA_DIR") or os.path.join(PROJECT_ROOT_DIR, "data"))
+SESSION_DIR = os.path.abspath(os.environ.get("XIUXIAN_SESSION_DIR") or os.path.join(DATA_DIR, "session"))
+STATE_DIR = os.path.abspath(os.environ.get("XIUXIAN_STATE_DIR") or os.path.join(DATA_DIR, "state"))
+MESSAGES_DIR = os.path.abspath(os.environ.get("XIUXIAN_MESSAGES_DIR") or os.path.join(DATA_DIR, "messages"))
 SESSION_FILE = os.path.join(SESSION_DIR, "ai_investor_session")
 
 # ================= 从 .env 读取启动配置 =================
 def _load_dotenv():
     env_path = os.path.join(PROJECT_ROOT_DIR, ".env")
     if not os.path.exists(env_path):
+        if os.environ.get("XIUXIAN_TESTING") == "1":
+            return
         raise FileNotFoundError(f"missing .env: {env_path}")
+    testing = os.environ.get("XIUXIAN_TESTING") == "1"
     with open(env_path, "r", encoding="utf-8") as f:
         for raw_line in f:
             line = raw_line.strip()
@@ -32,6 +35,8 @@ def _load_dotenv():
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
                 value = value[1:-1]
+            if testing and key in os.environ:
+                continue
             os.environ[key] = value
 
 
@@ -105,20 +110,50 @@ TG_PROXY_USERNAME = _get_env_str("TG_PROXY_USERNAME", "")
 TG_PROXY_PASSWORD = _get_env_str("TG_PROXY_PASSWORD", "")
 TELETHON_PROXY = _build_telethon_proxy_config()
 TG_REQUESTS_PROXIES = _build_requests_proxies()
+TIANDAO_MINIAPP_VERIFY_URL = _get_env_str("TIANDAO_MINIAPP_VERIFY_URL", "https://asc.aiopenai.app/miniapp/xianxia-verify")
+TIANDAO_MINIAPP_BOT_USERNAME = _get_env_str("TIANDAO_MINIAPP_BOT_USERNAME", "fanrenxiuxian_bot")
 LOG_GROUP_ID = int(os.environ["LOG_GROUP_ID"])
 LOG_SEND_MODE = str(os.environ.get("LOG_SEND_MODE", "account") or "account").strip().lower()
 if LOG_SEND_MODE not in {"account", "bot"}:
     LOG_SEND_MODE = "account"
 LOG_BOT_TOKEN = str(os.environ.get("LOG_BOT_TOKEN", "") or "").strip()
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 0) or 0)
+try:
+    LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC = max(60, int(os.environ.get("LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC", "600")))
+except (TypeError, ValueError):
+    LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC = 600
+try:
+    LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS = max(5, int(os.environ.get("LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS", "20")))
+except (TypeError, ValueError):
+    LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS = 20
+_raw_admin_id = str(os.environ.get("ADMIN_ID", "") or "").strip()
+ADMIN_IDS: frozenset[int] = frozenset()
+_admin_id_parts: list[int] = []
+for _part in _raw_admin_id.replace(";", ",").split(","):
+    _part = _part.strip()
+    if not _part:
+        continue
+    try:
+        _admin_id = int(_part)
+    except (TypeError, ValueError):
+        raise ValueError(f"ADMIN_ID 包含非数字 {_part!r}，请检查 .env")
+    if _admin_id > 0:
+        _admin_id_parts.append(_admin_id)
+ADMIN_IDS = frozenset(_admin_id_parts)
+if not ADMIN_IDS:
+    raise ValueError(
+        "ADMIN_ID 必须是大于 0 的 Telegram 用户 ID（多个用逗号分隔）。"
+        "未设置时日志群任何成员都能触发 .登录 / .全局暂停 等控制指令，已拒绝启动。"
+        "请在 .env 中填写 ADMIN_ID=<你的 TG user_id>。"
+    )
+ADMIN_ID = next(iter(sorted(ADMIN_IDS)))  # 兼容只取第一个的旧引用
 
 GAME_GROUP_ID = -1001680975844  # 游戏主群（初始化默认值，可在 UI 基础配置中修改）
-GAME_BOT_IDS = {-1003983937918, 7900199668, 8388633812, 8547797815, 8757550896}  # 游戏 BOT ID（初始化默认值，可在 UI 基础配置中修改）
+GAME_BOT_IDS = {-1003983937918, 7900199668, 8349385938, 8388633812, 8400307678, 8547797815, 8567800706, 8609885831, 8757550896}  # 游戏 BOT ID（初始化默认值，可在 UI 基础配置中修改）
 GAME_TOPIC_ID = 7310786  # 游戏话题 ID（初始化默认值，可在 UI 基础配置中修改）
 
 RETRY_MIN_SEC = 600
 RETRY_MAX_SEC = 900
-RETRY_LIMIT = 3
+RETRY_LIMIT = 1
 MY_MSG_TTL = 3600
 MY_MSG_MAX = 1000
 
@@ -149,7 +184,7 @@ SECT_TEACH_DELAY_MIN_SEC = 5       # 宗门传功链路最小等待秒数
 SECT_TEACH_DELAY_MAX_SEC = 10      # 宗门传功链路最大等待秒数
 FLUSH_INTERVAL_SEC = 30            # 脏状态定期写盘间隔
 BOT_SILENCE_TIMEOUT_SEC = 600      # bot 静默超时，触发全局暂停（10分钟）
-DB_FILE = os.path.join(STATE_DIR, "chaogu_state.db")
+DB_FILE = os.path.abspath(os.environ.get("XIUXIAN_DB_FILE") or os.path.join(STATE_DIR, "chaogu_state.db"))
 DB_SCHEMA_VERSION = 8
 TZ_LOCAL = timezone(timedelta(hours=8))
 
@@ -211,6 +246,8 @@ CMD_NANLONG_EXCHANGE_FABAO = ".交换 法宝"
 CMD_NANLONG_EXCHANGE_GONGFA = ".交换 功法"
 CMD_NANLONG_REJECT = ".拒绝交易"
 CMD_CONCUBINE_STATUS = ".我的侍妾"
+CMD_CONCUBINE_DAILY_GREET = ".每日问安"
+CMD_CONCUBINE_GIFT_STONE = ".赠予侍妾"
 CMD_CONCUBINE_DREAM = ".入梦寻图"
 CMD_CONCUBINE_FRAGMENT = ".残图"
 CMD_CONCUBINE_PUZZLE = ".拼图"
@@ -252,8 +289,8 @@ CONCUBINE_CHAIN_DELAY_MAX_SEC = 30
 CONCUBINE_REACQUIRE_RETRY_SEC = 12 * 3600
 CONCUBINE_TIANJI_CD_SEC = 12 * 3600
 CONCUBINE_HEART_CD_SEC = 12 * 3600
-CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC = 60
-CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC = 150
+CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC = 1
+CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC = 3
 SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC = 60
 
 
@@ -340,6 +377,8 @@ SCRIPT_COMMANDS = [
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
     CMD_CONCUBINE_STATUS,
+    CMD_CONCUBINE_DAILY_GREET,
+    CMD_CONCUBINE_GIFT_STONE,
     CMD_CONCUBINE_DREAM,
     CMD_CONCUBINE_FRAGMENT,
     CMD_CONCUBINE_PUZZLE,
@@ -391,6 +430,15 @@ MODULE_KEY_MAP = {
     "自动副本": "dungeon_join_enabled",
 }
 CMD_DUNGEON_JOIN = ".加入副本"
+CMD_DUNGEON_ZHUIMO_JOIN = ".加入坠魔谷"
+CMD_DUNGEON_HUANGLONG_JOIN = ".加入黄龙山"
+CMD_REPLICA_JOIN = CMD_DUNGEON_JOIN
+CMD_REPLICA_ZHUIMO_JOIN = CMD_DUNGEON_ZHUIMO_JOIN
+CMD_REPLICA_HUANGLONG_JOIN = CMD_DUNGEON_HUANGLONG_JOIN
+CMD_REPLICA_CANGKUN_JOIN = ".加入苍坤洞府"
+REPLICA_SUCCESS_COOLDOWN_SEC = 125 * 60
+REPLICA_ACTIVE_TTL_SEC = 2 * 60 * 60
+REPLICA_FAILURE_GRACE_SEC = 3 * 60
 UI_HOST = os.environ.get("CHAOGU_UI_HOST", "0.0.0.0")
 try:
     UI_PORT = int(os.environ.get("CHAOGU_UI_PORT", "3030"))
@@ -550,11 +598,21 @@ RE_CMD_GLOBAL_RESUME = re.compile(r'^\.全局(恢复|启动)$')
 RE_CMD_LOGIN = re.compile(r'^\.登录$')
 RE_CMD_HELP = re.compile(r'^\.(指令|帮助|help)$', re.I)
 RE_CMD_STATUS = re.compile(r'^\.(状态|模块状态)$')
+RE_CMD_ANALYSIS_SUMMARY = re.compile(r'^\.(离线分析|分析状态|玩法总览|指令总览)$')
+RE_CMD_ANALYSIS_HEALTH = re.compile(r'^\.(发送健康码|发送健康|运行健康码|健康码)$')
+RE_CMD_ANALYSIS_LOG_GROUP = re.compile(r'^\.(日志群分析|日志群指令)$')
+RE_CMD_ANALYSIS_WEBMINI = re.compile(r'^\.(webmini分析|webmini吸收|miniweb分析|miniweb吸收)$', re.I)
+RE_CMD_ANALYSIS_UNKNOWN = re.compile(r'^\.(未知指令|未归类指令)$')
+RE_CMD_STAGING_PREFLIGHT = re.compile(r'^\.(上线预检|待上线预检|预检|上线检查)$')
+RE_CMD_AUDIT_PUSH_STATUS = re.compile(r'^\.(日志推送状态|推送状态|日志优先级|日志汇总状态)$')
+RE_CMD_AUDIT_FLUSH_SUMMARY = re.compile(r'^\.(发送日志汇总|刷新日志汇总|立即日志汇总|日志汇总)$')
 RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
     (re.compile(r'^\.温养器灵状态$'), "温养器灵"),
     (re.compile(r'^\.器灵试炼状态$'), "器灵试炼"),
+    (re.compile(r'^\.放养状态$'), "放养"),
+    (re.compile(r'^\.野外历练状态$'), "野外历练"),
     (re.compile(r'^\.观星台状态$'), "观星台"),
     (re.compile(r'^\.观星状态$'), "观星"),
     (re.compile(r'^\.观星监控状态$'), "观星监控"),
@@ -572,6 +630,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.小世界状态$'), "小世界"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
     (re.compile(r'^\.闯塔状态$'), "闯塔"),
+    (re.compile(r'^\.(自动副本|副本)状态$'), "自动副本"),
 ]
 RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(开启|打开)灵树$'), "灵树", True),
@@ -582,6 +641,10 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)温养器灵$'), "温养器灵", False),
     (re.compile(r'^\.(开启|打开)器灵试炼$'), "器灵试炼", True),
     (re.compile(r'^\.(关闭|关掉)器灵试炼$'), "器灵试炼", False),
+    (re.compile(r'^\.(开启|打开)放养$'), "放养", True),
+    (re.compile(r'^\.(关闭|关掉)放养$'), "放养", False),
+    (re.compile(r'^\.(开启|打开)野外历练$'), "野外历练", True),
+    (re.compile(r'^\.(关闭|关掉)野外历练$'), "野外历练", False),
     (re.compile(r'^\.(开启|打开)观星台$'), "观星台", True),
     (re.compile(r'^\.(关闭|关掉)观星台$'), "观星台", False),
     (re.compile(r'^\.(开启|打开)观星$'), "观星", True),
@@ -612,4 +675,10 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)点卯$'), "点卯", False),
     (re.compile(r'^\.(开启|打开)闯塔$'), "闯塔", True),
     (re.compile(r'^\.(关闭|关掉)闯塔$'), "闯塔", False),
+    (re.compile(r'^\.(开启|打开)第二元神$'), "第二元神", True),
+    (re.compile(r'^\.(关闭|关掉)第二元神$'), "第二元神", False),
+    (re.compile(r'^\.(开启|打开)太一$'), "太一", True),
+    (re.compile(r'^\.(关闭|关掉)太一$'), "太一", False),
+    (re.compile(r'^\.(开启|打开)自动副本$'), "自动副本", True),
+    (re.compile(r'^\.(关闭|关掉)自动副本$'), "自动副本", False),
 ]

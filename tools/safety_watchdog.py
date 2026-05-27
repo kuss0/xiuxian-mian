@@ -56,10 +56,39 @@ SMALL_WORLD_TOOL_PREFIXES = (
     ".神识淬炼",
 )
 
-DUNGEON_JOIN_PREFIX = ".加入副本"
+DUNGEON_JOIN_PREFIXES = (".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府")
+DUNGEON_FAST_CHAIN_PREFIXES = (
+    ".开启副本",
+    ".开启虚天殿",
+    ".开启苍坤洞府",
+    ".开启坠魔谷",
+    ".开启黄龙山",
+    ".加入副本",
+    ".加入坠魔谷",
+    ".加入黄龙山",
+    ".加入苍坤洞府",
+    ".解散副本",
+    ".解散苍坤洞府",
+    ".解散坠魔谷",
+    ".解散黄龙山",
+    ".请离",
+    ".进入虚天殿",
+    ".进入坠魔谷",
+    ".进入黄龙山",
+    ".进入苍坤洞府",
+    ".选择道路",
+    ".阵策",
+    ".后殿阵策",
+    ".坠魔抉择",
+    ".黄龙抉择",
+    ".苍坤抉择",
+)
 SECT_TEACH_PREFIX = ".宗门传功"
 SECT_TEACH_MAX_ATTEMPTS_10M = 3
 HEART_CHOICE_COMMANDS = {".稳", ".狠", ".骗"}
+CONCUBINE_STATUS_COMMAND = ".我的侍妾"
+CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍妾")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
     "TG FloodWait",
@@ -157,7 +186,16 @@ def is_refresh_command(text: str) -> bool:
 
 def is_dungeon_join_command(text: str) -> bool:
     raw = str(text or "").strip()
-    return raw == DUNGEON_JOIN_PREFIX or raw.startswith(DUNGEON_JOIN_PREFIX + " ")
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in DUNGEON_JOIN_PREFIXES)
+
+
+def is_dungeon_fast_chain_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in DUNGEON_FAST_CHAIN_PREFIXES)
+
+
+def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
+    return is_dungeon_fast_chain_command(str(prev.get("text") or "")) or is_dungeon_fast_chain_command(str(cur.get("text") or ""))
 
 
 def is_sect_teach_command(text: str) -> bool:
@@ -216,9 +254,36 @@ def has_intervening_small_world_tool(sent: list[dict], sender_id: int, prev: dic
     return False
 
 
+def has_intervening_concubine_recovery_tool(sent: list[dict], sender_id: int, prev: dict, cur: dict) -> bool:
+    prev_epoch = float(prev.get("_epoch", 0) or 0)
+    cur_epoch = float(cur.get("_epoch", 0) or 0)
+    if sender_id <= 0 or prev_epoch <= 0 or cur_epoch <= prev_epoch:
+        return False
+    for item in sent:
+        item_epoch = float(item.get("_epoch", 0) or 0)
+        if item_epoch <= prev_epoch or item_epoch >= cur_epoch:
+            continue
+        if int(item.get("sender_id", 0) or 0) != sender_id:
+            continue
+        raw = str(item.get("text") or "").strip()
+        if any(raw == prefix or raw.startswith(prefix + " ") for prefix in CONCUBINE_RECOVERY_CHAIN_PREFIXES):
+            return True
+    return False
+
+
 def count_since(events: list[dict], now: float, seconds: float) -> int:
     start = now - float(seconds)
     return sum(1 for item in events if float(item.get("_epoch", 0) or 0) >= start)
+
+
+def count_non_dungeon_fast_chain_since(events: list[dict], now: float, seconds: float) -> int:
+    start = now - float(seconds)
+    return sum(
+        1
+        for item in events
+        if float(item.get("_epoch", 0) or 0) >= start
+        and not is_dungeon_fast_chain_command(str(item.get("text") or ""))
+    )
 
 
 def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str:
@@ -231,16 +296,18 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
     if not sent:
         return ""
 
-    if count_since(sent, now, 120) >= cfg.total_2m_limit:
+    if count_non_dungeon_fast_chain_since(sent, now, 120) >= cfg.total_2m_limit:
         return f"send burst: {cfg.total_2m_limit}+ sends in 120s"
-    if count_since(sent, now, 300) >= cfg.total_5m_limit:
+    if count_non_dungeon_fast_chain_since(sent, now, 300) >= cfg.total_5m_limit:
         return f"send burst: {cfg.total_5m_limit}+ sends in 300s"
-    if count_since(sent, now, 900) >= cfg.total_15m_limit:
+    if count_non_dungeon_fast_chain_since(sent, now, 900) >= cfg.total_15m_limit:
         return f"send burst: {cfg.total_15m_limit}+ sends in 900s"
 
     recent_gap_sent = [item for item in sent if float(item["_epoch"]) >= now - 30 * 60]
     for prev, cur in zip(recent_gap_sent, recent_gap_sent[1:]):
         gap = float(cur["_epoch"]) - float(prev["_epoch"])
+        if is_safe_global_gap_pair(prev, cur):
+            continue
         if 0 <= gap < cfg.min_any_gap_sec:
             return (
                 f"global lock breach: gap {gap:.1f}s between "
@@ -277,6 +344,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         for prev, cur in zip(items, items[1:]):
             gap = float(cur["_epoch"]) - float(prev["_epoch"])
             if refresh and has_intervening_small_world_tool(sent, sender_id, prev, cur):
+                continue
+            if text == CONCUBINE_STATUS_COMMAND and has_intervening_concubine_recovery_tool(sent, sender_id, prev, cur):
                 continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
@@ -377,6 +446,20 @@ def disable_global_switch(project_root: Path) -> str:
     return "global_enabled=0"
 
 
+def is_global_switch_enabled(project_root: Path) -> bool:
+    db_path = state_db_path(project_root)
+    if not db_path.exists():
+        return False
+    try:
+        with sqlite3.connect(str(db_path), timeout=5) as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()
+    except sqlite3.Error:
+        return False
+    if not row:
+        return True
+    return str(row[0]).strip() not in {"0", "false", "False", ""}
+
+
 def stop_service(service_name: str) -> str:
     proc = subprocess.run(
         ["systemctl", "stop", service_name],
@@ -422,11 +505,30 @@ def write_fuse_marker(project_root: Path, reason: str, actions: list[str]) -> No
     marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def read_fuse_marker_reason(project_root: Path) -> str:
+    marker = fuse_marker_path(project_root)
+    if not marker.exists():
+        return ""
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("reason") or "")
+
+
 def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
     marker = fuse_marker_path(cfg.project_root)
+    marker_existed = marker.exists()
     if marker.exists():
-        print(f"already fused: {marker}")
-        return
+        if read_fuse_marker_reason(cfg.project_root) == reason:
+            print(f"already fused: {marker}")
+            return
+        if cfg.dry_run or not is_global_switch_enabled(cfg.project_root):
+            print(f"already fused: {marker}")
+            return
+        print(f"stale fuse marker with global enabled, re-fusing silently: {marker}")
     actions: list[str] = []
     if cfg.dry_run:
         actions.append("dry-run: no action")
@@ -450,6 +552,9 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
         + "\n".join(f"- {item}" for item in actions)
     )
     print(message)
+    if marker_existed:
+        print("log bot skipped: existing fuse marker")
+        return
     print(send_log_via_bot(env, message))
 
 
@@ -500,7 +605,7 @@ def reset_fuse(cfg: WatchdogConfig) -> None:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Xiuxian external safety watchdog")
-    parser.add_argument("--project-root", default="/opt/xiuxian-main")
+    parser.add_argument("--project-root", default=str(PROJECT_ROOT))
     parser.add_argument("--service", default="xiuxian")
     parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--action", choices=("soft", "stop"), default="soft")

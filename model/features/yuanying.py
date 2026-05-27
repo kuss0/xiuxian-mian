@@ -73,8 +73,8 @@ YUANYING_SPEC = PhasefulSpec(
     protect_on_log="👶 元婴时间已到，但当前处于 30 秒保护中，暂不重复执行。",
     protect_off_log="👶 元婴 30 秒保护状态已结束。",
     launching_timeout_audit="👶 launching 超时，已回退。",
-    waiting_anomaly_audit="👶 归窍等待异常，已解卡继续。",
-    waiting_timeout_audit="👶 归窍总结超时，按兜底继续。",
+    waiting_anomaly_audit="👶 归窍等待异常，已解卡",
+    waiting_timeout_audit="👶 归窍总结超时",
     post_wait_console="👶 归窍缓冲结束，继续元婴。",
     running_due_console="👶 元婴归来时间到",
     cd_due_console="👶 元婴 CD 到",
@@ -173,9 +173,9 @@ async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None
         return False
 
     probe_hit = (
-        "你的元婴" in text and
-        "元神出窍" in text and
-        "任务" in text
+        "你的元婴正在执行" in text
+        and "任务" in text
+        and "元婴归窍" in text
     )
     if not probe_hit:
         return False
@@ -239,12 +239,14 @@ def match_yuanying_summary_identity(text, now=None):
     old_summary_kw_hit = "元神归窍总结" in compact_text
     new_summary_kw_hit = (
         "元神回响" in compact_text and "神游归来" in compact_text and "清点收获" in compact_text
-    )
+    ) or "元婴闭关结算" in compact_text
     if not (old_summary_kw_hit or new_summary_kw_hit):
         return None, [], old_summary_kw_hit, new_summary_kw_hit
     now = float(now or 0)
+    has_explicit_at = "@" in compact_text
 
     matched_ids = []
+    fallback_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state["yuanying_enabled"]:
@@ -262,12 +264,18 @@ def match_yuanying_summary_identity(text, now=None):
                 compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
                 if any(tag in compact_text for tag in compact_tags):
                     matched_ids.append(identity_id)
-            else:
+                elif not has_explicit_at:
+                    fallback_ids.append(identity_id)
+            elif not has_explicit_at:
                 if ("修士" in compact_text and old_summary_kw_hit) or new_summary_kw_hit:
-                    matched_ids.append(identity_id)
+                    fallback_ids.append(identity_id)
 
     if len(matched_ids) == 1:
         return matched_ids[0], matched_ids, old_summary_kw_hit, new_summary_kw_hit
+    if not matched_ids and len(fallback_ids) == 1:
+        return fallback_ids[0], fallback_ids, old_summary_kw_hit, new_summary_kw_hit
+    if not matched_ids:
+        matched_ids = fallback_ids
     return None, matched_ids, old_summary_kw_hit, new_summary_kw_hit
 
 

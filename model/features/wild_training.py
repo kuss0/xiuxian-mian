@@ -24,6 +24,7 @@ WILD_TRAINING_RESULT_MARKERS = ("【野外历练", "修为", "获得", "负伤",
 WILD_TRAINING_CD_KEYWORDS = ("山中灵机未复", "冷却", "请在", "等待")
 RE_WILD_TRAINING_XIUWEI = re.compile(r"修为(?:折损)?\s*([+-]\s*[\d,]+)")
 RE_WILD_TRAINING_REWARD = re.compile(r"获得\s+【([^】]+)】x(\d+)")
+RE_WILD_TRAINING_START_STRATEGY = re.compile(r"选择【([^】]+)】")
 
 
 def normalize_wild_training_strategy(strategy):
@@ -110,9 +111,19 @@ def _extract_result_title(text):
     for title in WILD_TRAINING_RESULT_TITLES:
         if raw_text.startswith(title):
             return title.replace("【野外历练 · ", "").replace("】", "")
-    if raw_text.startswith("【野外历练】") and "选择【" in raw_text:
-        return "已出发"
     return ""
+
+
+def _is_start_notice(text):
+    raw_text = str(text or "").strip()
+    return raw_text.startswith("【野外历练】") and "选择【" in raw_text and "荒野深处行去" in raw_text
+
+
+def _start_summary(text):
+    match = RE_WILD_TRAINING_START_STRATEGY.search(str(text or ""))
+    if match:
+        return f"已出发：{normalize_wild_training_strategy(match.group(1))}"
+    return "已出发"
 
 
 def _result_summary(text):
@@ -129,24 +140,37 @@ def _result_summary(text):
     return _extract_result_title(raw_text) or "未知结果"
 
 
-async def handle_wild_training_reply(text, now, reply_to, matched_family=None):
+async def handle_wild_training_reply(text, now, reply_to, matched_family=None, current_msg_id=None):
     if not state.get("wild_training_enabled"):
         return False
     if not _is_wild_training_reply(text, reply_to, matched_family=matched_family):
         return False
 
     raw_text = str(text or "").strip()
+    msg_id = int(current_msg_id or getattr(reply_to, "id", 0) or 0)
     if has_wait_time(raw_text) and any(keyword in raw_text for keyword in WILD_TRAINING_CD_KEYWORDS):
         wait_sec = parse_wait_time(raw_text)
         state["next_wild_training_time"] = float(now + wait_sec + CD_BUFFER_SEC + random.uniform(10, 60))
         state["wild_training_reply_to_msg_id"] = 0
         state["wild_training_reply_due_at"] = 0
         state["wild_training_retry_count"] = 0
-        state["wild_training_last_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
+        state["wild_training_last_msg_id"] = msg_id
         state["wild_training_last_result"] = "冷却中"
         state["wild_training_last_error"] = ""
         save_state()
         await send_audit_log(f"🏞️ 野外历练 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity")
+        return True
+
+    if _is_start_notice(raw_text):
+        if msg_id > 0:
+            state["wild_training_reply_to_msg_id"] = msg_id
+        state["wild_training_last_msg_id"] = msg_id
+        state["wild_training_last_result"] = _start_summary(raw_text)
+        state["wild_training_last_error"] = ""
+        if float(state.get("wild_training_reply_due_at", 0) or 0) <= now:
+            state["wild_training_reply_due_at"] = float(now + WILD_TRAINING_REPLY_TIMEOUT_SEC)
+        save_state()
+        console_log(f"🏞️ 野外历练已出发，等待结果编辑（msg_id={msg_id}）", scope="identity")
         return True
 
     if not any(marker in raw_text for marker in WILD_TRAINING_RESULT_MARKERS):
@@ -154,7 +178,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None):
 
     state["wild_training_reply_to_msg_id"] = 0
     state["wild_training_reply_due_at"] = 0
-    state["wild_training_last_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
+    state["wild_training_last_msg_id"] = msg_id
     state["wild_training_last_result"] = _result_summary(raw_text)
     state["wild_training_last_error"] = ""
     _schedule_next(now)
@@ -173,7 +197,10 @@ async def run_wild_training_scheduler(now):
             return
         state["wild_training_reply_to_msg_id"] = 0
         state["wild_training_reply_due_at"] = 0
-        if int(state.get("wild_training_retry_count", 0) or 0) < 1:
+        if str(state.get("wild_training_last_result") or "").startswith("已出发"):
+            _schedule_next(now)
+            state["wild_training_last_error"] = f"野外历练已出发但未收到最终结果编辑，进入下一轮，原消息ID={reply_to_msg_id}"
+        elif int(state.get("wild_training_retry_count", 0) or 0) < 1:
             state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
             _schedule_retry(now)
             state["wild_training_last_error"] = f"野外历练回复超时，准备补发一次，原消息ID={reply_to_msg_id}"

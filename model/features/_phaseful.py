@@ -74,6 +74,7 @@ SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD}
 SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
 SUMMARY_REPLAY_DELAY_MIN_SEC = 1
 SUMMARY_REPLAY_DELAY_MAX_SEC = 5
+SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC = 60
 
 
 def register_phaseful_spec(spec):
@@ -311,6 +312,11 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     priority = (payload or {}).get("priority") or "chain"
 
     with use_identity(send_as_id):
+        now = time.time()
+        if command == CMD_TREE_WATER and float(state.get("next_irr_time", 0) or 0) > now + SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC:
+            return
+        if command == CMD_TREE_GUARD and float(state.get("next_guard_time", 0) or 0) > now + SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC:
+            return
         if track and msg_id > 0 and msg_id not in state.get("pending_tasks", {}):
             return
         if msg_id > 0:
@@ -440,8 +446,17 @@ def _is_summary_observation_text(spec, text):
     return text in set(spec.summary_passive_triggers or ())
 
 
+def _is_active_summary_trigger_text(text):
+    text = str(text or "").strip()
+    return text == "1" or text.startswith(".")
+
+
 def _choose_passive_summary_trigger(spec):
-    triggers = tuple(spec.summary_passive_triggers or ())
+    triggers = tuple(
+        trigger
+        for trigger in tuple(spec.summary_passive_triggers or ())
+        if _is_active_summary_trigger_text(trigger)
+    )
     if not triggers:
         return spec.summary_trigger_command
     weighted = []
@@ -522,6 +537,17 @@ async def finalize_summary_broadcast(spec, now):
     console_log(spec.summary_received_console)
 
 
+async def _fallback_to_normal_cd(spec, now, audit_text):
+    await delete_summary_trigger_msg(spec)
+    clear_summary_flags(spec)
+    set_phase(spec, "idle")
+    state[spec.probe_pending_key] = False
+    state[spec.next_time_key] = _default_next_time(spec, now)
+    save_state()
+    await update_block_log_state(spec, waiting=False, protect=False)
+    await send_audit_log(f"{audit_text}，按正常CD兜底→{fmt_abs_ts(state[spec.next_time_key])}")
+
+
 async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
     if not state[spec.enabled_key]:
         return
@@ -549,19 +575,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] <= 0:
-        await delete_summary_trigger_msg(spec)
-        clear_summary_flags(spec)
-        save_state()
-        await send_audit_log(spec.waiting_anomaly_audit)
-        begin_queued_launch(spec, now)
-        msg = await send_game_command(launch_command, track=False, priority="chain")
-        if msg:
-            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-            mark_launch_command_sent(spec, sent_at)
-            await schedule_probe(random.uniform(8, 12))
-        else:
-            set_phase(spec, "idle")
-            save_state()
+        await _fallback_to_normal_cd(spec, now, spec.waiting_anomaly_audit)
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.last_summary_msg_id_key] < 0:
@@ -572,19 +586,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] > 0 and now - state[spec.summary_sent_at_key] >= spec.summary_timeout_sec:
-        await delete_summary_trigger_msg(spec)
-        clear_summary_flags(spec)
-        save_state()
-        await send_audit_log(spec.waiting_timeout_audit)
-        begin_queued_launch(spec, now)
-        msg = await send_game_command(launch_command, track=False, priority="chain")
-        if msg:
-            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-            mark_launch_command_sent(spec, sent_at)
-            await schedule_probe(random.uniform(8, 12))
-        else:
-            set_phase(spec, "idle")
-            save_state()
+        await _fallback_to_normal_cd(spec, now, spec.waiting_timeout_audit)
         return
 
     if _phase(spec) == "observing_summary":

@@ -6,9 +6,10 @@ import time
 from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, state
+from ..state import get_current_identity_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
+from .storage_bag import apply_storage_bag_item_text_delta
 
 
 PET_CD_HINT_KEYWORDS = ("尚未恢复", "冷却", "等待", "不足", "休息")
@@ -99,7 +100,7 @@ def _is_pet_warm_reply(text, reply_to, matched_family=None):
 
 def _has_pending_pet_warm_command():
     for pending in state.get("pending_tasks", {}).values():
-        pending_command = str((pending or {}).get("cmd") or "").strip()
+        pending_command = get_pending_command(pending)
         if pending_command == CMD_PET_WARM or pending_command.startswith(f"{CMD_PET_WARM} "):
             return True
     return False
@@ -221,6 +222,7 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
         state["pet_warm_last_error"] = ""
         reset_resource_shortage(PET_WARM_RESOURCE_KEY)
         clear_pending_tasks_by_commands({CMD_PET_WARM})
+        apply_storage_bag_item_text_delta(get_current_identity_id(), raw_text, sign=-1, allow_plain=True)
         _set_pet_warm_next_time(now + PET_WARM_CD + random.uniform(60, 300))
         return True
 

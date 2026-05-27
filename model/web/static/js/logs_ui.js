@@ -26,6 +26,34 @@
       .replace(/'/g, '&#39;');
   }
 
+  function escapeRegex(value) {
+    return String(value == null ? '' : value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function splitLogQueryTerms(query) {
+    const seen = Object.create(null);
+    return String(query || '').trim().split(/\s+/).filter(function (term) {
+      const key = term.toLowerCase();
+      if (!key || seen[key]) {
+        return false;
+      }
+      seen[key] = true;
+      return true;
+    });
+  }
+
+  function highlightQuery(value) {
+    const html = esc(value);
+    const terms = splitLogQueryTerms(state.q);
+    if (!terms.length) {
+      return html;
+    }
+    const pattern = new RegExp(terms.map(escapeRegex).join('|'), 'gi');
+    return html.replace(pattern, function (match) {
+      return '<mark class="log-highlight">' + match + '</mark>';
+    });
+  }
+
   async function getJson(path) {
     const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
     const data = await response.json();
@@ -71,8 +99,76 @@
       + '<span>msg ' + esc((entry || {}).message_id || '-') + '</span>'
       + '<span>reply ' + esc((entry || {}).reply_to_msg_id || '-') + '</span>'
       + '</div>'
-      + '<div class="logs-entry-title">' + esc(firstLine) + '</div>'
-      + (detail ? '<pre class="logs-entry-text">' + esc(detail) + '</pre>' : '')
+      + '<div class="logs-entry-title">' + highlightQuery(firstLine) + '</div>'
+      + (detail ? '<pre class="logs-entry-text">' + highlightQuery(detail) + '</pre>' : '')
+      + renderLogButtons((entry || {}).buttons || [])
+      + '</div>';
+  }
+
+  function normalizeLogButtons(buttons) {
+    if (!Array.isArray(buttons)) {
+      return [];
+    }
+    return buttons.map(function (row) {
+      if (!Array.isArray(row)) {
+        return [];
+      }
+      return row.filter(function (button) {
+        return button && typeof button === 'object';
+      });
+    }).filter(function (row) {
+      return row.length > 0;
+    });
+  }
+
+  function buttonTypeLabel(type) {
+    if (type === 'callback') {
+      return '回调';
+    }
+    if (type === 'url') {
+      return '链接';
+    }
+    if (type === 'web_view') {
+      return '网页';
+    }
+    if (type === 'switch_inline') {
+      return '内联';
+    }
+    if (type === 'request_phone') {
+      return '手机号';
+    }
+    if (type === 'request_geo') {
+      return '位置';
+    }
+    if (type === 'request_poll') {
+      return '投票';
+    }
+    if (type === 'game') {
+      return '游戏';
+    }
+    if (type === 'buy') {
+      return '支付';
+    }
+    return '按钮';
+  }
+
+  function renderLogButtons(buttons) {
+    const rows = normalizeLogButtons(buttons);
+    if (!rows.length) {
+      return '';
+    }
+    return '<div class="logs-entry-buttons" aria-label="Telegram 消息按钮">'
+      + '<div class="logs-buttons-title">按钮</div>'
+      + rows.map(function (row) {
+        return '<div class="logs-button-row">' + row.map(function (button) {
+          const type = String(button.type || '');
+          const host = type === 'url' && button.url_host ? ' ' + button.url_host : '';
+          return '<span class="logs-button-pill">'
+            + '<span class="logs-button-text">' + highlightQuery(button.text || '无文本按钮') + '</span>'
+            + '<span class="logs-button-kind">' + esc(buttonTypeLabel(type) + host) + '</span>'
+            + '</span>';
+        }).join('') + '</div>';
+      }).join('')
       + '</div>';
   }
 

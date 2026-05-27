@@ -1,5 +1,6 @@
 import asyncio
 import html
+import json
 import re
 import random
 import sys
@@ -9,8 +10,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .config import (
-    ADMIN_ID,
+    ADMIN_IDS,
     CMD_CHECKIN,
+    CMD_CONCUBINE_DAILY_GREET,
     CMD_CONCUBINE_DREAM,
     CMD_CONCUBINE_FRAGMENT,
     CMD_CONCUBINE_PUZZLE,
@@ -60,8 +62,11 @@ from .config import (
     CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
+    CD_BUFFER_SEC,
+    DEEP_RETREAT_CD,
     LAUNCHING_TIMEOUT_SEC,
     LOG_GROUP_ID,
+    MESSAGES_DIR,
     MODULE_KEY_MAP,
     MODULE_NAMES,
     PROJECT_ROOT_DIR,
@@ -72,12 +77,22 @@ from .config import (
     RE_CMD_GLOBAL_RESUME,
     RE_CMD_HELP,
     RE_CMD_LOGIN,
+    RE_CMD_ANALYSIS_HEALTH,
+    RE_CMD_ANALYSIS_LOG_GROUP,
+    RE_CMD_ANALYSIS_SUMMARY,
+    RE_CMD_ANALYSIS_UNKNOWN,
+    RE_CMD_ANALYSIS_WEBMINI,
+    RE_CMD_AUDIT_FLUSH_SUMMARY,
+    RE_CMD_AUDIT_PUSH_STATUS,
+    RE_CMD_STAGING_PREFLIGHT,
     RE_CMD_SINGLE_STATUS_PATTERNS,
     RE_CMD_STATUS,
     RE_WHITESPACE,
     RETRY_MAX_SEC,
     SUMMARY_TIMEOUT_SEC,
+    TAIYI_CYCLE_CD_SEC,
     TZ_LOCAL,
+    YUANYING_CD,
     format_battle_power_command,
     get_account_offline_reason,
     get_all_clients,
@@ -98,7 +113,9 @@ from .features.guanxing import (
 )
 from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore_guanxing_monitor_runtime_state
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
+from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
+from .features.passive_inbox import get_passive_inbox_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
@@ -108,15 +125,25 @@ from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.second_soul import get_second_soul_status_text
-from .features.taiyi import get_taiyi_status_text
+from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
 from .features.yuanying import get_yuanying_status_detail_text
-from .features.wild_training import clear_wild_training_state, get_wild_training_status_text, schedule_wild_training_initial_check
+from .features.wild_training import (
+    WILD_TRAINING_CYCLE_MAX_SEC,
+    WILD_TRAINING_CYCLE_MIN_SEC,
+    clear_wild_training_state,
+    get_wild_training_status_text,
+    schedule_wild_training_initial_check,
+)
 from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
     build_ui_login_url,
     clear_identity_runtime_tracking,
     clear_pending_tasks_by_commands,
+    flush_low_priority_audit_summary,
+    get_audit_push_status_text,
+    get_game_send_queue_snapshot,
+    get_low_priority_audit_pending_counts,
     console_log,
     issue_ui_login_token,
     reply_log_group_message,
@@ -128,6 +155,7 @@ from .state import (
     get_accounts,
     get_available_module_names,
     get_current_identity_id,
+    get_dungeon_join_run_state,
     get_game_group_id,
     get_identity_account,
     get_identity_display_name,
@@ -141,7 +169,9 @@ from .state import (
     remove_identity,
     set_global_enabled as set_global_enabled_state,
     get_module_window_hours,
+    get_pending_command,
     get_pet_name,
+    get_realm_sort_index,
     resolve_identity_selector,
     infer_realm_from_xiuwei_max,
     is_auto_delete_sent_messages_enabled,
@@ -149,6 +179,7 @@ from .state import (
     get_send_as_tags,
     get_stargazer_total_slots,
     get_tianti_rank_choice,
+    REALM_SORT_ORDER,
     is_module_available,
     is_small_world_realm_available,
     is_yuanying_realm_available,
@@ -162,14 +193,17 @@ from .state import (
     update_send_as_profile,
     use_identity,
 )
-from .timing import calc_next_daily_window_after_completion, calc_next_daily_window_time, get_checkin_day_key, get_day_key, reset_checkin_daily_state, schedule_next_checkin, schedule_next_checkin_after_completion, schedule_next_tower, schedule_next_tower_after_completion
+from .timing import calc_next_daily_window_after_completion, calc_next_daily_window_time, fmt_abs_ts, fmt_remaining, get_checkin_day_key, get_day_key, reset_checkin_daily_state, schedule_next_checkin, schedule_next_checkin_after_completion, schedule_next_tower, schedule_next_tower_after_completion
 
 RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
+RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
 RE_STORAGE_BAG_RECENT_DAYS = re.compile(r"近\s*(\d{1,2})\s*天")
 STORAGE_BAG_REPORT_TIMEOUT_SEC = 30
 STORAGE_BAG_REPORT_REPLY_LIMIT = 3300
+ANALYSIS_REPORT_DIR = Path(PROJECT_ROOT_DIR) / "data" / "analysis" / "latest"
+ANALYSIS_PAYLOAD_FILE = ANALYSIS_REPORT_DIR / "analysis_payload.json"
 RE_IDENTITY_INFO_NAME = re.compile(r"(?:道号|修士)[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_WITH_SECT = re.compile(r"境界[:：]\s*\S+\s*\(([^)]+)\)")
@@ -177,6 +211,9 @@ RE_IDENTITY_INFO_SECT = re.compile(r"宗门[:：]\s*【([^】]+)】")
 RE_IDENTITY_INFO_SPIRITUAL_ROOT = re.compile(r"灵根\s*[:：]\s*([^\n\r]+)")
 RE_BATTLE_POWER_SPIRITUAL_ROOT = re.compile(r"灵根【([^】]+)】")
 RE_IDENTITY_INFO_XIUWEI = re.compile(r"修为[:：]\s*([\d,]+)\s*/\s*([\d,]+)")
+RE_BATTLE_POWER_OWNER = re.compile(r"👤\s*修士[:：]\s*(\S+)\s*\(@([^)\s]+)\)")
+RE_BATTLE_POWER_VALUE = re.compile(r"综合战力[:：]\s*([\d,.]+)\s*([万亿]?)")
+RE_IDENTITY_INFO_OWNER = re.compile(r"@([A-Za-z0-9_]+)\s*的天命玉牒")
 RE_REALM_BREAKTHROUGH = re.compile(r"成功突破至【([^】]+)】")
 IDENTITY_INFO_REFRESH_TIMEOUT_SEC = 180
 IDENTITY_INFO_FOLLOWUP_DELAY_MIN_SEC = 20
@@ -190,6 +227,7 @@ RECOVERY_READY_MIN_SEC = 30
 RECOVERY_READY_MAX_SEC = 90
 RECOVERY_PHASEFUL_IDLE_MIN_SEC = 60
 RECOVERY_PHASEFUL_IDLE_MAX_SEC = 180
+TAIYI_PRESEND_RECOVERY_MAX_SEC = 300
 RECOVERY_SPREAD_TIMER_KEYS = (
     "next_irr_time",
     "next_guard_time",
@@ -219,20 +257,51 @@ RECOVERY_SPREAD_TIMER_KEYS = (
 )
 
 
+def _coerce_control_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
+        return True
+    if text in {"", "0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "禁用"}:
+        return False
+    return bool(default)
+
+
+def _state_positive_int(key):
+    try:
+        return int(state.get(key, 0) or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_tianti_ready_to_climb_snapshot():
     cooldown_text = str(state.get("tianti_cooldown_text") or "").strip()
     return bool(state.get("tianti_enabled") and cooldown_text and "可立即" in cooldown_text)
 
 
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
+    if timer_key == "next_wild_training_time":
+        return now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC)
+
     if timer_key == "next_tianti_climb_time" and _is_tianti_ready_to_climb_snapshot():
         status_time = float(state.get("next_tianti_status_time", 0) or 0)
         if 0 < status_time <= now + RECOVERY_SPREAD_MAX_SEC:
             state["next_tianti_status_time"] = 0
-        return now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+        state["next_tianti_status_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+        return now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
 
-    if timer_key == "next_deep_retreat_time" and state.get("deep_retreat_enabled"):
-        phase = str(state.get("deep_retreat_phase") or "idle")
+    phaseful_timer_meta = {
+        "next_yuanying_time": ("yuanying_enabled", "yuanying_phase"),
+        "next_deep_retreat_time": ("deep_retreat_enabled", "deep_retreat_phase"),
+    }
+    phaseful_meta = phaseful_timer_meta.get(timer_key)
+    if phaseful_meta and state.get(phaseful_meta[0]):
+        phase = str(state.get(phaseful_meta[1]) or "idle")
         if phase == "post_summary_wait":
             return now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
         if phase == "idle":
@@ -247,10 +316,26 @@ def _restore_tianti_ready_runtime(now):
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
     if next_climb_time <= 0 or next_climb_time > now + RECOVERY_SPREAD_MAX_SEC:
         return
-    state["next_tianti_climb_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
-    status_time = float(state.get("next_tianti_status_time", 0) or 0)
-    if 0 < status_time <= now + RECOVERY_SPREAD_MAX_SEC:
-        state["next_tianti_status_time"] = 0
+    state["next_tianti_status_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+    state["next_tianti_climb_time"] = now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
+
+
+def _restore_tianti_active_cooldown_runtime(now):
+    if not state.get("tianti_enabled"):
+        return
+    needs_status = False
+    if state.get("tianti_gangfeng_enabled") and float(state.get("next_tianti_gangfeng_time", 0) or 0) <= now:
+        state["next_tianti_gangfeng_time"] = now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
+        needs_status = True
+    next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
+    cooldown_text = str(state.get("tianti_cooldown_text") or "").strip()
+    if next_climb_time <= now and cooldown_text:
+        state["next_tianti_climb_time"] = now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
+        needs_status = True
+    if needs_status:
+        status_time = float(state.get("next_tianti_status_time", 0) or 0)
+        if status_time <= 0 or status_time > now + RECOVERY_SPREAD_MAX_SEC:
+            state["next_tianti_status_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
 
 
 def _is_within_module_window(module_name, now):
@@ -771,7 +856,10 @@ def _manual_disable_concubine_heart_module_state():
     state["concubine_heart_msg_id"] = 0
     state["concubine_heart_prompt_msg_id"] = 0
     state["concubine_heart_round"] = 0
-    if state.get("concubine_phase") in {"heart_pending", "heart_choice_pending"}:
+    state["concubine_heart_choice_prompt_msg_id"] = 0
+    state["concubine_heart_choice_round"] = 0
+    state["concubine_heart_choice_sent_at"] = 0
+    if state.get("concubine_phase") in {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
         state["concubine_phase"] = "idle"
 
 
@@ -961,6 +1049,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TIANTI_GANGFENG: "登天阶",
     CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CONCUBINE_STATUS: "侍妾",
+    CMD_CONCUBINE_DAILY_GREET: "侍妾",
     CMD_CONCUBINE_DREAM: "侍妾",
     CMD_CONCUBINE_FRAGMENT: "侍妾",
     CMD_CONCUBINE_PUZZLE: "侍妾",
@@ -1191,7 +1280,74 @@ async def reply_long_log_group_message(
     return True
 
 
+def get_dungeon_join_status_text(send_as_id=None):
+    now = time.time()
+    target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
+    records = get_dungeon_join_run_state()
+    records = records if isinstance(records, dict) else {}
+    lines = ["🧩 自动副本状态"]
+    if not target_ids:
+        lines.append("- 无身份配置")
+    for identity_id in target_ids:
+        record = records.get(str(int(identity_id))) if isinstance(records, dict) else {}
+        record = record if isinstance(record, dict) else {}
+        with use_identity(identity_id):
+            enabled = bool(state.get("dungeon_join_enabled"))
+            offline_account_id, offline_reason = _get_identity_account_offline_detail(identity_id)
+
+        status_parts = ["开启" if enabled else "关闭"]
+        pending_until = float(record.get("pending_until", 0) or 0)
+        cooldown_until = float(record.get("cooldown_until", 0) or 0)
+        active_until = float(record.get("active_until", 0) or 0)
+        participating = bool(record.get("participating"))
+        if offline_account_id:
+            status_parts.append(f"账号离线 acc={offline_account_id}")
+        if pending_until > now:
+            room_id = record.get("pending_room_id") or record.get("room_id") or "-"
+            status_parts.append(f"等待回复 房间 {room_id} 至 {fmt_abs_ts(pending_until)}（{fmt_remaining(pending_until)}）")
+        elif cooldown_until > now:
+            room_id = record.get("room_id") or "-"
+            status_parts.append(f"冷却中 房间 {room_id} 至 {fmt_abs_ts(cooldown_until)}（{fmt_remaining(cooldown_until)}）")
+        elif participating and active_until > now:
+            room_id = record.get("room_id") or "-"
+            status_parts.append(f"副本中 房间 {room_id} 至 {fmt_abs_ts(active_until)}（{fmt_remaining(active_until)}）")
+        elif record.get("last_result"):
+            detail = str(record.get("last_error") or record.get("last_result") or "").strip()
+            status_parts.append(f"上次结果 {detail or record.get('last_result')}")
+        else:
+            status_parts.append("空闲")
+        if offline_account_id and offline_reason:
+            status_parts.append(f"原因 {offline_reason}")
+        lines.append(f"- {get_identity_display_name(identity_id)}: " + "｜".join(status_parts))
+
+    inbox_items = get_dungeon_join_inbox_snapshot(limit=5)
+    lines.extend(["", "最近房间公告:"])
+    if inbox_items:
+        for item in inbox_items[-5:]:
+            lines.append(
+                "- "
+                f"{item.get('dungeon_name') or '副本'} {item.get('dungeon_id') or '-'} "
+                f"cmd {item.get('join_command') or '-'} msg {item.get('msg_id') or 0}"
+            )
+    else:
+        lines.append("- 无")
+    lines.extend(
+        [
+            "",
+            "副本群轻量指令:",
+            "- .查询副本",
+            "- .开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]",
+            "- .加入副本 @用户名 @用户名",
+            "- .解散副本",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def get_single_module_status_text(module_name, send_as_id=None):
+    if module_name == "自动副本":
+        return get_dungeon_join_status_text(send_as_id)
+
     status_map = {
         "灵树": get_tree_status_text,
         "法宝": get_pet_status_text,
@@ -1280,49 +1436,436 @@ async def _reply_log_group_card(event, title, body, *, error_prefix):
     return True
 
 
+def _format_analysis_count(value):
+    try:
+        return f"{int(value):,}"
+    except (TypeError, ValueError):
+        return str(value or 0)
+
+
+def _analysis_list(value):
+    return value if isinstance(value, list) else []
+
+
+def _short_analysis_text(value, limit=96):
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _format_analysis_mtime():
+    try:
+        mtime = ANALYSIS_PAYLOAD_FILE.stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(mtime, TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _load_analysis_payload():
+    if not ANALYSIS_PAYLOAD_FILE.exists():
+        return None, (
+            "离线分析报告不存在。\n"
+            f"路径: {ANALYSIS_PAYLOAD_FILE}\n"
+            "先离线运行: tools/analyze_game_records.py --run-name latest"
+        )
+    try:
+        payload = json.loads(ANALYSIS_PAYLOAD_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        return None, f"离线分析报告 JSON 损坏: {exc}"
+    except OSError as exc:
+        return None, f"读取离线分析报告失败: {exc}"
+    if not isinstance(payload, dict):
+        return None, "离线分析报告格式异常: 顶层不是 object。"
+    return payload, None
+
+
+def _format_analysis_rows(rows, *, limit=8, key_field="key", count_field="count"):
+    rows = _analysis_list(rows)
+    if not rows:
+        return ["- 无"]
+    lines = []
+    for row in rows[:limit]:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get(key_field) or "-")
+        count = _format_analysis_count(row.get(count_field, 0))
+        lines.append(f"- {key}: {count}")
+    return lines or ["- 无"]
+
+
+def _analysis_date_range(summary):
+    dates = []
+    for row in _analysis_list((summary or {}).get("dates")):
+        key = str(row.get("key") or "").strip()
+        if key:
+            dates.append(key)
+    if not dates:
+        return "未知"
+    dates = sorted(dates)
+    if dates[0] == dates[-1]:
+        return dates[0]
+    return f"{dates[0]} 到 {dates[-1]}"
+
+
+def _format_analysis_summary_text(payload):
+    summary = payload.get("summary") or {}
+    health = payload.get("health") or {}
+    miniweb = payload.get("miniweb") or {}
+    commands = _analysis_list(payload.get("commands"))
+    source_files = _analysis_list(summary.get("source_files"))
+    hard_stop_hits = _analysis_list(summary.get("hard_stop_hits"))
+    raw_messages = miniweb.get("raw_messages") or {}
+    mtime = _format_analysis_mtime()
+
+    lines = [
+        "离线报告: data/analysis/latest",
+        f"生成时间: {mtime or '未知'}",
+        f"扫描行数: {_format_analysis_count(summary.get('scanned_lines'))}",
+        f"无效 JSON: {_format_analysis_count(summary.get('invalid_json'))}",
+        f"日志文件: {_format_analysis_count(len(source_files))}",
+        f"日期范围: {_analysis_date_range(summary)}",
+        f"命令种类: {_format_analysis_count(len(commands))}",
+        f"自动发送: {_format_analysis_count(health.get('sent_total'))}",
+        f"硬停关键词命中: {_format_analysis_count(len(hard_stop_hits))}",
+        f"日志群 ID: {summary.get('log_group_id') or '未配置'}",
+        f"webmini: {'可用' if miniweb.get('available') else '不可用'}",
+    ]
+    if miniweb.get("available"):
+        lines.append(
+            "webmini 消息: "
+            f"{_format_analysis_count(raw_messages.get('count'))} "
+            f"({raw_messages.get('min_date') or '?'} 到 {raw_messages.get('max_date') or '?'})"
+        )
+
+    lines.extend(["", "命令家族 Top:"])
+    lines.extend(_format_analysis_rows(summary.get("command_families"), limit=10))
+    lines.extend(["", "自动发送家族 Top:"])
+    lines.extend(_format_analysis_rows(summary.get("sent_by_family"), limit=10))
+    lines.extend(
+        [
+            "",
+            "说明: 这是已落盘日志的只读摘要，不触发游戏发送，也不刷新实时状态。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_analysis_health_text(payload):
+    health = payload.get("health") or {}
+    summary = payload.get("summary") or {}
+    duplicate = _analysis_list(health.get("duplicate_short_gap"))
+    one_sec = _analysis_list(health.get("any_short_gap"))
+    missing = _analysis_list(health.get("missing_direct_replies_sample"))
+    hard_stop_hits = _analysis_list(summary.get("hard_stop_hits"))
+
+    lines = [
+        "发送健康码（离线候选）",
+        f"自动发送总数: {_format_analysis_count(health.get('sent_total'))}",
+        f"同身份同命令 90 秒内重复样本: {_format_analysis_count(len(duplicate))}",
+        f"同身份 1 秒内连续发送样本: {_format_analysis_count(len(one_sec))}",
+        f"未找到直接 reply 的 sent 记录: {_format_analysis_count(health.get('missing_direct_replies_total'))}",
+        f"硬停关键词命中: {_format_analysis_count(len(hard_stop_hits))}",
+        "",
+        "初判:",
+        "- 风暴: 看短间隔和高频分钟，当前这里只列候选样本，不能单独定性。",
+        "- 错发: 离线报告不直接做语义错发判定，优先从未知指令和未回复样本复核。",
+        "- 漏发: missing_direct_replies 不等于漏发，部分游戏回复不是直接 reply。",
+        "",
+        "高频分钟 Top:",
+    ]
+    busiest = _analysis_list(health.get("busiest_minutes"))
+    if busiest:
+        for row in busiest[:8]:
+            minute_text = ""
+            try:
+                minute_text = datetime.fromtimestamp(int(row.get("minute_epoch")) * 60, TZ_LOCAL).strftime("%Y-%m-%d %H:%M")
+            except (TypeError, ValueError, OSError, OverflowError):
+                minute_text = str(row.get("minute_epoch") or "")
+            lines.append(f"- sender {row.get('sender_id')}: {row.get('count')} 条 @ {minute_text}")
+    else:
+        lines.append("- 无")
+
+    lines.extend(["", "重复样本:"])
+    if duplicate:
+        for row in duplicate[:6]:
+            lines.append(
+                "- "
+                f"{row.get('cur_ts')} sender {row.get('sender_id')} "
+                f"gap {row.get('gap_sec')}s: {row.get('cur_command')}"
+            )
+    else:
+        lines.append("- 无")
+
+    lines.extend(["", "1 秒内连续样本:"])
+    if one_sec:
+        for row in one_sec[:6]:
+            lines.append(
+                "- "
+                f"{row.get('cur_ts')} sender {row.get('sender_id')} "
+                f"gap {row.get('gap_sec')}s: {row.get('prev_command')} -> {row.get('cur_command')}"
+            )
+    else:
+        lines.append("- 无")
+
+    lines.extend(["", "未直接 reply 样本:"])
+    if missing:
+        for row in missing[:6]:
+            lines.append(
+                "- "
+                f"{row.get('ts')} sender {row.get('sender_id')} "
+                f"{row.get('command')} msg {row.get('message_id')} family {row.get('family')}"
+            )
+    else:
+        lines.append("- 无")
+
+    return "\n".join(lines)
+
+
+def _format_analysis_log_group_text(payload):
+    summary = payload.get("summary") or {}
+    commands = _analysis_list(summary.get("log_group_commands"))
+    total = sum(int(row.get("count") or 0) for row in commands if isinstance(row, dict))
+    lines = [
+        "日志群指令分析（离线）",
+        f"限定 LOG_GROUP_ID: {summary.get('log_group_id') or '未配置'}",
+        f"观察到的日志群点命令种类: {_format_analysis_count(len(commands))}",
+        f"观察到的日志群点命令总数: {_format_analysis_count(total)}",
+        "",
+        "观察样本:",
+    ]
+    if commands:
+        for row in commands[:20]:
+            senders = ", ".join(
+                f"{sender.get('key')}({sender.get('count')})"
+                for sender in _analysis_list(row.get("top_senders"))[:3]
+                if isinstance(sender, dict)
+            )
+            lines.append(
+                "- "
+                f"{row.get('command')}: {row.get('count')} 次，"
+                f"{row.get('first_ts') or '?'} 到 {row.get('last_ts') or '?'}"
+                + (f"，sender {senders}" if senders else "")
+            )
+    else:
+        lines.append("- 无")
+    lines.extend(
+        [
+            "",
+            "说明: 这里按真实日志群 chat_id 过滤，和游戏群里的点命令统计是两件事。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _format_analysis_webmini_text(payload):
+    miniweb = payload.get("miniweb") or {}
+    static_inventory = payload.get("static_inventory") or {}
+    if not miniweb.get("available"):
+        return f"webmini DB 不可用: {miniweb.get('db_path') or '未知'}"
+
+    raw = miniweb.get("raw_messages") or {}
+    lines = [
+        "webmini 可吸收内容（离线）",
+        f"DB: {miniweb.get('db_path') or '未知'}",
+        f"raw_messages: {_format_analysis_count(raw.get('count'))}",
+        f"时间范围: {raw.get('min_date') or '?'} 到 {raw.get('max_date') or '?'}",
+        "",
+        "parser 注册:",
+    ]
+    parsers = _analysis_list(static_inventory.get("miniweb_parsers"))
+    lines.extend([f"- {parser}" for parser in parsers[:20]] or ["- 无"])
+    lines.extend(["", "raw 点命令 Top:"])
+    if miniweb.get("top_raw_commands"):
+        for row in _analysis_list(miniweb.get("top_raw_commands"))[:12]:
+            lines.append(f"- {row.get('command')}: {row.get('count')}")
+    else:
+        lines.append("- 无")
+    lines.extend(["", "resource_events Top:"])
+    if miniweb.get("resource_events"):
+        for row in _analysis_list(miniweb.get("resource_events"))[:10]:
+            lines.append(
+                "- "
+                f"{row.get('source_type')} / {row.get('source_name')} / "
+                f"{row.get('result')}: {row.get('count')}"
+            )
+    else:
+        lines.append("- 无")
+    lines.extend(["", "近期消息样本:"])
+    for row in _analysis_list(miniweb.get("latest_messages"))[:6]:
+        lines.append(
+            "- "
+            f"{row.get('date')} {row.get('source')}({row.get('sender_id')}): "
+            f"{_short_analysis_text(row.get('text'), 110)}"
+        )
+    if not miniweb.get("latest_messages"):
+        lines.append("- 无")
+    return "\n".join(lines)
+
+
+def _format_analysis_unknown_text(payload):
+    rows = _analysis_list(payload.get("unknown_commands"))
+    lines = [
+        "未知/未归类指令 Top",
+        "用途: 补命令分类、找本地新增功能、排查错发候选。",
+        "",
+    ]
+    lines.extend(_format_analysis_rows(rows, limit=30))
+    return "\n".join(lines)
+
+
+def _format_analysis_report_text(kind):
+    payload, error = _load_analysis_payload()
+    if error:
+        return error
+    formatters = {
+        "summary": _format_analysis_summary_text,
+        "health": _format_analysis_health_text,
+        "log_group": _format_analysis_log_group_text,
+        "webmini": _format_analysis_webmini_text,
+        "unknown": _format_analysis_unknown_text,
+    }
+    return formatters[kind](payload)
+
+
+def _format_staging_preflight_text():
+    identity_ids = get_identity_ids()
+    pending_total = 0
+    pending_rows = []
+    for identity_id in identity_ids:
+        with use_identity(identity_id):
+            pending_count = len(state.get("pending_tasks", {}) or {})
+        if pending_count:
+            pending_total += pending_count
+            pending_rows.append(f"- {get_identity_display_name(identity_id)}: {pending_count} 个 pending")
+
+    queue_items = get_game_send_queue_snapshot()
+    low_total, low_kind_count = get_low_priority_audit_pending_counts()
+    payload, analysis_error = _load_analysis_payload()
+
+    risk_notes = []
+    if pending_total:
+        risk_notes.append(f"有 {pending_total} 个游戏 pending，先观察回复或等超时处理。")
+    if queue_items:
+        risk_notes.append(f"游戏发送队列还有 {len(queue_items)} 条，避免此时重启造成判断偏差。")
+    if low_total:
+        risk_notes.append(f"低优先级日志还有 {low_total} 条 / {low_kind_count} 类未汇总。")
+    if not risk_notes:
+        risk_notes.append("当前内存队列和 pending 未见明显阻塞。")
+
+    lines = [
+        "待上线预检",
+        f"全局状态: {'启用' if get_global_enabled() else '暂停'}",
+        f"身份数: {len(identity_ids)}",
+        f"游戏 pending: {pending_total}",
+        f"游戏发送队列: {len(queue_items)}",
+        f"低优先级日志待汇总: {low_total} 条 / {low_kind_count} 类",
+        "",
+        "风险提示:",
+        *[f"- {note}" for note in risk_notes],
+        "",
+        "已加守卫:",
+        "- 游戏发送仍走队列，默认最多补发一次。",
+        "- 元婴/深度闭关等待类日志去重位已持久化，重启后不重复刷低优先级提示。",
+        "- 副本旧群调度只回迁移提示，不批量自动加入。",
+    ]
+
+    if pending_rows:
+        lines.extend(["", "pending 分布:"])
+        lines.extend(pending_rows[:10])
+
+    if queue_items:
+        lines.extend(["", "发送队列前 10:"])
+        for item in queue_items[:10]:
+            ready_in = int(item.get("ready_in_sec") or 0)
+            lines.append(
+                f"- {item.get('identity_name') or item.get('identity_id')}: "
+                f"{item.get('cmd') or '-'} / {item.get('status') or '-'} / {ready_in}s"
+            )
+
+    lines.append("")
+    if analysis_error:
+        lines.extend(["离线分析: 未读取", _short_analysis_text(analysis_error, limit=160)])
+    else:
+        summary = payload.get("summary") or {}
+        health = payload.get("health") or {}
+        duplicate = _analysis_list(health.get("duplicate_short_gap"))
+        one_sec = _analysis_list(health.get("any_short_gap"))
+        lines.extend(
+            [
+                "离线分析摘要:",
+                f"- 扫描行数: {_format_analysis_count(summary.get('scanned_lines'))}",
+                f"- 自动发送: {_format_analysis_count(health.get('sent_total'))}",
+                f"- 同身份 1 秒内连续发送样本: {_format_analysis_count(len(one_sec))}",
+                f"- 同身份同命令 90 秒内重复样本: {_format_analysis_count(len(duplicate))}",
+                f"- 报告时间: {_format_analysis_mtime() or '未知'}",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "说明: 这是上线前只读预检，不触发游戏发送，也不修改 live。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _format_log_group_help_html(send_as_id=None):
     suffix = ""
     if send_as_id is not None:
         suffix = f" @{get_identity_display_name(send_as_id)}"
-    module_commands = [
-        ".状态",
-        ".灵树状态",
-        ".法宝状态",
-        ".器灵试炼状态",
-        ".观星台状态",
-        ".观星状态",
-        ".观星监控状态",
-        ".天阶状态",
-        ".玄骨考校状态",
-        ".极阴祖师状态",
-        ".侍妾状态",
-        ".天机代卜状态",
-        ".共历心劫状态",
-        ".南陇侯状态",
-        ".元婴状态",
-        ".深度闭关状态",
-        ".第二元神状态",
-        ".太一状态",
-        ".小世界状态",
-        ".点卯状态",
-        ".闯塔状态",
+    status_aliases = {"登天阶": ".天阶状态", "自动副本": ".自动副本状态"}
+    module_commands = [".状态", ".消息盒子状态"] + [
+        status_aliases.get(module_name, f".{module_name}状态")
+        for module_name in MODULE_NAMES
     ]
     control_commands = [
         ".全局暂停",
         ".全局恢复",
         ".登录",
-        ".储物袋",
-        ".开启/关闭模块名",
+        ".开启/关闭<模块名>",
         ".开启全部 / .关闭全部",
+    ]
+    storage_commands = [
+        ".储物袋汇总",
+        ".储物袋盘点",
+        ".材料汇总",
+    ]
+    analysis_commands = [
+        ".上线预检",
+        ".玩法总览",
+        ".发送健康码",
+        ".日志群分析",
+        ".webmini分析",
+        ".未知指令",
+    ]
+    audit_commands = [
+        ".日志推送状态",
+        ".发送日志汇总",
+    ]
+    replica_group_commands = [
+        ".查询副本",
+        ".开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]",
+        ".加入副本 @用户名 @用户名",
+        ".解散副本",
     ]
     body = (
         "日志群指令\n"
         "身份选择：指令后可追加 @昵称 或身份 ID，例如 .状态 @竹灵1\n\n"
         "状态查询：\n"
         + "\n".join(f"- {cmd}{suffix}" for cmd in module_commands)
+        + "\n\n储物袋只读查询：\n"
+        + "\n".join(f"- {cmd}" for cmd in storage_commands)
+        + "\n\n离线分析（只读）：\n"
+        + "\n".join(f"- {cmd}" for cmd in analysis_commands)
+        + "\n\n日志推送：\n"
+        + "\n".join(f"- {cmd}" for cmd in audit_commands)
         + "\n\n控制指令：\n"
-        + "\n".join(f"- {cmd}{suffix if cmd.startswith('.开启') or cmd.startswith('.关闭') or cmd == '.状态' else ''}" for cmd in control_commands)
-        + "\n\n说明：这里列的是日志群控制/查询指令；游戏内指令仍由模块按全局锁排队。"
+        + "\n".join(f"- {cmd}{suffix if '<模块名>' in cmd or cmd.startswith('.开启全部') or cmd.startswith('.关闭全部') else ''}" for cmd in control_commands)
+        + "\n\n副本群轻量指令（在副本群/游戏群使用）：\n"
+        + "\n".join(f"- {cmd}" for cmd in replica_group_commands)
+        + "\n\n说明：日志群只处理监控、查询和开关；副本开房/加入/解散在副本群入口处理；游戏内指令仍由模块按全局锁排队。"
     )
     return _format_log_group_card_html("监控指令", body)
 
@@ -1410,11 +1953,21 @@ def _restore_tower_runtime(now):
 
 
 def _restore_tree_runtime(now):
-    if state["is_maturing"] or state["is_invading"] or state["pending_irrigation"]:
+    if state["is_maturing"]:
+        state["tree_bootstrap_check_needed"] = False
+        state["tree_bootstrap_check_due_at"] = 0
+        return
+    if state["is_invading"] or state["pending_irrigation"]:
         request_tree_bootstrap_check(now)
         return
     if state["next_irr_time"] <= 0:
         _schedule_module_immediate_retry("灵树", now)
+        return
+    if state["next_irr_time"] <= now + 15 * 60:
+        request_tree_bootstrap_check(now, min_sec=15, max_sec=90)
+        return
+    if float(state.get("last_tree_status_sent_at", 0) or 0) <= now - 6 * 3600:
+        request_tree_bootstrap_check(now, min_sec=60, max_sec=180)
 
 
 def _restore_second_soul_runtime(now):
@@ -1441,9 +1994,154 @@ def _restore_second_soul_runtime(now):
         state["next_second_soul_time"] = now
 
 
+_TAIYI_YINDAO_LOG_CALIBRATION_LOOKBACK_SEC = 6 * 3600
+RE_TAIYI_YINDAO_SUCCESS_LOG = re.compile(r"你引动【([金木水火土])之道】")
+
+
+def _parse_message_log_ts(raw_ts):
+    ts_text = str(raw_ts or "").strip()
+    if not ts_text:
+        return 0.0
+    ts_text = ts_text.replace(" UTC+8", "")
+    try:
+        return datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _iter_message_log_entries_between(start_ts, end_ts):
+    try:
+        start_day = datetime.fromtimestamp(float(start_ts), TZ_LOCAL).date()
+        end_day = datetime.fromtimestamp(float(end_ts), TZ_LOCAL).date()
+    except (TypeError, ValueError, OSError):
+        return
+    day = start_day
+    while day <= end_day:
+        log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
+        if log_path.exists():
+            try:
+                with log_path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+        day += timedelta(days=1)
+
+
+def _is_taiyi_yindao_command_text(text):
+    raw = str(text or "").strip()
+    return raw == CMD_YINDAO or raw.startswith(f"{CMD_YINDAO} ")
+
+
+def _is_taiyi_yindao_success_text(text):
+    raw = str(text or "")
+    return bool(RE_TAIYI_YINDAO_SUCCESS_LOG.search(raw) and "100点神识" in raw)
+
+
+def _find_taiyi_yindao_success_in_logs(send_as_id, start_ts, end_ts):
+    send_as_id = int(send_as_id or 0)
+    if send_as_id <= 0:
+        return None
+    commands = {}
+    latest_hit = None
+    for entry in _iter_message_log_entries_between(start_ts, end_ts):
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
+            continue
+        msg_id = int((entry or {}).get("message_id") or 0)
+        text = (entry or {}).get("text") or ""
+        sender_id = int((entry or {}).get("sender_id") or 0)
+        event_type = str((entry or {}).get("event_type") or "message")
+        if (
+            msg_id > 0
+            and event_type in {"message", "sent"}
+            and sender_id == send_as_id
+            and _is_taiyi_yindao_command_text(text)
+        ):
+            commands[msg_id] = {"ts": entry_ts, "text": str(text)}
+            continue
+        reply_to_msg_id = int((entry or {}).get("reply_to_msg_id") or 0)
+        if reply_to_msg_id in commands and _is_taiyi_yindao_success_text(text):
+            latest_hit = {
+                "command_ts": float(commands[reply_to_msg_id]["ts"]),
+                "reply_ts": float(entry_ts),
+                "command_text": str(commands[reply_to_msg_id]["text"]),
+                "reply_text": str(text),
+            }
+    return latest_hit
+
+
+def _calibrate_taiyi_yindao_from_recent_log(now):
+    if state.get("taiyi_phase", "idle") != "idle":
+        return False
+    last_error = str(state.get("taiyi_last_error") or "")
+    if "引道 reply 未回" not in last_error or "按正常12h周期兜底" not in last_error:
+        return False
+    phase_entered_at = float(state.get("taiyi_phase_entered_at", 0) or 0)
+    start_ts = phase_entered_at if phase_entered_at > 0 else float(now) - _TAIYI_YINDAO_LOG_CALIBRATION_LOOKBACK_SEC
+    start_ts = max(0.0, start_ts)
+    hit = _find_taiyi_yindao_success_in_logs(get_current_identity_id(), start_ts, float(now) + 60)
+    if not hit:
+        return False
+    next_cycle = float(hit["reply_ts"]) + TAIYI_CYCLE_CD_SEC + CD_BUFFER_SEC
+    state["next_taiyi_cycle_time"] = next_cycle
+    state["taiyi_phase_entered_at"] = float(hit["reply_ts"])
+    state["taiyi_pending_node_name"] = ""
+    state["taiyi_yindao_msg_id"] = 0
+    state["taiyi_node_search_msg_id"] = 0
+    state["taiyi_node_define_msg_id"] = 0
+    state["taiyi_failure_history"] = []
+    state["taiyi_last_error"] = ""
+    mark_dirty()
+    console_log(
+        (
+            "🌟 太一引道启动日志校准：检测到真实成功回复，"
+            f"下次→{datetime.fromtimestamp(next_cycle, TZ_LOCAL).strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        ),
+        scope="identity",
+        send_as_id=get_current_identity_id(),
+        limit=220,
+    )
+    return True
+
+
 def _restore_taiyi_runtime(now):
-    """启动恢复时保留太一链路阶段，让状态机做一次有锁兜底。"""
+    """启动恢复时修复太一链路阶段。
+
+    引道发送窗口很短，热重载可能发生在 phase 已落库但出站消息尚未可靠
+    登记时。这里宁可短延迟校准一次，也不要把不确定的引道误收口到 12h。
+    """
     phase = state.get("taiyi_phase", "idle")
+    if phase == "yindao_pending":
+        yindao_msg_id = int(state.get("taiyi_yindao_msg_id", 0) or 0)
+        entered_at = float(state.get("taiyi_phase_entered_at", 0) or 0)
+        if yindao_msg_id > 0 and _has_yindao_send_evidence(
+            get_current_identity_id(),
+            yindao_msg_id,
+            _resolve_yindao_command(),
+            entered_at,
+            now,
+        ):
+            if entered_at <= 0:
+                state["taiyi_phase_entered_at"] = max(0, now - 120)
+            return
+        state["taiyi_phase"] = "idle"
+        state["taiyi_phase_entered_at"] = 0
+        state["taiyi_pending_node_name"] = ""
+        state["taiyi_yindao_msg_id"] = 0
+        state["taiyi_node_search_msg_id"] = 0
+        state["taiyi_node_define_msg_id"] = 0
+        state["next_taiyi_cycle_time"] = now + random.uniform(
+            RECOVERY_SPREAD_MIN_SEC,
+            TAIYI_PRESEND_RECOVERY_MAX_SEC,
+        )
+        state["taiyi_last_error"] = "启动恢复：引道发送边界不确定，已安排短延迟重试"
+        return
+    if _calibrate_taiyi_yindao_from_recent_log(now):
+        phase = state.get("taiyi_phase", "idle")
     if phase in ("yindao_pending", "search_pending", "define_pending"):
         state["taiyi_yindao_msg_id"] = 0
         state["taiyi_node_search_msg_id"] = 0
@@ -1483,14 +2181,25 @@ def _restore_phaseful_runtime(module_name, now):
         phase_key = "yuanying_phase"
         next_time_key = "next_yuanying_time"
         last_command_time_key = "last_yuanying_command_time"
-        enable_handler = _set_yuanying_module_enabled
+        probe_pending_key = "yuanying_probe_pending"
+        summary_sent_at_key = "yuanying_summary_sent_at"
+        last_summary_msg_id_key = "last_yuanying_summary_msg_id"
     elif module_name == "深度闭关":
         phase_key = "deep_retreat_phase"
         next_time_key = "next_deep_retreat_time"
         last_command_time_key = "last_deep_retreat_command_time"
-        enable_handler = _set_deep_retreat_module_enabled
+        probe_pending_key = "deep_retreat_probe_pending"
+        summary_sent_at_key = "deep_retreat_summary_sent_at"
+        last_summary_msg_id_key = "last_deep_retreat_summary_msg_id"
     else:
         raise ValueError(f"不支持的模块恢复: {module_name}")
+
+    def recover_idle(delay_min=RECOVERY_PHASEFUL_IDLE_MIN_SEC, delay_max=RECOVERY_PHASEFUL_IDLE_MAX_SEC):
+        state[phase_key] = "idle"
+        state[probe_pending_key] = False
+        state[summary_sent_at_key] = 0
+        state[last_summary_msg_id_key] = 0
+        state[next_time_key] = now + random.uniform(delay_min, delay_max)
 
     phase = str(state.get(phase_key) or "idle")
     valid_phases = {
@@ -1504,20 +2213,18 @@ def _restore_phaseful_runtime(module_name, now):
         "post_summary_wait",
     }
     if phase not in valid_phases:
-        enable_handler(True, now)
+        recover_idle()
         return
     if phase in ("launching", "queued_launch") and float(state.get(last_command_time_key, 0) or 0) <= 0:
-        enable_handler(True, now)
+        recover_idle()
         return
     next_time = float(state.get(next_time_key, 0) or 0)
-    if module_name == "深度闭关" and phase == "post_summary_wait" and 0 < next_time <= now + RECOVERY_SPREAD_MAX_SEC:
+    if phase == "post_summary_wait" and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
         state[next_time_key] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
         return
-    if module_name == "深度闭关" and phase == "idle" and 0 < next_time <= now + RECOVERY_SPREAD_MAX_SEC:
+    if phase == "idle" and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
         state[next_time_key] = now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         return
-    if phase == "idle" and float(state.get(next_time_key, 0) or 0) <= now:
-        enable_handler(True, now)
 
 
 
@@ -1539,7 +2246,10 @@ def initialize_identity_runtime(send_as_id, now=None):
         if state.get("ranch_enabled") and state.get("next_ranch_time", 0) <= 0:
             schedule_ranch_initial_check(now, persist=False, keep_last_error=True)
         if state.get("wild_training_enabled") and state.get("next_wild_training_time", 0) <= 0:
-            schedule_wild_training_initial_check(now, persist=False, keep_last_error=True)
+            state["wild_training_reply_to_msg_id"] = 0
+            state["wild_training_reply_due_at"] = 0
+            state["wild_training_retry_count"] = 0
+            state["next_wild_training_time"] = now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC)
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:
@@ -1566,6 +2276,7 @@ def initialize_identity_runtime(send_as_id, now=None):
             if not has_status_snapshot or (next_climb_time > 0 and now >= next_climb_time):
                 state["next_tianti_status_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
             _restore_tianti_ready_runtime(now)
+            _restore_tianti_active_cooldown_runtime(now)
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
         if state["tower_enabled"]:
@@ -1578,7 +2289,7 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_second_soul_runtime(now)
         if state["taiyi_enabled"]:
             _restore_taiyi_runtime(now)
-        if state["concubine_enabled"] or state.get("concubine_tianji_enabled"):
+        if state["concubine_enabled"] or state.get("concubine_tianji_enabled") or state.get("concubine_heart_enabled"):
             restore_concubine_runtime(now)
         if state.get("small_world_enabled") and float(state.get("next_small_world_time", 0) or 0) <= 0:
             schedule_small_world_initial_check(now, persist=False, keep_last_error=True)
@@ -1841,7 +2552,7 @@ def _scan_pending_task_startup_timeouts(send_as_id, now, alerts, affected_identi
         timeout = float(item.get("timeout", 0) or 0)
         if sent_at <= 0 or timeout <= 0 or now - sent_at <= timeout:
             continue
-        module_name = _get_pending_task_module_name(item.get("cmd"))
+        module_name = _get_pending_task_module_name(get_pending_command(item))
         if not module_name:
             continue
         _record_startup_timeout(
@@ -1864,11 +2575,30 @@ def _scan_phase_startup_timeouts(send_as_id, now, rule, alerts, affected_identit
     elif phase == "waiting_summary":
         summary_sent_at = float(state.get(rule["summary_sent_at_key"], 0) or 0)
         if summary_sent_at <= 0:
-            reason, reason_code = rule["summary_missing"]
-            _record_startup_timeout(send_as_id, module_name, reason, reason_code, alerts, affected_identity_ids)
+            _phase_startup_normal_cd_fallback(send_as_id, now, rule, rule["summary_missing"])
         elif now - summary_sent_at >= SUMMARY_TIMEOUT_SEC:
-            reason, reason_code = rule["summary_timeout"]
-            _record_startup_timeout(send_as_id, module_name, reason, reason_code, alerts, affected_identity_ids)
+            _phase_startup_normal_cd_fallback(send_as_id, now, rule, rule["summary_timeout"])
+
+
+def _phase_startup_normal_cd_fallback(send_as_id, now, rule, reason_pair):
+    reason, _reason_code = reason_pair
+    state[rule["phase_key"]] = "idle"
+    state[rule["summary_sent_at_key"]] = 0
+    last_summary_msg_id_key = rule.get("last_summary_msg_id_key")
+    if last_summary_msg_id_key:
+        state[last_summary_msg_id_key] = 0
+    probe_pending_key = rule.get("probe_pending_key")
+    if probe_pending_key:
+        state[probe_pending_key] = False
+    retry_at = float(now) + float(rule["cd_sec"]) + CD_BUFFER_SEC + random.uniform(60, 600)
+    state[rule["next_time_key"]] = retry_at
+    mark_dirty()
+    console_log(
+        f"🧯 {rule['module_name']} 启动恢复：{reason} 已改为正常CD兜底→{datetime.fromtimestamp(retry_at, TZ_LOCAL).strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=220,
+    )
 
 
 def _scan_post_summary_startup_timeout(send_as_id, now, rule, alerts, affected_identity_ids):
@@ -1883,10 +2613,13 @@ _YUANYING_STARTUP_TIMEOUT_RULE = {
     "phase_key": "yuanying_phase",
     "command_time_key": "last_yuanying_command_time",
     "summary_sent_at_key": "yuanying_summary_sent_at",
+    "last_summary_msg_id_key": "last_yuanying_summary_msg_id",
+    "probe_pending_key": "yuanying_probe_pending",
     "next_time_key": "next_yuanying_time",
+    "cd_sec": YUANYING_CD,
     "launching": ("启动时检测到元婴出窍等待回复超时，已自动关闭元婴模块。", "yuanying_launching_timeout"),
-    "summary_missing": ("启动时检测到元婴归窍总结等待状态异常，已自动关闭元婴模块。", "yuanying_summary_missing"),
-    "summary_timeout": ("启动时检测到元婴归窍总结等待超时，已自动关闭元婴模块。", "yuanying_summary_timeout"),
+    "summary_missing": ("启动时检测到元婴归窍总结等待状态异常", "yuanying_summary_missing"),
+    "summary_timeout": ("启动时检测到元婴归窍总结等待超时", "yuanying_summary_timeout"),
     "post_summary": ("启动时检测到元婴总结后的缓冲等待已过期，已自动关闭元婴模块。", "yuanying_post_summary_overdue"),
 }
 
@@ -1895,10 +2628,13 @@ _DEEP_RETREAT_STARTUP_TIMEOUT_RULE = {
     "phase_key": "deep_retreat_phase",
     "command_time_key": "last_deep_retreat_command_time",
     "summary_sent_at_key": "deep_retreat_summary_sent_at",
+    "last_summary_msg_id_key": "last_deep_retreat_summary_msg_id",
+    "probe_pending_key": "deep_retreat_probe_pending",
     "next_time_key": "next_deep_retreat_time",
+    "cd_sec": DEEP_RETREAT_CD,
     "launching": ("启动时检测到深度闭关等待回复超时，已自动关闭深度闭关模块。", "deep_retreat_launching_timeout"),
-    "summary_missing": ("启动时检测到闭关总结等待状态异常，已自动关闭深度闭关模块。", "deep_retreat_summary_missing"),
-    "summary_timeout": ("启动时检测到闭关总结等待超时，已自动关闭深度闭关模块。", "deep_retreat_summary_timeout"),
+    "summary_missing": ("启动时检测到闭关总结等待状态异常", "deep_retreat_summary_missing"),
+    "summary_timeout": ("启动时检测到闭关总结等待超时", "deep_retreat_summary_timeout"),
     "post_summary": ("启动时检测到闭关总结后的缓冲等待已过期，已自动关闭深度闭关模块。", "deep_retreat_post_summary_overdue"),
 }
 
@@ -2008,7 +2744,7 @@ def _clear_identity_refresh_runtime(*, error="", clear_pending=True):
         remove_ids = [
             msg_id
             for msg_id, pending in state.get("pending_tasks", {}).items()
-            if _is_identity_refresh_command(pending.get("cmd"))
+            if _is_identity_refresh_command(get_pending_command(pending))
         ]
         for msg_id in remove_ids:
             state["pending_tasks"].pop(msg_id, None)
@@ -2030,7 +2766,7 @@ def _get_identity_info_refresh_status(send_as_id, now=None):
         now = time.time()
     with use_identity(send_as_id):
         requested_at = float(state.get("identity_info_last_requested_at", 0) or 0)
-        has_pending_cmd = any(_is_identity_refresh_command(pending.get("cmd")) for pending in state["pending_tasks"].values())
+        has_pending_cmd = any(_is_identity_refresh_command(get_pending_command(pending)) for pending in state["pending_tasks"].values())
         waiting_reply = bool(_get_identity_refresh_tracking_ids())
         waiting_followup = float(state.get("identity_info_followup_due_at", 0) or 0) > 0
         is_pending = has_pending_cmd or waiting_reply or waiting_followup
@@ -2061,17 +2797,31 @@ def _parse_spiritual_root_text(text):
 def _infer_replica_professions(spiritual_root_attrs):
     attrs_text = str(spiritual_root_attrs or "")
     rules = (
-        ("破军", {"金", "雷"}),
         ("御山", {"土"}),
         ("灵医", {"木", "水"}),
-        ("咒师", {"火", "暗"}),
         ("影刃", {"风", "冰"}),
+        ("破军", {"金", "雷"}),
+        ("咒师", {"火", "暗"}),
     )
     professions = []
     for profession, attrs in rules:
         if any(attr in attrs_text for attr in attrs):
             professions.append(profession)
     return "|".join(professions)
+
+
+def _parse_compact_chinese_number(value, unit=""):
+    try:
+        number = float(str(value or "0").replace(",", ""))
+    except (TypeError, ValueError):
+        return 0
+    unit = str(unit or "").strip()
+    multiplier = 1
+    if unit == "万":
+        multiplier = 10_000
+    elif unit == "亿":
+        multiplier = 100_000_000
+    return int(number * multiplier)
 
 
 def _extract_identity_refresh_payload(text, *, card_pattern, require_xiuwei=False):
@@ -2114,6 +2864,12 @@ def _extract_identity_refresh_payload(text, *, card_pattern, require_xiuwei=Fals
             payload["xiuwei_current"] = xiuwei_current
             payload["xiuwei_max"] = xiuwei_max
 
+    battle_power_match = RE_BATTLE_POWER_VALUE.search(raw_text)
+    if battle_power_match:
+        value_text = f"{battle_power_match.group(1)}{battle_power_match.group(2) or ''}"
+        payload["battle_power_text"] = value_text
+        payload["battle_power_value"] = _parse_compact_chinese_number(battle_power_match.group(1), battle_power_match.group(2))
+
     if require_xiuwei and "xiuwei_max" not in payload:
         return None
 
@@ -2145,6 +2901,8 @@ def _normalize_identity_refresh_payload(payload):
         "sect_name": str(payload.get("sect_name") or "").strip(),
         "xiuwei_current": int(payload.get("xiuwei_current") or 0),
         "xiuwei_max": int(payload.get("xiuwei_max") or 0),
+        "battle_power_text": str(payload.get("battle_power_text") or "").strip(),
+        "battle_power_value": int(payload.get("battle_power_value") or 0),
     }
     if not normalized["realm"] and normalized["xiuwei_max"] > 0:
         normalized["realm"] = infer_realm_from_xiuwei_max(normalized["xiuwei_max"])
@@ -2167,21 +2925,31 @@ def _merge_identity_refresh_payload(base_payload, overlay_payload):
     if int(overlay_payload.get("xiuwei_max") or 0) > 0:
         merged_payload["xiuwei_current"] = overlay_payload.get("xiuwei_current", 0)
         merged_payload["xiuwei_max"] = overlay_payload.get("xiuwei_max", 0)
+    if overlay_payload["battle_power_text"]:
+        merged_payload["battle_power_text"] = overlay_payload["battle_power_text"]
+        merged_payload["battle_power_value"] = overlay_payload["battle_power_value"]
     return merged_payload
 
 
 def _update_identity_profile_from_refresh_payload(send_as_id, payload, now):
+    raw_payload = payload or {}
     normalized_payload = _normalize_identity_refresh_payload(payload or {})
+    has_xiuwei = int(normalized_payload.get("xiuwei_max") or 0) > 0
+    has_battle_power = bool(normalized_payload.get("battle_power_text"))
+    has_spiritual_root = bool(normalized_payload.get("spiritual_root_type"))
+    has_realm = bool(normalized_payload.get("realm")) and ("realm" in raw_payload or has_xiuwei)
     update_send_as_profile(
         send_as_id,
-        daohao=normalized_payload["daohao"],
-        realm=normalized_payload["realm"],
-        spiritual_root_type=normalized_payload["spiritual_root_type"],
-        spiritual_root_attrs=normalized_payload["spiritual_root_attrs"],
-        replica_professions=normalized_payload["replica_professions"],
-        sect_name=normalized_payload["sect_name"],
-        xiuwei_current=normalized_payload.get("xiuwei_current", 0),
-        xiuwei_max=normalized_payload.get("xiuwei_max", 0),
+        daohao=normalized_payload["daohao"] if normalized_payload["daohao"] else None,
+        realm=normalized_payload["realm"] if has_realm else None,
+        spiritual_root_type=normalized_payload["spiritual_root_type"] if has_spiritual_root else None,
+        spiritual_root_attrs=normalized_payload["spiritual_root_attrs"] if has_spiritual_root else None,
+        replica_professions=normalized_payload["replica_professions"] if has_spiritual_root else None,
+        sect_name=normalized_payload["sect_name"] if normalized_payload["sect_name"] else None,
+        xiuwei_current=normalized_payload.get("xiuwei_current", 0) if has_xiuwei else None,
+        xiuwei_max=normalized_payload.get("xiuwei_max", 0) if has_xiuwei else None,
+        battle_power_text=normalized_payload.get("battle_power_text", "") if has_battle_power else None,
+        battle_power_value=normalized_payload.get("battle_power_value", 0) if has_battle_power else None,
         sect_updated_at=now,
     )
     return normalized_payload
@@ -2231,6 +2999,51 @@ def _get_identity_refresh_missing_fields(payload):
     return missing_fields
 
 
+def _match_identity_profile_owner(text):
+    raw_text = str(text or "")
+    username = ""
+    battle_owner = RE_BATTLE_POWER_OWNER.search(raw_text)
+    if battle_owner:
+        username = (battle_owner.group(2) or "").strip()
+    if not username:
+        info_owner = RE_IDENTITY_INFO_OWNER.search(raw_text)
+        if info_owner:
+            username = (info_owner.group(1) or "").strip()
+    if not username:
+        return None
+    username_key = username.casefold().lstrip("@")
+    matched = []
+    for identity_id in get_identity_ids():
+        profile = get_send_as_profile(identity_id)
+        candidates = [
+            str(profile.get("username") or "").strip().casefold().lstrip("@"),
+            str(profile.get("label") or "").strip().casefold().lstrip("@"),
+        ]
+        if username_key in candidates:
+            matched.append(identity_id)
+    return matched[0] if len(matched) == 1 else None
+
+
+async def handle_passive_identity_profile_card(text, now):
+    primary_payload = _parse_identity_info_partial(text)
+    battle_payload = _parse_battle_power_info(text)
+    if not primary_payload and not battle_payload:
+        return False
+    target_id = _match_identity_profile_owner(text)
+    if target_id is None:
+        return False
+    merged_payload = _merge_identity_refresh_payload(primary_payload or {}, battle_payload or {})
+    if not any(
+        merged_payload.get(key)
+        for key in ("daohao", "realm", "spiritual_root_type", "sect_name", "xiuwei_max", "battle_power_text")
+    ):
+        return False
+    _update_identity_profile_from_refresh_payload(target_id, merged_payload, now)
+    enforce_identity_module_availability(target_id, persist=False)
+    save_state()
+    return True
+
+
 def match_realm_breakthrough_identity(text):
     compact_text = RE_WHITESPACE.sub("", text or "")
     if "灵光一闪" not in compact_text or "成功突破至【" not in compact_text:
@@ -2265,6 +3078,15 @@ async def handle_realm_breakthrough_broadcast(text, now):
     profile = get_send_as_profile(target_id)
     old_realm = (profile.get("realm") or "").strip()
     if old_realm == realm:
+        return True
+    old_index = get_realm_sort_index(old_realm) if old_realm else len(REALM_SORT_ORDER)
+    new_index = get_realm_sort_index(realm)
+    if old_index < len(REALM_SORT_ORDER) and new_index < len(REALM_SORT_ORDER) and new_index < old_index:
+        await send_audit_log(
+            f"⚠️ 忽略疑似反向境界广播：{old_realm}→{realm}",
+            scope="identity",
+            send_as_id=target_id,
+        )
         return True
 
     update_send_as_profile(target_id, realm=realm)
@@ -2380,7 +3202,7 @@ async def run_identity_info_followup_scheduler(now):
             if not missing_fields:
                 _final_payload, trigger_msg_ids = _finalize_identity_refresh_success(identity_id, primary_payload, now)
                 save_state()
-            elif any(_is_identity_refresh_command(pending.get("cmd")) for pending in state["pending_tasks"].values()):
+            elif any(_is_identity_refresh_command(get_pending_command(pending)) for pending in state["pending_tasks"].values()):
                 continue
             else:
                 command = format_battle_power_command()
@@ -2593,7 +3415,7 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
 
-    enabled = bool(enabled)
+    enabled = _coerce_control_bool(enabled)
     if get_identity_enabled(send_as_id) == enabled:
         return True, f"身份状态未变化[{get_identity_display_name(send_as_id)}]"
 
@@ -2616,7 +3438,7 @@ async def set_identity_enabled(send_as_id, enabled, *, source="ui", actor_id=Non
 
 
 async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
-    enabled = bool(enabled)
+    enabled = _coerce_control_bool(enabled)
     if get_global_enabled() == enabled:
         return True, "全局状态未变化"
     set_global_enabled_state(enabled)
@@ -2644,9 +3466,10 @@ async def set_module_enabled(module_name, enabled, send_as_id=None, *, skip_unav
     if not key:
         return False
 
+    enabled = _coerce_control_bool(enabled)
     if module_name == "观星监控":
         now = time.time()
-        if bool(get_guanxing_monitor_enabled()) != bool(enabled):
+        if bool(get_guanxing_monitor_enabled()) != enabled:
             if enabled:
                 _manual_enable_guanxing_monitor_module_state(now)
             else:
@@ -2686,7 +3509,7 @@ async def set_module_enabled(module_name, enabled, send_as_id=None, *, skip_unav
     manual_toggle_handler = MANUAL_MODULE_TOGGLE_HANDLERS.get(module_name)
     for identity_id in target_ids:
         with use_identity(identity_id):
-            if bool(state.get(key, False)) == bool(enabled):
+            if bool(state.get(key, False)) == enabled:
                 if enabled:
                     _clear_startup_module_alerts(module_name)
                 continue
@@ -2879,8 +3702,11 @@ async def handle_log_group_command(event):
     if event.chat_id != LOG_GROUP_ID:
         return False
 
-    sender_id = getattr(event, "sender_id", None)
-    if ADMIN_ID and sender_id != ADMIN_ID:
+    try:
+        sender_id = int(getattr(event, "sender_id", None) or 0)
+    except (TypeError, ValueError):
+        return False
+    if sender_id not in ADMIN_IDS:
         return False
 
     raw_text = (event.raw_text or "").strip()
@@ -2906,16 +3732,107 @@ async def handle_log_group_command(event):
         )
         return True
 
+    if RE_CMD_ANALYSIS_SUMMARY.match(text):
+        await _reply_log_group_card(
+            event,
+            "离线分析",
+            _format_analysis_report_text("summary"),
+            error_prefix="❌ 离线分析发送失败",
+        )
+        return True
+
+    if RE_CMD_ANALYSIS_HEALTH.match(text):
+        await _reply_log_group_card(
+            event,
+            "发送健康码",
+            _format_analysis_report_text("health"),
+            error_prefix="❌ 发送健康码发送失败",
+        )
+        return True
+
+    if RE_CMD_ANALYSIS_LOG_GROUP.match(text):
+        await _reply_log_group_card(
+            event,
+            "日志群分析",
+            _format_analysis_report_text("log_group"),
+            error_prefix="❌ 日志群分析发送失败",
+        )
+        return True
+
+    if RE_CMD_ANALYSIS_WEBMINI.match(text):
+        await _reply_log_group_card(
+            event,
+            "webmini分析",
+            _format_analysis_report_text("webmini"),
+            error_prefix="❌ webmini分析发送失败",
+        )
+        return True
+
+    if RE_CMD_ANALYSIS_UNKNOWN.match(text):
+        await _reply_log_group_card(
+            event,
+            "未知指令",
+            _format_analysis_report_text("unknown"),
+            error_prefix="❌ 未知指令发送失败",
+        )
+        return True
+
+    if RE_CMD_STAGING_PREFLIGHT.match(text):
+        await _reply_log_group_card(
+            event,
+            "待上线预检",
+            _format_staging_preflight_text(),
+            error_prefix="❌ 待上线预检发送失败",
+        )
+        return True
+
+    if RE_CMD_AUDIT_PUSH_STATUS.match(text):
+        await _reply_log_group_card(
+            event,
+            "日志推送状态",
+            get_audit_push_status_text(),
+            error_prefix="❌ 日志推送状态发送失败",
+        )
+        return True
+
+    if RE_CMD_AUDIT_FLUSH_SUMMARY.match(text):
+        total, kind_count = get_low_priority_audit_pending_counts()
+        if total <= 0:
+            body = "当前没有待汇总的低优先级日志。"
+        else:
+            flushed = await flush_low_priority_audit_summary()
+            if flushed:
+                body = f"已发送低优先级日志汇总：{total} 条 / {kind_count} 类。"
+            else:
+                body = f"发送失败，明细已保留，稍后会自动重试：{total} 条 / {kind_count} 类。"
+        await _reply_log_group_card(
+            event,
+            "低优先级日志汇总",
+            body,
+            error_prefix="❌ 低优先级日志汇总状态发送失败",
+        )
+        return True
+
     if RE_CMD_GLOBAL_PAUSE.match(text):
         ok, message = await toggle_global_enabled(False, source="log_group", actor_id=sender_id)
         status_text = "🌐 全局状态：已暂停" if ok else f"❌ {message}"
-        await reply_log_group_message(event, status_text, error_prefix="❌ 全局暂停回复失败", scope="global")
+        await _reply_log_group_card(
+            event,
+            "全局控制结果",
+            status_text,
+            error_prefix="❌ 全局暂停回复失败",
+        )
         return True
 
     if RE_CMD_GLOBAL_RESUME.match(text):
         ok, message = await toggle_global_enabled(True, source="log_group", actor_id=sender_id)
         status_text = "🌐 全局状态：运行中" if ok else f"❌ {message}"
-        await reply_log_group_message(event, status_text, error_prefix="❌ 全局恢复回复失败", scope="global")
+        await _reply_log_group_card(
+            event,
+            "全局控制结果",
+            status_text,
+            error_prefix="❌ 全局恢复回复失败",
+        )
         return True
 
     if RE_CMD_ENABLE_ALL.match(text):
@@ -2928,14 +3845,19 @@ async def handle_log_group_command(event):
                 allow_empty=True,
             )
             if not ok:
-                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
+                await _reply_log_group_card(
+                    event,
+                    "模块切换失败",
+                    f"❌ {message}",
+                    error_prefix="❌ 模块状态回复失败",
+                )
                 return True
         prefix = "✅ 已开启全部模块"
-        await reply_long_log_group_message(
+        await _reply_log_group_card(
             event,
-            f"{prefix}\n{get_module_status_text(explicit_identity_id)}",
+            prefix,
+            get_module_status_text(explicit_identity_id),
             error_prefix="❌ 模块状态回复失败",
-            scope="global",
         )
         return True
 
@@ -2943,14 +3865,19 @@ async def handle_log_group_command(event):
         for module_name in MODULE_NAMES:
             ok, message = await set_module_enabled(module_name, False, send_as_id=explicit_identity_id)
             if not ok:
-                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
+                await _reply_log_group_card(
+                    event,
+                    "模块切换失败",
+                    f"❌ {message}",
+                    error_prefix="❌ 模块状态回复失败",
+                )
                 return True
         prefix = "✅ 已关闭全部模块"
-        await reply_long_log_group_message(
+        await _reply_log_group_card(
             event,
-            f"{prefix}\n{get_module_status_text(explicit_identity_id)}",
+            prefix,
+            get_module_status_text(explicit_identity_id),
             error_prefix="❌ 模块状态回复失败",
-            scope="global",
         )
         return True
 
@@ -2963,16 +3890,21 @@ async def handle_log_group_command(event):
                 skip_unavailable=enabled and explicit_identity_id is None,
             )
             if not ok:
-                await reply_log_group_message(event, f"❌ {message}", error_prefix="❌ 模块状态回复失败", scope="global")
+                await _reply_log_group_card(
+                    event,
+                    "模块切换失败",
+                    f"❌ {message}",
+                    error_prefix="❌ 模块状态回复失败",
+                )
                 return True
             action_text = "开启" if enabled else "关闭"
             status_text = get_module_status_text(explicit_identity_id)
             prefix = f"✅ 已{action_text}{module_name}模块"
-            await reply_long_log_group_message(
+            await _reply_log_group_card(
                 event,
-                f"{prefix}\n{status_text}",
+                prefix,
+                status_text,
                 error_prefix="❌ 模块状态回复失败",
-                scope="global",
             )
             return True
 
@@ -2998,6 +3930,15 @@ async def handle_log_group_command(event):
             "模块状态",
             get_module_status_text(explicit_identity_id),
             error_prefix="❌ 模块状态发送失败",
+        )
+        return True
+
+    if RE_CMD_PASSIVE_INBOX_STATUS.match(text):
+        await _reply_log_group_card(
+            event,
+            "消息盒子状态",
+            get_passive_inbox_status_text(),
+            error_prefix="❌ 消息盒子状态发送失败",
         )
         return True
 

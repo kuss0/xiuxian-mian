@@ -21,7 +21,7 @@ if not ENV_PATH.exists():
                 "TG_PROXY_HOST=127.0.0.1:7890",
                 "LOG_GROUP_ID=0",
                 "LOG_SEND_MODE=account",
-                "ADMIN_ID=0",
+                "ADMIN_ID=1",
                 "CHAOGU_UI_HOST=127.0.0.1",
                 "CHAOGU_UI_PORT=3030",
             ]

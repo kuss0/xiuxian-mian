@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from ..config import CMD_TOWER, RETRY_MAX_SEC
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import format_window_text, get_module_window_hours, state
+from ..state import format_window_text, get_module_window_hours, get_pending_command, state
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, schedule_next_tower, schedule_next_tower_after_completion
 
 
@@ -36,7 +36,7 @@ def _has_tower_pending():
     if last_msg_id > 0 and last_msg_id in pending_tasks:
         return True
     for pending in pending_tasks.values():
-        if str((pending or {}).get("cmd") or "").strip() == CMD_TOWER:
+        if get_pending_command(pending) == CMD_TOWER:
             return True
     return False
 

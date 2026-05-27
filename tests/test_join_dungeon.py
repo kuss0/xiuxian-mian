@@ -23,7 +23,7 @@ if not ENV_PATH.exists():
                 "TG_PROXY_HOST=127.0.0.1:7890",
                 "LOG_GROUP_ID=0",
                 "LOG_SEND_MODE=account",
-                "ADMIN_ID=0",
+                "ADMIN_ID=1",
                 "CHAOGU_UI_HOST=127.0.0.1",
                 "CHAOGU_UI_PORT=3030",
             ]
@@ -265,6 +265,36 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(handled)
         send_mock.assert_not_awaited()
 
+    async def test_dynamic_han_tianzun_bot_flag_counts_as_game_bot(self):
+        identity_id = self._prepare_identity()
+        now = 9500.0
+        opener = _event(95, 111, ".开启副本")
+        announce = _event(
+            96,
+            424242,
+            "【虚天殿已开启】\n副本ID: 394\n其他道友可使用 .加入副本 394 加入队伍！",
+            reply_to=95,
+        )
+        setattr(announce, "_xiuxian_sender_is_game_bot", True)
+        at_text = "@bbtest 来"
+        at = _event(97, 111, at_text, entities=[MessageEntityMention(0, 7)])
+
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[]), \
+                patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=123))) as send_mock, \
+                patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+            join_dungeon.record_game_group_message(opener, now=now)
+            join_dungeon.record_game_group_message(announce, now=now + 1)
+            join_dungeon.record_game_group_message(at, now=now + 2)
+            handled = await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2)
+
+        self.assertTrue(handled)
+        send_mock.assert_awaited_once_with(
+            ".加入副本 394",
+            track=False,
+            send_as_id=identity_id,
+            priority="urgent_reactive",
+        )
+
     async def test_bot_reply_without_dungeon_text_is_skipped(self):
         self._prepare_identity()
         now = 10000.0
@@ -367,7 +397,62 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual("408", join_dungeon._parse_dungeon_id("副本ID:408"))
         self.assertEqual("409", join_dungeon._parse_dungeon_id("副本ID：409"))
         self.assertEqual("410", join_dungeon._parse_dungeon_id(".加入副本 410"))
+        self.assertEqual("411", join_dungeon._parse_dungeon_id("【坠魔谷·集结】\n房间ID: 411"))
+        self.assertEqual("411", join_dungeon._parse_dungeon_id(".加入坠魔谷 411"))
+        self.assertEqual("411", join_dungeon._parse_dungeon_id(".加入黄龙山 411"))
         self.assertEqual("", join_dungeon._parse_dungeon_id("hello world 411"))
+
+    def test_infer_dungeon_kind_from_mainline_formats(self):
+        self.assertEqual(join_dungeon.DUNGEON_KIND_VIRTUAL_HALL, join_dungeon._infer_dungeon_kind("【虚天殿已开启】\n副本ID: 411"))
+        self.assertEqual(join_dungeon.DUNGEON_KIND_ZHUIMO, join_dungeon._infer_dungeon_kind("【坠魔谷·集结】\n房间ID: 411"))
+        self.assertEqual(join_dungeon.DUNGEON_KIND_HUANGLONG, join_dungeon._infer_dungeon_kind("【黄龙山大战·集结】\n房间ID: 411"))
+
+    def test_format_dungeon_join_command_uses_replica_kind(self):
+        self.assertEqual(".加入副本 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_VIRTUAL_HALL))
+        self.assertEqual(".加入坠魔谷 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_ZHUIMO))
+        self.assertEqual(".加入黄龙山 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_HUANGLONG))
+
+    def test_dungeon_inbox_snapshot_exposes_mainline_join_command(self):
+        now = 16700.0
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]):
+            join_dungeon.record_game_group_message(
+                _event(181, 7900199668, "【黄龙山大战·集结】\n房间ID: 514"),
+                now=now,
+            )
+
+        with patch.object(join_dungeon.time, "time", return_value=now + 2):
+            snapshot = join_dungeon.get_dungeon_join_inbox_snapshot()
+
+        self.assertEqual("514", snapshot[-1]["dungeon_id"])
+        self.assertEqual(join_dungeon.DUNGEON_KIND_HUANGLONG, snapshot[-1]["dungeon_kind"])
+        self.assertEqual("黄龙山", snapshot[-1]["dungeon_name"])
+        self.assertEqual(".加入黄龙山 514", snapshot[-1]["join_command"])
+
+    def test_dungeon_ui_snapshot_exposes_commands_and_identity_state(self):
+        identity_id = self._prepare_identity()
+        state_module.set_dungeon_join_run_state({
+            str(identity_id): {
+                "pending_room_id": "515",
+                "pending_msg_id": 188,
+                "pending_until": 16860.0,
+                "last_result": "pending",
+                "updated_at": 16801.0,
+            }
+        })
+
+        from model import ui
+
+        with patch.object(ui.time, "time", return_value=16800.0):
+            snapshot = ui.get_dungeon_join_snapshot()
+
+        commands = {item["name"]: item["join_command"] for item in snapshot["commands"]}
+        self.assertEqual(".加入副本", commands["虚天殿"])
+        self.assertEqual(".加入坠魔谷", commands["坠魔谷"])
+        self.assertEqual(".加入黄龙山", commands["黄龙山"])
+        row = next(item for item in snapshot["rows"] if item["identity_id"] == identity_id)
+        self.assertTrue(row["module_enabled"])
+        self.assertEqual("等待回复", row["status_text"])
+        self.assertEqual("515", row["pending_room_id"])
 
     def test_utf16_mention_slice_handles_emoji_before_mention(self):
         self.assertEqual("@bbtest", join_dungeon._slice_utf16_units("👌@bbtest 来", 2, 7))
@@ -410,6 +495,44 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         send_mock.assert_awaited_once_with(".加入副本 413", track=False, send_as_id=identity_id, priority="urgent_reactive")
+
+    async def test_zhuimo_announcement_uses_zhuimo_join_command(self):
+        identity_id = self._prepare_identity()
+        now = 16500.0
+        opener = _event(175, 111, ".坠魔谷")
+        announce = _event(176, 7900199668, "【坠魔谷·集结】\n队长 @leader\n房间ID: 512", reply_to=175)
+        at_text = "@bbtest 来"
+        at = _event(177, 111, at_text, entities=[MessageEntityMention(0, 7)])
+
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), \
+                patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=99))) as send_mock, \
+                patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+            join_dungeon.record_game_group_message(opener, now=now)
+            join_dungeon.record_game_group_message(announce, now=now + 1)
+            join_dungeon.record_game_group_message(at, now=now + 2)
+            handled = await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2)
+
+        self.assertTrue(handled)
+        send_mock.assert_awaited_once_with(".加入坠魔谷 512", track=False, send_as_id=identity_id, priority="urgent_reactive")
+
+    async def test_huanglong_announcement_uses_huanglong_join_command(self):
+        identity_id = self._prepare_identity()
+        now = 16600.0
+        opener = _event(178, 111, ".黄龙山")
+        announce = _event(179, 7900199668, "【黄龙山大战·集结】\n队长 @leader\n房间ID: 513", reply_to=178)
+        at_text = "@bbtest 来"
+        at = _event(180, 111, at_text, entities=[MessageEntityMention(0, 7)])
+
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), \
+                patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=99))) as send_mock, \
+                patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+            join_dungeon.record_game_group_message(opener, now=now)
+            join_dungeon.record_game_group_message(announce, now=now + 1)
+            join_dungeon.record_game_group_message(at, now=now + 2)
+            handled = await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2)
+
+        self.assertTrue(handled)
+        send_mock.assert_awaited_once_with(".加入黄龙山 513", track=False, send_as_id=identity_id, priority="urgent_reactive")
 
     async def test_duplicate_mentions_during_send_queue_are_reserved(self):
         identity_id = self._prepare_identity()
@@ -546,6 +669,78 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         record = state_module.get_dungeon_join_run_state()[str(identity_id)]
         self.assertFalse(record["participating"])
         self.assertGreater(record["cooldown_until"], now + 120 * 60)
+
+    async def test_progress_mentions_after_team_section_do_not_clear_identity(self):
+        identity_id = self._prepare_identity(username="bbtest")
+        now = 20500.0
+        state_module.set_dungeon_join_run_state({
+            str(identity_id): {
+                "participating": True,
+                "room_id": "419",
+                "joined_at": now - 600,
+                "active_until": now + 3000,
+            }
+        })
+        progress = _event(
+            215,
+            7900199668,
+            "【鼎前抉择】\n当前队伍:\n- @other\n【卦象词条】\n@bbtest 仅出现在说明里",
+        )
+
+        handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
+
+        self.assertFalse(handled)
+        record = state_module.get_dungeon_join_run_state()[str(identity_id)]
+        self.assertTrue(record["participating"])
+        self.assertEqual("419", record["room_id"])
+
+    async def test_progress_uses_usernames_inside_team_section(self):
+        identity_id = self._prepare_identity(username="bbtest")
+        now = 20600.0
+        state_module.set_dungeon_join_run_state({
+            str(identity_id): {
+                "participating": True,
+                "room_id": "419",
+                "joined_at": now - 600,
+                "active_until": now + 3000,
+            }
+        })
+        progress = _event(
+            216,
+            7900199668,
+            "【鼎前抉择】\n当前队伍:\n- @leader\n- @bbtest\n【卦象词条】\n@other",
+        )
+
+        handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
+
+        self.assertTrue(handled)
+        record = state_module.get_dungeon_join_run_state()[str(identity_id)]
+        self.assertFalse(record["participating"])
+        self.assertGreater(record["cooldown_until"], now + 120 * 60)
+
+    async def test_new_replica_join_text_marks_success(self):
+        identity_id = self._prepare_identity(username="bbtest")
+        now = 21000.0
+        state_module.set_dungeon_join_run_state({
+            str(identity_id): {
+                "pending_msg_id": 221,
+                "pending_room_id": "420",
+                "pending_until": now + 300,
+            }
+        })
+        reply = _event(
+            222,
+            7900199668,
+            "@bbtest 已成功加入坠魔谷 420\n当前队伍 (2/5):\n - @leader\n - @bbtest",
+            reply_to=221,
+        )
+
+        handled = await join_dungeon.handle_dungeon_join_bot_message(reply, reply.raw_text, now)
+
+        self.assertTrue(handled)
+        record = state_module.get_dungeon_join_run_state()[str(identity_id)]
+        self.assertTrue(record["participating"])
+        self.assertEqual("420", record["room_id"])
 
 
 if __name__ == "__main__":

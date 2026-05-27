@@ -24,7 +24,7 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_deltas
@@ -161,7 +161,7 @@ def _tree_panel_matches_current_identity(text):
 def _has_pending_tree_command(*commands):
     command_set = {str(command or "").strip() for command in commands if str(command or "").strip()}
     for pending in state.get("pending_tasks", {}).values():
-        if str((pending or {}).get("cmd") or "").strip() in command_set:
+        if get_pending_command(pending) in command_set:
             return True
     return False
 
@@ -169,7 +169,7 @@ def _has_pending_tree_command(*commands):
 def _clear_pending_tree_status(*, persist=False):
     remove_ids = [
         msg_id for msg_id, pending in state.get("pending_tasks", {}).items()
-        if str((pending or {}).get("cmd") or "").strip() == CMD_TREE_STATUS
+        if get_pending_command(pending) == CMD_TREE_STATUS
     ]
     for msg_id in remove_ids:
         state["pending_tasks"].pop(msg_id, None)
@@ -381,7 +381,7 @@ def _schedule_tree_abnormal_confirmation(now=None):
     )
 
 
-def request_tree_bootstrap_check(now=None):
+def request_tree_bootstrap_check(now=None, *, min_sec=None, max_sec=None):
     if not state["tree_enabled"]:
         return False
 
@@ -409,7 +409,7 @@ def request_tree_bootstrap_check(now=None):
     due_at = float(state.get("tree_bootstrap_check_due_at", 0) or 0)
     if state.get("tree_bootstrap_check_needed") and due_at > now:
         return False
-    _schedule_tree_bootstrap_check(now)
+    _schedule_tree_bootstrap_check(now, min_sec=min_sec, max_sec=max_sec)
     return True
 
 
@@ -636,23 +636,17 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
     return False
 
 
-async def handle_tree_exception_prompt(text):
+async def handle_tree_exception_prompt(text, now=None):
     if not state["tree_enabled"]:
-        return
+        return False
 
     if "已然成熟或正遭劫难" not in text:
-        return
+        return False
 
-    delay = random.randint(5, 7)
-
-    async def delayed_status():
-        await asyncio.sleep(delay)
-        if not state["tree_enabled"]:
-            return
-        await _send_tree_status(time.time())
-
-    _fire_and_forget(delayed_status())
+    delay = _schedule_tree_abnormal_confirmation(now)
+    save_state()
     console_log(f"🔍 灵树异常，{delay}s 后查状态。")
+    return True
 
 
 async def handle_tree_panel(text, now, is_reply_to_me):
@@ -675,7 +669,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
     if is_maturing_broadcast and not is_tree_panel:
         remove_ids = [
             msg_id for msg_id, pending in state["pending_tasks"].items()
-            if pending.get("cmd") in {CMD_TREE_WATER, CMD_TREE_STATUS}
+            if get_pending_command(pending) in {CMD_TREE_WATER, CMD_TREE_STATUS}
         ]
         for msg_id in remove_ids:
             state["pending_tasks"].pop(msg_id, None)
@@ -702,7 +696,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
     if "成熟采摘期" in text or is_maturing_broadcast:
         was_maturing = state["is_maturing"]
         state["is_maturing"] = True
-        has_pending_status = any(p["cmd"] == CMD_TREE_STATUS for p in state["pending_tasks"].values())
+        has_pending_status = any(get_pending_command(p) == CMD_TREE_STATUS for p in state["pending_tasks"].values())
 
         remaining_match = RE_TREE_REMAINING.search(text)
         remain_sec = parse_wait_time(remaining_match.group(1)) if remaining_match else 0

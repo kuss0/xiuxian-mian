@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import random
@@ -17,8 +18,10 @@ from telethon.errors import FloodWaitError
 from .config import (
     CMD_BATTLE_POWER,
     CMD_CHECKIN,
+    CMD_CONCUBINE_DAILY_GREET,
     CMD_CONCUBINE_DREAM,
     CMD_CONCUBINE_FRAGMENT,
+    CMD_CONCUBINE_GIFT_STONE,
     CMD_CONCUBINE_PUZZLE,
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_SECT_MARRY,
@@ -41,6 +44,10 @@ from .config import (
     CMD_PET_TRIAL,
     CMD_QUIZ_ANSWER,
     CMD_RANCH,
+    CMD_REPLICA_CANGKUN_JOIN,
+    CMD_REPLICA_HUANGLONG_JOIN,
+    CMD_REPLICA_JOIN,
+    CMD_REPLICA_ZHUIMO_JOIN,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
     CMD_SECOND_SOUL_STATUS,
@@ -71,8 +78,11 @@ from .config import (
     CMD_YUANYING_STATUS,
     LOG_BOT_TOKEN,
     LOG_GROUP_ID,
+    LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC,
+    LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS,
     LOG_SEND_MODE,
     TG_REQUESTS_PROXIES,
+    ADMIN_IDS,
     MESSAGES_DIR,
     MY_MSG_MAX,
     MY_MSG_TTL,
@@ -101,16 +111,24 @@ from .action_guard import (
     note_sent as action_guard_note_sent,
     should_log_block as action_guard_should_log_block,
 )
+from .features.dungeon_quiet import (
+    format_dungeon_quiet_until,
+    get_dungeon_quiet_reason,
+    is_dungeon_quiet_active,
+    should_log_dungeon_quiet_block,
+)
 from .state import (
     get_active_identity_id,
     get_current_identity_id,
     get_game_bot_ids,
     get_game_group_id,
     get_game_topic_id,
+    get_global_enabled,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
+    get_pending_command,
     get_send_as_label,
     has_active_identity_context,
     has_identity,
@@ -149,6 +167,7 @@ SEND_PRIORITY_P0 = "p0"
 SEND_PRIORITY_CHAIN = "chain"
 SEND_PRIORITY_REACTIVE = "reactive"
 SEND_PRIORITY_URGENT_REACTIVE = "urgent_reactive"
+SEND_PRIORITY_RETRY = "retry"
 SEND_PRIORITY_PROBE = "probe"
 SEND_PRIORITY_NORMAL = "normal"
 
@@ -162,6 +181,8 @@ REACTIVE_SEND_GAP_MIN_SEC = 14.0
 REACTIVE_SEND_GAP_MAX_SEC = 22.0
 URGENT_REACTIVE_SEND_GAP_MIN_SEC = 1.0
 URGENT_REACTIVE_SEND_GAP_MAX_SEC = 3.0
+RETRY_SEND_GAP_MIN_SEC = 1.0
+RETRY_SEND_GAP_MAX_SEC = 3.0
 NORMAL_SEND_GAP_MIN_SEC = 20.0
 NORMAL_SEND_GAP_MAX_SEC = 40.0
 
@@ -181,7 +202,18 @@ WEAKNESS_DEFAULT_SEC = 30 * 60
 WEAKNESS_BUFFER_SEC = 60
 WEAKNESS_ALLOWED_PREFIXES = (
     ".储物袋",
+    CMD_TREE_STATUS,
+    CMD_TREE_HARVEST,
+    ".上架",
+    ".购买",
+    ".赠送",
     ".修理法宝",
+    ".验证",
+    ".自证",
+    ".作答",
+)
+BUSY_CRITICAL_ALLOWED_PREFIXES = (
+    ".中断悟道",
     ".验证",
     ".自证",
     ".作答",
@@ -344,7 +376,7 @@ def should_pause_for_bot_health():
 
 def _normalize_send_priority(command, priority=None):
     explicit = str(priority or "").strip().lower()
-    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_CHAIN, SEND_PRIORITY_REACTIVE, SEND_PRIORITY_URGENT_REACTIVE, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
+    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_CHAIN, SEND_PRIORITY_REACTIVE, SEND_PRIORITY_URGENT_REACTIVE, SEND_PRIORITY_RETRY, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
         return explicit
     cmd = str(command or "").strip()
     if any(cmd.startswith(prefix) for prefix in P0_COMMAND_PREFIXES):
@@ -384,6 +416,8 @@ def _get_send_gap_range(priority):
         return P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_URGENT_REACTIVE:
         return URGENT_REACTIVE_SEND_GAP_MIN_SEC, URGENT_REACTIVE_SEND_GAP_MAX_SEC
+    if priority == SEND_PRIORITY_RETRY:
+        return RETRY_SEND_GAP_MIN_SEC, RETRY_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_REACTIVE:
         return REACTIVE_SEND_GAP_MIN_SEC, REACTIVE_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_CHAIN:
@@ -496,6 +530,8 @@ REPLY_FAMILY_COMMANDS = {
     "small_world_harvest": {CMD_SMALL_WORLD_HARVEST},
     "small_world_refine": {CMD_SMALL_WORLD_REFINE},
     "concubine_status": {CMD_CONCUBINE_STATUS},
+    "concubine_greet": {CMD_CONCUBINE_DAILY_GREET},
+    "concubine_gift": {CMD_CONCUBINE_GIFT_STONE},
     "concubine_dream": {CMD_CONCUBINE_DREAM},
     "concubine_fragment": {CMD_CONCUBINE_FRAGMENT},
     "concubine_puzzle": {CMD_CONCUBINE_PUZZLE},
@@ -510,6 +546,10 @@ REPLY_FAMILY_COMMANDS = {
     "taiyi_node_search": {CMD_NODE_SEARCH},
     "taiyi_node_define": {CMD_NODE_DEFINE},
     "storage_bag": {".储物袋"},
+    "storage_bag_listing": {".上架"},
+    "storage_bag_buy": {".购买"},
+    "storage_bag_gift": {".赠送"},
+    "replica_join": {CMD_REPLICA_JOIN, CMD_REPLICA_ZHUIMO_JOIN, CMD_REPLICA_HUANGLONG_JOIN, CMD_REPLICA_CANGKUN_JOIN},
 }
 COMMAND_TO_REPLY_FAMILY = {
     command: family
@@ -547,7 +587,19 @@ def _is_identity_refresh_command(command):
 def _fire_and_forget(coro):
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    def _done(done_task):
+        _background_tasks.discard(done_task)
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            traceback.print_exc()
+            return
+        if exc is not None:
+            console_log(f"⚠️ 后台任务异常：{_truncate_log_text(exc, limit=120)}", limit=180)
+            traceback.print_exception(type(exc), exc, exc.__traceback__)
+    task.add_done_callback(_done)
 
 
 def _secure_lookup(store, token):
@@ -665,14 +717,50 @@ def _get_special_tracked_message_family(identity_state, msg_id):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return None
-    if msg_id == int(identity_state.get("last_checkin_msg_id", 0) or 0):
-        return "checkin"
-    if msg_id == int(identity_state.get("last_sect_teach_msg_id", 0) or 0):
-        return "sect_teach"
-    if msg_id == int(identity_state.get("last_tower_msg_id", 0) or 0):
-        return "tower"
-    if msg_id == int(identity_state.get("last_identity_info_msg_id", 0) or 0):
-        return "identity_info"
+    tracked_id_families = (
+        ("last_checkin_msg_id", "checkin"),
+        ("last_sect_teach_msg_id", "sect_teach"),
+        ("last_tower_msg_id", "tower"),
+        ("ranch_last_msg_id", "ranch"),
+        ("wild_training_reply_to_msg_id", "wild_training"),
+        ("wild_training_last_msg_id", "wild_training"),
+        ("last_identity_info_msg_id", "identity_info"),
+        ("stargazer_last_panel_msg_id", "stargazer_panel"),
+        ("guanxing_last_query_msg_id", "guanxing_query"),
+        ("guanxing_last_shift_msg_id", "guanxing_shift"),
+        ("tianti_status_reply_to_msg_id", "tianti_status"),
+        ("tianti_last_status_msg_id", "tianti_status"),
+        ("tianti_last_wenxin_msg_id", "tianti_wenxin"),
+        ("tianti_last_climb_msg_id", "tianti_climb"),
+        ("tianti_last_gangfeng_msg_id", "tianti_gangfeng"),
+        ("last_yuanying_summary_msg_id", "yuanying"),
+        ("last_deep_retreat_summary_msg_id", "deep_retreat"),
+        ("small_world_preach_reply_to_msg_id", "small_world_preach"),
+        ("small_world_query_msg_id", "small_world_query"),
+        ("small_world_manifest_msg_id", "small_world_manifest"),
+        ("small_world_harvest_msg_id", "small_world_harvest"),
+        ("small_world_refine_msg_id", "small_world_refine"),
+        ("second_soul_status_msg_id", "second_soul_status"),
+        ("second_soul_train_msg_id", "second_soul_train"),
+        ("taiyi_yindao_msg_id", "taiyi_yindao"),
+        ("taiyi_node_search_msg_id", "taiyi_node_search"),
+        ("taiyi_node_define_msg_id", "taiyi_node_define"),
+        ("concubine_status_msg_id", "concubine_status"),
+        ("concubine_gift_status_msg_id", "concubine_status"),
+        ("concubine_greet_msg_id", "concubine_greet"),
+        ("concubine_gift_bag_msg_id", "storage_bag"),
+        ("concubine_gift_msg_id", "concubine_gift"),
+        ("concubine_dream_msg_id", "concubine_dream"),
+        ("concubine_fragment_msg_id", "concubine_fragment"),
+        ("concubine_puzzle_msg_id", "concubine_puzzle"),
+        ("concubine_reacquire_msg_id", "concubine_reacquire"),
+        ("concubine_tianji_msg_id", "concubine_tianji"),
+        ("concubine_heart_msg_id", "concubine_heart"),
+        ("concubine_heart_prompt_msg_id", "concubine_heart"),
+    )
+    for state_key, family in tracked_id_families:
+        if msg_id == int(identity_state.get(state_key, 0) or 0):
+            return family
     tracked_identity_info_ids = {
         int(tracked_msg_id or 0)
         for tracked_msg_id in identity_state.get("identity_info_reply_msg_ids", [])
@@ -706,6 +794,28 @@ def _resolve_identity_message_owner(msg_id, send_as_id=None):
     return None, None
 
 
+def _resolve_identity_from_message_sender(message, send_as_id=None):
+    sender_id = int(getattr(message, "sender_id", 0) or 0)
+    if sender_id == 0:
+        return None, None
+
+    candidates = [sender_id]
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            try:
+                candidates.append(int(sender_abs[3:]))
+            except ValueError:
+                pass
+
+    target_ids = {int(send_as_id)} if send_as_id is not None else {int(identity_id) for identity_id in get_identity_ids()}
+    for candidate in candidates:
+        candidate = int(candidate or 0)
+        if candidate in target_ids and has_identity(candidate):
+            return candidate, "reply_sender"
+    return None, None
+
+
 def _resolve_identity_message_family(msg_id, send_as_id):
     msg_id = int(msg_id or 0)
     send_as_id = int(send_as_id or 0)
@@ -720,7 +830,7 @@ def _resolve_identity_message_family(msg_id, send_as_id):
     identity_state = get_identity_state(send_as_id)
     pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
     if pending_item:
-        return resolve_reply_family(pending_item.get("cmd")), msg_id
+        return resolve_reply_family(get_pending_command(pending_item)), msg_id
 
     special_family = _get_special_tracked_message_family(identity_state, msg_id)
     if special_family:
@@ -741,6 +851,8 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
         }
 
     resolved_send_as_id, matched_via = _resolve_identity_message_owner(resolved_reply_to_msg_id, send_as_id=send_as_id)
+    if resolved_send_as_id is None and reply_to is not None:
+        resolved_send_as_id, matched_via = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
     family = None
     root_msg_id = resolved_reply_to_msg_id
     if resolved_send_as_id is not None:
@@ -752,7 +864,7 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
         reply_text = str(getattr(reply_to, "raw_text", "") or "").strip()
         if reply_text:
             for pending in identity_state.get("pending_tasks", {}).values():
-                pending_cmd = str((pending or {}).get("cmd") or "").strip()
+                pending_cmd = get_pending_command(pending)
                 if pending_cmd and pending_cmd in reply_text:
                     family = resolve_reply_family(pending_cmd)
                     break
@@ -792,7 +904,7 @@ def _clear_pending_tasks_by_commands_locked(commands):
     families.discard(None)
     remove_ids = []
     for msg_id, pending in state.get("pending_tasks", {}).items():
-        pending_cmd = str((pending or {}).get("cmd") or "").strip()
+        pending_cmd = get_pending_command(pending)
         pending_family = resolve_reply_family(pending_cmd)
         if pending_cmd in commands or (pending_family and pending_family in families):
             remove_ids.append(msg_id)
@@ -950,11 +1062,270 @@ def _format_log_message(content, *, scope="auto", send_as_id=None, html=False, l
     return f"{prefix}{text}" if prefix else text
 
 
-async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220):
+AUDIT_PRIORITY_LOW = "low"
+AUDIT_PRIORITY_MEDIUM = "medium"
+AUDIT_PRIORITY_HIGH = "high"
+_AUDIT_PRIORITY_ALIASES = {
+    "debug": AUDIT_PRIORITY_LOW,
+    "low": AUDIT_PRIORITY_LOW,
+    "info": AUDIT_PRIORITY_LOW,
+    "normal": AUDIT_PRIORITY_MEDIUM,
+    "medium": AUDIT_PRIORITY_MEDIUM,
+    "notice": AUDIT_PRIORITY_MEDIUM,
+    "warn": AUDIT_PRIORITY_MEDIUM,
+    "warning": AUDIT_PRIORITY_MEDIUM,
+    "high": AUDIT_PRIORITY_HIGH,
+    "error": AUDIT_PRIORITY_HIGH,
+    "critical": AUDIT_PRIORITY_HIGH,
+}
+_AUDIT_HIGH_MARKERS = (
+    "🚨",
+    "🆘",
+    "已被封禁",
+    "封禁",
+    "全局暂停",
+    "维持全局暂停",
+    "需人工",
+    "需要人工",
+    "人工抉择",
+    "人工处理",
+    "请手动",
+    "待处理",
+    "心魔试炼",
+    "账号离线熔断",
+    "天尊状态",
+    "后台任务异常",
+)
+_AUDIT_MEDIUM_MARKERS = (
+    "⚠️",
+    "⏸",
+    "暂停",
+    "熔断",
+    "超时",
+    "异常",
+    "失败",
+    "未匹配",
+    "多个身份",
+    "不足",
+    "冻结",
+    "重发",
+    "补发",
+    "吞回",
+    "节流",
+    "启动成功",
+    "UI 已启动",
+    "状态恢复",
+)
+_AUDIT_LOW_SELF_HEAL_MARKERS = (
+    "回复超时，准备补发一次",
+    "已出发但未收到最终结果编辑，进入下一轮",
+    "补发后仍无回复，进入下一轮",
+    "launching 超时，已回退",
+    "总结命中多个身份，已跳过",
+    "归窍总结命中多个身份，已跳过",
+    "题库内超时未作答",
+    "CD 到期，等待灵兽归来广播",
+    "启动成功",
+    "UI 已启动",
+    "状态恢复",
+)
+_low_priority_audit_bucket = {}
+_low_priority_audit_order = []
+_low_priority_audit_flush_task = None
+_low_priority_audit_seq = 0
+
+
+def _resolve_audit_priority(content, priority=None):
+    explicit = str(priority or "").strip().lower()
+    if explicit and explicit != "auto":
+        return _AUDIT_PRIORITY_ALIASES.get(explicit, AUDIT_PRIORITY_MEDIUM)
+    raw_text = str(content or "")
+    if any(marker in raw_text for marker in _AUDIT_HIGH_MARKERS):
+        return AUDIT_PRIORITY_HIGH
+    if any(marker in raw_text for marker in _AUDIT_LOW_SELF_HEAL_MARKERS):
+        return AUDIT_PRIORITY_LOW
+    if any(marker in raw_text for marker in _AUDIT_MEDIUM_MARKERS):
+        return AUDIT_PRIORITY_MEDIUM
+    return AUDIT_PRIORITY_LOW
+
+
+def _format_admin_mentions_html():
+    mentions = []
+    for admin_id in sorted(int(admin_id) for admin_id in ADMIN_IDS if int(admin_id or 0) > 0):
+        mentions.append(f'<a href="tg://user?id={admin_id}">@管理员</a>')
+    return " ".join(mentions)
+
+
+def _schedule_low_priority_audit_flush(*, force=False):
+    global _low_priority_audit_flush_task
+    if not _low_priority_audit_bucket:
+        return
+    if not force and _low_priority_audit_flush_task is not None and not _low_priority_audit_flush_task.done():
+        return
+    _low_priority_audit_flush_task = asyncio.create_task(_flush_low_priority_audit_after_delay())
+    _background_tasks.add(_low_priority_audit_flush_task)
+    _low_priority_audit_flush_task.add_done_callback(_handle_low_priority_audit_flush_done)
+
+
+def _queue_low_priority_audit(message_body, plain_body):
+    global _low_priority_audit_seq
+    now = time.time()
+    now_text = datetime.fromtimestamp(now, TZ_LOCAL).strftime("%H:%M:%S")
+    key = str(plain_body or "").strip() or "-"
+    row = _low_priority_audit_bucket.get(key)
+    if row is None:
+        _low_priority_audit_seq += 1
+        row = {
+            "count": 0,
+            "first_ts": now_text,
+            "last_ts": now_text,
+            "plain": key,
+            "html": message_body,
+            "seq": _low_priority_audit_seq,
+        }
+        _low_priority_audit_bucket[key] = row
+        _low_priority_audit_order.append(key)
+    row["count"] += 1
+    row["last_ts"] = now_text
+    _schedule_low_priority_audit_flush()
+
+
+def _handle_low_priority_audit_flush_done(done_task):
+    global _low_priority_audit_flush_task
+    _background_tasks.discard(done_task)
+    if _low_priority_audit_flush_task is done_task:
+        _low_priority_audit_flush_task = None
+    try:
+        exc = done_task.exception()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        traceback.print_exc()
+        return
+    if exc is not None:
+        console_log(f"⚠️ 低优先级日志汇总任务异常：{_truncate_log_text(exc, limit=120)}", limit=180)
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
+
+
+def _snapshot_low_priority_audit_bucket():
+    rows = []
+    for key in list(_low_priority_audit_order):
+        row = _low_priority_audit_bucket.get(key)
+        if row:
+            rows.append(dict(row))
+    _low_priority_audit_bucket.clear()
+    _low_priority_audit_order.clear()
+    return rows
+
+
+def _restore_low_priority_audit_rows(rows):
+    global _low_priority_audit_seq
+    for row in rows:
+        key = str(row.get("plain") or "").strip() or "-"
+        existing = _low_priority_audit_bucket.get(key)
+        if existing is None:
+            if int(row.get("seq") or 0) <= 0:
+                _low_priority_audit_seq += 1
+                row["seq"] = _low_priority_audit_seq
+            _low_priority_audit_bucket[key] = dict(row)
+            _low_priority_audit_order.append(key)
+            continue
+        existing["count"] += int(row.get("count") or 0)
+        existing["last_ts"] = row.get("last_ts") or existing.get("last_ts")
+
+
+def _format_low_priority_audit_summary(rows):
+    total = sum(int(row.get("count") or 0) for row in rows)
+    details = sorted(rows, key=lambda row: (-int(row.get("count") or 0), int(row.get("seq") or 0)))
+    max_details = int(LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS or 20)
+    detail_lines = []
+    for row in details[:max_details]:
+        count = int(row.get("count") or 0)
+        last_ts = row.get("last_ts") or "?"
+        text = _truncate_log_text(row.get("plain") or "-", limit=140)
+        detail_lines.append(f"{last_ts} x{count} {text}")
+    omitted = max(0, len(details) - len(detail_lines))
+    if omitted:
+        detail_lines.append(f"... 另 {omitted} 类低优先级日志未展开")
+    now_text = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
+    body = "\n".join(detail_lines) if detail_lines else "无明细"
+    return (
+        f"<b>【🍃 低优先级日志汇总 {now_text}】</b>\n"
+        f"累计 {total} 条，{len(rows)} 类。明细：\n"
+        f"<pre>{html.escape(body)}</pre>"
+    )
+
+
+def get_low_priority_audit_pending_counts():
+    total = sum(int(row.get("count") or 0) for row in _low_priority_audit_bucket.values())
+    return total, len(_low_priority_audit_bucket)
+
+
+def get_audit_push_status_text():
+    total, kind_count = get_low_priority_audit_pending_counts()
+    is_scheduled = _low_priority_audit_flush_task is not None and not _low_priority_audit_flush_task.done()
+    lines = [
+        "日志推送策略",
+        "低优先级: 进入定时汇总，汇总里保留明细和次数。",
+        "中优先级: 实时发送日志群，不 @。",
+        "高优先级: 实时发送日志群，并 @ 管理员。",
+        "",
+        f"低优先级汇总间隔: {LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC} 秒",
+        f"汇总明细上限: {LOG_GROUP_LOW_PRIORITY_SUMMARY_MAX_DETAILS} 类",
+        f"待汇总: {total} 条 / {kind_count} 类",
+        f"定时任务: {'已排程' if is_scheduled else '未排程'}",
+    ]
+    rows = sorted(
+        _low_priority_audit_bucket.values(),
+        key=lambda row: (-int(row.get("count") or 0), int(row.get("seq") or 0)),
+    )
+    if rows:
+        lines.extend(["", "待汇总 Top:"])
+        for row in rows[:10]:
+            lines.append(
+                f"- {row.get('last_ts') or '?'} x{int(row.get('count') or 0)} "
+                f"{_truncate_log_text(row.get('plain') or '-', limit=120)}"
+            )
+    return "\n".join(lines)
+
+
+async def flush_low_priority_audit_summary():
+    rows = _snapshot_low_priority_audit_bucket()
+    if not rows:
+        return True
+    message = _format_low_priority_audit_summary(rows)
+    try:
+        ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
+    except Exception:
+        ok = False
+        traceback.print_exc()
+    if not ok:
+        _restore_low_priority_audit_rows(rows)
+        _schedule_low_priority_audit_flush(force=True)
+        print("low priority audit summary failed")
+    return ok
+
+
+async def _flush_low_priority_audit_after_delay():
+    await asyncio.sleep(LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC)
+    await flush_low_priority_audit_summary()
+
+
+async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto"):
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
+    audit_priority = _resolve_audit_priority(content, priority)
     message_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=True, limit=limit)
-    message = f"【🍃 监控日志 {now}】\n{message_body}"
+    plain_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=False, limit=limit)
     console_log(content, scope=scope, send_as_id=send_as_id, limit=min(limit, 180))
+    if audit_priority == AUDIT_PRIORITY_LOW:
+        _queue_low_priority_audit(message_body, plain_body)
+        return True
+    attention_line = ""
+    if audit_priority == AUDIT_PRIORITY_HIGH:
+        mentions = _format_admin_mentions_html()
+        if mentions:
+            attention_line = f"\n关注：{mentions}"
+    message = f"【🍃 监控日志 {now}】\n{message_body}{attention_line}"
     ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
     if not ok:
         print(f"send_audit_log failed | content={_truncate_log_text(content, limit=240)}")
@@ -1287,6 +1658,16 @@ def _is_weakness_reply(text):
     return False
 
 
+def _is_jingsi_busy_reply(text):
+    raw = str(text or "")
+    return "静思崖面壁悟道" in raw and "无法进行大部分操作" in raw
+
+
+def _is_jingsi_interrupt_reply(text):
+    raw = str(text or "")
+    return "心乱如麻" in raw and "强行中断了感悟" in raw and "离开了静思崖" in raw
+
+
 def _weakness_until_from_text(text, now=None):
     if now is None:
         now = time.time()
@@ -1297,7 +1678,10 @@ def _weakness_until_from_text(text, now=None):
 
 
 def note_identity_weakness(text, now=None, send_as_id=None, *, source="reply"):
-    if not _is_weakness_reply(text):
+    is_jingsi_interrupt = _is_jingsi_interrupt_reply(text)
+    is_jingsi_busy = _is_jingsi_busy_reply(text)
+    is_weakness = _is_weakness_reply(text)
+    if not (is_weakness or is_jingsi_busy or is_jingsi_interrupt):
         return False
     if now is None:
         now = time.time()
@@ -1311,17 +1695,36 @@ def note_identity_weakness(text, now=None, send_as_id=None, *, source="reply"):
         return False
 
     identity_state = get_identity_state(send_as_id)
+    if is_jingsi_interrupt:
+        if str(identity_state.get("weak_source") or "") != "jingsi":
+            return True
+        identity_state["weak_until"] = 0
+        identity_state["weak_reason"] = ""
+        identity_state["weak_source"] = ""
+        identity_state["weak_last_block_log_at"] = 0
+        mark_dirty()
+        _fire_and_forget(
+            send_audit_log(
+                "🚫 静思悟道已中断，恢复该身份自动指令。",
+                scope="identity",
+                send_as_id=send_as_id,
+                limit=220,
+            )
+        )
+        return True
+
     until = _weakness_until_from_text(text, now)
     if until <= float(identity_state.get("weak_until", 0) or 0):
         return True
     identity_state["weak_until"] = until
     identity_state["weak_reason"] = _truncate_log_text(text, limit=120)
-    identity_state["weak_source"] = str(source or "reply")
+    identity_state["weak_source"] = "jingsi" if is_jingsi_busy else str(source or "reply")
     identity_state["weak_last_block_log_at"] = 0
     mark_dirty()
+    status_label = "静思悟道" if is_jingsi_busy else "虚弱状态"
     _fire_and_forget(
         send_audit_log(
-            f"🚫 检测到虚弱状态，暂停该身份自动指令至 {fmt_abs_ts(until)}（{fmt_remaining(until)}）。",
+            f"🚫 检测到{status_label}，暂停该身份自动指令至 {fmt_abs_ts(until)}（{fmt_remaining(until)}）。",
             scope="identity",
             send_as_id=send_as_id,
             limit=260,
@@ -1356,9 +1759,17 @@ def is_identity_weak(send_as_id=None, now=None):
     return False
 
 
-def _weakness_allows_command(command):
+def _command_matches_prefixes(command, prefixes):
     raw = str(command or "").strip()
-    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in WEAKNESS_ALLOWED_PREFIXES)
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in prefixes)
+
+
+def _weakness_allows_command(command, send_as_id=None):
+    if send_as_id is not None:
+        identity_state = get_identity_state(send_as_id)
+        if str(identity_state.get("weak_source") or "") == "jingsi":
+            return _command_matches_prefixes(command, BUSY_CRITICAL_ALLOWED_PREFIXES)
+    return _command_matches_prefixes(command, WEAKNESS_ALLOWED_PREFIXES)
 
 
 async def _log_weakness_blocked(command, *, send_as_id):
@@ -1370,12 +1781,31 @@ async def _log_weakness_blocked(command, *, send_as_id):
     identity_state["weak_last_block_log_at"] = now
     mark_dirty()
     until = float(identity_state.get("weak_until", 0) or 0)
+    status_label = "静思悟道暂停" if str(identity_state.get("weak_source") or "") == "jingsi" else "虚弱状态"
     await send_audit_log(
-        f"🚫 虚弱状态拦截：{_truncate_log_text(command, limit=32)}｜恢复 {fmt_abs_ts(until)}（{fmt_remaining(until)}）",
+        f"🚫 {status_label}拦截：{_truncate_log_text(command, limit=32)}｜恢复 {fmt_abs_ts(until)}（{fmt_remaining(until)}）",
         scope="identity",
         send_as_id=send_as_id,
         limit=260,
     )
+
+
+async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
+    if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+        return False
+    if not is_dungeon_quiet_active():
+        return False
+    if should_log_dungeon_quiet_block():
+        await send_audit_log(
+            (
+                f"🤫 {get_dungeon_quiet_reason() or '副本静场令'}生效中，暂缓普通指令："
+                f"{_truncate_log_text(command, limit=32)}｜恢复 {format_dungeon_quiet_until()}"
+            ),
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=260,
+        )
+    return True
 
 
 async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None, max_retry=None):
@@ -1387,6 +1817,12 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
     account_id = int(get_identity_account(send_as_id) or 0)
 
     try:
+        if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+            return None
+
+        if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
+            return None
+
         if account_id and is_account_offline(account_id):
             await _log_account_offline_blocked(
                 command,
@@ -1396,7 +1832,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             )
             return None
 
-        if is_identity_weak(send_as_id) and not _weakness_allows_command(command):
+        if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
             await _log_weakness_blocked(command, send_as_id=send_as_id)
             return None
 
@@ -1417,6 +1853,12 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             return None
 
         async with _send_slot(send_priority, command=command, send_as_id=send_as_id):
+            if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+                return None
+
+            if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
+                return None
+
             _refresh_bot_health_timeout_before_send()
             if account_id and is_account_offline(account_id):
                 await _log_account_offline_blocked(
@@ -1426,7 +1868,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                     reason=get_account_offline_reason(account_id) or "账号离线",
                 )
                 return None
-            if is_identity_weak(send_as_id) and not _weakness_allows_command(command):
+            if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
                 await _log_weakness_blocked(command, send_as_id=send_as_id)
                 return None
             if _bot_health_blocks_send(send_priority):
@@ -1541,6 +1983,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 identity_state["my_msg_ids"][msg_id] = sent_at
                 if track:
                     timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
+                    retry_limit = max(0, int(max_retry if max_retry is not None else RETRY_LIMIT))
                     if action_guard_is_guarded_command(command):
                         next_allowed_at = action_guard_next_allowed_at(command, send_as_id=send_as_id)
                         if next_allowed_at > sent_at:
@@ -1552,9 +1995,8 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                         "timeout": timeout,
                         "reply_to_msg_id": int(reply_to or 0),
                         "priority": send_priority,
+                        "max_retry": retry_limit,
                     }
-                    if max_retry is not None:
-                        pending_item["max_retry"] = max(0, int(max_retry))
                     identity_state["pending_tasks"][msg_id] = pending_item
                 mark_dirty()
             note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
@@ -1667,7 +2109,7 @@ def clear_pending_by_reply(reply_to=None, send_as_id=None, reply_context=None):
         if family:
             family_commands = get_reply_family_commands(family)
             for msg_id, pending in list(state["pending_tasks"].items()):
-                pending_cmd = str((pending or {}).get("cmd") or "").strip()
+                pending_cmd = get_pending_command(pending)
                 if pending_cmd in family_commands or resolve_reply_family(pending_cmd) == family:
                     state["pending_tasks"].pop(msg_id, None)
                     removed_ids.append(msg_id)
@@ -1696,8 +2138,8 @@ def _is_pending_consumed(identity_state, msg_id, family):
         same_family_items = [
             (pending_msg_id, pending)
             for pending_msg_id, pending in pending_tasks.items()
-            if (str((pending or {}).get("cmd") or "").strip() in family_commands)
-            or (resolve_reply_family((pending or {}).get("cmd")) == family)
+            if (get_pending_command(pending) in family_commands)
+            or (resolve_reply_family(get_pending_command(pending)) == family)
         ]
         if not same_family_items:
             return True
@@ -1735,10 +2177,16 @@ async def run_retry_scheduler(now, send_as_id=None):
         with use_identity(identity_id) as identity_state:
             retry_items = list(identity_state["pending_tasks"].items())
         for msg_id, item in retry_items:
-            cmd = item["cmd"]
-            send_time = item["sent_at"]
-            threshold = item["timeout"]
-            retry = item["retry"]
+            cmd = get_pending_command(item)
+            if not cmd:
+                with use_identity(identity_id) as identity_state:
+                    if msg_id in identity_state["pending_tasks"]:
+                        identity_state["pending_tasks"].pop(msg_id, None)
+                        mark_dirty()
+                continue
+            send_time = float((item or {}).get("sent_at", 0) or 0)
+            threshold = float((item or {}).get("timeout", 0) or 0)
+            retry = int((item or {}).get("retry", 0) or 0)
             family = resolve_reply_family(cmd)
 
             if now - send_time <= threshold or not has_identity(identity_id):
@@ -1753,7 +2201,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                     mark_dirty()
                     continue
                 retry = int(current_item.get("retry", retry) or 0)
-                cmd = current_item.get("cmd") or cmd
+                cmd = get_pending_command(current_item) or cmd
                 saved_priority = current_item.get("priority") or None
 
                 if get_bot_last_seen_at() < float(send_time or 0):
@@ -1807,7 +2255,12 @@ async def run_retry_scheduler(now, send_as_id=None):
                 scope="identity",
                 send_as_id=identity_id,
             )
-            new_msg = await send_game_command(cmd, send_as_id=identity_id, priority=saved_priority)
+            new_msg = await send_game_command(
+                cmd,
+                send_as_id=identity_id,
+                priority=SEND_PRIORITY_RETRY,
+                max_retry=retry_limit,
+            )
             if not has_identity(identity_id):
                 continue
             with use_identity(identity_id) as identity_state:
@@ -1846,7 +2299,7 @@ async def schedule_cleanup(reply_to, send_as_id=None):
         if (
             is_identity_refresh_command_text(reply_to.raw_text)
             and (
-                any(_is_identity_refresh_command(pending.get("cmd")) for pending in identity_state["pending_tasks"].values())
+                any(_is_identity_refresh_command(get_pending_command(pending)) for pending in identity_state["pending_tasks"].values())
                 or identity_state.get("identity_info_reply_msg_ids")
                 or identity_state.get("last_identity_info_msg_id", 0)
                 or float(identity_state.get("identity_info_followup_due_at", 0) or 0) > 0
@@ -1884,9 +2337,12 @@ __all__ = [
     "gc_my_msg_ids",
     "gc_ui_login_tokens",
     "gc_ui_sessions",
+    "flush_low_priority_audit_summary",
+    "get_audit_push_status_text",
     "get_bot_health_snapshot",
     "get_bot_last_seen_at",
     "get_game_send_queue_snapshot",
+    "get_low_priority_audit_pending_counts",
     "get_reply_context",
     "get_reply_family_commands",
     "is_account_session_error",

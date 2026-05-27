@@ -43,18 +43,18 @@ IDENTITY_RUNTIME_COLUMNS = [
     "last_tower_msg_id", "pet_last_error", "pet_warm_last_error", "pet_trial_last_error",
     "ranch_reply_to_msg_id", "ranch_reply_due_at", "ranch_retry_count", "ranch_last_msg_id", "ranch_last_result", "ranch_last_error", "ranch_return_pending", "ranch_return_seen_msg_id", "ranch_return_wait_since", "ranch_return_last_notified_at",
     "wild_training_strategy", "wild_training_reply_to_msg_id", "wild_training_reply_due_at", "wild_training_retry_count", "wild_training_last_msg_id", "wild_training_last_result", "wild_training_last_error",
-    "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
+    "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_queued_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
-    "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
-    "quiz_reply_to_msg_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_last_error", "quiz_last_matched_at",
+    "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_status_seen_at", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
+    "quiz_reply_to_msg_id", "quiz_chat_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_answer_method", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
-    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_fragment_count", "concubine_fragment_total", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
+    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_greet_msg_id", "concubine_last_greet_day", "concubine_greet_retry_count", "concubine_greet_last_error", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id", "concubine_gift_msg_id", "concubine_gift_amount", "concubine_last_gift_day", "concubine_gift_attempt_day", "concubine_gift_last_error", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_heart_choice_prompt_msg_id", "concubine_heart_choice_round", "concubine_heart_choice_sent_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_fragment_xutian_count", "concubine_fragment_xutian_total", "concubine_fragment_cangkun_count", "concubine_fragment_cangkun_total", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_last_error",
-    "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_last_panel_at", "small_world_last_error",
+    "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_last_panel_at", "small_world_last_error",
     "resource_shortage_backoffs", "action_guard_sessions",
-    "yuanying_phase", "yuanying_probe_pending", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
-    "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
+    "yuanying_phase", "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
+    "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_search_resend_count", "taiyi_last_error",
@@ -67,11 +67,11 @@ IDENTITY_BOOL_FIELDS = {
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
-    "yuanying_probe_pending", "deep_retreat_probe_pending",
+    "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged",
     "second_soul_heart_demon_notified",
     "tree_maturing_logged",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -80,6 +80,7 @@ SEND_AS_PROFILE_DEFAULTS = {
     "spiritual_root_type": "",
     "spiritual_root_attrs": "",
     "replica_professions": "",
+    "replica_gold_dps_enabled": False,
     "pet_name": DEFAULT_PET_NAME,
     "pet_warm_name": "",
     "pet_trial_name": "",
@@ -87,6 +88,8 @@ SEND_AS_PROFILE_DEFAULTS = {
     "sect_updated_at": 0,
     "xiuwei_current": 0,
     "xiuwei_max": 0,
+    "battle_power_text": "",
+    "battle_power_value": 0,
     "jiyin_choice": "",
     "nanlong_choice": "reject",
     "stargazer_star_choice": STARGAZER_STAR_CHOICES[0],
@@ -127,6 +130,13 @@ REALM_SORT_ORDER = [
     "化神后期大圆满",
 ]
 REALM_SORT_INDEX = {realm: index for index, realm in enumerate(REALM_SORT_ORDER)}
+REPLICA_PROFESSION_RULES = [
+    ("御山", {"土"}),
+    ("灵医", {"木", "水"}),
+    ("影刃", {"风", "冰"}),
+    ("破军", {"金", "雷"}),
+    ("咒师", {"火", "暗"}),
+]
 REALM_XIUWEI_MAX_MAP = {
     100: "炼气一层",
     150: "炼气二层",
@@ -252,6 +262,7 @@ IDENTITY_STATE_TEMPLATE = {
     "stargazer_collect_due_at": 0,
     "stargazer_last_panel_msg_id": 0,
     "stargazer_last_action": "",
+    "stargazer_queued_action": "",
     "stargazer_idle_slot_count": 0,
     "stargazer_dim_slot_count": 0,
     "stargazer_ready_slot_count": 0,
@@ -278,6 +289,7 @@ IDENTITY_STATE_TEMPLATE = {
     "next_tianti_gangfeng_time": 0,
     "tianti_status_reply_to_msg_id": 0,
     "tianti_last_status_msg_id": 0,
+    "tianti_last_status_seen_at": 0,
     "tianti_last_wenxin_msg_id": 0,
     "tianti_last_climb_msg_id": 0,
     "tianti_last_gangfeng_msg_id": 0,
@@ -323,12 +335,14 @@ IDENTITY_STATE_TEMPLATE = {
     # 玄骨考校模块
     "next_quiz_time": 0,
     "quiz_reply_to_msg_id": 0,
+    "quiz_chat_id": 0,
     "quiz_question": "",
     "quiz_options": {},
     "quiz_answer": "",
     "quiz_phase": "",
     "quiz_retry_count": 0,
     "quiz_match_mode": "",
+    "quiz_answer_method": "",
     "quiz_last_error": "",
     "quiz_last_matched_at": 0,
 
@@ -339,10 +353,21 @@ IDENTITY_STATE_TEMPLATE = {
 
     # 侍妾模块
     "next_concubine_time": 0,
-    "concubine_phase": "idle",  # idle|status_pending|dream_pending|fragment_pending|puzzle_ready|puzzle_pending|reacquire_pending|tianji_pending|heart_pending|heart_choice_pending|no_partner
+    "concubine_phase": "idle",  # idle|status_pending|greet_pending|gift_status_pending|gift_bag_pending|gift_pending|dream_pending|fragment_pending|puzzle_ready|puzzle_pending|reacquire_pending|tianji_pending|heart_pending|heart_choice_pending|no_partner
     "concubine_availability": "unknown",
     "concubine_nanlong_strategy": "reacquire_after_loss",
     "concubine_status_msg_id": 0,
+    "concubine_greet_msg_id": 0,
+    "concubine_last_greet_day": "",
+    "concubine_greet_retry_count": 0,
+    "concubine_greet_last_error": "",
+    "concubine_gift_status_msg_id": 0,
+    "concubine_gift_bag_msg_id": 0,
+    "concubine_gift_msg_id": 0,
+    "concubine_gift_amount": 0,
+    "concubine_last_gift_day": "",
+    "concubine_gift_attempt_day": "",
+    "concubine_gift_last_error": "",
     "concubine_dream_msg_id": 0,
     "concubine_fragment_msg_id": 0,
     "concubine_puzzle_msg_id": 0,
@@ -362,8 +387,15 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_tianji_chain": "",
     "concubine_tianji_chain_due_at": 0,
     "concubine_heart_round": 0,
+    "concubine_heart_choice_prompt_msg_id": 0,
+    "concubine_heart_choice_round": 0,
+    "concubine_heart_choice_sent_at": 0,
     "concubine_fragment_count": 0,
     "concubine_fragment_total": 4,
+    "concubine_fragment_xutian_count": 0,
+    "concubine_fragment_xutian_total": 4,
+    "concubine_fragment_cangkun_count": 0,
+    "concubine_fragment_cangkun_total": 4,
     "concubine_last_snapshot_at": 0,
     "concubine_reacquire_blocked_until": 0,
     "concubine_reacquire_attempts": 0,
@@ -404,6 +436,7 @@ IDENTITY_STATE_TEMPLATE = {
     "small_world_phase": "idle",
     "small_world_query_msg_id": 0,
     "small_world_manifest_msg_id": 0,
+    "small_world_manifest_cost_text": "",
     "small_world_harvest_msg_id": 0,
     "small_world_refine_msg_id": 0,
     "small_world_refresh_count": 0,
@@ -463,11 +496,11 @@ IDENTITY_STATE_TEMPLATE = {
     "identity_info_primary_payload": {},
     "startup_module_alerts": [],
 
-    # 元婴阻塞日志去重（运行态，不持久化）
+    # 元婴阻塞日志去重
     "yuanying_waiting_logged": False,
     "yuanying_protect_logged": False,
 
-    # 深度闭关阻塞日志去重（运行态，不持久化）
+    # 深度闭关阻塞日志去重
     "deep_retreat_waiting_logged": False,
     "deep_retreat_protect_logged": False,
 
@@ -503,9 +536,20 @@ GLOBAL_STATE_DEFAULTS = {
     "guanxing_monitor_last_seen_at": 0,
     "guanxing_monitor_last_notified_slot_key": "",
     "guanxing_round_state": {},
+    "replica_group_id": 0,
+    "replica_group_ids": [],
+    "replica_listener_account_id": 0,
+    "replica_listener_account_map": {},
+    "replica_participant_identity_ids": [],
+    "replica_run_state": {},
+    "replica_virtual_hall_match_enabled_map": {},
+    "replica_query_aggregator_config": {},
     "storage_bag_records": {},
     "storage_bag_item_rules": {},
     "dungeon_join_run_state": {},
+    "dungeon_quiet_until": 0,
+    "dungeon_quiet_reason": "",
+    "dungeon_quiet_last_log_at": 0,
     "send_as_profiles": {},
     "identity_states": {},
     "identity_ids": [],
@@ -519,6 +563,12 @@ _meta_state = copy.deepcopy(GLOBAL_STATE_DEFAULTS)
 
 def new_identity_state():
     return copy.deepcopy(IDENTITY_STATE_TEMPLATE)
+
+
+def get_pending_command(pending):
+    if not isinstance(pending, dict):
+        return ""
+    return str(pending.get("cmd") or pending.get("command") or "").strip()
 
 
 def has_identity(send_as_id):
@@ -600,7 +650,7 @@ def get_identity_state(send_as_id=None):
 def _coerce_send_as_profile_field(field_name, value):
     if field_name in {"username", "label"}:
         return value or ""
-    if field_name in {"daohao", "realm", "spiritual_root_type", "spiritual_root_attrs", "replica_professions", "sect_name", "jiyin_choice", "nanlong_choice"}:
+    if field_name in {"daohao", "realm", "spiritual_root_type", "spiritual_root_attrs", "replica_professions", "sect_name", "battle_power_text", "jiyin_choice", "nanlong_choice"}:
         return (value or "").strip()
     if field_name == "stargazer_star_choice":
         normalized = (value or "").strip()
@@ -614,7 +664,7 @@ def _coerce_send_as_profile_field(field_name, value):
         return (value or "").strip()
     if field_name == "sect_updated_at":
         return float(value or 0)
-    if field_name in {"xiuwei_current", "xiuwei_max", "stargazer_total_slots"}:
+    if field_name in {"xiuwei_current", "xiuwei_max", "battle_power_value", "stargazer_total_slots"}:
         return int(value or 0)
     if field_name in {
         "checkin_window_start_hour_utc",
@@ -623,7 +673,7 @@ def _coerce_send_as_profile_field(field_name, value):
         "tower_window_end_hour_utc",
     }:
         return int(value)
-    if field_name == "enabled":
+    if field_name in {"enabled", "replica_gold_dps_enabled"}:
         return bool(value)
     return value
 
@@ -682,6 +732,7 @@ def set_send_as_profile(
     spiritual_root_type=None,
     spiritual_root_attrs=None,
     replica_professions=None,
+    replica_gold_dps_enabled=None,
     pet_name=None,
     pet_warm_name=None,
     pet_trial_name=None,
@@ -689,6 +740,8 @@ def set_send_as_profile(
     sect_updated_at=None,
     xiuwei_current=None,
     xiuwei_max=None,
+    battle_power_text=None,
+    battle_power_value=None,
     jiyin_choice=None,
     nanlong_choice=None,
     stargazer_star_choice=None,
@@ -709,6 +762,7 @@ def set_send_as_profile(
         spiritual_root_type=spiritual_root_type,
         spiritual_root_attrs=spiritual_root_attrs,
         replica_professions=replica_professions,
+        replica_gold_dps_enabled=replica_gold_dps_enabled,
         pet_name=pet_name,
         pet_warm_name=pet_warm_name,
         pet_trial_name=pet_trial_name,
@@ -716,6 +770,8 @@ def set_send_as_profile(
         sect_updated_at=sect_updated_at,
         xiuwei_current=xiuwei_current,
         xiuwei_max=xiuwei_max,
+        battle_power_text=battle_power_text,
+        battle_power_value=battle_power_value,
         jiyin_choice=jiyin_choice,
         nanlong_choice=nanlong_choice,
         stargazer_star_choice=stargazer_star_choice,
@@ -729,12 +785,49 @@ def set_send_as_profile(
     )
 
 
+def infer_replica_professions(spiritual_root_attrs):
+    attrs_text = str(spiritual_root_attrs or "")
+    professions = []
+    for profession, attrs in REPLICA_PROFESSION_RULES:
+        if any(attr in attrs_text for attr in attrs):
+            professions.append(profession)
+    return "|".join(professions)
+
+
+def _profile_allows_replica_gold_dps(profile):
+    attrs_text = str((profile or {}).get("spiritual_root_attrs") or "")
+    return any(attr in attrs_text for attr in ("金", "雷"))
+
+
+def _normalize_replica_gold_dps_profile(profile):
+    if not _profile_allows_replica_gold_dps(profile):
+        profile["replica_gold_dps_enabled"] = False
+    else:
+        profile["replica_gold_dps_enabled"] = bool(profile.get("replica_gold_dps_enabled", False))
+    return profile
+
+
+def _normalize_replica_professions_profile(profile, *, infer_from_root=False):
+    explicit_professions = str((profile or {}).get("replica_professions") or "").strip()
+    if explicit_professions and not infer_from_root:
+        profile["replica_professions"] = explicit_professions
+    else:
+        profile["replica_professions"] = infer_replica_professions(profile.get("spiritual_root_attrs") or "")
+    return profile
+
+
 def update_send_as_profile(send_as_id, **changes):
     send_as_id = int(send_as_id)
     ensure_identity_registered(send_as_id)
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(send_as_id, {}))
-    profile.update(_normalize_send_as_profile_updates(changes))
+    normalized_changes = _normalize_send_as_profile_updates(changes)
+    profile.update(normalized_changes)
+    _normalize_replica_professions_profile(
+        profile,
+        infer_from_root="spiritual_root_attrs" in normalized_changes and "replica_professions" not in normalized_changes,
+    )
+    _normalize_replica_gold_dps_profile(profile)
     _meta_state["send_as_profiles"][send_as_id] = profile
     return profile
 
@@ -744,11 +837,29 @@ def get_send_as_profile(send_as_id=None):
         send_as_id = get_current_identity_id()
     profile = dict(SEND_AS_PROFILE_DEFAULTS)
     profile.update(_meta_state["send_as_profiles"].get(int(send_as_id), {}))
+    _normalize_replica_professions_profile(profile)
+    _normalize_replica_gold_dps_profile(profile)
     if not (profile.get("realm") or "").strip():
         inferred_realm = infer_realm_from_xiuwei_max(profile.get("xiuwei_max", 0))
         if inferred_realm:
             profile["realm"] = inferred_realm
     return profile
+
+
+def is_replica_gold_dps_allowed(send_as_id=None):
+    return _profile_allows_replica_gold_dps(get_send_as_profile(send_as_id))
+
+
+def get_replica_gold_dps_enabled(send_as_id=None):
+    profile = get_send_as_profile(send_as_id)
+    return _profile_allows_replica_gold_dps(profile) and bool(profile.get("replica_gold_dps_enabled", False))
+
+
+def set_replica_gold_dps_enabled(send_as_id, enabled):
+    send_as_id = int(send_as_id)
+    profile = get_send_as_profile(send_as_id)
+    update_send_as_profile(send_as_id, replica_gold_dps_enabled=bool(enabled) and _profile_allows_replica_gold_dps(profile))
+    return get_replica_gold_dps_enabled(send_as_id)
 
 
 def get_identity_enabled(send_as_id=None):
@@ -789,6 +900,245 @@ def get_dungeon_join_run_state():
 def set_dungeon_join_run_state(records):
     _meta_state["dungeon_join_run_state"] = records if isinstance(records, dict) else {}
     return get_dungeon_join_run_state()
+
+
+def _get_meta_dict(key):
+    value = _meta_state.get(key) or {}
+    return value if isinstance(value, dict) else {}
+
+
+def _set_meta_dict(key, value):
+    _meta_state[key] = value if isinstance(value, dict) else {}
+
+
+def get_replica_group_id():
+    group_ids = get_replica_group_ids()
+    if group_ids:
+        return int(group_ids[0])
+    return int(_meta_state.get("replica_group_id") or 0)
+
+
+def set_replica_group_id(group_id):
+    _meta_state["replica_group_id"] = int(group_id or 0)
+    if int(group_id or 0):
+        set_replica_group_ids([int(group_id or 0)])
+    else:
+        _meta_state["replica_group_ids"] = []
+        _meta_state["replica_listener_account_map"] = {}
+        _meta_state["replica_virtual_hall_match_enabled_map"] = {}
+    return get_replica_group_id()
+
+
+def _normalize_replica_group_ids(group_ids):
+    if isinstance(group_ids, str):
+        candidates = group_ids.replace("，", ",").replace("\n", ",").split(",")
+    else:
+        candidates = group_ids or []
+    normalized = []
+    seen = set()
+    for raw_id in candidates:
+        try:
+            group_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if group_id == 0 or group_id in seen:
+            continue
+        seen.add(group_id)
+        normalized.append(group_id)
+    return normalized
+
+
+def get_replica_group_ids():
+    group_ids = _normalize_replica_group_ids(_meta_state.get("replica_group_ids") or [])
+    if group_ids:
+        return group_ids
+    legacy_group_id = int(_meta_state.get("replica_group_id") or 0)
+    return [legacy_group_id] if legacy_group_id else []
+
+
+def set_replica_group_ids(group_ids):
+    normalized = _normalize_replica_group_ids(group_ids)
+    _meta_state["replica_group_ids"] = normalized
+    _meta_state["replica_group_id"] = int(normalized[0]) if normalized else 0
+    get_replica_virtual_hall_match_enabled_map()
+    return get_replica_group_ids()
+
+
+def get_replica_listener_account_id():
+    listener_map = get_replica_listener_account_map()
+    group_id = get_replica_group_id()
+    if group_id and str(group_id) in listener_map:
+        return int(listener_map.get(str(group_id)) or 0)
+    return int(_meta_state.get("replica_listener_account_id") or 0)
+
+
+def set_replica_listener_account_id(account_id):
+    _meta_state["replica_listener_account_id"] = int(account_id or 0)
+    group_id = get_replica_group_id()
+    if group_id and int(account_id or 0):
+        listener_map = get_replica_listener_account_map()
+        listener_map[str(group_id)] = int(account_id or 0)
+        set_replica_listener_account_map(listener_map)
+    return get_replica_listener_account_id()
+
+
+def _normalize_replica_listener_account_map(listener_map):
+    normalized = {}
+    group_ids = set(get_replica_group_ids())
+    for raw_group_id, raw_account_id in (listener_map or {}).items():
+        try:
+            group_id = int(raw_group_id)
+            account_id = int(raw_account_id)
+        except (TypeError, ValueError):
+            continue
+        if group_id == 0 or account_id <= 0:
+            continue
+        if group_ids and group_id not in group_ids:
+            continue
+        normalized[str(group_id)] = account_id
+    return normalized
+
+
+def get_replica_listener_account_map():
+    listener_map = _normalize_replica_listener_account_map(_meta_state.get("replica_listener_account_map") or {})
+    if listener_map:
+        return listener_map
+    legacy_group_id = int(_meta_state.get("replica_group_id") or 0)
+    legacy_account_id = int(_meta_state.get("replica_listener_account_id") or 0)
+    if legacy_group_id and legacy_account_id:
+        return {str(legacy_group_id): legacy_account_id}
+    return {}
+
+
+def set_replica_listener_account_map(listener_map):
+    normalized = _normalize_replica_listener_account_map(listener_map)
+    _meta_state["replica_listener_account_map"] = normalized
+    group_id = get_replica_group_id()
+    _meta_state["replica_listener_account_id"] = int(normalized.get(str(group_id)) or 0) if group_id else 0
+    return get_replica_listener_account_map()
+
+
+def _normalize_replica_participant_identity_ids(identity_ids):
+    normalized = []
+    seen = set()
+    known_ids = set(get_identity_ids())
+    for raw_id in identity_ids or []:
+        try:
+            identity_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if identity_id <= 0 or identity_id in seen or identity_id not in known_ids:
+            continue
+        seen.add(identity_id)
+        normalized.append(identity_id)
+    return normalized
+
+
+def get_replica_participant_identity_ids():
+    return _normalize_replica_participant_identity_ids(_meta_state.get("replica_participant_identity_ids") or [])
+
+
+def set_replica_participant_identity_ids(identity_ids):
+    _meta_state["replica_participant_identity_ids"] = _normalize_replica_participant_identity_ids(identity_ids)
+    return get_replica_participant_identity_ids()
+
+
+def get_replica_run_state():
+    return _get_meta_dict("replica_run_state")
+
+
+def set_replica_run_state(records):
+    _set_meta_dict("replica_run_state", records)
+    return get_replica_run_state()
+
+
+def _coerce_meta_bool(value, default=False):
+    if value is None:
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
+        return True
+    if text in {"", "0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "禁用"}:
+        return False
+    return bool(default)
+
+
+def _normalize_replica_virtual_hall_match_enabled_map(enabled_map):
+    normalized = {}
+    group_ids = set(get_replica_group_ids())
+    if not group_ids:
+        return normalized
+    for raw_group_id, raw_enabled in (enabled_map or {}).items():
+        try:
+            group_id = int(raw_group_id)
+        except (TypeError, ValueError):
+            continue
+        if group_id == 0 or group_id not in group_ids:
+            continue
+        normalized[str(group_id)] = _coerce_meta_bool(raw_enabled)
+    return normalized
+
+
+def get_replica_virtual_hall_match_enabled_map():
+    enabled_map = _normalize_replica_virtual_hall_match_enabled_map(_meta_state.get("replica_virtual_hall_match_enabled_map") or {})
+    _meta_state["replica_virtual_hall_match_enabled_map"] = enabled_map
+    return enabled_map
+
+
+def set_replica_virtual_hall_match_enabled_map(enabled_map):
+    _meta_state["replica_virtual_hall_match_enabled_map"] = _normalize_replica_virtual_hall_match_enabled_map(enabled_map)
+    return get_replica_virtual_hall_match_enabled_map()
+
+
+def set_replica_virtual_hall_match_enabled(group_id, enabled):
+    try:
+        group_id = int(group_id)
+    except (TypeError, ValueError):
+        return False
+    if group_id == 0 or group_id not in set(get_replica_group_ids()):
+        return False
+    enabled_map = get_replica_virtual_hall_match_enabled_map()
+    enabled_map[str(group_id)] = _coerce_meta_bool(enabled)
+    set_replica_virtual_hall_match_enabled_map(enabled_map)
+    return is_replica_virtual_hall_match_enabled(group_id)
+
+
+def is_replica_virtual_hall_match_enabled(group_id):
+    try:
+        group_id = int(group_id)
+    except (TypeError, ValueError):
+        return False
+    return bool(get_replica_virtual_hall_match_enabled_map().get(str(group_id), False))
+
+
+def _normalize_replica_query_aggregator_config(config):
+    config = config if isinstance(config, dict) else {}
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    client_id = str(config.get("client_id") or "").strip()
+    secret = str(config.get("secret") or "").strip()
+    return {
+        "base_url": base_url,
+        "client_id": client_id,
+        "secret": secret,
+    }
+
+
+def get_replica_query_aggregator_config():
+    return _normalize_replica_query_aggregator_config(_meta_state.get("replica_query_aggregator_config") or {})
+
+
+def set_replica_query_aggregator_config(config):
+    _meta_state["replica_query_aggregator_config"] = _normalize_replica_query_aggregator_config(config)
+    return get_replica_query_aggregator_config()
+
+
+def is_replica_query_aggregator_configured():
+    config = get_replica_query_aggregator_config()
+    return bool(config.get("base_url") and config.get("client_id") and config.get("secret"))
 
 
 def get_send_as_label(send_as_id=None):
@@ -1442,8 +1792,22 @@ __all__ = [
     "get_module_window_hours",
     "get_module_window_hours_local",
     "get_module_window_profile_keys",
+    "get_pending_command",
     "get_available_module_names",
     "get_dungeon_join_run_state",
+    "get_replica_group_id",
+    "get_replica_group_ids",
+    "get_replica_gold_dps_enabled",
+    "get_replica_listener_account_id",
+    "get_replica_listener_account_map",
+    "get_replica_participant_identity_ids",
+    "get_replica_query_aggregator_config",
+    "get_replica_run_state",
+    "get_replica_virtual_hall_match_enabled_map",
+    "infer_replica_professions",
+    "is_replica_gold_dps_allowed",
+    "is_replica_query_aggregator_configured",
+    "is_replica_virtual_hall_match_enabled",
     "get_jiyin_choice",
     "get_nanlong_choice",
     "get_pet_command",
@@ -1472,6 +1836,16 @@ __all__ = [
     "set_game_bot_ids",
     "set_game_topic_id",
     "set_dungeon_join_run_state",
+    "set_replica_group_id",
+    "set_replica_group_ids",
+    "set_replica_gold_dps_enabled",
+    "set_replica_listener_account_id",
+    "set_replica_listener_account_map",
+    "set_replica_participant_identity_ids",
+    "set_replica_query_aggregator_config",
+    "set_replica_run_state",
+    "set_replica_virtual_hall_match_enabled",
+    "set_replica_virtual_hall_match_enabled_map",
     "set_forum_topics",
     "set_global_enabled",
     "set_tiandao_judgement_enabled",

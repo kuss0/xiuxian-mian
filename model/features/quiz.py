@@ -5,7 +5,7 @@ import time
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC, RE_WHITESPACE
 from ..persistence import mark_dirty, save_quiz_learning_watchers_state, save_state
-from ..runtime import mono, send_audit_log, send_game_command
+from ..runtime import _get_identity_client, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -25,25 +25,27 @@ RE_QUIZ_COMMAND_HINT = re.compile(r"回复本消息并使用\s*\.作答\s*<选�
 QUIZ_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 RE_QUIZ_TARGET_TAG = re.compile(rf"@({QUIZ_TARGET_TAG_PATTERN})")
 RE_QUIZ_RESULT_CORRECT = re.compile(
-    rf"【考校结束[·・•]正确】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<answer>[A-D])\s*完全正确",
+    rf"【(?:考校结束[·・•]正确|玄骨考校[·・•]答对)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<answer>[A-D])\s*完全正确",
     re.S,
 )
 RE_QUIZ_RESULT_WRONG = re.compile(
-    rf"【考校结束[·・•]错误】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
+    rf"【(?:考校结束[·・•]错误|玄骨考校[·・•]答错)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})\s*的答案\s*(?P<submitted>[A-D])\s*错[^（(]*[（(]\s*正确答案\s*[:：]\s*(?P<answer>[A-D])\s*[)）]",
     re.S,
 )
 RE_QUIZ_RESULT_TIMEOUT = re.compile(
-    rf"【考校结束[·・•]超时】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
+    rf"【(?:考校结束[·・•]超时|玄骨考校[·・•]超时)】[\s\S]*?@(?P<tag>{QUIZ_TARGET_TAG_PATTERN})",
     re.S,
 )
 RE_PUNCT_ONLY = re.compile(r"[][\s\u3000\u201c\u201d\u2018\u2019'《》〈〉【】()（）{}，。！？、；：:,.!?;·…—-]+")
 QUIZ_RESULT_GRACE_SEC = 120
 QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC = 60
-QUIZ_ANSWER_MAX_RETRY_COUNT = 3
+QUIZ_ANSWER_MAX_RETRY_COUNT = 1
 QUIZ_ANSWER_DELAY_MIN_SEC = 20
 QUIZ_ANSWER_DELAY_MAX_SEC = 50
 QUIZ_PHASE_QUEUED_ANSWER = "queued_answer"
 QUIZ_PHASE_WAITING_RESULT = "waiting_result"
+QUIZ_ANSWER_METHOD_BUTTON = "button"
+QUIZ_ANSWER_METHOD_COMMAND = "command"
 
 _QUIZ_BANK = None
 _QUIZ_BANK_INDEX = None
@@ -382,15 +384,31 @@ def _match_quiz_prompt_for_current_identity(text):
     return parsed, identity_id
 
 
-def _set_quiz_pending(question, options, answer, reply_to_msg_id, deadline_at, *, last_error, last_matched_at, retry_count=0, match_mode="", phase=""):
+def _set_quiz_pending(
+    question,
+    options,
+    answer,
+    reply_to_msg_id,
+    deadline_at,
+    *,
+    last_error,
+    last_matched_at,
+    retry_count=0,
+    match_mode="",
+    phase="",
+    chat_id=0,
+    answer_method="",
+):
     state["quiz_question"] = question
     state["quiz_options"] = dict(options or {})
     state["quiz_answer"] = answer
     state["quiz_phase"] = str(phase or "")
     state["quiz_reply_to_msg_id"] = int(reply_to_msg_id or 0)
+    state["quiz_chat_id"] = int(chat_id or 0)
     state["next_quiz_time"] = float(deadline_at or 0)
     state["quiz_retry_count"] = int(retry_count or 0)
     state["quiz_match_mode"] = str(match_mode or "")
+    state["quiz_answer_method"] = str(answer_method or "")
     state["quiz_last_error"] = last_error
     state["quiz_last_matched_at"] = last_matched_at
 
@@ -402,6 +420,46 @@ def _set_quiz_error_and_save(message):
 
 async def _send_quiz_answer(answer, reply_to_msg_id):
     return await send_game_command(f"{CMD_QUIZ_ANSWER} {answer}", track=False, reply_to=reply_to_msg_id)
+
+
+async def _click_quiz_answer_button(identity_id, chat_id, message_id, answer):
+    answer = str(answer or "").strip().upper()
+    if answer not in {"A", "B", "C", "D"}:
+        return False, "答案无效"
+    if int(chat_id or 0) == 0 or int(message_id or 0) <= 0:
+        return False, "缺少题面消息"
+    try:
+        client = _get_identity_client(identity_id)
+        if client is None:
+            return False, "身份客户端不可用"
+        message = await client.get_messages(int(chat_id or 0), ids=int(message_id or 0))
+        if message is None:
+            return False, f"无法重新获取消息：{message_id}"
+        for row_index, row in enumerate(getattr(message, "buttons", None) or []):
+            for col_index, button in enumerate(row or []):
+                if str(getattr(button, "text", "") or "").strip().upper() != answer:
+                    continue
+                await message.click(row_index, col_index)
+                return True, ""
+    except Exception as exc:
+        return False, str(exc) or "按钮点击失败"
+    return False, f"未找到按钮：{answer}"
+
+
+async def _send_quiz_answer_with_fallback(identity_id, answer, reply_to_msg_id, *, prefer_button=False):
+    if prefer_button:
+        ok, error = await _click_quiz_answer_button(
+            identity_id,
+            int(state.get("quiz_chat_id", 0) or 0),
+            reply_to_msg_id,
+            answer,
+        )
+        if ok:
+            return True, QUIZ_ANSWER_METHOD_BUTTON, None, ""
+        reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
+        return bool(reply_msg), QUIZ_ANSWER_METHOD_COMMAND, reply_msg, error
+    reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
+    return bool(reply_msg), QUIZ_ANSWER_METHOD_COMMAND, reply_msg, ""
 
 
 async def _finalize_quiz_success(audit_text, *, identity_id):
@@ -437,6 +495,28 @@ def _quiz_pending_matches_result(parsed, watcher):
     watcher_question = str((watcher or {}).get("question") or "").strip()
     if pending_question and watcher_question and _normalize_text(pending_question) != _normalize_text(watcher_question):
         return False
+    return True
+
+
+def _quiz_pending_matches_watcher(watcher):
+    if int(state.get("quiz_reply_to_msg_id", 0) or 0) <= 0:
+        return False
+    pending_question = str(state.get("quiz_question") or "").strip()
+    watcher_question = str((watcher or {}).get("question") or "").strip()
+    if pending_question and watcher_question and _normalize_text(pending_question) != _normalize_text(watcher_question):
+        return False
+    return True
+
+
+def _clear_quiz_pending_for_timeout_result(watcher):
+    identity_id = _normalize_quiz_identity_id((watcher or {}).get("identity_id"))
+    if identity_id is None or identity_id not in get_identity_ids():
+        return False
+    with use_identity(identity_id):
+        if not _quiz_pending_matches_watcher(watcher):
+            return False
+        state["quiz_last_error"] = "收到玄骨考校超时结果，停止重试"
+        clear_quiz_state(persist=True, keep_last_error=True)
     return True
 
 
@@ -490,9 +570,15 @@ async def _handle_quiz_queued_answer_due(now):
         await _handle_quiz_pending_timeout(now)
         return
 
-    reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
+    ok, answer_method, reply_msg, fallback_error = await _send_quiz_answer_with_fallback(
+        identity_id,
+        answer,
+        reply_to_msg_id,
+        prefer_button=True,
+    )
     state["quiz_phase"] = QUIZ_PHASE_WAITING_RESULT
-    if not reply_msg:
+    state["quiz_answer_method"] = answer_method
+    if not ok:
         state["next_quiz_time"] = float(time.time() + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
         _set_quiz_error_and_save("作答发送失败")
         await send_audit_log(
@@ -505,10 +591,11 @@ async def _handle_quiz_queued_answer_due(now):
 
     sent_at = float(getattr(reply_msg, "sent_at", 0) or time.time())
     state["next_quiz_time"] = float(sent_at + QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC)
-    state["quiz_last_error"] = ""
+    state["quiz_last_error"] = "" if answer_method == QUIZ_ANSWER_METHOD_BUTTON or not fallback_error else f"按钮失败，已用指令：{fallback_error}"
     save_state()
+    method_label = "按钮" if answer_method == QUIZ_ANSWER_METHOD_BUTTON else "指令"
     await send_audit_log(
-        f"🦴 已发送作答，等待结果确认｜{answer_detail}｜{match_mode}｜题目：{question}",
+        f"🦴 已发送作答，等待结果确认｜{answer_detail}｜{match_mode}｜{method_label}｜题目：{question}",
         scope="identity",
         send_as_id=identity_id,
         limit=520,
@@ -538,6 +625,7 @@ async def _handle_quiz_answer_confirmation_timeout(now):
     retry_index = retry_count + 1
     reply_msg = await _send_quiz_answer(answer, reply_to_msg_id)
     state["quiz_retry_count"] = retry_index
+    state["quiz_answer_method"] = QUIZ_ANSWER_METHOD_COMMAND
 
     if reply_msg:
         sent_at = float(getattr(reply_msg, "sent_at", 0) or time.time())
@@ -584,6 +672,7 @@ def get_quiz_status_text():
         f"- 匹配答案：{state.get('quiz_answer') or '未匹配'}",
         f"- 当前阶段：{_format_quiz_phase(state.get('quiz_phase'))}",
         f"- 匹配方式：{state.get('quiz_match_mode') or '无'}",
+        f"- 作答方式：{state.get('quiz_answer_method') or '未作答'}",
         f"- 待回复消息ID：{reply_to_msg_id or '无'}",
         f"- 重试次数：{_get_quiz_retry_count()}/{QUIZ_ANSWER_MAX_RETRY_COUNT}",
         f"- 下次检查：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
@@ -599,8 +688,10 @@ def clear_quiz_state(*, persist=False, keep_last_error=False):
     state["quiz_options"] = {}
     state["quiz_answer"] = ""
     state["quiz_phase"] = ""
+    state["quiz_chat_id"] = 0
     state["quiz_retry_count"] = 0
     state["quiz_match_mode"] = ""
+    state["quiz_answer_method"] = ""
     if not keep_last_error:
         state["quiz_last_error"] = ""
     state["quiz_last_matched_at"] = 0
@@ -766,6 +857,8 @@ async def handle_quiz_result_broadcast(text, now=None):
     target_tag = watcher.get("target_tag") or target_tag or "未知目标"
     identity_id = _normalize_quiz_identity_id(watcher.get("identity_id"))
     log_kwargs = _get_quiz_log_kwargs(identity_id, limit=520)
+    if result_type == "timeout":
+        _clear_quiz_pending_for_timeout_result(watcher)
 
     # 查题库
     bank_answer, _ = _match_quiz_answer(question, options)
@@ -938,6 +1031,7 @@ async def handle_quiz_prompt(text, now, event):
             now + float(parsed["timeout_sec"]),
             last_error="题库未命中",
             last_matched_at=0,
+            chat_id=getattr(event, "chat_id", 0),
         )
         save_state()
         await send_audit_log(
@@ -966,6 +1060,8 @@ async def handle_quiz_prompt(text, now, event):
         last_matched_at=now,
         match_mode=match_mode,
         phase=QUIZ_PHASE_QUEUED_ANSWER,
+        chat_id=getattr(event, "chat_id", 0),
+        answer_method="pending_button",
     )
     save_state()
 
