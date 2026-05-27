@@ -411,6 +411,43 @@ def _storage_transfer_apply_basic_items_move():
     return changed_count
 
 
+def _storage_transfer_expected_exchange_items():
+    expected = {}
+    for item in _storage_bag_transfer_state.get("basic_items") or []:
+        item_name = str((item or {}).get("item_name") or "").strip()
+        quantity = int((item or {}).get("quantity") or 0)
+        if item_name and quantity > 0:
+            expected[item_name] = expected.get(item_name, 0) + quantity
+    return expected
+
+
+def _storage_transfer_price_items(price_text):
+    return parse_storage_bag_item_counts(str(price_text or "").replace("*", "x"), allow_plain=True)
+
+
+def _storage_transfer_listing_success_matches_expected(success):
+    if not success:
+        return False
+    listing_item = str(_storage_bag_transfer_state.get("listing_item") or "").strip()
+    if str(success.get("item") or "").strip() != listing_item:
+        return False
+    if int(success.get("count") or 0) != 1:
+        return False
+    return _storage_transfer_price_items(success.get("price")) == _storage_transfer_expected_exchange_items()
+
+
+def _is_manual_storage_transfer_listing_reply(success, reply_to, reply_context):
+    if not _storage_transfer_listing_success_matches_expected(success):
+        return False
+    if str((reply_context or {}).get("family") or "") != "storage_bag_listing":
+        return False
+    target_id = int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0)
+    if int((reply_context or {}).get("send_as_id") or 0) != target_id:
+        return False
+    raw_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()
+    return raw_cmd == str(_storage_bag_transfer_state.get("listing_command") or "").strip()
+
+
 def _is_storage_bag_reply_to_transfer(reply_to, *, msg_id_key, command_prefix, reply_to_msg_id=0):
     expected_msg_id = int(_storage_bag_transfer_state.get(msg_id_key, 0) or 0)
     reply_msg_id = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
@@ -644,18 +681,18 @@ async def cancel_storage_bag_transfer_task():
     if not _storage_bag_transfer_state.get("running"):
         return False, "当前没有进行中的转移任务", get_storage_bag_transfer_snapshot()
     step = str(_storage_bag_transfer_state.get("step") or "")
-    if step in {"waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply"}:
+    if step in {"listing", "buying", "gift_marker", "gift_sending", "waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply"}:
         return False, "命令已发送，不能安全取消；请等待回复或超时", get_storage_bag_transfer_snapshot()
     await _delete_storage_bag_gift_locator()
     _finalize_storage_bag_transfer(False, "用户取消转移任务")
     return True, "已取消转移任务", get_storage_bag_transfer_snapshot()
 
 
-async def _handle_storage_bag_listing_reply(raw_text):
+async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None):
     if is_storage_transfer_waiting_reply(raw_text):
         _storage_transfer_log("上架命令正在处理，等待最终回复")
         return False
-    success = _parse_listing_success(raw_text)
+    success = parsed_success or _parse_listing_success(raw_text)
     if success:
         _storage_bag_transfer_state["listing_id"] = str(success["id"])
         for item_name in _storage_transfer_item_names_for_rule_update(raw_text):
@@ -766,9 +803,19 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
     reply_to_msg_id = int((reply_context or {}).get("reply_to_msg_id") or 0)
     step = str(_storage_bag_transfer_state.get("step") or "")
     if step == "waiting_listing_reply":
-        if not _is_storage_bag_reply_to_transfer(reply_to, msg_id_key="listing_msg_id", command_prefix=CMD_STORAGE_BAG_LISTING, reply_to_msg_id=reply_to_msg_id):
-            return False
-        return await _handle_storage_bag_listing_reply(raw_text)
+        is_expected_reply = _is_storage_bag_reply_to_transfer(
+            reply_to,
+            msg_id_key="listing_msg_id",
+            command_prefix=CMD_STORAGE_BAG_LISTING,
+            reply_to_msg_id=reply_to_msg_id,
+        )
+        parsed_success = _parse_listing_success(raw_text)
+        if not is_expected_reply:
+            if not _is_manual_storage_transfer_listing_reply(parsed_success, reply_to, reply_context):
+                return False
+            _storage_bag_transfer_state["listing_msg_id"] = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
+            _storage_transfer_log(f"采纳手动补发上架回执，挂单ID={parsed_success['id']}")
+        return await _handle_storage_bag_listing_reply(raw_text, parsed_success=parsed_success)
     if step == "waiting_buy_reply":
         if not _is_storage_bag_reply_to_transfer(reply_to, msg_id_key="buy_msg_id", command_prefix=CMD_STORAGE_BAG_BUY, reply_to_msg_id=reply_to_msg_id):
             return False

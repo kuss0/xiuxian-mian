@@ -354,6 +354,82 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(listing_msg_id, identity_state["pending_tasks"])
         self.assertEqual("waiting_buy_reply", storage_bag._storage_bag_transfer_state["step"])
 
+    async def test_manual_listing_reply_can_resume_stuck_listing_command(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=500 + len(sent))
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "妖丹", "quantity": 3, "method": "basic"}],
+                "灵石",
+            )
+
+        self.assertTrue(ok, message)
+        original_listing_msg_id = int(storage_bag._storage_bag_transfer_state["listing_msg_id"])
+        manual_listing_msg_id = original_listing_msg_id + 99
+        manual_reply_to = SimpleNamespace(id=manual_listing_msg_id, raw_text=sent[0][0])
+        manual_context = {
+            "send_as_id": self.target_id,
+            "family": "storage_bag_listing",
+            "reply_to_msg_id": manual_listing_msg_id,
+            "root_msg_id": manual_listing_msg_id,
+        }
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), patch("model.features.storage_bag.send_audit_log"):
+            handled_manual = await handle_storage_bag_transfer_reply(
+                "上架成功！\n"
+                "你已将 【灵石】x1 上架至万宝楼。\n"
+                "每件售价: 【妖丹】x3\n"
+                "挂单ID: 889",
+                1000.0,
+                manual_reply_to,
+                matched_family="storage_bag_listing",
+                reply_context=manual_context,
+            )
+
+        self.assertTrue(handled_manual)
+        self.assertEqual(".购买 889", sent[-1][0])
+        self.assertEqual("waiting_buy_reply", storage_bag._storage_bag_transfer_state["step"])
+
+        ignored_original = await handle_storage_bag_transfer_reply(
+            "上架成功！\n"
+            "你已将 【灵石】x1 上架至万宝楼。\n"
+            "每件售价: 【妖丹】x3\n"
+            "挂单ID: 888",
+            1001.0,
+            SimpleNamespace(id=original_listing_msg_id, raw_text=sent[0][0]),
+            matched_family="storage_bag_listing",
+            reply_context={
+                "send_as_id": self.target_id,
+                "family": "storage_bag_listing",
+                "reply_to_msg_id": original_listing_msg_id,
+                "root_msg_id": original_listing_msg_id,
+            },
+        )
+
+        self.assertFalse(ignored_original)
+        self.assertEqual(".购买 889", sent[-1][0])
+
+    async def test_cancel_rejects_inflight_buy_send(self):
+        storage_bag._storage_bag_transfer_state.update({
+            "running": True,
+            "step": "buying",
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+        })
+
+        ok, message, snapshot = await cancel_storage_bag_transfer_task()
+
+        self.assertFalse(ok)
+        self.assertIn("不能安全取消", message)
+        self.assertTrue(snapshot["running"])
+        self.assertEqual("buying", snapshot["step"])
+
     async def test_gift_transfer_sends_locator_and_gift_reply_then_syncs_tax(self):
         sent = []
 
