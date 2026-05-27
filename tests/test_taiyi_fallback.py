@@ -48,6 +48,9 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
             state_module.state["next_taiyi_cycle_time"] = entered_at - 1
         return send_as_id
 
+    def _inbox_summaries(self, inbox_mock):
+        return [str(call.kwargs.get("summary") or "") for call in inbox_mock.call_args_list]
+
     async def test_yindao_timeout_falls_back_without_resend(self):
         now = 1_700_000_100.0
         entered_at = now - taiyi.TAIYI_REPLY_LOST_TIMEOUT_SEC - 1
@@ -103,6 +106,7 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                 patch.object(taiyi, "_has_yindao_send_evidence", return_value=False),
                 patch.object(taiyi, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(taiyi, "send_audit_log", new=AsyncMock()),
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
                 patch.object(taiyi, "save_state"),
             ):
                 await taiyi.run_taiyi_scheduler(now)
@@ -112,6 +116,8 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                 self.assertEqual(0, state_module.state["taiyi_yindao_msg_id"])
                 self.assertEqual(now + 90, state_module.state["next_taiyi_cycle_time"])
                 self.assertIn("无真实出站记录", state_module.state["taiyi_last_error"])
+                summaries = self._inbox_summaries(inbox_mock)
+                self.assertTrue(any("引道发送边界重试" in summary and "msg_id=9446605" in summary for summary in summaries))
 
     async def test_yindao_stale_msg_id_from_real_wrong_command_retries_short(self):
         send_as_id = 8659059191
@@ -178,6 +184,7 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                     patch.object(taiyi.random, "uniform", return_value=90),
                     patch.object(taiyi, "send_game_command", new=AsyncMock()) as send_mock,
                     patch.object(taiyi, "send_audit_log", new=AsyncMock()) as audit_mock,
+                    patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
                     patch.object(taiyi, "save_state"),
                 ):
                     await taiyi.run_taiyi_scheduler(now)
@@ -185,6 +192,8 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                     send_mock.assert_not_awaited()
                     audit_mock.assert_awaited_once()
                     self.assertIn(f"msg_id={wrong_msg_id}", audit_mock.await_args.args[0])
+                    summaries = self._inbox_summaries(inbox_mock)
+                    self.assertTrue(any("引道发送边界重试" in summary and f"msg_id={wrong_msg_id}" in summary for summary in summaries))
                     self.assertEqual("idle", state_module.state["taiyi_phase"])
                     self.assertEqual(0, state_module.state["taiyi_yindao_msg_id"])
                     self.assertEqual(now + 90, state_module.state["next_taiyi_cycle_time"])
@@ -268,6 +277,7 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
             state_module.state["next_taiyi_cycle_time"] = now - 1
             with (
                 patch.object(taiyi, "send_game_command", new=fake_send),
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
                 patch.object(taiyi, "save_state"),
             ):
                 await taiyi.run_taiyi_scheduler(now)
@@ -275,6 +285,8 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
                 self.assertEqual("yindao_pending", state_module.state["taiyi_phase"])
                 self.assertEqual(555, state_module.state["taiyi_yindao_msg_id"])
                 self.assertEqual(now + 1, state_module.state["taiyi_phase_entered_at"])
+                summaries = self._inbox_summaries(inbox_mock)
+                self.assertTrue(any("引道已发送" in summary and "msg_id=555" in summary and ".引道 水" in summary for summary in summaries))
 
     async def test_search_timeout_falls_back_without_resend(self):
         now = 1_700_000_200.0
@@ -322,6 +334,7 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
             with (
                 patch.object(taiyi, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(taiyi, "_fire_and_forget") as fire_mock,
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
                 patch.object(taiyi, "save_state"),
             ):
                 handled = await taiyi.handle_taiyi_yindao_reply(
@@ -335,6 +348,8 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
         self.assertTrue(handled)
         audit_mock.assert_awaited_once()
         fire_mock.assert_not_called()
+        summaries = self._inbox_summaries(inbox_mock)
+        self.assertTrue(any("引道手动/迟到成功" in summary for summary in summaries))
         with state_module.use_identity(send_as_id):
             self.assertEqual("idle", state_module.state["taiyi_phase"])
             self.assertEqual(0, state_module.state["taiyi_yindao_msg_id"])
