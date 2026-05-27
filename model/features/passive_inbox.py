@@ -100,6 +100,20 @@ def _record_passive_event(kind, *, module="", identity_id=0, reason="", summary=
     _save_passive_stats()
 
 
+def record_passive_inbox_event(kind, *, module="", identity_id=0, reason="", summary=""):
+    try:
+        _record_passive_event(
+            kind,
+            module=module,
+            identity_id=identity_id,
+            reason=reason,
+            summary=summary,
+        )
+    except Exception:
+        return False
+    return True
+
+
 def get_passive_inbox_snapshot():
     return {
         "total": int(_passive_stats.get("total", 0) or 0),
@@ -702,4 +716,9 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
     return changed
 
 
-__all__ = ["get_passive_inbox_snapshot", "get_passive_inbox_status_text", "handle_passive_module_card"]
+__all__ = [
+    "get_passive_inbox_snapshot",
+    "get_passive_inbox_status_text",
+    "handle_passive_module_card",
+    "record_passive_inbox_event",
+]

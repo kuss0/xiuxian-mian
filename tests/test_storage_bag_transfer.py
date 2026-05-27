@@ -189,6 +189,9 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             str(self.target_id): {"updated_at": 1000, "items": {"灵石": 100, "标记物": 1}, "sections": {"法宝/丹药/杂物": {"灵石": 100, "标记物": 1}}},
         })
 
+    def _inbox_summaries(self, inbox_mock):
+        return [str(call.kwargs.get("summary") or "") for call in inbox_mock.call_args_list]
+
     async def asyncTearDown(self):
         await cancel_storage_bag_transfer_task()
         storage_bag._clear_storage_bag_transfer_state()
@@ -236,7 +239,9 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             sent.append((command, kwargs))
             return SimpleNamespace(id=100 + len(sent))
 
-        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), patch("model.features.storage_bag.send_audit_log"):
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock:
             ok, message, transfer = await start_storage_bag_transfer_task(
                 self.source_id,
                 self.target_id,
@@ -270,6 +275,11 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(handled_buy)
+        summaries = self._inbox_summaries(inbox_mock)
+        self.assertTrue(any("上架已发送" in summary and ".上架 灵石 1 换 妖丹*3" in summary for summary in summaries))
+        self.assertTrue(any("准备购买" in summary and "挂单ID=888" in summary for summary in summaries))
+        self.assertTrue(any("购买已发送" in summary and "挂单ID=888" in summary for summary in summaries))
+        self.assertTrue(any("购买成功" in summary and "挂单ID=888" in summary for summary in summaries))
         records = state_module.get_storage_bag_records()
         self.assertEqual(6, records[str(self.source_id)]["items"]["妖丹"])
         self.assertEqual(1, records[str(self.source_id)]["items"].get("灵石", 0) - 1000)
@@ -380,40 +390,44 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             "root_msg_id": manual_listing_msg_id,
         }
 
-        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), patch("model.features.storage_bag.send_audit_log"):
-            handled_manual = await handle_storage_bag_transfer_reply(
+        with patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock:
+            with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), patch("model.features.storage_bag.send_audit_log"):
+                handled_manual = await handle_storage_bag_transfer_reply(
+                    "上架成功！\n"
+                    "你已将 【灵石】x1 上架至万宝楼。\n"
+                    "每件售价: 【妖丹】x3\n"
+                    "挂单ID: 889",
+                    1000.0,
+                    manual_reply_to,
+                    matched_family="storage_bag_listing",
+                    reply_context=manual_context,
+                )
+
+            self.assertTrue(handled_manual)
+            self.assertEqual(".购买 889", sent[-1][0])
+            self.assertEqual("waiting_buy_reply", storage_bag._storage_bag_transfer_state["step"])
+
+            ignored_original = await handle_storage_bag_transfer_reply(
                 "上架成功！\n"
                 "你已将 【灵石】x1 上架至万宝楼。\n"
                 "每件售价: 【妖丹】x3\n"
-                "挂单ID: 889",
-                1000.0,
-                manual_reply_to,
+                "挂单ID: 888",
+                1001.0,
+                SimpleNamespace(id=original_listing_msg_id, raw_text=sent[0][0]),
                 matched_family="storage_bag_listing",
-                reply_context=manual_context,
+                reply_context={
+                    "send_as_id": self.target_id,
+                    "family": "storage_bag_listing",
+                    "reply_to_msg_id": original_listing_msg_id,
+                    "root_msg_id": original_listing_msg_id,
+                },
             )
-
-        self.assertTrue(handled_manual)
-        self.assertEqual(".购买 889", sent[-1][0])
-        self.assertEqual("waiting_buy_reply", storage_bag._storage_bag_transfer_state["step"])
-
-        ignored_original = await handle_storage_bag_transfer_reply(
-            "上架成功！\n"
-            "你已将 【灵石】x1 上架至万宝楼。\n"
-            "每件售价: 【妖丹】x3\n"
-            "挂单ID: 888",
-            1001.0,
-            SimpleNamespace(id=original_listing_msg_id, raw_text=sent[0][0]),
-            matched_family="storage_bag_listing",
-            reply_context={
-                "send_as_id": self.target_id,
-                "family": "storage_bag_listing",
-                "reply_to_msg_id": original_listing_msg_id,
-                "root_msg_id": original_listing_msg_id,
-            },
-        )
 
         self.assertFalse(ignored_original)
         self.assertEqual(".购买 889", sent[-1][0])
+        summaries = self._inbox_summaries(inbox_mock)
+        self.assertTrue(any("采纳手动补发" in summary and "挂单ID=889" in summary for summary in summaries))
+        self.assertTrue(any("忽略上架回执" in summary and "回执挂单ID=888" in summary and "当前挂单ID=889" in summary for summary in summaries))
 
     async def test_cancel_rejects_inflight_buy_send(self):
         storage_bag._storage_bag_transfer_state.update({
@@ -423,12 +437,35 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             "target_identity_id": self.target_id,
         })
 
-        ok, message, snapshot = await cancel_storage_bag_transfer_task()
+        with patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock:
+            ok, message, snapshot = await cancel_storage_bag_transfer_task()
 
         self.assertFalse(ok)
         self.assertIn("不能安全取消", message)
         self.assertTrue(snapshot["running"])
         self.assertEqual("buying", snapshot["step"])
+        summaries = self._inbox_summaries(inbox_mock)
+        self.assertTrue(any("取消被拒绝" in summary and "step=buying" in summary for summary in summaries))
+
+    async def test_transfer_event_recording_failure_is_non_fatal(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=600 + len(sent))
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.passive_inbox.record_passive_inbox_event", side_effect=RuntimeError("disk full")):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "妖丹", "quantity": 3, "method": "basic"}],
+                "灵石",
+            )
+
+        self.assertTrue(ok, message)
+        self.assertEqual("waiting_listing_reply", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual([".上架 灵石 1 换 妖丹*3"], [item[0] for item in sent])
 
     async def test_gift_transfer_sends_locator_and_gift_reply_then_syncs_tax(self):
         sent = []
