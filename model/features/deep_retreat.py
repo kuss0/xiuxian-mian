@@ -139,6 +139,18 @@ def _is_deep_retreat_short_cd_text(text):
     return "灵气尚未平复" in raw_text and "无法立即再次闭关" in raw_text and has_wait_time(raw_text)
 
 
+def _is_deep_retreat_summary_text(text):
+    compact_text = RE_WHITESPACE.sub("", text or "")
+    return (
+        "天道感应：检测到" in compact_text
+        and "功成圆满，神魂正在归位" in compact_text
+    ) or (
+        "深度闭关总结" in compact_text
+        and "本次结算时长" in compact_text
+        and "神魂吐纳次数" in compact_text
+    )
+
+
 def set_deep_retreat_phase(phase):
     set_phase(DEEP_RETREAT_SPEC, phase)
 
@@ -338,11 +350,7 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
 
 def match_deep_retreat_summary_identity(text, now=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
-    summary_kw_hit = (
-        ("天道感应：检测到" in compact_text and "功成圆满，神魂正在归位" in compact_text)
-        or ("深度闭关总结" in compact_text and "本次结算时长" in compact_text and "神魂吐纳次数" in compact_text)
-    )
-    if not summary_kw_hit:
+    if not _is_deep_retreat_summary_text(text):
         return None, []
     now = float(now or 0)
     has_explicit_at = "@" in compact_text
@@ -386,6 +394,9 @@ def match_deep_retreat_summary_identity(text, now=None):
 
 
 async def handle_deep_retreat_summary_broadcast(text, now):
+    if not _is_deep_retreat_summary_text(text):
+        return
+
     target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now)
     if target_id is None:
         if len(matched_ids) > 1:

@@ -75,6 +75,33 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
+    async def test_deep_retreat_broadcast_ignores_non_summary_text(self):
+        send_as_id = 8659059211
+        now = 1_700_000_010.0
+        self._prepare_identity(send_as_id, "jihejish")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 10
+
+        text = (
+            "【野外历练 · 灵机暗藏】\n"
+            "@jihejish 在山涧残阵旁避开妖兽踪迹，采得一份机缘。\n"
+            "获得修为 +2551，获得 【养魂木】x1。"
+        )
+
+        with (
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+        ):
+            await deep_retreat.handle_deep_retreat_summary_broadcast(text, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+        audit_mock.assert_not_awaited()
+        inbox_mock.assert_not_called()
+
     async def test_deep_retreat_running_near_due_completion_notice_finalizes(self):
         send_as_id = 8659059204
         now = 1_700_000_020.0
