@@ -759,7 +759,10 @@ def _get_special_tracked_message_family(identity_state, msg_id):
         ("concubine_heart_prompt_msg_id", "concubine_heart"),
     )
     for state_key, family in tracked_id_families:
-        if msg_id == int(identity_state.get(state_key, 0) or 0):
+        tracked_msg_id = int(identity_state.get(state_key, 0) or 0)
+        if family in {"yuanying", "deep_retreat"}:
+            tracked_msg_id = abs(tracked_msg_id)
+        if msg_id == tracked_msg_id:
             return family
     tracked_identity_info_ids = {
         int(tracked_msg_id or 0)

@@ -87,6 +87,7 @@ register_phaseful_spec(DEEP_RETREAT_SPEC)
 
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
+DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
 
 
 def _is_deep_retreat_short_cd_text(text):
@@ -204,7 +205,12 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    is_status_reply = matched_family == "deep_retreat" or CMD_DEEP_RETREAT_QUERY in orig_cmd
+    stripped_orig_cmd = orig_cmd.strip()
+    passive_summary_reply = (
+        stripped_orig_cmd in {str(trigger or "").strip() for trigger in DEEP_RETREAT_SPEC.summary_passive_triggers}
+        and state.get("deep_retreat_phase") in ("summary_due", "observing_summary", "waiting_summary", "running")
+    )
+    is_status_reply = matched_family == "deep_retreat" or CMD_DEEP_RETREAT_QUERY in orig_cmd or passive_summary_reply
     is_retreat_cmd_status_like = (
         matched_family == "deep_retreat"
         or (CMD_DEEP_RETREAT in orig_cmd and any(k in text for k in ["预计还需", "尚未恢复", "尚未平复", "冷却", "等待", "不足", "休息", "功成圆满"]))
@@ -264,13 +270,18 @@ def match_deep_retreat_summary_identity(text, now=None):
             if not state["deep_retreat_enabled"]:
                 continue
             phase = state.get("deep_retreat_phase")
-            due_while_running = (
+            next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+            due_while_running = phase == "running" and now > 0 and 0 < next_time <= now
+            near_due_while_running = (
                 phase == "running"
                 and now > 0
-                and 0 < float(state.get("next_deep_retreat_time", 0) or 0) <= now
+                and next_time > now
+                and next_time - now <= DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC
             )
+            explicit_tagged_running_summary = phase == "running" and has_explicit_at
             if phase not in ("summary_due", "observing_summary", "waiting_summary") and not due_while_running:
-                continue
+                if not near_due_while_running and not explicit_tagged_running_summary:
+                    continue
             tags = get_send_as_tags(identity_id)
             if tags:
                 compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
