@@ -1,0 +1,26 @@
+{
+  "deep_retreat.tagged_summary.jihejish": {
+    "source": "data/messages/2026-05-28.log:9491714",
+    "text": "📜 修士 @jihejish 深度闭关总结\n【深度闭关总结】\n本次结算时长: 8.0 小时 (基础上限8小时)\n神魂吐纳次数: 32 周天\n\n- 修行有成: 20 次\n- 心神不宁: 12 次\n- 走火入魔: 0 次\n\n本次深度闭关，你的修为最终变化了 4505 点！"
+  },
+  "deep_retreat.non_summary.wild_training": {
+    "source": "data/messages/2026-05-28.log:9475801",
+    "text": "【野外历练 · 灵机暗藏】\n@jihejish 在山涧残阵旁避开妖兽踪迹，采得一份机缘。\n获得修为 +2551，获得 【养魂木】x1。\n此为玩家对 NPC 历练，不牵连其他修士。"
+  },
+  "taiyi.yindao.success_water": {
+    "source": "data/messages/2026-05-27.log:9446794",
+    "text": "你引动【水之道】，获得了 100点神识！\n并领悟了临时增益【润水之息】：\n普通闭关修炼时，获得的修为增加45%。"
+  },
+  "storage_bag.listing_success.manual_22028": {
+    "source": "data/messages/2026-05-27.log:9472550",
+    "text": "上架成功！\n你已将 【凝血草】x1 上架至万宝楼。\n每件售价: 【筑基丹】x1\n挂单ID: 22028"
+  },
+  "storage_bag.listing_success.original_22027": {
+    "source": "data/messages/2026-05-27.log:9472542",
+    "text": "上架成功！\n你已将 【凝血草】x1 上架至万宝楼。\n每件售价: 【筑基丹】x1\n挂单ID: 22027"
+  },
+  "storage_bag.buy_success.basic": {
+    "source": "data/messages/2026-05-27.log:9472587",
+    "text": "交易成功！\n你成功购得 【凝血草】x1！"
+  }
+}
