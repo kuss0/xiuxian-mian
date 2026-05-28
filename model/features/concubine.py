@@ -525,6 +525,49 @@ def _msg_id_int(value):
         return 0
 
 
+def _record_concubine_event(event, *, kind="skipped", reason="", phase="", state_key="", reply_to=None, current_msg_id=0, detail=""):
+    try:
+        parts = [str(event or "侍妾事件").strip() or "侍妾事件"]
+        phase_text = str(phase or _phase() or "").strip()
+        if phase_text:
+            parts.append(f"phase={phase_text}")
+        expected_msg_id = _msg_id_int(state.get(state_key, 0)) if state_key else 0
+        reply_to_msg_id = _msg_id_int(getattr(reply_to, "id", 0))
+        current_msg_id = _msg_id_int(current_msg_id)
+        if expected_msg_id:
+            parts.append(f"expected_msg_id={expected_msg_id}")
+        if reply_to_msg_id:
+            parts.append(f"reply_to_msg_id={reply_to_msg_id}")
+        if current_msg_id:
+            parts.append(f"current_msg_id={current_msg_id}")
+        if detail:
+            parts.append(str(detail).strip())
+        from . import passive_inbox
+
+        return passive_inbox.record_passive_inbox_event(
+            kind,
+            module="concubine",
+            identity_id=get_current_identity_id(),
+            reason=reason,
+            summary="｜".join(part for part in parts if part),
+        )
+    except Exception:
+        return False
+
+
+def _record_concubine_ignored_reply(label, *, reason="concubine_reply_ignored", phase="", state_key="", reply_to=None, current_msg_id=0, detail=""):
+    return _record_concubine_event(
+        f"忽略{label}回复",
+        kind="skipped",
+        reason=reason,
+        phase=phase,
+        state_key=state_key,
+        reply_to=reply_to,
+        current_msg_id=current_msg_id,
+        detail=detail,
+    )
+
+
 def _is_current_heart_prompt_message(reply_to=None, current_msg_id=0):
     expected_msg_id = _msg_id_int(state.get("concubine_heart_prompt_msg_id", 0))
     if expected_msg_id <= 0:
@@ -1715,10 +1758,19 @@ async def handle_concubine_status_reply(text, now, reply_to, matched_family=None
     if phase not in {"status_pending", "gift_status_pending"}:
         if phase in {"greet_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
             console_log(f"🌸 忽略非等待期侍妾状态回复（phase={phase}）。")
+            _record_concubine_ignored_reply("侍妾状态", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to, current_msg_id=current_msg_id)
             return True
         console_log(f"🌸 接受迟到的侍妾状态回复（phase={phase}）。")
     elif not _is_current_reply(reply_to, "concubine_gift_status_msg_id" if gift_status_flow else "concubine_status_msg_id"):
         console_log("🌸 忽略迟到的侍妾状态回复。")
+        _record_concubine_ignored_reply(
+            "侍妾状态",
+            reason="concubine_msg_id_mismatch",
+            phase=phase,
+            state_key="concubine_gift_status_msg_id" if gift_status_flow else "concubine_status_msg_id",
+            reply_to=reply_to,
+            current_msg_id=current_msg_id,
+        )
         return True
 
     parsed = _parse_status_panel(text, now)
@@ -1761,10 +1813,18 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
     if phase != "dream_pending":
         if phase in {"greet_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
             console_log(f"🌸 忽略非等待期入梦寻图回复（phase={phase}）。")
+            _record_concubine_ignored_reply("入梦寻图", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
             return True
         console_log(f"🌸 接受手动/迟到的入梦寻图回复（phase={phase}）。")
     elif not _is_current_reply(reply_to, "concubine_dream_msg_id") and not _is_strong_dream_terminal_text(text):
         console_log("🌸 忽略迟到的入梦寻图回复。")
+        _record_concubine_ignored_reply(
+            "入梦寻图",
+            reason="concubine_msg_id_mismatch",
+            phase=phase,
+            state_key="concubine_dream_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""
@@ -1851,10 +1911,19 @@ async def handle_concubine_fragment_reply(text, now, reply_to, matched_family=No
     if matched_family != "concubine_fragment" and CMD_CONCUBINE_FRAGMENT not in orig_cmd:
         return False
     if _phase() != "fragment_pending":
-        console_log(f"🌸 忽略非等待期残图回复（phase={_phase()}）。")
+        phase = _phase()
+        console_log(f"🌸 忽略非等待期残图回复（phase={phase}）。")
+        _record_concubine_ignored_reply("残图", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
         return True
     if not _is_current_reply(reply_to, "concubine_fragment_msg_id"):
         console_log("🌸 忽略迟到的残图回复。")
+        _record_concubine_ignored_reply(
+            "残图",
+            reason="concubine_msg_id_mismatch",
+            phase=_phase(),
+            state_key="concubine_fragment_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""
@@ -1904,10 +1973,19 @@ async def handle_concubine_puzzle_reply(text, now, reply_to, matched_family=None
     if matched_family != "concubine_puzzle" and CMD_CONCUBINE_PUZZLE not in orig_cmd:
         return False
     if _phase() != "puzzle_pending":
-        console_log(f"🌸 忽略非等待期拼图回复（phase={_phase()}）。")
+        phase = _phase()
+        console_log(f"🌸 忽略非等待期拼图回复（phase={phase}）。")
+        _record_concubine_ignored_reply("拼图", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
         return True
     if not _is_current_reply(reply_to, "concubine_puzzle_msg_id"):
         console_log("🌸 忽略迟到的拼图回复。")
+        _record_concubine_ignored_reply(
+            "拼图",
+            reason="concubine_msg_id_mismatch",
+            phase=_phase(),
+            state_key="concubine_puzzle_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""
@@ -1965,10 +2043,19 @@ async def handle_concubine_reacquire_reply(text, now, reply_to, matched_family=N
     if matched_family != "concubine_reacquire" and not any(cmd in orig_cmd for cmd in {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE}):
         return False
     if _phase() != "reacquire_pending":
-        console_log(f"🌸 忽略非等待期补领侍妾回复（phase={_phase()}）。")
+        phase = _phase()
+        console_log(f"🌸 忽略非等待期补领侍妾回复（phase={phase}）。")
+        _record_concubine_ignored_reply("补领侍妾", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
         return True
     if not _is_current_reply(reply_to, "concubine_reacquire_msg_id"):
         console_log("🌸 忽略迟到的补领侍妾回复。")
+        _record_concubine_ignored_reply(
+            "补领侍妾",
+            reason="concubine_msg_id_mismatch",
+            phase=_phase(),
+            state_key="concubine_reacquire_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""
@@ -2058,10 +2145,18 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
     if phase != "tianji_pending":
         if phase in {"status_pending", "greet_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
             console_log(f"🌸 忽略非等待期天机代卜回复（phase={phase}）。")
+            _record_concubine_ignored_reply("天机代卜", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
             return True
         console_log(f"🌸 接受手动/迟到的天机代卜回复（phase={phase}）。")
     elif not _is_current_reply(reply_to, "concubine_tianji_msg_id") and not _is_strong_tianji_terminal_text(text):
         console_log("🌸 忽略迟到的天机代卜回复。")
+        _record_concubine_ignored_reply(
+            "天机代卜",
+            reason="concubine_msg_id_mismatch",
+            phase=phase,
+            state_key="concubine_tianji_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""
@@ -2256,6 +2351,13 @@ async def handle_concubine_greet_reply(text, now, reply_to, matched_family=None)
         return False
     if _phase() == "greet_pending" and not _is_current_reply(reply_to, "concubine_greet_msg_id"):
         console_log("🌸 忽略迟到的每日问安回复。")
+        _record_concubine_ignored_reply(
+            "每日问安",
+            reason="concubine_msg_id_mismatch",
+            phase=_phase(),
+            state_key="concubine_greet_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""
@@ -2325,6 +2427,13 @@ async def handle_concubine_storage_bag_reply(text, now, reply_to, matched_family
     can_continue = _can_continue_gift_recovery(now)
     if phase == "gift_bag_pending" and not _is_current_reply(reply_to, "concubine_gift_bag_msg_id"):
         console_log("🌸 忽略迟到的侍妾赠予储物袋回复。")
+        _record_concubine_ignored_reply(
+            "侍妾赠予储物袋",
+            reason="concubine_msg_id_mismatch",
+            phase=phase,
+            state_key="concubine_gift_bag_msg_id",
+            reply_to=reply_to,
+        )
         return True
     if phase != "gift_bag_pending":
         if not can_continue:
@@ -2374,6 +2483,13 @@ async def handle_concubine_gift_reply(text, now, reply_to, matched_family=None):
         return False
     if _phase() == "gift_pending" and not _is_current_reply(reply_to, "concubine_gift_msg_id"):
         console_log("🌸 忽略迟到的侍妾赠予回复。")
+        _record_concubine_ignored_reply(
+            "侍妾赠予",
+            reason="concubine_msg_id_mismatch",
+            phase=_phase(),
+            state_key="concubine_gift_msg_id",
+            reply_to=reply_to,
+        )
         return True
 
     raw_text = text or ""

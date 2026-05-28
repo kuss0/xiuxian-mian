@@ -71,6 +71,9 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["next_concubine_time"] = 0
         return send_as_id
 
+    def _inbox_summaries(self, inbox_mock):
+        return [str(call.kwargs.get("summary") or "") for call in inbox_mock.call_args_list]
+
     async def test_selfless_realm_marks_affinity_zero_and_schedules_recovery(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
@@ -660,7 +663,8 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["next_concubine_time"] = now + 60
 
         with state_module.use_identity(send_as_id), \
-             patch.object(concubine, "save_state") as save_mock:
+             patch.object(concubine, "save_state") as save_mock, \
+             patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock:
             handled = await concubine.handle_concubine_dream_reply(
                 "这是另一条不带回复关系的入梦相关消息。",
                 now,
@@ -673,6 +677,8 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("dream_pending", state_module.state["concubine_phase"])
         self.assertEqual(501, state_module.state["concubine_dream_msg_id"])
         self.assertEqual(now + 60, state_module.state["next_concubine_time"])
+        summaries = self._inbox_summaries(inbox_mock)
+        self.assertTrue(any("忽略入梦寻图回复" in summary and "expected_msg_id=501" in summary for summary in summaries))
 
     async def test_cangkun_puzzle_success_clears_only_cangkun_progress(self):
         now = 1_700_000_000.0
