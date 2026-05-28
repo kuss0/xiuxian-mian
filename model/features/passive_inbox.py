@@ -22,6 +22,8 @@ from . import wild_training as wild_training_mod
 
 PASSIVE_INBOX_RECENT_LIMIT = 20
 PASSIVE_INBOX_STATS_FILE = os.path.join(STATE_DIR, "passive_inbox_stats.json")
+PASSIVE_INBOX_RECENT_FIELD_LIMIT = 120
+PASSIVE_INBOX_NOISY_SKIP_REASONS = {"no_identity", "no_reply_context"}
 _PASSIVE_STATS_DEFAULT = {
     "total": 0,
     "changed": 0,
@@ -78,7 +80,67 @@ def _bump_counter(bucket, key, amount=1):
     bucket[normalized] = int(bucket.get(normalized, 0) or 0) + int(amount or 1)
 
 
-def _record_passive_event(kind, *, module="", identity_id=0, reason="", summary=""):
+def _truncate_event_text(value, limit=PASSIVE_INBOX_RECENT_FIELD_LIMIT):
+    text = str(value or "").replace("\r", "\n").strip()
+    if not text:
+        return ""
+    text = " / ".join(part.strip() for part in text.splitlines() if part.strip())
+    return text[: int(limit or PASSIVE_INBOX_RECENT_FIELD_LIMIT)]
+
+
+def _event_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _append_recent_passive_event(kind, *, module="", identity_id=0, reason="", summary="", include_recent=None, **metadata):
+    if include_recent is None:
+        include_recent = not (kind != "changed" and reason in PASSIVE_INBOX_NOISY_SKIP_REASONS and not module)
+    if not include_recent:
+        return
+    item = {
+        "ts": float(time.time()),
+        "kind": str(kind or ""),
+        "module": str(module or ""),
+        "identity_id": _event_int(identity_id),
+        "reason": str(reason or ""),
+        "summary": _truncate_event_text(summary),
+    }
+    for key, value in metadata.items():
+        if key in {"msg_id", "reply_to_msg_id", "root_msg_id"}:
+            int_value = _event_int(value)
+            if int_value:
+                item[key] = int_value
+            continue
+        text_value = _truncate_event_text(value)
+        if text_value:
+            item[key] = text_value
+    recent = _passive_stats.setdefault("recent", [])
+    recent.append(item)
+    del recent[:-PASSIVE_INBOX_RECENT_LIMIT]
+
+
+def _record_passive_event(
+    kind,
+    *,
+    module="",
+    identity_id=0,
+    reason="",
+    summary="",
+    family="",
+    msg_id=0,
+    reply_to_msg_id=0,
+    root_msg_id=0,
+    route_source="",
+    matched_text="",
+    decision="",
+    state_before="",
+    state_after="",
+    command="",
+    include_recent=None,
+):
     _passive_stats["total"] = int(_passive_stats.get("total", 0) or 0) + 1
     if kind == "changed":
         _passive_stats["changed"] = int(_passive_stats.get("changed", 0) or 0) + 1
@@ -87,20 +149,46 @@ def _record_passive_event(kind, *, module="", identity_id=0, reason="", summary=
         _passive_stats["skipped"] = int(_passive_stats.get("skipped", 0) or 0) + 1
         _bump_counter(_passive_stats["skip_reasons"], reason or "unknown")
 
-    recent = _passive_stats.setdefault("recent", [])
-    recent.append({
-        "ts": float(time.time()),
-        "kind": str(kind or ""),
-        "module": str(module or ""),
-        "identity_id": int(identity_id or 0),
-        "reason": str(reason or ""),
-        "summary": str(summary or "")[:120],
-    })
-    del recent[:-PASSIVE_INBOX_RECENT_LIMIT]
+    _append_recent_passive_event(
+        kind,
+        module=module,
+        identity_id=identity_id,
+        reason=reason,
+        summary=summary,
+        include_recent=include_recent,
+        family=family,
+        msg_id=msg_id,
+        reply_to_msg_id=reply_to_msg_id,
+        root_msg_id=root_msg_id,
+        route_source=route_source,
+        matched_text=matched_text,
+        decision=decision,
+        state_before=state_before,
+        state_after=state_after,
+        command=command,
+    )
     _save_passive_stats()
 
 
-def record_passive_inbox_event(kind, *, module="", identity_id=0, reason="", summary=""):
+def record_passive_inbox_event(
+    kind,
+    *,
+    module="",
+    identity_id=0,
+    reason="",
+    summary="",
+    family="",
+    msg_id=0,
+    reply_to_msg_id=0,
+    root_msg_id=0,
+    route_source="",
+    matched_text="",
+    decision="",
+    state_before="",
+    state_after="",
+    command="",
+    include_recent=None,
+):
     try:
         _record_passive_event(
             kind,
@@ -108,6 +196,17 @@ def record_passive_inbox_event(kind, *, module="", identity_id=0, reason="", sum
             identity_id=identity_id,
             reason=reason,
             summary=summary,
+            family=family,
+            msg_id=msg_id,
+            reply_to_msg_id=reply_to_msg_id,
+            root_msg_id=root_msg_id,
+            route_source=route_source,
+            matched_text=matched_text,
+            decision=decision,
+            state_before=state_before,
+            state_after=state_after,
+            command=command,
+            include_recent=include_recent,
         )
     except Exception:
         return False
@@ -134,6 +233,29 @@ def get_passive_inbox_status_text():
         ordered = sorted(items.items(), key=lambda pair: (-int(pair[1] or 0), str(pair[0])))
         return "、".join(f"{key}:{value}" for key, value in ordered[:8])
 
+    def format_recent_detail(item):
+        parts = []
+        identity_id = int(item.get("identity_id") or 0)
+        if identity_id:
+            parts.append(str(identity_id))
+        for key, label in (
+            ("family", "family"),
+            ("decision", "decision"),
+            ("msg_id", "msg"),
+            ("reply_to_msg_id", "reply"),
+            ("route_source", "route"),
+            ("matched_text", "hit"),
+            ("summary", ""),
+        ):
+            value = item.get(key)
+            if value in (None, ""):
+                continue
+            if label:
+                parts.append(f"{label}={value}")
+            else:
+                parts.append(str(value))
+        return "｜".join(parts)
+
     lines = [
         "📥 消息盒子",
         f"- 总处理：{snapshot['total']}",
@@ -148,10 +270,8 @@ def get_passive_inbox_status_text():
         for item in recent[-8:]:
             kind = "更新" if item.get("kind") == "changed" else "跳过"
             subject = item.get("module") or item.get("reason") or "unknown"
-            identity_id = int(item.get("identity_id") or 0)
-            suffix = f"｜{identity_id}" if identity_id else ""
-            summary = str(item.get("summary") or "").strip()
-            lines.append(f"  {kind} {subject}{suffix}{'｜' + summary if summary else ''}")
+            detail = format_recent_detail(item)
+            lines.append(f"  {kind} {subject}{'｜' + detail if detail else ''}")
     return "\n".join(lines)
 
 
@@ -634,6 +754,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
             module="storage_bag",
             identity_id=storage_identity_id or 0,
             summary="storage_bag",
+            matched_text="储物袋",
+            decision="storage_bag_snapshot",
         )
         return True
 
@@ -646,7 +768,26 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
 
     if target_id is None:
         if _looks_like_supported_passive(raw_text, family):
-            _record_passive_event("skipped", reason="no_identity")
+            if family:
+                _record_passive_event(
+                    "skipped",
+                    reason="reply_context_no_identity",
+                    summary=family,
+                    family=family,
+                    reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+                    root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+                    route_source="reply_context",
+                    matched_text=raw_text,
+                    decision="skip_missing_identity",
+                )
+            else:
+                _record_passive_event(
+                    "skipped",
+                    reason="no_reply_context",
+                    matched_text=raw_text,
+                    decision="skip_missing_identity",
+                    include_recent=False,
+                )
         return False
 
     changed = False
@@ -710,9 +851,26 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
             module=",".join(changed_modules) or "unknown",
             identity_id=target_id,
             summary=family or "passive",
+            family=family,
+            reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+            root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+            route_source="reply_context" if family else "passive_match",
+            matched_text=raw_text,
+            decision="state_changed",
         )
     else:
-        _record_passive_event("skipped", identity_id=target_id, reason="no_change", summary=family or "passive")
+        _record_passive_event(
+            "skipped",
+            identity_id=target_id,
+            reason="no_change",
+            summary=family or "passive",
+            family=family,
+            reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+            root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+            route_source="reply_context" if family else "passive_match",
+            matched_text=raw_text,
+            decision="no_state_change",
+        )
     return changed
 
 

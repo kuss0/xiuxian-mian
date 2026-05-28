@@ -108,12 +108,25 @@ def _record_taiyi_event(
     *,
     kind="changed",
     reason="",
+    family="",
     command="",
     msg_id=0,
+    reply_msg_id=0,
     phase="",
     detail="",
+    matched_text="",
+    decision="",
+    route_source="taiyi",
 ):
     try:
+        if not family and command:
+            command_text = str(command or "").strip()
+            if command_text == CMD_YINDAO or command_text.startswith(f"{CMD_YINDAO} "):
+                family = "taiyi_yindao"
+            elif command_text == CMD_NODE_SEARCH or command_text.startswith(f"{CMD_NODE_SEARCH} "):
+                family = "taiyi_node_search"
+            elif command_text == CMD_NODE_DEFINE or command_text.startswith(f"{CMD_NODE_DEFINE} "):
+                family = "taiyi_node_define"
         parts = [str(event or "太一事件").strip() or "太一事件"]
         phase_text = str(phase or _phase() or "").strip()
         if phase_text:
@@ -132,6 +145,14 @@ def _record_taiyi_event(
             identity_id=get_current_identity_id(),
             reason=reason,
             summary="｜".join(part for part in parts if part),
+            family=family,
+            msg_id=msg_id,
+            reply_to_msg_id=reply_msg_id,
+            route_source=route_source,
+            matched_text=matched_text,
+            decision=decision or str(event or "").strip(),
+            state_after=phase_text,
+            command=command,
         )
     except Exception:
         return False
@@ -358,6 +379,7 @@ async def _fallback_taiyi_pending_to_normal_cycle(now, elapsed, label, reason, *
         reason="taiyi_reply_timeout",
         phase="idle",
         detail=f"{label}｜{reason}｜elapsed={elapsed}s",
+        decision="timeout_fallback_normal_cycle",
     )
     save_state()
     await send_audit_log(
@@ -380,9 +402,11 @@ async def _retry_taiyi_yindao_presend_boundary(now, elapsed, reason, *, msg_id=0
     state["taiyi_last_error"] = f"引道发送边界不确定：{reason}，已安排短延迟重试"
     _record_taiyi_event(
         "引道发送边界重试",
+        family="taiyi_yindao",
         phase="idle",
         msg_id=msg_id,
         detail=reason,
+        decision="presend_boundary_short_retry",
     )
     save_state()
     await send_audit_log(
@@ -431,7 +455,7 @@ def _finish_yindao_without_search(now):
     save_state()
 
 
-async def _apply_yindao_success(now, *, sent_at=None, late=False):
+async def _apply_yindao_success(now, *, sent_at=None, late=False, matched_text="", reply_msg_id=0):
     _reset_failures()
     _reset_search_resend_count()
     base_time = sent_at if sent_at is not None else now
@@ -441,8 +465,12 @@ async def _apply_yindao_success(now, *, sent_at=None, late=False):
         _clear_chain_msg_ids()
         _record_taiyi_event(
             "引道手动/迟到成功",
+            family="taiyi_yindao",
             phase="idle",
+            reply_msg_id=reply_msg_id,
             detail=f"下次={fmt_abs_ts(state['next_taiyi_cycle_time'])}",
+            matched_text=matched_text,
+            decision="calibrate_manual_late_no_search",
         )
         save_state()
         await send_audit_log(f"🌟 太一引道成功（手动/迟到校准），下次→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
@@ -452,8 +480,12 @@ async def _apply_yindao_success(now, *, sent_at=None, late=False):
         state["taiyi_yindao_msg_id"] = 0
         _record_taiyi_event(
             "引道成功已安排搜寻",
+            family="taiyi_yindao",
             phase="search_scheduled",
+            reply_msg_id=reply_msg_id,
             detail=f"下次={fmt_abs_ts(state['next_taiyi_cycle_time'])}",
+            matched_text=matched_text,
+            decision="yindao_success_schedule_search",
         )
         save_state()
         await send_audit_log(
@@ -465,8 +497,12 @@ async def _apply_yindao_success(now, *, sent_at=None, late=False):
         _clear_chain_msg_ids()
         _record_taiyi_event(
             "引道成功",
+            family="taiyi_yindao",
             phase="idle",
+            reply_msg_id=reply_msg_id,
             detail=f"下次={fmt_abs_ts(state['next_taiyi_cycle_time'])}",
+            matched_text=matched_text,
+            decision="yindao_success_cycle_only",
         )
         save_state()
         await send_audit_log(f"🌟 太一引道成功（+100 神识），下次→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
@@ -619,14 +655,24 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
     if _phase() != "yindao_pending":
         if _is_yindao_success_text(text):
             console_log(f"⚠️ 引道 reply 迟到/手动成功（phase={_phase()}），校准太一周期。")
-            await _apply_yindao_success(now, sent_at=now, late=True)
+            await _apply_yindao_success(
+                now,
+                sent_at=now,
+                late=True,
+                matched_text=text,
+                reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
+            )
         else:
             console_log(f"⚠️ 引道 reply 迟到（phase={_phase()}），仅清 pending 不改 state。")
             _record_taiyi_event(
                 "忽略迟到引道回执",
                 kind="skipped",
                 reason="taiyi_late_reply",
+                family="taiyi_yindao",
+                reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
                 detail=f"reply_phase={_phase()}",
+                matched_text=text,
+                decision="late_reply_ignored",
             )
         return True
     if not _is_current_reply(reply_to, "taiyi_yindao_msg_id"):
@@ -634,23 +680,42 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
             console_log("⚠️ 太一引道回复 msg_id 不匹配但确认成功，校准太一周期。")
             _record_taiyi_event(
                 "引道回执msg_id不匹配但成功",
+                family="taiyi_yindao",
+                reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
                 detail=f"reply_to_msg_id={int(getattr(reply_to, 'id', 0) or 0)}",
+                matched_text=text,
+                decision="mismatch_success_calibrate_no_search",
             )
-            await _apply_yindao_success(now, sent_at=now, late=True)
+            await _apply_yindao_success(
+                now,
+                sent_at=now,
+                late=True,
+                matched_text=text,
+                reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
+            )
         else:
             console_log("⚠️ 忽略迟到的太一引道回复。")
             _record_taiyi_event(
                 "忽略迟到引道回执",
                 kind="skipped",
                 reason="taiyi_msg_id_mismatch",
+                family="taiyi_yindao",
+                reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
                 detail=f"reply_to_msg_id={int(getattr(reply_to, 'id', 0) or 0)}",
+                matched_text=text,
+                decision="msg_id_mismatch_ignored",
             )
         return True
 
     # 成功
     if _is_yindao_success_text(text):
         sent_at = _current_yindao_sent_at(now)
-        await _apply_yindao_success(now, sent_at=sent_at)
+        await _apply_yindao_success(
+            now,
+            sent_at=sent_at,
+            matched_text=text,
+            reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
+        )
         return True
 
     # CD：大道感悟需循序渐进
@@ -666,8 +731,12 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
         _clear_chain_msg_ids()
         _record_taiyi_event(
             "引道CD",
+            family="taiyi_yindao",
             phase="idle",
+            reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
             detail=f"下次={fmt_abs_ts(state['next_taiyi_cycle_time'])}",
+            matched_text=text,
+            decision="yindao_cd_scheduled",
         )
         save_state()
         await send_audit_log(f"⏳ 太一引道 CD→{fmt_abs_ts(state['next_taiyi_cycle_time'])}")
@@ -677,7 +746,15 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
     if "你并非太一门弟子" in text:
         _freeze(now, "非太一门弟子")
         _clear_chain_msg_ids()
-        _record_taiyi_event("引道冻结", phase="frozen", detail="非太一门弟子")
+        _record_taiyi_event(
+            "引道冻结",
+            family="taiyi_yindao",
+            phase="frozen",
+            reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
+            detail="非太一门弟子",
+            matched_text=text,
+            decision="freeze_non_taiyi_member",
+        )
         save_state()
         await send_audit_log("ℹ️ 你并非太一门弟子，太一模块已冻结 7 天。")
         return True
@@ -688,7 +765,11 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
         "引道回复未识别",
         kind="skipped",
         reason="taiyi_unrecognized_yindao_reply",
+        family="taiyi_yindao",
+        reply_msg_id=int(getattr(reply_to, "id", 0) or 0),
         detail=text[:60],
+        matched_text=text,
+        decision="unrecognized_yindao_reply",
     )
     save_state()
     return True
@@ -977,6 +1058,16 @@ async def run_taiyi_scheduler(now):
             if yindao_msg_id <= 0 or not has_send_evidence:
                 await _retry_taiyi_yindao_presend_boundary(now, elapsed, "reply 未回且本地无真实出站记录", msg_id=yindao_msg_id)
                 return
+            _record_taiyi_event(
+                "引道出站证据确认",
+                kind="skipped",
+                reason="taiyi_send_evidence_present",
+                family="taiyi_yindao",
+                msg_id=yindao_msg_id,
+                phase=stale_phase,
+                detail=f"elapsed={elapsed}s｜event_type=sent",
+                decision="send_evidence_present_normal_timeout",
+            )
             await _fallback_taiyi_pending_to_normal_cycle(now, elapsed, "引道", "reply 未回")
             return
 

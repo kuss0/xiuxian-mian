@@ -280,6 +280,13 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("准备购买" in summary and "挂单ID=888" in summary for summary in summaries))
         self.assertTrue(any("购买已发送" in summary and "挂单ID=888" in summary for summary in summaries))
         self.assertTrue(any("购买成功" in summary and "挂单ID=888" in summary for summary in summaries))
+        self.assertTrue(any(
+            call.kwargs.get("family") == "storage_bag_buy"
+            and call.kwargs.get("decision") == "buy_success_inventory_synced"
+            and call.kwargs.get("reply_to_msg_id") == 102
+            and "本地核销=1项" in str(call.kwargs.get("summary") or "")
+            for call in inbox_mock.call_args_list
+        ))
         records = state_module.get_storage_bag_records()
         self.assertEqual(6, records[str(self.source_id)]["items"]["妖丹"])
         self.assertEqual(1, records[str(self.source_id)]["items"].get("灵石", 0) - 1000)
@@ -428,6 +435,13 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         summaries = self._inbox_summaries(inbox_mock)
         self.assertTrue(any("采纳手动补发" in summary and "挂单ID=889" in summary for summary in summaries))
         self.assertTrue(any("忽略上架回执" in summary and "回执挂单ID=888" in summary and "当前挂单ID=889" in summary for summary in summaries))
+        self.assertTrue(any(
+            call.kwargs.get("decision") == "manual_listing_accepted"
+            and call.kwargs.get("family") == "storage_bag_listing"
+            and call.kwargs.get("reply_to_msg_id") == manual_listing_msg_id
+            and "上架成功" in str(call.kwargs.get("matched_text") or "")
+            for call in inbox_mock.call_args_list
+        ))
 
     async def test_cancel_rejects_inflight_buy_send(self):
         storage_bag._storage_bag_transfer_state.update({

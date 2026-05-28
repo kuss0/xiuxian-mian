@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -90,6 +90,50 @@ DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
 DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
 
 
+def _record_deep_retreat_event(
+    event,
+    *,
+    kind="changed",
+    reason="",
+    identity_id=0,
+    use_current_identity=True,
+    reply_to=None,
+    detail="",
+    matched_text="",
+    decision="",
+):
+    try:
+        reply_msg_id = int(getattr(reply_to, "id", 0) or 0)
+        phase = str(state.get("deep_retreat_phase") or "").strip()
+        parts = [str(event or "深闭事件").strip() or "深闭事件"]
+        if phase:
+            parts.append(f"phase={phase}")
+        if reply_msg_id:
+            parts.append(f"reply_msg_id={reply_msg_id}")
+        if detail:
+            parts.append(str(detail).strip())
+        from . import passive_inbox
+        resolved_identity_id = int(identity_id or 0)
+        if resolved_identity_id <= 0 and use_current_identity:
+            resolved_identity_id = int(get_current_identity_id() or 0)
+
+        return passive_inbox.record_passive_inbox_event(
+            kind,
+            module="deep_retreat",
+            identity_id=resolved_identity_id,
+            reason=reason,
+            summary="｜".join(part for part in parts if part),
+            family="deep_retreat",
+            reply_to_msg_id=reply_msg_id,
+            route_source="deep_retreat",
+            matched_text=matched_text,
+            decision=decision or str(event or "").strip(),
+            state_after=phase,
+        )
+    except Exception:
+        return False
+
+
 def _is_deep_retreat_short_cd_text(text):
     raw_text = str(text or "")
     return "灵气尚未平复" in raw_text and "无法立即再次闭关" in raw_text and has_wait_time(raw_text)
@@ -162,10 +206,23 @@ async def handle_deep_retreat_success_reply(text, now, reply_to, matched_family=
         wait_sec = parse_wait_time(text)
         if wait_sec > 0:
             mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
+            _record_deep_retreat_event(
+                "闭关成功",
+                reply_to=reply_to,
+                detail=f"wait={wait_sec}s",
+                matched_text=text,
+                decision="success_schedule_summary",
+            )
             await send_audit_log(f"🧘 深闭成功→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
             return True
 
         set_deep_retreat_phase("running")
+        _record_deep_retreat_event(
+            "闭关成功待状态查询",
+            reply_to=reply_to,
+            matched_text=text,
+            decision="success_probe_status",
+        )
         if state["deep_retreat_probe_pending"]:
             mark_dirty()
             return True
@@ -190,6 +247,12 @@ async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=
         return False
 
     set_deep_retreat_phase("running")
+    _record_deep_retreat_event(
+        "已在闭关中",
+        reply_to=reply_to,
+        matched_text=text,
+        decision="running_probe_status",
+    )
     if state["deep_retreat_probe_pending"]:
         mark_dirty()
         return True
@@ -225,6 +288,13 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         state["deep_retreat_probe_pending"] = False
         state["last_deep_retreat_command_time"] = now
         state["next_deep_retreat_time"] = now + wait_sec + CD_BUFFER_SEC
+        _record_deep_retreat_event(
+            "短冷却",
+            reply_to=reply_to,
+            detail=f"wait={wait_sec}s",
+            matched_text=text,
+            decision="short_cd_rescheduled",
+        )
         save_state()
         await update_deep_retreat_block_log_state(waiting=False, protect=False)
         await send_audit_log(f"⏳ 深闭短冷却→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
@@ -235,6 +305,13 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         if not has_wait_time(text):
             return False
         mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
+        _record_deep_retreat_event(
+            "闭关状态确认",
+            reply_to=reply_to,
+            detail=f"remain={wait_sec}s",
+            matched_text=text,
+            decision="running_remaining_scheduled",
+        )
         await send_audit_log(f"⏳ 深闭 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
 
@@ -245,6 +322,13 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
             await delete_deep_retreat_summary_trigger_msg()
             delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC)
             begin_deep_retreat_post_summary_wait(now, delay=delay)
+            _record_deep_retreat_event(
+                "确认未处于深闭",
+                reply_to=reply_to,
+                detail=f"retry={int(delay)}s",
+                matched_text=text,
+                decision="not_running_retry_later",
+            )
             await update_deep_retreat_block_log_state(waiting=False, protect=False)
             await send_audit_log(f"🧘 已确认未处于深闭，{int(delay / 60)}分钟后排队发起深度闭关。")
             return True
@@ -306,10 +390,36 @@ async def handle_deep_retreat_summary_broadcast(text, now):
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
+            _record_deep_retreat_event(
+                "闭关总结跳过",
+                kind="skipped",
+                reason="deep_retreat_summary_ambiguous",
+                identity_id=0,
+                use_current_identity=False,
+                detail=names,
+                matched_text=text,
+                decision="summary_ambiguous_skip",
+            )
             await send_audit_log(f"🧘 闭关总结命中多个身份，已跳过：{names}", scope="global", limit=280)
+        else:
+            _record_deep_retreat_event(
+                "闭关总结跳过",
+                kind="skipped",
+                reason="deep_retreat_summary_no_match",
+                identity_id=0,
+                use_current_identity=False,
+                matched_text=text,
+                decision="summary_no_match_skip",
+            )
         return
 
     with use_identity(target_id):
+        _record_deep_retreat_event(
+            "闭关总结确认",
+            identity_id=target_id,
+            matched_text=text,
+            decision="summary_finalized",
+        )
         await finalize_summary_broadcast(DEEP_RETREAT_SPEC, now)
 
 

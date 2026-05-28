@@ -558,10 +558,11 @@ COMMAND_TO_REPLY_FAMILY = {
 }
 
 
-def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0):
+def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None):
     try:
         now = datetime.now(TZ_LOCAL)
         log_file = os.path.join(MESSAGES_DIR, f"{now.strftime('%Y-%m-%d')}.log")
+        family = resolve_reply_family(command) or ""
         payload = {
             "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
             "event_type": "sent",
@@ -572,6 +573,12 @@ def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0):
             "reply_to_msg_id": int(reply_to_msg_id or 0),
             "text": command or "",
         }
+        if family:
+            payload["family"] = family
+        if priority:
+            payload["priority"] = str(priority)
+        if track is not None:
+            payload["track"] = bool(track)
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:
@@ -1978,7 +1985,14 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
             msg_id = _extract_sent_message_id(result)
             if msg_id <= 0:
                 raise ValueError("无法从发送结果中解析消息 ID")
-            _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=int(reply_to or 0))
+            _append_sent_message_log(
+                msg_id,
+                command,
+                send_as_id,
+                reply_to_msg_id=int(reply_to or 0),
+                priority=send_priority,
+                track=track,
+            )
             sent_at = time.time()
             msg = SimpleNamespace(id=msg_id, sent_at=sent_at)
             action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)

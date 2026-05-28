@@ -229,14 +229,28 @@ def _record_storage_transfer_event(
     kind="changed",
     identity_id=0,
     reason="",
+    family="",
     listing_id="",
     command="",
     msg_id=0,
     reply_msg_id=0,
     step="",
     detail="",
+    matched_text="",
+    decision="",
+    route_source="storage_bag_transfer",
 ):
     try:
+        if not family and command:
+            command_text = str(command or "").strip()
+            if command_text == CMD_STORAGE_BAG or command_text.startswith(f"{CMD_STORAGE_BAG} "):
+                family = "storage_bag"
+            elif command_text == CMD_STORAGE_BAG_LISTING or command_text.startswith(f"{CMD_STORAGE_BAG_LISTING} "):
+                family = "storage_bag_listing"
+            elif command_text == CMD_STORAGE_BAG_BUY or command_text.startswith(f"{CMD_STORAGE_BAG_BUY} "):
+                family = "storage_bag_buy"
+            elif command_text == CMD_STORAGE_BAG_GIFT or command_text.startswith(f"{CMD_STORAGE_BAG_GIFT} "):
+                family = "storage_bag_gift"
         op_id = str(_storage_bag_transfer_state.get("op_id") or "").strip()
         parts = []
         if op_id:
@@ -262,6 +276,14 @@ def _record_storage_transfer_event(
             identity_id=int(identity_id or _storage_bag_transfer_state.get("source_identity_id") or 0),
             reason=reason,
             summary="｜".join(part for part in parts if part),
+            family=family,
+            msg_id=msg_id,
+            reply_to_msg_id=reply_msg_id,
+            route_source=route_source,
+            matched_text=matched_text,
+            decision=decision or str(event or "").strip(),
+            state_after=step or str(_storage_bag_transfer_state.get("step") or ""),
+            command=command,
         )
     except Exception:
         return False
@@ -587,6 +609,13 @@ async def _send_next_storage_bag_gift():
     if index >= len(gift_items):
         await _delete_storage_bag_gift_locator()
         message = "储物袋转移完成：购买和赠送成功" if _storage_bag_transfer_state.get("basic_items") else "储物袋转移完成：赠送成功"
+        _record_storage_transfer_event(
+            "转移完成",
+            identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            step=str(_storage_bag_transfer_state.get("step") or ""),
+            detail=message,
+            decision="transfer_completed",
+        )
         _finalize_storage_bag_transfer(True, message)
         await send_audit_log(f"✅ {message}", limit=220)
         return True, message
@@ -612,6 +641,13 @@ async def _send_next_storage_bag_gift():
         priority="normal",
     )
     if not msg:
+        _record_storage_transfer_event(
+            "赠送发送失败",
+            identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            family="storage_bag_gift",
+            command=command,
+            detail=item_name,
+        )
         await _delete_storage_bag_gift_locator()
         message = f"赠送命令发送失败：{item_name}"
         _finalize_storage_bag_transfer(False, message)
@@ -621,6 +657,16 @@ async def _send_next_storage_bag_gift():
     _storage_bag_transfer_state["step"] = "waiting_gift_reply"
     _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
     _storage_transfer_log(f"已发送赠送命令，等待结果（消息ID={_storage_bag_transfer_state['gift_msg_id']}）")
+    _record_storage_transfer_event(
+        "赠送已发送",
+        identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+        family="storage_bag_gift",
+        command=command,
+        msg_id=_storage_bag_transfer_state["gift_msg_id"],
+        reply_msg_id=int(_storage_bag_transfer_state.get("gift_locator_msg_id", 0) or 0),
+        detail=f"{item_name}x{quantity}",
+        decision="gift_sent",
+    )
     return True, "已发送赠送命令，等待结果"
 
 
@@ -645,12 +691,26 @@ async def _start_storage_bag_gift_phase():
     _storage_transfer_log(f"目标身份发送赠送定位消息：{locator}")
     msg = await send_game_command(locator, track=False, send_as_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0), priority="normal")
     if not msg:
+        _record_storage_transfer_event(
+            "赠送定位发送失败",
+            identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+            command=locator,
+            step="gift_marker",
+        )
         message = "赠送定位消息发送失败"
         _finalize_storage_bag_transfer(False, message)
         await send_audit_log("❌ 储物袋定位发送失败。", limit=220)
         return False, message
     _storage_bag_transfer_state["gift_locator_msg_id"] = int(getattr(msg, "id", 0) or 0)
     _storage_transfer_log(f"已发送赠送定位消息（消息ID={_storage_bag_transfer_state['gift_locator_msg_id']}）")
+    _record_storage_transfer_event(
+        "赠送定位已发送",
+        identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+        command=locator,
+        msg_id=_storage_bag_transfer_state["gift_locator_msg_id"],
+        step="gift_marker",
+        decision="gift_locator_sent",
+    )
     return await _send_next_storage_bag_gift()
 
 
@@ -750,7 +810,7 @@ async def cancel_storage_bag_transfer_task():
     return True, "已取消转移任务", get_storage_bag_transfer_snapshot()
 
 
-async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None):
+async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, reply_msg_id=0, family="storage_bag_listing"):
     if is_storage_transfer_waiting_reply(raw_text):
         _storage_transfer_log("上架命令正在处理，等待最终回复")
         return False
@@ -769,16 +829,23 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None):
         _record_storage_transfer_event(
             "准备购买",
             identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            family=family,
             listing_id=success["id"],
             command=buy_command,
+            reply_msg_id=reply_msg_id,
+            matched_text=raw_text,
+            decision="listing_success_queue_buy",
         )
         msg = await send_game_command(buy_command, track=False, send_as_id=int(_storage_bag_transfer_state["source_identity_id"]), priority="normal")
         if not msg:
             _record_storage_transfer_event(
                 "购买发送失败",
                 identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+                family="storage_bag_buy",
                 listing_id=success["id"],
                 command=buy_command,
+                reply_msg_id=reply_msg_id,
+                matched_text=raw_text,
             )
             _finalize_storage_bag_transfer(False, "购买命令发送失败")
             await send_audit_log("❌ 储物袋购买发送失败。", limit=220)
@@ -790,9 +857,13 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None):
         _record_storage_transfer_event(
             "购买已发送",
             identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            family="storage_bag_buy",
             listing_id=success["id"],
             command=buy_command,
             msg_id=_storage_bag_transfer_state["buy_msg_id"],
+            reply_msg_id=reply_msg_id,
+            matched_text=raw_text,
+            decision="buy_sent",
         )
         return True
     reason = raw_text.splitlines()[0].strip() if raw_text.splitlines() else raw_text[:80]
@@ -806,25 +877,33 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None):
     _record_storage_transfer_event(
         "上架失败",
         identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+        family=family,
         step=str(_storage_bag_transfer_state.get("step") or ""),
         detail=reason,
+        reply_msg_id=reply_msg_id,
+        matched_text=raw_text,
     )
     _finalize_storage_bag_transfer(False, f"上架失败：{reason}")
     await send_audit_log("❌ 储物袋上架失败。", limit=260)
     return True
 
 
-async def _handle_storage_bag_buy_reply(raw_text):
+async def _handle_storage_bag_buy_reply(raw_text, *, reply_msg_id=0, family="storage_bag_buy"):
     if is_storage_transfer_waiting_reply(raw_text):
         _storage_transfer_log("购买命令正在处理，等待最终回复")
         return False
     if raw_text.startswith("交易成功！") or "你成功购得" in raw_text:
+        moved_count = _storage_transfer_apply_basic_items_move()
         _record_storage_transfer_event(
             "购买成功",
             identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            family=family,
             listing_id=str(_storage_bag_transfer_state.get("listing_id") or ""),
+            reply_msg_id=reply_msg_id,
+            detail=f"本地核销={moved_count}项",
+            matched_text=raw_text,
+            decision="buy_success_inventory_synced",
         )
-        moved_count = _storage_transfer_apply_basic_items_move()
         if moved_count:
             _storage_transfer_log(f"已同步本地储物袋数据：买卖转移 {moved_count} 项")
         if _storage_bag_transfer_state.get("gift_items"):
@@ -838,15 +917,18 @@ async def _handle_storage_bag_buy_reply(raw_text):
     _record_storage_transfer_event(
         "购买失败",
         identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+        family=family,
         listing_id=str(_storage_bag_transfer_state.get("listing_id") or ""),
         detail=reason,
+        reply_msg_id=reply_msg_id,
+        matched_text=raw_text,
     )
     _finalize_storage_bag_transfer(False, f"购买失败：{reason}")
     await send_audit_log("❌ 储物袋购买失败。", limit=260)
     return True
 
 
-async def _handle_storage_bag_gift_reply(raw_text):
+async def _handle_storage_bag_gift_reply(raw_text, *, reply_msg_id=0, family="storage_bag_gift"):
     if is_storage_transfer_waiting_reply(raw_text):
         _storage_transfer_log("赠送命令正在处理，等待最终回复")
         return False
@@ -856,6 +938,14 @@ async def _handle_storage_bag_gift_reply(raw_text):
     if raw_text.startswith(STORAGE_TRANSFER_GIFT_SUCCESS_PREFIX):
         result = _parse_storage_transfer_gift_result(raw_text)
         if not result:
+            _record_storage_transfer_event(
+                "赠送结果无法识别",
+                identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+                family=family,
+                reply_msg_id=reply_msg_id,
+                detail=gift_item,
+                matched_text=raw_text,
+            )
             await _delete_storage_bag_gift_locator()
             message = f"赠送结果无法识别：{gift_item}"
             _finalize_storage_bag_transfer(False, message)
@@ -864,14 +954,35 @@ async def _handle_storage_bag_gift_reply(raw_text):
         moved_item = str(result.get("item_name") or "").strip()
         moved_quantity = int(result.get("quantity") or 0)
         if moved_item != gift_item or moved_quantity != gift_quantity:
+            _record_storage_transfer_event(
+                "赠送结果不匹配",
+                kind="skipped",
+                reason="storage_bag_transfer_gift_mismatch",
+                identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+                family=family,
+                reply_msg_id=reply_msg_id,
+                detail=f"期望={gift_item}x{gift_quantity}｜实际={moved_item or '未知'}x{moved_quantity}",
+                matched_text=raw_text,
+                decision="gift_result_mismatch",
+            )
             await _delete_storage_bag_gift_locator()
             message = f"赠送结果不匹配：期望 {gift_item} x{gift_quantity}，实际 {moved_item or '未知'} x{moved_quantity}"
             _finalize_storage_bag_transfer(False, message)
             await send_audit_log(f"❌ 储物袋赠送结果不匹配：{gift_item}", limit=260)
             return True
         source_costs = {"灵石": int(result.get("tax") or 0)} if int(result.get("tax") or 0) > 0 else None
-        if _storage_transfer_apply_item_move(moved_item, moved_quantity, extra_source_costs=source_costs):
+        gift_synced = _storage_transfer_apply_item_move(moved_item, moved_quantity, extra_source_costs=source_costs)
+        if gift_synced:
             _storage_transfer_log(f"已同步本地储物袋数据：赠送 {moved_item} x{moved_quantity}")
+        _record_storage_transfer_event(
+            "赠送成功",
+            identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            family=family,
+            reply_msg_id=reply_msg_id,
+            detail=f"{moved_item}x{moved_quantity}｜因果税={int(result.get('tax') or 0)}｜本地核销={'是' if gift_synced else '否'}",
+            matched_text=raw_text,
+            decision="gift_success_inventory_synced",
+        )
         next_index = int(_storage_bag_transfer_state.get("gift_index", 0) or 0) + 1
         _storage_bag_transfer_state["gift_index"] = next_index
         if next_index < len(_storage_bag_transfer_state.get("gift_items") or []):
@@ -884,6 +995,14 @@ async def _handle_storage_bag_gift_reply(raw_text):
         await _send_next_storage_bag_gift()
         return True
     reason = raw_text.splitlines()[0].strip() if raw_text.splitlines() else raw_text[:80]
+    _record_storage_transfer_event(
+        "赠送失败",
+        identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+        family=family,
+        reply_msg_id=reply_msg_id,
+        detail=f"{gift_item}：{reason}",
+        matched_text=raw_text,
+    )
     await _delete_storage_bag_gift_locator()
     prefix = "储物袋转移部分完成：" if _storage_bag_transfer_state.get("basic_items") else ""
     message = f"{prefix}赠送失败：{gift_item}：{reason}"
@@ -899,6 +1018,8 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
     if not raw_text:
         return False
     reply_to_msg_id = int((reply_context or {}).get("reply_to_msg_id") or 0)
+    reply_family = str(matched_family or (reply_context or {}).get("family") or "").strip()
+    route_source = str((reply_context or {}).get("matched_via") or "storage_bag_transfer").strip()
     step = str(_storage_bag_transfer_state.get("step") or "")
     if step == "waiting_listing_reply":
         is_expected_reply = _is_storage_bag_reply_to_transfer(
@@ -916,8 +1037,12 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
                         kind="skipped",
                         reason="storage_bag_transfer_reply_mismatch",
                         identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+                        family=reply_family or "storage_bag_listing",
                         reply_msg_id=reply_to_msg_id or getattr(reply_to, "id", 0) or 0,
                         detail=f"回执挂单ID={parsed_success['id']}｜未匹配当前上架命令",
+                        matched_text=raw_text,
+                        decision="listing_reply_mismatch",
+                        route_source=route_source,
                     )
                 return False
             _storage_bag_transfer_state["listing_msg_id"] = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
@@ -925,11 +1050,20 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
             _record_storage_transfer_event(
                 "采纳手动补发",
                 identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+                family=reply_family or "storage_bag_listing",
                 listing_id=parsed_success["id"],
                 reply_msg_id=_storage_bag_transfer_state["listing_msg_id"],
                 command=str(getattr(reply_to, "raw_text", "") or "").strip(),
+                matched_text=raw_text,
+                decision="manual_listing_accepted",
+                route_source=route_source,
             )
-        return await _handle_storage_bag_listing_reply(raw_text, parsed_success=parsed_success)
+        return await _handle_storage_bag_listing_reply(
+            raw_text,
+            parsed_success=parsed_success,
+            reply_msg_id=reply_to_msg_id or getattr(reply_to, "id", 0) or 0,
+            family=reply_family or "storage_bag_listing",
+        )
     if step == "waiting_buy_reply":
         if not _is_storage_bag_reply_to_transfer(reply_to, msg_id_key="buy_msg_id", command_prefix=CMD_STORAGE_BAG_BUY, reply_to_msg_id=reply_to_msg_id):
             parsed_success = _parse_listing_success(raw_text)
@@ -944,15 +1078,38 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
                     kind="skipped",
                     reason="storage_bag_transfer_reply_mismatch",
                     identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+                    family=reply_family or "storage_bag_listing",
                     reply_msg_id=reply_to_msg_id or getattr(reply_to, "id", 0) or 0,
                     detail=detail,
+                    matched_text=raw_text,
+                    decision="stale_listing_reply_ignored",
+                    route_source=route_source,
                 )
             return False
-        return await _handle_storage_bag_buy_reply(raw_text)
+        return await _handle_storage_bag_buy_reply(
+            raw_text,
+            reply_msg_id=reply_to_msg_id or getattr(reply_to, "id", 0) or 0,
+            family=reply_family or "storage_bag_buy",
+        )
     if step == "waiting_gift_reply":
         if not _is_storage_bag_reply_to_transfer(reply_to, msg_id_key="gift_msg_id", command_prefix=CMD_STORAGE_BAG_GIFT, reply_to_msg_id=reply_to_msg_id):
+            _record_storage_transfer_event(
+                "忽略赠送回执",
+                kind="skipped",
+                reason="storage_bag_transfer_reply_mismatch",
+                identity_id=int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+                family=reply_family or "storage_bag_gift",
+                reply_msg_id=reply_to_msg_id or getattr(reply_to, "id", 0) or 0,
+                matched_text=raw_text,
+                decision="gift_reply_mismatch",
+                route_source=route_source,
+            )
             return False
-        return await _handle_storage_bag_gift_reply(raw_text)
+        return await _handle_storage_bag_gift_reply(
+            raw_text,
+            reply_msg_id=reply_to_msg_id or getattr(reply_to, "id", 0) or 0,
+            family=reply_family or "storage_bag_gift",
+        )
     return False
 
 

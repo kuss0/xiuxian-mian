@@ -8,8 +8,12 @@ const PASSIVE_INBOX_LABELS = {
   concubine: '侍妾',
   concubine_heart: '共历心劫',
   concubine_tianji: '天机代卜',
+  deep_retreat: '深度闭关',
+  deep_retreat_summary_ambiguous: '深闭总结多身份',
+  deep_retreat_summary_no_match: '深闭总结未匹配',
   no_change: '状态未变化',
   no_identity: '无法确认身份',
+  no_reply_context: '缺少回复上下文',
   passive: '被动消息',
   pet: '抚摸法宝',
   pet_trial: '器灵试炼',
@@ -23,6 +27,17 @@ const PASSIVE_INBOX_LABELS = {
   stargazer_soothe: '观星安抚',
   stargazer_sync: '观星同步',
   storage_bag: '储物袋',
+  storage_bag_transfer: '储物袋转移',
+  storage_bag_transfer_cancel_rejected: '转移取消被拒',
+  storage_bag_transfer_gift_mismatch: '赠送结果不匹配',
+  storage_bag_transfer_reply_mismatch: '转移回执不匹配',
+  storage_bag_transfer_timeout: '转移等待超时',
+  taiyi: '太一',
+  taiyi_late_reply: '太一迟到回执',
+  taiyi_msg_id_mismatch: '太一消息不匹配',
+  taiyi_reply_timeout: '太一回执超时',
+  taiyi_send_evidence_present: '太一出站已确认',
+  taiyi_unrecognized_yindao_reply: '引道回执未识别',
   tianti: '登天阶',
   tower: '闯塔',
   tree: '灵树',
@@ -76,8 +91,10 @@ function renderPassiveInboxAttention(inbox) {
   }
   const lines = [];
   if (noIdentity > 0) lines.push('有 ' + noIdentity + ' 条相关消息没能确认属于哪个身份。');
+  const noReplyContext = Number((inbox.skip_reasons || {}).no_reply_context || 0);
+  if (noReplyContext > 0) lines.push('有 ' + noReplyContext + ' 条相关消息缺少回复上下文，已从最近事件降噪。');
   if (noChange > 0) lines.push('有 ' + noChange + ' 条消息已识别，但没有带来状态变化。');
-  const other = skips.filter(function(pair) { return pair[0] !== 'no_identity' && pair[0] !== 'no_change'; });
+  const other = skips.filter(function(pair) { return pair[0] !== 'no_identity' && pair[0] !== 'no_reply_context' && pair[0] !== 'no_change'; });
   other.forEach(function(pair) {
     lines.push(passiveInboxLabel(pair[0]) + '：' + pair[1] + ' 条');
   });
@@ -93,8 +110,15 @@ function renderPassiveInboxRecent(inbox) {
     const changed = item.kind === 'changed';
     const title = changed ? '已更新' : '已跳过';
     const subject = passiveInboxLabel(item.module || item.reason || 'unknown');
-    const identity = item.identity_id ? ' ｜ ' + item.identity_id : '';
-    const summary = item.summary ? ' ｜ ' + passiveInboxLabel(item.summary) : '';
+    const detail = [];
+    if (item.identity_id) detail.push(item.identity_id);
+    if (item.family) detail.push('family=' + passiveInboxLabel(item.family));
+    if (item.decision) detail.push('decision=' + passiveInboxLabel(item.decision));
+    if (item.msg_id) detail.push('msg=' + item.msg_id);
+    if (item.reply_to_msg_id) detail.push('reply=' + item.reply_to_msg_id);
+    if (item.summary) detail.push(passiveInboxLabel(item.summary));
+    if (item.matched_text) detail.push('hit=' + item.matched_text);
+    const summary = detail.length ? ' ｜ ' + detail.join(' ｜ ') : '';
     return '<div class="passive-readable-event">'
       + '<span>' + escapeHtml(formatPassiveInboxTs(item.ts)) + '</span>'
       + '<strong class="' + (changed ? 'passive-readable-good' : 'passive-readable-warn') + '">' + escapeHtml(title) + '</strong>'

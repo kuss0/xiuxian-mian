@@ -129,7 +129,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         text = "【深度闭关总结】\n本次结算时长: 5.3 小时\n神魂吐纳次数: 21 周天"
 
-        with patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock:
+        with (
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+        ):
             await deep_retreat.handle_deep_retreat_summary_broadcast(text, now)
 
         with state_module.use_identity(send_as_id):
@@ -178,7 +181,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         text = "【深度闭关总结】\n本次结算时长: 3.1 小时\n神魂吐纳次数: 12 周天"
 
-        with patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock:
+        with (
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+        ):
             await deep_retreat.handle_deep_retreat_summary_broadcast(text, now)
 
         with state_module.use_identity(first_id):
@@ -186,6 +192,12 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(second_id):
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
         audit_mock.assert_awaited_once()
+        self.assertTrue(any(
+            call.kwargs.get("reason") == "deep_retreat_summary_ambiguous"
+            and call.kwargs.get("decision") == "summary_ambiguous_skip"
+            and "深度闭关总结" in str(call.kwargs.get("matched_text") or "")
+            for call in inbox_mock.call_args_list
+        ))
 
     async def test_deep_retreat_tagless_near_due_running_summary_skips_multiple_candidates(self):
         first_id = 8659059206
@@ -226,6 +238,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             with (
                 patch.object(deep_retreat, "save_state"),
                 patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
             ):
                 handled = await deep_retreat.handle_deep_retreat_status_reply(
                     "灵气尚未平复，无法立即再次闭关。请在 5秒 后再试。",
@@ -242,6 +255,12 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 state_module.state["next_deep_retreat_time"],
             )
             audit_mock.assert_awaited_once()
+            self.assertTrue(any(
+                call.kwargs.get("family") == "deep_retreat"
+                and call.kwargs.get("decision") == "short_cd_rescheduled"
+                and "灵气尚未平复" in str(call.kwargs.get("matched_text") or "")
+                for call in inbox_mock.call_args_list
+            ))
 
     async def test_deep_retreat_passive_trigger_status_reply_confirms_not_running(self):
         send_as_id = 8659059209
@@ -259,6 +278,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 patch.object(deep_retreat, "delete_deep_retreat_summary_trigger_msg", new=AsyncMock()),
                 patch.object(deep_retreat, "save_state"),
                 patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
             ):
                 handled = await deep_retreat.handle_deep_retreat_status_reply(
                     "你并未处于深度闭关之中。",
@@ -271,6 +291,12 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 180, state_module.state["next_deep_retreat_time"])
             audit_mock.assert_awaited_once()
+            self.assertTrue(any(
+                call.kwargs.get("family") == "deep_retreat"
+                and call.kwargs.get("decision") == "not_running_retry_later"
+                and "你并未处于深度闭关" in str(call.kwargs.get("matched_text") or "")
+                for call in inbox_mock.call_args_list
+            ))
 
     async def test_yuanying_direct_summary_finalizes_wait(self):
         send_as_id = 8659059195

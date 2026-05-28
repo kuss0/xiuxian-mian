@@ -350,6 +350,12 @@ class TaiyiFallbackTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase)
         fire_mock.assert_not_called()
         summaries = self._inbox_summaries(inbox_mock)
         self.assertTrue(any("引道手动/迟到成功" in summary for summary in summaries))
+        self.assertTrue(any(
+            call.kwargs.get("family") == "taiyi_yindao"
+            and call.kwargs.get("decision") == "calibrate_manual_late_no_search"
+            and "你引动【水之道】" in str(call.kwargs.get("matched_text") or "")
+            for call in inbox_mock.call_args_list
+        ))
         with state_module.use_identity(send_as_id):
             self.assertEqual("idle", state_module.state["taiyi_phase"])
             self.assertEqual(0, state_module.state["taiyi_yindao_msg_id"])
