@@ -105,6 +105,7 @@ def _record_deep_retreat_event(
     detail="",
     matched_text="",
     decision="",
+    include_recent=None,
 ):
     try:
         reply_msg_id = int(getattr(reply_to, "id", 0) or 0)
@@ -133,6 +134,7 @@ def _record_deep_retreat_event(
             matched_text=matched_text,
             decision=decision or str(event or "").strip(),
             state_after=phase,
+            include_recent=include_recent,
         )
     except Exception:
         return False
@@ -426,6 +428,7 @@ async def handle_deep_retreat_summary_broadcast(text, now):
                 use_current_identity=False,
                 matched_text=text,
                 decision="summary_no_match_skip",
+                include_recent=False,
             )
         return
 

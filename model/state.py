@@ -71,7 +71,7 @@ IDENTITY_BOOL_FIELDS = {
     "second_soul_heart_demon_notified",
     "tree_maturing_logged",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -540,7 +540,10 @@ GLOBAL_STATE_DEFAULTS = {
     "replica_group_ids": [],
     "replica_listener_account_id": 0,
     "replica_listener_account_map": {},
+    "replica_dispatch_group_ids": [],
+    "replica_dispatch_listener_account_map": {},
     "replica_participant_identity_ids": [],
+    "replica_dispatch_participant_identity_ids": [],
     "replica_run_state": {},
     "replica_virtual_hall_match_enabled_map": {},
     "replica_query_aggregator_config": {},
@@ -961,6 +964,12 @@ def set_replica_group_ids(group_ids):
     _meta_state["replica_group_ids"] = normalized
     _meta_state["replica_group_id"] = int(normalized[0]) if normalized else 0
     get_replica_virtual_hall_match_enabled_map()
+    _meta_state["replica_dispatch_group_ids"] = _normalize_replica_dispatch_group_ids(
+        _meta_state.get("replica_dispatch_group_ids") or []
+    )
+    _meta_state["replica_dispatch_listener_account_map"] = _normalize_replica_dispatch_listener_account_map(
+        _meta_state.get("replica_dispatch_listener_account_map") or {}
+    )
     return get_replica_group_ids()
 
 
@@ -1018,6 +1027,56 @@ def set_replica_listener_account_map(listener_map):
     return get_replica_listener_account_map()
 
 
+def _normalize_replica_dispatch_group_ids(group_ids):
+    normalized = _normalize_replica_group_ids(group_ids)
+    reserved_group_ids = set(get_replica_group_ids())
+    game_group_id = get_game_group_id()
+    if game_group_id:
+        reserved_group_ids.add(game_group_id)
+    return [group_id for group_id in normalized if group_id not in reserved_group_ids]
+
+
+def get_replica_dispatch_group_ids():
+    return _normalize_replica_dispatch_group_ids(_meta_state.get("replica_dispatch_group_ids") or [])
+
+
+def set_replica_dispatch_group_ids(group_ids):
+    normalized = _normalize_replica_dispatch_group_ids(group_ids)
+    _meta_state["replica_dispatch_group_ids"] = normalized
+    _meta_state["replica_dispatch_listener_account_map"] = _normalize_replica_dispatch_listener_account_map(
+        _meta_state.get("replica_dispatch_listener_account_map") or {}
+    )
+    return get_replica_dispatch_group_ids()
+
+
+def _normalize_replica_dispatch_listener_account_map(listener_map):
+    normalized = {}
+    group_ids = set(get_replica_dispatch_group_ids())
+    for raw_group_id, raw_account_id in (listener_map or {}).items():
+        try:
+            group_id = int(raw_group_id)
+            account_id = int(raw_account_id)
+        except (TypeError, ValueError):
+            continue
+        if group_id == 0 or account_id <= 0:
+            continue
+        if group_ids and group_id not in group_ids:
+            continue
+        normalized[str(group_id)] = account_id
+    return normalized
+
+
+def get_replica_dispatch_listener_account_map():
+    return _normalize_replica_dispatch_listener_account_map(
+        _meta_state.get("replica_dispatch_listener_account_map") or {}
+    )
+
+
+def set_replica_dispatch_listener_account_map(listener_map):
+    _meta_state["replica_dispatch_listener_account_map"] = _normalize_replica_dispatch_listener_account_map(listener_map)
+    return get_replica_dispatch_listener_account_map()
+
+
 def _normalize_replica_participant_identity_ids(identity_ids):
     normalized = []
     seen = set()
@@ -1041,6 +1100,15 @@ def get_replica_participant_identity_ids():
 def set_replica_participant_identity_ids(identity_ids):
     _meta_state["replica_participant_identity_ids"] = _normalize_replica_participant_identity_ids(identity_ids)
     return get_replica_participant_identity_ids()
+
+
+def get_replica_dispatch_participant_identity_ids():
+    return _normalize_replica_participant_identity_ids(_meta_state.get("replica_dispatch_participant_identity_ids") or [])
+
+
+def set_replica_dispatch_participant_identity_ids(identity_ids):
+    _meta_state["replica_dispatch_participant_identity_ids"] = _normalize_replica_participant_identity_ids(identity_ids)
+    return get_replica_dispatch_participant_identity_ids()
 
 
 def get_replica_run_state():
@@ -1236,6 +1304,12 @@ def get_game_group_id():
 
 def set_game_group_id(group_id):
     _meta_state["game_group_id"] = int(group_id or 0)
+    _meta_state["replica_dispatch_group_ids"] = _normalize_replica_dispatch_group_ids(
+        _meta_state.get("replica_dispatch_group_ids") or []
+    )
+    _meta_state["replica_dispatch_listener_account_map"] = _normalize_replica_dispatch_listener_account_map(
+        _meta_state.get("replica_dispatch_listener_account_map") or {}
+    )
     return get_game_group_id()
 
 
@@ -1800,7 +1874,10 @@ __all__ = [
     "get_replica_gold_dps_enabled",
     "get_replica_listener_account_id",
     "get_replica_listener_account_map",
+    "get_replica_dispatch_group_ids",
+    "get_replica_dispatch_listener_account_map",
     "get_replica_participant_identity_ids",
+    "get_replica_dispatch_participant_identity_ids",
     "get_replica_query_aggregator_config",
     "get_replica_run_state",
     "get_replica_virtual_hall_match_enabled_map",
@@ -1841,7 +1918,10 @@ __all__ = [
     "set_replica_gold_dps_enabled",
     "set_replica_listener_account_id",
     "set_replica_listener_account_map",
+    "set_replica_dispatch_group_ids",
+    "set_replica_dispatch_listener_account_map",
     "set_replica_participant_identity_ids",
+    "set_replica_dispatch_participant_identity_ids",
     "set_replica_query_aggregator_config",
     "set_replica_run_state",
     "set_replica_virtual_hall_match_enabled",

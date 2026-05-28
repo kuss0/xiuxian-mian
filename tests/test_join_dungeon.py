@@ -3,6 +3,7 @@ import asyncio
 import copy
 import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -569,6 +570,28 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".加入副本 414", calls[0][0][0])
         self.assertEqual(identity_id, calls[0][1]["send_as_id"])
         self.assertEqual("urgent_reactive", calls[0][1]["priority"])
+
+    async def test_fast_retry_join_resends_once_while_pending(self):
+        identity_id = self._prepare_identity()
+        now = time.time()
+        join_dungeon._mark_join_sent(identity_id, "414", now, msg_id=99)
+
+        with patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=100, sent_at=now + 3))) as send_mock, \
+                patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+            first = await join_dungeon._retry_join_once(identity_id, "414", join_dungeon.DUNGEON_KIND_VIRTUAL_HALL, ".加入副本 414", 99, delay_sec=0)
+            second = await join_dungeon._retry_join_once(identity_id, "414", join_dungeon.DUNGEON_KIND_VIRTUAL_HALL, ".加入副本 414", 100, delay_sec=0)
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        send_mock.assert_awaited_once_with(
+            ".加入副本 414",
+            track=False,
+            send_as_id=identity_id,
+            priority="urgent_reactive",
+        )
+        record = state_module.get_dungeon_join_run_state()[str(identity_id)]
+        self.assertEqual(1, record["retry_count"])
+        self.assertEqual(100, record["pending_msg_id"])
 
     async def test_cooldown_reply_blocks_later_join(self):
         identity_id = self._prepare_identity()

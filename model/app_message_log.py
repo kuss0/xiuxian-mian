@@ -10,7 +10,14 @@ import requests
 from .app_runtime import _claim_runtime_log_event
 from .config import LOG_BOT_TOKEN, LOG_SEND_MODE, MESSAGES_DIR, TG_REQUESTS_PROXIES, TZ_LOCAL, client, get_all_clients
 from .runtime import send_audit_log
-from .state import get_game_group_id, get_replica_group_ids, get_replica_listener_account_map, state
+from .state import (
+    get_game_group_id,
+    get_replica_dispatch_group_ids,
+    get_replica_dispatch_listener_account_map,
+    get_replica_group_ids,
+    get_replica_listener_account_map,
+    state,
+)
 
 _MESSAGE_LOG_BUTTON_MAX_ROWS = 20
 _MESSAGE_LOG_BUTTON_MAX_COLS = 20
@@ -124,15 +131,15 @@ def _append_game_group_message_log(event, *, event_type="message"):
     _write_message_log(f"{MESSAGES_DIR}/{now.strftime('%Y-%m-%d')}.log", payload)
 
 
-def _get_replica_event_listener_account_id(event):
+def _get_group_event_listener_account_id(event, group_ids, listener_map):
     try:
         chat_id = int(getattr(event, "chat_id", 0) or 0)
     except (TypeError, ValueError):
         return 0
-    if chat_id not in set(get_replica_group_ids()):
+    if chat_id not in set(group_ids or []):
         return 0
     event_client = getattr(event, "client", None)
-    listener_account_id = int((get_replica_listener_account_map() or {}).get(str(chat_id)) or 0)
+    listener_account_id = int((listener_map or {}).get(str(chat_id)) or 0)
     if listener_account_id <= 0:
         for account_id, account_client in get_all_clients().items():
             if event_client is account_client:
@@ -146,6 +153,24 @@ def _get_replica_event_listener_account_id(event):
     if expected_client is None or event_client is not expected_client:
         return 0
     return listener_account_id
+
+
+def _get_replica_event_listener_account_id(event):
+    return _get_group_event_listener_account_id(event, get_replica_group_ids(), get_replica_listener_account_map())
+
+
+def _get_replica_dispatch_event_listener_account_id(event):
+    try:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+    if chat_id and chat_id == get_game_group_id():
+        return 0
+    return _get_group_event_listener_account_id(
+        event,
+        get_replica_dispatch_group_ids(),
+        get_replica_dispatch_listener_account_map(),
+    )
 
 
 def _is_replica_listener_self_event(event, listener_account_id=0):
@@ -165,6 +190,19 @@ def _append_replica_group_message_log(event, *, event_type="message"):
         return True
     now, payload = _build_message_log_payload(event, event_type=event_type)
     payload["listener_account_id"] = listener_account_id
+    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload)
+    return True
+
+
+def _append_replica_dispatch_group_message_log(event, *, event_type="message"):
+    listener_account_id = _get_replica_dispatch_event_listener_account_id(event)
+    if not listener_account_id:
+        return False
+    if not _claim_runtime_log_event(event, event_type=f"replica_dispatch_{event_type}"):
+        return True
+    now, payload = _build_message_log_payload(event, event_type=event_type)
+    payload["listener_account_id"] = listener_account_id
+    payload["replica_group_role"] = "dispatch"
     _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload)
     return True
 
@@ -294,7 +332,9 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
 
 __all__ = [
     "_append_game_group_message_log",
+    "_append_replica_dispatch_group_message_log",
     "_append_replica_group_message_log",
+    "_get_replica_dispatch_event_listener_account_id",
     "_get_replica_event_listener_account_id",
     "_is_replica_listener_self_event",
     "_send_replica_group_message",

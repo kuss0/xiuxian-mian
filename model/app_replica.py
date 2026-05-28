@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from html import escape, unescape
 
 from .app_message_log import (
+    _get_replica_dispatch_event_listener_account_id,
     _get_replica_event_listener_account_id,
     _is_replica_listener_self_event,
     _send_replica_group_message,
@@ -51,6 +52,8 @@ from .state import (
     get_identity_enabled,
     get_identity_ids,
     get_replica_gold_dps_enabled,
+    get_replica_dispatch_listener_account_map,
+    get_replica_dispatch_participant_identity_ids,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
@@ -147,6 +150,10 @@ _REPLICA_LIGHTWEIGHT_OPEN_TIMEOUT_SEC = 10 * 60
 _REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC = 3 * 60 * 60
 _REPLICA_TICKET_EVENT_TTL_SEC = 24 * 60 * 60
 _REPLICA_TICKET_EVENT_MAX = 1000
+_REPLICA_EXTERNAL_DISPATCH_PENDING_SEC = 5 * 60
+_REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC = 2
+_REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_DELAY_SEC = 2.5
+_REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_LIMIT = 1
 _VIRTUAL_HALL_ELEMENT_ALIASES = {
     "金": {"金", "雷"},
     "木": {"木", "风"},
@@ -700,19 +707,36 @@ def _select_open_replica_kind(identity_id, requested_kind=""):
 
 def _get_replica_listener_account_ids():
     listener_ids = set()
-    for account_id in (get_replica_listener_account_map() or {}).values():
-        try:
-            normalized_id = int(account_id or 0)
-        except (TypeError, ValueError):
-            normalized_id = 0
-        if normalized_id > 0:
-            listener_ids.add(normalized_id)
+    listener_maps = (get_replica_listener_account_map() or {}, get_replica_dispatch_listener_account_map() or {})
+    for listener_map in listener_maps:
+        for account_id in listener_map.values():
+            try:
+                normalized_id = int(account_id or 0)
+            except (TypeError, ValueError):
+                normalized_id = 0
+            if normalized_id > 0:
+                listener_ids.add(normalized_id)
     return listener_ids
 
 
-def _get_replica_candidate_identity_ids(*, require_username=False, require_ticket=False):
-    participant_ids = [int(identity_id) for identity_id in get_replica_participant_identity_ids()]
+def _get_replica_candidate_identity_ids(*, require_username=False, require_ticket=False, participant_identity_ids=None, fallback_to_all=True):
+    if participant_identity_ids is None:
+        participant_ids = [int(identity_id) for identity_id in get_replica_participant_identity_ids()]
+    else:
+        participant_ids = []
+        seen_participant_ids = set()
+        for raw_identity_id in participant_identity_ids or []:
+            try:
+                identity_id = int(raw_identity_id)
+            except (TypeError, ValueError):
+                continue
+            if identity_id <= 0 or identity_id in seen_participant_ids:
+                continue
+            seen_participant_ids.add(identity_id)
+            participant_ids.append(identity_id)
     explicit_participants = bool(participant_ids)
+    if participant_identity_ids is not None and not explicit_participants and not fallback_to_all:
+        return []
     identity_ids = participant_ids if explicit_participants else [int(identity_id) for identity_id in get_identity_ids()]
     listener_account_ids = _get_replica_listener_account_ids()
     candidates = []
@@ -2571,6 +2595,18 @@ def _cleanup_replica_run_state(now=None):
                     state_item["team_usernames"] = []
                     state_item["team_identity_ids"] = []
                 changed = True
+            dispatch_pending_until = float(state_item.get("dispatch_pending_until") or 0)
+            if dispatch_pending_until > 0 and now >= dispatch_pending_until:
+                for key in (
+                    "dispatch_pending_room_id",
+                    "dispatch_pending_until",
+                    "dispatch_pending_msg_id",
+                    "dispatch_pending_source_chat_id",
+                    "dispatch_pending_source_msg_id",
+                    "dispatch_retry_count",
+                ):
+                    state_item.pop(key, None)
+                changed = True
         failure_pending_until = float(record.get("failure_pending_until") or 0)
         if failure_pending_until > 0 and now >= failure_pending_until:
             record["failure_pending_until"] = 0
@@ -2606,6 +2642,9 @@ def _update_replica_join_record(record, identity_id, room_id, team_usernames, no
         "active_until": float(now or 0) + REPLICA_ACTIVE_TTL_SEC,
         "last_join_msg_id": int(msg_id or 0),
         "failure_pending_until": 0,
+        "dispatch_pending_until": 0,
+        "dispatch_pending_room_id": "",
+        "dispatch_retry_count": 0,
     })
     record.update({
         "replica_kind": replica_kind,
@@ -2639,6 +2678,9 @@ def _mark_replica_join_not_joined(identity_id, room_id, reason, now, msg_id=0, r
         "team_usernames": [],
         "team_identity_ids": [],
         "failure_pending_until": 0,
+        "dispatch_pending_until": 0,
+        "dispatch_pending_room_id": "",
+        "dispatch_retry_count": 0,
     })
     record.update({
         "replica_kind": replica_kind,
@@ -2660,6 +2702,9 @@ def _mark_replica_join_cooldown(identity_id, wait_sec, now, msg_id=0, replica_ki
         "team_usernames": [],
         "team_identity_ids": [],
         "failure_pending_until": 0,
+        "dispatch_pending_until": 0,
+        "dispatch_pending_room_id": "",
+        "dispatch_retry_count": 0,
     })
     record.update({
         "replica_kind": replica_kind,
@@ -2678,7 +2723,11 @@ def _find_replica_identity_id_by_reply_sender(event):
         return 0
     if sender_id <= 0:
         return 0
-    for identity_id in get_replica_participant_identity_ids():
+    participant_ids = []
+    for identity_id in [*get_replica_participant_identity_ids(), *get_replica_dispatch_participant_identity_ids()]:
+        if int(identity_id or 0) not in participant_ids:
+            participant_ids.append(int(identity_id or 0))
+    for identity_id in participant_ids:
         try:
             normalized_id = int(identity_id or 0)
         except (TypeError, ValueError):
@@ -2999,12 +3048,16 @@ def _format_replica_query_root_attrs(root_attrs, dps_enabled=False):
     return root_attrs
 
 
-def _format_replica_query_reply(filter_text=""):
+def _format_replica_query_reply(filter_text="", participant_identity_ids=None, fallback_to_all=True):
     query = str(filter_text or "").strip()
     now = time.time()
     records = _cleanup_replica_run_state(now)
     lines = []
-    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
+    for identity_id in _get_replica_candidate_identity_ids(
+        require_username=True,
+        participant_identity_ids=participant_identity_ids,
+        fallback_to_all=fallback_to_all,
+    ):
         profile = get_send_as_profile(identity_id)
         username = str(profile.get("username") or "").strip()
         if not username.startswith("@"):
@@ -3028,7 +3081,24 @@ def _get_replica_query_aggregator_submit_config():
     return config
 
 
-async def _maybe_submit_replica_query_reply_to_aggregator(query_message_id, query_text, query_filter, reply_text):
+def _coerce_replica_metadata_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+async def _maybe_submit_replica_query_reply_to_aggregator(
+    query_message_id,
+    query_text,
+    query_filter,
+    reply_text,
+    *,
+    source_chat_id=0,
+    source_message_id=0,
+    listener_account_id=0,
+    identity_id=0,
+):
     config = _get_replica_query_aggregator_submit_config()
     if not config:
         return False
@@ -3039,13 +3109,23 @@ async def _maybe_submit_replica_query_reply_to_aggregator(query_message_id, quer
     if query_message_id <= 0:
         console_log("副本查询汇聚提交失败：缺少 query_message_id", scope="global", limit=180)
         return True
+    source_chat_id = _coerce_replica_metadata_int(source_chat_id)
+    source_message_id = _coerce_replica_metadata_int(source_message_id or query_message_id)
+    listener_account_id = _coerce_replica_metadata_int(listener_account_id)
+    identity_id = _coerce_replica_metadata_int(identity_id or listener_account_id)
     try:
         response = await submit_replica_query_result(
             config=config,
             query_message_id=query_message_id,
             query_text=query_text,
             query_filter=query_filter,
-            source_id=config.get("client_id") or "",
+            source_id=source_chat_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            identity_id=identity_id,
+            send_as_id=identity_id,
+            listener_account_id=listener_account_id,
+            client_id=config.get("client_id") or "",
             reply_text=reply_text,
             generated_at=time.time(),
         )
@@ -3817,18 +3897,39 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
     return False
 
 
-async def _handle_replica_query_command(event):
-    listener_account_id = _get_replica_event_listener_account_id(event)
+async def _handle_replica_query_command(
+    event,
+    listener_account_id=None,
+    claim_scope="replica_query",
+    participant_identity_ids=None,
+    participant_fallback_to_all=True,
+):
+    if listener_account_id is None:
+        listener_account_id = _get_replica_event_listener_account_id(event)
     if not listener_account_id:
         return False
     raw_text = str(getattr(event, "raw_text", "") or "").strip()
     if raw_text != ".查询" and not raw_text.startswith(".查询 "):
         return False
-    if not _claim_runtime_event(event, scope="replica_query"):
+    if not _claim_runtime_event(event, scope=claim_scope):
         return True
     query = raw_text[len(".查询"):].strip()
-    reply_text = _format_replica_query_reply(query)
-    if await _maybe_submit_replica_query_reply_to_aggregator(getattr(event, "id", 0), raw_text, query, reply_text):
+    reply_text = _format_replica_query_reply(
+        query,
+        participant_identity_ids=participant_identity_ids,
+        fallback_to_all=participant_fallback_to_all,
+    )
+    event_message_id = _coerce_replica_metadata_int(getattr(event, "id", 0))
+    if await _maybe_submit_replica_query_reply_to_aggregator(
+        event_message_id,
+        raw_text,
+        query,
+        reply_text,
+        source_chat_id=_coerce_replica_metadata_int(getattr(event, "chat_id", 0)),
+        source_message_id=event_message_id,
+        listener_account_id=listener_account_id,
+        identity_id=listener_account_id,
+    ):
         return True
     await _send_replica_group_message(
         event.client,
@@ -3841,17 +3942,35 @@ async def _handle_replica_query_command(event):
     return True
 
 
-async def _submit_virtual_hall_match_text_to_aggregator(room_id, text, query_message_id=0, html=False):
+async def _submit_virtual_hall_match_text_to_aggregator(
+    room_id,
+    text,
+    query_message_id=0,
+    html=False,
+    *,
+    source_chat_id=0,
+    source_message_id=0,
+    listener_account_id=0,
+):
     config = _get_replica_query_aggregator_submit_config()
     if not config:
         return False
+    source_chat_id = _coerce_replica_metadata_int(source_chat_id)
+    source_message_id = _coerce_replica_metadata_int(source_message_id or query_message_id)
+    listener_account_id = _coerce_replica_metadata_int(listener_account_id)
     try:
         response = await submit_virtual_hall_recommendation(
             config=config,
             room_id=room_id,
             text=str(text or "") if html else mono(str(text or "")),
             query_message_id=query_message_id,
-            source_id=config.get("client_id") or "",
+            source_id=source_chat_id,
+            source_chat_id=source_chat_id,
+            source_message_id=source_message_id,
+            identity_id=listener_account_id,
+            send_as_id=listener_account_id,
+            listener_account_id=listener_account_id,
+            client_id=config.get("client_id") or "",
             generated_at=time.time(),
         )
         message_ids = response.get("message_ids") or []
@@ -3866,7 +3985,15 @@ async def _submit_virtual_hall_match_text_to_aggregator(room_id, text, query_mes
 
 
 async def _send_virtual_hall_match_text(client_obj, chat_id, text, listener_account_id=0, html=False, room_id="", query_message_id=0):
-    if room_id and await _submit_virtual_hall_match_text_to_aggregator(room_id, text, query_message_id=query_message_id, html=html):
+    if room_id and await _submit_virtual_hall_match_text_to_aggregator(
+        room_id,
+        text,
+        query_message_id=query_message_id,
+        html=html,
+        source_chat_id=chat_id,
+        source_message_id=query_message_id,
+        listener_account_id=listener_account_id,
+    ):
         return
     await _send_replica_group_message(
         client_obj,
@@ -3892,7 +4019,16 @@ async def _run_virtual_hall_match(room_id, client_obj, chat_id, listener_account
     query_message_id = int(getattr(query_msg, "id", 0) or 0)
     reply_text = _format_replica_query_reply("")
     if not reply_text.startswith("未找到") and reply_text != "当前没有已勾选且带 username 的副本参与身份":
-        await _maybe_submit_replica_query_reply_to_aggregator(query_message_id, ".查询", "", reply_text)
+        await _maybe_submit_replica_query_reply_to_aggregator(
+            query_message_id,
+            ".查询",
+            "",
+            reply_text,
+            source_chat_id=chat_id,
+            source_message_id=query_message_id,
+            listener_account_id=listener_account_id,
+            identity_id=listener_account_id,
+        )
     aggregator_configured = bool(_get_replica_query_aggregator_submit_config())
     query_wait_sec = _VIRTUAL_HALL_MATCH_QUERY_WAIT_SEC + (5 if aggregator_configured else 0)
     await asyncio.sleep(query_wait_sec)
@@ -4341,9 +4477,13 @@ def _normalize_replica_username(username):
     return username.lower()
 
 
-def _get_enabled_replica_identity_ids_by_username():
+def _get_enabled_replica_identity_ids_by_username(participant_identity_ids=None, fallback_to_all=True):
     identity_ids_by_username = {}
-    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
+    for identity_id in _get_replica_candidate_identity_ids(
+        require_username=True,
+        participant_identity_ids=participant_identity_ids,
+        fallback_to_all=fallback_to_all,
+    ):
         username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         identity_ids_by_username[username] = identity_id
     return identity_ids_by_username
@@ -4363,6 +4503,273 @@ def _parse_replica_dispatch_command(raw_text):
             seen.add(normalized_username)
             usernames.append(normalized_username)
     return replica_kind, replica_id, usernames
+
+
+def _reserve_external_dispatch_join(identity_id, replica_kind, room_id, event, now):
+    identity_id = int(identity_id or 0)
+    room_id = str(room_id or "").strip()
+    if identity_id <= 0 or replica_kind not in _REPLICA_KINDS or not room_id:
+        return False, "invalid"
+    if not get_identity_enabled(identity_id):
+        return False, "disabled"
+    if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
+        return False, _format_cangkun_realm_requirement(identity_id)
+    records = _cleanup_replica_run_state(now)
+    record = _get_replica_identity_record(records, identity_id)
+    state_item = _get_replica_kind_state(record, replica_kind, create=True)
+    cooldown_until = float(state_item.get("cooldown_until") or 0)
+    if cooldown_until > float(now or 0):
+        return False, "cooldown"
+    active_until = _get_replica_active_until(record, replica_kind)
+    if state_item.get("participating") and active_until > float(now or 0):
+        return False, "participating"
+    dispatch_pending_until = float(state_item.get("dispatch_pending_until") or 0)
+    if dispatch_pending_until > float(now or 0):
+        return False, "pending"
+    state_item.update({
+        "dispatch_pending_room_id": room_id,
+        "dispatch_pending_until": float(now or 0) + _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC,
+        "dispatch_pending_source_chat_id": int(getattr(event, "chat_id", 0) or 0),
+        "dispatch_pending_source_msg_id": int(getattr(event, "id", 0) or 0),
+        "dispatch_retry_count": 0,
+    })
+    record.update({
+        "replica_kind": replica_kind,
+        "last_join_result": "pending",
+        "last_join_error": "",
+        "updated_at": float(now or 0),
+    })
+    _save_replica_run_records(records)
+    return True, ""
+
+
+def _mark_external_dispatch_join_sent(identity_id, replica_kind, room_id, msg_id, now, retry_count=None):
+    records = _get_replica_run_records()
+    record = _get_replica_identity_record(records, identity_id)
+    state_item = _get_replica_kind_state(record, replica_kind, create=True)
+    if retry_count is None:
+        retry_count = int(state_item.get("dispatch_retry_count") or 0)
+    state_item.update({
+        "room_id": str(room_id or state_item.get("room_id") or ""),
+        "dispatch_pending_msg_id": int(msg_id or 0),
+        "dispatch_pending_until": float(now or 0) + _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC,
+        "dispatch_retry_count": max(0, int(retry_count or 0)),
+    })
+    record.update({
+        "replica_kind": replica_kind,
+        "last_join_msg_id": int(msg_id or 0),
+        "last_join_result": "pending",
+        "last_join_error": "",
+        "updated_at": float(now or 0),
+    })
+    _save_replica_run_records(records)
+
+
+def _clear_external_dispatch_join_pending(identity_id, replica_kind, room_id="", source_msg_id=0):
+    records = _get_replica_run_records()
+    record = _get_replica_identity_record(records, identity_id)
+    state_item = _get_replica_kind_state(record, replica_kind, create=True)
+    if room_id and str(state_item.get("dispatch_pending_room_id") or "") != str(room_id):
+        return
+    if source_msg_id and int(state_item.get("dispatch_pending_source_msg_id") or 0) != int(source_msg_id or 0):
+        return
+    for key in (
+        "dispatch_pending_room_id",
+        "dispatch_pending_until",
+        "dispatch_pending_msg_id",
+        "dispatch_pending_source_chat_id",
+        "dispatch_pending_source_msg_id",
+        "dispatch_retry_count",
+    ):
+        state_item.pop(key, None)
+    record["updated_at"] = time.time()
+    _save_replica_run_records(records)
+
+
+def _should_fast_retry_external_dispatch(identity_id, replica_kind, room_id, source_msg_id, sent_msg_id, now):
+    records = _cleanup_replica_run_state(now)
+    record = _get_replica_identity_record(records, identity_id)
+    state_item = _get_replica_kind_state(record, replica_kind, create=False)
+    if str(state_item.get("dispatch_pending_room_id") or "") != str(room_id or ""):
+        return False
+    if source_msg_id and int(state_item.get("dispatch_pending_source_msg_id") or 0) != int(source_msg_id or 0):
+        return False
+    if sent_msg_id and int(state_item.get("dispatch_pending_msg_id") or 0) != int(sent_msg_id or 0):
+        return False
+    if int(state_item.get("dispatch_retry_count") or 0) >= _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_LIMIT:
+        return False
+    if float(state_item.get("dispatch_pending_until") or 0) <= float(now or 0):
+        return False
+    if state_item.get("participating") and _get_replica_active_until(record, replica_kind) > float(now or 0):
+        return False
+    if float(state_item.get("cooldown_until") or 0) > float(now or 0):
+        return False
+    return True
+
+
+def _mark_external_dispatch_retry_used(identity_id, replica_kind, retry_count, now):
+    records = _get_replica_run_records()
+    record = _get_replica_identity_record(records, identity_id)
+    state_item = _get_replica_kind_state(record, replica_kind, create=True)
+    state_item["dispatch_retry_count"] = max(int(state_item.get("dispatch_retry_count") or 0), int(retry_count or 0))
+    record["updated_at"] = float(now or 0)
+    _save_replica_run_records(records)
+
+
+async def _retry_external_dispatch_join_once(identity_id, replica_kind, room_id, command, source_msg_id, first_msg_id, delay_sec=None):
+    delay_sec = _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    now = time.time()
+    if not _should_fast_retry_external_dispatch(identity_id, replica_kind, room_id, source_msg_id, first_msg_id, now):
+        return False
+    retry_count = 1
+    _mark_external_dispatch_retry_used(identity_id, replica_kind, retry_count, now)
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=identity_id,
+        priority="urgent_reactive",
+        source_module="自动副本",
+        op_id=f"replica_external_dispatch_retry:{int(source_msg_id or 0)}:{identity_id}:{retry_count}",
+        chain_id=f"replica_external_dispatch:{replica_kind}:{room_id}",
+        delete_policy="keep",
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if msg:
+        _mark_external_dispatch_join_sent(
+            identity_id,
+            replica_kind,
+            room_id,
+            int(getattr(msg, "id", 0) or 0),
+            sent_at,
+            retry_count=retry_count,
+        )
+        await send_audit_log(
+            f"🧩 主线拉人快补发：{command}｜retry={retry_count}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=180,
+        )
+        return True
+    return False
+
+
+def _schedule_external_dispatch_fast_retry(identity_id, replica_kind, room_id, command, source_msg_id, first_msg_id):
+    _fire_and_forget(
+        _retry_external_dispatch_join_once(
+            identity_id,
+            replica_kind,
+            room_id,
+            command,
+            source_msg_id,
+            first_msg_id,
+        )
+    )
+
+
+async def _handle_replica_external_dispatch_command(event, participant_identity_ids=None, participant_fallback_to_all=True):
+    listener_account_id = _get_replica_dispatch_event_listener_account_id(event)
+    if not listener_account_id:
+        return False
+    replica_kind, replica_id, usernames = _parse_replica_dispatch_command(getattr(event, "raw_text", "") or "")
+    if not replica_kind or not replica_id:
+        return False
+    if not _claim_runtime_event(event, scope="replica_external_dispatch"):
+        return True
+    if not usernames:
+        return True
+    identity_ids_by_username = _get_enabled_replica_identity_ids_by_username(
+        participant_identity_ids=participant_identity_ids,
+        fallback_to_all=participant_fallback_to_all,
+    )
+    command = f"{_REPLICA_KIND_META[replica_kind]['join_command']} {replica_id}"
+    seen_identity_ids = set()
+    sent_usernames = []
+    skipped = []
+    now = time.time()
+    started_at = time.monotonic()
+    for username in usernames:
+        identity_id = identity_ids_by_username.get(username)
+        if not identity_id or identity_id in seen_identity_ids:
+            skipped.append(username)
+            continue
+        seen_identity_ids.add(identity_id)
+        allowed, reason = _reserve_external_dispatch_join(identity_id, replica_kind, replica_id, event, now)
+        if not allowed:
+            skipped.append(f"{username}({reason})" if reason else username)
+            continue
+        delay_sec = max(0, len(sent_usernames)) * _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC
+        wait_sec = delay_sec - (time.monotonic() - started_at)
+        if wait_sec > 0:
+            await asyncio.sleep(wait_sec)
+        msg = await send_game_command(
+            command,
+            track=False,
+            send_as_id=identity_id,
+            priority="urgent_reactive",
+            source_module="自动副本",
+            op_id=f"replica_external_dispatch:{int(getattr(event, 'chat_id', 0) or 0)}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
+            chain_id=f"replica_external_dispatch:{replica_kind}:{replica_id}",
+            delete_policy="keep",
+        )
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+        if msg:
+            sent_msg_id = int(getattr(msg, "id", 0) or 0)
+            _mark_external_dispatch_join_sent(identity_id, replica_kind, replica_id, sent_msg_id, sent_at)
+            _schedule_external_dispatch_fast_retry(
+                identity_id,
+                replica_kind,
+                replica_id,
+                command,
+                int(getattr(event, "id", 0) or 0),
+                sent_msg_id,
+            )
+            sent_usernames.append(username)
+            await send_audit_log(
+                (
+                    f"🧩 主线拉人已发出：{command}｜{username}"
+                    f"｜来源群 {int(getattr(event, 'chat_id', 0) or 0)} msg {int(getattr(event, 'id', 0) or 0)}"
+                ),
+                scope="identity",
+                send_as_id=identity_id,
+                limit=240,
+            )
+        else:
+            _clear_external_dispatch_join_pending(
+                identity_id,
+                replica_kind,
+                replica_id,
+                source_msg_id=int(getattr(event, "id", 0) or 0),
+            )
+            skipped.append(f"{username}(send_failed)")
+    if skipped and not sent_usernames:
+        console_log(
+            f"🧩 主线拉人未发送：{_REPLICA_KIND_META[replica_kind]['name']} {replica_id}｜{' '.join(skipped[:8])}",
+            scope="global",
+            limit=240,
+        )
+    return True
+
+
+async def _handle_replica_dispatch_group_command(event):
+    listener_account_id = _get_replica_dispatch_event_listener_account_id(event)
+    if not listener_account_id:
+        return False
+    participant_identity_ids = get_replica_dispatch_participant_identity_ids()
+    handled = await _handle_replica_query_command(
+        event,
+        listener_account_id=listener_account_id,
+        claim_scope="replica_dispatch_query",
+        participant_identity_ids=participant_identity_ids,
+        participant_fallback_to_all=False,
+    )
+    if handled:
+        return True
+    return await _handle_replica_external_dispatch_command(
+        event,
+        participant_identity_ids=participant_identity_ids,
+        participant_fallback_to_all=False,
+    )
 
 
 async def _handle_replica_dispatch_command(event):
@@ -4442,6 +4849,8 @@ async def _handle_replica_group_command(event):
 
 
 __all__ = [
+    "_handle_replica_dispatch_group_command",
+    "_handle_replica_external_dispatch_command",
     "_handle_replica_group_command",
     "_handle_replica_join_reply",
     "_handle_replica_progress_event",

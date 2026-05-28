@@ -135,6 +135,54 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual(93001, rows[0]["listener_account_id"])
 
+    def test_replica_dispatch_group_message_log_uses_separate_claim_scope(self):
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        event = SimpleNamespace(
+            id=92002,
+            chat_id=-100921,
+            sender_id=424242,
+            client=listener_client,
+            raw_text=".苍坤洞府 123 @first",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(app_message_log, "MESSAGES_DIR", tmpdir), \
+                patch.object(app_message_log, "get_replica_dispatch_group_ids", return_value=[-100921]), \
+                patch.object(app_message_log, "get_replica_dispatch_listener_account_map", return_value={"-100921": 93002}), \
+                patch.object(app_message_log, "get_all_clients", return_value={93002: listener_client}):
+            first = app_message_log._append_replica_dispatch_group_message_log(event, event_type="message")
+            second = app_message_log._append_replica_dispatch_group_message_log(event, event_type="message")
+            rows = [
+                json.loads(line)
+                for line in next(Path(tmpdir).glob("replica-*.log")).read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(1, len(rows))
+        self.assertEqual(93002, rows[0]["listener_account_id"])
+        self.assertEqual("dispatch", rows[0]["replica_group_role"])
+
+    def test_replica_dispatch_group_message_log_rejects_game_group_overlap(self):
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        event = SimpleNamespace(
+            id=92003,
+            chat_id=-100922,
+            sender_id=424242,
+            client=listener_client,
+            raw_text="真实游戏群回包",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with patch.object(app_message_log, "get_game_group_id", return_value=-100922), \
+                patch.object(app_message_log, "get_replica_dispatch_group_ids", return_value=[-100922]), \
+                patch.object(app_message_log, "get_replica_dispatch_listener_account_map", return_value={"-100922": 93002}), \
+                patch.object(app_message_log, "get_all_clients", return_value={93002: listener_client}):
+            self.assertFalse(app_message_log._append_replica_dispatch_group_message_log(event, event_type="message"))
+
     def test_han_tianzun_name_variants_require_bot_identity(self):
         self.assertTrue(
             app._entity_is_han_tianzun_bot(

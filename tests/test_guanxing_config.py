@@ -137,7 +137,10 @@ class GuanxingConfigTests(unittest.TestCase):
         payload = {
             "group_ids": "-100777",
             "listener_account_map": {"-100777": "9001"},
+            "dispatch_group_ids": "-100888",
+            "dispatch_listener_account_map": {"-100888": "9002"},
             "participant_identity_ids": [],
+            "dispatch_participant_identity_ids": [],
             "virtual_hall_match_enabled_map": {"-100777": "false"},
         }
 
@@ -146,7 +149,104 @@ class GuanxingConfigTests(unittest.TestCase):
 
         self.assertTrue(ok, message)
         self.assertEqual([-100777], state_module.get_replica_group_ids())
+        self.assertEqual([-100888], state_module.get_replica_dispatch_group_ids())
+        self.assertEqual({"-100888": 9002}, state_module.get_replica_dispatch_listener_account_map())
         self.assertEqual({"-100777": False}, state_module.get_replica_virtual_hall_match_enabled_map())
+
+    def test_replica_config_preserves_dispatch_fields_when_omitted(self):
+        state_module.set_replica_group_ids([-100777])
+        state_module.set_replica_dispatch_group_ids([-100888])
+        state_module.set_replica_dispatch_listener_account_map({"-100888": 9002})
+        state_module.ensure_identity_registered(9002001)
+        state_module.set_replica_dispatch_participant_identity_ids([9002001])
+        payload = {
+            "group_ids": "-100777",
+            "listener_account_map": {"-100777": "9001"},
+            "participant_identity_ids": [],
+            "virtual_hall_match_enabled_map": {"-100777": "false"},
+        }
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config(payload)
+
+        self.assertTrue(ok, message)
+        self.assertEqual([-100888], state_module.get_replica_dispatch_group_ids())
+        self.assertEqual({"-100888": 9002}, state_module.get_replica_dispatch_listener_account_map())
+        self.assertEqual([9002001], state_module.get_replica_dispatch_participant_identity_ids())
+
+    def test_replica_config_saves_dispatch_participants_separately(self):
+        for identity_id in (9003001, 9003002, 9003003):
+            state_module.ensure_identity_registered(identity_id)
+        payload = {
+            "group_ids": "-100777",
+            "listener_account_map": {"-100777": "9001"},
+            "participant_identity_ids": ["9003001", "9003002", "9003003"],
+            "dispatch_participant_identity_ids": ["9003001", "9003002"],
+            "virtual_hall_match_enabled_map": {},
+        }
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config(payload)
+
+        self.assertTrue(ok, message)
+        self.assertEqual([9003001, 9003002, 9003003], state_module.get_replica_participant_identity_ids())
+        self.assertEqual([9003001, 9003002], state_module.get_replica_dispatch_participant_identity_ids())
+        snapshot = ui.get_replica_config_snapshot()
+        self.assertEqual([9003001, 9003002], snapshot["dispatch_participant_identity_ids"])
+
+    def test_replica_config_saves_query_aggregator_separately_and_preserves_blank_secret(self):
+        state_module.set_replica_query_aggregator_config({
+            "base_url": "https://old.example/api",
+            "client_id": "old-client",
+            "secret": "old-secret",
+        })
+        payload = {
+            "group_ids": "-100777",
+            "listener_account_map": {"-100777": "9001"},
+            "participant_identity_ids": [],
+            "virtual_hall_match_enabled_map": {},
+            "query_aggregator_config": {
+                "base_url": "https://new.example/api/",
+                "client_id": "new-client",
+                "secret": "",
+            },
+        }
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config(payload)
+
+        self.assertTrue(ok, message)
+        self.assertEqual(
+            {
+                "base_url": "https://new.example/api",
+                "client_id": "new-client",
+                "secret": "old-secret",
+            },
+            state_module.get_replica_query_aggregator_config(),
+        )
+        snapshot = ui.get_replica_config_snapshot()["query_aggregator_config"]
+        self.assertTrue(snapshot["configured"])
+        self.assertTrue(snapshot["secret_configured"])
+        self.assertNotIn("secret", snapshot)
+
+    def test_replica_config_ignores_dispatch_group_overlaps(self):
+        state_module.set_game_group_id(-100999)
+        payload = {
+            "group_ids": "-100777",
+            "listener_account_map": {"-100777": "9001"},
+            "dispatch_group_ids": "-100999\n-100777\n-100888",
+            "dispatch_listener_account_map": {"-100999": "9003", "-100777": "9001", "-100888": "9002"},
+            "participant_identity_ids": [],
+            "virtual_hall_match_enabled_map": {},
+        }
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config(payload)
+
+        self.assertTrue(ok, message)
+        self.assertIn("已忽略", message)
+        self.assertEqual([-100888], state_module.get_replica_dispatch_group_ids())
+        self.assertEqual({"-100888": 9002}, state_module.get_replica_dispatch_listener_account_map())
 
 
 if __name__ == "__main__":

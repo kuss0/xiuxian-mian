@@ -72,7 +72,8 @@ function renderDungeonAnnouncements(announcements) {
   }).join('') + '</div>';
 }
 
-function renderReplicaAccountSelect(groupId, accountOptions, selectedAccountId) {
+function renderReplicaAccountSelect(groupId, accountOptions, selectedAccountId, listenerAttr) {
+  listenerAttr = listenerAttr || 'data-replica-listener';
   const selectedId = Number(selectedAccountId || 0);
   const options = ['<option value="">未设置</option>'].concat((accountOptions || []).map(function(account) {
     const value = Number(account.account_id || 0);
@@ -82,28 +83,34 @@ function renderReplicaAccountSelect(groupId, accountOptions, selectedAccountId) 
       + escapeHtml((account.label || value) + ' ｜ ' + value + suffix)
       + '</option>';
   }));
-  return '<select class="text-input" data-replica-listener="' + escapeHtml(groupId) + '">' + options.join('') + '</select>';
+  return '<select class="text-input" ' + listenerAttr + '="' + escapeHtml(groupId) + '">' + options.join('') + '</select>';
 }
 
-function renderReplicaGroupRows(replica) {
-  const groupIds = Array.isArray(replica.group_ids) ? replica.group_ids : [];
+function renderReplicaGroupRows(replica, options) {
+  options = options || {};
+  const groupIds = Array.isArray(options.groupIds) ? options.groupIds : (Array.isArray(replica.group_ids) ? replica.group_ids : []);
   const accountOptions = Array.isArray(replica.account_options) ? replica.account_options : [];
-  const listenerMap = replica.listener_account_map || {};
+  const listenerMap = options.listenerMap || replica.listener_account_map || {};
+  const listenerAttr = options.listenerAttr || 'data-replica-listener';
+  const emptyText = options.emptyText || '暂无副本群。';
   if (!groupIds.length) {
-    return '<div class="queue-empty">暂无副本群。</div>';
+    return '<div class="queue-empty">' + escapeHtml(emptyText) + '</div>';
   }
   return '<div class="replica-group-list">' + groupIds.map(function(groupId) {
     const key = String(groupId);
     return '<div class="replica-group-row">'
       + '<code>' + escapeHtml(key) + '</code>'
-      + renderReplicaAccountSelect(key, accountOptions, listenerMap[key])
+      + renderReplicaAccountSelect(key, accountOptions, listenerMap[key], listenerAttr)
       + '</div>';
   }).join('') + '</div>';
 }
 
-function renderReplicaParticipantRows(replica) {
+function renderReplicaParticipantRows(replica, options) {
+  options = options || {};
   const identities = Array.isArray(replica.identity_options) ? replica.identity_options : [];
-  const participantIds = new Set((replica.participant_identity_ids || []).map(function(id) { return Number(id); }));
+  const sourceIds = Array.isArray(options.participantIds) ? options.participantIds : (replica.participant_identity_ids || []);
+  const participantIds = new Set(sourceIds.map(function(id) { return Number(id); }));
+  const participantAttr = options.participantAttr || 'data-replica-participant';
   if (!identities.length) {
     return '<div class="queue-empty">暂无身份。</div>';
   }
@@ -120,7 +127,7 @@ function renderReplicaParticipantRows(replica) {
     const openLabel = identity.preferred_open_label ? ('可开 ' + identity.preferred_open_label) : '不可开房';
     return '<div class="replica-identity-row' + (identity.can_open ? ' replica-identity-can-open' : '') + '">'
       + '<label class="checkbox-inline checkbox-inline-small">'
-      + '<input type="checkbox" data-replica-participant="' + escapeHtml(identityId) + '"' + participantChecked + ' />'
+      + '<input type="checkbox" ' + participantAttr + '="' + escapeHtml(identityId) + '"' + participantChecked + ' />'
       + '<span class="replica-identity-main">'
       + '<span class="replica-identity-title"><strong>' + escapeHtml(identity.display_name || identityId) + '</strong><em>' + escapeHtml(username) + '</em></span>'
       + '<small>' + escapeHtml((identity.realm || '未获取') + ' ｜ ' + (identity.spiritual_root_attrs || '灵根未获取') + ' ｜ ' + (identity.replica_professions || '未匹配') + disabledText) + '</small>'
@@ -159,6 +166,9 @@ function renderReplicaOpeners(replica) {
 
 function renderReplicaConfig(replica) {
   const groupIds = Array.isArray(replica.group_ids) ? replica.group_ids : [];
+  const dispatchGroupIds = Array.isArray(replica.dispatch_group_ids) ? replica.dispatch_group_ids : [];
+  const aggregator = replica.query_aggregator_config || {};
+  const secretPlaceholder = aggregator.secret_configured ? '已配置，留空保留' : '未配置';
   return '<form id="replica-config-form" class="replica-config-form">'
     + '<div class="replica-config-grid">'
     + '<label class="form-label">副本群 ID<textarea class="text-input replica-groups-input" name="replica_group_ids" rows="4">' + escapeHtml(groupIds.join('\n')) + '</textarea></label>'
@@ -167,9 +177,36 @@ function renderReplicaConfig(replica) {
     + renderReplicaGroupRows(replica)
     + '</div>'
     + '</div>'
+    + '<div class="replica-config-grid">'
+    + '<label class="form-label">主线拉人群 ID<textarea class="text-input replica-groups-input" name="replica_dispatch_group_ids" rows="3">' + escapeHtml(dispatchGroupIds.join('\n')) + '</textarea></label>'
+    + '<div class="replica-config-side">'
+    + '<div class="queue-section-title">拉人群监听账号</div>'
+    + renderReplicaGroupRows(replica, {
+      groupIds: dispatchGroupIds,
+      listenerMap: replica.dispatch_listener_account_map || {},
+      listenerAttr: 'data-replica-dispatch-listener',
+      emptyText: '暂无主线拉人群。'
+    })
+    + '</div>'
+    + '</div>'
     + '<div class="dungeon-section">'
-    + '<div class="queue-section-title">参与身份</div>'
+    + '<div class="queue-section-title">外部汇聚接入' + (aggregator.configured ? '（已配置）' : '（未配置）') + '</div>'
+    + '<div class="replica-config-grid">'
+    + '<label class="form-label">Base URL<input class="text-input" name="replica_query_aggregator_base_url" value="' + escapeHtml(aggregator.base_url || '') + '" autocomplete="off" /></label>'
+    + '<label class="form-label">Client ID<input class="text-input" name="replica_query_aggregator_client_id" value="' + escapeHtml(aggregator.client_id || '') + '" autocomplete="off" /></label>'
+    + '<label class="form-label">Secret<input class="text-input" name="replica_query_aggregator_secret" type="password" placeholder="' + escapeHtml(secretPlaceholder) + '" autocomplete="new-password" /></label>'
+    + '</div>'
+    + '</div>'
+    + '<div class="dungeon-section">'
+    + '<div class="queue-section-title">本地参与身份</div>'
     + renderReplicaParticipantRows(replica)
+    + '</div>'
+    + '<div class="dungeon-section">'
+    + '<div class="queue-section-title">主线参与身份</div>'
+    + renderReplicaParticipantRows(replica, {
+      participantIds: replica.dispatch_participant_identity_ids || [],
+      participantAttr: 'data-replica-dispatch-participant'
+    })
     + '</div>'
     + '<div class="modal-actions modal-actions-inline">'
     + '<button type="submit" class="btn">保存副本群配置</button>'
@@ -290,6 +327,8 @@ function collectReplicaConfigPayload() {
   }
   const groupText = form.querySelector('textarea[name="replica_group_ids"]')?.value || '';
   const groupIds = groupText.split(/[\s,，]+/).map(function(value) { return value.trim(); }).filter(Boolean);
+  const dispatchGroupText = form.querySelector('textarea[name="replica_dispatch_group_ids"]')?.value || '';
+  const dispatchGroupIds = dispatchGroupText.split(/[\s,，]+/).map(function(value) { return value.trim(); }).filter(Boolean);
   const listenerMap = {};
   form.querySelectorAll('[data-replica-listener]').forEach(function(select) {
     const groupId = String(select.getAttribute('data-replica-listener') || '').trim();
@@ -297,13 +336,32 @@ function collectReplicaConfigPayload() {
       listenerMap[groupId] = select.value;
     }
   });
+  const dispatchListenerMap = {};
+  form.querySelectorAll('[data-replica-dispatch-listener]').forEach(function(select) {
+    const groupId = String(select.getAttribute('data-replica-dispatch-listener') || '').trim();
+    if (groupId && select.value) {
+      dispatchListenerMap[groupId] = select.value;
+    }
+  });
+  const queryAggregatorConfig = {
+    base_url: (form.querySelector('input[name="replica_query_aggregator_base_url"]')?.value || '').trim(),
+    client_id: (form.querySelector('input[name="replica_query_aggregator_client_id"]')?.value || '').trim(),
+    secret: (form.querySelector('input[name="replica_query_aggregator_secret"]')?.value || '').trim()
+  };
   const participantIds = Array.from(form.querySelectorAll('[data-replica-participant]:checked')).map(function(input) {
     return input.getAttribute('data-replica-participant');
+  });
+  const dispatchParticipantIds = Array.from(form.querySelectorAll('[data-replica-dispatch-participant]:checked')).map(function(input) {
+    return input.getAttribute('data-replica-dispatch-participant');
   });
   return {
     group_ids: groupIds,
     listener_account_map: listenerMap,
+    dispatch_group_ids: dispatchGroupIds,
+    dispatch_listener_account_map: dispatchListenerMap,
+    query_aggregator_config: queryAggregatorConfig,
     participant_identity_ids: participantIds,
+    dispatch_participant_identity_ids: dispatchParticipantIds,
     virtual_hall_match_enabled_map: {}
   };
 }

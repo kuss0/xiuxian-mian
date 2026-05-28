@@ -165,6 +165,12 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(send_as_id):
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
         audit_mock.assert_not_awaited()
+        self.assertTrue(any(
+            call.kwargs.get("reason") == "deep_retreat_summary_no_match"
+            and call.kwargs.get("decision") == "summary_no_match_skip"
+            and call.kwargs.get("include_recent") is False
+            for call in inbox_mock.call_args_list
+        ))
 
     async def test_deep_retreat_tagless_force_exit_summary_uses_unique_candidate_only(self):
         send_as_id = 8659059192

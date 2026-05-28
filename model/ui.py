@@ -105,10 +105,14 @@ from .state import (
     get_game_topic_id,
     get_global_enabled,
     get_dungeon_join_run_state,
+    get_replica_dispatch_group_ids,
+    get_replica_dispatch_listener_account_map,
+    get_replica_dispatch_participant_identity_ids,
     get_replica_gold_dps_enabled,
     get_replica_group_ids,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
+    get_replica_query_aggregator_config,
     get_replica_virtual_hall_match_enabled_map,
     get_tiandao_judgement_enabled,
     get_guanxing_monitor_enabled,
@@ -152,9 +156,13 @@ from .state import (
     set_pet_warm_name,
     set_pet_trial_name,
     set_replica_gold_dps_enabled,
+    set_replica_dispatch_group_ids,
+    set_replica_dispatch_listener_account_map,
+    set_replica_dispatch_participant_identity_ids,
     set_replica_group_ids,
     set_replica_listener_account_map,
     set_replica_participant_identity_ids,
+    set_replica_query_aggregator_config,
     set_replica_virtual_hall_match_enabled_map,
     set_storage_bag_item_rules,
     set_stargazer_star_choice,
@@ -754,7 +762,11 @@ def _select_replica_ui_open_kind(counts):
 def get_replica_config_snapshot():
     group_ids = get_replica_group_ids()
     listener_map = get_replica_listener_account_map()
+    dispatch_group_ids = get_replica_dispatch_group_ids()
+    dispatch_listener_map = get_replica_dispatch_listener_account_map()
+    query_aggregator_config = get_replica_query_aggregator_config()
     participant_ids = get_replica_participant_identity_ids()
+    dispatch_participant_ids = get_replica_dispatch_participant_identity_ids()
     match_map = get_replica_virtual_hall_match_enabled_map()
     storage_records = get_storage_bag_records()
     identity_options = []
@@ -787,7 +799,20 @@ def get_replica_config_snapshot():
     return {
         "group_ids": group_ids,
         "listener_account_map": {str(group_id): int(listener_map.get(str(group_id)) or 0) for group_id in group_ids},
+        "dispatch_group_ids": dispatch_group_ids,
+        "dispatch_listener_account_map": {str(group_id): int(dispatch_listener_map.get(str(group_id)) or 0) for group_id in dispatch_group_ids},
+        "query_aggregator_config": {
+            "base_url": query_aggregator_config.get("base_url") or "",
+            "client_id": query_aggregator_config.get("client_id") or "",
+            "secret_configured": bool(query_aggregator_config.get("secret")),
+            "configured": bool(
+                query_aggregator_config.get("base_url")
+                and query_aggregator_config.get("client_id")
+                and query_aggregator_config.get("secret")
+            ),
+        },
         "participant_identity_ids": participant_ids,
+        "dispatch_participant_identity_ids": dispatch_participant_ids,
         "virtual_hall_match_enabled_map": {str(group_id): bool(match_map.get(str(group_id), False)) for group_id in group_ids},
         "account_options": _get_replica_account_options(),
         "identity_options": identity_options,
@@ -810,19 +835,61 @@ def ui_set_replica_config(payload):
         if account_id > 0:
             listener_map[str(group_id)] = account_id
 
+    dispatch_group_input_present = "dispatch_group_ids" in payload
+    dispatch_listener_input_present = isinstance(payload.get("dispatch_listener_account_map"), dict)
+    raw_dispatch_group_ids = (
+        _normalize_ui_int_list(payload.get("dispatch_group_ids"), allow_negative=True)
+        if dispatch_group_input_present
+        else get_replica_dispatch_group_ids()
+    )
+    dispatch_listener_input = payload.get("dispatch_listener_account_map") if dispatch_listener_input_present else get_replica_dispatch_listener_account_map()
+    dispatch_listener_map = {}
+    for group_id in raw_dispatch_group_ids:
+        try:
+            account_id = int(dispatch_listener_input.get(str(group_id)) or dispatch_listener_input.get(group_id) or 0)
+        except (TypeError, ValueError):
+            account_id = 0
+        if account_id > 0:
+            dispatch_listener_map[str(group_id)] = account_id
+
     participant_ids = _normalize_ui_int_list(payload.get("participant_identity_ids"))
+    dispatch_participant_input_present = "dispatch_participant_identity_ids" in payload
+    dispatch_participant_ids = (
+        _normalize_ui_int_list(payload.get("dispatch_participant_identity_ids"))
+        if dispatch_participant_input_present
+        else get_replica_dispatch_participant_identity_ids()
+    )
     match_input = payload.get("virtual_hall_match_enabled_map") if isinstance(payload.get("virtual_hall_match_enabled_map"), dict) else {}
     match_map = {
         str(group_id): _coerce_ui_bool(match_input.get(str(group_id), match_input.get(group_id)))
         for group_id in group_ids
     }
+    query_aggregator_input = payload.get("query_aggregator_config")
+    if isinstance(query_aggregator_input, dict):
+        current_query_aggregator = get_replica_query_aggregator_config()
+        next_secret = str(query_aggregator_input.get("secret") or "").strip()
+        if not next_secret:
+            next_secret = current_query_aggregator.get("secret") or ""
+        set_replica_query_aggregator_config({
+            "base_url": query_aggregator_input.get("base_url"),
+            "client_id": query_aggregator_input.get("client_id"),
+            "secret": next_secret,
+        })
 
     set_replica_group_ids(group_ids)
     set_replica_listener_account_map(listener_map)
+    set_replica_dispatch_group_ids(raw_dispatch_group_ids)
+    set_replica_dispatch_listener_account_map(dispatch_listener_map)
     set_replica_participant_identity_ids(participant_ids)
+    set_replica_dispatch_participant_identity_ids(dispatch_participant_ids)
     set_replica_virtual_hall_match_enabled_map(match_map)
     save_state()
-    return True, f"已更新副本群配置：群 {len(group_ids)} 个，参与身份 {len(get_replica_participant_identity_ids())} 个"
+    dispatch_group_ids = get_replica_dispatch_group_ids()
+    ignored_dispatch_group_ids = [group_id for group_id in raw_dispatch_group_ids if group_id not in set(dispatch_group_ids)]
+    message = f"已更新副本群配置：轻量群 {len(group_ids)} 个，主线拉人群 {len(dispatch_group_ids)} 个，本地参与 {len(get_replica_participant_identity_ids())} 个，主线参与 {len(get_replica_dispatch_participant_identity_ids())} 个"
+    if ignored_dispatch_group_ids:
+        message += f"，已忽略与游戏群/轻量群重叠的拉人群 {len(ignored_dispatch_group_ids)} 个"
+    return True, message
 
 
 def ui_set_replica_gold_dps_enabled(send_as_id, enabled):

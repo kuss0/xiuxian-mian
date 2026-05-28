@@ -1,6 +1,7 @@
 import atexit
 import asyncio
 import copy
+import json
 import sys
 import time
 import unittest
@@ -38,7 +39,7 @@ if CREATED_ENV:
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import app_replica, app_runtime, runtime
+from model import app_replica, app_runtime, replica_query_aggregator_client, runtime
 from model import app_message_log
 from model import state as state_module
 
@@ -55,6 +56,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
         state_module._meta_state["replica_group_id"] = 0
         state_module._meta_state["replica_listener_account_map"] = {}
         state_module._meta_state["replica_listener_account_id"] = 0
+        state_module._meta_state["replica_dispatch_group_ids"] = []
+        state_module._meta_state["replica_dispatch_listener_account_map"] = {}
+        state_module._meta_state["replica_dispatch_participant_identity_ids"] = []
         state_module._meta_state["storage_bag_records"] = {}
         app_runtime._runtime_event_claims.clear()
 
@@ -130,6 +134,57 @@ class ReplicaAbsorbTests(unittest.TestCase):
         state_module.set_replica_query_aggregator_config({"base_url": "https://example.invalid/api"})
         self.assertEqual({}, app_replica._get_replica_query_aggregator_submit_config())
 
+    def test_replica_query_aggregator_body_carries_source_and_identity_metadata(self):
+        body = replica_query_aggregator_client._build_query_result_body(
+            query_message_id=456,
+            query_text=".查询",
+            query_filter="",
+            source_chat_id=-100777,
+            source_message_id=456,
+            identity_id=9001,
+            listener_account_id=9001,
+            client_id="client-a",
+            reply_text="@foo | 金 | 空闲",
+            generated_at=123.0,
+        )
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(-100777, payload["source_id"])
+        self.assertEqual(-100777, payload["source_chat_id"])
+        self.assertEqual(456, payload["source_message_id"])
+        self.assertEqual(9001, payload["identity_id"])
+        self.assertEqual(9001, payload["send_as_id"])
+        self.assertEqual(9001, payload["listener_account_id"])
+        self.assertEqual("client-a", payload["client_id"])
+
+    def test_replica_query_command_submits_group_and_listener_metadata(self):
+        state_module.set_replica_query_aggregator_config({
+            "base_url": "https://example.invalid/api",
+            "client_id": "client-a",
+            "secret": "secret-a",
+        })
+        event = self._prepare_replica_group([])
+        event.raw_text = ".查询"
+        event.id = 456
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica.submit_replica_query_result", new=AsyncMock(return_value={"ok": True, "session_id": "s1", "accepted_lines": 0})) as submit_mock, \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_replica_query_command(event)
+                return handled, submit_mock.await_args.kwargs, send_mock.await_count
+
+        handled, submit_kwargs, send_count = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(-100777, submit_kwargs["source_id"])
+        self.assertEqual(-100777, submit_kwargs["source_chat_id"])
+        self.assertEqual(456, submit_kwargs["source_message_id"])
+        self.assertEqual(9001, submit_kwargs["identity_id"])
+        self.assertEqual(9001, submit_kwargs["send_as_id"])
+        self.assertEqual(9001, submit_kwargs["listener_account_id"])
+        self.assertEqual("client-a", submit_kwargs["client_id"])
+        self.assertEqual(0, send_count)
+
     def test_replica_query_command_replies_when_no_candidates(self):
         event = self._prepare_replica_group([])
         event.raw_text = ".查询"
@@ -178,6 +233,61 @@ class ReplicaAbsorbTests(unittest.TestCase):
         handled, reply_text = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertIn("当前没有已勾选且带 username 的副本参与身份", reply_text)
+
+    def test_replica_dispatch_group_command_dispatches_query_command(self):
+        first_id = self._register_replica_identity(991204, "first")
+        second_id = self._register_replica_identity(991205, "second")
+        state_module.set_replica_participant_identity_ids([first_id, second_id])
+        state_module.set_replica_dispatch_participant_identity_ids([first_id])
+        event = SimpleNamespace(raw_text=".查询", chat_id=-100888, sender_id=4444, id=88004, client=SimpleNamespace(name="dispatch-listener"))
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_dispatch_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=704))) as send_mock:
+                handled = await app_replica._handle_replica_dispatch_group_command(event)
+                reply_text = send_mock.await_args.args[2]
+                return handled, reply_text
+
+        handled, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("@first", reply_text)
+        self.assertNotIn("@second", reply_text)
+
+    def test_replica_dispatch_group_command_still_allows_external_pull(self):
+        first_id = self._register_replica_identity(991204, "first")
+        second_id = self._register_replica_identity(991205, "second")
+        state_module.set_replica_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_participant_identity_ids([first_id])
+        event = SimpleNamespace(raw_text=".虚天殿 456 @first @second", chat_id=-100888, sender_id=4444, id=88005, client=SimpleNamespace(name="dispatch-listener"))
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_dispatch_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=778))) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                handled = await app_replica._handle_replica_dispatch_group_command(event)
+                return handled, send_mock.await_args
+
+        handled, send_args = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(".加入副本 456", send_args.args[0])
+        self.assertEqual(first_id, send_args.kwargs["send_as_id"])
+
+    def test_replica_dispatch_group_command_ignores_non_dispatch_participants(self):
+        first_id = self._register_replica_identity(991206, "first")
+        second_id = self._register_replica_identity(991207, "second")
+        state_module.set_replica_participant_identity_ids([first_id, second_id])
+        state_module.set_replica_dispatch_participant_identity_ids([first_id])
+        event = SimpleNamespace(raw_text=".虚天殿 456 @second", chat_id=-100888, sender_id=4444, id=88007, client=SimpleNamespace(name="dispatch-listener"))
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_dispatch_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_replica_dispatch_group_command(event)
+                return handled, send_mock.await_count
+
+        handled, send_count = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(0, send_count)
 
     def test_replica_group_command_dispatches_virtual_hall_match(self):
         event = self._prepare_replica_group([])
@@ -1062,6 +1172,123 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual("123", room["room_id"])
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, room["replica_kind"])
         self.assertEqual(0, room["leader_identity_id"])
+
+    def test_external_dispatch_group_sends_join_and_pending_blocks_duplicate(self):
+        first_id = self._register_replica_identity(991202, "first")
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        state_module.set_replica_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_group_ids([-100888])
+        state_module.set_replica_dispatch_listener_account_map({"-100888": 9001})
+        event = SimpleNamespace(
+            raw_text=".苍坤洞府 123 @first",
+            chat_id=-100888,
+            sender_id=4444,
+            id=88001,
+            client=listener_client,
+        )
+        duplicate_event = SimpleNamespace(
+            raw_text=".苍坤洞府 123 @first",
+            chat_id=-100888,
+            sender_id=4444,
+            id=88002,
+            client=listener_client,
+        )
+
+        async def run_test():
+            with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=777))) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                first_handled = await app_replica._handle_replica_external_dispatch_command(event)
+                duplicate_handled = await app_replica._handle_replica_external_dispatch_command(duplicate_event)
+                return first_handled, duplicate_handled, send_mock.await_args_list
+
+        first_handled, duplicate_handled, send_calls = asyncio.run(run_test())
+
+        self.assertTrue(first_handled)
+        self.assertTrue(duplicate_handled)
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".加入苍坤洞府 123", send_calls[0].args[0])
+        self.assertFalse(send_calls[0].kwargs["track"])
+        self.assertEqual(first_id, send_calls[0].kwargs["send_as_id"])
+        self.assertEqual("urgent_reactive", send_calls[0].kwargs["priority"])
+        self.assertEqual("自动副本", send_calls[0].kwargs["source_module"])
+        self.assertEqual("keep", send_calls[0].kwargs["delete_policy"])
+        self.assertIn("replica_external_dispatch", send_calls[0].kwargs["op_id"])
+        self.assertEqual("replica_external_dispatch:cangkun:123", send_calls[0].kwargs["chain_id"])
+
+        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
+        self.assertEqual("123", state_item["dispatch_pending_room_id"])
+        self.assertEqual(777, state_item["dispatch_pending_msg_id"])
+
+    def test_external_dispatch_send_failure_clears_pending(self):
+        first_id = self._register_replica_identity(991202, "first")
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        state_module.set_replica_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_group_ids([-100888])
+        state_module.set_replica_dispatch_listener_account_map({"-100888": 9001})
+        event = SimpleNamespace(
+            raw_text=".虚天殿 456 @first",
+            chat_id=-100888,
+            sender_id=4444,
+            id=88003,
+            client=listener_client,
+        )
+
+        async def run_test():
+            with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)), \
+                    patch("model.app_replica.console_log"):
+                return await app_replica._handle_replica_external_dispatch_command(event)
+
+        handled = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertNotIn("dispatch_pending_room_id", state_item)
+        self.assertNotIn("dispatch_pending_until", state_item)
+
+    def test_external_dispatch_fast_retry_resends_once_while_pending(self):
+        first_id = self._register_replica_identity(991205, "first")
+        event = SimpleNamespace(chat_id=-100888, id=88006)
+        now = time.time()
+        app_replica._reserve_external_dispatch_join(first_id, app_replica._REPLICA_KIND_VIRTUAL_HALL, "456", event, now)
+        app_replica._mark_external_dispatch_join_sent(first_id, app_replica._REPLICA_KIND_VIRTUAL_HALL, "456", 778, now)
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=779, sent_at=now + 3))) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                first = await app_replica._retry_external_dispatch_join_once(
+                    first_id,
+                    app_replica._REPLICA_KIND_VIRTUAL_HALL,
+                    "456",
+                    ".加入副本 456",
+                    88006,
+                    778,
+                    delay_sec=0,
+                )
+                second = await app_replica._retry_external_dispatch_join_once(
+                    first_id,
+                    app_replica._REPLICA_KIND_VIRTUAL_HALL,
+                    "456",
+                    ".加入副本 456",
+                    88006,
+                    779,
+                    delay_sec=0,
+                )
+                return first, second, send_mock.await_args
+
+        first, second, send_args = asyncio.run(run_test())
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(".加入副本 456", send_args.args[0])
+        self.assertFalse(send_args.kwargs["track"])
+        self.assertEqual(first_id, send_args.kwargs["send_as_id"])
+        self.assertEqual("urgent_reactive", send_args.kwargs["priority"])
+        self.assertEqual("自动副本", send_args.kwargs["source_module"])
+        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertEqual(1, state_item["dispatch_retry_count"])
+        self.assertEqual(779, state_item["dispatch_pending_msg_id"])
 
     def test_lightweight_dissolve_refuses_room_without_leader_identity(self):
         event = self._prepare_replica_group([])

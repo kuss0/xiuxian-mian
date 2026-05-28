@@ -170,6 +170,7 @@ from .state import (
     set_global_enabled as set_global_enabled_state,
     get_module_window_hours,
     get_pending_command,
+    get_replica_dispatch_group_ids,
     get_pet_name,
     get_realm_sort_index,
     resolve_identity_selector,
@@ -1321,6 +1322,7 @@ def get_dungeon_join_status_text(send_as_id=None):
         lines.append(f"- {get_identity_display_name(identity_id)}: " + "｜".join(status_parts))
 
     inbox_items = get_dungeon_join_inbox_snapshot(limit=5)
+    dispatch_group_count = len(get_replica_dispatch_group_ids())
     lines.extend(["", "最近房间公告:"])
     if inbox_items:
         for item in inbox_items[-5:]:
@@ -1339,6 +1341,9 @@ def get_dungeon_join_status_text(send_as_id=None):
             "- .开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]",
             "- .加入副本 @用户名 @用户名",
             "- .解散副本",
+            "",
+            f"主线拉人群: {dispatch_group_count} 个",
+            "- 兼容 .虚天殿/.坠魔谷/.黄龙山/.苍坤洞府 房间号 @用户名",
         ]
     )
     return "\n".join(lines)
@@ -1850,6 +1855,12 @@ def _format_log_group_help_html(send_as_id=None):
         ".加入副本 @用户名 @用户名",
         ".解散副本",
     ]
+    replica_dispatch_commands = [
+        ".虚天殿 123 @用户名",
+        ".坠魔谷 123 @用户名",
+        ".黄龙山 123 @用户名",
+        ".苍坤洞府 123 @用户名",
+    ]
     body = (
         "日志群指令\n"
         "身份选择：指令后可追加 @昵称 或身份 ID，例如 .状态 @竹灵1\n\n"
@@ -1865,6 +1876,8 @@ def _format_log_group_help_html(send_as_id=None):
         + "\n".join(f"- {cmd}{suffix if '<模块名>' in cmd or cmd.startswith('.开启全部') or cmd.startswith('.关闭全部') else ''}" for cmd in control_commands)
         + "\n\n副本群轻量指令（在副本群/游戏群使用）：\n"
         + "\n".join(f"- {cmd}" for cmd in replica_group_commands)
+        + "\n\n主线拉人群兼容指令（仅配置的拉人群生效）：\n"
+        + "\n".join(f"- {cmd}" for cmd in replica_dispatch_commands)
         + "\n\n说明：日志群只处理监控、查询和开关；副本开房/加入/解散在副本群入口处理；游戏内指令仍由模块按全局锁排队。"
     )
     return _format_log_group_card_html("监控指令", body)

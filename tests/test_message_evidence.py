@@ -1,8 +1,10 @@
+import asyncio
 import copy
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import sys
@@ -18,6 +20,7 @@ from model.features import passive_inbox
 class PassiveInboxEvidenceTests(unittest.TestCase):
     def setUp(self):
         self._stats_snapshot = copy.deepcopy(passive_inbox._passive_stats)
+        self._observed_snapshot = dict(passive_inbox._observed_passive_events)
         passive_inbox._passive_stats = {
             "total": 0,
             "changed": 0,
@@ -26,9 +29,11 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
             "skip_reasons": {},
             "recent": [],
         }
+        passive_inbox._observed_passive_events = {}
 
     def tearDown(self):
         passive_inbox._passive_stats = self._stats_snapshot
+        passive_inbox._observed_passive_events = self._observed_snapshot
 
     def test_no_reply_context_counts_without_recent_noise(self):
         with patch.object(passive_inbox, "_save_passive_stats"):
@@ -46,6 +51,75 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual(1, snapshot["skipped"])
         self.assertEqual(1, snapshot["skip_reasons"]["no_reply_context"])
         self.assertEqual([], snapshot["recent"])
+
+    def test_reply_context_without_identity_counts_without_recent_noise(self):
+        event = SimpleNamespace(chat_id=-1001680975844, id=9512505)
+        with patch.object(passive_inbox, "_save_passive_stats"):
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                "【琉璃问心塔】\n你深吸一口气，踏入了古塔的第 1 层。",
+                now=1_779_978_314.0,
+                reply_context={"family": "tower", "reply_to_msg_id": 9512504, "root_msg_id": 9512504},
+                event=event,
+                event_type="message",
+            ))
+
+        self.assertFalse(handled)
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["total"])
+        self.assertEqual(1, snapshot["skipped"])
+        self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
+        self.assertEqual([], snapshot["recent"])
+
+    def test_duplicate_same_message_text_is_ignored(self):
+        event = SimpleNamespace(chat_id=-1001680975844, id=9512505)
+        text = "【琉璃问心塔】\n你深吸一口气，踏入了古塔的第 1 层。"
+        reply_context = {"family": "tower", "reply_to_msg_id": 9512504, "root_msg_id": 9512504}
+
+        with patch.object(passive_inbox, "_save_passive_stats"):
+            first = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=1_779_978_314.0,
+                reply_context=reply_context,
+                event=event,
+                event_type="message",
+            ))
+            second = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=1_779_978_315.0,
+                reply_context=reply_context,
+                event=event,
+                event_type="message",
+            ))
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["total"])
+        self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
+
+    def test_same_message_with_edited_text_is_not_deduped(self):
+        event = SimpleNamespace(chat_id=-1001680975844, id=9512505)
+        reply_context = {"family": "tower", "reply_to_msg_id": 9512504, "root_msg_id": 9512504}
+
+        with patch.object(passive_inbox, "_save_passive_stats"):
+            asyncio.run(passive_inbox.handle_passive_module_card(
+                "【琉璃问心塔】\n你深吸一口气，踏入了古塔的第 1 层。",
+                now=1_779_978_314.0,
+                reply_context=reply_context,
+                event=event,
+                event_type="message",
+            ))
+            asyncio.run(passive_inbox.handle_passive_module_card(
+                "【试炼古塔 - 战报】\n本次共闯过 21 层。",
+                now=1_779_978_328.0,
+                reply_context=reply_context,
+                event=event,
+                event_type="edit",
+            ))
+
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(2, snapshot["total"])
+        self.assertEqual(2, snapshot["skip_reasons"]["reply_context_no_identity"])
 
     def test_structured_recent_fields_are_kept_and_shown(self):
         with patch.object(passive_inbox, "_save_passive_stats"):

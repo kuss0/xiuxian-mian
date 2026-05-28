@@ -1,10 +1,11 @@
+import asyncio
 import re
 import time
 from collections import deque
 
 from ..config import CMD_DUNGEON_HUANGLONG_JOIN, CMD_DUNGEON_JOIN, CMD_DUNGEON_ZHUIMO_JOIN
 from ..persistence import save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import (
     get_dungeon_join_run_state,
     get_game_bot_ids,
@@ -38,6 +39,8 @@ DUNGEON_ACTIVE_TTL_SEC = 2 * 60 * 60
 DUNGEON_SUCCESS_COOLDOWN_SEC = 125 * 60
 DUNGEON_COOLDOWN_BUFFER_SEC = 30
 DUNGEON_FAILURE_GRACE_SEC = 3 * 60
+DUNGEON_JOIN_FAST_RETRY_DELAY_SEC = 2.5
+DUNGEON_JOIN_FAST_RETRY_LIMIT = 1
 
 _JOIN_COMMANDS_RE = "|".join(re.escape(meta["join_command"]) for meta in DUNGEON_KIND_META.values())
 _DUNGEON_ID_RE = re.compile(rf"(?:(?:副本|房间)ID\s*[:：]\s*|(?:{_JOIN_COMMANDS_RE})\s+)(\d+)")
@@ -110,6 +113,7 @@ def _cleanup(now=None):
             normalized["pending_msg_id"] = 0
             normalized["pending_room_id"] = ""
             normalized["pending_until"] = 0
+            normalized["retry_count"] = 0
             changed = True
         if normalized != record:
             records[str(raw_identity_id)] = normalized
@@ -242,6 +246,7 @@ def _normalize_run_record(record):
         "pending_msg_id": int(record.get("pending_msg_id", 0) or 0),
         "pending_room_id": str(record.get("pending_room_id") or ""),
         "pending_until": float(record.get("pending_until", 0) or 0),
+        "retry_count": int(record.get("retry_count", 0) or 0),
         "last_result": str(record.get("last_result") or ""),
         "last_error": str(record.get("last_error") or ""),
         "updated_at": float(record.get("updated_at", 0) or 0),
@@ -286,13 +291,14 @@ def _get_identity_block_reason(identity_id, now):
     return ""
 
 
-def _mark_pending_join(identity_id, dungeon_id, msg_id, now):
+def _mark_pending_join(identity_id, dungeon_id, msg_id, now, retry_count=0):
     records = _get_run_records()
     record = _get_identity_run_record(records, identity_id)
     record.update({
         "pending_msg_id": int(msg_id or 0),
         "pending_room_id": str(dungeon_id or ""),
         "pending_until": float(now or 0) + DUNGEON_SENT_TTL_SEC,
+        "retry_count": max(0, int(retry_count or 0)),
         "last_result": "pending",
         "last_error": "",
         "updated_at": float(now or 0),
@@ -313,6 +319,7 @@ def _mark_join_success(identity_id, dungeon_id, now, *, msg_id=0):
         "pending_msg_id": 0,
         "pending_room_id": "",
         "pending_until": 0,
+        "retry_count": 0,
         "last_result": "joined",
         "last_error": "",
         "updated_at": float(now or 0),
@@ -331,6 +338,7 @@ def _mark_join_cooldown(identity_id, wait_sec, now, *, dungeon_id="", msg_id=0):
         "pending_msg_id": 0,
         "pending_room_id": "",
         "pending_until": 0,
+        "retry_count": 0,
         "last_result": "cooldown",
         "last_error": "",
         "updated_at": float(now or 0),
@@ -350,6 +358,7 @@ def _mark_join_failure(identity_id, reason, now, *, dungeon_id=""):
         "pending_msg_id": 0,
         "pending_room_id": "",
         "pending_until": 0,
+        "retry_count": 0,
         "last_result": "failed",
         "last_error": str(reason or ""),
         "updated_at": float(now or 0),
@@ -420,6 +429,7 @@ def _mark_success_cooldown(identity_ids, now):
             "pending_msg_id": 0,
             "pending_room_id": "",
             "pending_until": 0,
+            "retry_count": 0,
             "last_result": "success_cooldown",
             "last_error": "",
             "updated_at": float(now or 0),
@@ -447,6 +457,7 @@ def _clear_room_participants(room_id, now, reason):
             "pending_msg_id": 0,
             "pending_room_id": "",
             "pending_until": 0,
+            "retry_count": 0,
             "last_result": "failed",
             "last_error": str(reason or ""),
             "updated_at": float(now or 0),
@@ -469,6 +480,7 @@ def _mark_failure_pending(identity_ids, now):
             "pending_msg_id": 0,
             "pending_room_id": "",
             "pending_until": float(now or 0) + DUNGEON_FAILURE_GRACE_SEC,
+            "retry_count": 0,
             "last_result": "failed",
             "last_error": "challenge_failed",
             "updated_at": float(now or 0),
@@ -485,7 +497,9 @@ def _find_pending_identity_by_reply_msg_id(reply_to_msg_id):
     if reply_to_msg_id <= 0:
         return 0, ""
     for (identity_id, dungeon_id), item in list(_join_keys.items()):
-        if int((item or {}).get("msg_id", 0) or 0) == reply_to_msg_id:
+        msg_ids = {int((item or {}).get("msg_id", 0) or 0)}
+        msg_ids.update(int(msg_id or 0) for msg_id in (item or {}).get("msg_ids", []) if int(msg_id or 0) > 0)
+        if reply_to_msg_id in msg_ids:
             return int(identity_id), str(dungeon_id)
     for raw_identity_id, record in _get_run_records().items():
         normalized = _normalize_run_record(record)
@@ -625,13 +639,21 @@ def _reserve_join(identity_id, dungeon_id, now):
     _join_keys[(int(identity_id), str(dungeon_id))] = {"at": float(now or 0), "status": "inflight"}
 
 
-def _mark_join_sent(identity_id, dungeon_id, now, msg_id=0):
-    _join_keys[(int(identity_id), str(dungeon_id))] = {
+def _mark_join_sent(identity_id, dungeon_id, now, msg_id=0, retry_count=0):
+    key = (int(identity_id), str(dungeon_id))
+    previous = _join_keys.get(key) or {}
+    msg_ids = [int(item or 0) for item in previous.get("msg_ids", []) if int(item or 0) > 0]
+    msg_id = int(msg_id or 0)
+    if msg_id > 0 and msg_id not in msg_ids:
+        msg_ids.append(msg_id)
+    _join_keys[key] = {
         "at": float(now or 0),
         "status": "sent",
-        "msg_id": int(msg_id or 0),
+        "msg_id": msg_id,
+        "msg_ids": msg_ids[-3:],
+        "retry_count": max(0, int(retry_count or 0)),
     }
-    _mark_pending_join(identity_id, dungeon_id, msg_id, now)
+    _mark_pending_join(identity_id, dungeon_id, msg_id, now, retry_count=retry_count)
 
 
 def _release_join_reservation(identity_id, dungeon_id):
@@ -639,6 +661,64 @@ def _release_join_reservation(identity_id, dungeon_id):
     item = _join_keys.get(key) or {}
     if item.get("status") == "inflight":
         _join_keys.pop(key, None)
+
+
+def _should_fast_retry_join(identity_id, dungeon_id, first_msg_id, now):
+    key = (int(identity_id), str(dungeon_id))
+    item = _join_keys.get(key) or {}
+    record = _get_identity_run_record(_get_run_records(), identity_id)
+    if item.get("status") != "sent":
+        return False
+    if int(item.get("retry_count") or 0) >= DUNGEON_JOIN_FAST_RETRY_LIMIT:
+        return False
+    if first_msg_id and int(item.get("msg_id") or 0) != int(first_msg_id or 0):
+        return False
+    if str(record.get("pending_room_id") or "") != str(dungeon_id or ""):
+        return False
+    if first_msg_id and int(record.get("pending_msg_id") or 0) != int(first_msg_id or 0):
+        return False
+    if float(record.get("pending_until") or 0) <= float(now or 0):
+        return False
+    if record.get("participating") and _get_active_until(record) > float(now or 0):
+        return False
+    if float(record.get("cooldown_until") or 0) > float(now or 0):
+        return False
+    if int(record.get("retry_count") or 0) >= DUNGEON_JOIN_FAST_RETRY_LIMIT:
+        return False
+    return True
+
+
+async def _retry_join_once(identity_id, dungeon_id, dungeon_kind, join_command, first_msg_id, delay_sec=None):
+    delay_sec = DUNGEON_JOIN_FAST_RETRY_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    now = _now_ts()
+    _cleanup(now)
+    if not _should_fast_retry_join(identity_id, dungeon_id, first_msg_id, now):
+        return False
+    retry_count = 1
+    _join_keys[(int(identity_id), str(dungeon_id))]["retry_count"] = retry_count
+    _mark_pending_join(identity_id, dungeon_id, first_msg_id, now, retry_count=retry_count)
+    msg = await send_game_command(
+        join_command,
+        track=False,
+        send_as_id=identity_id,
+        priority="urgent_reactive",
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if msg:
+        _mark_join_sent(identity_id, dungeon_id, sent_at, msg_id=int(getattr(msg, "id", 0) or 0), retry_count=retry_count)
+        await send_audit_log(
+            f"🧩 自动副本快补发：{join_command}｜retry={retry_count}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=180,
+        )
+        return True
+    return False
+
+
+def _schedule_join_fast_retry(identity_id, dungeon_id, dungeon_kind, join_command, first_msg_id):
+    _fire_and_forget(_retry_join_once(identity_id, dungeon_id, dungeon_kind, join_command, first_msg_id))
 
 
 async def handle_dungeon_join_mention(event, text, now=None):
@@ -682,7 +762,9 @@ async def handle_dungeon_join_mention(event, text, now=None):
             _release_join_reservation(identity_id, dungeon_id)
             continue
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-        _mark_join_sent(identity_id, dungeon_id, sent_at, msg_id=int(getattr(msg, "id", 0) or 0))
+        sent_msg_id = int(getattr(msg, "id", 0) or 0)
+        _mark_join_sent(identity_id, dungeon_id, sent_at, msg_id=sent_msg_id)
+        _schedule_join_fast_retry(identity_id, dungeon_id, dungeon_kind, join_command, sent_msg_id)
         _join_throttle.setdefault(int(identity_id), []).append(now)
         await send_audit_log(
             f"🧩 自动副本已发出：{join_command}｜公告={matched['announcement_msg_id']}｜开门={matched['opener_msg_id']}",

@@ -6,7 +6,11 @@ from types import SimpleNamespace
 
 from telethon import events
 
-from .app_message_log import _append_game_group_message_log, _append_replica_group_message_log
+from .app_message_log import (
+    _append_game_group_message_log,
+    _append_replica_dispatch_group_message_log,
+    _append_replica_group_message_log,
+)
 from .app_runtime import (
     _claim_runtime_event,
     _get_event_reply_header_msg_id,
@@ -14,6 +18,7 @@ from .app_runtime import (
     _mark_runtime_message_consumed,
 )
 from .app_replica import (
+    _handle_replica_dispatch_group_command,
     _handle_replica_group_command,
     _handle_replica_join_reply,
     _handle_replica_progress_event,
@@ -841,6 +846,9 @@ async def on_message(event):
     if _append_replica_group_message_log(event, event_type="message"):
         await _handle_replica_group_command(event)
         return
+    if _append_replica_dispatch_group_message_log(event, event_type="message"):
+        await _handle_replica_dispatch_group_command(event)
+        return
 
     _append_game_group_message_log(event, event_type="message")
 
@@ -903,7 +911,7 @@ async def on_message(event):
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
             if handled_reply:
-                await handle_passive_module_card(text, now, reply_context=reply_context)
+                await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="message")
                 return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
@@ -914,7 +922,7 @@ async def on_message(event):
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
         await handle_passive_identity_profile_card(text, now)
-        await handle_passive_module_card(text, now, reply_context=reply_context)
+        await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="message")
         await handle_storage_bag_reply(text, now, reply_to)
 
     except Exception:
@@ -924,6 +932,8 @@ async def on_message(event):
 @client.on(events.MessageEdited())
 async def on_message_edited(event):
     if _append_replica_group_message_log(event, event_type="edit"):
+        return
+    if _append_replica_dispatch_group_message_log(event, event_type="edit"):
         return
 
     _append_game_group_message_log(event, event_type="edit")
@@ -967,7 +977,7 @@ async def on_message_edited(event):
                 event_kind="edit",
             )
             if handled_reply:
-                await handle_passive_module_card(text, now, reply_context=reply_context)
+                await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
                 return
 
         await _dispatch_message_edited_tree_panel(event, text, now)
@@ -978,7 +988,7 @@ async def on_message_edited(event):
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
         await handle_passive_identity_profile_card(text, now)
-        await handle_passive_module_card(text, now, reply_context=reply_context)
+        await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
     except Exception:
         print(traceback.format_exc())
 

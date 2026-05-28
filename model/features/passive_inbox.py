@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tempfile
@@ -23,7 +24,8 @@ from . import wild_training as wild_training_mod
 PASSIVE_INBOX_RECENT_LIMIT = 20
 PASSIVE_INBOX_STATS_FILE = os.path.join(STATE_DIR, "passive_inbox_stats.json")
 PASSIVE_INBOX_RECENT_FIELD_LIMIT = 120
-PASSIVE_INBOX_NOISY_SKIP_REASONS = {"no_identity", "no_reply_context"}
+PASSIVE_INBOX_NOISY_SKIP_REASONS = {"no_identity", "no_reply_context", "reply_context_no_identity"}
+PASSIVE_INBOX_OBSERVED_TTL_SEC = 10 * 60
 _PASSIVE_STATS_DEFAULT = {
     "total": 0,
     "changed": 0,
@@ -33,6 +35,7 @@ _PASSIVE_STATS_DEFAULT = {
     "recent": [],
 }
 _passive_stats = dict(_PASSIVE_STATS_DEFAULT)
+_observed_passive_events = {}
 
 
 def _load_passive_stats():
@@ -93,6 +96,37 @@ def _event_int(value):
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _event_text_hash(text):
+    raw_text = str(text or "")
+    if not raw_text:
+        return ""
+    return hashlib.sha256(raw_text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def _gc_observed_passive_events(now=None):
+    now = float(now if now is not None else time.time())
+    expired_keys = [key for key, expires_at in _observed_passive_events.items() if float(expires_at or 0) <= now]
+    for key in expired_keys:
+        _observed_passive_events.pop(key, None)
+
+
+def _mark_observed_passive_event(chat_id=0, msg_id=0, text="", now=None):
+    chat_id = _event_int(chat_id)
+    msg_id = _event_int(msg_id)
+    if chat_id == 0 or msg_id <= 0:
+        return True
+    text_hash = _event_text_hash(text)
+    if not text_hash:
+        return True
+    now = float(now if now is not None else time.time())
+    _gc_observed_passive_events(now)
+    key = (chat_id, msg_id, text_hash)
+    if float(_observed_passive_events.get(key, 0) or 0) > now:
+        return False
+    _observed_passive_events[key] = now + PASSIVE_INBOX_OBSERVED_TTL_SEC
+    return True
 
 
 def _append_recent_passive_event(kind, *, module="", identity_id=0, reason="", summary="", include_recent=None, **metadata):
@@ -741,11 +775,18 @@ def _looks_like_supported_passive(text, family):
     return False
 
 
-async def handle_passive_module_card(text, now=None, reply_context=None):
+async def handle_passive_module_card(text, now=None, reply_context=None, event=None, event_type=""):
     now = float(now or time.time())
     raw_text = str(text or "")
+    observed_msg_id = _event_int(getattr(event, "id", 0))
+    observed_chat_id = _event_int(getattr(event, "chat_id", 0))
+    event_type = str(event_type or "").strip()
+    if not _mark_observed_passive_event(observed_chat_id, observed_msg_id, raw_text, now=now):
+        return False
     family = _family_from_reply_context(reply_context)
     target_id = _identity_from_reply_context(reply_context)
+    context_route_source = f"{event_type}:reply_context" if event_type else "reply_context"
+    passive_route_source = f"{event_type}:passive_match" if event_type else "passive_match"
 
     storage_changed, storage_identity_id = _apply_storage_bag_passive(raw_text, now)
     if storage_changed:
@@ -756,6 +797,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
             summary="storage_bag",
             matched_text="储物袋",
             decision="storage_bag_snapshot",
+            msg_id=observed_msg_id,
+            route_source=event_type or "passive_match",
         )
         return True
 
@@ -774,9 +817,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
                     reason="reply_context_no_identity",
                     summary=family,
                     family=family,
+                    msg_id=observed_msg_id,
                     reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
                     root_msg_id=(reply_context or {}).get("root_msg_id", 0),
-                    route_source="reply_context",
+                    route_source=context_route_source,
                     matched_text=raw_text,
                     decision="skip_missing_identity",
                 )
@@ -784,6 +828,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
                 _record_passive_event(
                     "skipped",
                     reason="no_reply_context",
+                    msg_id=observed_msg_id,
                     matched_text=raw_text,
                     decision="skip_missing_identity",
                     include_recent=False,
@@ -852,9 +897,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
             identity_id=target_id,
             summary=family or "passive",
             family=family,
+            msg_id=observed_msg_id,
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
-            route_source="reply_context" if family else "passive_match",
+            route_source=context_route_source if family else passive_route_source,
             matched_text=raw_text,
             decision="state_changed",
         )
@@ -865,9 +911,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None):
             reason="no_change",
             summary=family or "passive",
             family=family,
+            msg_id=observed_msg_id,
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
-            route_source="reply_context" if family else "passive_match",
+            route_source=context_route_source if family else passive_route_source,
             matched_text=raw_text,
             decision="no_state_change",
         )

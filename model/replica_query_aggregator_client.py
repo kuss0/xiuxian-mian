@@ -21,22 +21,76 @@ def _build_body(payload):
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
-def _build_query_result_body(*, query_message_id, query_text, query_filter, source_id, reply_text, generated_at):
+def _coerce_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+def _build_query_result_body(
+    *,
+    query_message_id,
+    query_text,
+    query_filter,
+    source_id=0,
+    source_chat_id=0,
+    source_message_id=0,
+    identity_id=0,
+    send_as_id=0,
+    listener_account_id=0,
+    client_id="",
+    reply_text,
+    generated_at,
+):
+    source_chat_id = _coerce_int(source_chat_id or source_id)
+    source_message_id = _coerce_int(source_message_id or query_message_id)
+    identity_id = _coerce_int(identity_id or send_as_id or listener_account_id)
+    listener_account_id = _coerce_int(listener_account_id or identity_id)
     return _build_body({
         "query_message_id": int(query_message_id or 0),
         "query_text": str(query_text or ""),
         "query_filter": str(query_filter or ""),
-        "source_id": str(source_id or ""),
+        "source_id": source_chat_id,
+        "source_chat_id": source_chat_id,
+        "source_message_id": source_message_id,
+        "identity_id": identity_id,
+        "send_as_id": identity_id,
+        "listener_account_id": listener_account_id,
+        "client_id": str(client_id or ""),
         "reply_text": str(reply_text or ""),
         "generated_at": float(generated_at if generated_at is not None else time.time()),
     })
 
 
-def _build_virtual_hall_recommendation_body(*, room_id, text, query_message_id, source_id, generated_at):
+def _build_virtual_hall_recommendation_body(
+    *,
+    room_id,
+    text,
+    query_message_id,
+    source_id=0,
+    source_chat_id=0,
+    source_message_id=0,
+    identity_id=0,
+    send_as_id=0,
+    listener_account_id=0,
+    client_id="",
+    generated_at,
+):
+    source_chat_id = _coerce_int(source_chat_id or source_id)
+    source_message_id = _coerce_int(source_message_id or query_message_id)
+    identity_id = _coerce_int(identity_id or send_as_id or listener_account_id)
+    listener_account_id = _coerce_int(listener_account_id or identity_id)
     payload = {
         "room_id": str(room_id or ""),
         "text": str(text or ""),
-        "source_id": str(source_id or ""),
+        "source_id": source_chat_id,
+        "source_chat_id": source_chat_id,
+        "source_message_id": source_message_id,
+        "identity_id": identity_id,
+        "send_as_id": identity_id,
+        "listener_account_id": listener_account_id,
+        "client_id": str(client_id or ""),
         "generated_at": float(generated_at if generated_at is not None else time.time()),
     }
     try:
@@ -95,7 +149,13 @@ async def submit_replica_query_result(
     query_message_id,
     query_text,
     query_filter,
-    source_id,
+    source_id=0,
+    source_chat_id=0,
+    source_message_id=0,
+    identity_id=0,
+    send_as_id=0,
+    listener_account_id=0,
+    client_id="",
     reply_text,
     generated_at=None,
 ):
@@ -104,6 +164,12 @@ async def submit_replica_query_result(
         query_text=query_text,
         query_filter=query_filter,
         source_id=source_id,
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+        identity_id=identity_id,
+        send_as_id=send_as_id,
+        listener_account_id=listener_account_id,
+        client_id=client_id,
         reply_text=reply_text,
         generated_at=generated_at,
     )
@@ -116,7 +182,13 @@ async def submit_virtual_hall_recommendation(
     room_id,
     text,
     query_message_id=0,
-    source_id="",
+    source_id=0,
+    source_chat_id=0,
+    source_message_id=0,
+    identity_id=0,
+    send_as_id=0,
+    listener_account_id=0,
+    client_id="",
     generated_at=None,
 ):
     body = _build_virtual_hall_recommendation_body(
@@ -124,6 +196,12 @@ async def submit_virtual_hall_recommendation(
         text=text,
         query_message_id=query_message_id,
         source_id=source_id,
+        source_chat_id=source_chat_id,
+        source_message_id=source_message_id,
+        identity_id=identity_id,
+        send_as_id=send_as_id,
+        listener_account_id=listener_account_id,
+        client_id=client_id,
         generated_at=generated_at,
     )
     return await asyncio.to_thread(_post, config, "/v1/virtual-hall-recommendations", body)
