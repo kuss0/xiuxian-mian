@@ -148,6 +148,72 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             self.assertEqual(1, identity_state["pending_tasks"][202]["retry"])
             self.assertEqual(1, identity_state["pending_tasks"][202]["max_retry"])
 
+    def test_pending_retry_preserves_send_intent_metadata(self):
+        send_as_id = 971005
+        now = 6500.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                251: {
+                    "cmd": ".引道 水",
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "chain",
+                    "source_module": "太一",
+                    "op_id": "taiyi-yindao-251",
+                    "chain_id": "taiyi-cycle-1",
+                    "delete_policy": "auto_delete",
+                }
+            }
+
+        async def fake_send(command, **kwargs):
+            return SimpleNamespace(id=252, sent_at=now + 1)
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", side_effect=fake_send) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_awaited_once_with(
+            ".引道 水",
+            send_as_id=send_as_id,
+            priority=runtime.SEND_PRIORITY_RETRY,
+            max_retry=1,
+            source_module="太一",
+            op_id="taiyi-yindao-251",
+            chain_id="taiyi-cycle-1",
+            delete_policy="auto_delete",
+        )
+
+    def test_pending_timeout_without_bot_seen_marks_suspect_and_does_not_resend(self):
+        send_as_id = 971006
+        now = 6600.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                261: {
+                    "cmd": ".灵树状态",
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                }
+            }
+
+        with patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            runtime._bot_last_seen_at = now - 30
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        self.assertEqual(runtime.BOT_HEALTH_SUSPECT, runtime.get_bot_health_snapshot()["state"])
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
+
     def test_legacy_command_key_pending_resends_once(self):
         send_as_id = 971003
         now = 7000.0

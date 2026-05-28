@@ -145,6 +145,46 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual("坠魔谷静场令", state_module.state["dungeon_quiet_reason"])
                 self.assertEqual(12000.0, state_module.state["dungeon_quiet_last_log_at"])
 
+    def test_pending_task_send_intent_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990201
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    state_module.state["pending_tasks"] = {
+                        4567: {
+                            "cmd": ".引道 水",
+                            "sent_at": 123.0,
+                            "retry": 0,
+                            "timeout": 60.0,
+                            "reply_to_msg_id": 0,
+                            "max_retry": 1,
+                            "priority": "chain",
+                            "source_module": "太一",
+                            "op_id": "taiyi-yindao-4567",
+                            "chain_id": "taiyi-cycle-1",
+                            "delete_policy": "auto_delete",
+                        }
+                    }
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
+                self.assertTrue({"source_module", "op_id", "chain_id", "delete_policy"}.issubset(columns))
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+
+                with state_module.use_identity(identity_id):
+                    item = state_module.state["pending_tasks"][4567]
+                    self.assertEqual("太一", item["source_module"])
+                    self.assertEqual("taiyi-yindao-4567", item["op_id"])
+                    self.assertEqual("taiyi-cycle-1", item["chain_id"])
+                    self.assertEqual("auto_delete", item["delete_policy"])
+
     def test_save_state_blocks_demo_identity_collapse_over_live_roster(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

@@ -151,6 +151,11 @@ class MessageLogButtonTests(unittest.TestCase):
                 SimpleNamespace(bot=True, first_name="", last_name="", title="韩天尊")
             )
         )
+        self.assertTrue(
+            app._entity_is_han_tianzun_bot(
+                SimpleNamespace(bot=True, first_name="陆天尊", last_name="")
+            )
+        )
         self.assertFalse(
             app._entity_is_han_tianzun_bot(
                 SimpleNamespace(bot=False, first_name="韩天尊", last_name="")

@@ -117,6 +117,7 @@ from .features.dungeon_quiet import (
     is_dungeon_quiet_active,
     should_log_dungeon_quiet_block,
 )
+from .module_manifest import get_module_name_for_reply_family
 from .state import (
     get_active_identity_id,
     get_current_identity_id,
@@ -498,6 +499,7 @@ async def _send_slot(priority, command=None, send_as_id=None):
         _GAME_SEND_QUEUE_ITEMS.pop(queue_token, None)
 _ui_login_tokens = {}
 _reply_chain_tracker = {}
+SEND_INTENT_FIELDS = ("source_module", "op_id", "chain_id", "delete_policy")
 
 
 REPLY_FAMILY_COMMANDS = {
@@ -558,7 +560,53 @@ COMMAND_TO_REPLY_FAMILY = {
 }
 
 
-def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None):
+def _compact_send_intent(intent=None):
+    compact = {}
+    if not isinstance(intent, dict):
+        return compact
+    for key in SEND_INTENT_FIELDS:
+        value = str(intent.get(key) or "").strip()
+        if value:
+            compact[key] = value
+    return compact
+
+
+def _normalize_send_intent(
+    command,
+    *,
+    intent=None,
+    source_module=None,
+    op_id=None,
+    chain_id=None,
+    delete_policy=None,
+):
+    merged = _compact_send_intent(intent)
+    explicit_values = {
+        "source_module": source_module,
+        "op_id": op_id,
+        "chain_id": chain_id,
+        "delete_policy": delete_policy,
+    }
+    for key, value in explicit_values.items():
+        if value is not None:
+            merged[key] = str(value or "").strip()
+
+    if not merged.get("source_module"):
+        family = resolve_reply_family(command) or ""
+        source_module = get_module_name_for_reply_family(family)
+        if source_module:
+            merged["source_module"] = source_module
+    if not merged.get("delete_policy"):
+        merged["delete_policy"] = "auto_delete" if is_auto_delete_sent_messages_enabled() else "keep"
+    return _compact_send_intent(merged)
+
+
+def _pending_send_intent_kwargs(pending_item):
+    intent = _compact_send_intent(pending_item)
+    return {key: value for key, value in intent.items() if value}
+
+
+def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None, intent=None):
     try:
         now = datetime.now(TZ_LOCAL)
         log_file = os.path.join(MESSAGES_DIR, f"{now.strftime('%Y-%m-%d')}.log")
@@ -579,6 +627,8 @@ def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, 
             payload["priority"] = str(priority)
         if track is not None:
             payload["track"] = bool(track)
+        for key, value in _compact_send_intent(intent).items():
+            payload[key] = value
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:
@@ -1818,13 +1868,34 @@ async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
     return True
 
 
-async def send_game_command(command, track=True, reply_to=None, send_as_id=None, priority=None, max_retry=None):
+async def send_game_command(
+    command,
+    track=True,
+    reply_to=None,
+    send_as_id=None,
+    priority=None,
+    max_retry=None,
+    *,
+    intent=None,
+    source_module=None,
+    op_id=None,
+    chain_id=None,
+    delete_policy=None,
+):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
     send_as_id = int(send_as_id)
     topic_id = get_game_topic_id()
     send_priority = _normalize_send_priority(command, priority=priority)
     account_id = int(get_identity_account(send_as_id) or 0)
+    send_intent = _normalize_send_intent(
+        command,
+        intent=intent,
+        source_module=source_module,
+        op_id=op_id,
+        chain_id=chain_id,
+        delete_policy=delete_policy,
+    )
 
     try:
         if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
@@ -1992,6 +2063,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 reply_to_msg_id=int(reply_to or 0),
                 priority=send_priority,
                 track=track,
+                intent=send_intent,
             )
             sent_at = time.time()
             msg = SimpleNamespace(id=msg_id, sent_at=sent_at)
@@ -2014,6 +2086,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                         "priority": send_priority,
                         "max_retry": retry_limit,
                     }
+                    pending_item.update(send_intent)
                     identity_state["pending_tasks"][msg_id] = pending_item
                 mark_dirty()
             note_game_command_sent(command, sent_at=sent_at, priority=send_priority)
@@ -2029,6 +2102,7 @@ async def send_game_command(command, track=True, reply_to=None, send_as_id=None,
                 reply_to=int(reply_to or 0),
                 priority=send_priority,
                 max_retry=max_retry,
+                **send_intent,
             )
             return msg
     except Exception as e:
@@ -2277,6 +2351,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                 send_as_id=identity_id,
                 priority=SEND_PRIORITY_RETRY,
                 max_retry=retry_limit,
+                **_pending_send_intent_kwargs(current_item),
             )
             if not has_identity(identity_id):
                 continue

@@ -602,6 +602,14 @@ def _ensure_schema_columns(conn):
         conn.execute(f"ALTER TABLE pending_tasks ADD COLUMN max_retry INTEGER NOT NULL DEFAULT {int(RETRY_LIMIT)}")
     if "priority" not in pending_columns:
         conn.execute("ALTER TABLE pending_tasks ADD COLUMN priority TEXT NOT NULL DEFAULT ''")
+    if "source_module" not in pending_columns:
+        conn.execute("ALTER TABLE pending_tasks ADD COLUMN source_module TEXT NOT NULL DEFAULT ''")
+    if "op_id" not in pending_columns:
+        conn.execute("ALTER TABLE pending_tasks ADD COLUMN op_id TEXT NOT NULL DEFAULT ''")
+    if "chain_id" not in pending_columns:
+        conn.execute("ALTER TABLE pending_tasks ADD COLUMN chain_id TEXT NOT NULL DEFAULT ''")
+    if "delete_policy" not in pending_columns:
+        conn.execute("ALTER TABLE pending_tasks ADD COLUMN delete_policy TEXT NOT NULL DEFAULT ''")
     if "identity_info_reply_msg_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]'")
     if "last_identity_info_msg_id" not in runtime_columns:
@@ -1024,7 +1032,11 @@ def init_db():
             timeout REAL NOT NULL,
             reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             max_retry INTEGER NOT NULL DEFAULT 1,
-            priority TEXT NOT NULL DEFAULT ''
+            priority TEXT NOT NULL DEFAULT '',
+            source_module TEXT NOT NULL DEFAULT '',
+            op_id TEXT NOT NULL DEFAULT '',
+            chain_id TEXT NOT NULL DEFAULT '',
+            delete_policy TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS message_index (
@@ -1341,7 +1353,7 @@ def upsert_identity_to_db(send_as_id):
     conn.execute("DELETE FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),))
     for msg_id, item in identity_state.get("pending_tasks", {}).items():
         conn.execute(
-            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, max_retry, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO pending_tasks(msg_id, send_as_id, cmd, sent_at, retry, timeout, reply_to_msg_id, max_retry, priority, source_module, op_id, chain_id, delete_policy) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 int(msg_id),
                 int(send_as_id),
@@ -1352,6 +1364,10 @@ def upsert_identity_to_db(send_as_id):
                 int(item.get("reply_to_msg_id", 0) or 0),
                 int(item.get("max_retry", RETRY_LIMIT) if item.get("max_retry", RETRY_LIMIT) is not None else RETRY_LIMIT),
                 str(item.get("priority", "") or ""),
+                str(item.get("source_module", "") or ""),
+                str(item.get("op_id", "") or ""),
+                str(item.get("chain_id", "") or ""),
+                str(item.get("delete_policy", "") or ""),
             ),
         )
 
@@ -1428,6 +1444,10 @@ def _load_identity_from_db(send_as_id):
             "reply_to_msg_id": row["reply_to_msg_id"],
             "max_retry": row["max_retry"] if "max_retry" in row.keys() else RETRY_LIMIT,
             "priority": row["priority"] if "priority" in row.keys() else "",
+            "source_module": row["source_module"] if "source_module" in row.keys() else "",
+            "op_id": row["op_id"] if "op_id" in row.keys() else "",
+            "chain_id": row["chain_id"] if "chain_id" in row.keys() else "",
+            "delete_policy": row["delete_policy"] if "delete_policy" in row.keys() else "",
         }
         for row in pending_rows
     }

@@ -87,6 +87,12 @@ class SentMessageEvidenceTests(unittest.TestCase):
                     reply_to_msg_id=0,
                     priority="chain",
                     track=False,
+                    intent={
+                        "source_module": "太一",
+                        "op_id": "taiyi-yindao-9446793",
+                        "chain_id": "taiyi-cycle-01",
+                        "delete_policy": "manual_keep",
+                    },
                 )
 
             log_files = list(Path(tmpdir).glob("*.log"))
@@ -97,6 +103,18 @@ class SentMessageEvidenceTests(unittest.TestCase):
         self.assertEqual("taiyi_yindao", payload["family"])
         self.assertEqual("chain", payload["priority"])
         self.assertIs(False, payload["track"])
+        self.assertEqual("太一", payload["source_module"])
+        self.assertEqual("taiyi-yindao-9446793", payload["op_id"])
+        self.assertEqual("taiyi-cycle-01", payload["chain_id"])
+        self.assertEqual("manual_keep", payload["delete_policy"])
+
+    def test_send_intent_infers_module_and_delete_policy(self):
+        with patch.object(runtime, "is_auto_delete_sent_messages_enabled", return_value=True):
+            intent = runtime._normalize_send_intent(".引道 水", op_id="op-1")
+
+        self.assertEqual("太一", intent["source_module"])
+        self.assertEqual("op-1", intent["op_id"])
+        self.assertEqual("auto_delete", intent["delete_policy"])
 
 
 if __name__ == "__main__":

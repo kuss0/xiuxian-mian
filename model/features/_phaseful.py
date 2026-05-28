@@ -265,7 +265,19 @@ def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
     return command in SUMMARY_REPLAYABLE_COMMANDS
 
 
-def _remember_summary_consumed_command(send_as_id, spec, command, now, msg_id=0, *, track=True, reply_to=0, priority=None, max_retry=None):
+def _remember_summary_consumed_command(
+    send_as_id,
+    spec,
+    command,
+    now,
+    msg_id=0,
+    *,
+    track=True,
+    reply_to=0,
+    priority=None,
+    max_retry=None,
+    **send_intent,
+):
     if not _is_replayable_summary_consumed_command(spec, command, reply_to=reply_to):
         return
     key = int(send_as_id or 0)
@@ -285,6 +297,7 @@ def _remember_summary_consumed_command(send_as_id, spec, command, now, msg_id=0,
         "reply_to": int(reply_to or 0),
         "priority": priority,
         "max_retry": max_retry,
+        "send_intent": {key: value for key, value in send_intent.items() if str(value or "").strip()},
         "specs": [spec.phase_key],
     }
 
@@ -314,6 +327,7 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     track = bool((payload or {}).get("track", True))
     max_retry = (payload or {}).get("max_retry")
     priority = (payload or {}).get("priority") or "chain"
+    send_intent = {key: value for key, value in (payload or {}).get("send_intent", {}).items() if str(value or "").strip()}
 
     with use_identity(send_as_id):
         now = time.time()
@@ -327,7 +341,14 @@ async def _replay_summary_consumed_command(send_as_id, payload):
             state.get("pending_tasks", {}).pop(msg_id, None)
             save_state()
 
-    msg = await send_game_command(command, track=track, send_as_id=send_as_id, priority=priority, max_retry=max_retry)
+    msg = await send_game_command(
+        command,
+        track=track,
+        send_as_id=send_as_id,
+        priority=priority,
+        max_retry=max_retry,
+        **send_intent,
+    )
     if msg:
         await send_audit_log(
             f"↩️ 归位结算吃掉原指令，已补发一次：{command}",
@@ -372,7 +393,18 @@ def _schedule_summary_consumed_command_replay(spec, now):
     _fire_and_forget(_replay_summary_consumed_command(send_as_id, payload))
 
 
-def observe_phaseful_identity_message(send_as_id, text, now=None, msg_id=0, *, track=True, reply_to=0, priority=None, max_retry=None):
+def observe_phaseful_identity_message(
+    send_as_id,
+    text,
+    now=None,
+    msg_id=0,
+    *,
+    track=True,
+    reply_to=0,
+    priority=None,
+    max_retry=None,
+    **_send_intent,
+):
     text = str(text or "").strip()
     if not text:
         return
@@ -412,6 +444,7 @@ def observe_phaseful_identity_message(send_as_id, text, now=None, msg_id=0, *, t
                 reply_to=reply_to,
                 priority=priority,
                 max_retry=max_retry,
+                **_send_intent,
             )
             changed = True
     if changed:

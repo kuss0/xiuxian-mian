@@ -177,6 +177,7 @@ IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
 UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
 UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
 HAN_TIANZUN_BOT_NAME = "韩天尊"
+TIANZUN_BOT_NAME_MARKER = "天尊"
 
 BOT_REPLY_FAMILY_HINTS = {
     "checkin": ("点卯", "已点卯", "已经点过", "宗门"),
@@ -258,7 +259,11 @@ def _entity_is_han_tianzun_bot(entity):
         candidates.append(f"{first_name}{last_name}")
         candidates.append(f"{first_name} {last_name}")
     candidates.extend([first_name, title])
-    return any(_normalize_sender_display_name(name) == HAN_TIANZUN_BOT_NAME for name in candidates)
+    for name in candidates:
+        normalized_name = _normalize_sender_display_name(name)
+        if normalized_name == HAN_TIANZUN_BOT_NAME or TIANZUN_BOT_NAME_MARKER in normalized_name:
+            return True
+    return False
 
 
 async def _learn_game_bot_id(sender_id, reason):
