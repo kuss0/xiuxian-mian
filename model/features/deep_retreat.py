@@ -34,6 +34,10 @@ from ._phaseful import (
 )
 
 
+DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
+DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
+DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
+
 DEEP_RETREAT_SPEC = PhasefulSpec(
     enabled_key="deep_retreat_enabled",
     phase_key="deep_retreat_phase",
@@ -82,12 +86,12 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     summary_due_delay_max_sec=15 * 60,
     summary_retry_min_sec=5 * 60,
     summary_retry_max_sec=10 * 60,
+    passive_timeout_action="relaunch",
+    queued_launch_timeout_action="relaunch",
+    timeout_relaunch_min_sec=DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC,
+    timeout_relaunch_max_sec=DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC,
 )
 register_phaseful_spec(DEEP_RETREAT_SPEC)
-
-DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
-DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
-DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
 
 
 def _record_deep_retreat_event(
@@ -259,19 +263,20 @@ async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=
         return False
 
     set_deep_retreat_phase("running")
+    estimated_next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    if estimated_next_time <= now + CD_BUFFER_SEC:
+        estimated_next_time = None
     _record_deep_retreat_event(
         "已在闭关中",
         reply_to=reply_to,
         matched_text=text,
-        decision="running_probe_status",
+        decision="running_keep_estimate" if estimated_next_time else "running_default_estimate",
     )
-    if state["deep_retreat_probe_pending"]:
+    state["deep_retreat_probe_pending"] = False
+    if estimated_next_time:
         mark_dirty()
-        return True
-
-    state["deep_retreat_probe_pending"] = True
-    mark_dirty()
-    await schedule_deep_retreat_status_probe(random.uniform(10, 15), allowed_phases=("running", "launching"))
+    else:
+        mark_deep_retreat_success(now)
     return True
 
 

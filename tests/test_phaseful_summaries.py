@@ -456,6 +456,92 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
             self.assertEqual(-901, state_module.state["last_deep_retreat_summary_msg_id"])
 
+    async def test_deep_retreat_passive_timeout_delays_relaunch_without_status_query(self):
+        send_as_id = 8659059212
+        now = 1_700_000_470.0
+        self._prepare_identity(send_as_id, "PassiveTimeoutRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.DEEP_RETREAT_SPEC.summary_passive_timeout_sec - 1
+            state_module.state["last_deep_retreat_summary_msg_id"] = -901
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=180),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertEqual(now + 180, state_module.state["next_deep_retreat_time"])
+            self.assertTrue(
+                any("不再状态查询" in str(call.args[0]) for call in audit_mock.await_args_list)
+            )
+
+    async def test_deep_retreat_queued_launch_timeout_delays_relaunch_without_status_query(self):
+        send_as_id = 8659059213
+        now = 1_700_000_480.0
+        self._prepare_identity(send_as_id, "QueuedTimeoutRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["last_deep_retreat_command_time"] = now - 300
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            sent_msg = SimpleNamespace(id=904, sent_at=now + 181)
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=180),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+                send_mock.assert_not_awaited()
+                self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+                self.assertTrue(
+                    any("不再状态查询" in str(call.args[0]) for call in audit_mock.await_args_list)
+                )
+
+                await deep_retreat.run_deep_retreat_scheduler(now + 181)
+
+            send_mock.assert_awaited_once_with(deep_retreat.CMD_DEEP_RETREAT, track=False, priority="chain")
+            self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+
+    async def test_deep_retreat_already_running_reply_keeps_estimate_without_status_probe(self):
+        send_as_id = 8659059214
+        now = 1_700_000_490.0
+        next_time = now + deep_retreat.DEEP_RETREAT_CD
+        self._prepare_identity(send_as_id, "AlreadyRunningRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "launching"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = next_time
+
+            with (
+                patch.object(deep_retreat, "schedule_deep_retreat_status_probe", new=AsyncMock()) as probe_mock,
+                patch("model.features.passive_inbox.record_passive_inbox_event"),
+            ):
+                handled = await deep_retreat.handle_deep_retreat_running_reply(
+                    "你已在深度闭关之中。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=deep_retreat.CMD_DEEP_RETREAT, id=905),
+                    matched_family="deep_retreat",
+                )
+
+            self.assertTrue(handled)
+            probe_mock.assert_not_awaited()
+            self.assertEqual("running", state_module.state["deep_retreat_phase"])
+            self.assertFalse(state_module.state["deep_retreat_probe_pending"])
+            self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
+
     async def test_yuanying_summary_due_does_not_send_tagless_status_text(self):
         send_as_id = 8659059203
         now = 1_700_000_460.0

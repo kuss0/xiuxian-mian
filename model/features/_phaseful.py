@@ -61,6 +61,10 @@ class PhasefulSpec:
     summary_retry_max_sec: int = 30 * 60
     queued_launch_timeout_sec: int = 120
     blocks_ordinary_while_running: bool = False
+    passive_timeout_action: str = "active_query"
+    queued_launch_timeout_action: str = "active_query"
+    timeout_relaunch_min_sec: int = 2 * 60
+    timeout_relaunch_max_sec: int = 5 * 60
 
 
 SUMMARY_DUE_PHASES = {"summary_due", "observing_summary", "waiting_summary"}
@@ -499,6 +503,15 @@ async def _send_active_summary_query(spec, now):
     return True
 
 
+async def _delay_relaunch_without_status_query(spec, now, audit_text):
+    await delete_summary_trigger_msg(spec)
+    state[spec.probe_pending_key] = False
+    delay = random.uniform(spec.timeout_relaunch_min_sec, spec.timeout_relaunch_max_sec)
+    begin_post_summary_wait(spec, now, delay=delay)
+    await update_block_log_state(spec, waiting=False, protect=False)
+    await send_audit_log(f"{audit_text}，不再状态查询，{int(delay / 60)}分钟后重新发起。")
+
+
 def _other_observing_remaining(spec, now):
     remaining = 0.0
     for other in _REGISTERED_SPECS:
@@ -561,8 +574,11 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
             save_state()
         if now < deadline:
             return
-        await send_audit_log(f"{spec.title} 发起排队等待过久，先查询状态确认，避免重复发起。")
-        await _send_active_summary_query(spec, now)
+        if spec.queued_launch_timeout_action == "relaunch":
+            await _delay_relaunch_without_status_query(spec, now, f"{spec.title} 发起排队等待过久")
+        else:
+            await send_audit_log(f"{spec.title} 发起排队等待过久，先查询状态确认，避免重复发起。")
+            await _send_active_summary_query(spec, now)
         return
 
     if _phase(spec) == "launching":
@@ -581,8 +597,11 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
     if _phase(spec) == "waiting_summary" and state[spec.last_summary_msg_id_key] < 0:
         passive_elapsed = now - state[spec.summary_sent_at_key]
         if passive_elapsed >= spec.summary_passive_timeout_sec:
-            await send_audit_log(f"{spec.title} 顺带触发后未观察到总结，改用状态查询确认。")
-            await _send_active_summary_query(spec, now)
+            if spec.passive_timeout_action == "relaunch":
+                await _delay_relaunch_without_status_query(spec, now, f"{spec.title} 顺带触发后未观察到总结")
+            else:
+                await send_audit_log(f"{spec.title} 顺带触发后未观察到总结，改用状态查询确认。")
+                await _send_active_summary_query(spec, now)
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] > 0 and now - state[spec.summary_sent_at_key] >= spec.summary_timeout_sec:
@@ -593,7 +612,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         if now < state[spec.next_time_key]:
             return
         _schedule_summary_trigger_retry(spec, now)
-        console_log(f"{spec.title} 顺带触发观察结束，稍后主动查询确认。")
+        console_log(f"{spec.title} 顺带触发观察结束，稍后再次触发确认。")
         return
 
     if _phase(spec) == "summary_due":
