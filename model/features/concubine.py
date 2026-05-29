@@ -881,6 +881,7 @@ def _set_fragment_progress(kind, count, total):
     if normalized_kind == DREAM_KIND_XUTIAN:
         state["concubine_fragment_count"] = count
         state["concubine_fragment_total"] = total
+    _clear_stale_fragment_confirmation()
     return True
 
 
@@ -916,6 +917,36 @@ def _parse_fragment_progresses(text):
     return progresses
 
 
+def _iter_fragment_sections(text):
+    raw_text = str(text or "")
+    matches = list(RE_FRAGMENT_CONTEXT_KIND.finditer(raw_text))
+    for index, matched in enumerate(matches):
+        start = matched.start()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw_text)
+        yield _normalize_fragment_kind(matched.group("kind")), raw_text[start:end]
+
+
+def _confirmed_completed_fragment_kinds_from_reply(text):
+    confirmed = []
+    for kind, section in _iter_fragment_sections(text):
+        progress = _parse_fragment_progresses(section).get(kind)
+        if not progress:
+            continue
+        count, total = progress
+        missing_match = RE_PUZZLE_MISSING.search(section)
+        missing_text = missing_match.group(1).strip() if missing_match else ""
+        if total > 0 and count >= total and (not missing_text or missing_text == "无"):
+            confirmed.append(kind)
+    if confirmed:
+        return confirmed
+
+    missing_match = RE_PUZZLE_MISSING.search(str(text or ""))
+    missing_text = missing_match.group(1).strip() if missing_match else ""
+    if _is_puzzle_ready() and (not missing_text or missing_text == "无"):
+        return _completed_fragment_kinds()
+    return []
+
+
 def _parse_fragment_progress(text):
     progresses = _parse_fragment_progresses(text)
     if DREAM_KIND_XUTIAN in progresses:
@@ -943,6 +974,41 @@ def _is_fragment_ready(kind):
 
 def _completed_fragment_kinds():
     return [kind for kind in FRAGMENT_KIND_ORDER if _is_fragment_ready(kind)]
+
+
+def _fragment_confirmation_key():
+    parts = []
+    for kind in _completed_fragment_kinds():
+        count, total = _get_fragment_progress(kind)
+        parts.append(f"{kind}:{count}/{total}")
+    return "|".join(parts)
+
+
+def _clear_fragment_confirmation():
+    state["concubine_fragment_confirm_key"] = ""
+    state["concubine_fragment_confirmed_at"] = 0
+
+
+def _clear_stale_fragment_confirmation():
+    current_key = _fragment_confirmation_key()
+    confirmed_key = str(state.get("concubine_fragment_confirm_key") or "")
+    if confirmed_key and confirmed_key != current_key:
+        _clear_fragment_confirmation()
+
+
+def _mark_fragment_confirmation(now):
+    key = _fragment_confirmation_key()
+    if not key:
+        _clear_fragment_confirmation()
+        return ""
+    state["concubine_fragment_confirm_key"] = key
+    state["concubine_fragment_confirmed_at"] = float(now or 0)
+    return key
+
+
+def _is_current_fragment_confirmed():
+    key = _fragment_confirmation_key()
+    return bool(key and key == str(state.get("concubine_fragment_confirm_key") or ""))
 
 
 def _format_fragment_progresses(progresses=None):
@@ -1708,6 +1774,14 @@ async def _send_dream_command(now):
 
 
 async def _send_fragment_command(now):
+    if _is_current_fragment_confirmed():
+        _set_phase("puzzle_ready")
+        next_time = float(state.get("next_concubine_time", 0) or 0)
+        if next_time <= 0 or next_time > now:
+            state["next_concubine_time"] = float(now)
+        save_state()
+        return False
+
     msg = await send_game_command(CMD_CONCUBINE_FRAGMENT, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -2139,10 +2213,9 @@ async def handle_concubine_fragment_reply(text, now, reply_to, matched_family=No
     if "【虚天残图卷】" in raw_text or "【苍坤残图卷】" in raw_text:
         _set_phase("idle")
         _clear_pending_msg_ids()
-        missing_match = RE_PUZZLE_MISSING.search(raw_text)
-        missing_text = missing_match.group(1).strip() if missing_match else ""
-        if _is_puzzle_ready() and (not missing_text or missing_text == "无"):
+        if _confirmed_completed_fragment_kinds_from_reply(raw_text):
             state["concubine_last_error"] = ""
+            _mark_fragment_confirmation(now)
             _set_phase("puzzle_ready")
             _schedule_chain_action(now)
             save_state()
@@ -2905,7 +2978,11 @@ async def _run_concubine_scheduler(now):
         return
 
     if state.get("concubine_enabled") and _is_puzzle_ready():
-        await _send_fragment_command(now)
+        if _is_current_fragment_confirmed():
+            _set_phase("puzzle_ready")
+            await _send_puzzle_command(now)
+        else:
+            await _send_fragment_command(now)
         return
 
     if _is_daily_greet_due(now):

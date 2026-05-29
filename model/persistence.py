@@ -363,6 +363,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_cangkun_count INTEGER NOT NULL DEFAULT 0")
     if "concubine_fragment_cangkun_total" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4")
+    if "concubine_fragment_confirm_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_confirm_key TEXT NOT NULL DEFAULT ''")
+    if "concubine_fragment_confirmed_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_confirmed_at REAL NOT NULL DEFAULT 0")
     conn.execute("""
         UPDATE identity_runtime_state
            SET concubine_fragment_xutian_count = concubine_fragment_count,
@@ -968,6 +972,8 @@ def init_db():
             concubine_fragment_xutian_total INTEGER NOT NULL DEFAULT 4,
             concubine_fragment_cangkun_count INTEGER NOT NULL DEFAULT 0,
             concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4,
+            concubine_fragment_confirm_key TEXT NOT NULL DEFAULT '',
+            concubine_fragment_confirmed_at REAL NOT NULL DEFAULT 0,
             concubine_last_snapshot_at REAL NOT NULL DEFAULT 0,
             concubine_reacquire_blocked_until REAL NOT NULL DEFAULT 0,
             concubine_reacquire_attempts INTEGER NOT NULL DEFAULT 0,

@@ -717,6 +717,61 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((0, 4), concubine._get_fragment_progress(concubine.DREAM_KIND_CANGKUN))
         self.assertEqual(3, state_module.state["concubine_fragment_count"])
 
+    async def test_fragment_confirmation_promotes_puzzle_and_blocks_repeat_fragment_send(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        reply_to = SimpleNamespace(raw_text=config.CMD_CONCUBINE_FRAGMENT, id=701)
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "fragment_pending"
+            identity_state["concubine_fragment_msg_id"] = 701
+            identity_state["next_concubine_time"] = now
+            concubine._set_fragment_progress(concubine.DREAM_KIND_XUTIAN, 3, 4)
+            concubine._set_fragment_progress(concubine.DREAM_KIND_CANGKUN, 4, 4)
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_audit_log", new=AsyncMock()), \
+             patch.object(concubine.random, "uniform", return_value=0):
+            handled = await concubine.handle_concubine_fragment_reply(
+                "侍妾【月婵】（随行中）的残图卷轴如下：\n\n"
+                "【虚天残图卷】\n"
+                "拼片进度：3/4\n"
+                "已收集：北阙残纹、南渊残纹、西极残纹\n"
+                "缺失残纹：东离残纹\n"
+                "重复藏本：北阙残纹x4、南渊残纹x3\n\n"
+                "【苍坤残图卷】\n"
+                "拼片进度：4/4\n"
+                "已收集：慕兰残纹、禁门残纹、玉匣残纹、太妙残纹\n"
+                "缺失残纹：无\n"
+                "重复藏本：禁门残纹x2",
+                now,
+                reply_to,
+                matched_family="concubine_fragment",
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual("puzzle_ready", state_module.state["concubine_phase"])
+        self.assertEqual("cangkun:4/4", state_module.state["concubine_fragment_confirm_key"])
+        self.assertEqual(now, state_module.state["concubine_fragment_confirmed_at"])
+        self.assertEqual(now, state_module.state["next_concubine_time"])
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "idle"
+            identity_state["concubine_puzzle_msg_id"] = 0
+            identity_state["next_concubine_time"] = now
+
+        sent_msg = SimpleNamespace(id=888, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_PUZZLE, track=False, priority="chain")
+        self.assertEqual("puzzle_pending", state_module.state["concubine_phase"])
+        self.assertEqual(888, state_module.state["concubine_puzzle_msg_id"])
+        self.assertEqual("cangkun:4/4", state_module.state["concubine_fragment_confirm_key"])
+
     async def test_orphan_heart_prompt_blocks_new_heart_command(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
