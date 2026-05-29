@@ -1,8 +1,10 @@
 import atexit
 import asyncio
 import copy
+import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -40,7 +42,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import join_dungeon
+from model.features import join_dungeon, workflow_log
 
 
 class MessageEntityMention:
@@ -63,6 +65,15 @@ def _event(msg_id, sender_id, text, *, reply_to=0, topic=123, entities=None, for
         reply_to=SimpleNamespace(reply_to_msg_id=reply_to, reply_to_top_id=topic, forum_topic=forum_topic),
         message=SimpleNamespace(entities=entities or []),
     )
+
+
+def _read_workflow_events(tmpdir):
+    events = []
+    for path in Path(tmpdir).glob("**/*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(json.loads(line))
+    return events
 
 
 class _StateIsolationMixin:
@@ -120,6 +131,71 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             send_as_id=identity_id,
             priority="urgent_reactive",
         )
+
+    async def test_dungeon_join_workflow_log_tracks_announcement_send_and_success(self):
+        identity_id = self._prepare_identity()
+        now = 1000.0
+        opener = _event(10, 111, ".开启虚天殿")
+        announce = _event(
+            11,
+            7900199668,
+            "【虚天殿已开启】\n副本ID: 393\n其他道友可使用 .加入副本 393 加入队伍！",
+            reply_to=10,
+        )
+        at_text = "@bbtest 来"
+        at = _event(12, 111, at_text, entities=[MessageEntityMention(0, 7)])
+        success_reply = _event(
+            100,
+            7900199668,
+            "@bbtest 已成功加入副本 393\n当前队伍:\n- @bbtest",
+            reply_to=99,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                    patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), \
+                    patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=99, sent_at=now + 2))) as send_mock, \
+                    patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+                join_dungeon.record_game_group_message(opener, now=now)
+                join_dungeon.record_game_group_message(announce, now=now + 1)
+                join_dungeon.record_game_group_message(at, now=now + 2)
+
+                handled = await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2)
+                self.assertTrue(handled)
+                self.assertTrue(await join_dungeon.handle_dungeon_join_bot_message(success_reply, success_reply.raw_text, now + 3))
+                events = _read_workflow_events(tmpdir)
+
+        send_mock.assert_awaited_once_with(
+            ".加入副本 393",
+            track=False,
+            send_as_id=identity_id,
+            priority="urgent_reactive",
+        )
+        self.assertTrue(any(
+            event.get("event") == "announcement_seen"
+            and event.get("decision") == "passive_announcement_recorded"
+            and event.get("msg_id") == 11
+            for event in events
+        ))
+        self.assertTrue(any(
+            event.get("event") == "join_reserved"
+            and event.get("op_id") == f"{identity_id}:393"
+            and event.get("source_message_id") == 11
+            for event in events
+        ))
+        self.assertTrue(any(
+            event.get("event") == "join_sent"
+            and event.get("command") == ".加入副本 393"
+            and event.get("detail", {}).get("retry_count") == 0
+            for event in events
+        ))
+        self.assertTrue(any(
+            event.get("event") == "join_success"
+            and event.get("decision") == "join_success_observed"
+            and event.get("reply_to_msg_id") == 99
+            and "@bbtest 已成功加入副本 393" in event.get("text", "")
+            for event in events
+        ))
 
     async def test_wrong_opener_does_not_join(self):
         self._prepare_identity()
@@ -619,6 +695,55 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         record = state_module.get_dungeon_join_run_state()[str(identity_id)]
         self.assertFalse(record["participating"])
         self.assertGreater(record["cooldown_until"], now + 3600)
+
+    async def test_dungeon_join_workflow_log_tracks_cooldown_guard_skip(self):
+        identity_id = self._prepare_identity()
+        now = 18000.0
+        opener = _event(190, 111, ".开启虚天殿")
+        announce = _event(191, 7900199668, "副本ID: 415", reply_to=190)
+        at_text = "@bbtest 来"
+        at = _event(192, 111, at_text, entities=[MessageEntityMention(0, 7)])
+        cd_reply = _event(
+            194,
+            7900199668,
+            "无法立即加入新副本，请在 1小时2分钟3秒 后再试",
+            reply_to=193,
+        )
+        next_opener = _event(195, 111, ".开启虚天殿")
+        next_announce = _event(196, 7900199668, "副本ID: 416", reply_to=195)
+        next_at = _event(197, 111, at_text, entities=[MessageEntityMention(0, 7)])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                    patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), \
+                    patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=193, sent_at=now + 2))), \
+                    patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+                join_dungeon.record_game_group_message(opener, now=now)
+                join_dungeon.record_game_group_message(announce, now=now + 1)
+                join_dungeon.record_game_group_message(at, now=now + 2)
+                self.assertTrue(await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2))
+                self.assertTrue(await join_dungeon.handle_dungeon_join_bot_message(cd_reply, cd_reply.raw_text, now + 3))
+                join_dungeon.record_game_group_message(next_opener, now=now + 10)
+                join_dungeon.record_game_group_message(next_announce, now=now + 11)
+                join_dungeon.record_game_group_message(next_at, now=now + 12)
+                handled = await join_dungeon.handle_dungeon_join_mention(next_at, at_text, now + 12)
+                self.assertFalse(handled)
+                events = _read_workflow_events(tmpdir)
+
+        self.assertTrue(any(
+            event.get("event") == "join_cooldown"
+            and event.get("decision") == "join_cooldown_observed"
+            and event.get("detail", {}).get("wait_sec") == 3723
+            and "无法立即加入新副本" in event.get("text", "")
+            for event in events
+        ))
+        self.assertTrue(any(
+            event.get("event") == "join_skipped"
+            and event.get("decision") == "join_guard_cooldown"
+            and event.get("detail", {}).get("reason") == "cooldown"
+            and event.get("op_id") == f"{identity_id}:416"
+            for event in events
+        ))
 
         next_opener = _event(195, 111, ".开启虚天殿")
         next_announce = _event(196, 7900199668, "副本ID: 416", reply_to=195)

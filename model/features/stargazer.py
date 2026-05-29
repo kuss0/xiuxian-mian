@@ -143,6 +143,15 @@ def _schedule_next_stargazer_action(next_time):
     state["next_stargazer_panel_time"] = float(next_time or 0)
 
 
+def _schedule_stargazer_timeout_panel_fallback(msg, sent_at, fallback_delay=RETRY_MAX_SEC):
+    msg_id = int(getattr(msg, "id", 0) or 0)
+    delay = float(fallback_delay or RETRY_MAX_SEC)
+    pending = state.get("pending_tasks", {}).get(msg_id) if msg_id > 0 else None
+    if isinstance(pending, dict):
+        delay = float(pending.get("timeout", 0) or 0) or delay
+    _schedule_next_stargazer_action(float(sent_at or time.time()) + delay + random.uniform(5, 10))
+
+
 def _get_queued_stargazer_action():
     queued_action = str(state.get("stargazer_queued_action") or "").strip()
     if queued_action:
@@ -236,7 +245,7 @@ async def _send_stargazer_guide(now, audit_text=None):
     state["stargazer_followup_due_at"] = 0
     _schedule_next_stargazer_action(now + RETRY_MAX_SEC)
     guide_command = _build_stargazer_guide_command()
-    msg = await send_game_command(guide_command, max_retry=1)
+    msg = await send_game_command(guide_command, max_retry=0)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         retry_delay = RETRY_MAX_SEC + random.uniform(5, 10)
@@ -244,7 +253,7 @@ async def _send_stargazer_guide(now, audit_text=None):
         save_state()
         await send_audit_log("❌ 牵引星辰发送失败，稍后重试。")
         return False
-    _schedule_next_stargazer_action(sent_at + RETRY_MAX_SEC)
+    _schedule_stargazer_timeout_panel_fallback(msg, sent_at)
     save_state()
     if audit_text:
         await send_audit_log(audit_text)

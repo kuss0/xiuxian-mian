@@ -1,7 +1,9 @@
 import atexit
 import copy
+import json
 import sys
 import asyncio
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -473,6 +475,106 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("stk_REAL123", item["token"])
         self.assertEqual(identity_id, item["identity_id"])
         schedule_mock.assert_called_once()
+
+    async def test_real_miniapp_prompt_falls_back_to_local_message_log_sender(self):
+        identity_id = self._prepare_identity(identity_id=8658442054, account_id=80001, username="local_stock")
+        now = 1_700_000_000.0
+        state_module.state["tiandao_judgement_enabled"] = True
+        state_module.state["tiandao_judgement_pending"] = {}
+        text = (
+            "🤖 【天道迷障 · 神识验证】\n\n"
+            "检测到高频灵力波动，请破除迷障证明你的道心！\n\n"
+            "天道已降下【Mini App 拖动验证】。请在 3分钟 内打开入口并完成随机拖动交互。\n\n"
+            "🧩 拖动验证入口：\n"
+            "请点击下方 打开验证 按钮，完成一次随机拖动验证。\n"
+            "验证会话已绑定，请直接完成页面内滑动。\n\n"
+            "✅ 完成后自动通过；通过后 10分钟 内可继续交易，无需重复验证。"
+        )
+        button = SimpleNamespace(
+            text="打开 Mini App 验证",
+            button=SimpleNamespace(url="https://t.me/fanrenxiuxian_bot/app?startapp=stk_LOG123"),
+        )
+
+        class Event:
+            id = 9453000
+            chat_id = -1001680975844
+            message = SimpleNamespace(buttons=[[button]])
+            reply_to = SimpleNamespace(reply_to_msg_id=9452999)
+
+            async def get_reply_message(self):
+                return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-05-29.log"
+            log_path.write_text(
+                json.dumps(
+                    {
+                        "ts": "2026-05-29 08:19:19 UTC+8",
+                        "event_type": "message",
+                        "message_id": 9452999,
+                        "chat_id": -1001680975844,
+                        "sender_id": -1008658442054,
+                        "text": ".买入 IDX_ORE 3764",
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with (
+                patch.object(tiandao_judgement, "MESSAGES_DIR", tmpdir),
+                patch.object(tiandao_judgement, "_schedule_tiandao_judgement_due_task") as schedule_mock,
+                patch.object(tiandao_judgement, "save_state"),
+            ):
+                handled = await tiandao_judgement.handle_tiandao_judgement_prompt(text, now, Event())
+
+        self.assertTrue(handled)
+        pending = state_module.state["tiandao_judgement_pending"]
+        self.assertIn("-1001680975844:9453000", pending)
+        item = pending["-1001680975844:9453000"]
+        self.assertEqual("stk_LOG123", item["token"])
+        self.assertEqual(identity_id, item["identity_id"])
+        schedule_mock.assert_called_once()
+
+    async def test_real_miniapp_prompt_for_external_reply_sender_is_skipped_without_audit(self):
+        now = 1_700_000_000.0
+        state_module.state["tiandao_judgement_enabled"] = True
+        state_module.state["tiandao_judgement_pending"] = {}
+        text = (
+            "🤖 【天道迷障 · 神识验证】\n\n"
+            "检测到高频抛售，请破除迷障证明你的道心！\n\n"
+            "天道已降下【Mini App 拖动验证】。请在 3分钟 内打开入口并完成随机拖动交互。\n\n"
+            "🧩 拖动验证入口：\n"
+            "请点击下方 打开验证 按钮，完成一次随机拖动验证。\n"
+            "验证会话已绑定，请直接完成页面内滑动。\n\n"
+            "✅ 完成后自动通过；通过后 10分钟 内可继续交易，无需重复验证。"
+        )
+        button = SimpleNamespace(
+            text="打开 Mini App 验证",
+            button=SimpleNamespace(url="https://t.me/fanrenxiuxian_bot/app?startapp=stk_EXT123"),
+        )
+
+        class Event:
+            id = 9453100
+            chat_id = -1001680975844
+            message = SimpleNamespace(buttons=[[button]])
+            reply_to = SimpleNamespace(reply_to_msg_id=9453099)
+
+            async def get_reply_message(self):
+                return SimpleNamespace(sender_id=6049695503)
+
+        with (
+            patch.object(tiandao_judgement, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(tiandao_judgement, "console_log") as console_mock,
+            patch.object(tiandao_judgement, "_schedule_tiandao_judgement_due_task") as schedule_mock,
+        ):
+            handled = await tiandao_judgement.handle_tiandao_judgement_prompt(text, now, Event())
+
+        self.assertTrue(handled)
+        self.assertEqual({}, state_module.state["tiandao_judgement_pending"])
+        audit_mock.assert_not_awaited()
+        schedule_mock.assert_not_called()
+        self.assertIn("外部身份验证，跳过", console_mock.call_args.args[0])
 
     async def test_miniapp_scheduler_submits_and_clears_pending(self):
         identity_id = self._prepare_identity()

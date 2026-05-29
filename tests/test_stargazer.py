@@ -2,6 +2,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
@@ -52,6 +53,38 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             send_soothe.assert_awaited_once_with(now)
             self.assertEqual("", state_module.state["stargazer_queued_action"])
             self.assertEqual(0, state_module.state["stargazer_followup_due_at"])
+
+    async def test_guide_send_disables_blind_retry_and_schedules_panel_fallback(self):
+        now = 1500.0
+        sent_at = now + 3
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        async def fake_send(command, **kwargs):
+            state_module.state["pending_tasks"][123] = {
+                "cmd": command,
+                "sent_at": sent_at,
+                "retry": 0,
+                "timeout": 42,
+                "max_retry": kwargs.get("max_retry"),
+            }
+            return SimpleNamespace(id=123, sent_at=sent_at)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.set_stargazer_star_choice(identity_id, "天雷星")
+
+            with (
+                patch.object(stargazer, "send_game_command", side_effect=fake_send) as send_mock,
+                patch.object(stargazer.random, "uniform", return_value=7),
+                patch.object(stargazer, "save_state"),
+            ):
+                sent = await stargazer._send_stargazer_guide(now)
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once_with(".牵引星辰 天雷星", max_retry=0)
+            self.assertEqual(sent_at + 42 + 7, state_module.state["next_stargazer_panel_time"])
+            self.assertEqual(0, state_module.state["pending_tasks"][123]["max_retry"])
 
     async def test_passive_collect_reply_does_not_overwrite_active_queue(self):
         now = 1000.0

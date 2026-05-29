@@ -57,6 +57,7 @@ from ..runtime import (
 )
 from ..state import get_current_identity_id, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from . import workflow_log
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 
 
@@ -129,6 +130,7 @@ def _record_taiyi_event(
                 family = "taiyi_node_define"
         parts = [str(event or "太一事件").strip() or "太一事件"]
         phase_text = str(phase or _phase() or "").strip()
+        identity_id = get_current_identity_id()
         if phase_text:
             parts.append(f"phase={phase_text}")
         if msg_id:
@@ -137,12 +139,29 @@ def _record_taiyi_event(
             parts.append(str(command).strip())
         if detail:
             parts.append(str(detail).strip())
+        workflow_log.append_workflow_event(
+            "taiyi",
+            op_id=f"{identity_id}:{phase_text}" if identity_id and phase_text else "",
+            step=phase_text,
+            event=str(event or "太一事件").strip() or "太一事件",
+            status=kind,
+            identity_id=identity_id,
+            msg_id=msg_id,
+            reply_to_msg_id=reply_msg_id,
+            family=family,
+            command=command,
+            text=matched_text,
+            decision=decision or str(event or "").strip(),
+            detail={"reason": reason, "detail": detail},
+            route_source=route_source,
+            state_after=phase_text,
+        )
         from . import passive_inbox
 
         return passive_inbox.record_passive_inbox_event(
             kind,
             module="taiyi",
-            identity_id=get_current_identity_id(),
+            identity_id=identity_id,
             reason=reason,
             summary="｜".join(part for part in parts if part),
             family=family,

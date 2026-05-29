@@ -9,6 +9,7 @@ import requests
 
 from .app_runtime import _claim_runtime_log_event
 from .config import LOG_BOT_TOKEN, LOG_SEND_MODE, MESSAGES_DIR, TG_REQUESTS_PROXIES, TZ_LOCAL, client, get_all_clients
+from .log_retention import cleanup_message_logs
 from .runtime import send_audit_log
 from .state import (
     get_game_group_id,
@@ -116,6 +117,7 @@ def _build_message_log_payload(event, *, event_type="message"):
 
 def _write_message_log(log_file, payload):
     try:
+        cleanup_message_logs()
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except Exception:

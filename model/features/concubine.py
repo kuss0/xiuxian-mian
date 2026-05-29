@@ -40,6 +40,7 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from . import workflow_log
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import CMD_STORAGE_BAG, apply_storage_bag_item_deltas, parse_storage_bag_reply, resolve_storage_bag_identity_id
 from ..action_guard import close_action as close_action_guard
@@ -525,31 +526,114 @@ def _msg_id_int(value):
         return 0
 
 
-def _record_concubine_event(event, *, kind="skipped", reason="", phase="", state_key="", reply_to=None, current_msg_id=0, detail=""):
+def _concubine_family_for_command(command):
+    command_text = str(command or "").strip()
+    if command_text == CMD_CONCUBINE_STATUS:
+        return "concubine_status"
+    if command_text == CMD_CONCUBINE_DAILY_GREET:
+        return "concubine_greet"
+    if command_text.startswith(CMD_CONCUBINE_GIFT_STONE):
+        return "concubine_gift"
+    if command_text == CMD_CONCUBINE_DREAM:
+        return "concubine_dream"
+    if command_text == CMD_CONCUBINE_FRAGMENT:
+        return "concubine_fragment"
+    if command_text == CMD_CONCUBINE_PUZZLE:
+        return "concubine_puzzle"
+    if command_text in CONCUBINE_REACQUIRE_COMMANDS:
+        return "concubine_reacquire"
+    if command_text == CMD_CONCUBINE_TIANJI:
+        return "concubine_tianji"
+    if command_text == CMD_CONCUBINE_HEART:
+        return "concubine_heart"
+    if command_text == CMD_CONCUBINE_HEART_STEADY:
+        return "concubine_heart"
+    if command_text == CMD_STORAGE_BAG:
+        return "concubine_storage_bag"
+    return "concubine"
+
+
+def _record_concubine_event(
+    event,
+    *,
+    kind="skipped",
+    reason="",
+    phase="",
+    state_key="",
+    reply_to=None,
+    current_msg_id=0,
+    detail="",
+    family="",
+    command="",
+    msg_id=0,
+    matched_text="",
+    decision="",
+    route_source="concubine",
+    workflow_status="",
+):
     try:
-        parts = [str(event or "侍妾事件").strip() or "侍妾事件"]
+        event_text = str(event or "侍妾事件").strip() or "侍妾事件"
+        parts = [event_text]
         phase_text = str(phase or _phase() or "").strip()
         if phase_text:
             parts.append(f"phase={phase_text}")
         expected_msg_id = _msg_id_int(state.get(state_key, 0)) if state_key else 0
         reply_to_msg_id = _msg_id_int(getattr(reply_to, "id", 0))
         current_msg_id = _msg_id_int(current_msg_id)
+        msg_id = _msg_id_int(msg_id)
+        family = str(family or "").strip() or _concubine_family_for_command(command)
         if expected_msg_id:
             parts.append(f"expected_msg_id={expected_msg_id}")
         if reply_to_msg_id:
             parts.append(f"reply_to_msg_id={reply_to_msg_id}")
         if current_msg_id:
             parts.append(f"current_msg_id={current_msg_id}")
+        if msg_id:
+            parts.append(f"msg_id={msg_id}")
+        if command:
+            parts.append(str(command).strip())
         if detail:
             parts.append(str(detail).strip())
+        identity_id = get_current_identity_id()
+        workflow_log.append_workflow_event(
+            "concubine",
+            op_id=f"{identity_id}:{phase_text}" if identity_id and phase_text else "",
+            step=phase_text,
+            event=event_text,
+            status=workflow_status or kind,
+            identity_id=identity_id,
+            msg_id=msg_id or current_msg_id,
+            reply_to_msg_id=reply_to_msg_id,
+            family=family,
+            command=command,
+            text=matched_text,
+            decision=decision or event_text,
+            detail={
+                "reason": reason,
+                "state_key": state_key,
+                "expected_msg_id": expected_msg_id,
+                "current_msg_id": current_msg_id,
+                "detail": detail,
+            },
+            route_source=route_source,
+            state_after=phase_text,
+        )
         from . import passive_inbox
 
         return passive_inbox.record_passive_inbox_event(
             kind,
             module="concubine",
-            identity_id=get_current_identity_id(),
+            identity_id=identity_id,
             reason=reason,
             summary="｜".join(part for part in parts if part),
+            family=family,
+            msg_id=msg_id or current_msg_id,
+            reply_to_msg_id=reply_to_msg_id,
+            route_source=route_source,
+            matched_text=matched_text,
+            decision=decision or event_text,
+            state_after=phase_text,
+            command=command,
         )
     except Exception:
         return False
@@ -1596,11 +1680,29 @@ async def _send_dream_command(now):
         state["concubine_last_error"] = "发送 .入梦寻图 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "dream_pending")
+        _record_concubine_event(
+            "入梦寻图发送失败",
+            kind="skipped",
+            reason="concubine_send_failed",
+            phase="idle",
+            command=CMD_CONCUBINE_DREAM,
+            decision="dream_send_failed",
+            workflow_status="failed",
+        )
         save_state()
         return False
     _set_phase("dream_pending")
     state["concubine_dream_msg_id"] = int(getattr(msg, "id", 0) or 0)
     state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    _record_concubine_event(
+        "入梦寻图已发送",
+        kind="changed",
+        phase="dream_pending",
+        command=CMD_CONCUBINE_DREAM,
+        msg_id=state["concubine_dream_msg_id"],
+        decision="dream_sent",
+        workflow_status="sent",
+    )
     save_state()
     return True
 
@@ -1662,11 +1764,29 @@ async def _send_tianji_command(now):
         state["concubine_tianji_last_error"] = "发送 .天机代卜 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "tianji_pending")
+        _record_concubine_event(
+            "天机代卜发送失败",
+            kind="skipped",
+            reason="concubine_send_failed",
+            phase="idle",
+            command=CMD_CONCUBINE_TIANJI,
+            decision="tianji_send_failed",
+            workflow_status="failed",
+        )
         save_state()
         return False
     _set_phase("tianji_pending")
     state["concubine_tianji_msg_id"] = int(getattr(msg, "id", 0) or 0)
     state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    _record_concubine_event(
+        "天机代卜已发送",
+        kind="changed",
+        phase="tianji_pending",
+        command=CMD_CONCUBINE_TIANJI,
+        msg_id=state["concubine_tianji_msg_id"],
+        decision="tianji_sent",
+        workflow_status="sent",
+    )
     save_state()
     return True
 
@@ -1682,6 +1802,15 @@ async def _send_heart_command(now):
         elif float(state.get("next_concubine_time", 0) or 0) <= now:
             state["next_concubine_time"] = now + random.uniform(5 * 60, 10 * 60)
         state["concubine_heart_last_error"] = "已有心劫链路未结算，跳过重复发起"
+        _record_concubine_event(
+            "共历心劫已有链路",
+            kind="skipped",
+            reason="concubine_heart_chain_active",
+            phase=_phase(),
+            command=CMD_CONCUBINE_HEART,
+            detail=f"prompt_msg_id={int(state.get('concubine_heart_prompt_msg_id', 0) or 0)}｜round={int(state.get('concubine_heart_round', 0) or 0)}",
+            decision="heart_chain_already_active",
+        )
         save_state()
         return False
 
@@ -1697,6 +1826,16 @@ async def _send_heart_command(now):
         state["concubine_heart_last_error"] = "发送 .共历心劫 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "heart_pending")
+        _record_concubine_event(
+            "共历心劫发送失败",
+            kind="skipped",
+            reason="concubine_send_failed",
+            phase="idle",
+            command=CMD_CONCUBINE_HEART,
+            detail=f"panel_msg_id={panel_msg_id}",
+            decision="heart_send_failed",
+            workflow_status="failed",
+        )
         save_state()
         return False
     _set_phase("heart_pending")
@@ -1705,6 +1844,16 @@ async def _send_heart_command(now):
     state["concubine_heart_round"] = 0
     _clear_heart_choice_guard()
     state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    _record_concubine_event(
+        "共历心劫已发送",
+        kind="changed",
+        phase="heart_pending",
+        command=CMD_CONCUBINE_HEART,
+        msg_id=state["concubine_heart_msg_id"],
+        detail=f"panel_msg_id={panel_msg_id}",
+        decision="heart_sent",
+        workflow_status="sent",
+    )
     save_state()
     return True
 
@@ -1716,17 +1865,43 @@ async def _send_heart_choice(now):
         state["concubine_heart_last_error"] = "心劫抉择缺少提示消息ID"
         _set_phase("idle")
         _backoff_after_pending_timeout(now, "heart_choice_pending")
+        _record_concubine_event(
+            "心劫抉择缺少提示",
+            kind="skipped",
+            reason="concubine_heart_missing_prompt",
+            phase="idle",
+            command=CMD_CONCUBINE_HEART_STEADY,
+            decision="heart_choice_missing_prompt",
+        )
         save_state()
         return False
     if round_no not in {1, 2, 3}:
         state["concubine_heart_last_error"] = "心劫抉择轮次异常，暂停自动处理"
         _set_phase("idle")
         _backoff_after_pending_timeout(now, "heart_choice_pending")
+        _record_concubine_event(
+            "心劫抉择轮次异常",
+            kind="skipped",
+            reason="concubine_heart_invalid_round",
+            phase="idle",
+            command=CMD_CONCUBINE_HEART_STEADY,
+            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
+            decision="heart_choice_invalid_round",
+        )
         save_state()
         return False
     if _has_sent_heart_choice(prompt_msg_id, round_no):
         _wait_for_existing_heart_choice(now)
         state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮已发送 .稳，等待回合推进"
+        _record_concubine_event(
+            "心劫抉择已发送",
+            kind="skipped",
+            reason="concubine_heart_choice_duplicate_guard",
+            phase="heart_choice_reply_pending",
+            command=CMD_CONCUBINE_HEART_STEADY,
+            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
+            decision="heart_choice_duplicate_guard",
+        )
         save_state()
         return False
     msg = await send_game_command(CMD_CONCUBINE_HEART_STEADY, track=False, reply_to=prompt_msg_id, priority="urgent_reactive")
@@ -1734,11 +1909,31 @@ async def _send_heart_choice(now):
     if not msg:
         state["concubine_heart_last_error"] = "发送 .稳 失败"
         state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
+        _record_concubine_event(
+            "心劫抉择发送失败",
+            kind="skipped",
+            reason="concubine_send_failed",
+            phase=_phase(),
+            command=CMD_CONCUBINE_HEART_STEADY,
+            detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
+            decision="heart_choice_send_failed",
+            workflow_status="failed",
+        )
         save_state()
         return False
     _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
     _set_phase("heart_choice_reply_pending")
     state["next_concubine_time"] = sent_at + 45
+    _record_concubine_event(
+        "心劫抉择已发送",
+        kind="changed",
+        phase="heart_choice_reply_pending",
+        command=CMD_CONCUBINE_HEART_STEADY,
+        msg_id=int(getattr(msg, "id", 0) or 0),
+        detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
+        decision="heart_choice_sent",
+        workflow_status="sent",
+    )
     save_state()
     return True
 

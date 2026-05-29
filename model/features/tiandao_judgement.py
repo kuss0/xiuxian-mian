@@ -1,11 +1,13 @@
 import asyncio
 import ast
+import json
 import operator
+import os
 import random
 import re
 import time
 
-from ..config import CMD_TIANDAO_JUDGEMENT_PROVE
+from ..config import CMD_TIANDAO_JUDGEMENT_PROVE, MESSAGES_DIR
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, _get_identity_client, console_log, get_reply_context, mono, send_audit_log, send_game_command
 from ..state import (
@@ -608,14 +610,24 @@ async def _handle_tiandao_miniapp_prompt(text, now, event):
         return True
 
     target = parsed.get("target") or "被回复身份"
-    identity_id = await _resolve_tiandao_identity_id(parsed.get("target"), event)
+    identity_context = await _resolve_tiandao_identity_context(parsed.get("target"), event)
+    identity_id = int((identity_context or {}).get("identity_id") or 0)
     if identity_id is None or int(identity_id or 0) <= 0:
         _mark_miniapp_terminal_event(terminal_key, now)
-        await send_audit_log(
-            f"⚖️ 天道 Mini App 验证未匹配身份：{mono(target)}｜{mono(parsed.get('kind') or '')}",
-            scope="global",
-            limit=300,
-        )
+        external_sender_id = int((identity_context or {}).get("external_sender_id") or 0)
+        matched_via = str((identity_context or {}).get("matched_via") or "")
+        if external_sender_id:
+            console_log(
+                f"⚖️ 天道 Mini App 外部身份验证，跳过：sender={external_sender_id}｜{parsed.get('kind') or ''}",
+                scope="global",
+                limit=220,
+            )
+        else:
+            await send_audit_log(
+                f"⚖️ 天道 Mini App 验证未匹配本地身份：{mono(target)}｜{mono(parsed.get('kind') or '')}｜{mono(matched_via)}",
+                scope="global",
+                limit=320,
+            )
         return True
 
     pending = _get_pending_map()
@@ -691,13 +703,52 @@ def _get_event_reply_header_msg_id(event):
     return int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
 
 
-def _find_identity_id_by_message_sender(message):
+def _message_log_names(limit=3):
     try:
-        sender_id = int(getattr(message, "sender_id", 0) or 0)
+        names = [
+            name
+            for name in os.listdir(MESSAGES_DIR)
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.log", str(name or ""))
+        ]
+    except OSError:
+        return []
+    return sorted(names, reverse=True)[: max(1, int(limit or 3))]
+
+
+def _find_message_log_entry_by_msg_id(msg_id, *, chat_id=0, limit_files=3):
+    msg_id = int(msg_id or 0)
+    chat_id = int(chat_id or 0)
+    if msg_id <= 0:
+        return None
+    needle = str(msg_id)
+    for name in _message_log_names(limit_files):
+        path = os.path.join(MESSAGES_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8") as fp:
+                for raw_line in fp:
+                    if needle not in raw_line:
+                        continue
+                    try:
+                        payload = json.loads(raw_line)
+                    except ValueError:
+                        continue
+                    if int((payload or {}).get("message_id", 0) or 0) != msg_id:
+                        continue
+                    if chat_id and int((payload or {}).get("chat_id", 0) or 0) != chat_id:
+                        continue
+                    return payload
+        except OSError:
+            continue
+    return None
+
+
+def _normalize_sender_candidates(sender_id):
+    try:
+        sender_id = int(sender_id or 0)
     except (TypeError, ValueError):
-        return None
+        return []
     if sender_id == 0:
-        return None
+        return []
 
     candidates = [sender_id]
     if sender_id < 0:
@@ -707,7 +758,11 @@ def _find_identity_id_by_message_sender(message):
                 candidates.append(int(sender_abs[3:]))
             except ValueError:
                 pass
+    return candidates
 
+
+def _find_identity_id_by_sender_id(sender_id):
+    candidates = _normalize_sender_candidates(sender_id)
     for identity_id in get_identity_ids():
         identity_id = int(identity_id)
         for candidate in candidates:
@@ -716,28 +771,62 @@ def _find_identity_id_by_message_sender(message):
     return None
 
 
-async def _find_reply_identity_id(event):
+def _find_identity_id_by_message_sender(message):
+    return _find_identity_id_by_sender_id(getattr(message, "sender_id", 0) if message is not None else 0)
+
+
+def _first_sender_candidate(sender_id):
+    candidates = _normalize_sender_candidates(sender_id)
+    return int(candidates[-1]) if candidates else 0
+
+
+async def _find_reply_identity_context(event):
     if event is None:
-        return None
+        return {"identity_id": None, "matched_via": "no_event", "external_sender_id": 0}
+    reply_header_msg_id = _get_event_reply_header_msg_id(event)
     try:
         reply_to = await event.get_reply_message()
     except Exception:
         reply_to = None
-    identity_id = _find_identity_id_by_message_sender(reply_to)
+    reply_sender_id = int(getattr(reply_to, "sender_id", 0) or 0) if reply_to is not None else 0
+    identity_id = _find_identity_id_by_sender_id(reply_sender_id)
     if identity_id is not None:
-        return identity_id
-    reply_context = get_reply_context(reply_to, reply_to_msg_id=_get_event_reply_header_msg_id(event))
+        return {"identity_id": identity_id, "matched_via": "reply_sender", "external_sender_id": 0}
+    reply_context = get_reply_context(reply_to, reply_to_msg_id=reply_header_msg_id)
     identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    if identity_id > 0:
+        return {"identity_id": identity_id, "matched_via": (reply_context or {}).get("matched_via") or "reply_context", "external_sender_id": 0}
+
+    logged_reply = _find_message_log_entry_by_msg_id(reply_header_msg_id, chat_id=getattr(event, "chat_id", 0))
+    logged_sender_id = int((logged_reply or {}).get("sender_id", 0) or 0)
+    identity_id = _find_identity_id_by_sender_id(logged_sender_id)
+    if identity_id is not None:
+        return {"identity_id": identity_id, "matched_via": "message_log_sender", "external_sender_id": 0}
+
+    external_sender_id = _first_sender_candidate(logged_sender_id or reply_sender_id)
+    matched_via = "message_log_external_sender" if logged_sender_id else ("reply_external_sender" if reply_sender_id else "none")
+    return {"identity_id": None, "matched_via": matched_via, "external_sender_id": external_sender_id}
+
+
+async def _find_reply_identity_id(event):
+    context = await _find_reply_identity_context(event)
+    identity_id = int((context or {}).get("identity_id") or 0)
     return identity_id if identity_id > 0 else None
 
 
-async def _resolve_tiandao_identity_id(target, event):
+async def _resolve_tiandao_identity_context(target, event):
     identity_id = _find_target_identity_id(target)
     if identity_id is not None:
-        return identity_id
+        return {"identity_id": identity_id, "matched_via": "target", "external_sender_id": 0}
     if _normalize_identity_text(target):
-        return None
-    return await _find_reply_identity_id(event)
+        return {"identity_id": None, "matched_via": "target_unmatched", "external_sender_id": 0}
+    return await _find_reply_identity_context(event)
+
+
+async def _resolve_tiandao_identity_id(target, event):
+    context = await _resolve_tiandao_identity_context(target, event)
+    identity_id = int((context or {}).get("identity_id") or 0)
+    return identity_id if identity_id > 0 else None
 
 
 def _remove_identity_pending(identity_id):

@@ -1,6 +1,8 @@
 import atexit
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,7 +42,7 @@ from model import app
 from model import state as state_module
 from model import runtime
 from model import ui
-from model.features import storage_bag
+from model.features import storage_bag, workflow_log
 from model.features.storage_bag import (
     apply_storage_bag_item_deltas,
     cancel_storage_bag_transfer_task,
@@ -49,6 +51,15 @@ from model.features.storage_bag import (
     run_storage_bag_transfer_scheduler,
     start_storage_bag_transfer_task,
 )
+
+
+def _read_workflow_events(tmpdir):
+    events = []
+    for path in Path(tmpdir).glob("**/*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(json.loads(line))
+    return events
 
 
 class StorageBagTransferTests(unittest.TestCase):
@@ -292,6 +303,70 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, records[str(self.source_id)]["items"].get("灵石", 0) - 1000)
         self.assertEqual(3, records[str(self.target_id)]["items"]["妖丹"])
         self.assertEqual(99, records[str(self.target_id)]["items"]["灵石"])
+
+    async def test_storage_transfer_workflow_log_tracks_stale_listing_and_inventory_sync(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=100 + len(sent))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                    patch("model.features.storage_bag.send_audit_log"), \
+                    patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                    patch("model.features.passive_inbox.record_passive_inbox_event"):
+                ok, message, _transfer = await start_storage_bag_transfer_task(
+                    self.source_id,
+                    self.target_id,
+                    [{"item_name": "妖丹", "quantity": 3, "method": "basic"}],
+                    "灵石",
+                )
+                self.assertTrue(ok, message)
+                op_id = storage_bag._storage_bag_transfer_state["op_id"]
+
+                handled_listing = await handle_storage_bag_transfer_reply(
+                    "上架成功！\n你已将 【灵石】x1 上架至万宝楼。\n捆绑总价: 妖丹*3\n挂单ID: 888",
+                    1000.0,
+                    SimpleNamespace(id=101, raw_text=sent[0][0]),
+                    reply_context={"reply_to_msg_id": 101},
+                )
+                self.assertTrue(handled_listing)
+
+                ignored_listing = await handle_storage_bag_transfer_reply(
+                    "上架成功！\n你已将 【灵石】x1 上架至万宝楼。\n捆绑总价: 妖丹*3\n挂单ID: 777",
+                    1001.0,
+                    SimpleNamespace(id=999, raw_text=sent[0][0]),
+                    matched_family="storage_bag_listing",
+                    reply_context={"reply_to_msg_id": 999, "family": "storage_bag_listing"},
+                )
+                self.assertFalse(ignored_listing)
+
+                handled_buy = await handle_storage_bag_transfer_reply(
+                    "交易成功！你成功购得 【灵石】x1。",
+                    1002.0,
+                    SimpleNamespace(id=102, raw_text=sent[1][0]),
+                    matched_family="storage_bag_buy",
+                    reply_context={"reply_to_msg_id": 102, "family": "storage_bag_buy"},
+                )
+                self.assertTrue(handled_buy)
+
+                events = _read_workflow_events(tmpdir)
+
+        self.assertTrue(all(event.get("workflow") == "storage_bag_transfer" for event in events))
+        self.assertTrue(any(event.get("op_id") == op_id and event.get("event") == "准备购买" for event in events))
+        self.assertTrue(any(
+            event.get("decision") == "stale_listing_reply_ignored"
+            and "回执挂单ID=777" in event.get("detail", {}).get("detail", "")
+            and "当前挂单ID=888" in event.get("detail", {}).get("detail", "")
+            for event in events
+        ))
+        self.assertTrue(any(
+            event.get("decision") == "buy_success_inventory_synced"
+            and event.get("detail", {}).get("listing_id") == "888"
+            and "本地核销=1项" in event.get("detail", {}).get("detail", "")
+            for event in events
+        ))
 
     async def test_storage_transfer_commands_route_without_pending_tasks(self):
         with state_module.use_identity(self.target_id) as identity_state:

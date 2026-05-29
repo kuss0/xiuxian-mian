@@ -16,7 +16,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -79,6 +79,7 @@ YUANYING_SPEC = PhasefulSpec(
     running_due_console="👶 元婴归来时间到",
     cd_due_console="👶 元婴 CD 到",
     summary_received_console="👶 收到归窍总结，短缓冲后继续。",
+    source_module="元婴",
     summary_trigger_command=CMD_YUANYING_STATUS,
     summary_passive_triggers=("元婴状态", "1"),
     summary_passive_timeout_sec=45,
@@ -234,7 +235,23 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
     return False
 
 
-def match_yuanying_summary_identity(text, now=None):
+def _is_yuanying_summary_candidate_phase(now):
+    phase = state.get("yuanying_phase")
+    next_time = float(state.get("next_yuanying_time", 0) or 0)
+    due_while_running = phase == "running" and now > 0 and 0 < next_time <= now
+    near_due_while_running = phase == "running" and now > 0 and next_time > now and next_time - now <= 10 * 60
+    return phase in ("summary_due", "observing_summary", "waiting_summary") or due_while_running or near_due_while_running or phase == "running"
+
+
+def _reply_context_identity(reply_context):
+    try:
+        identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    return identity_id if identity_id > 0 and has_identity(identity_id) else 0
+
+
+def match_yuanying_summary_identity(text, now=None, reply_context=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
     old_summary_kw_hit = "元神归窍总结" in compact_text
     new_summary_kw_hit = (
@@ -245,42 +262,36 @@ def match_yuanying_summary_identity(text, now=None):
     now = float(now or 0)
     has_explicit_at = "@" in compact_text
 
+    reply_identity_id = _reply_context_identity(reply_context)
+    if reply_identity_id:
+        with use_identity(reply_identity_id):
+            if state["yuanying_enabled"] and _is_yuanying_summary_candidate_phase(now):
+                return reply_identity_id, [reply_identity_id], old_summary_kw_hit, new_summary_kw_hit
+        return None, [], old_summary_kw_hit, new_summary_kw_hit
+
+    if not has_explicit_at:
+        return None, [], old_summary_kw_hit, new_summary_kw_hit
+
     matched_ids = []
-    fallback_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state["yuanying_enabled"]:
                 continue
-            phase = state.get("yuanying_phase")
-            due_while_running = (
-                phase == "running"
-                and now > 0
-                and 0 < float(state.get("next_yuanying_time", 0) or 0) <= now
-            )
-            if phase not in ("summary_due", "observing_summary", "waiting_summary") and not due_while_running:
+            if not _is_yuanying_summary_candidate_phase(now):
                 continue
             tags = get_send_as_tags(identity_id)
             if tags:
                 compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
                 if any(tag in compact_text for tag in compact_tags):
                     matched_ids.append(identity_id)
-                elif not has_explicit_at:
-                    fallback_ids.append(identity_id)
-            elif not has_explicit_at:
-                if ("修士" in compact_text and old_summary_kw_hit) or new_summary_kw_hit:
-                    fallback_ids.append(identity_id)
 
     if len(matched_ids) == 1:
         return matched_ids[0], matched_ids, old_summary_kw_hit, new_summary_kw_hit
-    if not matched_ids and len(fallback_ids) == 1:
-        return fallback_ids[0], fallback_ids, old_summary_kw_hit, new_summary_kw_hit
-    if not matched_ids:
-        matched_ids = fallback_ids
     return None, matched_ids, old_summary_kw_hit, new_summary_kw_hit
 
 
-async def handle_yuanying_summary_broadcast(text, now):
-    target_id, matched_ids, old_summary_kw_hit, new_summary_kw_hit = match_yuanying_summary_identity(text, now=now)
+async def handle_yuanying_summary_broadcast(text, now, event=None, reply_to=None, reply_context=None):
+    target_id, matched_ids, old_summary_kw_hit, new_summary_kw_hit = match_yuanying_summary_identity(text, now=now, reply_context=reply_context)
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)

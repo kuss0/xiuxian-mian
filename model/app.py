@@ -458,8 +458,15 @@ def _is_concubine_loss_broadcast_candidate(text):
     )
 
 
-async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None):
-    await _dispatch_broadcast_handlers(event, text, now, _NEW_MESSAGE_BROADCAST_HANDLERS, reply_to=reply_to)
+async def _dispatch_new_message_broadcasts(event, text, now, reply_to=None, reply_context=None):
+    await _dispatch_broadcast_handlers(
+        event,
+        text,
+        now,
+        _NEW_MESSAGE_BROADCAST_HANDLERS,
+        reply_to=reply_to,
+        reply_context=reply_context,
+    )
     if _is_concubine_loss_broadcast_candidate(text) and _claim_runtime_event(event, scope="concubine_loss"):
         await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
 
@@ -487,13 +494,19 @@ _BROADCAST_EVENT_HANDLERS = {
 _BROADCAST_REPLY_CONTEXT_HANDLERS = {
     handle_tianji_quiz_result_broadcast,
 }
+_PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS = {
+    handle_deep_retreat_summary_broadcast,
+    handle_yuanying_summary_broadcast,
+}
 
 
-async def _dispatch_broadcast_handlers(event, text, now, handlers, *, reply_to=None):
+async def _dispatch_broadcast_handlers(event, text, now, handlers, *, reply_to=None, reply_context=None):
     for scope, handler in handlers:
         if not _claim_runtime_event(event, scope=scope):
             continue
-        if handler in _BROADCAST_REPLY_CONTEXT_HANDLERS:
+        if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS:
+            await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
+        elif handler in _BROADCAST_REPLY_CONTEXT_HANDLERS:
             await handler(text, now, event, reply_to=reply_to)
         elif handler in _BROADCAST_EVENT_HANDLERS:
             await handler(text, now, event)
@@ -575,8 +588,15 @@ async def _dispatch_message_edited_concubine_loss(event, text, now):
         await _run_until_handled_for_enabled_identities(handle_concubine_loss_broadcast, text, now, event)
 
 
-async def _dispatch_message_edited_phaseful_summaries(event, text, now):
-    await _dispatch_message_edited_broadcasts(event, text, now, _PHASEFUL_MESSAGE_EDIT_BROADCAST_HANDLERS)
+async def _dispatch_message_edited_phaseful_summaries(event, text, now, reply_to=None, reply_context=None):
+    await _dispatch_message_edited_broadcasts(
+        event,
+        text,
+        now,
+        _PHASEFUL_MESSAGE_EDIT_BROADCAST_HANDLERS,
+        reply_to=reply_to,
+        reply_context=reply_context,
+    )
 
 
 _EARLY_MESSAGE_EDIT_BROADCAST_HANDLERS = (
@@ -596,11 +616,13 @@ _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS = {
 }
 
 
-async def _dispatch_message_edited_broadcasts(event, text, now, handlers):
+async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, reply_to=None, reply_context=None):
     for scope, handler in handlers:
         if not _claim_runtime_event(event, scope=scope):
             continue
-        if handler in _MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS:
+        if handler in _PHASEFUL_SUMMARY_REPLY_CONTEXT_HANDLERS:
+            await handler(text, now, event=event, reply_to=reply_to, reply_context=reply_context)
+        elif handler in _MESSAGE_EDIT_IDENTITY_BROADCAST_HANDLERS:
             await _run_for_all_identities(handler, text, now, False)
         elif handler in _MESSAGE_EDIT_EVENT_BROADCAST_HANDLERS:
             await handler(text, now, event)
@@ -893,7 +915,7 @@ async def on_message(event):
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
 
-        await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to)
+        await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to, reply_context=reply_context)
         await handle_dungeon_join_bot_message(event, text, now)
         _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
         await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="message")
@@ -961,7 +983,13 @@ async def on_message_edited(event):
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
         await _dispatch_message_edited_concubine_loss(event, text, now)
-        await _dispatch_message_edited_phaseful_summaries(event, text, now)
+        await _dispatch_message_edited_phaseful_summaries(
+            event,
+            text,
+            now,
+            reply_to=reply_to,
+            reply_context=reply_context,
+        )
         await handle_dungeon_join_bot_message(event, text, now)
         _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
         await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")

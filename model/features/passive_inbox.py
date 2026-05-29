@@ -19,6 +19,7 @@ from . import tianti as tianti_mod
 from . import tower as tower_mod
 from . import tree as tree_mod
 from . import wild_training as wild_training_mod
+from .passive_event_ledger import append_passive_event
 
 
 PASSIVE_INBOX_RECENT_LIMIT = 20
@@ -164,15 +165,18 @@ def _record_passive_event(
     reason="",
     summary="",
     family="",
+    chat_id=0,
     msg_id=0,
     reply_to_msg_id=0,
     root_msg_id=0,
+    event_type="",
     route_source="",
     matched_text="",
     decision="",
     state_before="",
     state_after="",
     command="",
+    source_message_id=0,
     include_recent=None,
 ):
     _passive_stats["total"] = int(_passive_stats.get("total", 0) or 0) + 1
@@ -201,6 +205,27 @@ def _record_passive_event(
         state_after=state_after,
         command=command,
     )
+    append_passive_event(
+        kind=kind,
+        module=module,
+        identity_id=identity_id,
+        reason=reason,
+        summary=summary,
+        family=family,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        reply_to_msg_id=reply_to_msg_id,
+        root_msg_id=root_msg_id,
+        event_type=event_type,
+        route_source=route_source,
+        matched_text=matched_text,
+        matched_text_hash=_event_text_hash(matched_text),
+        decision=decision,
+        state_before=state_before,
+        state_after=state_after,
+        command=command,
+        source_message_id=source_message_id,
+    )
     _save_passive_stats()
 
 
@@ -212,15 +237,18 @@ def record_passive_inbox_event(
     reason="",
     summary="",
     family="",
+    chat_id=0,
     msg_id=0,
     reply_to_msg_id=0,
     root_msg_id=0,
+    event_type="",
     route_source="",
     matched_text="",
     decision="",
     state_before="",
     state_after="",
     command="",
+    source_message_id=0,
     include_recent=None,
 ):
     try:
@@ -231,15 +259,18 @@ def record_passive_inbox_event(
             reason=reason,
             summary=summary,
             family=family,
+            chat_id=chat_id,
             msg_id=msg_id,
             reply_to_msg_id=reply_to_msg_id,
             root_msg_id=root_msg_id,
+            event_type=event_type,
             route_source=route_source,
             matched_text=matched_text,
             decision=decision,
             state_before=state_before,
             state_after=state_after,
             command=command,
+            source_message_id=source_message_id,
             include_recent=include_recent,
         )
     except Exception:
@@ -787,6 +818,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     target_id = _identity_from_reply_context(reply_context)
     context_route_source = f"{event_type}:reply_context" if event_type else "reply_context"
     passive_route_source = f"{event_type}:passive_match" if event_type else "passive_match"
+    source_message_id = observed_msg_id
 
     storage_changed, storage_identity_id = _apply_storage_bag_passive(raw_text, now)
     if storage_changed:
@@ -797,8 +829,11 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             summary="storage_bag",
             matched_text="储物袋",
             decision="storage_bag_snapshot",
+            chat_id=observed_chat_id,
             msg_id=observed_msg_id,
+            event_type=event_type,
             route_source=event_type or "passive_match",
+            source_message_id=source_message_id,
         )
         return True
 
@@ -817,20 +852,26 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                     reason="reply_context_no_identity",
                     summary=family,
                     family=family,
+                    chat_id=observed_chat_id,
                     msg_id=observed_msg_id,
                     reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
                     root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+                    event_type=event_type,
                     route_source=context_route_source,
                     matched_text=raw_text,
                     decision="skip_missing_identity",
+                    source_message_id=source_message_id,
                 )
             else:
                 _record_passive_event(
                     "skipped",
                     reason="no_reply_context",
+                    chat_id=observed_chat_id,
                     msg_id=observed_msg_id,
+                    event_type=event_type,
                     matched_text=raw_text,
                     decision="skip_missing_identity",
+                    source_message_id=source_message_id,
                     include_recent=False,
                 )
         return False
@@ -897,12 +938,15 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             identity_id=target_id,
             summary=family or "passive",
             family=family,
+            chat_id=observed_chat_id,
             msg_id=observed_msg_id,
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+            event_type=event_type,
             route_source=context_route_source if family else passive_route_source,
             matched_text=raw_text,
             decision="state_changed",
+            source_message_id=source_message_id,
         )
     else:
         _record_passive_event(
@@ -911,12 +955,15 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             reason="no_change",
             summary=family or "passive",
             family=family,
+            chat_id=observed_chat_id,
             msg_id=observed_msg_id,
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+            event_type=event_type,
             route_source=context_route_source if family else passive_route_source,
             matched_text=raw_text,
             decision="no_state_change",
+            source_message_id=source_message_id,
         )
     return changed
 

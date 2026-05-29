@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import runtime
-from model.features import passive_inbox
+from model.features import passive_event_ledger, passive_inbox, workflow_log
 
 
 class PassiveInboxEvidenceTests(unittest.TestCase):
@@ -145,6 +146,110 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertIn("decision=calibrate_manual_late_no_search", status_text)
         self.assertIn("reply=9446793", status_text)
 
+    def test_passive_event_ledger_records_structured_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir),
+                patch.object(passive_inbox, "_save_passive_stats"),
+            ):
+                ok = passive_inbox.record_passive_inbox_event(
+                    "changed",
+                    module="taiyi",
+                    identity_id=8659059191,
+                    family="taiyi_yindao",
+                    chat_id=-1001680975844,
+                    msg_id=9446794,
+                    reply_to_msg_id=9446793,
+                    event_type="edit",
+                    route_source="edit:reply_context",
+                    decision="calibrate_manual_late_no_search",
+                    matched_text="你引动【水之道】，获得了 100点神识！",
+                    state_before="waiting_yindao",
+                    state_after="idle",
+                    source_message_id=9446794,
+                )
+
+            self.assertTrue(ok)
+            ledger_files = list(Path(tmpdir).glob("*.jsonl"))
+            self.assertEqual(1, len(ledger_files))
+            payload = json.loads(ledger_files[0].read_text(encoding="utf-8").strip())
+
+        self.assertEqual("changed", payload["kind"])
+        self.assertEqual("taiyi", payload["module"])
+        self.assertEqual("taiyi_yindao", payload["family"])
+        self.assertEqual(-1001680975844, payload["chat_id"])
+        self.assertEqual(9446794, payload["msg_id"])
+        self.assertEqual(9446793, payload["reply_to_msg_id"])
+        self.assertEqual("edit", payload["event_type"])
+        self.assertEqual("edit:reply_context", payload["route_source"])
+        self.assertEqual("waiting_yindao", payload["state_before"])
+        self.assertEqual("idle", payload["state_after"])
+        self.assertIn("matched_text_hash", payload)
+
+    def test_passive_event_ledger_uses_test_state_dir_from_env(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.dict(os.environ, {"XIUXIAN_STATE_DIR": tmpdir}),
+                patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", passive_event_ledger._DEFAULT_PASSIVE_EVENT_LEDGER_DIR),
+            ):
+                path = passive_event_ledger.get_passive_event_ledger_path(1_779_911_737.0)
+
+        self.assertTrue(str(Path(path)).startswith(tmpdir))
+
+    def test_passive_event_ledger_iter_skips_bad_lines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                ok = passive_event_ledger.append_passive_event(
+                    kind="changed",
+                    module="taiyi",
+                    identity_id=8659059191,
+                    family="taiyi_yindao",
+                    msg_id=9446794,
+                    matched_text="你引动【水之道】，获得了 100点神识！",
+                    decision="calibrate_manual_late_no_search",
+                    now=1_779_911_737.0,
+                )
+                path = passive_event_ledger.get_passive_event_ledger_path(1_779_911_737.0)
+                with open(path, "a", encoding="utf-8") as fp:
+                    fp.write("not-json\n")
+
+                events = passive_event_ledger.iter_passive_events(path=path, limit=10)
+
+        self.assertTrue(ok)
+        self.assertEqual(1, len(events))
+        self.assertEqual("taiyi", events[0]["module"])
+        self.assertEqual("taiyi_yindao", events[0]["family"])
+
+
+class WorkflowLogUtilityTests(unittest.TestCase):
+    def test_workflow_log_roundtrip_uses_test_state_dir_from_env(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.dict(os.environ, {"XIUXIAN_STATE_DIR": tmpdir}),
+                patch.object(workflow_log, "WORKFLOW_LOG_DIR", workflow_log._DEFAULT_WORKFLOW_LOG_DIR),
+            ):
+                ok = workflow_log.append_workflow_event(
+                    "storage/bag transfer",
+                    op_id="transfer-1",
+                    event="购买已发送",
+                    status="changed",
+                    identity_id=1001,
+                    msg_id=22028,
+                    family="storage_bag_buy",
+                    command=".购买 22028",
+                    detail={"listing_id": "22028", "empty": ""},
+                    now=1_779_911_737.0,
+                )
+                path = workflow_log.get_workflow_log_path("storage/bag transfer", 1_779_911_737.0)
+                events = workflow_log.iter_workflow_events("storage/bag transfer", path=path, limit=10)
+
+        self.assertTrue(ok)
+        self.assertTrue(str(Path(path)).startswith(tmpdir))
+        self.assertEqual(1, len(events))
+        self.assertEqual("storage_bag_transfer", events[0]["workflow"])
+        self.assertEqual("storage_bag_buy", events[0]["family"])
+        self.assertEqual("22028", events[0]["detail"]["listing_id"])
+
 
 class SentMessageEvidenceTests(unittest.TestCase):
     def test_sent_log_records_family_priority_and_track(self):
@@ -189,6 +294,26 @@ class SentMessageEvidenceTests(unittest.TestCase):
         self.assertEqual("太一", intent["source_module"])
         self.assertEqual("op-1", intent["op_id"])
         self.assertEqual("auto_delete", intent["delete_policy"])
+
+    def test_send_intent_infers_modules_for_parameterized_commands(self):
+        cases = {
+            ".购买 22028": "储物袋",
+            ".上架 凝血草 1 换 筑基丹*1": "储物袋",
+            ".赠送 筑基丹 1": "储物袋",
+            ".加入苍坤洞府 393": "自动副本",
+            ".稳": "共历心劫",
+            ".天机代卜": "天机代卜",
+            ".搜寻节点": "太一",
+            ".查看闭关": "深度闭关",
+        }
+
+        with patch.object(runtime, "is_auto_delete_sent_messages_enabled", return_value=False):
+            for command, source_module in cases.items():
+                with self.subTest(command=command):
+                    intent = runtime._normalize_send_intent(command)
+
+                    self.assertEqual(source_module, intent["source_module"])
+                    self.assertEqual("keep", intent["delete_policy"])
 
 
 if __name__ == "__main__":

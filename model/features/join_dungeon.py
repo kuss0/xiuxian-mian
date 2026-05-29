@@ -17,6 +17,7 @@ from ..state import (
     set_dungeon_join_run_state,
 )
 from ..timing import has_wait_time, parse_wait_time
+from . import workflow_log
 
 
 # 自动副本只允许向游戏群发加入副本类指令，不能在游戏群补充说明。
@@ -52,6 +53,69 @@ _inbox = deque()
 _by_msg_id = {}
 _join_keys = {}
 _join_throttle = {}
+
+
+def _event_chat_id(event):
+    return int(getattr(event, "chat_id", 0) or 0)
+
+
+def _event_msg_id(event):
+    return int(getattr(event, "id", 0) or 0)
+
+
+def _record_dungeon_workflow_event(
+    event,
+    *,
+    status="",
+    identity_id=0,
+    dungeon_id="",
+    dungeon_kind="",
+    command="",
+    msg_id=0,
+    reply_to_msg_id=0,
+    chat_id=0,
+    source_message_id=0,
+    text="",
+    decision="",
+    detail=None,
+    now=None,
+):
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    dungeon_id = str(dungeon_id or "").strip()
+    op_id = f"{identity_id}:{dungeon_id}" if identity_id and dungeon_id else ""
+    event_name = str(event or "").strip() or "event"
+    workflow_detail = {
+        "dungeon_id": dungeon_id,
+        "dungeon_kind": str(dungeon_kind or "").strip(),
+    }
+    if isinstance(detail, dict):
+        workflow_detail.update(detail)
+    elif detail:
+        workflow_detail["detail"] = str(detail)
+    return workflow_log.append_workflow_event(
+        "dungeon_join",
+        op_id=op_id,
+        step=event_name,
+        event=event_name,
+        status=status,
+        identity_id=identity_id,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        reply_to_msg_id=reply_to_msg_id,
+        source_message_id=source_message_id,
+        family="dungeon_join",
+        command=command,
+        text=text,
+        decision=decision or event_name,
+        detail=workflow_detail,
+        route_source="dungeon_join",
+        state_after=status or event_name,
+        now=now,
+    )
+    return False
 
 
 def _now_ts(now=None):
@@ -146,8 +210,21 @@ def record_game_group_message(event, *, now=None, event_type="message"):
         return
     _inbox.append(item)
     _by_msg_id[msg_id] = item
-    if _parse_dungeon_id(item["text"]) and item["sender_is_game_bot"]:
-        console_log(f"🧩 副本公告入箱：ID={_parse_dungeon_id(item['text'])} msg_id={msg_id}", scope="global", limit=160)
+    dungeon_id = _parse_dungeon_id(item["text"])
+    if dungeon_id and item["sender_is_game_bot"]:
+        _record_dungeon_workflow_event(
+            "announcement_seen",
+            status="observed",
+            dungeon_id=dungeon_id,
+            dungeon_kind=_infer_dungeon_kind(item["text"]),
+            chat_id=item["chat_id"],
+            msg_id=msg_id,
+            reply_to_msg_id=item["reply_to_msg_id"],
+            text=item["text"],
+            decision="passive_announcement_recorded",
+            now=now,
+        )
+        console_log(f"🧩 副本公告入箱：ID={dungeon_id} msg_id={msg_id}", scope="global", limit=160)
 
 
 def _parse_dungeon_id(text):
@@ -307,12 +384,13 @@ def _mark_pending_join(identity_id, dungeon_id, msg_id, now, retry_count=0):
     _save_run_records(records)
 
 
-def _mark_join_success(identity_id, dungeon_id, now, *, msg_id=0):
+def _mark_join_success(identity_id, dungeon_id, now, *, msg_id=0, chat_id=0, reply_to_msg_id=0, text=""):
     records = _get_run_records()
     record = _get_identity_run_record(records, identity_id)
+    dungeon_id = str(dungeon_id or record.get("pending_room_id") or record.get("room_id") or "")
     record.update({
         "participating": True,
-        "room_id": str(dungeon_id or record.get("pending_room_id") or record.get("room_id") or ""),
+        "room_id": dungeon_id,
         "joined_at": float(now or 0),
         "active_until": float(now or 0) + DUNGEON_ACTIVE_TTL_SEC,
         "cooldown_until": 0,
@@ -326,9 +404,21 @@ def _mark_join_success(identity_id, dungeon_id, now, *, msg_id=0):
     })
     records[str(int(identity_id))] = record
     _save_run_records(records)
+    _record_dungeon_workflow_event(
+        "join_success",
+        status="success",
+        identity_id=identity_id,
+        dungeon_id=dungeon_id,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        reply_to_msg_id=reply_to_msg_id,
+        text=text,
+        decision="join_success_observed",
+        now=now,
+    )
 
 
-def _mark_join_cooldown(identity_id, wait_sec, now, *, dungeon_id="", msg_id=0):
+def _mark_join_cooldown(identity_id, wait_sec, now, *, dungeon_id="", msg_id=0, chat_id=0, reply_to_msg_id=0, text=""):
     records = _get_run_records()
     record = _get_identity_run_record(records, identity_id)
     record.update({
@@ -347,9 +437,22 @@ def _mark_join_cooldown(identity_id, wait_sec, now, *, dungeon_id="", msg_id=0):
         record["room_id"] = str(dungeon_id)
     records[str(int(identity_id))] = record
     _save_run_records(records)
+    _record_dungeon_workflow_event(
+        "join_cooldown",
+        status="cooldown",
+        identity_id=identity_id,
+        dungeon_id=dungeon_id,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        reply_to_msg_id=reply_to_msg_id,
+        text=text,
+        decision="join_cooldown_observed",
+        detail={"wait_sec": int(wait_sec or 0)},
+        now=now,
+    )
 
 
-def _mark_join_failure(identity_id, reason, now, *, dungeon_id=""):
+def _mark_join_failure(identity_id, reason, now, *, dungeon_id="", msg_id=0, chat_id=0, reply_to_msg_id=0, text=""):
     records = _get_run_records()
     record = _get_identity_run_record(records, identity_id)
     record.update({
@@ -365,6 +468,19 @@ def _mark_join_failure(identity_id, reason, now, *, dungeon_id=""):
     })
     records[str(int(identity_id))] = record
     _save_run_records(records)
+    _record_dungeon_workflow_event(
+        "join_failure",
+        status="failed",
+        identity_id=identity_id,
+        dungeon_id=dungeon_id,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        reply_to_msg_id=reply_to_msg_id,
+        text=text,
+        decision=f"join_failed_{str(reason or '').strip() or 'unknown'}",
+        detail={"reason": str(reason or "")},
+        now=now,
+    )
 
 
 def _active_identity_ids(now):
@@ -419,6 +535,7 @@ def _mark_success_cooldown(identity_ids, now):
     changed = False
     for identity_id in identity_ids or []:
         record = _get_identity_run_record(records, identity_id)
+        room_id = str(record.get("room_id") or record.get("pending_room_id") or "")
         record.update({
             "participating": False,
             "room_id": "",
@@ -435,6 +552,14 @@ def _mark_success_cooldown(identity_ids, now):
             "updated_at": float(now or 0),
         })
         records[str(int(identity_id))] = record
+        _record_dungeon_workflow_event(
+            "progress_success_cooldown",
+            status="cooldown",
+            identity_id=identity_id,
+            dungeon_id=room_id,
+            decision="progress_success_sets_cooldown",
+            now=now,
+        )
         changed = True
     if changed:
         _save_run_records(records)
@@ -463,6 +588,15 @@ def _clear_room_participants(room_id, now, reason):
             "updated_at": float(now or 0),
         })
         records[str(raw_identity_id)] = normalized
+        _record_dungeon_workflow_event(
+            "room_cleared",
+            status="failed",
+            identity_id=raw_identity_id,
+            dungeon_id=room_id,
+            decision=f"room_cleared_{str(reason or '').strip() or 'unknown'}",
+            detail={"reason": str(reason or "")},
+            now=now,
+        )
         changed = True
     if changed:
         _save_run_records(records)
@@ -474,6 +608,7 @@ def _mark_failure_pending(identity_ids, now):
     changed = False
     for identity_id in identity_ids or []:
         record = _get_identity_run_record(records, identity_id)
+        room_id = str(record.get("room_id") or record.get("pending_room_id") or "")
         record.update({
             "participating": False,
             "room_id": "",
@@ -486,6 +621,15 @@ def _mark_failure_pending(identity_ids, now):
             "updated_at": float(now or 0),
         })
         records[str(int(identity_id))] = record
+        _record_dungeon_workflow_event(
+            "progress_failure_pending",
+            status="failed",
+            identity_id=identity_id,
+            dungeon_id=room_id,
+            decision="challenge_failed_observed",
+            detail={"reason": "challenge_failed"},
+            now=now,
+        )
         changed = True
     if changed:
         _save_run_records(records)
@@ -635,11 +779,23 @@ def _allow_join(identity_id, dungeon_id, now):
     return True, ""
 
 
-def _reserve_join(identity_id, dungeon_id, now):
+def _reserve_join(identity_id, dungeon_id, now, *, dungeon_kind="", command="", chat_id=0, source_message_id=0):
     _join_keys[(int(identity_id), str(dungeon_id))] = {"at": float(now or 0), "status": "inflight"}
+    _record_dungeon_workflow_event(
+        "join_reserved",
+        status="inflight",
+        identity_id=identity_id,
+        dungeon_id=dungeon_id,
+        dungeon_kind=dungeon_kind,
+        command=command,
+        chat_id=chat_id,
+        source_message_id=source_message_id,
+        decision="join_reserved_before_send",
+        now=now,
+    )
 
 
-def _mark_join_sent(identity_id, dungeon_id, now, msg_id=0, retry_count=0):
+def _mark_join_sent(identity_id, dungeon_id, now, msg_id=0, retry_count=0, *, dungeon_kind="", command="", chat_id=0, source_message_id=0):
     key = (int(identity_id), str(dungeon_id))
     previous = _join_keys.get(key) or {}
     msg_ids = [int(item or 0) for item in previous.get("msg_ids", []) if int(item or 0) > 0]
@@ -654,6 +810,20 @@ def _mark_join_sent(identity_id, dungeon_id, now, msg_id=0, retry_count=0):
         "retry_count": max(0, int(retry_count or 0)),
     }
     _mark_pending_join(identity_id, dungeon_id, msg_id, now, retry_count=retry_count)
+    _record_dungeon_workflow_event(
+        "join_sent",
+        status="sent",
+        identity_id=identity_id,
+        dungeon_id=dungeon_id,
+        dungeon_kind=dungeon_kind,
+        command=command,
+        chat_id=chat_id,
+        msg_id=msg_id,
+        source_message_id=source_message_id,
+        decision="join_command_sent" if int(retry_count or 0) <= 0 else "join_fast_retry_sent",
+        detail={"retry_count": max(0, int(retry_count or 0)), "msg_ids": msg_ids[-3:]},
+        now=now,
+    )
 
 
 def _release_join_reservation(identity_id, dungeon_id):
@@ -694,6 +864,18 @@ async def _retry_join_once(identity_id, dungeon_id, dungeon_kind, join_command, 
     now = _now_ts()
     _cleanup(now)
     if not _should_fast_retry_join(identity_id, dungeon_id, first_msg_id, now):
+        _record_dungeon_workflow_event(
+            "join_fast_retry_skipped",
+            status="skipped",
+            identity_id=identity_id,
+            dungeon_id=dungeon_id,
+            dungeon_kind=dungeon_kind,
+            command=join_command,
+            msg_id=first_msg_id,
+            decision="fast_retry_guard_blocked",
+            detail={"first_msg_id": int(first_msg_id or 0)},
+            now=now,
+        )
         return False
     retry_count = 1
     _join_keys[(int(identity_id), str(dungeon_id))]["retry_count"] = retry_count
@@ -706,7 +888,15 @@ async def _retry_join_once(identity_id, dungeon_id, dungeon_kind, join_command, 
     )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if msg:
-        _mark_join_sent(identity_id, dungeon_id, sent_at, msg_id=int(getattr(msg, "id", 0) or 0), retry_count=retry_count)
+        _mark_join_sent(
+            identity_id,
+            dungeon_id,
+            sent_at,
+            msg_id=int(getattr(msg, "id", 0) or 0),
+            retry_count=retry_count,
+            dungeon_kind=dungeon_kind,
+            command=join_command,
+        )
         await send_audit_log(
             f"🧩 自动副本快补发：{join_command}｜retry={retry_count}",
             scope="identity",
@@ -714,6 +904,18 @@ async def _retry_join_once(identity_id, dungeon_id, dungeon_kind, join_command, 
             limit=180,
         )
         return True
+    _record_dungeon_workflow_event(
+        "join_fast_retry_send_failed",
+        status="failed",
+        identity_id=identity_id,
+        dungeon_id=dungeon_id,
+        dungeon_kind=dungeon_kind,
+        command=join_command,
+        msg_id=first_msg_id,
+        decision="fast_retry_send_failed",
+        detail={"retry_count": retry_count},
+        now=sent_at,
+    )
     return False
 
 
@@ -736,6 +938,15 @@ async def handle_dungeon_join_mention(event, text, now=None):
         at_item = _by_msg_id.get(int(getattr(event, "id", 0) or 0))
     matched = _find_matching_dungeon(at_item, now=now)
     if not matched:
+        _record_dungeon_workflow_event(
+            "mention_no_match",
+            status="skipped",
+            chat_id=_event_chat_id(event),
+            msg_id=_event_msg_id(event),
+            text=text,
+            decision="mention_without_recent_dungeon_match",
+            now=now,
+        )
         console_log("🧩 自动副本：收到 @，但未找到同话题/同开门人/60s 内的副本公告。", scope="global", limit=180)
         return False
 
@@ -744,14 +955,41 @@ async def handle_dungeon_join_mention(event, text, now=None):
     join_command = _format_dungeon_join_command(dungeon_id, dungeon_kind)
     handled = False
     for identity_id in identity_ids:
+        event_detail = {
+            "announcement_msg_id": matched["announcement_msg_id"],
+            "opener_msg_id": matched["opener_msg_id"],
+            "mention_msg_id": _event_msg_id(event),
+        }
         allowed, reason = _allow_join(identity_id, dungeon_id, now)
         if not allowed:
+            _record_dungeon_workflow_event(
+                "join_skipped",
+                status="skipped",
+                identity_id=identity_id,
+                dungeon_id=dungeon_id,
+                dungeon_kind=dungeon_kind,
+                command=join_command,
+                chat_id=_event_chat_id(event),
+                msg_id=_event_msg_id(event),
+                text=text,
+                decision=f"join_guard_{reason or 'blocked'}",
+                detail={**event_detail, "reason": reason},
+                now=now,
+            )
             if reason == "throttled":
                 await send_audit_log(f"🧩 自动副本节流：5分钟内加入次数过多，跳过副本 {dungeon_id}", scope="identity", send_as_id=identity_id, limit=180)
             elif reason in {"cooldown", "participating", "pending"}:
                 console_log(f"🧩 自动副本跳过：{reason}｜副本={dungeon_id}", scope="identity", send_as_id=identity_id, limit=160)
             continue
-        _reserve_join(identity_id, dungeon_id, now)
+        _reserve_join(
+            identity_id,
+            dungeon_id,
+            now,
+            dungeon_kind=dungeon_kind,
+            command=join_command,
+            chat_id=_event_chat_id(event),
+            source_message_id=matched["announcement_msg_id"],
+        )
         msg = await send_game_command(
             join_command,
             track=False,
@@ -760,10 +998,33 @@ async def handle_dungeon_join_mention(event, text, now=None):
         )
         if not msg:
             _release_join_reservation(identity_id, dungeon_id)
+            _record_dungeon_workflow_event(
+                "join_send_failed",
+                status="failed",
+                identity_id=identity_id,
+                dungeon_id=dungeon_id,
+                dungeon_kind=dungeon_kind,
+                command=join_command,
+                chat_id=_event_chat_id(event),
+                source_message_id=matched["announcement_msg_id"],
+                text=text,
+                decision="join_command_send_failed",
+                detail=event_detail,
+                now=now,
+            )
             continue
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
         sent_msg_id = int(getattr(msg, "id", 0) or 0)
-        _mark_join_sent(identity_id, dungeon_id, sent_at, msg_id=sent_msg_id)
+        _mark_join_sent(
+            identity_id,
+            dungeon_id,
+            sent_at,
+            msg_id=sent_msg_id,
+            dungeon_kind=dungeon_kind,
+            command=join_command,
+            chat_id=_event_chat_id(event),
+            source_message_id=matched["announcement_msg_id"],
+        )
         _schedule_join_fast_retry(identity_id, dungeon_id, dungeon_kind, join_command, sent_msg_id)
         _join_throttle.setdefault(int(identity_id), []).append(now)
         await send_audit_log(
@@ -805,20 +1066,55 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
     if joined_match:
         dungeon_id = dungeon_id or next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
     if "你已在队伍中" in raw or any(keyword in raw for keyword in ("已成功加入副本", "已成功加入坠魔谷", "已成功加入黄龙山")):
-        _mark_join_success(identity_id, dungeon_id, now, msg_id=int(getattr(event, "id", 0) or 0))
+        _mark_join_success(
+            identity_id,
+            dungeon_id,
+            now,
+            msg_id=_event_msg_id(event),
+            chat_id=_event_chat_id(event),
+            reply_to_msg_id=reply_to_msg_id,
+            text=raw,
+        )
         return True
 
     if "无法立即加入新副本" in raw and "请在" in raw and "后再试" in raw:
         wait_sec = parse_wait_time(raw) if has_wait_time(raw) else 0
         if wait_sec > 0:
-            _mark_join_cooldown(identity_id, wait_sec, now, dungeon_id=dungeon_id, msg_id=int(getattr(event, "id", 0) or 0))
+            _mark_join_cooldown(
+                identity_id,
+                wait_sec,
+                now,
+                dungeon_id=dungeon_id,
+                msg_id=_event_msg_id(event),
+                chat_id=_event_chat_id(event),
+                reply_to_msg_id=reply_to_msg_id,
+                text=raw,
+            )
             return True
 
     if "此队伍已满员" in raw or "队伍已满" in raw:
-        _mark_join_failure(identity_id, "full", now, dungeon_id=dungeon_id)
+        _mark_join_failure(
+            identity_id,
+            "full",
+            now,
+            dungeon_id=dungeon_id,
+            msg_id=_event_msg_id(event),
+            chat_id=_event_chat_id(event),
+            reply_to_msg_id=reply_to_msg_id,
+            text=raw,
+        )
         return True
     if "找不到此副本房间" in raw or "副本房间不存在" in raw:
-        _mark_join_failure(identity_id, "not_found", now, dungeon_id=dungeon_id)
+        _mark_join_failure(
+            identity_id,
+            "not_found",
+            now,
+            dungeon_id=dungeon_id,
+            msg_id=_event_msg_id(event),
+            chat_id=_event_chat_id(event),
+            reply_to_msg_id=reply_to_msg_id,
+            text=raw,
+        )
         return True
     return False
 

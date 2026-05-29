@@ -172,7 +172,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             for call in inbox_mock.call_args_list
         ))
 
-    async def test_deep_retreat_tagless_force_exit_summary_uses_unique_candidate_only(self):
+    async def test_deep_retreat_tagless_force_exit_summary_uses_reply_context_identity(self):
         send_as_id = 8659059192
         now = 1_700_000_100.0
         self._prepare_identity(send_as_id, "NoAtRetreat")
@@ -194,10 +194,57 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             patch.object(deep_retreat, "console_log"),
             patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
         ):
-            await deep_retreat.handle_deep_retreat_summary_broadcast(text, now)
+            await deep_retreat.handle_deep_retreat_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": send_as_id, "family": "deep_retreat", "reply_to_msg_id": 9545414},
+            )
 
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+
+    async def test_deep_retreat_tagless_force_exit_summary_skips_mismatched_reply_context(self):
+        waiting_id = 8659059220
+        other_id = 8659059221
+        now = 1_700_000_110.0
+        self._prepare_identity(waiting_id, "WaitingRetreat")
+        self._prepare_identity(other_id, "OtherRetreat")
+
+        with state_module.use_identity(waiting_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 10
+        with state_module.use_identity(other_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "idle"
+
+        text = (
+            "【深度闭关总结】\n"
+            "本次结算时长: 5.5 小时 (基础上限8小时)\n"
+            "神魂吐纳次数: 21 周天\n"
+            "【强行出关惩罚】: 因你强行中断修行，所得感悟流失大半。"
+        )
+
+        with (
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+        ):
+            await deep_retreat.handle_deep_retreat_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": other_id, "family": "deep_retreat", "reply_to_msg_id": 9545414},
+            )
+
+        with state_module.use_identity(waiting_id):
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+        with state_module.use_identity(other_id):
+            self.assertEqual("idle", state_module.state["deep_retreat_phase"])
+        audit_mock.assert_not_awaited()
+        self.assertTrue(any(
+            call.kwargs.get("reason") == "deep_retreat_summary_no_match"
+            and call.kwargs.get("decision") == "summary_no_match_skip"
+            for call in inbox_mock.call_args_list
+        ))
 
     async def test_deep_retreat_tagless_summary_skips_multiple_candidates(self):
         first_id = 8659059193
@@ -224,10 +271,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
         with state_module.use_identity(second_id):
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
-        audit_mock.assert_awaited_once()
+        audit_mock.assert_not_awaited()
         self.assertTrue(any(
-            call.kwargs.get("reason") == "deep_retreat_summary_ambiguous"
-            and call.kwargs.get("decision") == "summary_ambiguous_skip"
+            call.kwargs.get("reason") == "deep_retreat_summary_no_match"
+            and call.kwargs.get("decision") == "summary_no_match_skip"
             and "深度闭关总结" in str(call.kwargs.get("matched_text") or "")
             for call in inbox_mock.call_args_list
         ))
@@ -247,14 +294,22 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         text = "【深度闭关总结】\n本次结算时长: 5.3 小时\n神魂吐纳次数: 21 周天"
 
-        with patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock:
+        with (
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+        ):
             await deep_retreat.handle_deep_retreat_summary_broadcast(text, now)
 
         with state_module.use_identity(first_id):
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
         with state_module.use_identity(second_id):
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
-        audit_mock.assert_awaited_once()
+        audit_mock.assert_not_awaited()
+        self.assertTrue(any(
+            call.kwargs.get("reason") == "deep_retreat_summary_no_match"
+            and call.kwargs.get("decision") == "summary_no_match_skip"
+            for call in inbox_mock.call_args_list
+        ))
 
     async def test_deep_retreat_short_cooldown_reply_updates_next_time(self):
         send_as_id = 8659059200
@@ -353,7 +408,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             patch.object(yuanying, "console_log"),
             patch.object(yuanying, "send_audit_log", new=AsyncMock()),
         ):
-            await yuanying.handle_yuanying_summary_broadcast(text, now)
+            await yuanying.handle_yuanying_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": send_as_id, "family": "yuanying", "reply_to_msg_id": 9544658},
+            )
 
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["yuanying_phase"])
@@ -381,7 +440,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             patch.object(yuanying, "console_log"),
             patch.object(yuanying, "send_audit_log", new=AsyncMock()),
         ):
-            await yuanying.handle_yuanying_summary_broadcast(text, now)
+            await yuanying.handle_yuanying_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": send_as_id, "family": "yuanying", "reply_to_msg_id": 9544658},
+            )
 
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["yuanying_phase"])
@@ -458,7 +521,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
-            send_mock.assert_awaited_once_with("1", track=False, priority="chain")
+            send_mock.assert_awaited_once_with("1", track=False, priority="chain", source_module="深度闭关")
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
             self.assertEqual(-901, state_module.state["last_deep_retreat_summary_msg_id"])
 
@@ -566,7 +629,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             ):
                 await yuanying.run_yuanying_scheduler(now)
 
-            send_mock.assert_awaited_once_with("1", track=False, priority="chain")
+            send_mock.assert_awaited_once_with("1", track=False, priority="chain", source_module="元婴")
             self.assertEqual("waiting_summary", state_module.state["yuanying_phase"])
             self.assertEqual(-902, state_module.state["last_yuanying_summary_msg_id"])
 

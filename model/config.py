@@ -47,6 +47,27 @@ def _get_env_str(key, default=""):
     return str(os.environ.get(key, default) or default).strip()
 
 
+def _get_env_int(key, default, *, minimum=None, maximum=None):
+    try:
+        value = int(os.environ.get(key, default))
+    except (TypeError, ValueError):
+        value = int(default)
+    if minimum is not None:
+        value = max(int(minimum), value)
+    if maximum is not None:
+        value = min(int(maximum), value)
+    return value
+
+
+MESSAGE_LOG_RETENTION_DAYS = _get_env_int("XIUXIAN_MESSAGE_LOG_RETENTION_DAYS", 30, minimum=1)
+MESSAGE_LOG_MAX_MB = _get_env_int("XIUXIAN_MESSAGE_LOG_MAX_MB", 300, minimum=0)
+PASSIVE_EVENT_LEDGER_RETENTION_DAYS = _get_env_int("XIUXIAN_PASSIVE_EVENT_RETENTION_DAYS", 14, minimum=1)
+PASSIVE_EVENT_LEDGER_MAX_MB = _get_env_int("XIUXIAN_PASSIVE_EVENT_MAX_MB", 50, minimum=0)
+WORKFLOW_LOG_RETENTION_DAYS = _get_env_int("XIUXIAN_WORKFLOW_LOG_RETENTION_DAYS", 14, minimum=1)
+WORKFLOW_LOG_MAX_MB = _get_env_int("XIUXIAN_WORKFLOW_LOG_MAX_MB", 50, minimum=0)
+LOG_RETENTION_CLEANUP_INTERVAL_SEC = _get_env_int("XIUXIAN_LOG_RETENTION_CLEANUP_INTERVAL_SEC", 3600, minimum=60)
+
+
 def _split_host_port(raw_value):
     host_port = str(raw_value or "").strip()
     if not host_port:

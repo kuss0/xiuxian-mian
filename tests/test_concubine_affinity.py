@@ -1,6 +1,8 @@
 import atexit
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -39,7 +41,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import config
 from model import runtime
 from model import state as state_module
-from model.features import concubine
+from model.features import concubine, workflow_log
+
+
+def _read_workflow_events(tmpdir):
+    events = []
+    for path in Path(tmpdir).glob("**/*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(json.loads(line))
+    return events
 
 
 class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
@@ -834,10 +845,13 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
             identity_state["concubine_heart_round"] = 2
 
-        with state_module.use_identity(send_as_id), \
-             patch.object(concubine, "save_state"), \
-             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
-            sent = await concubine._send_heart_choice(now)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+                sent = await concubine._send_heart_choice(now)
+                workflow_events = _read_workflow_events(tmpdir)
 
         self.assertTrue(sent)
         mock_send.assert_awaited_once_with(
@@ -849,6 +863,15 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
         self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_choice_prompt_msg_id"])
         self.assertEqual(2, state_module.state["concubine_heart_choice_round"])
+        self.assertTrue(any(
+            event.get("workflow") == "concubine"
+            and event.get("decision") == "heart_choice_sent"
+            and event.get("family") == "concubine_heart"
+            and event.get("command") == config.CMD_CONCUBINE_HEART_STEADY
+            and event.get("msg_id") == sent_msg.id
+            and "prompt_msg_id=9387665" in event.get("detail", {}).get("detail", "")
+            for event in workflow_events
+        ))
 
     async def test_heart_choice_guard_blocks_duplicate_same_round_send(self):
         now = 1_700_000_000.0
@@ -863,16 +886,28 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_heart_choice_round"] = 2
             identity_state["concubine_heart_choice_sent_at"] = now - 10
 
-        with state_module.use_identity(send_as_id), \
-             patch.object(concubine, "save_state"), \
-             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
-            sent = await concubine._send_heart_choice(now)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+                sent = await concubine._send_heart_choice(now)
+                workflow_events = _read_workflow_events(tmpdir)
 
         self.assertFalse(sent)
         mock_send.assert_not_awaited()
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
         self.assertEqual(now + 35, state_module.state["next_concubine_time"])
         self.assertIn("已发送 .稳", state_module.state["concubine_heart_last_error"])
+        self.assertTrue(any(
+            event.get("workflow") == "concubine"
+            and event.get("decision") == "heart_choice_duplicate_guard"
+            and event.get("status") == "skipped"
+            and event.get("family") == "concubine_heart"
+            and event.get("command") == config.CMD_CONCUBINE_HEART_STEADY
+            and "round=2" in event.get("detail", {}).get("detail", "")
+            for event in workflow_events
+        ))
 
     async def test_heart_edit_after_sent_choice_advances_round_without_duplicate(self):
         now = 1_700_000_000.0

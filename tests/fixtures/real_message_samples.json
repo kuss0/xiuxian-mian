@@ -1,26 +1,58 @@
 {
   "deep_retreat.tagged_summary.jihejish": {
     "source": "data/messages/2026-05-28.log:9491714",
+    "module": "deep_retreat",
+    "family": "deep_retreat",
+    "event_type": "message",
     "text": "📜 修士 @jihejish 深度闭关总结\n【深度闭关总结】\n本次结算时长: 8.0 小时 (基础上限8小时)\n神魂吐纳次数: 32 周天\n\n- 修行有成: 20 次\n- 心神不宁: 12 次\n- 走火入魔: 0 次\n\n本次深度闭关，你的修为最终变化了 4505 点！"
   },
   "deep_retreat.non_summary.wild_training": {
     "source": "data/messages/2026-05-28.log:9475801",
+    "module": "wild_training",
+    "family": "wild_training",
+    "event_type": "message",
     "text": "【野外历练 · 灵机暗藏】\n@jihejish 在山涧残阵旁避开妖兽踪迹，采得一份机缘。\n获得修为 +2551，获得 【养魂木】x1。\n此为玩家对 NPC 历练，不牵连其他修士。"
   },
   "taiyi.yindao.success_water": {
     "source": "data/messages/2026-05-27.log:9446794",
+    "module": "taiyi",
+    "family": "taiyi_yindao",
+    "event_type": "message",
     "text": "你引动【水之道】，获得了 100点神识！\n并领悟了临时增益【润水之息】：\n普通闭关修炼时，获得的修为增加45%。"
   },
   "storage_bag.listing_success.manual_22028": {
     "source": "data/messages/2026-05-27.log:9472550",
+    "module": "storage_bag",
+    "family": "storage_bag_listing",
+    "event_type": "message",
     "text": "上架成功！\n你已将 【凝血草】x1 上架至万宝楼。\n每件售价: 【筑基丹】x1\n挂单ID: 22028"
   },
   "storage_bag.listing_success.original_22027": {
     "source": "data/messages/2026-05-27.log:9472542",
+    "module": "storage_bag",
+    "family": "storage_bag_listing",
+    "event_type": "message",
     "text": "上架成功！\n你已将 【凝血草】x1 上架至万宝楼。\n每件售价: 【筑基丹】x1\n挂单ID: 22027"
   },
   "storage_bag.buy_success.basic": {
     "source": "data/messages/2026-05-27.log:9472587",
+    "module": "storage_bag",
+    "family": "storage_bag_buy",
+    "event_type": "message",
     "text": "交易成功！\n你成功购得 【凝血草】x1！"
+  },
+  "join_dungeon.open_393": {
+    "source": "data/messages/replica-2026-05-26.log:4",
+    "module": "join_dungeon",
+    "family": "dungeon_join",
+    "event_type": "message",
+    "text": "【虚天殿已开启】\n副本ID: 393\n其他道友可使用 .加入副本 393 加入队伍！"
+  },
+  "yuanying.summary_bbeexxyz": {
+    "source": "data/messages/2026-05-28.log:46",
+    "module": "yuanying",
+    "family": "yuanying",
+    "event_type": "edit",
+    "text": "📜 修士 @bbeexxyz 元神归窍总结\n你的元婴在虚空中神游八小时，带回了以下收获：\n\n - 【四级妖丹】x3\n - 【法则碎片·金】x1\n - 【法则碎片·水】x1\n - 【法则碎片·土】x1\n - 天道感悟: 你的修为额外增加了 2458 点！\n\n元婴成长:\n - 获得了 2147 点经验。"
   }
 }

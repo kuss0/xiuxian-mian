@@ -14,7 +14,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -32,6 +32,7 @@ from ._phaseful import (
     set_phase,
     update_block_log_state,
 )
+from . import workflow_log
 
 
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
@@ -79,6 +80,7 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     running_due_console="🧘 深闭时间到",
     cd_due_console="🧘 深闭 CD 到",
     summary_received_console="🧘 收到闭关总结，30 秒后继续。",
+    source_module="深度闭关",
     summary_trigger_command=CMD_DEEP_RETREAT_QUERY,
     summary_passive_triggers=("查看闭关", "1"),
     summary_passive_timeout_sec=120,
@@ -110,6 +112,9 @@ def _record_deep_retreat_event(
     try:
         reply_msg_id = int(getattr(reply_to, "id", 0) or 0)
         phase = str(state.get("deep_retreat_phase") or "").strip()
+        resolved_identity_id = int(identity_id or 0)
+        if resolved_identity_id <= 0 and use_current_identity:
+            resolved_identity_id = int(get_current_identity_id() or 0)
         parts = [str(event or "深闭事件").strip() or "深闭事件"]
         if phase:
             parts.append(f"phase={phase}")
@@ -117,10 +122,22 @@ def _record_deep_retreat_event(
             parts.append(f"reply_msg_id={reply_msg_id}")
         if detail:
             parts.append(str(detail).strip())
+        workflow_log.append_workflow_event(
+            "deep_retreat",
+            op_id=f"{resolved_identity_id}:{phase}" if resolved_identity_id and phase else "",
+            step=phase,
+            event=str(event or "深闭事件").strip() or "深闭事件",
+            status=kind,
+            identity_id=resolved_identity_id,
+            reply_to_msg_id=reply_msg_id,
+            family="deep_retreat",
+            text=matched_text,
+            decision=decision or str(event or "").strip(),
+            detail={"reason": reason, "detail": detail},
+            route_source="deep_retreat",
+            state_after=phase,
+        )
         from . import passive_inbox
-        resolved_identity_id = int(identity_id or 0)
-        if resolved_identity_id <= 0 and use_current_identity:
-            resolved_identity_id = int(get_current_identity_id() or 0)
 
         return passive_inbox.record_passive_inbox_event(
             kind,
@@ -355,56 +372,68 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
     return False
 
 
-def match_deep_retreat_summary_identity(text, now=None):
+def _is_deep_retreat_summary_candidate_phase(now):
+    phase = state.get("deep_retreat_phase")
+    next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    due_while_running = phase == "running" and now > 0 and 0 < next_time <= now
+    near_due_while_running = (
+        phase == "running"
+        and now > 0
+        and next_time > now
+        and next_time - now <= DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC
+    )
+    explicit_tagged_running_summary = phase == "running"
+    return phase in ("summary_due", "observing_summary", "waiting_summary") or due_while_running or near_due_while_running or explicit_tagged_running_summary
+
+
+def _reply_context_identity(reply_context):
+    try:
+        identity_id = int((reply_context or {}).get("send_as_id") or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    return identity_id if identity_id > 0 and has_identity(identity_id) else 0
+
+
+def match_deep_retreat_summary_identity(text, now=None, reply_context=None):
     compact_text = RE_WHITESPACE.sub("", text or "")
     if not _is_deep_retreat_summary_text(text):
         return None, []
     now = float(now or 0)
     has_explicit_at = "@" in compact_text
 
+    reply_identity_id = _reply_context_identity(reply_context)
+    if reply_identity_id:
+        with use_identity(reply_identity_id):
+            if state["deep_retreat_enabled"] and _is_deep_retreat_summary_candidate_phase(now):
+                return reply_identity_id, [reply_identity_id]
+        return None, []
+
+    if not has_explicit_at:
+        return None, []
+
     matched_ids = []
-    fallback_ids = []
     for identity_id in get_identity_ids():
         with use_identity(identity_id):
             if not state["deep_retreat_enabled"]:
                 continue
-            phase = state.get("deep_retreat_phase")
-            next_time = float(state.get("next_deep_retreat_time", 0) or 0)
-            due_while_running = phase == "running" and now > 0 and 0 < next_time <= now
-            near_due_while_running = (
-                phase == "running"
-                and now > 0
-                and next_time > now
-                and next_time - now <= DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC
-            )
-            explicit_tagged_running_summary = phase == "running" and has_explicit_at
-            if phase not in ("summary_due", "observing_summary", "waiting_summary") and not due_while_running:
-                if not near_due_while_running and not explicit_tagged_running_summary:
-                    continue
+            if not _is_deep_retreat_summary_candidate_phase(now):
+                continue
             tags = get_send_as_tags(identity_id)
             if tags:
                 compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
                 if any(tag in compact_text for tag in compact_tags):
                     matched_ids.append(identity_id)
-                elif not has_explicit_at:
-                    fallback_ids.append(identity_id)
-            elif not has_explicit_at:
-                fallback_ids.append(identity_id)
 
     if len(matched_ids) == 1:
         return matched_ids[0], matched_ids
-    if not matched_ids and len(fallback_ids) == 1:
-        return fallback_ids[0], fallback_ids
-    if not matched_ids:
-        matched_ids = fallback_ids
     return None, matched_ids
 
 
-async def handle_deep_retreat_summary_broadcast(text, now):
+async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=None, reply_context=None):
     if not _is_deep_retreat_summary_text(text):
         return
 
-    target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now)
+    target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now, reply_context=reply_context)
     if target_id is None:
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)

@@ -103,6 +103,7 @@ from .config import (
     mark_account_offline,
 )
 from .persistence import mark_dirty
+from .log_retention import cleanup_message_logs
 from .timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .action_guard import (
     before_send as action_guard_before_send,
@@ -610,6 +611,7 @@ def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, 
     try:
         now = datetime.now(TZ_LOCAL)
         log_file = os.path.join(MESSAGES_DIR, f"{now.strftime('%Y-%m-%d')}.log")
+        cleanup_message_logs()
         family = resolve_reply_family(command) or ""
         payload = {
             "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),

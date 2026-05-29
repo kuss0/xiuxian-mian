@@ -13,39 +13,41 @@ ACTIVE_QUERY_LAST_RESORT = "last_resort"
 class ModuleManifest:
     name: str
     state_key: str = ""
+    replay_modules: tuple = ()
     reply_families: tuple = ()
     send_policy: str = SEND_POLICY_OBSERVE_THEN_SEND
     active_query_policy: str = ACTIVE_QUERY_FALLBACK_ONLY
     duplicate_guard: str = "runtime"
     replay_required: bool = True
+    workflow_names: tuple = ()
 
 
 _MANIFESTS = (
-    ModuleManifest("灵树", MODULE_KEY_MAP["灵树"], ("tree_panel", "tree_guard", "tree_harvest"), duplicate_guard="action_guard"),
-    ModuleManifest("法宝", MODULE_KEY_MAP["法宝"], ("pet",), duplicate_guard="pending_reply"),
-    ModuleManifest("温养器灵", MODULE_KEY_MAP["温养器灵"], ("pet_warm",), duplicate_guard="pending_reply"),
-    ModuleManifest("器灵试炼", MODULE_KEY_MAP["器灵试炼"], ("pet_trial",), duplicate_guard="pending_reply"),
-    ModuleManifest("放养", MODULE_KEY_MAP["放养"], ("ranch",), duplicate_guard="passive_result"),
-    ModuleManifest("野外历练", MODULE_KEY_MAP["野外历练"], ("wild_training",), duplicate_guard="reply_msg_id"),
-    ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], ("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), duplicate_guard="phase"),
-    ModuleManifest("观星监控", MODULE_KEY_MAP["观星监控"], send_policy=SEND_POLICY_PASSIVE_FIRST, duplicate_guard="passive_broadcast"),
-    ModuleManifest("观星", MODULE_KEY_MAP["观星"], ("guanxing_query", "guanxing_shift"), duplicate_guard="reply_msg_id"),
-    ModuleManifest("登天阶", MODULE_KEY_MAP["登天阶"], ("tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"), duplicate_guard="reply_msg_id"),
-    ModuleManifest("玄骨考校", MODULE_KEY_MAP["玄骨考校"], duplicate_guard="prompt_claim"),
-    ModuleManifest("极阴祖师", MODULE_KEY_MAP["极阴祖师"], duplicate_guard="prompt_claim"),
-    ModuleManifest("侍妾", MODULE_KEY_MAP["侍妾"], ("concubine_status", "concubine_greet", "concubine_gift", "concubine_dream", "concubine_fragment", "concubine_puzzle", "concubine_reacquire"), duplicate_guard="phase"),
-    ModuleManifest("天机代卜", MODULE_KEY_MAP["天机代卜"], ("concubine_tianji",), duplicate_guard="chain_state"),
-    ModuleManifest("共历心劫", MODULE_KEY_MAP["共历心劫"], ("concubine_heart",), duplicate_guard="round_state"),
-    ModuleManifest("南陇侯", MODULE_KEY_MAP["南陇侯"], ("nanlong",), duplicate_guard="prompt_claim"),
-    ModuleManifest("元婴", MODULE_KEY_MAP["元婴"], ("yuanying",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful"),
-    ModuleManifest("深度闭关", MODULE_KEY_MAP["深度闭关"], ("deep_retreat",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful"),
-    ModuleManifest("小世界", MODULE_KEY_MAP["小世界"], ("small_world_preach", "small_world_query", "small_world_manifest", "small_world_harvest", "small_world_refine"), duplicate_guard="phase"),
-    ModuleManifest("点卯", MODULE_KEY_MAP["点卯"], ("checkin", "sect_teach"), duplicate_guard="daily_state"),
-    ModuleManifest("闯塔", MODULE_KEY_MAP["闯塔"], ("tower",), duplicate_guard="daily_state"),
-    ModuleManifest("第二元神", MODULE_KEY_MAP["第二元神"], ("second_soul_status", "second_soul_train", "second_soul_choice"), duplicate_guard="phase"),
-    ModuleManifest("太一", MODULE_KEY_MAP["太一"], ("taiyi_yindao", "taiyi_node_search", "taiyi_node_define"), duplicate_guard="phase"),
-    ModuleManifest("自动副本", MODULE_KEY_MAP["自动副本"], ("replica_join",), duplicate_guard="run_state"),
-    ModuleManifest("储物袋", "", ("storage_bag", "storage_bag_listing", "storage_bag_buy", "storage_bag_gift"), duplicate_guard="transfer_state"),
+    ModuleManifest("灵树", MODULE_KEY_MAP["灵树"], reply_families=("tree_panel", "tree_guard", "tree_harvest"), replay_required=False, duplicate_guard="action_guard"),
+    ModuleManifest("法宝", MODULE_KEY_MAP["法宝"], reply_families=("pet",), replay_required=False, duplicate_guard="pending_reply"),
+    ModuleManifest("温养器灵", MODULE_KEY_MAP["温养器灵"], reply_families=("pet_warm",), replay_required=False, duplicate_guard="pending_reply"),
+    ModuleManifest("器灵试炼", MODULE_KEY_MAP["器灵试炼"], reply_families=("pet_trial",), replay_required=False, duplicate_guard="pending_reply"),
+    ModuleManifest("放养", MODULE_KEY_MAP["放养"], reply_families=("ranch",), replay_required=False, duplicate_guard="passive_result"),
+    ModuleManifest("野外历练", MODULE_KEY_MAP["野外历练"], replay_modules=("wild_training",), reply_families=("wild_training",), duplicate_guard="reply_msg_id"),
+    ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], reply_families=("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), replay_required=False, duplicate_guard="phase"),
+    ModuleManifest("观星监控", MODULE_KEY_MAP["观星监控"], send_policy=SEND_POLICY_PASSIVE_FIRST, replay_required=False, duplicate_guard="passive_broadcast"),
+    ModuleManifest("观星", MODULE_KEY_MAP["观星"], reply_families=("guanxing_query", "guanxing_shift"), replay_required=False, duplicate_guard="reply_msg_id"),
+    ModuleManifest("登天阶", MODULE_KEY_MAP["登天阶"], reply_families=("tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"), replay_required=False, duplicate_guard="reply_msg_id"),
+    ModuleManifest("玄骨考校", MODULE_KEY_MAP["玄骨考校"], replay_required=False, duplicate_guard="prompt_claim"),
+    ModuleManifest("极阴祖师", MODULE_KEY_MAP["极阴祖师"], replay_required=False, duplicate_guard="prompt_claim"),
+    ModuleManifest("侍妾", MODULE_KEY_MAP["侍妾"], reply_families=("concubine_status", "concubine_greet", "concubine_gift", "concubine_dream", "concubine_fragment", "concubine_puzzle", "concubine_reacquire"), replay_required=False, duplicate_guard="phase", workflow_names=("concubine",)),
+    ModuleManifest("天机代卜", MODULE_KEY_MAP["天机代卜"], reply_families=("concubine_tianji",), replay_required=False, duplicate_guard="chain_state"),
+    ModuleManifest("共历心劫", MODULE_KEY_MAP["共历心劫"], reply_families=("concubine_heart",), replay_required=False, duplicate_guard="round_state"),
+    ModuleManifest("南陇侯", MODULE_KEY_MAP["南陇侯"], reply_families=("nanlong",), replay_required=False, duplicate_guard="prompt_claim"),
+    ModuleManifest("元婴", MODULE_KEY_MAP["元婴"], replay_modules=("yuanying",), reply_families=("yuanying",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful"),
+    ModuleManifest("深度闭关", MODULE_KEY_MAP["深度闭关"], replay_modules=("deep_retreat",), reply_families=("deep_retreat",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful", workflow_names=("deep_retreat",)),
+    ModuleManifest("小世界", MODULE_KEY_MAP["小世界"], reply_families=("small_world_preach", "small_world_query", "small_world_manifest", "small_world_harvest", "small_world_refine"), replay_required=False, duplicate_guard="phase"),
+    ModuleManifest("点卯", MODULE_KEY_MAP["点卯"], reply_families=("checkin", "sect_teach"), replay_required=False, duplicate_guard="daily_state"),
+    ModuleManifest("闯塔", MODULE_KEY_MAP["闯塔"], reply_families=("tower",), replay_required=False, duplicate_guard="daily_state"),
+    ModuleManifest("第二元神", MODULE_KEY_MAP["第二元神"], reply_families=("second_soul_status", "second_soul_train", "second_soul_choice"), replay_required=False, duplicate_guard="phase"),
+    ModuleManifest("太一", MODULE_KEY_MAP["太一"], replay_modules=("taiyi",), reply_families=("taiyi_yindao", "taiyi_node_search", "taiyi_node_define"), duplicate_guard="phase", workflow_names=("taiyi",)),
+    ModuleManifest("自动副本", MODULE_KEY_MAP["自动副本"], replay_modules=("join_dungeon", "app_replica"), reply_families=("replica_join", "dungeon_join"), duplicate_guard="run_state", workflow_names=("dungeon_join",)),
+    ModuleManifest("储物袋", "", replay_modules=("storage_bag",), reply_families=("storage_bag", "storage_bag_listing", "storage_bag_buy", "storage_bag_gift"), duplicate_guard="transfer_state", workflow_names=("storage_bag_transfer",)),
 )
 
 MODULE_MANIFESTS = {manifest.name: manifest for manifest in _MANIFESTS}
@@ -53,6 +55,16 @@ REPLY_FAMILY_TO_MODULE = {
     family: manifest.name
     for manifest in _MANIFESTS
     for family in tuple(manifest.reply_families or ())
+}
+WORKFLOW_TO_MODULE = {
+    workflow: manifest.name
+    for manifest in _MANIFESTS
+    for workflow in tuple(manifest.workflow_names or ())
+}
+REPLAY_MODULE_TO_MODULE = {
+    replay_module: manifest.name
+    for manifest in _MANIFESTS
+    for replay_module in tuple(manifest.replay_modules or ())
 }
 
 
@@ -62,6 +74,14 @@ def get_module_manifest(name):
 
 def get_module_name_for_reply_family(family):
     return REPLY_FAMILY_TO_MODULE.get(str(family or "").strip(), "")
+
+
+def get_module_name_for_workflow(workflow):
+    return WORKFLOW_TO_MODULE.get(str(workflow or "").strip(), "")
+
+
+def get_module_name_for_replay_module(replay_module):
+    return REPLAY_MODULE_TO_MODULE.get(str(replay_module or "").strip(), "")
 
 
 def iter_module_manifests():
@@ -77,14 +97,94 @@ def validate_module_manifest_coverage():
     ]
     seen_families = {}
     duplicate_reply_families = []
+    seen_replay_modules = {}
+    duplicate_replay_modules = []
+    seen_workflows = {}
+    duplicate_workflows = []
     for manifest in _MANIFESTS:
+        for replay_module in tuple(manifest.replay_modules or ()):
+            if replay_module in seen_replay_modules:
+                duplicate_replay_modules.append(replay_module)
+            seen_replay_modules[replay_module] = manifest.name
         for family in tuple(manifest.reply_families or ()):
             if family in seen_families:
                 duplicate_reply_families.append(family)
             seen_families[family] = manifest.name
+        for workflow in tuple(manifest.workflow_names or ()):
+            if workflow in seen_workflows:
+                duplicate_workflows.append(workflow)
+            seen_workflows[workflow] = manifest.name
     return {
-        "ok": not missing_modules and not invalid_state_keys and not duplicate_reply_families,
+        "ok": not missing_modules and not invalid_state_keys and not duplicate_replay_modules and not duplicate_reply_families and not duplicate_workflows,
         "missing_modules": missing_modules,
         "invalid_state_keys": invalid_state_keys,
+        "duplicate_replay_modules": duplicate_replay_modules,
         "duplicate_reply_families": duplicate_reply_families,
+        "duplicate_workflows": duplicate_workflows,
+    }
+
+
+def validate_replay_sample_coverage(samples):
+    sample_items = samples.values() if isinstance(samples, dict) else samples
+    sample_module_names = set()
+    sample_families = set()
+    missing_sample_sources = []
+    missing_sample_modules = []
+    missing_sample_families = []
+    unknown_sample_modules = []
+    unknown_sample_families = []
+    sample_pairs = samples.items() if isinstance(samples, dict) else (
+        (getattr(sample, "sample_id", ""), sample) for sample in sample_items
+    )
+    for sample_id, payload in sample_pairs:
+        sample_source = ""
+        sample_module = ""
+        sample_family = ""
+        if isinstance(payload, dict):
+            sample_source = str(payload.get("source") or "").strip()
+            sample_module = str(payload.get("module") or "").strip()
+            sample_family = str(payload.get("family") or "").strip()
+        else:
+            sample_source = str(getattr(payload, "source", "") or "").strip()
+            sample_module = str(getattr(payload, "module", "") or "").strip()
+            sample_family = str(getattr(payload, "family", "") or "").strip()
+        if not sample_source:
+            missing_sample_sources.append(str(sample_id))
+        if not sample_module:
+            missing_sample_modules.append(str(sample_id))
+        else:
+            sample_module_names.add(sample_module)
+            if not get_module_name_for_replay_module(sample_module):
+                unknown_sample_modules.append(str(sample_id))
+        if not sample_family:
+            missing_sample_families.append(str(sample_id))
+        else:
+            sample_families.add(sample_family)
+            if not get_module_name_for_reply_family(sample_family):
+                unknown_sample_families.append(str(sample_id))
+
+    missing_required_modules = []
+    for manifest in _MANIFESTS:
+        if not manifest.replay_required:
+            continue
+        has_module_sample = any(replay_module in sample_module_names for replay_module in tuple(manifest.replay_modules or ()))
+        has_family_sample = any(family in sample_families for family in tuple(manifest.reply_families or ()))
+        if not has_module_sample and not has_family_sample:
+            missing_required_modules.append(manifest.name)
+
+    return {
+        "ok": (
+            not missing_sample_sources
+            and not missing_sample_modules
+            and not missing_sample_families
+            and not unknown_sample_modules
+            and not unknown_sample_families
+            and not missing_required_modules
+        ),
+        "missing_sample_sources": missing_sample_sources,
+        "missing_sample_modules": missing_sample_modules,
+        "missing_sample_families": missing_sample_families,
+        "unknown_sample_modules": unknown_sample_modules,
+        "unknown_sample_families": unknown_sample_families,
+        "missing_required_modules": missing_required_modules,
     }

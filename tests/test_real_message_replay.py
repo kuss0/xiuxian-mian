@@ -1,6 +1,7 @@
 import copy
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,17 +13,25 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model.config import CD_BUFFER_SEC, TAIYI_CYCLE_CD_SEC
-from model.features import deep_retreat, storage_bag, taiyi
+from model.features import deep_retreat, storage_bag, taiyi, workflow_log
 from model.features.storage_bag import handle_storage_bag_transfer_reply, start_storage_bag_transfer_task
+from model.real_message_replay import get_real_message_text, iter_real_message_samples
 
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "real_message_samples.json"
 
 
 def real_text(sample_id):
-    with FIXTURE_PATH.open("r", encoding="utf-8") as fp:
-        samples = json.load(fp)
-    return samples[sample_id]["text"]
+    return get_real_message_text(FIXTURE_PATH, sample_id)
+
+
+def _read_workflow_events(tmpdir):
+    events = []
+    for path in Path(tmpdir).glob("**/*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                events.append(json.loads(line))
+    return events
 
 
 class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
@@ -45,6 +54,20 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
         state_module.ensure_identity_registered(send_as_id)
         state_module.update_send_as_profile(send_as_id, username=username)
 
+    def test_replay_fixture_can_filter_by_module_and_family(self):
+        storage_samples = list(iter_real_message_samples(FIXTURE_PATH, module="storage_bag"))
+        listing_samples = list(iter_real_message_samples(FIXTURE_PATH, family="storage_bag_listing"))
+        dungeon_samples = list(iter_real_message_samples(FIXTURE_PATH, module="join_dungeon"))
+        yuanying_samples = list(iter_real_message_samples(FIXTURE_PATH, family="yuanying"))
+
+        self.assertGreaterEqual(len(storage_samples), 3)
+        self.assertEqual(2, len(listing_samples))
+        self.assertEqual(1, len(dungeon_samples))
+        self.assertEqual(1, len(yuanying_samples))
+        self.assertTrue(all(sample.text for sample in storage_samples))
+        self.assertIn("副本ID", dungeon_samples[0].text)
+        self.assertIn("元神归窍总结", yuanying_samples[0].text)
+
     async def test_deep_retreat_real_summary_finalizes_wait(self):
         send_as_id = 3870643893
         now = 1_779_916_182.0
@@ -56,16 +79,19 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["deep_retreat_summary_sent_at"] = now - 10
             state_module.state["last_deep_retreat_summary_msg_id"] = 9491712
 
-        with (
-            patch.object(deep_retreat, "console_log"),
-            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
-            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
-            patch.object(deep_retreat, "save_state"),
-        ):
-            await deep_retreat.handle_deep_retreat_summary_broadcast(
-                real_text("deep_retreat.tagged_summary.jihejish"),
-                now,
-            )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir),
+                patch.object(deep_retreat, "console_log"),
+                patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
+                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.handle_deep_retreat_summary_broadcast(
+                    real_text("deep_retreat.tagged_summary.jihejish"),
+                    now,
+                )
+                workflow_events = _read_workflow_events(tmpdir)
 
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
@@ -74,6 +100,13 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
             and call.kwargs.get("decision") == "summary_finalized"
             and "@jihejish" in str(call.kwargs.get("matched_text") or "")
             for call in inbox_mock.call_args_list
+        ))
+        self.assertTrue(any(
+            event.get("workflow") == "deep_retreat"
+            and event.get("decision") == "summary_finalized"
+            and event.get("identity_id") == send_as_id
+            and "@jihejish" in event.get("text", "")
+            for event in workflow_events
         ))
 
     async def test_deep_retreat_real_non_summary_is_ignored(self):
@@ -111,18 +144,21 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["taiyi_node_search_enabled"] = False
             state_module.state["taiyi_phase"] = "idle"
             state_module.state["next_taiyi_cycle_time"] = now - 1
-            with (
-                patch.object(taiyi, "send_audit_log", new=AsyncMock()),
-                patch.object(taiyi, "_fire_and_forget") as fire_mock,
-                patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
-                patch.object(taiyi, "save_state"),
-            ):
-                handled = await taiyi.handle_taiyi_yindao_reply(
-                    real_text("taiyi.yindao.success_water"),
-                    now,
-                    reply_to,
-                    matched_family="taiyi_yindao",
-                )
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with (
+                    patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir),
+                    patch.object(taiyi, "send_audit_log", new=AsyncMock()),
+                    patch.object(taiyi, "_fire_and_forget") as fire_mock,
+                    patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+                    patch.object(taiyi, "save_state"),
+                ):
+                    handled = await taiyi.handle_taiyi_yindao_reply(
+                        real_text("taiyi.yindao.success_water"),
+                        now,
+                        reply_to,
+                        matched_family="taiyi_yindao",
+                    )
+                    workflow_events = _read_workflow_events(tmpdir)
 
         self.assertTrue(handled)
         fire_mock.assert_not_called()
@@ -135,6 +171,14 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual("idle", state_module.state["taiyi_phase"])
             self.assertEqual(now + TAIYI_CYCLE_CD_SEC + CD_BUFFER_SEC, state_module.state["next_taiyi_cycle_time"])
+        self.assertTrue(any(
+            event.get("workflow") == "taiyi"
+            and event.get("decision") == "calibrate_manual_late_no_search"
+            and event.get("family") == "taiyi_yindao"
+            and event.get("reply_to_msg_id") == 9446793
+            and "你引动【水之道】" in event.get("text", "")
+            for event in workflow_events
+        ))
 
     async def test_storage_bag_real_manual_listing_replaces_original_and_syncs_inventory(self):
         source_id = 1001

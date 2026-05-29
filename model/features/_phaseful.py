@@ -51,6 +51,7 @@ class PhasefulSpec:
     running_due_console: str
     cd_due_console: str
     summary_received_console: str
+    source_module: str = ""
     summary_trigger_command: str = "1"
     summary_passive_triggers: tuple = ()
     summary_passive_timeout_sec: int = 90
@@ -508,7 +509,7 @@ async def _send_summary_trigger(spec, console_message):
     console_log(console_message)
     command = _choose_passive_summary_trigger(spec)
     is_passive = command != spec.summary_trigger_command
-    msg = await send_game_command(command, track=False, priority="chain")
+    msg = await send_game_command(command, track=False, priority="chain", source_module=spec.source_module or None)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         _schedule_summary_trigger_retry(spec, sent_at)

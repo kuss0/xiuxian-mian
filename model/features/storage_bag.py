@@ -7,6 +7,7 @@ from ..persistence import save_state
 from ..runtime import _get_identity_client, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
 from ..timing import fmt_abs_ts
+from . import workflow_log
 
 CMD_STORAGE_BAG = ".储物袋"
 CMD_STORAGE_BAG_LISTING = ".上架"
@@ -220,6 +221,21 @@ def _storage_transfer_log(message, *, level="info"):
     if len(_storage_bag_transfer_state["logs"]) > 80:
         _storage_bag_transfer_state["logs"] = _storage_bag_transfer_state["logs"][-80:]
     _storage_bag_transfer_state["updated_at"] = time.time()
+    op_id = str(_storage_bag_transfer_state.get("op_id") or "").strip()
+    if op_id:
+        workflow_log.append_workflow_event(
+            "storage_bag_transfer",
+            op_id=op_id,
+            step=str(_storage_bag_transfer_state.get("step") or ""),
+            event=str(message or ""),
+            status=str(level or "info"),
+            identity_id=int(
+                _storage_bag_transfer_state.get("source_identity_id")
+                or _storage_bag_transfer_state.get("target_identity_id")
+                or 0
+            ),
+            state_after=str(_storage_bag_transfer_state.get("step") or ""),
+        )
     return entry
 
 
@@ -268,12 +284,36 @@ def _record_storage_transfer_event(
             parts.append(str(command).strip())
         if detail:
             parts.append(str(detail).strip())
+        workflow_identity_id = int(identity_id or _storage_bag_transfer_state.get("source_identity_id") or 0)
+        workflow_step = step or str(_storage_bag_transfer_state.get("step") or "")
+        workflow_detail = {
+            "listing_id": str(listing_id or ""),
+            "reason": str(reason or ""),
+            "detail": str(detail or ""),
+        }
+        workflow_log.append_workflow_event(
+            "storage_bag_transfer",
+            op_id=op_id,
+            step=workflow_step,
+            event=str(event or "事件").strip() or "事件",
+            status=kind,
+            identity_id=workflow_identity_id,
+            msg_id=msg_id,
+            reply_to_msg_id=reply_msg_id,
+            family=family,
+            command=command,
+            text=matched_text,
+            decision=decision or str(event or "").strip(),
+            detail=workflow_detail,
+            route_source=route_source,
+            state_after=workflow_step,
+        )
         from . import passive_inbox
 
         return passive_inbox.record_passive_inbox_event(
             kind,
             module="storage_bag_transfer",
-            identity_id=int(identity_id or _storage_bag_transfer_state.get("source_identity_id") or 0),
+            identity_id=workflow_identity_id,
             reason=reason,
             summary="｜".join(part for part in parts if part),
             family=family,
