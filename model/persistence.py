@@ -42,6 +42,7 @@ from .state import (
     get_replica_run_state,
     get_replica_virtual_hall_match_enabled_map,
     get_send_as_profile,
+    get_storage_bag_api_config,
     get_storage_bag_item_rules,
     get_storage_bag_records,
     new_identity_state,
@@ -71,6 +72,7 @@ from .state import (
     set_replica_run_state,
     set_replica_virtual_hall_match_enabled_map,
     set_send_as_profile,
+    set_storage_bag_api_config,
     set_storage_bag_item_rules,
     set_storage_bag_records,
     get_accounts,
@@ -1682,6 +1684,11 @@ _META_STATE_CODEC = {
         get_replica_query_aggregator_config,
         _encode_meta_json,
         lambda value: set_replica_query_aggregator_config(_decode_meta_json(value, {})),
+    ),
+    "storage_bag_api_config": (
+        get_storage_bag_api_config,
+        _encode_meta_json,
+        lambda value: set_storage_bag_api_config(_decode_meta_json(value, {})),
     ),
     "storage_bag_records": (
         get_storage_bag_records,

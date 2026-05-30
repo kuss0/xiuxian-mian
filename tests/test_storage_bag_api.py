@@ -1,0 +1,431 @@
+import atexit
+import copy
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+import requests
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ENV_PATH = PROJECT_ROOT / ".env"
+CREATED_ENV = False
+
+if not ENV_PATH.exists():
+    ENV_PATH.write_text(
+        "\n".join(
+            [
+                "API_ID=12345",
+                "API_HASH=00000000000000000000000000000000",
+                "TG_PROXY_TYPE=",
+                "TG_PROXY_HOST=127.0.0.1:7890",
+                "LOG_GROUP_ID=0",
+                "LOG_SEND_MODE=account",
+                "ADMIN_ID=1",
+                "CHAOGU_UI_HOST=127.0.0.1",
+                "CHAOGU_UI_PORT=3030",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    CREATED_ENV = True
+
+if CREATED_ENV:
+    atexit.register(lambda: ENV_PATH.exists() and ENV_PATH.unlink())
+
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from model import state as state_module
+from model import storage_bag_api_client
+from model import ui
+
+
+def _response(status_code=200, text="{}", session_value=""):
+    headers = {}
+    cookies = requests.cookies.cookiejar_from_dict({})
+    if session_value:
+        cookies = requests.cookies.cookiejar_from_dict({"session": session_value})
+        headers["Set-Cookie"] = f"session={session_value}; Path=/"
+    return SimpleNamespace(
+        status_code=status_code,
+        text=text,
+        headers=headers,
+        cookies=cookies,
+        json=lambda: __import__("json").loads(text),
+    )
+
+
+class _FakeSession:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = []
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls.append({"url": url, "headers": headers or {}, "timeout": timeout})
+        if not self.responses:
+            raise AssertionError(f"unexpected GET: {url}")
+        return self.responses.pop(0)
+
+
+class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self.identity_id = 1001
+        state_module.ensure_identity_registered(self.identity_id)
+        state_module.set_send_as_profile(self.identity_id, label="来源号", username="source", daohao="青源")
+        state_module.set_storage_bag_records({})
+        state_module.set_storage_bag_api_config({})
+        ui._storage_bag_api_state.update({
+            "running": False,
+            "last_ok": False,
+            "last_message": "",
+            "last_updated_at": 0,
+            "updated_count": 0,
+            "skipped_count": 0,
+            "keepalive_running": False,
+        })
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        ui._storage_bag_api_state.update({
+            "running": False,
+            "last_ok": False,
+            "last_message": "",
+            "last_updated_at": 0,
+            "updated_count": 0,
+            "skipped_count": 0,
+            "keepalive_running": False,
+        })
+
+    def test_storage_bag_api_snapshot_hides_credentials(self):
+        ui.ui_set_storage_bag_api_config({
+            "base_url": "https://example.invalid/",
+            "api_token": "token-value",
+            "cookie": "session=hidden",
+        })
+
+        snapshot = ui.get_storage_bag_api_snapshot()
+
+        self.assertTrue(snapshot["configured"])
+        self.assertEqual("https://example.invalid", snapshot["base_url"])
+        self.assertEqual("/api/bootstrap", snapshot["verify_path"])
+        self.assertEqual("/api/me", snapshot["refresh_path"])
+        self.assertTrue(snapshot["api_token_configured"])
+        self.assertTrue(snapshot["cookie_configured"])
+        self.assertTrue(snapshot["keepalive_enabled"] is False)
+        self.assertNotIn("api_token", snapshot)
+        self.assertNotIn("cookie", snapshot)
+
+    def test_cookie_header_paste_normalizes_to_session_cookie(self):
+        cookie = storage_bag_api_client.normalize_storage_bag_api_cookie(
+            "Cookie: cf_clearance=skip; session=SESSION_VALUE; theme=dark"
+        )
+
+        self.assertEqual("session=SESSION_VALUE", cookie)
+
+    def test_storage_bag_api_client_bootstrap_extracts_token_and_rotated_cookie(self):
+        html = '<html><script>window.DASHBOARD_API_TOKEN = "token-from-html";</script></html>'
+        fake_session = _FakeSession([
+            _response(200, html, "ROTATED"),
+            _response(200, '{"game_items":{"mat_001":{"name":"灵石","type":"material"}}}', ""),
+        ])
+        with patch("model.storage_bag_api_client.requests.Session", return_value=fake_session):
+            result = storage_bag_api_client._request_json_sync({
+                "base_url": "https://example.invalid",
+                "cookie": "session=OLD",
+            }, "/api/bootstrap")
+
+        self.assertEqual("token-from-html", result.api_token)
+        self.assertEqual("session=ROTATED", result.cookie)
+        self.assertEqual({"game_items": {"mat_001": {"name": "灵石", "type": "material"}}}, result.payload)
+        self.assertEqual(2, len(fake_session.calls))
+        self.assertIn("X-API-Token", fake_session.calls[1]["headers"])
+        self.assertEqual("token-from-html", fake_session.calls[1]["headers"]["X-API-Token"])
+
+    def test_storage_bag_api_client_uses_configured_token_without_homepage_probe(self):
+        fake_session = _FakeSession([
+            _response(200, '{"characters":[]}', "ROTATED"),
+        ])
+        with patch("model.storage_bag_api_client.requests.Session", return_value=fake_session):
+            result = storage_bag_api_client._request_json_sync({
+                "base_url": "https://example.invalid",
+                "cookie": "session=OLD",
+                "api_token": "configured-token",
+            }, "/api/me")
+
+        self.assertEqual({"characters": []}, result.payload)
+        self.assertEqual("configured-token", result.api_token)
+        self.assertEqual("session=ROTATED", result.cookie)
+        self.assertEqual(1, len(fake_session.calls))
+        self.assertEqual("https://example.invalid/api/me", fake_session.calls[0]["url"])
+        self.assertEqual("configured-token", fake_session.calls[0]["headers"]["X-API-Token"])
+
+    async def test_verify_enables_keepalive_and_persists_item_map(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+        })
+        verify_result = {
+            "ok": True,
+            "verified": True,
+            "cookie": "session=rotated",
+            "api_token": "token-from-html",
+            "item_name_map": {"mat_001": "灵石", "mat_101": "木髓"},
+            "status_code": 200,
+        }
+
+        with patch("model.ui.verify_storage_bag_api", new=AsyncMock(return_value=verify_result)):
+            ok, message, snapshot = await ui.ui_verify_storage_bag_api({})
+
+        self.assertTrue(ok)
+        self.assertIn("验证成功", message)
+        self.assertTrue(snapshot["keepalive_enabled"])
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated", config["cookie"])
+        self.assertEqual("token-from-html", config["api_token"])
+        self.assertEqual("灵石", config["item_name_map"]["mat_001"])
+        self.assertGreater(config["verified_at"], 0)
+        self.assertGreater(config["next_keepalive_at"], 0)
+
+    async def test_manual_api_refresh_updates_storage_records_without_game_send(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+            "item_name_map": {"mat_001": "灵石", "mat_101": "木髓"},
+        })
+        api_payload = {
+            "characters": [
+                {
+                    "telegram_id": self.identity_id,
+                    "username": "source",
+                    "dao_name": "青源",
+                    "inventory": {
+                        "items": [{"name": "青竹蜂云剑", "quantity": 1}],
+                        "materials": {"mat_001": 5000, "mat_101": 3},
+                    },
+                }
+            ]
+        }
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload=api_payload,
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/me",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)), \
+                patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        self.assertEqual(1, snapshot["updated_count"])
+        send_mock.assert_not_called()
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated", config["cookie"])
+        self.assertEqual("token-from-html", config["api_token"])
+        record = state_module.get_storage_bag_records()[str(self.identity_id)]
+        self.assertEqual({"青竹蜂云剑": 1, "灵石": 5000, "木髓": 3}, record["items"])
+        self.assertEqual("storage_bag_api_character", record["source"])
+
+    async def test_manual_api_refresh_accepts_direct_cultivator_shape(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+            "item_name_map": {"mat_001": "灵石"},
+        })
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "telegram_id": self.identity_id,
+                "username": "source",
+                "dao_name": "青源",
+                "inventory": {
+                    "items": [{"item_id": "treasure_201", "name": "青竹蜂云剑", "quantity": 1}],
+                    "materials": {"mat_001": 50},
+                },
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/cultivator/source",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)):
+            ok, message, _snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        record = state_module.get_storage_bag_records()[str(self.identity_id)]
+        self.assertEqual({"青竹蜂云剑": 1, "灵石": 50}, record["items"])
+        self.assertEqual("storage_bag_api_cultivator", record["source"])
+
+    async def test_manual_api_refresh_queries_other_roles_with_same_cookie(self):
+        other_identity_id = 2002
+        state_module.ensure_identity_registered(other_identity_id)
+        state_module.set_send_as_profile(other_identity_id, label="外号", username="other", daohao="外道")
+        with patch("model.ui.get_identity_ids", return_value=[self.identity_id, other_identity_id]):
+            state_module.set_storage_bag_api_config({
+                "base_url": "https://example.invalid",
+                "cookie": "session=old",
+                "api_token": "token-from-html",
+                "item_name_map": {"mat_001": "灵石"},
+            })
+            me_result = storage_bag_api_client.StorageBagApiResult(
+                payload={
+                    "characters": [
+                        {
+                            "telegram_id": self.identity_id,
+                            "username": "source",
+                            "dao_name": "青源",
+                            "inventory": {
+                                "items": [{"name": "青竹蜂云剑", "quantity": 1}],
+                                "materials": {"mat_001": 5000},
+                            },
+                        }
+                    ]
+                },
+                status_code=200,
+                cookie="session=rotated-me",
+                api_token="token-from-html",
+                path="/api/me",
+            )
+            cultivator_result = storage_bag_api_client.StorageBagApiResult(
+                payload={
+                    "username": "other",
+                    "dao_name": "外道",
+                    "inventory": {
+                        "items": [{"item_id": "treasure_201", "name": "青竹蜂云剑", "quantity": 2}],
+                        "materials": {"mat_001": 77},
+                    },
+                },
+                status_code=200,
+                cookie="session=rotated-other",
+                api_token="token-from-html",
+                path="/api/cultivator/other",
+            )
+            call_paths = []
+
+            async def fake_fetch(config, path):
+                call_paths.append(path)
+                if path == storage_bag_api_client.REFRESH_PATH:
+                    return me_result
+                if path == storage_bag_api_client.build_cultivator_path("other"):
+                    return cultivator_result
+                raise AssertionError(f"unexpected path: {path}")
+
+            with patch("model.ui.fetch_storage_bag_result", new=fake_fetch), \
+                    patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+                ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 2 个身份", message)
+        self.assertEqual([storage_bag_api_client.REFRESH_PATH, "/api/cultivator/other"], call_paths)
+        send_mock.assert_not_called()
+        records = state_module.get_storage_bag_records()
+        self.assertEqual({"青竹蜂云剑": 1, "灵石": 5000}, records[str(self.identity_id)]["items"])
+        self.assertEqual({"青竹蜂云剑": 2, "灵石": 77}, records[str(other_identity_id)]["items"])
+        self.assertEqual("session=rotated-other", state_module.get_storage_bag_api_config()["cookie"])
+        self.assertEqual(2, snapshot["updated_count"])
+
+    async def test_manual_api_refresh_does_not_mutate_on_unmatched_payload(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+        })
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"旧物": 1}}})
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "characters": [
+                    {
+                        "telegram_id": 9999,
+                        "username": "other",
+                        "inventory": {"items": [{"name": "木髓", "quantity": 3}]},
+                    }
+                ]
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/me",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)):
+            ok, message, _snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertFalse(ok)
+        self.assertIn("未匹配", message)
+        self.assertEqual({"旧物": 1}, state_module.get_storage_bag_records()[str(self.identity_id)]["items"])
+
+    async def test_keepalive_scheduler_only_updates_cookie_status(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-old",
+            "keepalive_enabled": True,
+            "verified_at": 1,
+            "last_keepalive_at": 1,
+            "next_keepalive_at": 0,
+            "item_name_map": {"mat_001": "灵石"},
+        })
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"旧物": 1}}})
+        verify_result = {
+            "ok": True,
+            "verified": True,
+            "cookie": "session=rotated",
+            "api_token": "token-new",
+            "item_name_map": {"mat_001": "灵石"},
+            "status_code": 200,
+        }
+
+        with patch("model.ui.verify_storage_bag_api", new=AsyncMock(return_value=verify_result)), \
+                patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+            await ui.run_storage_bag_api_keepalive_scheduler(1000)
+
+        send_mock.assert_not_called()
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated", config["cookie"])
+        self.assertEqual("token-new", config["api_token"])
+        self.assertTrue(config["keepalive_enabled"])
+        self.assertTrue(config["last_keepalive_ok"])
+        self.assertGreater(config["next_keepalive_at"], 1000)
+        self.assertEqual({"旧物": 1}, state_module.get_storage_bag_records()[str(self.identity_id)]["items"])
+
+    async def test_keepalive_scheduler_disables_on_auth_failure(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-old",
+            "keepalive_enabled": True,
+            "verified_at": 1,
+            "next_keepalive_at": 0,
+        })
+        exc = storage_bag_api_client.StorageBagApiError(
+            "HTTP 401",
+            status_code=401,
+            auth_failed=True,
+            cookie="session=rotated",
+            api_token="token-new",
+        )
+
+        with patch("model.ui.verify_storage_bag_api", new=AsyncMock(side_effect=exc)):
+            await ui.run_storage_bag_api_keepalive_scheduler(1000)
+
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated", config["cookie"])
+        self.assertEqual("token-new", config["api_token"])
+        self.assertFalse(config["keepalive_enabled"])
+        self.assertFalse(config["last_keepalive_ok"])
+        self.assertIn("401", config["last_keepalive_error"])
+
+
+if __name__ == "__main__":
+    unittest.main()

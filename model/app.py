@@ -170,7 +170,7 @@ from .state import (
     use_identity,
 )
 from .timing import fmt_time_after
-from .ui import start_ui_server, stop_ui_server
+from .ui import run_storage_bag_api_keepalive_scheduler, start_ui_server, stop_ui_server
 
 _bot_silence_auto_paused = False
 _identity_scheduler_task = None
@@ -686,6 +686,7 @@ async def _run_identity_schedulers(now):
 async def _run_global_schedulers(now):
     await run_guanxing_monitor_scheduler(now)
     await run_guanxing_scheduler(now)
+    await run_storage_bag_api_keepalive_scheduler(now)
     await run_storage_bag_transfer_scheduler(now)
     await run_tiandao_judgement_scheduler(now)
     await run_tianji_quiz_scheduler(now)

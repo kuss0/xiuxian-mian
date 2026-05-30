@@ -80,7 +80,7 @@ from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normaliz
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.stargazer import sync_stargazer_total_slots
-from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, get_storage_bag_transfer_snapshot, start_storage_bag_transfer_task
+from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, get_storage_bag_transfer_snapshot, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yuanying import get_yuanying_phase_text
@@ -93,6 +93,15 @@ from .official_schedule import (
 )
 from .persistence import save_state
 from .runtime import _fire_and_forget, consume_unseen_startup_alerts, console_log, fetch_forum_topics, get_game_send_queue_snapshot, redeem_ui_login_token, send_audit_log, send_game_command, touch_ui_session
+from .storage_bag_api_client import (
+    REFRESH_PATH as STORAGE_BAG_API_REFRESH_PATH,
+    VERIFY_PATH as STORAGE_BAG_API_VERIFY_PATH,
+    StorageBagApiError,
+    build_cultivator_path,
+    fetch_storage_bag_result,
+    normalize_storage_bag_api_cookie,
+    verify_storage_bag_api,
+)
 from .state import (
     convert_window_hours_local_to_utc,
     format_window_text,
@@ -134,6 +143,7 @@ from .state import (
     is_replica_gold_dps_allowed,
     get_stargazer_star_choice,
     get_stargazer_total_slots,
+    get_storage_bag_api_config,
     get_storage_bag_item_rules,
     get_storage_bag_records,
     get_tianti_rank_choice,
@@ -164,7 +174,9 @@ from .state import (
     set_replica_participant_identity_ids,
     set_replica_query_aggregator_config,
     set_replica_virtual_hall_match_enabled_map,
+    set_storage_bag_api_config,
     set_storage_bag_item_rules,
+    set_storage_bag_records,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
     state,
@@ -175,7 +187,22 @@ from .timing import fmt_abs_ts
 _ui_server = None
 _STORAGE_BAG_TRANSFER_METHODS = {"basic", "gift", "blocked", "unknown"}
 _STORAGE_BAG_DEFAULT_TAG = "未知"
-_STORAGE_BAG_DEFAULT_TAGS = ["未知", "灵草", "种子", "丹药", "材料", "装备", "特殊"]
+_STORAGE_BAG_DEFAULT_TAGS = [
+    "货币",
+    "丹方图纸图谱",
+    "装备武器防具",
+    "称号",
+    "丹药",
+    "灵草",
+    "种子",
+    "材料",
+    "法则",
+    "副本",
+    "符箓",
+    "特殊",
+    "未知",
+]
+_STORAGE_BAG_TITLE_ITEMS = {"乱星海炼体第一人", "稳控全场", "降伏年兽", "始皇的新衣"}
 UI_PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 UI_FAVICON_PNG_PATH = os.path.join(UI_PROJECT_ROOT, "favicon.png")
 UI_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(UI_PROJECT_ROOT, "data", "storage_bag_item_rules.json")
@@ -187,6 +214,16 @@ UI_STATIC_CONTENT_TYPES = {
     ".js": "application/javascript; charset=utf-8",
 }
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
+_storage_bag_api_state = {
+    "running": False,
+    "last_ok": False,
+    "last_message": "",
+    "last_updated_at": 0,
+    "updated_count": 0,
+    "skipped_count": 0,
+}
+_STORAGE_BAG_API_KEEPALIVE_INTERVAL_SEC = 30 * 60
+_STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC = 10 * 60
 _LOG_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
 _REPLICA_UI_KIND_VIRTUAL_HALL = "virtual_hall"
 _REPLICA_UI_KIND_CANGKUN = "cangkun"
@@ -231,6 +268,35 @@ _storage_bag_base_item_rules_cache = None
 _storage_bag_base_item_rules_mtime = None
 
 
+def _infer_storage_bag_item_tags(item_name):
+    name = str(item_name or "").strip()
+    if not name:
+        return []
+    if name == "灵石":
+        return ["货币"]
+    if any(keyword in name for keyword in ("丹方", "图纸", "图谱")):
+        return ["丹方图纸图谱"]
+    if name in _STORAGE_BAG_TITLE_ITEMS or name.endswith(("第一人", "全场")) or "称号" in name:
+        return ["称号"]
+    if "法则碎片" in name or name.startswith("元磁山核"):
+        return ["法则"]
+    if any(keyword in name for keyword in ("残图", "通行令", "禁制令", "急援令", "坐标", "阵旗残片")):
+        return ["副本"]
+    if "符" in name:
+        return ["符箓"]
+    if "种子" in name:
+        return ["种子"]
+    if any(keyword in name for keyword in ("草", "芝", "果", "参", "花", "菌", "藤", "叶", "莲")):
+        return ["灵草"]
+    if any(keyword in name for keyword in ("妖丹", "矿", "木髓", "丝", "羽", "翎", "晶", "尘埃", "壤", "庚金", "碎片", "核")):
+        return ["材料"]
+    if name in {"万年灵乳", "太虚仙露"} or name.endswith(("丹", "散", "液", "露", "乳")):
+        return ["丹药"]
+    if any(keyword in name for keyword in ("剑", "盾", "幡", "刃", "甲", "衣", "翅", "瓶", "山", "匣", "傀", "牌", "扇", "轮", "环", "钟", "塔", "鼎", "冠", "靴", "履", "袍", "带")):
+        return ["装备武器防具"]
+    return ["特殊"]
+
+
 def _normalize_storage_bag_item_rule(item_name, raw_rule=None):
     rule = raw_rule if isinstance(raw_rule, dict) else {}
     method = str(rule.get("method") or "unknown").strip().lower()
@@ -244,8 +310,8 @@ def _normalize_storage_bag_item_rule(item_name, raw_rule=None):
         if tag and tag not in seen:
             seen.add(tag)
             normalized_tags.append(tag)
-    if not normalized_tags:
-        normalized_tags = [_STORAGE_BAG_DEFAULT_TAG]
+    if not normalized_tags or normalized_tags == [_STORAGE_BAG_DEFAULT_TAG]:
+        normalized_tags = _infer_storage_bag_item_tags(item_name) or [_STORAGE_BAG_DEFAULT_TAG]
     return {
         "item_name": str(item_name or ""),
         "method": method,
@@ -333,6 +399,558 @@ def get_storage_bag_sync_snapshot():
     }
 
 
+def get_storage_bag_api_snapshot():
+    config = get_storage_bag_api_config()
+    return {
+        "configured": bool(config.get("cookie")),
+        "running": bool(_storage_bag_api_state.get("running")),
+        "base_url": config.get("base_url") or "https://asc.aiopenai.app",
+        "verify_path": STORAGE_BAG_API_VERIFY_PATH,
+        "refresh_path": STORAGE_BAG_API_REFRESH_PATH,
+        "api_token_configured": bool(config.get("api_token")),
+        "cookie_configured": bool(config.get("cookie")),
+        "verified": bool(config.get("verified_at")),
+        "verified_at": fmt_abs_ts(config.get("verified_at") or 0),
+        "keepalive_enabled": bool(config.get("keepalive_enabled")),
+        "last_keepalive_at": fmt_abs_ts(config.get("last_keepalive_at") or 0),
+        "last_keepalive_ok": bool(config.get("last_keepalive_ok")),
+        "last_keepalive_error": str(config.get("last_keepalive_error") or ""),
+        "next_keepalive_at": fmt_abs_ts(config.get("next_keepalive_at") or 0),
+        "item_name_map_count": len(config.get("item_name_map") or {}),
+        "last_ok": bool(_storage_bag_api_state.get("last_ok")),
+        "last_message": str(_storage_bag_api_state.get("last_message") or ""),
+        "last_updated_at": fmt_abs_ts(_storage_bag_api_state.get("last_updated_at") or 0),
+        "updated_count": int(_storage_bag_api_state.get("updated_count") or 0),
+        "skipped_count": int(_storage_bag_api_state.get("skipped_count") or 0),
+    }
+
+
+def _storage_bag_api_identity_lookup():
+    lookup = {}
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        profile = get_send_as_profile(identity_id)
+        candidates = (
+            str(identity_id),
+            profile.get("username"),
+            profile.get("label"),
+            profile.get("daohao"),
+            get_identity_ui_display_name(identity_id),
+        )
+        for candidate in candidates:
+            key = str(candidate or "").strip().lstrip("@").casefold()
+            if key:
+                lookup[key] = identity_id
+    return lookup
+
+
+def _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup):
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    local_ids = {int(item or 0) for item in get_identity_ids()}
+    if identity_id in local_ids:
+        return identity_id
+    owner_key = str(owner_text or "").strip().lstrip("@").casefold()
+    if owner_key:
+        matched_id = int((lookup or {}).get(owner_key) or 0)
+        if matched_id:
+            return matched_id
+    return identity_id
+
+
+def _storage_bag_api_candidate_from_value(value, *, normalize_suffix=False):
+    candidate = str(value or "").strip().lstrip("@")
+    if not candidate:
+        return ""
+    if normalize_suffix:
+        candidate = re.sub(r"-\d{4,}$", "", candidate).strip()
+    return candidate
+
+
+def _storage_bag_api_cultivator_candidates(identity_id):
+    profile = get_send_as_profile(identity_id)
+    raw_candidates = [
+        (profile.get("username"), False),
+        (profile.get("label"), True),
+        (profile.get("daohao"), True),
+        (get_identity_display_name(identity_id), True),
+        (get_identity_ui_display_name(identity_id), True),
+    ]
+    candidates = []
+    seen = set()
+    for raw_value, normalize_suffix in raw_candidates:
+        candidate = _storage_bag_api_candidate_from_value(raw_value, normalize_suffix=normalize_suffix)
+        if not candidate:
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return candidates
+
+
+def _storage_bag_api_normalize_item_name(value):
+    text = str(value or "").strip()
+    return text.strip("[]【】")
+
+
+def _storage_bag_api_item_count(value):
+    try:
+        return int(str(value or 0).replace(",", "") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _storage_bag_api_add_item(items, name, count):
+    name = _storage_bag_api_normalize_item_name(name)
+    count = _storage_bag_api_item_count(count)
+    if not name or count <= 0:
+        return
+    items[name] = items.get(name, 0) + count
+
+
+def _storage_bag_api_resolve_item_name(item_name, item_name_map):
+    item_name = _storage_bag_api_normalize_item_name(item_name)
+    return str((item_name_map or {}).get(item_name) or item_name).strip()
+
+
+def _storage_bag_api_extract_items(raw_inventory, item_name_map=None):
+    items = {}
+    seen_inventory = False
+
+    if isinstance(raw_inventory, list):
+        seen_inventory = True
+        for item in raw_inventory:
+            if not isinstance(item, dict):
+                continue
+            _storage_bag_api_add_item(
+                items,
+                item.get("name")
+                or item.get("item_name")
+                or item.get("display_name")
+                or item.get("title")
+                or _storage_bag_api_resolve_item_name(item.get("item_id") or item.get("id"), item_name_map),
+                item.get("quantity") or item.get("amount") or item.get("count") or item.get("num") or item.get("value"),
+            )
+        return items, seen_inventory
+
+    if not isinstance(raw_inventory, dict):
+        return items, seen_inventory
+
+    seen_inventory = True
+    for key in ("items", "current", "materials", "inventory", "storage", "bag", "snapshots"):
+        value = raw_inventory.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    _storage_bag_api_add_item(
+                        items,
+                        item.get("name")
+                        or item.get("item_name")
+                        or item.get("display_name")
+                        or item.get("title")
+                        or _storage_bag_api_resolve_item_name(item.get("item_id") or item.get("id"), item_name_map),
+                        item.get("quantity") or item.get("amount") or item.get("count") or item.get("num") or item.get("value"),
+                    )
+        elif isinstance(value, dict):
+            if key in {"materials", "inventory", "storage", "bag"}:
+                for item_name, amount in value.items():
+                    if isinstance(amount, dict):
+                        _storage_bag_api_add_item(
+                            items,
+                            amount.get("name")
+                            or amount.get("item_name")
+                            or amount.get("display_name")
+                            or amount.get("title")
+                            or _storage_bag_api_resolve_item_name(item_name, item_name_map),
+                            amount.get("quantity") or amount.get("amount") or amount.get("count") or amount.get("num") or amount.get("value"),
+                        )
+                    else:
+                        _storage_bag_api_add_item(items, _storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
+            elif key == "items":
+                for item_name, amount in value.items():
+                    _storage_bag_api_add_item(items, _storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
+
+    if not items:
+        for item_name, amount in raw_inventory.items():
+            if item_name in {"owner", "owner_username", "source", "event_time", "raw_message_id", "chat_id", "msg_id", "updated_at"}:
+                continue
+            if isinstance(amount, (int, float, str)):
+                _storage_bag_api_add_item(items, _storage_bag_api_resolve_item_name(item_name, item_name_map), amount)
+    return items, seen_inventory
+
+
+def _storage_bag_api_extract_owner_fields(row):
+    if not isinstance(row, dict):
+        return 0, ""
+    identity_id = 0
+    for key in ("identity_id", "send_as_id", "telegram_id", "character_id", "owner_id", "id"):
+        try:
+            candidate = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            candidate = 0
+        if candidate != 0:
+            identity_id = candidate
+            break
+    owner_text = ""
+    for key in ("owner", "owner_username", "username", "dao_name", "daohao", "label", "name"):
+        value = str(row.get(key) or "").strip()
+        if value:
+            owner_text = value
+            break
+    return identity_id, owner_text
+
+
+def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_owner_text=""):
+    payload = payload if isinstance(payload, dict) else {}
+    if isinstance(payload.get("data"), dict):
+        payload = payload.get("data") or {}
+    lookup = _storage_bag_api_identity_lookup()
+    item_name_map = get_storage_bag_api_config().get("item_name_map") or {}
+    records = dict(get_storage_bag_records())
+    updated = 0
+    skipped = 0
+    updated_identity_ids = set()
+    now = time.time()
+
+    def update_record(identity_id, owner_text, items, *, source="storage_bag_api"):
+        nonlocal updated
+        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        if identity_id == 0 and int(fallback_identity_id or 0):
+            identity_id = int(fallback_identity_id or 0)
+        if not owner_text:
+            owner_text = fallback_owner_text
+        if identity_id == 0 or str(identity_id) not in records and identity_id not in get_identity_ids():
+            return
+        if not items:
+            return
+        profile = get_send_as_profile(identity_id)
+        records[str(identity_id)] = {
+            "owner": owner_text or profile.get("username") or profile.get("label") or profile.get("daohao") or str(identity_id),
+            "owner_username": profile.get("username") or "",
+            "label": profile.get("label") or profile.get("username") or profile.get("daohao") or str(identity_id),
+            "sections": {"API": dict(items)},
+            "items": dict(items),
+            "empty": False,
+            "updated_at": float(now),
+            "updated_at_text": fmt_abs_ts(now),
+            "source": source,
+        }
+        updated += 1
+        updated_identity_ids.add(int(identity_id))
+
+    if isinstance(payload.get("current"), list):
+        grouped = {}
+        for row in payload.get("current") or []:
+            if not isinstance(row, dict):
+                continue
+            identity_id, owner_text = _storage_bag_api_extract_owner_fields(row)
+            identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+            key = identity_id or owner_text or "unknown"
+            grouped.setdefault(key, {"identity_id": identity_id, "owner_text": owner_text, "items": {}})
+            _storage_bag_api_add_item(grouped[key]["items"], row.get("name") or row.get("item_name"), row.get("amount") or row.get("quantity") or row.get("count"))
+        for row in grouped.values():
+            update_record(row["identity_id"], row["owner_text"], row["items"], source="storage_bag_api_current")
+        skipped += max(0, len(payload.get("current") or []) - updated)
+
+    for snapshot in payload.get("snapshots") or []:
+        if not isinstance(snapshot, dict):
+            continue
+        identity_id, owner_text = _storage_bag_api_extract_owner_fields(snapshot)
+        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        items, seen_inventory = _storage_bag_api_extract_items(
+            snapshot.get("items") or snapshot.get("inventory") or snapshot.get("storage") or snapshot.get("bag") or snapshot,
+            item_name_map,
+        )
+        if not seen_inventory or not items:
+            skipped += 1
+            continue
+        update_record(identity_id, owner_text, items, source="storage_bag_api_snapshot")
+
+    for character in payload.get("characters") or []:
+        if not isinstance(character, dict):
+            continue
+        identity_id, owner_text = _storage_bag_api_extract_owner_fields(character)
+        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        inventory = character.get("inventory") or character.get("storage_bag") or character.get("bag") or {}
+        items, seen_inventory = _storage_bag_api_extract_items(inventory, item_name_map)
+        if not seen_inventory or not items:
+            skipped += 1
+            continue
+        update_record(identity_id, owner_text, items, source="storage_bag_api_character")
+
+    if payload.get("inventory") or payload.get("storage_bag") or payload.get("bag"):
+        identity_id, owner_text = _storage_bag_api_extract_owner_fields(payload)
+        identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+        inventory = payload.get("inventory") or payload.get("storage_bag") or payload.get("bag") or {}
+        items, seen_inventory = _storage_bag_api_extract_items(inventory, item_name_map)
+        if seen_inventory and items:
+            update_record(identity_id, owner_text, items, source="storage_bag_api_cultivator")
+        else:
+            skipped += 1
+
+    for key in ("storage_bag_records", "records"):
+        value = payload.get(key)
+        if not isinstance(value, dict):
+            continue
+        for owner_key, record in value.items():
+            if not isinstance(record, dict):
+                continue
+            identity_id, owner_text = _storage_bag_api_extract_owner_fields(record)
+            identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+            if identity_id == 0:
+                identity_id = lookup.get(str(owner_key or "").strip().lstrip("@").casefold(), 0)
+            items, seen_inventory = _storage_bag_api_extract_items(record.get("items") or record.get("inventory") or record, item_name_map)
+            if not seen_inventory or not items:
+                skipped += 1
+                continue
+            update_record(identity_id, owner_text or str(owner_key or ""), items, source="storage_bag_api_records")
+
+    if updated > 0:
+        set_storage_bag_records(records)
+        save_state()
+    return {"updated_count": updated, "skipped_count": skipped, "updated_identity_ids": sorted(updated_identity_ids), "records": records}
+
+
+def ui_set_storage_bag_api_config(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    current = get_storage_bag_api_config()
+    base_url = str(payload.get("base_url") or current.get("base_url") or "https://asc.aiopenai.app").strip().rstrip("/")
+    input_cookie = normalize_storage_bag_api_cookie(payload.get("cookie"))
+    input_token = str(payload.get("api_token") or "").strip()
+    next_cookie = input_cookie or current.get("cookie") or ""
+    next_api_token = input_token or current.get("api_token") or ""
+    reset_verified = (
+        bool(input_cookie and input_cookie != current.get("cookie"))
+        or bool(input_token and input_token != current.get("api_token"))
+        or bool(base_url and base_url != current.get("base_url"))
+    )
+    next_config = {
+        "base_url": base_url,
+        "api_token": next_api_token,
+        "cookie": next_cookie,
+        "item_name_map": current.get("item_name_map") or {},
+        "keepalive_enabled": bool(current.get("keepalive_enabled")) and not reset_verified,
+        "verified_at": 0 if reset_verified else current.get("verified_at"),
+        "last_keepalive_at": current.get("last_keepalive_at") if not reset_verified else 0,
+        "last_keepalive_ok": bool(current.get("last_keepalive_ok")) and not reset_verified,
+        "last_keepalive_error": "" if reset_verified else current.get("last_keepalive_error"),
+        "next_keepalive_at": current.get("next_keepalive_at") if not reset_verified else 0,
+    }
+    set_storage_bag_api_config(next_config)
+    save_state()
+    return True, "已更新天机阁储物袋 API 配置"
+
+
+def _storage_bag_api_store_verified_result(result, now):
+    current = get_storage_bag_api_config()
+    item_name_map = dict(current.get("item_name_map") or {})
+    item_name_map.update(result.get("item_name_map") or {})
+    set_storage_bag_api_config({
+        **current,
+        "cookie": result.get("cookie") or current.get("cookie") or "",
+        "api_token": result.get("api_token") or current.get("api_token") or "",
+        "item_name_map": item_name_map,
+        "keepalive_enabled": True,
+        "verified_at": float(now),
+        "last_keepalive_at": float(now),
+        "last_keepalive_ok": True,
+        "last_keepalive_error": "",
+        "next_keepalive_at": float(now) + _STORAGE_BAG_API_KEEPALIVE_INTERVAL_SEC,
+    })
+    save_state()
+
+
+def _storage_bag_api_store_failure(exc, now):
+    current = get_storage_bag_api_config()
+    keepalive_enabled = bool(current.get("keepalive_enabled"))
+    if isinstance(exc, StorageBagApiError) and exc.auth_failed:
+        keepalive_enabled = False
+    set_storage_bag_api_config({
+        **current,
+        "cookie": getattr(exc, "cookie", "") or current.get("cookie") or "",
+        "api_token": getattr(exc, "api_token", "") or current.get("api_token") or "",
+        "keepalive_enabled": keepalive_enabled,
+        "last_keepalive_at": float(now),
+        "last_keepalive_ok": False,
+        "last_keepalive_error": str(exc),
+        "next_keepalive_at": float(now) + _STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC,
+    })
+    save_state()
+
+
+def _storage_bag_api_store_session(cookie="", api_token=""):
+    current = get_storage_bag_api_config()
+    set_storage_bag_api_config({
+        **current,
+        "cookie": str(cookie or current.get("cookie") or "").strip(),
+        "api_token": str(api_token or current.get("api_token") or "").strip(),
+    })
+    save_state()
+    return get_storage_bag_api_config()
+
+
+async def ui_verify_storage_bag_api(payload=None):
+    if _storage_bag_api_state.get("running"):
+        return False, "储物袋 API 正在进行中", get_storage_bag_api_snapshot()
+    if payload:
+        ui_set_storage_bag_api_config(payload)
+    config = get_storage_bag_api_config()
+    if not config.get("cookie"):
+        return False, "请先填写天机阁 session Cookie", get_storage_bag_api_snapshot()
+    _storage_bag_api_state["running"] = True
+    now = time.time()
+    ok = False
+    try:
+        result = await verify_storage_bag_api(config)
+        _storage_bag_api_store_verified_result(result, now)
+        ok = True
+        message = "天机阁验证成功，已启用低频保活"
+        _storage_bag_api_state.update({
+            "last_ok": True,
+            "last_message": message,
+            "last_updated_at": now,
+            "updated_count": 0,
+            "skipped_count": 0,
+        })
+    except Exception as exc:
+        _storage_bag_api_store_failure(exc, now)
+        message = f"天机阁验证失败: {exc}"
+        _storage_bag_api_state.update({
+            "last_ok": False,
+            "last_message": message,
+            "last_updated_at": now,
+            "updated_count": 0,
+            "skipped_count": 0,
+        })
+    finally:
+        _storage_bag_api_state["running"] = False
+    return ok, message, get_storage_bag_api_snapshot()
+
+
+async def ui_refresh_storage_bag_from_api(payload=None):
+    if _storage_bag_api_state.get("running"):
+        return False, "储物袋 API 读取正在进行中", get_storage_bag_api_snapshot()
+    payload = payload if isinstance(payload, dict) else {}
+    if payload:
+        ui_set_storage_bag_api_config(payload)
+    config = get_storage_bag_api_config()
+    if not config.get("cookie"):
+        return False, "请先配置储物袋 API", get_storage_bag_api_snapshot()
+    _storage_bag_api_state["running"] = True
+    ok = False
+    message = ""
+    try:
+        active_config = dict(config)
+        updated_identity_ids = set()
+        total_updated = 0
+        total_skipped = 0
+        me_result = await fetch_storage_bag_result(active_config, STORAGE_BAG_API_REFRESH_PATH)
+        active_config = _storage_bag_api_store_session(me_result.cookie, me_result.api_token)
+        me_payload = me_result.payload
+        if isinstance(me_payload, dict) and me_payload.get("ok") is False:
+            raise StorageBagApiError(str(me_payload.get("error") or "储物袋 API 返回失败"))
+        me_result_data = _storage_bag_api_apply_payload(me_payload if isinstance(me_payload, dict) else {})
+        updated_identity_ids.update(me_result_data.get("updated_identity_ids") or [])
+        total_updated += int(me_result_data.get("updated_count") or 0)
+        total_skipped += int(me_result_data.get("skipped_count") or 0)
+
+        local_identity_ids = [int(identity_id or 0) for identity_id in get_identity_ids()]
+        for identity_id in local_identity_ids:
+            if identity_id <= 0 or identity_id in updated_identity_ids:
+                continue
+            candidates = _storage_bag_api_cultivator_candidates(identity_id)
+            if not candidates:
+                total_skipped += 1
+                continue
+            candidate_success = False
+            last_error = None
+            for candidate in candidates:
+                try:
+                    api_result = await fetch_storage_bag_result(active_config, build_cultivator_path(candidate))
+                    active_config = _storage_bag_api_store_session(api_result.cookie, api_result.api_token)
+                    api_payload = api_result.payload
+                    if isinstance(api_payload, dict) and api_payload.get("ok") is False:
+                        raise StorageBagApiError(str(api_payload.get("error") or "储物袋 API 返回失败"))
+                    result = _storage_bag_api_apply_payload(
+                        api_payload if isinstance(api_payload, dict) else {},
+                        fallback_identity_id=identity_id,
+                    )
+                    total_updated += int(result.get("updated_count") or 0)
+                    total_skipped += int(result.get("skipped_count") or 0)
+                    updated_identity_ids.update(result.get("updated_identity_ids") or [])
+                    if int(result.get("updated_count") or 0) > 0:
+                        candidate_success = True
+                        break
+                except StorageBagApiError as exc:
+                    _storage_bag_api_store_session(exc.cookie, exc.api_token)
+                    active_config = get_storage_bag_api_config()
+                    last_error = exc
+                    if exc.auth_failed or exc.rate_limited:
+                        raise
+                    if exc.status_code == 404:
+                        continue
+                    continue
+            if not candidate_success:
+                total_skipped += 1
+        ok = total_updated > 0
+        if ok:
+            message = f"已更新 {total_updated} 个身份的储物袋"
+        else:
+            message = "API 已返回，但未匹配到可更新身份"
+        _storage_bag_api_state.update({
+            "last_ok": ok,
+            "last_message": message,
+            "last_updated_at": time.time(),
+            "updated_count": int(total_updated),
+            "skipped_count": int(total_skipped),
+        })
+    except Exception as exc:
+        _storage_bag_api_store_failure(exc, time.time())
+        message = f"储物袋 API 读取失败: {exc}"
+        _storage_bag_api_state.update({
+            "last_ok": False,
+            "last_message": message,
+            "last_updated_at": time.time(),
+            "updated_count": 0,
+            "skipped_count": 0,
+        })
+    finally:
+        _storage_bag_api_state["running"] = False
+    return ok, message, get_storage_bag_api_snapshot()
+
+
+async def run_storage_bag_api_keepalive_scheduler(now):
+    config = get_storage_bag_api_config()
+    if not config.get("keepalive_enabled") or not config.get("cookie"):
+        return
+    if _storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"):
+        return
+    if float(config.get("next_keepalive_at") or 0) > float(now):
+        return
+    _storage_bag_api_state["keepalive_running"] = True
+    try:
+        result = await verify_storage_bag_api(config)
+        _storage_bag_api_store_verified_result(result, now)
+        _storage_bag_api_state.update({
+            "last_ok": True,
+            "last_message": "天机阁低频保活成功",
+            "last_updated_at": now,
+        })
+    except Exception as exc:
+        _storage_bag_api_store_failure(exc, now)
+        _storage_bag_api_state.update({
+            "last_ok": False,
+            "last_message": f"天机阁低频保活失败: {exc}",
+            "last_updated_at": now,
+        })
+    finally:
+        _storage_bag_api_state["keepalive_running"] = False
+
+
 async def _run_storage_bag_sync(identity_ids):
     try:
         for identity_id in identity_ids:
@@ -405,8 +1023,53 @@ def ui_set_storage_bag_item_rule(item_name, method, tags=None, reason=""):
     return True, f"已更新物品规则：{item_name}"
 
 
+def _normalize_storage_bag_batch_items(payload):
+    raw_items = payload.get("items") if isinstance(payload.get("items"), list) else []
+    normalized = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        item_name = str(raw_item.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        try:
+            quantity = int(raw_item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        normalized.append({"item_name": item_name, "quantity": quantity})
+    return normalized
+
+
+def _resolve_storage_bag_batch_sources(payload, target_identity_id):
+    known_ids = [int(item) for item in get_identity_ids()]
+    requested_ids = payload.get("source_identity_ids") if isinstance(payload.get("source_identity_ids"), list) else []
+    include_protected = bool(payload.get("include_protected"))
+    if requested_ids:
+        normalized_ids = []
+        seen = set()
+        for raw_id in requested_ids:
+            try:
+                identity_id = int(raw_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if identity_id in seen or identity_id not in known_ids or identity_id == target_identity_id:
+                continue
+            if not include_protected and _is_storage_bag_protected_identity(identity_id):
+                continue
+            seen.add(identity_id)
+            normalized_ids.append(identity_id)
+        return normalized_ids
+    return [
+        identity_id
+        for identity_id in known_ids
+        if identity_id != target_identity_id and (include_protected or not _is_storage_bag_protected_identity(identity_id))
+    ]
+
+
 def ui_preview_storage_bag_transfer(payload):
     payload = payload if isinstance(payload, dict) else {}
+    if payload.get("batch"):
+        return ui_preview_storage_bag_transfer_batch(payload)
     try:
         source_identity_id = int(payload.get("source_identity_id") or 0)
         target_identity_id = int(payload.get("target_identity_id") or 0)
@@ -518,6 +1181,9 @@ def ui_preview_storage_bag_transfer(payload):
 
 
 async def ui_start_storage_bag_transfer(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    if payload.get("batch"):
+        return await ui_start_storage_bag_transfer_batch(payload)
     ok, message, preview = ui_preview_storage_bag_transfer(payload)
     if not ok:
         return False, message, None
@@ -526,6 +1192,100 @@ async def ui_start_storage_bag_transfer(payload):
         preview["target_identity_id"],
         preview.get("items") or [],
         preview.get("listing_item") or "",
+    )
+
+
+def ui_preview_storage_bag_transfer_batch(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    try:
+        target_identity_id = int(payload.get("target_identity_id") or 0)
+    except (TypeError, ValueError):
+        return False, "目标身份无效", None
+    known_ids = set(int(item) for item in get_identity_ids())
+    if target_identity_id not in known_ids:
+        return False, "目标身份无效", None
+    requested_items = _normalize_storage_bag_batch_items(payload)
+    if not requested_items:
+        return False, "请至少填写一个物品", None
+
+    sources = _resolve_storage_bag_batch_sources(payload, target_identity_id)
+    if not sources:
+        return False, "没有可用来源身份", None
+    storage_bag = get_storage_bag_snapshot()
+    rows = storage_bag.get("rows") or []
+    listing_item = str(payload.get("listing_item") or "").strip()
+    mode = str(payload.get("mode") or "all").strip().lower()
+    if mode not in {"all", "fixed"}:
+        mode = "all"
+
+    tasks = []
+    skipped = []
+    warnings = []
+    for source_id in sources:
+        task_items = []
+        for request_item in requested_items:
+            item_name = request_item["item_name"]
+            source_count = _get_storage_bag_item_count(rows, source_id, item_name)
+            if source_count <= 0:
+                continue
+            rule = _get_storage_bag_item_rule(item_name)
+            method = rule.get("method") or "unknown"
+            if method == "blocked":
+                warnings.append(f"{item_name} 不可转移，已跳过")
+                continue
+            requested_quantity = int(request_item.get("quantity") or 0)
+            quantity = source_count if mode == "all" or requested_quantity <= 0 else min(requested_quantity, source_count)
+            if quantity <= 0:
+                continue
+            task_items.append({
+                "item_name": item_name,
+                "quantity": quantity,
+                "source_count": source_count,
+                "target_count": _get_storage_bag_item_count(rows, target_identity_id, item_name),
+                "method": method,
+                "method_label": _storage_bag_transfer_method_label(method),
+                "tags": rule.get("tags") or [_STORAGE_BAG_DEFAULT_TAG],
+            })
+        if not task_items:
+            skipped.append(source_id)
+            continue
+        if any(str(item.get("method") or "unknown") != "gift" for item in task_items) and not listing_item:
+            return False, "请选择集中号用于上架的物品", None
+        source_row = next((row for row in rows if int(row.get("identity_id") or 0) == int(source_id)), {})
+        target_row = next((row for row in rows if int(row.get("identity_id") or 0) == int(target_identity_id)), {})
+        tasks.append({
+            "source_identity_id": int(source_id),
+            "source_label": source_row.get("label") or source_row.get("display_name") or str(source_id),
+            "target_identity_id": target_identity_id,
+            "target_label": target_row.get("label") or target_row.get("display_name") or str(target_identity_id),
+            "listing_item": listing_item,
+            "items": task_items,
+        })
+    if not tasks:
+        return False, "没有匹配库存的来源身份", None
+    total_items = sum(len(task.get("items") or []) for task in tasks)
+    total_quantity = sum(int(item.get("quantity") or 0) for task in tasks for item in (task.get("items") or []))
+    preview = {
+        "target_identity_id": target_identity_id,
+        "listing_item": listing_item,
+        "mode": mode,
+        "tasks": tasks,
+        "skipped_source_ids": skipped,
+        "warnings": sorted(set(warnings)),
+        "summary": f"批量预览 {len(tasks)} 个来源，{total_items} 个条目，合计 {total_quantity}",
+    }
+    return True, "已生成批量转移预览", preview
+
+
+async def ui_start_storage_bag_transfer_batch(payload):
+    ok, message, preview = ui_preview_storage_bag_transfer_batch(payload)
+    if not ok:
+        return False, message, None
+    return await start_storage_bag_transfer_batch(
+        preview.get("tasks") or [],
+        target_identity_id=preview.get("target_identity_id") or 0,
+        listing_item=preview.get("listing_item") or "",
+        stop_on_error=not bool(payload.get("continue_on_error")),
     )
 
 
@@ -1283,6 +2043,7 @@ def get_ui_snapshot(session_token=None):
         "passive_inbox": get_passive_inbox_snapshot(),
         "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
+        "storage_bag_api": get_storage_bag_api_snapshot(),
         "storage_bag_sync": get_storage_bag_sync_snapshot(),
         "storage_bag_transfer": get_storage_bag_transfer_snapshot(),
         "dungeon_join": get_dungeon_join_snapshot(),
@@ -2904,6 +3665,46 @@ async def handle_ui_http(reader, writer):
                         snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/storage-bag-api-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = ui_set_storage_bag_api_config(payload)
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/storage-bag-api-verify":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, api_snapshot = await ui_verify_storage_bag_api(payload)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(
+                        ok,
+                        message=message if ok else "",
+                        error="" if ok else message,
+                        snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                        extra={"storage_bag_api": api_snapshot},
+                    )
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/storage-bag-api-refresh":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, api_snapshot = await ui_refresh_storage_bag_from_api(payload)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(
+                        ok,
+                        message=message if ok else "",
+                        error="" if ok else message,
+                        snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                        extra={"storage_bag_api": api_snapshot},
+                    )
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/storage-bag-item-rule":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -3439,6 +4240,7 @@ async def stop_ui_server():
 
 __all__ = [
     "get_identity_ui_snapshot",
+    "get_storage_bag_api_snapshot",
     "get_storage_bag_snapshot",
     "get_storage_bag_sync_snapshot",
     "get_replica_config_snapshot",
@@ -3454,6 +4256,10 @@ __all__ = [
     "ui_preview_storage_bag_transfer",
     "ui_start_storage_bag_transfer",
     "ui_start_storage_bag_sync",
+    "ui_refresh_storage_bag_from_api",
+    "ui_set_storage_bag_api_config",
+    "ui_verify_storage_bag_api",
+    "run_storage_bag_api_keepalive_scheduler",
     "ui_set_storage_bag_item_rule",
     "ui_set_replica_config",
     "ui_set_replica_gold_dps_enabled",

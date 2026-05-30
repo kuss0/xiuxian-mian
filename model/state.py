@@ -71,7 +71,7 @@ IDENTITY_BOOL_FIELDS = {
     "second_soul_heart_demon_notified",
     "tree_maturing_logged",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -549,6 +549,7 @@ GLOBAL_STATE_DEFAULTS = {
     "replica_run_state": {},
     "replica_virtual_hall_match_enabled_map": {},
     "replica_query_aggregator_config": {},
+    "storage_bag_api_config": {},
     "storage_bag_records": {},
     "storage_bag_item_rules": {},
     "dungeon_join_run_state": {},
@@ -885,6 +886,57 @@ def get_storage_bag_records():
 def set_storage_bag_records(records):
     _meta_state["storage_bag_records"] = records if isinstance(records, dict) else {}
     return get_storage_bag_records()
+
+
+def _normalize_storage_bag_api_config(config):
+    config = config if isinstance(config, dict) else {}
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    api_token = str(config.get("api_token") or "").strip()
+    cookie = str(config.get("cookie") or "").strip()
+    keepalive_enabled = bool(config.get("keepalive_enabled"))
+    item_name_map = config.get("item_name_map") if isinstance(config.get("item_name_map"), dict) else {}
+    try:
+        verified_at = float(config.get("verified_at") or 0)
+    except (TypeError, ValueError):
+        verified_at = 0
+    try:
+        last_keepalive_at = float(config.get("last_keepalive_at") or 0)
+    except (TypeError, ValueError):
+        last_keepalive_at = 0
+    try:
+        next_keepalive_at = float(config.get("next_keepalive_at") or 0)
+    except (TypeError, ValueError):
+        next_keepalive_at = 0
+    return {
+        "base_url": base_url,
+        "api_token": api_token,
+        "cookie": cookie,
+        "item_name_map": {
+            str(item_id): str(name)
+            for item_id, name in item_name_map.items()
+            if str(item_id or "").strip() and str(name or "").strip()
+        },
+        "keepalive_enabled": keepalive_enabled,
+        "verified_at": verified_at,
+        "last_keepalive_at": last_keepalive_at,
+        "last_keepalive_ok": bool(config.get("last_keepalive_ok")),
+        "last_keepalive_error": str(config.get("last_keepalive_error") or "").strip(),
+        "next_keepalive_at": next_keepalive_at,
+    }
+
+
+def get_storage_bag_api_config():
+    return _normalize_storage_bag_api_config(_meta_state.get("storage_bag_api_config") or {})
+
+
+def set_storage_bag_api_config(config):
+    _meta_state["storage_bag_api_config"] = _normalize_storage_bag_api_config(config)
+    return get_storage_bag_api_config()
+
+
+def is_storage_bag_api_configured():
+    config = get_storage_bag_api_config()
+    return bool(config.get("cookie"))
 
 
 def get_storage_bag_item_rules():
@@ -1887,6 +1939,7 @@ __all__ = [
     "is_replica_gold_dps_allowed",
     "is_replica_query_aggregator_configured",
     "is_replica_virtual_hall_match_enabled",
+    "is_storage_bag_api_configured",
     "get_jiyin_choice",
     "get_nanlong_choice",
     "get_pet_command",
@@ -1896,6 +1949,7 @@ __all__ = [
     "get_pet_trial_name",
     "get_pet_trial_command",
     "get_stargazer_star_choice",
+    "get_storage_bag_api_config",
     "get_storage_bag_records",
     "get_storage_bag_item_rules",
     "get_stargazer_total_slots",
@@ -1944,6 +1998,7 @@ __all__ = [
     "set_pet_warm_name",
     "set_pet_trial_name",
     "set_stargazer_star_choice",
+    "set_storage_bag_api_config",
     "set_storage_bag_records",
     "set_storage_bag_item_rules",
     "set_stargazer_total_slots",

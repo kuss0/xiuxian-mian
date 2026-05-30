@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import copy
 import json
@@ -66,6 +67,7 @@ class StorageBagTransferTests(unittest.TestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         storage_bag._clear_storage_bag_transfer_state()
+        storage_bag._clear_storage_bag_transfer_batch_state()
         self.source_id = 1001
         self.target_id = 1002
         state_module.ensure_identity_registered(self.source_id)
@@ -91,6 +93,8 @@ class StorageBagTransferTests(unittest.TestCase):
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        storage_bag._clear_storage_bag_transfer_state()
+        storage_bag._clear_storage_bag_transfer_batch_state()
 
     def test_snapshot_includes_rules_and_transfer_identities(self):
         snapshot = ui.get_storage_bag_snapshot()
@@ -101,6 +105,55 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertEqual("basic", snapshot["item_rules"]["灵石"]["method"])
         self.assertFalse(snapshot["item_rules"]["绑定物"]["transfer_selectable"])
         self.assertEqual({self.source_id, self.target_id}, {row["identity_id"] for row in snapshot["transfer_identities"]})
+
+    def test_snapshot_infers_categories_for_uncategorized_items(self):
+        state_module.set_storage_bag_item_rules({})
+        state_module.set_storage_bag_records({
+            str(self.source_id): {
+                "updated_at": 1000,
+                "items": {
+                    "灵石": 1,
+                    "增元丹丹方": 1,
+                    "玄铁剑图纸": 1,
+                    "紫铖兜图谱": 1,
+                    "玄天斩灵剑": 1,
+                    "乱星海炼体第一人": 1,
+                    "黄芽丹": 1,
+                    "凝血草": 1,
+                    "凝血草种子": 1,
+                    "一阶妖丹": 1,
+                    "法则碎片·水": 1,
+                    "虚天残图": 1,
+                    "神行符": 1,
+                    "尘封的储物袋": 1,
+                },
+            },
+            str(self.target_id): {
+                "updated_at": 1000,
+                "items": {},
+            },
+        })
+
+        snapshot = ui.get_storage_bag_snapshot()
+
+        expected_tags = {
+            "灵石": "货币",
+            "增元丹丹方": "丹方图纸图谱",
+            "玄铁剑图纸": "丹方图纸图谱",
+            "紫铖兜图谱": "丹方图纸图谱",
+            "玄天斩灵剑": "装备武器防具",
+            "乱星海炼体第一人": "称号",
+            "黄芽丹": "丹药",
+            "凝血草": "灵草",
+            "凝血草种子": "种子",
+            "一阶妖丹": "材料",
+            "法则碎片·水": "法则",
+            "虚天残图": "副本",
+            "神行符": "符箓",
+            "尘封的储物袋": "特殊",
+        }
+        for item_name, expected_tag in expected_tags.items():
+            self.assertEqual(expected_tag, snapshot["item_rules"][item_name]["tags"][0], item_name)
 
     def test_basic_transfer_preview_generates_listing_and_purchase_only(self):
         ok, message, preview = ui.ui_preview_storage_bag_transfer({
@@ -130,6 +183,62 @@ class StorageBagTransferTests(unittest.TestCase):
             {"identity_id": self.target_id, "command": "转移标记 <本次转移ID>", "note": "目标身份先发送一条可回复的标记消息"},
             {"identity_id": self.source_id, "command": ".赠送 木髓 2", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
+
+    def test_batch_transfer_preview_defaults_to_all_non_protected_sources(self):
+        other_id = 1003
+        protected_id = 1004
+        state_module.ensure_identity_registered(other_id)
+        state_module.ensure_identity_registered(protected_id)
+        state_module.set_send_as_profile(other_id, label="备用来源", username="other")
+        state_module.set_send_as_profile(protected_id, label="WalterWA2000", username="wa2000")
+        records = state_module.get_storage_bag_records()
+        records[str(other_id)] = {"updated_at": 1000, "items": {"妖丹": 2, "木髓": 1}}
+        records[str(protected_id)] = {"updated_at": 1000, "items": {"妖丹": 99}}
+        state_module.set_storage_bag_records(records)
+
+        ok, message, preview = ui.ui_preview_storage_bag_transfer({
+            "batch": True,
+            "target_identity_id": self.target_id,
+            "listing_item": "灵石",
+            "mode": "all",
+            "items": [{"item_name": "妖丹", "quantity": 0}, {"item_name": "木髓", "quantity": 0}],
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual("已生成批量转移预览", message)
+        self.assertEqual({self.source_id, other_id}, {task["source_identity_id"] for task in preview["tasks"]})
+        self.assertNotIn(self.target_id, {task["source_identity_id"] for task in preview["tasks"]})
+        self.assertNotIn(protected_id, {task["source_identity_id"] for task in preview["tasks"]})
+        quantities = {
+            (task["source_identity_id"], item["item_name"]): item["quantity"]
+            for task in preview["tasks"]
+            for item in task["items"]
+        }
+        self.assertEqual(9, quantities[(self.source_id, "妖丹")])
+        self.assertEqual(4, quantities[(self.source_id, "木髓")])
+        self.assertEqual(2, quantities[(other_id, "妖丹")])
+        self.assertEqual(1, quantities[(other_id, "木髓")])
+
+    def test_batch_transfer_preview_supports_subset_and_fixed_quantity(self):
+        other_id = 1003
+        state_module.ensure_identity_registered(other_id)
+        state_module.set_send_as_profile(other_id, label="备用来源", username="other")
+        records = state_module.get_storage_bag_records()
+        records[str(other_id)] = {"updated_at": 1000, "items": {"妖丹": 2}}
+        state_module.set_storage_bag_records(records)
+
+        ok, message, preview = ui.ui_preview_storage_bag_transfer({
+            "batch": True,
+            "target_identity_id": self.target_id,
+            "source_identity_ids": [other_id],
+            "listing_item": "灵石",
+            "mode": "fixed",
+            "items": [{"item_name": "妖丹", "quantity": 3}],
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual([other_id], [task["source_identity_id"] for task in preview["tasks"]])
+        self.assertEqual(2, preview["tasks"][0]["items"][0]["quantity"])
 
     def test_blocked_item_rejects_preview(self):
         ok, message, preview = ui.ui_preview_storage_bag_transfer({
@@ -189,6 +298,8 @@ class StorageBagTransferTests(unittest.TestCase):
 class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        storage_bag._clear_storage_bag_transfer_state()
+        storage_bag._clear_storage_bag_transfer_batch_state()
         self.source_id = 1001
         self.target_id = 1002
         state_module.ensure_identity_registered(self.source_id)
@@ -206,6 +317,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await cancel_storage_bag_transfer_task()
         storage_bag._clear_storage_bag_transfer_state()
+        storage_bag._clear_storage_bag_transfer_batch_state()
         ui._storage_bag_sync_state.update({"running": False, "pending_ids": [], "completed_ids": []})
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
@@ -303,6 +415,146 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, records[str(self.source_id)]["items"].get("灵石", 0) - 1000)
         self.assertEqual(3, records[str(self.target_id)]["items"]["妖丹"])
         self.assertEqual(99, records[str(self.target_id)]["items"]["灵石"])
+
+    async def test_batch_transfer_advances_serially_after_each_success(self):
+        other_id = 1003
+        state_module.ensure_identity_registered(other_id)
+        state_module.set_send_as_profile(other_id, label="备用来源", username="other")
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"妖丹": 9, "木髓": 4, "灵石": 1000}, "sections": {"材料": {"妖丹": 9, "木髓": 4}, "法宝/丹药/杂物": {"灵石": 1000}}},
+            str(self.target_id): {"updated_at": 1000, "items": {"灵石": 100, "标记物": 1}, "sections": {"法宝/丹药/杂物": {"灵石": 100, "标记物": 1}}},
+            str(other_id): {"updated_at": 1000, "items": {"妖丹": 2, "灵石": 500}, "sections": {"材料": {"妖丹": 2}, "法宝/丹药/杂物": {"灵石": 500}}},
+        })
+
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            msg_id = 700 + len(sent)
+            sent.append((command, kwargs, msg_id))
+            return SimpleNamespace(id=msg_id)
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, snapshot = await ui.ui_start_storage_bag_transfer({
+                "batch": True,
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "mode": "all",
+                "items": [{"item_name": "妖丹", "quantity": 0}],
+            })
+
+            self.assertTrue(ok, message)
+            self.assertTrue(snapshot["batch"]["running"])
+            self.assertEqual("running_task", snapshot["batch"]["status"])
+            self.assertEqual(".上架 灵石 1 换 妖丹*9", sent[0][0])
+
+            handled_listing = await handle_storage_bag_transfer_reply(
+                "上架成功！\n"
+                "你已将 【灵石】x1 上架至万宝楼。\n"
+                "捆绑总价: 妖丹*9\n"
+                "挂单ID: 901",
+                1000.0,
+                SimpleNamespace(id=sent[0][2], raw_text=sent[0][0]),
+                reply_context={"reply_to_msg_id": sent[0][2]},
+            )
+            self.assertTrue(handled_listing)
+
+            handled_buy = await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【灵石】x1。",
+                1001.0,
+                SimpleNamespace(id=sent[1][2], raw_text=sent[1][0]),
+                reply_context={"reply_to_msg_id": sent[1][2]},
+            )
+            self.assertTrue(handled_buy)
+
+            await asyncio.sleep(0.05)
+
+            self.assertGreaterEqual(len(sent), 3)
+            self.assertEqual(".上架 灵石 1 换 妖丹*2", sent[2][0])
+            self.assertEqual(other_id, storage_bag._storage_bag_transfer_state["source_identity_id"])
+            self.assertEqual(1, len(storage_bag._storage_bag_transfer_batch_state["completed"]))
+            self.assertEqual(other_id, storage_bag._storage_bag_transfer_batch_state["active_task"]["source_identity_id"])
+            self.assertEqual([], storage_bag._storage_bag_transfer_batch_state["queue"])
+
+    async def test_batch_transfer_stops_queue_on_failure_by_default(self):
+        other_id = 1003
+        state_module.ensure_identity_registered(other_id)
+        state_module.set_send_as_profile(other_id, label="备用来源", username="other")
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"妖丹": 9, "灵石": 1000}, "sections": {"材料": {"妖丹": 9}, "法宝/丹药/杂物": {"灵石": 1000}}},
+            str(self.target_id): {"updated_at": 1000, "items": {"灵石": 100}, "sections": {"法宝/丹药/杂物": {"灵石": 100}}},
+            str(other_id): {"updated_at": 1000, "items": {"妖丹": 2, "灵石": 500}, "sections": {"材料": {"妖丹": 2}, "法宝/丹药/杂物": {"灵石": 500}}},
+        })
+
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            msg_id = 800 + len(sent)
+            sent.append((command, kwargs, msg_id))
+            return SimpleNamespace(id=msg_id)
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, _snapshot = await ui.ui_start_storage_bag_transfer({
+                "batch": True,
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "items": [{"item_name": "妖丹", "quantity": 0}],
+            })
+            self.assertTrue(ok, message)
+
+            handled = await handle_storage_bag_transfer_reply(
+                "价格格式错误，请重新上架。",
+                1000.0,
+                SimpleNamespace(id=sent[0][2], raw_text=sent[0][0]),
+                reply_context={"reply_to_msg_id": sent[0][2]},
+            )
+            self.assertTrue(handled)
+
+            await asyncio.sleep(0.05)
+
+            self.assertFalse(storage_bag._storage_bag_transfer_batch_state["running"])
+            self.assertEqual("failed", storage_bag._storage_bag_transfer_batch_state["status"])
+            self.assertEqual([], storage_bag._storage_bag_transfer_batch_state["queue"])
+            self.assertEqual(1, len(storage_bag._storage_bag_transfer_batch_state["failed"]))
+            self.assertEqual(1, len(sent))
+
+    async def test_batch_transfer_immediate_send_failure_does_not_double_advance(self):
+        other_id = 1003
+        state_module.ensure_identity_registered(other_id)
+        state_module.set_send_as_profile(other_id, label="备用来源", username="other")
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"妖丹": 9, "灵石": 1000}, "sections": {"材料": {"妖丹": 9}, "法宝/丹药/杂物": {"灵石": 1000}}},
+            str(self.target_id): {"updated_at": 1000, "items": {"灵石": 100}, "sections": {"法宝/丹药/杂物": {"灵石": 100}}},
+            str(other_id): {"updated_at": 1000, "items": {"妖丹": 2, "灵石": 500}, "sections": {"材料": {"妖丹": 2}, "法宝/丹药/杂物": {"灵石": 500}}},
+        })
+
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return None
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, _snapshot = await ui.ui_start_storage_bag_transfer({
+                "batch": True,
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "items": [{"item_name": "妖丹", "quantity": 0}],
+            })
+
+            await asyncio.sleep(0.05)
+
+        self.assertFalse(ok)
+        self.assertIn("上架命令发送失败", message)
+        self.assertFalse(storage_bag._storage_bag_transfer_batch_state["running"])
+        self.assertEqual("failed", storage_bag._storage_bag_transfer_batch_state["status"])
+        self.assertEqual(1, len(storage_bag._storage_bag_transfer_batch_state["failed"]))
+        self.assertEqual(1, len(sent))
 
     async def test_storage_transfer_workflow_log_tracks_stale_listing_and_inventory_sync(self):
         sent = []

@@ -14,6 +14,10 @@
     return snapshot().storage_bag || {};
   }
 
+  function storageApiData() {
+    return snapshot().storage_bag_api || {};
+  }
+
   function rows() {
     return Array.isArray(storageData().rows) ? storageData().rows : [];
   }
@@ -39,11 +43,22 @@
         manualText: '',
         preview: null,
         busy: false,
+        batchMode: false,
+        batchAllSources: true,
+        batchSourceIds: [],
+        batchQuantityMode: 'all',
+        includeProtected: false,
+        continueOnError: false,
       };
     }
     if (!appState.storageBagTransfer.selectedItems) appState.storageBagTransfer.selectedItems = {};
+    if (!Array.isArray(appState.storageBagTransfer.batchSourceIds)) appState.storageBagTransfer.batchSourceIds = [];
+    if (!appState.storageBagTransfer.batchQuantityMode) appState.storageBagTransfer.batchQuantityMode = 'all';
+    if (typeof appState.storageBagTransfer.batchAllSources !== 'boolean') appState.storageBagTransfer.batchAllSources = true;
     return appState.storageBagTransfer;
   }
+
+  var storageBagSearchTimer = null;
 
   function setFlash(message, isError) {
     if (typeof updateFlash === 'function') {
@@ -82,6 +97,10 @@
     return rows().find(function (row) { return (Number(row.identity_id) || 0) === id; }) || null;
   }
 
+  function rowLabel(row) {
+    return String((row || {}).label || (row || {}).display_name || (row || {}).identity_id || '').trim();
+  }
+
   function itemCount(identityId, itemName) {
     const row = rowById(identityId);
     return Number(((row || {}).items || {})[itemName] || 0);
@@ -105,6 +124,53 @@
       || names.find(function (name) { return name.indexOf('灵石') < 0; })
       || names[0]
       || '';
+  }
+
+  function availableBatchSourceRows() {
+    const state = transferState();
+    const targetId = Number(state.targetId) || 0;
+    return rows().filter(function (row) {
+      const id = Number(row.identity_id) || 0;
+      return id && id !== targetId && (state.includeProtected || !row.protected);
+    });
+  }
+
+  function selectedBatchSourceIds() {
+    const state = transferState();
+    const availableIds = new Set(availableBatchSourceRows().map(function (row) {
+      return Number(row.identity_id) || 0;
+    }).filter(Boolean));
+    return (Array.isArray(state.batchSourceIds) ? state.batchSourceIds : []).map(function (id) {
+      return Number(id) || 0;
+    }).filter(function (id, index, list) {
+      return id && availableIds.has(id) && list.indexOf(id) === index;
+    });
+  }
+
+  function effectiveBatchSourceRows() {
+    const available = availableBatchSourceRows();
+    if (transferState().batchAllSources) return available;
+    const selected = new Set(selectedBatchSourceIds());
+    return available.filter(function (row) {
+      return selected.has(Number(row.identity_id) || 0);
+    });
+  }
+
+  function batchItemStats(itemName) {
+    const holders = effectiveBatchSourceRows().map(function (row) {
+      return {
+        row: row,
+        count: Number(((row || {}).items || {})[itemName] || 0),
+      };
+    }).filter(function (holder) {
+      return holder.count > 0;
+    });
+    const total = holders.reduce(function (sum, holder) { return sum + holder.count; }, 0);
+    return {
+      total: total,
+      holderCount: holders.length,
+      holderLabels: holders.slice(0, 3).map(function (holder) { return rowLabel(holder.row); }),
+    };
   }
 
   function parseManualItems(text) {
@@ -132,6 +198,21 @@
       if (!name) return;
       merged.set(name, (Number(merged.get(name) || 0) + Number(item.quantity || 0)));
     });
+    if (state.batchMode) {
+      const payload = {
+        batch: true,
+        target_identity_id: Number(state.targetId) || 0,
+        listing_item: String(state.listingItem || '').trim(),
+        mode: String(state.batchQuantityMode || 'all') === 'fixed' ? 'fixed' : 'all',
+        items: Array.from(merged.entries()).map(function (entry) {
+          return { item_name: entry[0], quantity: entry[1] };
+        }),
+        include_protected: !!state.includeProtected,
+        continue_on_error: !!state.continueOnError,
+      };
+      if (!state.batchAllSources) payload.source_identity_ids = selectedBatchSourceIds();
+      return payload;
+    }
     return {
       source_identity_id: Number(state.sourceId) || 0,
       target_identity_id: Number(state.targetId) || 0,
@@ -151,6 +232,12 @@
       state.targetId = ids.find(function (id) { return id !== Number(state.sourceId); }) || '';
     }
     if (!state.listingItem) state.listingItem = preferredListingItem(state.targetId);
+    if (!state.batchAllSources) {
+      const selected = selectedBatchSourceIds();
+      state.batchSourceIds = selected.length ? selected : availableBatchSourceRows().map(function (row) {
+        return Number(row.identity_id) || 0;
+      }).filter(Boolean);
+    }
   }
 
   function resetTransferDraftToDefaults() {
@@ -169,6 +256,263 @@
     state.manualText = '';
     state.preview = null;
     state.busy = false;
+    if (!state.batchAllSources) {
+      state.batchSourceIds = availableBatchSourceRows().map(function (row) {
+        return Number(row.identity_id) || 0;
+      }).filter(Boolean);
+    }
+  }
+
+  function storageBagViewState() {
+    if (typeof appState === 'undefined') return { query: '', tag: 'all', flag: 'all', sort: 'group', focusItem: '', focusIdentityId: 0 };
+    if (!appState.storageBagView) {
+      appState.storageBagView = { query: '', tag: 'all', flag: 'all', sort: 'group', focusItem: '', focusIdentityId: 0 };
+    }
+    const state = appState.storageBagView;
+    state.query = String(state.query || '');
+    state.tag = String(state.tag || 'all');
+    state.flag = String(state.flag || 'all');
+    state.sort = String(state.sort || 'group');
+    state.focusItem = String(state.focusItem || '');
+    state.focusIdentityId = Number(state.focusIdentityId || 0) || 0;
+    return state;
+  }
+
+  function identityLabel(row) {
+    return String((row || {}).label || (row || {}).display_name || (row || {}).identity_id || '').trim();
+  }
+
+  function identityTotal(row) {
+    const itemMap = (row || {}).items || {};
+    return Object.keys(itemMap).reduce(function (sum, name) {
+      return sum + Number(itemMap[name] || 0);
+    }, 0);
+  }
+
+  function identityUniqueCount(row) {
+    const itemMap = (row || {}).items || {};
+    return Object.keys(itemMap).filter(function (name) { return Number(itemMap[name] || 0) > 0; }).length;
+  }
+
+  function itemTags(itemName) {
+    const rule = itemRule(itemName);
+    const tags = Array.isArray(rule.tags) ? rule.tags.map(function (tag) { return String(tag || '').trim(); }).filter(Boolean) : [];
+    return tags.length ? tags : ['未知'];
+  }
+
+  function primaryItemTag(itemName) {
+    return itemTags(itemName)[0] || '未知';
+  }
+
+  function buildStorageBagEntries(currentRows, currentItems, totals) {
+    return currentItems.map(function (itemName) {
+      const rule = itemRule(itemName);
+      const total = Number(totals[itemName] || 0);
+      const holders = currentRows.map(function (row) {
+        return { row: row, count: Number(((row || {}).items || {})[itemName] || 0) };
+      }).filter(function (holder) {
+        return holder.count > 0;
+      }).sort(function (a, b) {
+        return b.count - a.count || identityLabel(a.row).localeCompare(identityLabel(b.row), 'zh-Hans-CN');
+      });
+      const topHolder = holders[0] || null;
+      const concentration = total > 0 && topHolder ? topHolder.count / total : 0;
+      const tags = itemTags(itemName);
+      return {
+        name: itemName,
+        total: total,
+        rule: rule,
+        tags: tags,
+        tag: tags[0] || '未知',
+        method: String(rule.method || 'unknown'),
+        methodLabel: String(rule.method_label || methodLabel(rule.method)),
+        holders: holders,
+        holderCount: holders.length,
+        topHolder: topHolder,
+        concentration: concentration,
+        protectedHeld: holders.some(function (holder) { return !!holder.row.protected; }),
+      };
+    });
+  }
+
+  function matchesStorageBagQuery(entry, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return true;
+    if (entry.name.toLowerCase().indexOf(q) >= 0) return true;
+    if (entry.tags.some(function (tag) { return tag.toLowerCase().indexOf(q) >= 0; })) return true;
+    if (entry.methodLabel.toLowerCase().indexOf(q) >= 0) return true;
+    return entry.holders.some(function (holder) {
+      return identityLabel(holder.row).toLowerCase().indexOf(q) >= 0
+        || String(holder.row.identity_id || '').indexOf(q) >= 0;
+    });
+  }
+
+  function matchesStorageBagFlag(entry, flag) {
+    if (flag === 'uncategorized') return entry.method === 'unknown' || entry.tags.indexOf('未知') >= 0;
+    if (flag === 'concentrated') return entry.total > 0 && entry.concentration >= 0.7;
+    if (flag === 'single') return entry.holderCount === 1;
+    if (flag === 'protected') return entry.protectedHeld;
+    return true;
+  }
+
+  function sortStorageBagEntries(entries, view, defaultTags) {
+    const tagOrder = new Map((defaultTags || []).map(function (tag, index) { return [String(tag), index]; }));
+    const tagRank = function (tag) { return tagOrder.has(tag) ? tagOrder.get(tag) : 999; };
+    const sorted = entries.slice();
+    sorted.sort(function (a, b) {
+      if (view.sort === 'total') return b.total - a.total || a.name.localeCompare(b.name, 'zh-Hans-CN');
+      if (view.sort === 'concentration') return b.concentration - a.concentration || b.total - a.total || a.name.localeCompare(b.name, 'zh-Hans-CN');
+      if (view.sort === 'name') return a.name.localeCompare(b.name, 'zh-Hans-CN');
+      return tagRank(a.tag) - tagRank(b.tag) || b.total - a.total || a.name.localeCompare(b.name, 'zh-Hans-CN');
+    });
+    return sorted;
+  }
+
+  function visibleStorageBagEntries(entries, view, data) {
+    const filtered = entries.filter(function (entry) {
+      if (!matchesStorageBagQuery(entry, view.query)) return false;
+      if (view.tag !== 'all' && entry.tags.indexOf(view.tag) < 0) return false;
+      return matchesStorageBagFlag(entry, view.flag);
+    });
+    return sortStorageBagEntries(filtered, view, data.default_tags || []);
+  }
+
+  function groupStorageBagEntries(entries) {
+    const groups = [];
+    const byTag = new Map();
+    entries.forEach(function (entry) {
+      if (!byTag.has(entry.tag)) {
+        const group = { tag: entry.tag, entries: [], total: 0, concentrated: 0 };
+        byTag.set(entry.tag, group);
+        groups.push(group);
+      }
+      const group = byTag.get(entry.tag);
+      group.entries.push(entry);
+      group.total += entry.total;
+      if (entry.concentration >= 0.7) group.concentrated += 1;
+    });
+    return groups;
+  }
+
+  function formatShortCount(value) {
+    const n = Number(value || 0);
+    if (Math.abs(n) >= 100000000) return `${(n / 100000000).toFixed(1).replace(/\.0$/, '')}亿`;
+    if (Math.abs(n) >= 10000) return `${(n / 10000).toFixed(1).replace(/\.0$/, '')}万`;
+    return n.toLocaleString();
+  }
+
+  function renderStatChip(label, value, note, attrs, active) {
+    const tag = attrs ? 'button' : 'div';
+    const attrText = attrs ? ` type="button" ${attrs}` : '';
+    return `<${tag}${attrText} class="storage-bag-stat-chip${active ? ' active' : ''}"><span>${esc(label)}</span><strong>${esc(value)}</strong>${note ? `<small>${esc(note)}</small>` : ''}</${tag}>`;
+  }
+
+  function renderStorageBagOverview(entries, visibleEntries, currentRows) {
+    const panel = document.getElementById('storage-bag-overview-panel');
+    if (!panel) return;
+    const view = storageBagViewState();
+    const protectedCount = currentRows.filter(function (row) { return row.protected; }).length;
+    const totalQuantity = entries.reduce(function (sum, entry) { return sum + entry.total; }, 0);
+    const uncategorizedCount = entries.filter(function (entry) { return entry.method === 'unknown' || entry.tags.indexOf('未知') >= 0; }).length;
+    const concentratedCount = entries.filter(function (entry) { return entry.total > 0 && entry.concentration >= 0.7; }).length;
+    const singleCount = entries.filter(function (entry) { return entry.holderCount === 1; }).length;
+    const latestRow = currentRows.slice().sort(function (a, b) { return Number(b.updated_at_raw || 0) - Number(a.updated_at_raw || 0); })[0] || null;
+    const topItem = entries.slice().sort(function (a, b) { return b.total - a.total; })[0] || null;
+    const topIdentity = currentRows.slice().sort(function (a, b) { return identityTotal(b) - identityTotal(a); })[0] || null;
+    panel.innerHTML = `
+      <div class="storage-bag-overview-grid">
+        ${renderStatChip('身份', currentRows.length, protectedCount ? `保护 ${protectedCount}` : '')}
+        ${renderStatChip('物品', entries.length, `当前 ${visibleEntries.length}`)}
+        ${renderStatChip('总量', formatShortCount(totalQuantity), topItem ? `最多 ${topItem.name}` : '')}
+        ${renderStatChip('主仓', topIdentity ? identityLabel(topIdentity) : '-', topIdentity ? formatShortCount(identityTotal(topIdentity)) : '')}
+        ${renderStatChip('未分类', uncategorizedCount, '规则待补', 'data-storage-bag-flag="uncategorized"', view.flag === 'uncategorized')}
+        ${renderStatChip('高集中', concentratedCount, '70%以上', 'data-storage-bag-flag="concentrated"', view.flag === 'concentrated')}
+        ${renderStatChip('独占', singleCount, '单身份持有', 'data-storage-bag-flag="single"', view.flag === 'single')}
+        ${renderStatChip('最近更新', latestRow ? latestRow.updated_at : '-', latestRow ? identityLabel(latestRow) : '')}
+      </div>`;
+  }
+
+  function renderStorageBagToolbar(entries, visibleEntries, data) {
+    const toolbar = document.getElementById('storage-bag-toolbar');
+    if (!toolbar) return;
+    const view = storageBagViewState();
+    const tagStats = new Map();
+    entries.forEach(function (entry) {
+      tagStats.set(entry.tag, (tagStats.get(entry.tag) || 0) + 1);
+    });
+    const defaultTags = (data.default_tags || []).filter(function (tag) { return tagStats.has(tag); });
+    const extraTags = Array.from(tagStats.keys()).filter(function (tag) { return defaultTags.indexOf(tag) < 0; }).sort(function (a, b) { return a.localeCompare(b, 'zh-Hans-CN'); });
+    const tagChips = ['all'].concat(defaultTags, extraTags).map(function (tag) {
+      const label = tag === 'all' ? '全部' : tag;
+      const count = tag === 'all' ? entries.length : (tagStats.get(tag) || 0);
+      return `<button type="button" class="storage-bag-filter-chip${view.tag === tag ? ' active' : ''}" data-storage-bag-filter-tag="${esc(tag)}">${esc(label)}<strong>${esc(count)}</strong></button>`;
+    }).join('');
+    const flagChips = [
+      ['all', '全局'],
+      ['uncategorized', '未分类'],
+      ['concentrated', '高集中'],
+      ['single', '独占'],
+      ['protected', '保护号'],
+    ].map(function (item) {
+      return `<button type="button" class="storage-bag-filter-chip${view.flag === item[0] ? ' active' : ''}" data-storage-bag-flag="${esc(item[0])}">${esc(item[1])}</button>`;
+    }).join('');
+    toolbar.innerHTML = `
+      <div class="storage-bag-filter-row">
+        <input class="text-input storage-bag-search" data-storage-bag-search="1" value="${esc(view.query)}" placeholder="搜索物品、身份、标签" />
+        <select class="text-input storage-bag-sort" data-storage-bag-sort="1">
+          <option value="group"${view.sort === 'group' ? ' selected' : ''}>按标签分组</option>
+          <option value="total"${view.sort === 'total' ? ' selected' : ''}>按总量</option>
+          <option value="concentration"${view.sort === 'concentration' ? ' selected' : ''}>按集中度</option>
+          <option value="name"${view.sort === 'name' ? ' selected' : ''}>按名称</option>
+        </select>
+        <span class="storage-bag-visible-count">${esc(visibleEntries.length)} / ${esc(entries.length)} 项</span>
+      </div>
+      <div class="storage-bag-filter-chips">${tagChips}</div>
+      <div class="storage-bag-filter-chips storage-bag-filter-flags">${flagChips}</div>`;
+  }
+
+  function renderStorageBagDetailPanel(entries, visibleEntries, currentRows) {
+    const panel = document.getElementById('storage-bag-detail-panel');
+    if (!panel) return;
+    const view = storageBagViewState();
+    const visibleFocusItem = visibleEntries.find(function (entry) { return entry.name === view.focusItem; }) || null;
+    const fallbackItem = visibleEntries[0] || entries[0] || null;
+    if ((!entries.some(function (entry) { return entry.name === view.focusItem; }) || (visibleEntries.length && !visibleFocusItem)) && fallbackItem) {
+      view.focusItem = fallbackItem.name;
+    }
+    const focusItem = entries.find(function (entry) { return entry.name === view.focusItem; }) || fallbackItem;
+    const fallbackIdentity = currentRows.slice().sort(function (a, b) { return identityTotal(b) - identityTotal(a); })[0] || null;
+    if (!currentRows.some(function (row) { return Number(row.identity_id || 0) === Number(view.focusIdentityId || 0); }) && fallbackIdentity) {
+      view.focusIdentityId = Number(fallbackIdentity.identity_id || 0) || 0;
+    }
+    const focusIdentity = currentRows.find(function (row) { return Number(row.identity_id || 0) === Number(view.focusIdentityId || 0); }) || fallbackIdentity;
+    const holderRows = focusItem ? focusItem.holders.slice(0, 8).map(function (holder) {
+      const pct = focusItem.total > 0 ? Math.round(holder.count / focusItem.total * 100) : 0;
+      return `<div class="storage-bag-detail-row"><span>${esc(identityLabel(holder.row))}</span><strong>${esc(holder.count.toLocaleString())}</strong><small>${esc(pct)}%</small></div>`;
+    }).join('') : '<div class="queue-empty">暂无物品焦点。</div>';
+    const identityItems = focusIdentity ? Object.keys((focusIdentity.items || {})).map(function (name) {
+      return { name: name, count: Number(focusIdentity.items[name] || 0) };
+    }).filter(function (item) { return item.count > 0; }).sort(function (a, b) { return b.count - a.count || a.name.localeCompare(b.name, 'zh-Hans-CN'); }) : [];
+    const identityRows = identityItems.slice(0, 8).map(function (item) {
+      return `<div class="storage-bag-detail-row"><span>${esc(item.name)}</span><strong>${esc(item.count.toLocaleString())}</strong><small>${esc(primaryItemTag(item.name))}</small></div>`;
+    }).join('') || '<div class="queue-empty">暂无身份焦点。</div>';
+    panel.innerHTML = `
+      <div class="storage-bag-detail-grid">
+        <section class="storage-bag-detail-card">
+          <div class="storage-bag-detail-head"><span>聚焦物品</span><strong>${esc(focusItem ? focusItem.name : '-')}</strong></div>
+          <div class="storage-bag-detail-meta">
+            ${focusItem ? `<span>${esc(focusItem.tag)}</span><span>${esc(focusItem.methodLabel)}</span><span>总量 ${esc(focusItem.total.toLocaleString())}</span><span>${esc(focusItem.holderCount)} 个身份</span>` : ''}
+          </div>
+          <div class="storage-bag-detail-list">${holderRows}</div>
+        </section>
+        <section class="storage-bag-detail-card">
+          <div class="storage-bag-detail-head"><span>聚焦身份</span><strong>${esc(focusIdentity ? identityLabel(focusIdentity) : '-')}</strong></div>
+          <div class="storage-bag-detail-meta">
+            ${focusIdentity ? `<span>${focusIdentity.protected ? '保护号' : '可同步'}</span><span>${esc(focusIdentity.updated_at || '未解析')}</span><span>${esc(identityUniqueCount(focusIdentity))} 项</span><span>总量 ${esc(identityTotal(focusIdentity).toLocaleString())}</span>` : ''}
+          </div>
+          <div class="storage-bag-detail-list">${identityRows}</div>
+        </section>
+      </div>`;
   }
 
   function renderStorageBagTable() {
@@ -180,23 +524,72 @@
     const totals = data.totals || {};
     const syncIds = selectedSyncIds();
     renderSyncControls();
+    const view = storageBagViewState();
+    const allEntries = currentRows.length ? buildStorageBagEntries(currentRows, currentItems, totals) : [];
+    const visibleEntries = currentRows.length ? visibleStorageBagEntries(allEntries, view, data) : [];
     if (!currentRows.length) {
       wrap.innerHTML = '<div class="queue-empty">暂无身份。</div>';
-      return;
+    } else {
+      const groups = groupStorageBagEntries(visibleEntries);
+      const header = currentRows.map(function (row) {
+        const id = Number(row.identity_id) || 0;
+        const checkbox = row.protected ? '' : `<input type="checkbox" name="storage_bag_identity_id" value="${esc(id)}"${syncIds.has(id) ? ' checked' : ''} />`;
+        const protectedText = row.protected ? '<span class="storage-bag-protected">保护</span>' : '';
+        const activeClass = Number(view.focusIdentityId || 0) === id ? ' storage-bag-col-active' : '';
+        return `<th class="${activeClass}" data-storage-bag-identity-focus="${esc(id)}"><label class="storage-bag-head">${checkbox}<span>${esc(row.label || row.display_name || id)}</span></label><small>${esc(identityUniqueCount(row))}项 / ${esc(formatShortCount(identityTotal(row)))} ${protectedText}</small><small>${esc(row.updated_at || '未解析')}</small></th>`;
+      }).join('');
+      const body = groups.length ? groups.map(function (group) {
+        const groupHeader = `<tr class="storage-bag-category" data-storage-bag-filter-tag="${esc(group.tag)}"><th colspan="${2 + currentRows.length}"><span>${esc(group.tag)}</span><small>${esc(group.entries.length)}项 ｜ 总量 ${esc(group.total.toLocaleString())}${group.concentrated ? ` ｜ 高集中 ${esc(group.concentrated)}` : ''}</small></th></tr>`;
+        const rowsHtml = group.entries.map(function (entry) {
+          const rowActive = view.focusItem === entry.name ? ' storage-bag-row-active' : '';
+          const itemMeta = `<div class="storage-bag-item-meta">${entry.tags.map(function (tag) { return `<span>${esc(tag)}</span>`; }).join('')}<span>${esc(entry.methodLabel)}</span><span>${esc(entry.holderCount)}人</span>${entry.concentration >= 0.7 ? '<span>高集中</span>' : ''}</div>`;
+          return `<tr class="storage-bag-item-row${rowActive}" data-storage-bag-item-focus="${esc(entry.name)}"><th class="storage-bag-item-cell"><div class="storage-bag-item-name">${esc(entry.name)}</div>${itemMeta}</th><td class="storage-bag-total">${entry.total ? esc(entry.total.toLocaleString()) : ''}</td>${currentRows.map(function (row) {
+            const count = Number((row.items || {})[entry.name] || 0);
+            const colActive = Number(view.focusIdentityId || 0) === Number(row.identity_id || 0) ? ' storage-bag-col-active' : '';
+            return `<td class="${count ? 'storage-bag-cell-filled' : ''}${colActive}">${count ? esc(count.toLocaleString()) : ''}</td>`;
+          }).join('')}</tr>`;
+        }).join('');
+        return groupHeader + rowsHtml;
+      }).join('') : `<tr><th>暂无匹配物品</th><td></td>${currentRows.map(function () { return '<td></td>'; }).join('')}</tr>`;
+      wrap.innerHTML = `<table class="storage-bag-table"><thead><tr><th>物品</th><th>总量</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
     }
-    const header = currentRows.map(function (row) {
-      const id = Number(row.identity_id) || 0;
-      const checkbox = row.protected ? '' : `<input type="checkbox" name="storage_bag_identity_id" value="${esc(id)}"${syncIds.has(id) ? ' checked' : ''} />`;
-      const protectedText = row.protected ? '<span class="storage-bag-protected">保护</span>' : '';
-      return `<th><label class="storage-bag-head">${checkbox}<span>${esc(row.label || row.display_name || id)}</span></label><small>${esc(row.updated_at || '未解析')} ${protectedText}</small></th>`;
-    }).join('');
-    const body = currentItems.length ? currentItems.map(function (item) {
-      return `<tr><th>${esc(item)}</th><td class="storage-bag-total">${Number(totals[item] || 0).toLocaleString()}</td>${currentRows.map(function (row) {
-        const count = Number((row.items || {})[item] || 0);
-        return `<td>${count ? esc(count.toLocaleString()) : ''}</td>`;
-      }).join('')}</tr>`;
-    }).join('') : `<tr><th>暂无物品</th><td></td>${currentRows.map(function () { return '<td></td>'; }).join('')}</tr>`;
-    wrap.innerHTML = `<table class="storage-bag-table"><thead><tr><th>物品</th><th>总量</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
+    renderStorageBagOverview(allEntries, visibleEntries, currentRows);
+    renderStorageBagToolbar(allEntries, visibleEntries, data);
+    renderStorageBagDetailPanel(allEntries, visibleEntries, currentRows);
+    renderStorageBagApiPanel();
+  }
+
+  function renderStorageBagApiPanel() {
+    const panel = document.getElementById('storage-bag-api-panel');
+    if (!panel) return;
+    const api = storageApiData();
+    const tokenPlaceholder = api.api_token_configured ? '已配置，留空不变' : '';
+    const cookiePlaceholder = api.cookie_configured ? '已配置，留空不变' : '';
+    const verifyLine = api.verified
+      ? `<span class="storage-bag-api-status">已验证 ${esc(api.verified_at || '-')} ｜ 保活 ${api.keepalive_enabled ? '已启用' : '未启用'}${api.next_keepalive_at && api.next_keepalive_at !== '-' ? ' ｜ 下次 ' + esc(api.next_keepalive_at) : ''}</span>`
+      : `<span class="storage-bag-api-status storage-bag-api-status-error">未验证</span>`;
+    const keepaliveError = api.last_keepalive_error
+      ? `<span class="storage-bag-api-status storage-bag-api-status-error">保活：${esc(api.last_keepalive_error)}</span>`
+      : '';
+    const lastLine = api.last_message
+      ? `<span class="storage-bag-api-status${api.last_ok ? '' : ' storage-bag-api-status-error'}">${esc(api.last_message)}${api.last_updated_at && api.last_updated_at !== '-' ? ' ｜ ' + esc(api.last_updated_at) : ''}</span>`
+      : '';
+    panel.innerHTML = `
+      <form id="storage-bag-api-form" class="storage-bag-api-form">
+        <div class="storage-bag-api-grid">
+          <label class="field-label">Base URL<input class="text-input" name="storage_bag_api_base_url" value="${esc(api.base_url || 'https://asc.aiopenai.app')}" autocomplete="off" /></label>
+          <label class="field-label">API Token<input class="text-input" name="storage_bag_api_token" type="password" placeholder="${esc(tokenPlaceholder || '可留空，验证时自动读取')}" autocomplete="new-password" /></label>
+          <label class="field-label storage-bag-api-cookie">Cookie<input class="text-input" name="storage_bag_api_cookie" type="password" placeholder="${esc(cookiePlaceholder || 'session=...')}" autocomplete="new-password" /></label>
+        </div>
+        <div class="storage-bag-api-actions">
+          <button type="button" class="btn btn-secondary" data-storage-bag-api-save="1">保存 API</button>
+          <button type="button" class="btn btn-secondary" data-storage-bag-api-verify="1"${api.running ? ' disabled' : ''}>${api.running ? '验证中' : '验证'}</button>
+          <button type="button" class="btn" data-storage-bag-api-refresh="1"${api.running || !api.configured ? ' disabled' : ''}>${api.running ? '读取中' : 'API读取'}</button>
+          ${verifyLine}
+          ${keepaliveError}
+          ${lastLine}
+        </div>
+      </form>`;
   }
 
   function renderSyncControls() {
@@ -224,59 +617,138 @@
     }
   }
 
+  function renderTransferWarnings(preview) {
+    return preview && Array.isArray(preview.warnings) && preview.warnings.length
+      ? `<div class="storage-bag-transfer-warnings">${preview.warnings.map(function (item) { return `提示：${esc(item)}`; }).join('<br>')}</div>`
+      : '';
+  }
+
+  function renderTransferPreviewHtml(preview) {
+    if (!preview) return '<div class="queue-empty">尚未生成预览。</div>';
+    if (Array.isArray(preview.tasks)) {
+      const taskLines = preview.tasks.map(function (task, index) {
+        const itemText = (task.items || []).map(function (item) {
+          return `${item.item_name}x${Number(item.quantity || 0).toLocaleString()}`;
+        }).join('、');
+        return `${index + 1}. ${task.source_label || task.source_identity_id} -> ${task.target_label || task.target_identity_id}｜${itemText}`;
+      });
+      const skipped = Array.isArray(preview.skipped_source_ids) && preview.skipped_source_ids.length
+        ? `<div class="form-label">已跳过无匹配库存来源：${esc(preview.skipped_source_ids.join('、'))}</div>`
+        : '';
+      return `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成批量预览')}</div>${renderTransferWarnings(preview)}<pre>${esc(taskLines.join('\n'))}</pre>${skipped}`;
+    }
+    return `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成预览')}</div>${renderTransferWarnings(preview)}<pre>${esc((preview.commands || []).map(function (cmd) { return `${cmd.identity_id}｜${cmd.command}｜${cmd.note || ''}`; }).join('\n'))}</pre>`;
+  }
+
+  function renderBatchRuntimeHtml(batchRuntime) {
+    const rawLogs = Array.isArray((batchRuntime || {}).logs) ? batchRuntime.logs : [];
+    const status = String((batchRuntime || {}).status || '');
+    if (!batchRuntime || (!batchRuntime.running && (!status || status === 'idle') && !rawLogs.length && !batchRuntime.last_message)) return '';
+    const completed = Array.isArray(batchRuntime.completed) ? batchRuntime.completed.length : 0;
+    const failed = Array.isArray(batchRuntime.failed) ? batchRuntime.failed.length : 0;
+    const queued = Array.isArray(batchRuntime.queue) ? batchRuntime.queue.length : 0;
+    const total = Number(batchRuntime.total || 0);
+    const active = batchRuntime.active_task || null;
+    const statusLine = [
+      batchRuntime.running ? '批量运行中' : status,
+      total ? `完成 ${completed}/${total}` : '',
+      queued ? `待跑 ${queued}` : '',
+      failed ? `失败 ${failed}` : '',
+      active ? `当前 ${active.source_label || active.source_identity_id}` : '',
+    ].filter(Boolean).join('｜');
+    const logs = rawLogs.slice(-10).map(function (log) {
+      return `${log.ts || ''} ${log.message || ''}`;
+    }).join('\n');
+    return `<div class="storage-bag-transfer-runtime"><div>${esc(statusLine || batchRuntime.last_message || '')}</div>${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
+  }
+
   function renderTransferPanel() {
     const panel = document.getElementById('storage-bag-transfer-panel');
     if (!panel) return;
     normalizeTransferDefaults();
     const state = transferState();
     const runtime = snapshot().storage_bag_transfer || {};
+    const batchRuntime = runtime.batch || {};
     const sourceRow = rowById(state.sourceId);
-    const sourceItems = items().filter(function (name) {
-      const rule = itemRule(name);
-      return itemCount(state.sourceId, name) > 0 && String(rule.method || 'unknown') !== 'blocked';
-    });
+    const sourceRows = effectiveBatchSourceRows();
+    const sourceItems = state.batchMode
+      ? items().filter(function (name) {
+        const rule = itemRule(name);
+        return batchItemStats(name).total > 0 && String(rule.method || 'unknown') !== 'blocked';
+      })
+      : items().filter(function (name) {
+        const rule = itemRule(name);
+        return itemCount(state.sourceId, name) > 0 && String(rule.method || 'unknown') !== 'blocked';
+      });
     const itemRows = sourceItems.length ? sourceItems.map(function (name) {
-      const count = itemCount(state.sourceId, name);
-      const checked = Object.prototype.hasOwnProperty.call(state.selectedItems, name);
-      const qty = checked ? Number(state.selectedItems[name] || count) : count;
       const rule = itemRule(name);
+      const checked = Object.prototype.hasOwnProperty.call(state.selectedItems, name);
+      if (state.batchMode) {
+        const stats = batchItemStats(name);
+        const qty = checked ? Number(state.selectedItems[name] || (state.batchQuantityMode === 'fixed' ? 1 : stats.total)) : (state.batchQuantityMode === 'fixed' ? 1 : stats.total);
+        const holderText = `${stats.holderCount}号${stats.holderLabels.length ? `｜${stats.holderLabels.join('、')}${stats.holderCount > stats.holderLabels.length ? '…' : ''}` : ''}`;
+        return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(rule.method_label || methodLabel(rule.method))}</td><td>${esc(stats.total.toLocaleString())}</td><td>${esc(holderText)}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked && state.batchQuantityMode === 'fixed' ? '' : ' disabled'} /></td></tr>`;
+      }
+      const count = itemCount(state.sourceId, name);
+      const qty = checked ? Number(state.selectedItems[name] || count) : count;
       return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(rule.method_label || methodLabel(rule.method))}</td><td>${esc(count.toLocaleString())}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked ? '' : ' disabled'} /></td></tr>`;
-    }).join('') : '<tr><td colspan="5" class="storage-bag-empty-cell">来源快照暂无可转移物品，可直接使用手填清单。</td></tr>';
+    }).join('') : `<tr><td colspan="${state.batchMode ? '6' : '5'}" class="storage-bag-empty-cell">${state.batchMode ? '当前来源范围暂无可转移物品，可直接使用手填清单。' : '来源快照暂无可转移物品，可直接使用手填清单。'}</td></tr>`;
     const preview = state.preview;
-    const warnings = preview && Array.isArray(preview.warnings) && preview.warnings.length
-      ? `<div class="storage-bag-transfer-warnings">${preview.warnings.map(function (item) { return `提示：${esc(item)}`; }).join('<br>')}</div>`
-      : '';
-    const previewHtml = preview
-      ? `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成预览')}</div>${warnings}<pre>${esc((preview.commands || []).map(function (cmd) { return `${cmd.identity_id}｜${cmd.command}｜${cmd.note || ''}`; }).join('\n'))}</pre>`
-      : '<div class="queue-empty">尚未生成预览。</div>';
     const logs = Array.isArray(runtime.logs) ? runtime.logs.slice(-8).map(function (log) {
       return `${log.ts || ''} ${log.message || ''}`;
     }).join('\n') : '';
-    const running = !!runtime.running;
+    const running = !!runtime.running || !!batchRuntime.running;
     const busy = !!state.busy;
     const sourceLabel = sourceRow ? (sourceRow.label || sourceRow.display_name || state.sourceId) : '来源';
-    panel.innerHTML = `
+    const modeButtons = `
+      <div class="storage-bag-transfer-mode">
+        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${running || busy ? ' disabled' : ''}>单次</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${running || busy ? ' disabled' : ''}>批量</button>
+      </div>`;
+    const sourceControls = state.batchMode ? `
+      <div class="storage-bag-transfer-controls storage-bag-transfer-controls-batch">
+        <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
+        <label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>
+        <label class="field-label">数量模式<select class="text-input" data-storage-transfer-field="batchQuantityMode"><option value="all"${state.batchQuantityMode !== 'fixed' ? ' selected' : ''}>转移全部库存</option><option value="fixed"${state.batchQuantityMode === 'fixed' ? ' selected' : ''}>每号固定上限</option></select></label>
+      </div>
+      <div class="storage-bag-transfer-batch-options">
+        <label><input type="checkbox" data-storage-transfer-flag="batchAllSources"${state.batchAllSources ? ' checked' : ''} />全部可用来源</label>
+        <label><input type="checkbox" data-storage-transfer-flag="includeProtected"${state.includeProtected ? ' checked' : ''} />包含保护号</label>
+        <label><input type="checkbox" data-storage-transfer-flag="continueOnError"${state.continueOnError ? ' checked' : ''} />失败后继续</label>
+        <span>${esc(state.batchAllSources ? `来源 ${sourceRows.length}` : `已选 ${sourceRows.length}/${availableBatchSourceRows().length}`)}</span>
+      </div>
+      <div class="storage-bag-transfer-source-list">
+        ${availableBatchSourceRows().map(function (row) {
+          const id = Number(row.identity_id) || 0;
+          const selected = state.batchAllSources || selectedBatchSourceIds().indexOf(id) >= 0;
+          return `<label><input type="checkbox" name="storage_bag_batch_source" value="${esc(id)}"${selected ? ' checked' : ''}${state.batchAllSources ? ' disabled' : ''} />${esc(rowLabel(row) || id)}${row.protected ? '<span class="storage-bag-protected">保护</span>' : ''}</label>`;
+        }).join('') || '<div class="queue-empty">暂无可用来源身份。</div>'}
+      </div>`
+      : `
       <div class="storage-bag-transfer-controls">
         <label class="field-label">资源号<select class="text-input" data-storage-transfer-field="sourceId">${identityOptions(state.sourceId)}</select></label>
         <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
         <label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>
-      </div>
+      </div>`;
+    panel.innerHTML = `
+      ${modeButtons}
+      ${sourceControls}
       <div class="storage-bag-transfer-grid">
         <section>
-          <div class="form-label">${esc(sourceLabel)} 快照物品，可批量勾选。</div>
-          <div class="storage-bag-transfer-table-wrap"><table class="storage-bag-transfer-table"><thead><tr><th>选</th><th>物品</th><th>方式</th><th>库存</th><th>数量</th></tr></thead><tbody>${itemRows}</tbody></table></div>
+          <div class="form-label">${state.batchMode ? `批量来源 ${esc(sourceRows.length)} 个，可勾选要集中的物品。` : `${esc(sourceLabel)} 快照物品，可批量勾选。`}</div>
+          <div class="storage-bag-transfer-table-wrap"><table class="storage-bag-transfer-table"><thead>${state.batchMode ? '<tr><th>选</th><th>物品</th><th>方式</th><th>来源合计</th><th>持有号</th><th>数量</th></tr>' : '<tr><th>选</th><th>物品</th><th>方式</th><th>库存</th><th>数量</th></tr>'}</thead><tbody>${itemRows}</tbody></table></div>
         </section>
         <section>
           <label class="field-label">手填清单<textarea class="text-input storage-bag-transfer-textarea" data-storage-transfer-field="manualText" placeholder="妖丹*10 木髓*5 或一行一个">${esc(state.manualText || '')}</textarea></label>
-          <div class="form-label">快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。</div>
+          <div class="form-label">${state.batchMode ? '全部模式会按每个来源当前库存转移；固定模式按每个来源上限转移。' : '快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。'}</div>
         </section>
       </div>
       <div class="storage-bag-transfer-actions">
-        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${running || busy ? ' disabled' : ''}>生成预览</button>
-        <button type="button" class="btn" data-storage-transfer-start="1"${running || busy ? ' disabled' : ''}>执行转移</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${running || busy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
+        <button type="button" class="btn" data-storage-transfer-start="1"${running || busy ? ' disabled' : ''}>${state.batchMode ? '执行批量转移' : '执行转移'}</button>
         <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${running ? '' : ' disabled'}>取消任务</button>
       </div>
-      <div id="storage-bag-transfer-preview" class="storage-bag-transfer-preview">${previewHtml}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
+      <div id="storage-bag-transfer-preview" class="storage-bag-transfer-preview">${renderTransferPreviewHtml(preview)}${renderBatchRuntimeHtml(batchRuntime)}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
   }
 
   function resetTransferPreviewOnly() {
@@ -286,6 +758,7 @@
 
   function openStorageBagModal() {
     renderStorageBagTable();
+    renderStorageBagApiPanel();
     const modal = document.getElementById('storage-bag-modal');
     if (modal) modal.classList.add('show');
   }
@@ -297,7 +770,8 @@
 
   function openTransferModal() {
     const runtime = snapshot().storage_bag_transfer || {};
-    if (!runtime.running) resetTransferDraftToDefaults();
+    const batchRuntime = runtime.batch || {};
+    if (!runtime.running && !batchRuntime.running) resetTransferDraftToDefaults();
     renderTransferPanel();
     const modal = document.getElementById('storage-bag-transfer-modal');
     if (modal) modal.classList.add('show');
@@ -327,9 +801,63 @@
     }
   }
 
+  function collectStorageBagApiPayload() {
+    const form = document.getElementById('storage-bag-api-form');
+    if (!form) return {};
+    return {
+      base_url: (form.querySelector('input[name="storage_bag_api_base_url"]')?.value || '').trim(),
+      api_token: (form.querySelector('input[name="storage_bag_api_token"]')?.value || '').trim(),
+      cookie: (form.querySelector('input[name="storage_bag_api_cookie"]')?.value || '').trim(),
+    };
+  }
+
+  async function saveStorageBagApiConfig() {
+    try {
+      const data = await post('/api/storage-bag-api-config', collectStorageBagApiPayload());
+      setFlash(data.message || '已更新储物袋 API 配置', false);
+      if (typeof applySnapshot === 'function') applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
+      renderStorageBagApiPanel();
+    } catch (error) {
+      setFlash((error && error.message) || '保存储物袋 API 失败', true);
+      renderStorageBagApiPanel();
+    }
+  }
+
+  async function verifyStorageBagApi() {
+    try {
+      renderStorageBagApiPanel();
+      const data = await post('/api/storage-bag-api-verify', collectStorageBagApiPayload());
+      setFlash(data.message || '天机阁验证成功', false);
+      if (typeof applySnapshot === 'function') applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
+      renderStorageBagApiPanel();
+    } catch (error) {
+      setFlash((error && error.message) || '天机阁验证失败', true);
+      if (typeof refreshState === 'function') await refreshState({ silent: true, keepFlash: true });
+      renderStorageBagApiPanel();
+    }
+  }
+
+  async function refreshStorageBagApi() {
+    try {
+      renderStorageBagApiPanel();
+      const data = await post('/api/storage-bag-api-refresh', collectStorageBagApiPayload());
+      setFlash(data.message || '已读取储物袋 API', false);
+      if (typeof applySnapshot === 'function') applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
+      renderStorageBagTable();
+    } catch (error) {
+      setFlash((error && error.message) || '储物袋 API 读取失败', true);
+      if (typeof refreshState === 'function') await refreshState({ silent: true, keepFlash: true });
+      renderStorageBagTable();
+    }
+  }
+
   async function previewTransfer() {
     const state = transferState();
     if (state.busy) return;
+    if (state.batchMode && !state.batchAllSources && selectedBatchSourceIds().length <= 0) {
+      setFlash('请至少选择一个批量来源身份', true);
+      return;
+    }
     state.busy = true;
     renderTransferPanel();
     try {
@@ -348,6 +876,10 @@
   async function startTransfer() {
     const state = transferState();
     if (state.busy) return;
+    if (state.batchMode && !state.batchAllSources && selectedBatchSourceIds().length <= 0) {
+      setFlash('请至少选择一个批量来源身份', true);
+      return;
+    }
     state.busy = true;
     renderTransferPanel();
     try {
@@ -383,7 +915,8 @@
   async function refreshTransferPanelIfOpen() {
     if (!isTransferModalOpen()) return;
     const runtime = snapshot().storage_bag_transfer || {};
-    if (!runtime.running) return;
+    const batchRuntime = runtime.batch || {};
+    if (!runtime.running && !batchRuntime.running) return;
     if (typeof refreshState === 'function') await refreshState({ silent: true, keepFlash: true });
     renderTransferPanel();
   }
@@ -392,6 +925,53 @@
     if (event.target.closest('[data-open-storage-bag]')) return openStorageBagModal();
     if (event.target.closest('#storage-bag-transfer-open-btn')) return openTransferModal();
     if (event.target.closest('#storage-bag-sync-btn')) return syncStorageBag();
+    if (event.target.closest('[data-storage-bag-api-save]')) return saveStorageBagApiConfig();
+    if (event.target.closest('[data-storage-bag-api-verify]')) return verifyStorageBagApi();
+    if (event.target.closest('[data-storage-bag-api-refresh]')) return refreshStorageBagApi();
+    const modeButton = event.target.closest('[data-storage-transfer-mode]');
+    if (modeButton) {
+      const state = transferState();
+      const nextMode = modeButton.getAttribute('data-storage-transfer-mode') || 'single';
+      const nextBatchMode = nextMode === 'batch';
+      if (state.batchMode !== nextBatchMode) {
+        state.batchMode = nextBatchMode;
+        state.selectedItems = {};
+        state.preview = null;
+        if (state.batchMode && !state.batchAllSources && selectedBatchSourceIds().length <= 0) {
+          state.batchSourceIds = availableBatchSourceRows().map(function (row) {
+            return Number(row.identity_id) || 0;
+          }).filter(Boolean);
+        }
+      }
+      renderTransferPanel();
+      return;
+    }
+    const tagFilter = event.target.closest('[data-storage-bag-filter-tag]');
+    if (tagFilter && !event.target.closest('input, select, textarea')) {
+      storageBagViewState().tag = tagFilter.getAttribute('data-storage-bag-filter-tag') || 'all';
+      renderStorageBagTable();
+      return;
+    }
+    const flagFilter = event.target.closest('[data-storage-bag-flag]');
+    if (flagFilter) {
+      const view = storageBagViewState();
+      const nextFlag = flagFilter.getAttribute('data-storage-bag-flag') || 'all';
+      view.flag = view.flag === nextFlag && nextFlag !== 'all' ? 'all' : nextFlag;
+      renderStorageBagTable();
+      return;
+    }
+    const itemFocus = event.target.closest('[data-storage-bag-item-focus]');
+    if (itemFocus && !event.target.closest('input, select, textarea, button, a')) {
+      storageBagViewState().focusItem = itemFocus.getAttribute('data-storage-bag-item-focus') || '';
+      renderStorageBagTable();
+      return;
+    }
+    const identityFocus = event.target.closest('[data-storage-bag-identity-focus]');
+    if (identityFocus && !event.target.closest('input, select, textarea, button, a')) {
+      storageBagViewState().focusIdentityId = Number(identityFocus.getAttribute('data-storage-bag-identity-focus') || 0) || 0;
+      renderStorageBagTable();
+      return;
+    }
     if (event.target.closest('[data-storage-transfer-preview]')) return previewTransfer();
     if (event.target.closest('[data-storage-transfer-start]')) return startTransfer();
     if (event.target.closest('[data-storage-transfer-cancel]')) return cancelTransfer();
@@ -424,6 +1004,12 @@
       renderSyncControls();
       return;
     }
+    const sort = event.target.closest('[data-storage-bag-sort]');
+    if (sort) {
+      storageBagViewState().sort = sort.value || 'group';
+      renderStorageBagTable();
+      return;
+    }
     const field = event.target.closest('[data-storage-transfer-field]');
     if (field) {
       const state = transferState();
@@ -432,6 +1018,38 @@
       state.preview = null;
       if (key === 'sourceId') state.selectedItems = {};
       if (key === 'targetId') state.listingItem = preferredListingItem(state.targetId);
+      if (key === 'targetId' && state.batchMode && !state.batchAllSources) state.batchSourceIds = selectedBatchSourceIds();
+      renderTransferPanel();
+      return;
+    }
+    const flag = event.target.closest('[data-storage-transfer-flag]');
+    if (flag) {
+      const state = transferState();
+      const key = flag.getAttribute('data-storage-transfer-flag');
+      state[key] = !!flag.checked;
+      state.preview = null;
+      if (key === 'batchAllSources' && !state.batchAllSources && selectedBatchSourceIds().length <= 0) {
+        state.batchSourceIds = availableBatchSourceRows().map(function (row) {
+          return Number(row.identity_id) || 0;
+        }).filter(Boolean);
+      }
+      if (key === 'includeProtected' && !state.batchAllSources) {
+        state.batchSourceIds = selectedBatchSourceIds();
+      }
+      renderTransferPanel();
+      return;
+    }
+    const batchSource = event.target.closest('input[name="storage_bag_batch_source"]');
+    if (batchSource) {
+      const state = transferState();
+      const ids = new Set(selectedBatchSourceIds());
+      const id = Number(batchSource.value) || 0;
+      if (id) {
+        if (batchSource.checked) ids.add(id);
+        else ids.delete(id);
+      }
+      state.batchSourceIds = Array.from(ids);
+      state.preview = null;
       renderTransferPanel();
       return;
     }
@@ -439,13 +1057,18 @@
     if (itemCheckbox) {
       const state = transferState();
       const name = itemCheckbox.value;
-      if (itemCheckbox.checked) state.selectedItems[name] = itemCount(state.sourceId, name);
+      if (itemCheckbox.checked) {
+        const stats = state.batchMode ? batchItemStats(name) : null;
+        state.selectedItems[name] = state.batchMode
+          ? (state.batchQuantityMode === 'fixed' ? 1 : Number((stats || {}).total || 1))
+          : itemCount(state.sourceId, name);
+      }
       else delete state.selectedItems[name];
       state.preview = null;
       const row = itemCheckbox.closest('tr');
       const qtyInput = row ? row.querySelector('input[name="storage_bag_transfer_qty"]') : null;
       if (qtyInput) {
-        qtyInput.disabled = !itemCheckbox.checked;
+        qtyInput.disabled = !itemCheckbox.checked || (state.batchMode && state.batchQuantityMode !== 'fixed');
         if (itemCheckbox.checked) qtyInput.value = String(state.selectedItems[name] || itemCount(state.sourceId, name) || 1);
       }
       resetTransferPreviewOnly();
@@ -460,6 +1083,16 @@
   });
 
   document.addEventListener('input', function (event) {
+    const search = event.target.closest('[data-storage-bag-search]');
+    if (search) {
+      storageBagViewState().query = search.value || '';
+      if (storageBagSearchTimer) window.clearTimeout(storageBagSearchTimer);
+      storageBagSearchTimer = window.setTimeout(function () {
+        storageBagSearchTimer = null;
+        renderStorageBagTable();
+      }, event.isComposing ? 250 : 120);
+      return;
+    }
     const field = event.target.closest('[data-storage-transfer-field]');
     if (!field) return;
     const key = field.getAttribute('data-storage-transfer-field');

@@ -76,6 +76,24 @@ _storage_bag_transfer_state = {
     "reply_due_at": 0,
 }
 
+_storage_bag_transfer_batch_state = {
+    "running": False,
+    "batch_id": "",
+    "target_identity_id": 0,
+    "listing_item": "",
+    "queue": [],
+    "active_task": None,
+    "completed": [],
+    "failed": [],
+    "total": 0,
+    "stop_on_error": True,
+    "status": "idle",
+    "last_message": "",
+    "logs": [],
+    "created_at": 0,
+    "updated_at": 0,
+}
+
 
 def _normalize_owner_key(value):
     return str(value or "").strip().lstrip("@").casefold()
@@ -339,6 +357,15 @@ def get_storage_bag_transfer_snapshot():
     snapshot["updated_at_text"] = fmt_abs_ts(float(snapshot.get("updated_at") or 0))
     snapshot["reply_due_at_text"] = fmt_abs_ts(float(snapshot.get("reply_due_at") or 0))
     snapshot["gift_next_due_at_text"] = fmt_abs_ts(float(snapshot.get("gift_next_due_at") or 0))
+    batch = dict(_storage_bag_transfer_batch_state)
+    batch["queue"] = [dict(task) for task in _storage_bag_transfer_batch_state.get("queue") or []]
+    batch["active_task"] = dict(_storage_bag_transfer_batch_state.get("active_task") or {}) or None
+    batch["completed"] = [dict(task) for task in _storage_bag_transfer_batch_state.get("completed") or []]
+    batch["failed"] = [dict(task) for task in _storage_bag_transfer_batch_state.get("failed") or []]
+    batch["logs"] = list(_storage_bag_transfer_batch_state.get("logs") or [])
+    batch["created_at_text"] = fmt_abs_ts(float(batch.get("created_at") or 0))
+    batch["updated_at_text"] = fmt_abs_ts(float(batch.get("updated_at") or 0))
+    snapshot["batch"] = batch
     return snapshot
 
 
@@ -375,13 +402,99 @@ def _clear_storage_bag_transfer_state():
     })
 
 
-def _finalize_storage_bag_transfer(success, message):
+def _clear_storage_bag_transfer_batch_state():
+    _storage_bag_transfer_batch_state.update({
+        "running": False,
+        "batch_id": "",
+        "target_identity_id": 0,
+        "listing_item": "",
+        "queue": [],
+        "active_task": None,
+        "completed": [],
+        "failed": [],
+        "total": 0,
+        "stop_on_error": True,
+        "status": "idle",
+        "last_message": "",
+        "logs": [],
+        "created_at": 0,
+        "updated_at": 0,
+    })
+
+
+def _storage_transfer_batch_log(message, *, level="info"):
+    entry = {"ts": fmt_abs_ts(time.time()), "level": str(level or "info"), "message": str(message or "")}
+    _storage_bag_transfer_batch_state.setdefault("logs", []).append(entry)
+    if len(_storage_bag_transfer_batch_state["logs"]) > 80:
+        _storage_bag_transfer_batch_state["logs"] = _storage_bag_transfer_batch_state["logs"][-80:]
+    _storage_bag_transfer_batch_state["updated_at"] = time.time()
+    return entry
+
+
+def _finalize_storage_bag_transfer_batch(success, message):
+    _storage_bag_transfer_batch_state["running"] = False
+    _storage_bag_transfer_batch_state["status"] = "done" if success else "failed"
+    _storage_bag_transfer_batch_state["last_message"] = str(message or "")
+    _storage_bag_transfer_batch_state["updated_at"] = time.time()
+    _storage_transfer_batch_log(message, level="success" if success else "error")
+
+
+async def _maybe_advance_storage_bag_transfer_batch(success, message):
+    if not _storage_bag_transfer_batch_state.get("running"):
+        return False
+    active_task = _storage_bag_transfer_batch_state.get("active_task")
+    if not isinstance(active_task, dict):
+        return False
+    task_record = dict(active_task)
+    task_record["message"] = str(message or "")
+    task_record["finished_at"] = time.time()
+    if success:
+        _storage_bag_transfer_batch_state.setdefault("completed", []).append(task_record)
+        _storage_transfer_batch_log(
+            f"完成 {task_record.get('source_label') or task_record.get('source_identity_id')}：{message}",
+            level="success",
+        )
+    else:
+        _storage_bag_transfer_batch_state.setdefault("failed", []).append(task_record)
+        _storage_transfer_batch_log(
+            f"失败 {task_record.get('source_label') or task_record.get('source_identity_id')}：{message}",
+            level="error",
+        )
+    _storage_bag_transfer_batch_state["active_task"] = None
+    if not success and _storage_bag_transfer_batch_state.get("stop_on_error", True):
+        _storage_bag_transfer_batch_state["queue"] = []
+        _finalize_storage_bag_transfer_batch(False, f"批量转移停止：{message}")
+        await send_audit_log(f"❌ 储物袋批量转移停止：{message}", limit=260)
+        return True
+    if not _storage_bag_transfer_batch_state.get("queue"):
+        total = int(_storage_bag_transfer_batch_state.get("total") or 0)
+        failed = len(_storage_bag_transfer_batch_state.get("failed") or [])
+        completed = len(_storage_bag_transfer_batch_state.get("completed") or [])
+        if failed:
+            final_message = f"批量转移结束：完成 {completed}/{total}，失败 {failed}"
+            _finalize_storage_bag_transfer_batch(False, final_message)
+            await send_audit_log(f"⚠️ {final_message}", limit=260)
+        else:
+            final_message = f"批量转移完成：{completed}/{total}"
+            _finalize_storage_bag_transfer_batch(True, final_message)
+            await send_audit_log(f"✅ {final_message}", limit=220)
+        return True
+    return await _start_next_storage_bag_transfer_batch_task()
+
+
+def _finalize_storage_bag_transfer(success, message, *, advance_batch=True):
     _storage_bag_transfer_state["running"] = False
     _storage_bag_transfer_state["step"] = "done" if success else "failed"
     _storage_bag_transfer_state["last_error"] = "" if success else str(message or "")
     _storage_bag_transfer_state["reply_due_at"] = 0
     _storage_bag_transfer_state["gift_next_due_at"] = 0
     _storage_transfer_log(message, level="success" if success else "error")
+    if advance_batch:
+        try:
+            from ..runtime import _fire_and_forget
+            _fire_and_forget(_maybe_advance_storage_bag_transfer_batch(bool(success), str(message or "")))
+        except Exception:
+            pass
 
 
 def _set_storage_bag_rule_method(item_name, method, reason=""):
@@ -754,9 +867,11 @@ async def _start_storage_bag_gift_phase():
     return await _send_next_storage_bag_gift()
 
 
-async def start_storage_bag_transfer_task(source_identity_id, target_identity_id, items, listing_item):
+async def start_storage_bag_transfer_task(source_identity_id, target_identity_id, items, listing_item, *, batch_child=False):
     if _storage_bag_transfer_state.get("running"):
         return False, "已有储物袋转移任务正在执行", get_storage_bag_transfer_snapshot()
+    if _storage_bag_transfer_batch_state.get("running") and not batch_child:
+        return False, "已有储物袋批量转移正在执行", get_storage_bag_transfer_snapshot()
     try:
         source_identity_id = int(source_identity_id or 0)
         target_identity_id = int(target_identity_id or 0)
@@ -832,8 +947,124 @@ async def start_storage_bag_transfer_task(source_identity_id, target_identity_id
     return True, "已开始储物袋转移，等待上架结果", get_storage_bag_transfer_snapshot()
 
 
+async def _start_next_storage_bag_transfer_batch_task():
+    if not _storage_bag_transfer_batch_state.get("running"):
+        return False
+    if _storage_bag_transfer_state.get("running"):
+        return False
+    queue = _storage_bag_transfer_batch_state.get("queue")
+    if not isinstance(queue, list) or not queue:
+        completed = len(_storage_bag_transfer_batch_state.get("completed") or [])
+        total = int(_storage_bag_transfer_batch_state.get("total") or 0)
+        _finalize_storage_bag_transfer_batch(True, f"批量转移完成：{completed}/{total}")
+        return True
+    task = dict(queue.pop(0) or {})
+    _storage_bag_transfer_batch_state["active_task"] = task
+    _storage_bag_transfer_batch_state["status"] = "running_task"
+    _storage_bag_transfer_batch_state["updated_at"] = time.time()
+    _storage_transfer_batch_log(
+        f"开始 {task.get('source_label') or task.get('source_identity_id')} -> {task.get('target_label') or task.get('target_identity_id')}：{len(task.get('items') or [])} 项"
+    )
+    ok, message, _snapshot = await start_storage_bag_transfer_task(
+        task.get("source_identity_id"),
+        task.get("target_identity_id"),
+        task.get("items") or [],
+        task.get("listing_item") or "",
+        batch_child=True,
+    )
+    if not ok:
+        _storage_bag_transfer_batch_state["active_task"] = None
+        failed_task = {**task, "message": str(message or ""), "finished_at": time.time()}
+        _storage_bag_transfer_batch_state.setdefault("failed", []).append(failed_task)
+        if _storage_bag_transfer_batch_state.get("stop_on_error", True):
+            _storage_bag_transfer_batch_state["queue"] = []
+            _finalize_storage_bag_transfer_batch(False, f"批量转移停止：{message}")
+            await send_audit_log(f"❌ 储物袋批量转移停止：{message}", limit=260)
+            return False
+        return await _start_next_storage_bag_transfer_batch_task()
+    return True
+
+
+async def start_storage_bag_transfer_batch(tasks, *, target_identity_id=0, listing_item="", stop_on_error=True):
+    if _storage_bag_transfer_state.get("running") or _storage_bag_transfer_batch_state.get("running"):
+        return False, "已有储物袋转移任务正在执行", get_storage_bag_transfer_snapshot()
+    normalized_tasks = []
+    known_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    try:
+        target_identity_id = int(target_identity_id or 0)
+    except (TypeError, ValueError):
+        target_identity_id = 0
+    if target_identity_id not in known_ids:
+        return False, "目标身份无效", get_storage_bag_transfer_snapshot()
+    for raw_task in tasks if isinstance(tasks, (list, tuple)) else []:
+        if not isinstance(raw_task, dict):
+            continue
+        try:
+            source_identity_id = int(raw_task.get("source_identity_id") or 0)
+            raw_target_id = int(raw_task.get("target_identity_id") or target_identity_id or 0)
+        except (TypeError, ValueError):
+            return False, "身份参数无效", get_storage_bag_transfer_snapshot()
+        if source_identity_id not in known_ids:
+            return False, "来源身份无效", get_storage_bag_transfer_snapshot()
+        if raw_target_id != target_identity_id:
+            return False, "批量转移目标身份不一致", get_storage_bag_transfer_snapshot()
+        if source_identity_id == target_identity_id:
+            continue
+        normalized_items = []
+        for raw_item in raw_task.get("items") if isinstance(raw_task.get("items"), (list, tuple)) else []:
+            item, error = _normalize_storage_transfer_task_item(raw_item)
+            if error:
+                return False, error, get_storage_bag_transfer_snapshot()
+            normalized_items.append(item)
+        if not normalized_items:
+            continue
+        task_listing_item = str(raw_task.get("listing_item") or listing_item or "").strip()
+        if any(str(item.get("method") or "unknown") != "gift" for item in normalized_items) and not task_listing_item:
+            return False, "请选择目标身份用于上架的物品", get_storage_bag_transfer_snapshot()
+        source_profile = get_send_as_profile(source_identity_id)
+        target_profile = get_send_as_profile(target_identity_id)
+        normalized_tasks.append({
+            "source_identity_id": source_identity_id,
+            "source_label": source_profile.get("label") or source_profile.get("username") or str(source_identity_id),
+            "target_identity_id": target_identity_id,
+            "target_label": target_profile.get("label") or target_profile.get("username") or str(target_identity_id),
+            "items": normalized_items,
+            "listing_item": task_listing_item,
+        })
+    if not normalized_tasks:
+        return False, "没有可执行的批量转移任务", get_storage_bag_transfer_snapshot()
+    now = time.time()
+    _clear_storage_bag_transfer_state()
+    _clear_storage_bag_transfer_batch_state()
+    _storage_bag_transfer_batch_state.update({
+        "running": True,
+        "batch_id": uuid.uuid4().hex[:12],
+        "target_identity_id": target_identity_id,
+        "listing_item": str(listing_item or "").strip(),
+        "queue": [dict(task) for task in normalized_tasks],
+        "active_task": None,
+        "completed": [],
+        "failed": [],
+        "total": len(normalized_tasks),
+        "stop_on_error": bool(stop_on_error),
+        "status": "queued",
+        "last_message": "",
+        "created_at": now,
+        "updated_at": now,
+    })
+    _storage_transfer_batch_log(f"已创建批量转移：{len(normalized_tasks)} 个来源，目标 {target_identity_id}")
+    ok = await _start_next_storage_bag_transfer_batch_task()
+    message = f"已开始批量转移：{len(normalized_tasks)} 个来源"
+    return bool(ok), message if ok else (_storage_bag_transfer_batch_state.get("last_message") or "批量转移启动失败"), get_storage_bag_transfer_snapshot()
+
+
 async def cancel_storage_bag_transfer_task():
     if not _storage_bag_transfer_state.get("running"):
+        if _storage_bag_transfer_batch_state.get("running"):
+            _storage_bag_transfer_batch_state["queue"] = []
+            _storage_bag_transfer_batch_state["active_task"] = None
+            _finalize_storage_bag_transfer_batch(False, "用户取消批量转移")
+            return True, "已取消批量转移任务", get_storage_bag_transfer_snapshot()
         return False, "当前没有进行中的转移任务", get_storage_bag_transfer_snapshot()
     step = str(_storage_bag_transfer_state.get("step") or "")
     if step in {"listing", "buying", "gift_marker", "gift_sending", "waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply"}:
@@ -847,6 +1078,10 @@ async def cancel_storage_bag_transfer_task():
         return False, "命令已发送，不能安全取消；请等待回复或超时", get_storage_bag_transfer_snapshot()
     await _delete_storage_bag_gift_locator()
     _finalize_storage_bag_transfer(False, "用户取消转移任务")
+    if _storage_bag_transfer_batch_state.get("running"):
+        _storage_bag_transfer_batch_state["queue"] = []
+        _storage_bag_transfer_batch_state["active_task"] = None
+        _finalize_storage_bag_transfer_batch(False, "用户取消批量转移")
     return True, "已取消转移任务", get_storage_bag_transfer_snapshot()
 
 
@@ -1154,6 +1389,8 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
 
 
 async def run_storage_bag_transfer_scheduler(now):
+    if _storage_bag_transfer_batch_state.get("running") and not _storage_bag_transfer_state.get("running") and not _storage_bag_transfer_batch_state.get("active_task"):
+        await _start_next_storage_bag_transfer_batch_task()
     if not _storage_bag_transfer_state.get("running"):
         return
     reply_due_at = float(_storage_bag_transfer_state.get("reply_due_at", 0) or 0)
@@ -1221,5 +1458,6 @@ __all__ = [
     "parse_storage_bag_reply",
     "resolve_storage_bag_identity_id",
     "run_storage_bag_transfer_scheduler",
+    "start_storage_bag_transfer_batch",
     "start_storage_bag_transfer_task",
 ]
