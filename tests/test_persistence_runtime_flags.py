@@ -191,6 +191,29 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertEqual("taiyi-cycle-1", item["chain_id"])
                     self.assertEqual("auto_delete", item["delete_policy"])
 
+    def test_load_state_tolerates_runtime_column_list_newer_than_db_row(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990301
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="futurecol")
+                state_module._meta_state["identity_membership_initialized"] = True
+                with state_module.use_identity(identity_id):
+                    state_module.state["ranch_last_result"] = "ok"
+
+                self.assertTrue(persistence.save_state())
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                runtime_columns = list(persistence.IDENTITY_RUNTIME_COLUMNS) + ["future_runtime_col"]
+                with patch.object(persistence, "IDENTITY_RUNTIME_COLUMNS", runtime_columns):
+                    self.assertTrue(persistence.load_state())
+
+                with state_module.use_identity(identity_id):
+                    self.assertEqual("ok", state_module.state["ranch_last_result"])
+
     def test_save_state_blocks_demo_identity_collapse_over_live_roster(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

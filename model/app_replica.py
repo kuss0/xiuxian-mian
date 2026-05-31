@@ -154,6 +154,7 @@ _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC = 5 * 60
 _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC = 2
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_DELAY_SEC = 2.5
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_LIMIT = 1
+_REPLICA_SEND_SOURCE_MODULE = "自动副本"
 _VIRTUAL_HALL_ELEMENT_ALIASES = {
     "金": {"金", "雷"},
     "木": {"木", "风"},
@@ -161,6 +162,22 @@ _VIRTUAL_HALL_ELEMENT_ALIASES = {
     "火": {"火", "暗"},
     "土": {"土"},
 }
+
+
+def _replica_send_intent(op_id="", chain_id=""):
+    intent = {
+        "source_module": _REPLICA_SEND_SOURCE_MODULE,
+        "delete_policy": "keep",
+    }
+    op_id = str(op_id or "").strip()
+    chain_id = str(chain_id or "").strip()
+    if op_id:
+        intent["op_id"] = op_id
+    if chain_id:
+        intent["chain_id"] = chain_id
+    return intent
+
+
 _VIRTUAL_HALL_GUA_ROLE_ORDER = {"阵骨": 0, "主锋": 1, "引灵": 2, "旁合": 3}
 _REPLICA_QUERY_STATUS_RE = re.compile(
     r"虚\s*[:：]\s*(?P<virtual>[^|\n]+?)\s*\|\s*坠\s*[:：]\s*(?P<zhuimo>[^|\n]+?)\s*\|\s*黄\s*[:：]\s*(?P<huanglong>[^|\n]+)(?:\s*\|\s*苍\s*[:：]\s*(?P<cangkun>[^|\n]+))?"
@@ -3602,7 +3619,15 @@ async def _handle_virtual_hall_auto_open_command(event):
         "last_error": "",
     }
     _upsert_virtual_hall_auto_flow(flow)
-    msg = await send_game_command(_VIRTUAL_HALL_OPEN_COMMAND, track=False, send_as_id=identity_id)
+    msg = await send_game_command(
+        _VIRTUAL_HALL_OPEN_COMMAND,
+        track=False,
+        send_as_id=identity_id,
+        **_replica_send_intent(
+            op_id=f"virtual_hall_auto_open:{chat_id}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
+            chain_id=f"virtual_hall_auto:{flow_id}",
+        ),
+    )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
         flow.update({"phase": "failed", "last_error": "开房命令发送失败", "expires_at": now + _VIRTUAL_HALL_AUTO_OPEN_DONE_TTL_SEC, "updated_at": time.time()})
@@ -3664,7 +3689,16 @@ async def _handle_virtual_hall_auto_dispatch_observer(event):
 async def _request_virtual_hall_auto_enter(flow, now):
     if flow.get("enter_requested_at"):
         return False
-    msg = await send_game_command(_VIRTUAL_HALL_ENTER_COMMAND, track=False, send_as_id=int(flow.get("leader_identity_id") or 0))
+    flow_id = str(flow.get("flow_id") or "").strip()
+    msg = await send_game_command(
+        _VIRTUAL_HALL_ENTER_COMMAND,
+        track=False,
+        send_as_id=int(flow.get("leader_identity_id") or 0),
+        **_replica_send_intent(
+            op_id=f"virtual_hall_auto_enter:{flow_id}",
+            chain_id=f"virtual_hall_auto:{flow_id}",
+        ),
+    )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
         flow["last_error"] = "进入命令发送失败"
@@ -3684,7 +3718,16 @@ async def _request_virtual_hall_auto_enter(flow, now):
 async def _request_virtual_hall_auto_dissolve(flow, plain_members, now, manual=False):
     if flow.get("dissolve_requested_at"):
         return False
-    msg = await send_game_command(_VIRTUAL_HALL_DISSOLVE_COMMAND, track=False, send_as_id=int(flow.get("leader_identity_id") or 0))
+    flow_id = str(flow.get("flow_id") or "").strip()
+    msg = await send_game_command(
+        _VIRTUAL_HALL_DISSOLVE_COMMAND,
+        track=False,
+        send_as_id=int(flow.get("leader_identity_id") or 0),
+        **_replica_send_intent(
+            op_id=f"virtual_hall_auto_dissolve:{flow_id}",
+            chain_id=f"virtual_hall_auto:{flow_id}",
+        ),
+    )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
         flow["last_error"] = "解散命令发送失败"
@@ -3756,7 +3799,16 @@ async def _apply_virtual_hall_auto_team_snapshot(flow, snapshot, now, allow_miss
     for username in kick_candidates[:1] if can_send_kick else []:
         previous = pending.pop(username, None)
         previous = previous if isinstance(previous, dict) else {}
-        msg = await send_game_command(f"{_VIRTUAL_HALL_KICK_COMMAND} {username}", track=False, send_as_id=int(flow.get("leader_identity_id") or 0))
+        flow_id = str(flow.get("flow_id") or "").strip()
+        msg = await send_game_command(
+            f"{_VIRTUAL_HALL_KICK_COMMAND} {username}",
+            track=False,
+            send_as_id=int(flow.get("leader_identity_id") or 0),
+            **_replica_send_intent(
+                op_id=f"virtual_hall_auto_kick:{flow_id}:{username}",
+                chain_id=f"virtual_hall_auto:{flow_id}",
+            ),
+        )
         msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
         flow["last_kick_command_sent_at"] = float(now or 0)
         if len(kick_candidates) > 1:
@@ -4104,7 +4156,16 @@ async def _run_lightweight_room_auto_dissolve(room_snapshot, delay):
     ):
         return False
     command = (_REPLICA_TICKET_META.get(replica_kind) or {}).get("dissolve_command") or _VIRTUAL_HALL_DISSOLVE_COMMAND
-    msg = await send_game_command(command, track=False, send_as_id=leader_identity_id, priority="urgent_reactive")
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=leader_identity_id,
+        priority="urgent_reactive",
+        **_replica_send_intent(
+            op_id=f"replica_lightweight_auto_dissolve:{chat_id}:{room_id}:{leader_identity_id}",
+            chain_id=f"replica_lightweight_room:{replica_kind}:{room_id}",
+        ),
+    )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     current.update({
         "phase": "dissolve_requested" if msg_id > 0 else current.get("phase"),
@@ -4317,7 +4378,16 @@ async def _handle_lightweight_open_command(event):
     }
     _upsert_lightweight_open_flow(flow)
     command = (_REPLICA_TICKET_META.get(replica_kind) or {}).get("open_command")
-    msg = await send_game_command(command, track=False, send_as_id=identity_id, priority="urgent_reactive")
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=identity_id,
+        priority="urgent_reactive",
+        **_replica_send_intent(
+            op_id=f"replica_lightweight_open:{chat_id}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
+            chain_id=f"replica_lightweight_open:{replica_kind}:{flow['flow_id']}",
+        ),
+    )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
         _remove_lightweight_open_flow(flow.get("flow_id"))
@@ -4391,7 +4461,16 @@ async def _handle_lightweight_join_command(event):
         if identity_id == leader_identity_id or identity_id in seen_identity_ids:
             continue
         seen_identity_ids.add(identity_id)
-        msg = await send_game_command(command, track=False, send_as_id=identity_id, priority="urgent_reactive")
+        msg = await send_game_command(
+            command,
+            track=False,
+            send_as_id=identity_id,
+            priority="urgent_reactive",
+            **_replica_send_intent(
+                op_id=f"replica_lightweight_join:{int(getattr(event, 'chat_id', 0) or 0)}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
+                chain_id=f"replica_lightweight_room:{replica_kind}:{room_id}",
+            ),
+        )
         if msg:
             sent_usernames.append(_normalize_replica_username(get_send_as_profile(identity_id).get("username") or selector))
         else:
@@ -4429,7 +4508,16 @@ async def _handle_lightweight_dissolve_command(event):
         text = "已记录副本房间，但缺少开房身份，不能自动解散。\n\n" + _format_lightweight_next_commands(".查询副本", ".开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
-    msg = await send_game_command(command, track=False, send_as_id=leader_identity_id, priority="urgent_reactive")
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=leader_identity_id,
+        priority="urgent_reactive",
+        **_replica_send_intent(
+            op_id=f"replica_lightweight_dissolve:{int(getattr(event, 'chat_id', 0) or 0)}:{int(getattr(event, 'id', 0) or 0)}:{leader_identity_id}",
+            chain_id=f"replica_lightweight_room:{replica_kind}:{str(room.get('room_id') or '').strip()}",
+        ),
+    )
     if not msg:
         text = f"{escape(command)} 发送失败。\n\n" + _format_lightweight_next_commands(".解散副本", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
@@ -4788,7 +4876,16 @@ async def _handle_replica_dispatch_command(event):
         if not identity_id or identity_id in seen_identity_ids:
             continue
         seen_identity_ids.add(identity_id)
-        await send_game_command(command, track=False, send_as_id=identity_id, priority="urgent_reactive")
+        await send_game_command(
+            command,
+            track=False,
+            send_as_id=identity_id,
+            priority="urgent_reactive",
+            **_replica_send_intent(
+                op_id=f"replica_dispatch:{int(getattr(event, 'chat_id', 0) or 0)}:{int(getattr(event, 'id', 0) or 0)}:{identity_id}",
+                chain_id=f"replica_dispatch:{replica_kind}:{replica_id}",
+            ),
+        )
     return True
 
 

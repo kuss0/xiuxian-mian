@@ -1399,6 +1399,13 @@ def upsert_identity_to_db(send_as_id):
         )
 
 
+def _load_identity_columns_from_row(identity_state, row, columns):
+    row_keys = set(row.keys())
+    for col in columns:
+        if col in row_keys:
+            identity_state[col] = _deserialize_db_value(col, row[col])
+
+
 def _load_identity_from_db(send_as_id):
     conn = get_db_conn()
     identity_state = new_identity_state()
@@ -1441,18 +1448,15 @@ def _load_identity_from_db(send_as_id):
 
     row = conn.execute("SELECT * FROM identity_module_state WHERE send_as_id = ?", (int(send_as_id),)).fetchone()
     if row:
-        for col in IDENTITY_MODULE_COLUMNS:
-            identity_state[col] = _deserialize_db_value(col, row[col])
+        _load_identity_columns_from_row(identity_state, row, IDENTITY_MODULE_COLUMNS)
 
     row = conn.execute("SELECT * FROM identity_timers WHERE send_as_id = ?", (int(send_as_id),)).fetchone()
     if row:
-        for col in IDENTITY_TIMER_COLUMNS:
-            identity_state[col] = _deserialize_db_value(col, row[col])
+        _load_identity_columns_from_row(identity_state, row, IDENTITY_TIMER_COLUMNS)
 
     row = conn.execute("SELECT * FROM identity_runtime_state WHERE send_as_id = ?", (int(send_as_id),)).fetchone()
     if row:
-        for col in IDENTITY_RUNTIME_COLUMNS:
-            identity_state[col] = _deserialize_db_value(col, row[col])
+        _load_identity_columns_from_row(identity_state, row, IDENTITY_RUNTIME_COLUMNS)
 
     pending_rows = conn.execute("SELECT * FROM pending_tasks WHERE send_as_id = ?", (int(send_as_id),)).fetchall()
     identity_state["pending_tasks"] = {

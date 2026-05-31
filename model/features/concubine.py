@@ -5,6 +5,7 @@ import random
 import re
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -95,6 +96,8 @@ RE_IDENTITY_TAG = re.compile(rf"@({IDENTITY_TAG_PATTERN})")
 CONCUBINE_DREAM_RESOURCE_KEY = "concubine_dream"
 CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
 CONCUBINE_HEART_RESOURCE_KEY = "concubine_heart"
+CONCUBINE_LOG_REPLAY_LOOKBACK_SEC = CONCUBINE_PHASE_TIMEOUT_SEC + 5 * 60
+CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC = 5
 CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
 CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
 CONCUBINE_HEART_PANEL_MAX_AGE_SEC = 10 * 60
@@ -108,6 +111,8 @@ CONCUBINE_GREET_RETRY_MIN_SEC = 90
 CONCUBINE_GREET_RETRY_MAX_SEC = 180
 CONCUBINE_GREET_DEFER_MIN_SEC = 60
 CONCUBINE_GREET_DEFER_MAX_SEC = 180
+CONCUBINE_ACTIVE_DEFER_MIN_SEC = 60
+CONCUBINE_ACTIVE_DEFER_MAX_SEC = 180
 PHASEFUL_SUMMARY_GUARD_PHASES = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}
 DREAM_KIND_XUTIAN = "xutian"
 DREAM_KIND_CANGKUN = "cangkun"
@@ -351,24 +356,22 @@ def _has_phaseful_summary_window(now):
     return False
 
 
-def _defer_daily_greet_for_phaseful_summary(now):
+def _defer_active_for_phaseful_summary(now, action, *, error_key="concubine_last_error"):
     if not _has_phaseful_summary_window(now):
         return False
     _set_phase("idle")
     _clear_non_heart_pending_msg_ids()
-    _schedule_after(now, CONCUBINE_GREET_DEFER_MIN_SEC, CONCUBINE_GREET_DEFER_MAX_SEC)
-    state["concubine_greet_last_error"] = "每日问安等待闭关/元婴结算，稍后补发"
+    _schedule_after(now, CONCUBINE_ACTIVE_DEFER_MIN_SEC, CONCUBINE_ACTIVE_DEFER_MAX_SEC)
+    state[error_key] = f"{action}等待闭关/元婴结算，稍后处理"
     return True
+
+
+def _defer_daily_greet_for_phaseful_summary(now):
+    return _defer_active_for_phaseful_summary(now, "每日问安", error_key="concubine_greet_last_error")
 
 
 def _defer_gift_for_phaseful_summary(now):
-    if not _has_phaseful_summary_window(now):
-        return False
-    _set_phase("idle")
-    _clear_non_heart_pending_msg_ids()
-    _schedule_after(now, CONCUBINE_GREET_DEFER_MIN_SEC, CONCUBINE_GREET_DEFER_MAX_SEC)
-    state["concubine_gift_last_error"] = "赠予侍妾等待闭关/元婴结算，稍后处理"
-    return True
+    return _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error")
 
 
 def _schedule_next_daily_greet_check(now):
@@ -524,6 +527,40 @@ def _msg_id_int(value):
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _parse_message_log_ts(raw_ts):
+    ts_text = str(raw_ts or "").strip()
+    if not ts_text:
+        return 0.0
+    ts_text = ts_text.replace(" UTC+8", "")
+    try:
+        return datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _iter_message_log_entries_between(start_ts, end_ts):
+    try:
+        start_day = datetime.fromtimestamp(float(start_ts), TZ_LOCAL).date()
+        end_day = datetime.fromtimestamp(float(end_ts), TZ_LOCAL).date()
+    except (TypeError, ValueError, OSError):
+        return
+
+    day = start_day
+    while day <= end_day:
+        log_file = os.path.join(MESSAGES_DIR, f"{day.isoformat()}.log")
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+        day += timedelta(days=1)
 
 
 def _concubine_family_for_command(command):
@@ -698,6 +735,8 @@ def _is_concubine_candidate_text_for_phase(text, phase):
     raw_text = str(text or "")
     if not raw_text:
         return False
+    if phase == "status_pending":
+        return "侍妾" in raw_text or "红尘道侣" in raw_text or "道心侍妾" in raw_text or _is_no_partner_text(raw_text)
     if phase == "dream_pending":
         return (
             _is_strong_dream_terminal_text(raw_text)
@@ -747,7 +786,7 @@ def _candidate_mentions_identity_or_partner(text):
 
 
 def _read_recent_message_log_candidates(now, phase):
-    log_file = os.path.join(MESSAGES_DIR, f"{datetime.fromtimestamp(float(now)).strftime('%Y-%m-%d')}.log")
+    log_file = os.path.join(MESSAGES_DIR, f"{datetime.fromtimestamp(float(now), TZ_LOCAL).strftime('%Y-%m-%d')}.log")
     if not os.path.exists(log_file):
         return []
     start = float(now) - CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC
@@ -764,10 +803,8 @@ def _read_recent_message_log_candidates(now, phase):
             continue
         if payload.get("event_type") not in {"message", "edit"}:
             continue
-        ts_text = str(payload.get("ts") or "")[:19]
-        try:
-            event_ts = time.mktime(datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").timetuple())
-        except Exception:
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0:
             continue
         if event_ts < start or event_ts > float(now) + 5:
             continue
@@ -795,6 +832,171 @@ async def _audit_pending_timeout_candidates(now, phase):
         scope="identity",
         limit=360,
     )
+
+
+def _pending_log_replay_spec(phase):
+    if phase == "status_pending":
+        return {
+            "state_key": "concubine_status_msg_id",
+            "command": CMD_CONCUBINE_STATUS,
+            "family": "concubine_status",
+            "handler": handle_concubine_status_reply,
+            "current_msg_id": True,
+        }
+    if phase == "gift_status_pending":
+        return {
+            "state_key": "concubine_gift_status_msg_id",
+            "command": CMD_CONCUBINE_STATUS,
+            "family": "concubine_status",
+            "handler": handle_concubine_status_reply,
+            "current_msg_id": True,
+        }
+    if phase == "greet_pending":
+        return {
+            "state_key": "concubine_greet_msg_id",
+            "command": CMD_CONCUBINE_DAILY_GREET,
+            "family": "concubine_greet",
+            "handler": handle_concubine_greet_reply,
+        }
+    if phase == "gift_bag_pending":
+        return {
+            "state_key": "concubine_gift_bag_msg_id",
+            "command": CMD_STORAGE_BAG,
+            "family": "storage_bag",
+            "handler": handle_concubine_storage_bag_reply,
+        }
+    if phase == "gift_pending":
+        return {
+            "state_key": "concubine_gift_msg_id",
+            "command": CMD_CONCUBINE_GIFT_STONE,
+            "family": "concubine_gift",
+            "handler": handle_concubine_gift_reply,
+        }
+    if phase == "dream_pending":
+        return {
+            "state_key": "concubine_dream_msg_id",
+            "command": CMD_CONCUBINE_DREAM,
+            "family": "concubine_dream",
+            "handler": handle_concubine_dream_reply,
+        }
+    if phase == "fragment_pending":
+        return {
+            "state_key": "concubine_fragment_msg_id",
+            "command": CMD_CONCUBINE_FRAGMENT,
+            "family": "concubine_fragment",
+            "handler": handle_concubine_fragment_reply,
+        }
+    if phase == "puzzle_pending":
+        return {
+            "state_key": "concubine_puzzle_msg_id",
+            "command": CMD_CONCUBINE_PUZZLE,
+            "family": "concubine_puzzle",
+            "handler": handle_concubine_puzzle_reply,
+        }
+    if phase == "reacquire_pending":
+        command = str(state.get("concubine_reacquire_command_override") or "") or _get_reacquire_command()
+        return {
+            "state_key": "concubine_reacquire_msg_id",
+            "command": command,
+            "family": "concubine_reacquire",
+            "handler": handle_concubine_reacquire_reply,
+        }
+    if phase == "tianji_pending":
+        return {
+            "state_key": "concubine_tianji_msg_id",
+            "command": CMD_CONCUBINE_TIANJI,
+            "family": "concubine_tianji",
+            "handler": handle_concubine_tianji_reply,
+        }
+    if phase == "heart_pending":
+        return {
+            "state_key": "concubine_heart_msg_id",
+            "command": CMD_CONCUBINE_HEART,
+            "family": "concubine_heart",
+            "handler": handle_concubine_heart_reply,
+            "current_msg_id": True,
+        }
+    if phase == "heart_choice_reply_pending":
+        return {
+            "state_key": "concubine_heart_prompt_msg_id",
+            "command": CMD_CONCUBINE_HEART_STEADY,
+            "family": "concubine_heart",
+            "handler": handle_concubine_heart_reply,
+            "current_msg_id": True,
+            "match_message_id": True,
+        }
+    return None
+
+
+def _find_logged_pending_reply(now, phase):
+    spec = _pending_log_replay_spec(phase)
+    if not spec:
+        return None
+    expected_msg_id = _msg_id_int(state.get(spec["state_key"]))
+    if expected_msg_id <= 0:
+        return None
+
+    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - CONCUBINE_LOG_REPLAY_LOOKBACK_SEC)
+    found = None
+    for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if payload.get("event_type") not in {"message", "edit"}:
+            continue
+        if spec.get("match_message_id"):
+            if _msg_id_int(payload.get("message_id")) != expected_msg_id:
+                continue
+        elif _msg_id_int(payload.get("reply_to_msg_id")) != expected_msg_id:
+            continue
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
+            continue
+        text = str(payload.get("text") or "")
+        if not _is_concubine_candidate_text_for_phase(text, phase):
+            continue
+        found = {
+            "ts": event_ts,
+            "message_id": _msg_id_int(payload.get("message_id")),
+            "reply_to_msg_id": expected_msg_id,
+            "text": text,
+            "spec": spec,
+        }
+    return found
+
+
+async def _recover_concubine_pending_from_message_log(now, phase):
+    logged_reply = _find_logged_pending_reply(now, phase)
+    if not logged_reply:
+        return False
+    spec = logged_reply["spec"]
+    before_phase = _phase()
+    before_next = float(state.get("next_concubine_time", 0) or 0)
+    reply_to = SimpleNamespace(raw_text=spec["command"], id=logged_reply["reply_to_msg_id"])
+    handler = spec["handler"]
+    event_ts = float(logged_reply["ts"] or now)
+    if spec.get("current_msg_id"):
+        handled = await handler(
+            logged_reply["text"],
+            event_ts,
+            reply_to,
+            matched_family=spec["family"],
+            current_msg_id=logged_reply["message_id"],
+        )
+    else:
+        handled = await handler(
+            logged_reply["text"],
+            event_ts,
+            reply_to,
+            matched_family=spec["family"],
+        )
+    state_changed = _phase() != before_phase or float(state.get("next_concubine_time", 0) or 0) != before_next
+    if not handled and not state_changed:
+        return False
+    await send_audit_log(
+        f"🌸 侍妾日志补偿：{phase} 已按真实回复接管（msg_id={logged_reply['message_id']}）。",
+        scope="identity",
+        limit=220,
+    )
+    return True
 
 
 def _normalize_identity_text(text):
@@ -1651,6 +1853,9 @@ def restore_concubine_runtime(now):
 
 
 async def _send_status_command(now):
+    if _defer_active_for_phaseful_summary(now, "侍妾状态校准"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1667,6 +1872,9 @@ async def _send_status_command(now):
 
 
 async def _send_greet_command(now):
+    if _defer_active_for_phaseful_summary(now, "每日问安", error_key="concubine_greet_last_error"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_DAILY_GREET, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1684,6 +1892,9 @@ async def _send_greet_command(now):
 
 
 async def _send_gift_status_command(now):
+    if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1700,6 +1911,9 @@ async def _send_gift_status_command(now):
 
 
 async def _send_gift_bag_command(now):
+    if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_STORAGE_BAG, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1715,6 +1929,9 @@ async def _send_gift_bag_command(now):
 
 
 async def _send_gift_command(now, amount):
+    if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
+        save_state()
+        return False
     gift_amount = max(0, int(amount or 0))
     if gift_amount <= 0:
         state["concubine_gift_last_error"] = "赠予数量为 0，跳过"
@@ -1740,6 +1957,9 @@ async def _send_gift_command(now, amount):
 
 
 async def _send_dream_command(now):
+    if _defer_active_for_phaseful_summary(now, "入梦寻图"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_DREAM, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1774,6 +1994,9 @@ async def _send_dream_command(now):
 
 
 async def _send_fragment_command(now):
+    if _defer_active_for_phaseful_summary(now, "残图确认"):
+        save_state()
+        return False
     if _is_current_fragment_confirmed():
         _set_phase("puzzle_ready")
         next_time = float(state.get("next_concubine_time", 0) or 0)
@@ -1798,6 +2021,9 @@ async def _send_fragment_command(now):
 
 
 async def _send_puzzle_command(now):
+    if _defer_active_for_phaseful_summary(now, "残图拼合"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_PUZZLE, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1814,6 +2040,9 @@ async def _send_puzzle_command(now):
 
 
 async def _send_reacquire_command(now):
+    if _defer_active_for_phaseful_summary(now, "侍妾补领"):
+        save_state()
+        return False
     command = _get_reacquire_command()
     msg = await send_game_command(command, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
@@ -1832,6 +2061,9 @@ async def _send_reacquire_command(now):
 
 
 async def _send_tianji_command(now):
+    if _defer_active_for_phaseful_summary(now, "天机代卜", error_key="concubine_tianji_last_error"):
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_TIANJI, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -1866,6 +2098,9 @@ async def _send_tianji_command(now):
 
 
 async def _send_heart_command(now):
+    if _defer_active_for_phaseful_summary(now, "共历心劫", error_key="concubine_heart_last_error"):
+        save_state()
+        return False
     if _is_heart_chain_active():
         if int(state.get("concubine_heart_prompt_msg_id", 0) or 0) > 0 and _phase() not in CONCUBINE_HEART_ACTIVE_PHASES:
             _set_phase("heart_choice_pending")
@@ -2909,6 +3144,8 @@ async def _run_concubine_scheduler(now):
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
             return
+        if await _recover_concubine_pending_from_message_log(now, phase):
+            return
         state["concubine_heart_last_error"] = "心劫抉择后未观察到回合推进，已停止当前链路"
         _set_phase("idle")
         _clear_pending_msg_ids()
@@ -2925,6 +3162,8 @@ async def _run_concubine_scheduler(now):
     if phase in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending"}:
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
+            return
+        if await _recover_concubine_pending_from_message_log(now, phase):
             return
         await _audit_pending_timeout_candidates(now, phase)
         state["concubine_last_error"] = f"{phase} 等待回复超时，已转状态校准" if phase != "status_pending" else "侍妾状态查询等待回复超时"

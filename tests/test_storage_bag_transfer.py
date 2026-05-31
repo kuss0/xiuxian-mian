@@ -335,6 +335,53 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([self.source_id, self.target_id], ui._storage_bag_sync_state["pending_ids"])
         fire_mock.assert_called_once()
 
+    async def test_storage_bag_sync_rejects_while_transfer_running(self):
+        storage_bag._storage_bag_transfer_state.update({
+            "running": True,
+            "step": "waiting_listing_reply",
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+        })
+
+        with patch.object(ui, "_fire_and_forget") as fire_mock:
+            ok, message = await ui.ui_start_storage_bag_sync([self.source_id])
+
+        self.assertFalse(ok)
+        self.assertIn("转移正在进行中", message)
+        self.assertFalse(ui._storage_bag_sync_state["running"])
+        fire_mock.assert_not_called()
+
+    async def test_storage_bag_transfer_rejects_while_sync_running(self):
+        ui._storage_bag_sync_state.update({"running": True, "pending_ids": [self.source_id], "completed_ids": []})
+
+        with patch("model.ui.start_storage_bag_transfer_task", new=AsyncMock()) as start_mock:
+            ok, message, transfer = await ui.ui_start_storage_bag_transfer({
+                "source_identity_id": self.source_id,
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "items": [{"item_name": "妖丹", "quantity": 1}],
+            })
+
+        self.assertFalse(ok)
+        self.assertIn("同步正在进行中", message)
+        self.assertIsNone(transfer)
+        start_mock.assert_not_called()
+
+    async def test_storage_bag_batch_transfer_rejects_while_sync_running(self):
+        ui._storage_bag_sync_state.update({"running": True, "pending_ids": [self.source_id], "completed_ids": []})
+
+        with patch("model.ui.start_storage_bag_transfer_batch", new=AsyncMock()) as start_mock:
+            ok, message, transfer = await ui.ui_start_storage_bag_transfer_batch({
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "items": [{"item_name": "妖丹", "quantity": 1}],
+            })
+
+        self.assertFalse(ok)
+        self.assertIn("同步正在进行中", message)
+        self.assertIsNone(transfer)
+        start_mock.assert_not_called()
+
     async def test_transfer_task_rejects_invalid_direct_payload_before_sending(self):
         invalid_cases = [
             (9999, self.target_id, [{"item_name": "妖丹", "quantity": 1, "method": "basic"}], "灵石", "来源身份无效"),

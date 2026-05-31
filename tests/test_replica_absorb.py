@@ -1,4 +1,5 @@
 import atexit
+import ast
 import asyncio
 import copy
 import json
@@ -66,6 +67,29 @@ class ReplicaAbsorbTests(unittest.TestCase):
         app_runtime._runtime_event_claims.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+
+    def test_app_replica_sends_carry_send_intent_metadata(self):
+        source_path = PROJECT_ROOT / "model" / "app_replica.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"))
+        missing_lines = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func_name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+            if func_name != "send_game_command":
+                continue
+            has_source_module = any(keyword.arg == "source_module" for keyword in node.keywords)
+            has_replica_intent = any(
+                keyword.arg is None
+                and isinstance(keyword.value, ast.Call)
+                and isinstance(keyword.value.func, ast.Name)
+                and keyword.value.func.id == "_replica_send_intent"
+                for keyword in node.keywords
+            )
+            if not has_source_module and not has_replica_intent:
+                missing_lines.append(node.lineno)
+
+        self.assertEqual([], missing_lines)
 
     def _prepare_replica_identity(self, identity_id=991201, username="leader"):
         state_module.ensure_identity_registered(identity_id)
@@ -803,12 +827,20 @@ class ReplicaAbsorbTests(unittest.TestCase):
                     patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
                     patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=501))):
                 handled = await app_replica._handle_lightweight_open_command(event)
-                app_replica.send_game_command.assert_awaited_once_with(".开启苍坤洞府", track=False, send_as_id=leader_id, priority="urgent_reactive")
+                send_args = app_replica.send_game_command.await_args
                 reply_text = app_replica._send_replica_group_message.await_args.args[2]
-                return handled, reply_text
+                return handled, reply_text, send_args
 
-        handled, reply_text = asyncio.run(run_test())
+        handled, reply_text, send_args = asyncio.run(run_test())
         self.assertTrue(handled)
+        self.assertEqual(".开启苍坤洞府", send_args.args[0])
+        self.assertFalse(send_args.kwargs["track"])
+        self.assertEqual(leader_id, send_args.kwargs["send_as_id"])
+        self.assertEqual("urgent_reactive", send_args.kwargs["priority"])
+        self.assertEqual("自动副本", send_args.kwargs["source_module"])
+        self.assertEqual("keep", send_args.kwargs["delete_policy"])
+        self.assertIn("replica_lightweight_open", send_args.kwargs["op_id"])
+        self.assertIn("replica_lightweight_open:cangkun", send_args.kwargs["chain_id"])
         self.assertIn("已用 @leader 发送 .开启苍坤洞府", reply_text)
         self.assertIn("<code>.加入副本 @用户名 @用户名</code>", reply_text)
         self.assertIn("<code>.解散副本</code>", reply_text)
@@ -1067,6 +1099,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(".解散副本", call_args.args[0])
         self.assertEqual(leader_id, call_args.kwargs["send_as_id"])
+        self.assertEqual("自动副本", call_args.kwargs["source_module"])
+        self.assertEqual("keep", call_args.kwargs["delete_policy"])
+        self.assertIn("replica_lightweight_auto_dissolve", call_args.kwargs["op_id"])
+        self.assertEqual("replica_lightweight_room:virtual_hall:914", call_args.kwargs["chain_id"])
         self.assertEqual("dissolve_requested", saved_room["phase"])
 
     def test_lightweight_dissolve_confirmation_sends_realtime_notice(self):
@@ -1355,6 +1391,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(".加入苍坤洞府 16", calls[0].args[0])
         self.assertEqual(first_id, calls[0].kwargs["send_as_id"])
         self.assertEqual(second_id, calls[1].kwargs["send_as_id"])
+        self.assertEqual("自动副本", calls[0].kwargs["source_module"])
+        self.assertEqual("keep", calls[0].kwargs["delete_policy"])
+        self.assertIn("replica_lightweight_join", calls[0].kwargs["op_id"])
+        self.assertEqual("replica_lightweight_room:cangkun:16", calls[0].kwargs["chain_id"])
         self.assertIn("已发送加入苍坤洞府 16", join_reply)
         self.assertIn("<code>.解散副本</code>", join_reply)
         self.assertIn(".解散副本", join_reply)
@@ -1393,6 +1433,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(".解散苍坤洞府", call_args.args[0])
         self.assertEqual(leader_id, call_args.kwargs["send_as_id"])
+        self.assertEqual("自动副本", call_args.kwargs["source_module"])
+        self.assertEqual("keep", call_args.kwargs["delete_policy"])
+        self.assertIn("replica_lightweight_dissolve", call_args.kwargs["op_id"])
+        self.assertEqual("replica_lightweight_room:cangkun:16", call_args.kwargs["chain_id"])
         self.assertIn("已用 @leader 发送 .解散苍坤洞府", dissolve_reply)
         self.assertIn("<code>.查询副本</code>", dissolve_reply)
         self.assertIn(".查询副本", dissolve_reply)

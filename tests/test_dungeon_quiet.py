@@ -19,6 +19,9 @@ ACTIVE_NOTICE = """【坠魔谷·第一幕：裂隙外谷】
 【稳控全场】已展开
 副本结束前，天机阁将暂不响应本话题中的其他修仙指令。"""
 
+ACTIVE_NOTICE_REAL_20260531 = """【稳控全场】已展开
+本次【虚天殿】进行期间，天机阁将暂不响应本话题中的其他修仙指令。"""
+
 
 class DungeonQuietTests(unittest.TestCase):
     def setUp(self):
@@ -45,6 +48,16 @@ class DungeonQuietTests(unittest.TestCase):
         self.assertEqual("坠魔谷静场令", result["reason"])
         self.assertTrue(dungeon_quiet.is_dungeon_quiet_active(now=1419))
         self.assertFalse(dungeon_quiet.is_dungeon_quiet_active(now=1420))
+
+    def test_real_active_notice_with_dungeon_after_marker_sets_reason(self):
+        self.assertTrue(dungeon_quiet.is_dungeon_quiet_active_notice(ACTIVE_NOTICE_REAL_20260531))
+
+        with patch.object(dungeon_quiet.random, "randint", return_value=300):
+            result = dungeon_quiet.observe_dungeon_quiet_text(ACTIVE_NOTICE_REAL_20260531, now=2000)
+
+        self.assertTrue(result["changed"])
+        self.assertEqual(2300, result["until"])
+        self.assertEqual("虚天殿静场令", result["reason"])
 
     def test_active_notice_does_not_extend_existing_window(self):
         state_module.state["dungeon_quiet_until"] = 1500
@@ -82,6 +95,17 @@ class DungeonQuietRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(runtime, "send_audit_log", new_callable=unittest.mock.AsyncMock) as audit_mock:
             blocked = await runtime._dungeon_quiet_blocks_send(".小世界", runtime.SEND_PRIORITY_NORMAL, send_as_id=123)
+
+        self.assertTrue(blocked)
+        audit_mock.assert_awaited_once()
+
+    async def test_quiet_window_blocks_chain_command(self):
+        state_module.state["dungeon_quiet_until"] = 9999999999
+        state_module.state["dungeon_quiet_reason"] = "虚天殿静场令"
+        state_module.state["dungeon_quiet_last_log_at"] = 0
+
+        with patch.object(runtime, "send_audit_log", new_callable=unittest.mock.AsyncMock) as audit_mock:
+            blocked = await runtime._dungeon_quiet_blocks_send("1", runtime.SEND_PRIORITY_CHAIN, send_as_id=123)
 
         self.assertTrue(blocked)
         audit_mock.assert_awaited_once()

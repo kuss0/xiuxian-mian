@@ -216,6 +216,7 @@ UI_STATIC_CONTENT_TYPES = {
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
 _storage_bag_api_state = {
     "running": False,
+    "keepalive_running": False,
     "last_ok": False,
     "last_message": "",
     "last_updated_at": 0,
@@ -399,11 +400,23 @@ def get_storage_bag_sync_snapshot():
     }
 
 
+def _is_storage_bag_api_busy():
+    return bool(_storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"))
+
+
+def _is_storage_bag_transfer_busy():
+    snapshot = get_storage_bag_transfer_snapshot() or {}
+    batch = snapshot.get("batch") if isinstance(snapshot.get("batch"), dict) else {}
+    return bool(snapshot.get("running") or batch.get("running"))
+
+
 def get_storage_bag_api_snapshot():
     config = get_storage_bag_api_config()
     return {
         "configured": bool(config.get("cookie")),
-        "running": bool(_storage_bag_api_state.get("running")),
+        "running": _is_storage_bag_api_busy(),
+        "manual_running": bool(_storage_bag_api_state.get("running")),
+        "keepalive_running": bool(_storage_bag_api_state.get("keepalive_running")),
         "base_url": config.get("base_url") or "https://asc.aiopenai.app",
         "verify_path": STORAGE_BAG_API_VERIFY_PATH,
         "refresh_path": STORAGE_BAG_API_REFRESH_PATH,
@@ -794,7 +807,7 @@ def _storage_bag_api_store_session(cookie="", api_token=""):
 
 
 async def ui_verify_storage_bag_api(payload=None):
-    if _storage_bag_api_state.get("running"):
+    if _is_storage_bag_api_busy():
         return False, "储物袋 API 正在进行中", get_storage_bag_api_snapshot()
     if payload:
         ui_set_storage_bag_api_config(payload)
@@ -832,7 +845,7 @@ async def ui_verify_storage_bag_api(payload=None):
 
 
 async def ui_refresh_storage_bag_from_api(payload=None):
-    if _storage_bag_api_state.get("running"):
+    if _is_storage_bag_api_busy():
         return False, "储物袋 API 读取正在进行中", get_storage_bag_api_snapshot()
     payload = payload if isinstance(payload, dict) else {}
     if payload:
@@ -927,7 +940,7 @@ async def run_storage_bag_api_keepalive_scheduler(now):
     config = get_storage_bag_api_config()
     if not config.get("keepalive_enabled") or not config.get("cookie"):
         return
-    if _storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"):
+    if _is_storage_bag_api_busy():
         return
     if float(config.get("next_keepalive_at") or 0) > float(now):
         return
@@ -968,6 +981,8 @@ async def _run_storage_bag_sync(identity_ids):
 async def ui_start_storage_bag_sync(identity_ids):
     if _storage_bag_sync_state.get("running"):
         return False, "储物袋同步正在进行中"
+    if _is_storage_bag_transfer_busy():
+        return False, "储物袋转移正在进行中，暂不允许同步"
     normalized_ids = []
     for raw_id in identity_ids or []:
         try:
@@ -1182,6 +1197,8 @@ def ui_preview_storage_bag_transfer(payload):
 
 async def ui_start_storage_bag_transfer(payload):
     payload = payload if isinstance(payload, dict) else {}
+    if _storage_bag_sync_state.get("running"):
+        return False, "储物袋同步正在进行中，暂不允许转移", None
     if payload.get("batch"):
         return await ui_start_storage_bag_transfer_batch(payload)
     ok, message, preview = ui_preview_storage_bag_transfer(payload)
@@ -1278,6 +1295,8 @@ def ui_preview_storage_bag_transfer_batch(payload):
 
 
 async def ui_start_storage_bag_transfer_batch(payload):
+    if _storage_bag_sync_state.get("running"):
+        return False, "储物袋同步正在进行中，暂不允许转移", None
     ok, message, preview = ui_preview_storage_bag_transfer_batch(payload)
     if not ok:
         return False, message, None

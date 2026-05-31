@@ -594,7 +594,10 @@
 
   function renderSyncControls() {
     const sync = snapshot().storage_bag_sync || {};
+    const transfer = snapshot().storage_bag_transfer || {};
+    const transferBatch = transfer.batch || {};
     const running = !!sync.running;
+    const transferRunning = !!transfer.running || !!transferBatch.running;
     const selectable = rows().filter(function (row) { return !row.protected; });
     const selected = selectedSyncIds();
     const selectedCount = selectable.filter(function (row) { return selected.has(Number(row.identity_id) || 0); }).length;
@@ -602,18 +605,18 @@
     const selectAll = document.getElementById('storage-bag-select-all');
     const status = document.getElementById('storage-bag-sync-status');
     if (btn) {
-      btn.disabled = running;
-      btn.textContent = running ? '同步中' : '同步';
+      btn.disabled = running || transferRunning;
+      btn.textContent = running ? '同步中' : (transferRunning ? '转移中' : '同步');
     }
     if (selectAll) {
       selectAll.checked = selectable.length > 0 && selectedCount === selectable.length;
       selectAll.indeterminate = selectedCount > 0 && selectedCount < selectable.length;
-      selectAll.disabled = running || selectable.length <= 0;
+      selectAll.disabled = running || transferRunning || selectable.length <= 0;
     }
     if (status) {
       const pending = Array.isArray(sync.pending_ids) ? sync.pending_ids.length : 0;
       const completed = Array.isArray(sync.completed_ids) ? sync.completed_ids.length : 0;
-      status.textContent = running ? `排队 ${pending}，已发送 ${completed}` : '';
+      status.textContent = running ? `排队 ${pending}，已发送 ${completed}` : (transferRunning ? '转移中暂停同步' : '');
     }
   }
 
@@ -669,6 +672,7 @@
     const state = transferState();
     const runtime = snapshot().storage_bag_transfer || {};
     const batchRuntime = runtime.batch || {};
+    const syncRuntime = snapshot().storage_bag_sync || {};
     const sourceRow = rowById(state.sourceId);
     const sourceRows = effectiveBatchSourceRows();
     const sourceItems = state.batchMode
@@ -699,11 +703,12 @@
     }).join('\n') : '';
     const running = !!runtime.running || !!batchRuntime.running;
     const busy = !!state.busy;
+    const syncBusy = !!syncRuntime.running;
     const sourceLabel = sourceRow ? (sourceRow.label || sourceRow.display_name || state.sourceId) : '来源';
     const modeButtons = `
       <div class="storage-bag-transfer-mode">
-        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${running || busy ? ' disabled' : ''}>单次</button>
-        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${running || busy ? ' disabled' : ''}>批量</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${running || busy || syncBusy ? ' disabled' : ''}>单次</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${running || busy || syncBusy ? ' disabled' : ''}>批量</button>
       </div>`;
     const sourceControls = state.batchMode ? `
       <div class="storage-bag-transfer-controls storage-bag-transfer-controls-batch">
@@ -744,8 +749,8 @@
         </section>
       </div>
       <div class="storage-bag-transfer-actions">
-        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${running || busy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
-        <button type="button" class="btn" data-storage-transfer-start="1"${running || busy ? ' disabled' : ''}>${state.batchMode ? '执行批量转移' : '执行转移'}</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${running || busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
+        <button type="button" class="btn" data-storage-transfer-start="1"${running || busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '执行批量转移' : '执行转移'}</button>
         <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${running ? '' : ' disabled'}>取消任务</button>
       </div>
       <div id="storage-bag-transfer-preview" class="storage-bag-transfer-preview">${renderTransferPreviewHtml(preview)}${renderBatchRuntimeHtml(batchRuntime)}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;

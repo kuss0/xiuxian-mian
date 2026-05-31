@@ -12,6 +12,7 @@ DUNGEON_QUIET_MAX_SEC = 10 * 60
 DUNGEON_QUIET_LOG_INTERVAL_SEC = 60
 
 _DUNGEON_NAME_RE = re.compile(r"【([^】]+?)】")
+_DUNGEON_CONTEXT_RE = re.compile(r"(?:为)?本次【([^】]+?)】(?:立下静场令|进行期间)")
 
 
 def _now(now=None):
@@ -20,11 +21,15 @@ def _now(now=None):
 
 def _extract_reason(text):
     raw = str(text or "")
-    match = _DUNGEON_NAME_RE.search(raw)
-    if not match:
-        return "副本静场令"
-    title = match.group(1).split("·", 1)[0].strip()
-    return f"{title}静场令" if title else "副本静场令"
+    match = _DUNGEON_CONTEXT_RE.search(raw)
+    if match:
+        title = match.group(1).split("·", 1)[0].strip()
+        return f"{title}静场令" if title else "副本静场令"
+    for match in _DUNGEON_NAME_RE.finditer(raw):
+        title = match.group(1).split("·", 1)[0].strip()
+        if title and title != "稳控全场":
+            return f"{title}静场令"
+    return "副本静场令"
 
 
 def is_dungeon_quiet_prepare_notice(text):
@@ -34,7 +39,11 @@ def is_dungeon_quiet_prepare_notice(text):
 
 def is_dungeon_quiet_active_notice(text):
     raw = str(text or "")
-    return "【稳控全场】已展开" in raw and "副本结束前，天机阁将暂不响应本话题中的其他修仙指令" in raw
+    if "【稳控全场】已展开" not in raw:
+        return False
+    if "天机阁将暂不响应本话题中的其他修仙指令" not in raw:
+        return False
+    return "副本结束前" in raw or "进行期间" in raw
 
 
 def get_dungeon_quiet_until():

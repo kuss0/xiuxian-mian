@@ -399,6 +399,45 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(config["next_keepalive_at"], 1000)
         self.assertEqual({"旧物": 1}, state_module.get_storage_bag_records()[str(self.identity_id)]["items"])
 
+    async def test_manual_api_actions_reject_during_keepalive(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-old",
+        })
+        ui._storage_bag_api_state["keepalive_running"] = True
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock()) as fetch_mock, \
+                patch("model.ui.verify_storage_bag_api", new=AsyncMock()) as verify_mock:
+            refresh_ok, refresh_message, refresh_snapshot = await ui.ui_refresh_storage_bag_from_api()
+            verify_ok, verify_message, verify_snapshot = await ui.ui_verify_storage_bag_api()
+
+        self.assertFalse(refresh_ok)
+        self.assertFalse(verify_ok)
+        self.assertIn("正在进行中", refresh_message)
+        self.assertIn("正在进行中", verify_message)
+        self.assertTrue(refresh_snapshot["running"])
+        self.assertTrue(verify_snapshot["keepalive_running"])
+        fetch_mock.assert_not_called()
+        verify_mock.assert_not_called()
+
+    async def test_keepalive_scheduler_skips_while_manual_api_running(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-old",
+            "keepalive_enabled": True,
+            "next_keepalive_at": 0,
+        })
+        ui._storage_bag_api_state["running"] = True
+
+        with patch("model.ui.verify_storage_bag_api", new=AsyncMock()) as verify_mock:
+            await ui.run_storage_bag_api_keepalive_scheduler(1000)
+
+        self.assertTrue(ui._storage_bag_api_state["running"])
+        self.assertFalse(ui._storage_bag_api_state["keepalive_running"])
+        verify_mock.assert_not_called()
+
     async def test_keepalive_scheduler_disables_on_auth_failure(self):
         state_module.set_storage_bag_api_config({
             "base_url": "https://example.invalid",

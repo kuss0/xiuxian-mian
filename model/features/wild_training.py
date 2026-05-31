@@ -1,8 +1,11 @@
+import json
 import random
 import re
 import time
+from datetime import datetime, timedelta
+from pathlib import Path
 
-from ..config import CD_BUFFER_SEC, CMD_WILD_TRAINING, WILD_TRAINING_STRATEGIES
+from ..config import CD_BUFFER_SEC, CMD_WILD_TRAINING, MESSAGES_DIR, TZ_LOCAL, WILD_TRAINING_STRATEGIES
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
@@ -14,6 +17,8 @@ WILD_TRAINING_CYCLE_MAX_SEC = 3 * 3600
 WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
+WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
+WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
 WILD_TRAINING_TITLE = "【野外历练"
 WILD_TRAINING_RESULT_TITLES = (
     "【野外历练 · 妖兽遭遇】",
@@ -45,6 +50,40 @@ def _schedule_next(now):
 
 def _schedule_retry(now):
     state["next_wild_training_time"] = float(now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC))
+
+
+def _parse_message_log_ts(raw_ts):
+    ts_text = str(raw_ts or "").strip()
+    if not ts_text:
+        return 0.0
+    ts_text = ts_text.replace(" UTC+8", "")
+    try:
+        return datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _iter_message_log_entries_between(start_ts, end_ts):
+    try:
+        start_day = datetime.fromtimestamp(float(start_ts), TZ_LOCAL).date()
+        end_day = datetime.fromtimestamp(float(end_ts), TZ_LOCAL).date()
+    except (TypeError, ValueError, OSError):
+        return
+
+    day = start_day
+    while day <= end_day:
+        log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
+        if log_path.exists():
+            try:
+                with log_path.open("r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+            except OSError:
+                pass
+        day += timedelta(days=1)
 
 
 def clear_wild_training_state(*, persist=False, keep_last_error=False):
@@ -119,6 +158,11 @@ def _is_start_notice(text):
     return raw_text.startswith("【野外历练】") and "选择【" in raw_text and "荒野深处行去" in raw_text
 
 
+def _is_result_notice(text):
+    raw_text = str(text or "").strip()
+    return not _is_start_notice(raw_text) and any(marker in raw_text for marker in WILD_TRAINING_RESULT_MARKERS)
+
+
 def _start_summary(text):
     match = RE_WILD_TRAINING_START_STRATEGY.search(str(text or ""))
     if match:
@@ -138,6 +182,89 @@ def _result_summary(text):
     if parts:
         return " ｜ ".join(parts)
     return _extract_result_title(raw_text) or "未知结果"
+
+
+def _apply_wild_training_result(raw_text, now, msg_id):
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_last_msg_id"] = int(msg_id or 0)
+    state["wild_training_last_result"] = _result_summary(raw_text)
+    state["wild_training_last_error"] = ""
+    _schedule_next(now)
+
+
+def _find_logged_entry_by_msg_id(msg_id, now, *, result=False):
+    msg_id = int(msg_id or 0)
+    if msg_id <= 0:
+        return None
+    end_ts = float(now or 0) + WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC)
+    found = None
+    for entry in _iter_message_log_entries_between(start_ts, end_ts):
+        if int((entry or {}).get("message_id") or 0) != msg_id:
+            continue
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
+            continue
+        raw_text = str((entry or {}).get("text") or "").strip()
+        if result and not _is_result_notice(raw_text):
+            continue
+        if not result and not _is_start_notice(raw_text):
+            continue
+        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text}
+    return found
+
+
+def _find_logged_start_for_command(command_msg_id, now):
+    command_msg_id = int(command_msg_id or 0)
+    if command_msg_id <= 0:
+        return None
+    end_ts = float(now or 0) + WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC)
+    found = None
+    for entry in _iter_message_log_entries_between(start_ts, end_ts):
+        if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
+            continue
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
+            continue
+        raw_text = str((entry or {}).get("text") or "").strip()
+        if not _is_start_notice(raw_text):
+            continue
+        found = {"ts": entry_ts, "msg_id": int((entry or {}).get("message_id") or 0), "text": raw_text}
+    return found
+
+
+def _recover_wild_training_from_message_log(now):
+    reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
+    if reply_to_msg_id <= 0:
+        return ""
+
+    last_result = str(state.get("wild_training_last_result") or "")
+    if last_result.startswith("已出发"):
+        result_entry = _find_logged_entry_by_msg_id(reply_to_msg_id, now, result=True)
+        if not result_entry:
+            return ""
+        _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
+        return "result"
+
+    start_entry = _find_logged_start_for_command(reply_to_msg_id, now)
+    if not start_entry:
+        return ""
+    result_entry = _find_logged_entry_by_msg_id(start_entry["msg_id"], now, result=True)
+    if result_entry:
+        _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
+        return "result"
+
+    state["wild_training_reply_to_msg_id"] = int(start_entry["msg_id"] or 0)
+    state["wild_training_last_msg_id"] = int(start_entry["msg_id"] or 0)
+    state["wild_training_last_result"] = _start_summary(start_entry["text"])
+    state["wild_training_last_error"] = ""
+    state["wild_training_reply_due_at"] = max(
+        float(state.get("wild_training_reply_due_at", 0) or 0),
+        float(start_entry["ts"] or now) + WILD_TRAINING_REPLY_TIMEOUT_SEC,
+    )
+    return "start"
 
 
 async def handle_wild_training_reply(text, now, reply_to, matched_family=None, current_msg_id=None):
@@ -173,15 +300,10 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
         console_log(f"🏞️ 野外历练已出发，等待结果编辑（msg_id={msg_id}）", scope="identity")
         return True
 
-    if not any(marker in raw_text for marker in WILD_TRAINING_RESULT_MARKERS):
+    if not _is_result_notice(raw_text):
         return False
 
-    state["wild_training_reply_to_msg_id"] = 0
-    state["wild_training_reply_due_at"] = 0
-    state["wild_training_last_msg_id"] = msg_id
-    state["wild_training_last_result"] = _result_summary(raw_text)
-    state["wild_training_last_error"] = ""
-    _schedule_next(now)
+    _apply_wild_training_result(raw_text, now, msg_id)
     save_state()
     await send_audit_log(f"🏞️ 野外历练结果：{state['wild_training_last_result']}", scope="identity", limit=220)
     return True
@@ -194,6 +316,18 @@ async def run_wild_training_scheduler(now):
     reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
     if reply_to_msg_id > 0:
         if now < float(state.get("wild_training_reply_due_at", 0) or 0):
+            return
+        recovered = _recover_wild_training_from_message_log(now)
+        if recovered == "result":
+            save_state()
+            await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
+            return
+        if recovered == "start" and now < float(state.get("wild_training_reply_due_at", 0) or 0):
+            save_state()
+            console_log(
+                f"🏞️ 野外历练日志补偿：已出发，继续等待结果编辑（msg_id={state['wild_training_reply_to_msg_id']}）",
+                scope="identity",
+            )
             return
         state["wild_training_reply_to_msg_id"] = 0
         state["wild_training_reply_due_at"] = 0
