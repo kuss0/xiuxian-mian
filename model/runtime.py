@@ -1530,12 +1530,23 @@ async def fetch_forum_topics(group_id):
     return True, f"已读取群聊[{group_title}]的话题列表，共 {len(topics)} 个", topics
 
 
+def _coerce_ui_admin_sender_id(sender_id):
+    try:
+        value = int(sender_id or 0)
+    except (TypeError, ValueError):
+        return 0
+    return value if value in ADMIN_IDS else 0
+
+
 def issue_ui_login_token(sender_id, now=None):
+    admin_id = _coerce_ui_admin_sender_id(sender_id)
+    if admin_id <= 0:
+        raise ValueError("Unauthorized UI login token requester")
     if now is None:
         now = time.time()
     token = _new_runtime_token(_ui_login_tokens)
     _ui_login_tokens[token] = {
-        "sender_id": int(sender_id) if sender_id is not None else 0,
+        "sender_id": admin_id,
         "created_at": now,
         "last_seen_at": now,
     }
@@ -1556,10 +1567,15 @@ def redeem_ui_login_token(token, now=None):
         _ui_login_tokens.pop(stored_token, None)
         return None
 
+    sender_id = _coerce_ui_admin_sender_id(payload.get("sender_id"))
+    if sender_id <= 0:
+        _ui_login_tokens.pop(stored_token, None)
+        return None
+
     _ui_login_tokens.pop(stored_token, None)
     session_token = _new_runtime_token(_ui_sessions)
     _ui_sessions[session_token] = {
-        "sender_id": int(payload.get("sender_id") or 0),
+        "sender_id": sender_id,
         "created_at": now,
         "last_seen_at": now,
         "seen_startup_alert_keys": [],
@@ -1574,6 +1590,9 @@ def validate_ui_session(session_token, now=None):
     if not stored_token or not payload:
         return None
     if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_SESSION_TIMEOUT_SEC:
+        _ui_sessions.pop(stored_token, None)
+        return None
+    if _coerce_ui_admin_sender_id(payload.get("sender_id")) <= 0:
         _ui_sessions.pop(stored_token, None)
         return None
     return {
@@ -1600,6 +1619,7 @@ def gc_ui_login_tokens(now=None):
         token
         for token, payload in _ui_login_tokens.items()
         if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC
+        or _coerce_ui_admin_sender_id(payload.get("sender_id")) <= 0
     ]
     for token in expired:
         _ui_login_tokens.pop(token, None)
@@ -1613,6 +1633,7 @@ def gc_ui_sessions(now=None):
         token
         for token, payload in _ui_sessions.items()
         if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_SESSION_TIMEOUT_SEC
+        or _coerce_ui_admin_sender_id(payload.get("sender_id")) <= 0
     ]
     for token in expired:
         _ui_sessions.pop(token, None)
