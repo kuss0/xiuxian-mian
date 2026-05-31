@@ -112,6 +112,7 @@ from .features.guanxing import (
     restore_guanxing_round_runtime,
 )
 from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore_guanxing_monitor_runtime_state
+from .features.hehuan import get_hehuan_status_text
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
@@ -1369,6 +1370,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "侍妾": get_concubine_status_text,
         "天机代卜": get_concubine_status_text,
         "共历心劫": get_concubine_status_text,
+        "合欢宗": get_hehuan_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,

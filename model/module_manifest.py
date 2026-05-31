@@ -38,6 +38,7 @@ _MANIFESTS = (
     ModuleManifest("侍妾", MODULE_KEY_MAP["侍妾"], reply_families=("concubine_status", "concubine_greet", "concubine_gift", "concubine_dream", "concubine_fragment", "concubine_puzzle", "concubine_reacquire"), replay_required=False, duplicate_guard="phase", workflow_names=("concubine",)),
     ModuleManifest("天机代卜", MODULE_KEY_MAP["天机代卜"], reply_families=("concubine_tianji",), replay_required=False, duplicate_guard="chain_state"),
     ModuleManifest("共历心劫", MODULE_KEY_MAP["共历心劫"], reply_families=("concubine_heart",), replay_required=False, duplicate_guard="round_state"),
+    ModuleManifest("合欢宗", MODULE_KEY_MAP["合欢宗"], replay_modules=("hehuan",), reply_families=("hehuan_retreat", "hehuan_contract", "hehuan_dual", "hehuan_seal", "hehuan_escape"), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="passive_observation"),
     ModuleManifest("南陇侯", MODULE_KEY_MAP["南陇侯"], reply_families=("nanlong",), replay_required=False, duplicate_guard="prompt_claim"),
     ModuleManifest("元婴", MODULE_KEY_MAP["元婴"], replay_modules=("yuanying",), reply_families=("yuanying",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful"),
     ModuleManifest("深度闭关", MODULE_KEY_MAP["深度闭关"], replay_modules=("deep_retreat",), reply_families=("deep_retreat",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful", workflow_names=("deep_retreat",)),

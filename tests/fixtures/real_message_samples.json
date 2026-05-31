@@ -54,5 +54,61 @@
     "family": "yuanying",
     "event_type": "edit",
     "text": "📜 修士 @bbeexxyz 元神归窍总结\n你的元婴在虚空中神游八小时，带回了以下收获：\n\n - 【四级妖丹】x3\n - 【法则碎片·金】x1\n - 【法则碎片·水】x1\n - 【法则碎片·土】x1\n - 天道感悟: 你的修为额外增加了 2458 点！\n\n元婴成长:\n - 获得了 2147 点经验。"
+  },
+  "hehuan.warm_success.basic": {
+    "source": "data/messages/2026-05-31.log:497",
+    "module": "hehuan",
+    "family": "hehuan_dual",
+    "event_type": "message",
+    "text": "【温养双修·大成】\n在同参契印的加持下，你与 @wuwenyao 灵力完美交融，事半功倍！\n@wushanxiang 修为增加了 36 点，并获得 15 点宗门贡献！\n@wuwenyao 修为增加了 68 点！"
+  },
+  "hehuan.dual.cooldown": {
+    "source": "data/messages/2026-05-31.log:2163",
+    "module": "hehuan",
+    "family": "hehuan_dual",
+    "event_type": "message",
+    "text": "道友 @iceeet1 心神尚未恢复，无法进行双修（冷却中）。"
+  },
+  "hehuan.guide.basic": {
+    "source": "data/messages/2026-05-21.log:34259",
+    "module": "hehuan",
+    "family": "hehuan_dual",
+    "event_type": "edit",
+    "text": "道友若欲双修，须先拜入合欢宗。待炼气四层后，可使用 .闭关双修。若已与道侣缔结同参，则可使用 .双修 温养 提升收益，或使用 .双修 采补。"
+  },
+  "hehuan.seal.invalid_mortal": {
+    "source": "data/messages/2026-05-21.log:20349",
+    "module": "hehuan",
+    "family": "hehuan_seal",
+    "event_type": "message",
+    "text": "对方只是凡人，种下心印也无用处。"
+  },
+  "hehuan.furnace.challenged": {
+    "source": "data/messages/2026-05-21.log:40293",
+    "module": "hehuan",
+    "family": "hehuan_seal",
+    "event_type": "message",
+    "text": "*神识微颤，此人欲拘我为炉鼎乎……*"
+  },
+  "hehuan.furnace.controlled": {
+    "source": "data/messages/2026-05-25.log:45374",
+    "module": "hehuan",
+    "family": "hehuan_seal",
+    "event_type": "message",
+    "text": "*神魂一颤，此身竟沦为炉鼎玩物么…*"
+  },
+  "hehuan.retreat.success_bonus": {
+    "source": "data/messages/2026-05-30.log:3178",
+    "module": "hehuan",
+    "family": "hehuan_retreat",
+    "event_type": "message",
+    "text": "【闭关成功】\n掩月心契·守秘: 天机偏转，本次奇遇率提高。\n你福至心灵，成功炼化灵气，基础修为增加了 132 点。\n因【合欢宗】灵脉加持，你额外获得了 66 点修为！\n本次闭关，你的修为最终增加了 198 点。\n\n当前境界: 结丹后期\n当前修为: 1147769 / 200000\n\n你感到一阵疲惫，需要打坐调息 12 分钟方可再次闭关。\n*(因 【侍妾护持】+8%，本次奇遇几率提升至 13%)*"
+  },
+  "hehuan.dual.realm_blocked": {
+    "source": "data/messages/2026-05-30.log:46911",
+    "module": "hehuan",
+    "family": "hehuan_dual",
+    "event_type": "message",
+    "text": "双方或其中一方尚未踏入仙途，无法进行双修。"
   }
 }

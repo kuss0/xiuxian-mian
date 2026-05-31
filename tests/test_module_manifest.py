@@ -43,6 +43,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("储物袋", module_manifest.get_module_name_for_reply_family("storage_bag_buy"))
         self.assertEqual("自动副本", module_manifest.get_module_name_for_reply_family("dungeon_join"))
         self.assertEqual("共历心劫", module_manifest.get_module_name_for_reply_family("concubine_heart"))
+        self.assertEqual("合欢宗", module_manifest.get_module_name_for_reply_family("hehuan_dual"))
 
     def test_workflow_names_map_to_manifest_owner(self):
         self.assertEqual("太一", module_manifest.get_module_name_for_workflow("taiyi"))
@@ -97,6 +98,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual([], result["missing_sample_families"])
         self.assertEqual("自动副本", module_manifest.get_module_name_for_replay_module("join_dungeon"))
         self.assertEqual("元婴", module_manifest.get_module_name_for_replay_module("yuanying"))
+        self.assertEqual("合欢宗", module_manifest.get_module_name_for_replay_module("hehuan"))
 
     def test_phaseful_modules_are_passive_first_last_resort_query(self):
         deep_retreat = module_manifest.get_module_manifest("深度闭关")

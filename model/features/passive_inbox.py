@@ -10,6 +10,7 @@ from ..state import get_identity_ids, get_send_as_profile, get_send_as_tags, sta
 from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait_time
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
+from . import hehuan as hehuan_mod
 from . import pet as pet_mod
 from . import second_soul as second_soul_mod
 from . import small_world as small_world_mod
@@ -778,6 +779,7 @@ def _looks_like_supported_passive(text, family):
         family.startswith("tianti_")
         or family.startswith("second_soul")
         or family.startswith("concubine_")
+        or family.startswith("hehuan_")
         or family.startswith("stargazer_")
         or family in {
             "pet",
@@ -800,6 +802,7 @@ def _looks_like_supported_passive(text, family):
         or tianti_mod.RE_TIANTI_PANEL.search(raw_text)
         or _is_tree_panel_text(raw_text)
         or _is_tree_mature_broadcast(raw_text)
+        or hehuan_mod.looks_like_hehuan_text(raw_text)
         or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE)
     ):
         return True
@@ -843,6 +846,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
         owner_match = small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text)
         if owner_match:
             target_id = _match_identity_by_owner_name(owner_match.group("owner"))
+    if target_id is None and (family.startswith("hehuan_") or hehuan_mod.looks_like_hehuan_text(raw_text)):
+        target_id = _match_identity_by_at_text(raw_text)
 
     if target_id is None:
         if _looks_like_supported_passive(raw_text, family):
@@ -903,6 +908,11 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             module_changed = _apply_concubine_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append("concubine")
+            changed = module_changed or changed
+        if family.startswith("hehuan_") or (not family and hehuan_mod.looks_like_hehuan_text(raw_text)):
+            module_changed = hehuan_mod.apply_hehuan_passive(raw_text, now, family)
+            if module_changed:
+                changed_modules.append("hehuan")
             changed = module_changed or changed
         if family in {"tree_panel", "tree_guard", "tree_harvest"} or _is_tree_panel_text(raw_text) or _is_tree_mature_broadcast(raw_text):
             module_changed = _apply_tree_passive(raw_text, now, family)
