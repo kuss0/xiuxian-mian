@@ -145,7 +145,7 @@ def _append_recent_passive_event(kind, *, module="", identity_id=0, reason="", s
         "summary": _truncate_event_text(summary),
     }
     for key, value in metadata.items():
-        if key in {"msg_id", "reply_to_msg_id", "root_msg_id"}:
+        if key in {"msg_id", "reply_to_msg_id", "root_msg_id", "source_message_id"}:
             int_value = _event_int(value)
             if int_value:
                 item[key] = int_value
@@ -205,6 +205,7 @@ def _record_passive_event(
         state_before=state_before,
         state_after=state_after,
         command=command,
+        source_message_id=source_message_id,
     )
     append_passive_event(
         kind=kind,
@@ -309,6 +310,7 @@ def get_passive_inbox_status_text():
             ("decision", "decision"),
             ("msg_id", "msg"),
             ("reply_to_msg_id", "reply"),
+            ("source_message_id", "source"),
             ("route_source", "route"),
             ("matched_text", "hit"),
             ("summary", ""),
@@ -509,6 +511,8 @@ def _apply_small_world_passive(text, now):
     state["small_world_faith_value"] = int(panel.get("faith", 0) or 0)
     state["small_world_pending_incense"] = float(panel.get("pending_incense", 0) or 0)
     state["small_world_incense_stock"] = int(panel.get("stock", 0) or 0)
+    if state.get("small_world_phase") == "calibration_wait":
+        state["small_world_phase"] = "idle"
     if panel.get("has_wait"):
         state["next_small_world_time"] = float(now + int(panel.get("wait_sec", 0) or 0) + small_world_mod.CD_BUFFER_SEC)
         state["small_world_phase"] = "idle"

@@ -638,15 +638,22 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         text = app_replica._format_virtual_hall_recommendations("777", gua_record, recommendations, candidates, lightweight=True)
 
-        self.assertIn("路策建议：冰路 / 稳策", text)
+        self.assertIn("路策：冰路 / 稳策", text)
         self.assertIn("实测顺合", text)
+        self.assertIn("正1", text)
         self.assertIn(".选择道路 冰", text)
         self.assertIn(".阵策 稳", text)
-        self.assertIn("不自动发送", text)
+        self.assertIn(".争鼎 夺鼎", text)
+        self.assertIn(".后殿抉择 冲关", text)
+        self.assertIn(".争鼎 求稳", text)
+        self.assertIn(".后殿抉择 收手", text)
+        self.assertNotIn("脚本不会自动发送", text)
 
         html_text = app_replica._format_virtual_hall_recommendations("777", gua_record, recommendations, candidates, lightweight=True, html=True)
         self.assertIn("<code>.选择道路 冰</code>", html_text)
         self.assertIn("<code>.阵策 稳</code>", html_text)
+        self.assertIn("<code>.争鼎 夺鼎</code>", html_text)
+        self.assertIn("<code>.后殿抉择 冲关</code>", html_text)
 
     def test_virtual_hall_no_dps_suppresses_join_recommendations(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")

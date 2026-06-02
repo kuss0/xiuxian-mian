@@ -58,7 +58,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
-    "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_search_resend_count", "taiyi_last_error",
+    "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_yindao_resend_count", "taiyi_search_resend_count", "taiyi_last_error",
     "weak_reason", "weak_source", "weak_last_block_log_at",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
@@ -72,7 +72,7 @@ IDENTITY_BOOL_FIELDS = {
     "second_soul_heart_demon_notified",
     "tree_maturing_logged",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -485,6 +485,7 @@ IDENTITY_STATE_TEMPLATE = {
     "taiyi_freeze_until": 0,
     "taiyi_freeze_reason": "",
     "taiyi_failure_history": [],
+    "taiyi_yindao_resend_count": 0,
     "taiyi_search_resend_count": 0,
     "taiyi_last_error": "",
 
@@ -557,6 +558,7 @@ GLOBAL_STATE_DEFAULTS = {
     "storage_bag_api_config": {},
     "storage_bag_records": {},
     "storage_bag_item_rules": {},
+    "tianjige_dao_path_records": {},
     "dungeon_join_run_state": {},
     "dungeon_quiet_until": 0,
     "dungeon_quiet_reason": "",
@@ -891,6 +893,16 @@ def get_storage_bag_records():
 def set_storage_bag_records(records):
     _meta_state["storage_bag_records"] = records if isinstance(records, dict) else {}
     return get_storage_bag_records()
+
+
+def get_tianjige_dao_path_records():
+    records = _meta_state.get("tianjige_dao_path_records") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_tianjige_dao_path_records(records):
+    _meta_state["tianjige_dao_path_records"] = records if isinstance(records, dict) else {}
+    return get_tianjige_dao_path_records()
 
 
 def _normalize_storage_bag_api_config(config):
@@ -1959,6 +1971,7 @@ __all__ = [
     "get_storage_bag_api_config",
     "get_storage_bag_records",
     "get_storage_bag_item_rules",
+    "get_tianjige_dao_path_records",
     "get_stargazer_total_slots",
     "get_tianti_rank_choice",
     "get_wild_training_strategy",
@@ -2008,6 +2021,7 @@ __all__ = [
     "set_storage_bag_api_config",
     "set_storage_bag_records",
     "set_storage_bag_item_rules",
+    "set_tianjige_dao_path_records",
     "set_stargazer_total_slots",
     "set_tianti_rank_choice",
     "set_wild_training_strategy",

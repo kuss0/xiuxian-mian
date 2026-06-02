@@ -2218,26 +2218,54 @@ def _xutian_oracle_strategy_commands(strategy_text):
     return commands
 
 
+def _format_xutian_oracle_advice_meta(advice):
+    confidence = str((advice or {}).get("confidence") or "").strip()
+    positive_count = len((advice or {}).get("positive_examples") or [])
+    negative_count = len((advice or {}).get("negative_examples") or [])
+    sample_parts = []
+    if positive_count:
+        sample_parts.append(f"正{positive_count}")
+    if negative_count:
+        sample_parts.append(f"反{negative_count}")
+    return "，".join(part for part in (confidence, "，".join(sample_parts)) if part)
+
+
+def _format_xutian_oracle_manual_command(command, *, html=False):
+    return mono(command) if html else command
+
+
+def _format_xutian_oracle_followup_section(*, html=False):
+    return "\n".join([
+        "后续：" + " / ".join([
+            _format_xutian_oracle_manual_command(".争鼎 夺鼎", html=html),
+            _format_xutian_oracle_manual_command(".后殿抉择 冲关", html=html),
+        ]),
+        "保守：" + " / ".join([
+            _format_xutian_oracle_manual_command(".争鼎 求稳", html=html),
+            _format_xutian_oracle_manual_command(".后殿抉择 收手", html=html),
+        ]),
+    ])
+
+
 def _format_xutian_oracle_route_advice_section(gua_record, *, html=False):
     advice = _get_xutian_oracle_route_advice((gua_record or {}).get("gua_title") or "")
     if not advice:
         return ""
     route = str(advice.get("route") or "").strip()
     strategy = str(advice.get("strategy") or "").strip()
-    confidence = str(advice.get("confidence") or "").strip()
     basis = str(advice.get("basis") or "").strip()
     lines = []
     if route or strategy:
         route_text = " / ".join(part for part in (route, strategy) if part)
-        meta_text = "，".join(part for part in (confidence, basis) if part)
-        lines.append(f"路策建议：{route_text}" + (f"（{meta_text}）" if meta_text else ""))
+        meta_text = _format_xutian_oracle_advice_meta(advice)
+        lines.append(f"路策：{route_text}" + (f"（{meta_text}）" if meta_text else ""))
         commands = _xutian_oracle_route_commands(route) + _xutian_oracle_strategy_commands(strategy)
         if commands:
-            lines.append("可复制路策：")
-            lines.extend(mono(command) if html else command for command in commands)
-        lines.append("提示：只给路策建议，不自动发送。")
+            lines.extend(_format_xutian_oracle_manual_command(command, html=html) for command in commands)
+        lines.append(_format_xutian_oracle_followup_section(html=html))
     else:
-        lines.append(f"路策建议：{basis or '暂无可用路线'}" + (f"（{confidence}）" if confidence else ""))
+        meta_text = _format_xutian_oracle_advice_meta(advice)
+        lines.append(f"路策：{basis or '暂无可用路线'}" + (f"（{meta_text}）" if meta_text else ""))
         negative_examples = advice.get("negative_examples") or []
         if negative_examples:
             lines.append("历史反例：" + "；".join(str(item) for item in negative_examples[:2]))

@@ -204,6 +204,29 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(now + 90, state_module.state["next_taiyi_cycle_time"])
             self.assertIn("发送边界不确定", state_module.state["taiyi_last_error"])
 
+    def test_taiyi_yindao_restart_keeps_inflight_retry_pending(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["taiyi_enabled"] = True
+            state_module.state["taiyi_phase"] = "yindao_pending"
+            state_module.state["taiyi_phase_entered_at"] = now - 120
+            state_module.state["taiyi_yindao_msg_id"] = 12345
+            state_module.state["taiyi_yindao_resend_count"] = 1
+            state_module.state["taiyi_node_search_msg_id"] = 0
+            state_module.state["taiyi_node_define_msg_id"] = 0
+            state_module.state["next_taiyi_cycle_time"] = now - 1
+
+        with patch.object(control.random, "uniform", return_value=90):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("yindao_pending", state_module.state["taiyi_phase"])
+            self.assertEqual(1, state_module.state["taiyi_yindao_resend_count"])
+            self.assertEqual(12345, state_module.state["taiyi_yindao_msg_id"])
+            self.assertEqual(now - 120, state_module.state["taiyi_phase_entered_at"])
+
     def test_taiyi_yindao_lost_reply_calibrates_from_real_log_text(self):
         send_as_id = 8659059191
         command_ts = 1_700_000_320.0

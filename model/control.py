@@ -82,6 +82,7 @@ from .config import (
     RE_CMD_ANALYSIS_SUMMARY,
     RE_CMD_ANALYSIS_UNKNOWN,
     RE_CMD_ANALYSIS_WEBMINI,
+    RE_CMD_RUNTIME_HEALTH,
     RE_CMD_AUDIT_FLUSH_SUMMARY,
     RE_CMD_AUDIT_PUSH_STATUS,
     RE_CMD_STAGING_PREFLIGHT,
@@ -116,7 +117,7 @@ from .features.hehuan import get_hehuan_status_text
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
-from .features.passive_inbox import get_passive_inbox_status_text
+from .features.passive_inbox import get_passive_inbox_snapshot, get_passive_inbox_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
@@ -493,6 +494,7 @@ def _disable_taiyi_module_state():
     state["taiyi_freeze_until"] = 0
     state["taiyi_freeze_reason"] = ""
     state["taiyi_failure_history"] = []
+    state["taiyi_yindao_resend_count"] = 0
     state["taiyi_last_error"] = ""
     _clear_pending_tasks_by_commands({CMD_YINDAO, CMD_NODE_SEARCH, CMD_NODE_DEFINE})
 
@@ -1818,6 +1820,143 @@ def _format_staging_preflight_text():
     return "\n".join(lines)
 
 
+RUNTIME_HEALTH_ERROR_KEYS = [
+    ("wild_training_last_error", "野外历练"),
+    ("small_world_last_error", "小世界"),
+    ("taiyi_last_error", "太一"),
+    ("concubine_last_error", "侍妾"),
+    ("concubine_tianji_last_error", "侍妾天机"),
+    ("concubine_heart_last_error", "侍妾心法"),
+    ("deep_retreat_last_error", "深度闭关"),
+    ("yuanying_last_error", "元婴"),
+    ("identity_info_last_error", "身份"),
+    ("ranch_last_error", "放养"),
+    ("pet_last_error", "灵兽"),
+    ("pet_warm_last_error", "温养"),
+    ("pet_trial_last_error", "器灵试炼"),
+    ("stargazer_last_error", "观星台"),
+    ("tianti_last_error", "登天阶"),
+    ("nanlong_last_error", "南陇侯"),
+    ("second_soul_last_error", "第二元神"),
+]
+
+RUNTIME_HEALTH_PHASE_KEYS = [
+    ("wild_training_reply_to_msg_id", "野外历练待回复"),
+    ("small_world_phase", "小世界"),
+    ("taiyi_phase", "太一"),
+    ("concubine_phase", "侍妾"),
+]
+
+
+def _format_runtime_counter_map(items, limit=6):
+    if not items:
+        return "无"
+    ordered = sorted(items.items(), key=lambda pair: (-int(pair[1] or 0), str(pair[0])))
+    return "、".join(f"{key}:{value}" for key, value in ordered[:limit])
+
+
+def _format_runtime_health_text():
+    now = time.time()
+    identity_ids = get_identity_ids()
+    enabled_count = sum(1 for identity_id in identity_ids if get_identity_enabled(identity_id))
+    pending_total = 0
+    pending_rows = []
+    error_rows = []
+    phase_rows = []
+
+    for identity_id in identity_ids:
+        display_name = get_identity_display_name(identity_id)
+        with use_identity(identity_id):
+            pending_tasks = state.get("pending_tasks", {}) or {}
+            if pending_tasks:
+                pending_total += len(pending_tasks)
+                samples = []
+                for pending in list(pending_tasks.values())[:3]:
+                    command = get_pending_command(pending) or "unknown"
+                    sent_at = float((pending or {}).get("sent_at", 0) or 0)
+                    age = int(max(0, now - sent_at)) if sent_at > 0 else 0
+                    retry = int((pending or {}).get("retry", 0) or 0)
+                    max_retry = int((pending or {}).get("max_retry", 0) or 0)
+                    retry_text = f" retry={retry}/{max_retry}" if max_retry or retry else ""
+                    age_text = f" {age}s" if age else ""
+                    samples.append(f"{command}{age_text}{retry_text}".strip())
+                pending_rows.append(f"- {display_name}: {len(pending_tasks)} 个｜{'；'.join(samples)}")
+
+            for key, label in RUNTIME_HEALTH_ERROR_KEYS:
+                value = str(state.get(key) or "").strip()
+                if value:
+                    error_rows.append(f"- {display_name}: {label}｜{_short_analysis_text(value, 90)}")
+
+            for key, label in RUNTIME_HEALTH_PHASE_KEYS:
+                value = state.get(key)
+                if key.endswith("_reply_to_msg_id"):
+                    try:
+                        msg_id = int(value or 0)
+                    except (TypeError, ValueError):
+                        msg_id = 0
+                    if msg_id > 0:
+                        phase_rows.append(f"- {display_name}: {label} msg={msg_id}")
+                    continue
+                value_text = str(value or "").strip()
+                if value_text and value_text not in {"idle", "normal"}:
+                    phase_rows.append(f"- {display_name}: {label}={value_text}")
+
+    queue_items = get_game_send_queue_snapshot()
+    low_total, low_kind_count = get_low_priority_audit_pending_counts()
+    inbox = get_passive_inbox_snapshot()
+
+    lines = [
+        "运行健康摘要",
+        "常驻检测: 脚本内状态/消息盒子常驻采样；外部 safety watchdog 负责风暴与进程熔断。",
+        "只读: 不触发游戏命令，不读取天机阁 API。",
+        "",
+        f"全局状态: {'启用' if get_global_enabled() else '暂停'}",
+        f"身份: {enabled_count}/{len(identity_ids)} 启用",
+        f"游戏 pending: {pending_total}",
+        f"游戏发送队列: {len(queue_items)}",
+        f"低优先级日志待汇总: {low_total} 条 / {low_kind_count} 类",
+        f"消息盒子: total={inbox.get('total', 0)} changed={inbox.get('changed', 0)} skipped={inbox.get('skipped', 0)}",
+        f"命中模块: {_format_runtime_counter_map(inbox.get('modules') or {})}",
+        f"跳过原因: {_format_runtime_counter_map(inbox.get('skip_reasons') or {})}",
+    ]
+
+    if pending_rows:
+        lines.extend(["", "pending 样本:"])
+        lines.extend(pending_rows[:10])
+
+    if queue_items:
+        lines.extend(["", "发送队列前 8:"])
+        for item in queue_items[:8]:
+            ready_in = int(item.get("ready_in_sec") or 0)
+            lines.append(
+                f"- {item.get('identity_name') or item.get('identity_id')}: "
+                f"{item.get('cmd') or '-'} / {item.get('priority') or '-'} / {item.get('status') or '-'} / {ready_in}s"
+            )
+
+    if phase_rows:
+        lines.extend(["", "非空阶段:"])
+        lines.extend(phase_rows[:12])
+
+    if error_rows:
+        lines.extend(["", "模块 last_error:"])
+        lines.extend(error_rows[:12])
+    else:
+        lines.extend(["", "模块 last_error: 无"])
+
+    recent = inbox.get("recent") or []
+    if recent:
+        lines.extend(["", "消息盒子最近证据:"])
+        for item in recent[-5:]:
+            module_name = item.get("module") or item.get("reason") or "unknown"
+            identity_text = item.get("identity_id") or "-"
+            msg_text = item.get("source_message_id") or item.get("msg_id") or "-"
+            route_text = item.get("route_source") or "-"
+            summary = item.get("summary") or item.get("matched_text") or ""
+            lines.append(f"- {module_name}｜id={identity_text}｜msg={msg_text}｜{route_text}｜{_short_analysis_text(summary, 72)}")
+
+    return "\n".join(lines)
+
+
 def _format_log_group_help_html(send_as_id=None):
     suffix = ""
     if send_as_id is not None:
@@ -1841,6 +1980,7 @@ def _format_log_group_help_html(send_as_id=None):
     ]
     analysis_commands = [
         ".上线预检",
+        ".运行健康",
         ".玩法总览",
         ".发送健康码",
         ".日志群分析",
@@ -2133,6 +2273,11 @@ def _restore_taiyi_runtime(now):
     if phase == "yindao_pending":
         yindao_msg_id = int(state.get("taiyi_yindao_msg_id", 0) or 0)
         entered_at = float(state.get("taiyi_phase_entered_at", 0) or 0)
+        resend_count = int(state.get("taiyi_yindao_resend_count", 0) or 0)
+        if resend_count > 0:
+            if entered_at <= 0:
+                state["taiyi_phase_entered_at"] = max(0, now - 120)
+            return
         if yindao_msg_id > 0 and _has_yindao_send_evidence(
             get_current_identity_id(),
             yindao_msg_id,
@@ -2149,6 +2294,7 @@ def _restore_taiyi_runtime(now):
         state["taiyi_yindao_msg_id"] = 0
         state["taiyi_node_search_msg_id"] = 0
         state["taiyi_node_define_msg_id"] = 0
+        state["taiyi_yindao_resend_count"] = 1
         state["next_taiyi_cycle_time"] = now + random.uniform(
             RECOVERY_SPREAD_MIN_SEC,
             TAIYI_PRESEND_RECOVERY_MAX_SEC,
@@ -3762,6 +3908,15 @@ async def handle_log_group_command(event):
             "发送健康码",
             _format_analysis_report_text("health"),
             error_prefix="❌ 发送健康码发送失败",
+        )
+        return True
+
+    if RE_CMD_RUNTIME_HEALTH.match(text):
+        await _reply_log_group_card(
+            event,
+            "运行健康摘要",
+            _format_runtime_health_text(),
+            error_prefix="❌ 运行健康摘要发送失败",
         )
         return True
 

@@ -3,6 +3,7 @@ import asyncio
 import os
 import sys
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -44,6 +45,7 @@ from model.config import (
     RE_CMD_ANALYSIS_SUMMARY,
     RE_CMD_ANALYSIS_UNKNOWN,
     RE_CMD_ANALYSIS_WEBMINI,
+    RE_CMD_RUNTIME_HEALTH,
     RE_CMD_AUDIT_FLUSH_SUMMARY,
     RE_CMD_AUDIT_PUSH_STATUS,
     RE_CMD_ENABLE_PATTERNS,
@@ -62,6 +64,8 @@ class LogGroupDisplayTests(unittest.TestCase):
     def test_analysis_regex_accepts_log_group_aliases(self):
         self.assertIsNotNone(RE_CMD_ANALYSIS_SUMMARY.match(".玩法总览"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_HEALTH.match(".发送健康码"))
+        self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH.match(".运行健康"))
+        self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH.match(".健康摘要"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_LOG_GROUP.match(".日志群分析"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_WEBMINI.match(".miniweb分析"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_UNKNOWN.match(".未知指令"))
@@ -168,6 +172,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".储物袋汇总", html_text)
         self.assertIn(".玩法总览", html_text)
         self.assertIn(".上线预检", html_text)
+        self.assertIn(".运行健康", html_text)
         self.assertIn(".发送健康码", html_text)
         self.assertIn("日志推送", html_text)
         self.assertIn(".日志推送状态", html_text)
@@ -203,6 +208,58 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("去重位已持久化", text)
         self.assertIn("副本旧群调度只回迁移提示", text)
         self.assertIn("扫描行数: 100", text)
+
+    def test_runtime_health_formatter_is_read_only_and_surfaces_live_state(self):
+        @contextmanager
+        def fake_use_identity(_identity_id):
+            yield
+
+        fake_state = {
+            "pending_tasks": {
+                9: {"cmd": ".小世界", "sent_at": 1000, "retry": 1, "max_retry": 1},
+            },
+            "wild_training_last_error": "回复超时，准备补发一次",
+            "small_world_phase": "calibration_wait",
+        }
+        inbox = {
+            "total": 3,
+            "changed": 2,
+            "skipped": 1,
+            "modules": {"small_world": 2},
+            "skip_reasons": {"no_identity": 1},
+            "recent": [
+                {
+                    "module": "small_world",
+                    "identity_id": 8659,
+                    "source_message_id": 99,
+                    "route_source": "message:passive_match",
+                    "summary": "小世界面板",
+                }
+            ],
+        }
+
+        with patch.object(control, "time") as time_mock, \
+                patch.object(control, "get_identity_ids", return_value=[8659]), \
+                patch.object(control, "get_identity_enabled", return_value=True), \
+                patch.object(control, "get_identity_display_name", return_value="wa2000"), \
+                patch.object(control, "use_identity", fake_use_identity), \
+                patch.object(control, "state", fake_state), \
+                patch.object(control, "get_global_enabled", return_value=True), \
+                patch.object(control, "get_game_send_queue_snapshot", return_value=[{"identity_name": "wa2000", "cmd": ".引道 水", "priority": "chain", "status": "waiting", "ready_in_sec": 2}]), \
+                patch.object(control, "get_low_priority_audit_pending_counts", return_value=(4, 2)), \
+                patch.object(control, "get_passive_inbox_snapshot", return_value=inbox):
+            time_mock.time.return_value = 1060
+            text = control._format_runtime_health_text()
+
+        self.assertIn("运行健康摘要", text)
+        self.assertIn("只读", text)
+        self.assertIn("不触发游戏命令", text)
+        self.assertIn("游戏 pending: 1", text)
+        self.assertIn(".小世界 60s retry=1/1", text)
+        self.assertIn("小世界=calibration_wait", text)
+        self.assertIn("野外历练", text)
+        self.assertIn("消息盒子: total=3 changed=2 skipped=1", text)
+        self.assertIn("msg=99", text)
 
     def test_auto_dungeon_status_text_is_not_unknown(self):
         text = control.get_single_module_status_text("自动副本")

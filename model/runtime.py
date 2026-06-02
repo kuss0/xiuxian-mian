@@ -96,6 +96,7 @@ from .config import (
     RETRY_MIN_SEC,
     SCRIPT_COMMANDS,
     TZ_LOCAL,
+    STATE_DIR,
     UI_AUTH_IDLE_TIMEOUT_SEC,
     UI_AUTH_SESSION_TIMEOUT_SEC,
     UI_PUBLIC_BASE_URL,
@@ -646,6 +647,10 @@ def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, 
     except Exception:
         traceback.print_exc()
 _ui_sessions = {}
+_UI_AUTH_STATE_FILE = os.path.join(STATE_DIR, "ui_auth_state.json")
+_UI_AUTH_STATE_LOADED = False
+_UI_AUTH_STATE_LAST_SAVED_AT = 0.0
+_UI_AUTH_STATE_SAVE_INTERVAL_SEC = 60.0
 IDENTITY_INFO_REFRESH_ERROR_TEXT = "获取失败，请手动重新获取"
 
 
@@ -686,6 +691,13 @@ def _new_runtime_token(store):
         token = secrets.token_urlsafe(32)
         if token not in store:
             return token
+
+
+def _coerce_ui_auth_float(value, default=0.0):
+    try:
+        return float(value or default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def is_script_command_text(text):
@@ -1538,18 +1550,139 @@ def _coerce_ui_admin_sender_id(sender_id):
     return value if value in ADMIN_IDS else 0
 
 
+def _load_ui_auth_state(now=None):
+    global _UI_AUTH_STATE_LOADED
+    if _UI_AUTH_STATE_LOADED:
+        return
+    if now is None:
+        now = time.time()
+    _UI_AUTH_STATE_LOADED = True
+    try:
+        with open(_UI_AUTH_STATE_FILE, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return
+    if not isinstance(payload, dict):
+        return
+
+    login_tokens = payload.get("login_tokens")
+    if isinstance(login_tokens, dict):
+        for token, item in login_tokens.items():
+            if not isinstance(item, dict):
+                continue
+            sender_id = _coerce_ui_admin_sender_id(item.get("sender_id"))
+            created_at = _coerce_ui_auth_float(item.get("created_at"), now)
+            last_seen_at = _coerce_ui_auth_float(item.get("last_seen_at"), created_at)
+            if sender_id <= 0:
+                continue
+            if now - last_seen_at > UI_AUTH_IDLE_TIMEOUT_SEC:
+                continue
+            token_text = str(token or "").strip()
+            if not token_text:
+                continue
+            _ui_login_tokens[token_text] = {
+                "sender_id": sender_id,
+                "created_at": created_at,
+                "last_seen_at": last_seen_at,
+            }
+
+    sessions = payload.get("sessions")
+    if isinstance(sessions, dict):
+        for token, item in sessions.items():
+            if not isinstance(item, dict):
+                continue
+            sender_id = _coerce_ui_admin_sender_id(item.get("sender_id"))
+            created_at = _coerce_ui_auth_float(item.get("created_at"), now)
+            last_seen_at = _coerce_ui_auth_float(item.get("last_seen_at"), created_at)
+            if sender_id <= 0:
+                continue
+            if now - last_seen_at > UI_AUTH_SESSION_TIMEOUT_SEC:
+                continue
+            token_text = str(token or "").strip()
+            if not token_text:
+                continue
+            seen_keys = []
+            for alert_key in item.get("seen_startup_alert_keys") or []:
+                text = str(alert_key or "").strip()
+                if text and text not in seen_keys:
+                    seen_keys.append(text)
+            _ui_sessions[token_text] = {
+                "sender_id": sender_id,
+                "created_at": created_at,
+                "last_seen_at": last_seen_at,
+                "seen_startup_alert_keys": seen_keys,
+            }
+
+
+def _save_ui_auth_state(now=None, *, force=False):
+    global _UI_AUTH_STATE_LAST_SAVED_AT
+    if now is None:
+        now = time.time()
+    if not force and now - float(_UI_AUTH_STATE_LAST_SAVED_AT or 0) < _UI_AUTH_STATE_SAVE_INTERVAL_SEC:
+        return
+    _UI_AUTH_STATE_LAST_SAVED_AT = float(now)
+    tmp_path = ""
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        payload = {
+            "login_tokens": {
+                token: {
+                    "sender_id": int(item.get("sender_id") or 0),
+                    "created_at": float(item.get("created_at") or 0),
+                    "last_seen_at": float(item.get("last_seen_at") or 0),
+                }
+                for token, item in _ui_login_tokens.items()
+                if int(item.get("sender_id") or 0) > 0
+            },
+            "sessions": {
+                token: {
+                    "sender_id": int(item.get("sender_id") or 0),
+                    "created_at": float(item.get("created_at") or 0),
+                    "last_seen_at": float(item.get("last_seen_at") or 0),
+                    "seen_startup_alert_keys": [
+                        str(alert_key or "").strip()
+                        for alert_key in (item.get("seen_startup_alert_keys") or [])
+                        if str(alert_key or "").strip()
+                    ],
+                }
+                for token, item in _ui_sessions.items()
+                if int(item.get("sender_id") or 0) > 0
+            },
+        }
+        tmp_path = f"{_UI_AUTH_STATE_FILE}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2, sort_keys=True)
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp_path, _UI_AUTH_STATE_FILE)
+        try:
+            os.chmod(_UI_AUTH_STATE_FILE, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except OSError:
+            pass
+
+
 def issue_ui_login_token(sender_id, now=None):
     admin_id = _coerce_ui_admin_sender_id(sender_id)
     if admin_id <= 0:
         raise ValueError("Unauthorized UI login token requester")
     if now is None:
         now = time.time()
+    _load_ui_auth_state(now)
     token = _new_runtime_token(_ui_login_tokens)
     _ui_login_tokens[token] = {
         "sender_id": admin_id,
         "created_at": now,
         "last_seen_at": now,
     }
+    _save_ui_auth_state(now, force=True)
     return token
 
 
@@ -1560,16 +1693,19 @@ def build_ui_login_url(token):
 def redeem_ui_login_token(token, now=None):
     if now is None:
         now = time.time()
+    _load_ui_auth_state(now)
     stored_token, payload = _secure_lookup(_ui_login_tokens, token)
     if not stored_token or not payload:
         return None
     if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_IDLE_TIMEOUT_SEC:
         _ui_login_tokens.pop(stored_token, None)
+        _save_ui_auth_state(now, force=True)
         return None
 
     sender_id = _coerce_ui_admin_sender_id(payload.get("sender_id"))
     if sender_id <= 0:
         _ui_login_tokens.pop(stored_token, None)
+        _save_ui_auth_state(now, force=True)
         return None
 
     _ui_login_tokens.pop(stored_token, None)
@@ -1580,20 +1716,24 @@ def redeem_ui_login_token(token, now=None):
         "last_seen_at": now,
         "seen_startup_alert_keys": [],
     }
+    _save_ui_auth_state(now, force=True)
     return session_token
 
 
 def validate_ui_session(session_token, now=None):
     if now is None:
         now = time.time()
+    _load_ui_auth_state(now)
     stored_token, payload = _secure_lookup(_ui_sessions, session_token)
     if not stored_token or not payload:
         return None
     if now - float(payload.get("last_seen_at", 0) or 0) > UI_AUTH_SESSION_TIMEOUT_SEC:
         _ui_sessions.pop(stored_token, None)
+        _save_ui_auth_state(now, force=True)
         return None
     if _coerce_ui_admin_sender_id(payload.get("sender_id")) <= 0:
         _ui_sessions.pop(stored_token, None)
+        _save_ui_auth_state(now, force=True)
         return None
     return {
         "session_token": stored_token,
@@ -1609,12 +1749,14 @@ def touch_ui_session(session_token, now=None):
         return None
     _ui_sessions[session["session_token"]]["last_seen_at"] = now
     session["last_seen_at"] = now
+    _save_ui_auth_state(now)
     return session
 
 
 def gc_ui_login_tokens(now=None):
     if now is None:
         now = time.time()
+    _load_ui_auth_state(now)
     expired = [
         token
         for token, payload in _ui_login_tokens.items()
@@ -1623,12 +1765,15 @@ def gc_ui_login_tokens(now=None):
     ]
     for token in expired:
         _ui_login_tokens.pop(token, None)
+    if expired:
+        _save_ui_auth_state(now, force=True)
     return len(expired)
 
 
 def gc_ui_sessions(now=None):
     if now is None:
         now = time.time()
+    _load_ui_auth_state(now)
     expired = [
         token
         for token, payload in _ui_sessions.items()
@@ -1637,12 +1782,23 @@ def gc_ui_sessions(now=None):
     ]
     for token in expired:
         _ui_sessions.pop(token, None)
+    if expired:
+        _save_ui_auth_state(now, force=True)
     return len(expired)
 
 
 def clear_ui_auth_state():
+    global _UI_AUTH_STATE_LOADED, _UI_AUTH_STATE_LAST_SAVED_AT
     _ui_login_tokens.clear()
     _ui_sessions.clear()
+    _UI_AUTH_STATE_LOADED = True
+    _UI_AUTH_STATE_LAST_SAVED_AT = 0.0
+    try:
+        os.remove(_UI_AUTH_STATE_FILE)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
 
 
 def consume_unseen_startup_alerts(session_token, alerts):
@@ -1663,6 +1819,7 @@ def consume_unseen_startup_alerts(session_token, alerts):
         unseen_alerts.append(alert)
         seen_keys.add(alert_key)
     stored_session["seen_startup_alert_keys"] = sorted(seen_keys)
+    _save_ui_auth_state(force=True)
     return unseen_alerts
 
 

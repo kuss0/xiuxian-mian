@@ -38,6 +38,8 @@ SMALL_WORLD_INITIAL_CHECK_MIN_SEC = 10 * 60
 SMALL_WORLD_INITIAL_CHECK_MAX_SEC = 30 * 60
 SMALL_WORLD_TOOL_STEP_MIN_SEC = 120
 SMALL_WORLD_TOOL_STEP_MAX_SEC = 240
+SMALL_WORLD_THEFT_CALIBRATION_MIN_SEC = 30
+SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC = 90
 SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
 SMALL_WORLD_PREACH_FAITH_THRESHOLD = 92
 
@@ -130,12 +132,14 @@ def _schedule_short_retry(now):
     return _schedule_after(now, 10 * 60, 30 * 60)
 
 
-def _schedule_theft_backoff(now, loss_amount):
+def _schedule_theft_calibration(now, loss_amount):
     _clear_chain_pending()
     stock = max(0, int(state.get("small_world_incense_stock", 0) or 0) - max(0, int(loss_amount or 0)))
     state["small_world_incense_stock"] = stock
-    due_at = _schedule_short_retry(now)
-    state["small_world_last_error"] = f"库存香火失窃 {int(loss_amount or 0)} 点，暂停链路后复查"
+    _set_phase("calibration_wait")
+    state["small_world_refresh_count"] = 0
+    due_at = _schedule_after(now, SMALL_WORLD_THEFT_CALIBRATION_MIN_SEC, SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC)
+    state["small_world_last_error"] = f"库存香火失窃 {int(loss_amount or 0)} 点，等待面板校准"
     return due_at
 
 
@@ -577,10 +581,10 @@ async def handle_small_world_disaster_broadcast(text, now, event):
     incense_loss = RE_SMALL_WORLD_INCENSE_LOSS.search(raw_text)
     if incense_loss:
         loss_amount = int(incense_loss.group(1))
-        due_at = _schedule_theft_backoff(now, loss_amount)
+        due_at = _schedule_theft_calibration(now, loss_amount)
         save_state()
         await send_audit_log(
-            f"⚠️ 小世界库存香火失窃 {loss_amount} 点，已暂停当前链路，{fmt_time_after(max(0, due_at - now))} 后复查。",
+            f"⚠️ 小世界库存香火失窃 {loss_amount} 点，已记录，{fmt_time_after(max(0, due_at - now))} 后校准面板。",
             scope="identity",
             limit=240,
         )
@@ -848,11 +852,15 @@ async def _run_small_world_scheduler(now):
         await _send_query(now, "淬炼后复查")
         return
 
-    if not _chain_enabled():
-        return
-
     next_time = float(state.get("next_small_world_time", 0) or 0)
     if next_time > 0 and now < next_time:
+        return
+
+    if phase == "calibration_wait":
+        await _send_query(now, "失窃后校准")
+        return
+
+    if not _chain_enabled():
         return
 
     if phase == "refresh_wait":

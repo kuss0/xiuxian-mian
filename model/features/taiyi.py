@@ -6,7 +6,7 @@
 3. 三个 reply handler 都做 phase guard，迟到 reply 不推进流程
 4. 太一引道/搜寻节点按固定 12h CD 运行，不因回复/定星耗时漂移
 5. 失败熔断：24h 内 5 次失败自动停子开关
-6. bot 吞回兜底：已发出的阶段等不到 reply 时按正常 12h 周期收口，不短补发
+6. bot 吞回兜底：引道等不到 reply 时本轮最多短补发一次，仍无回复才按正常 12h 周期收口
 7. 链路指令不走通用 retry；每一阶段只接受当前 msg_id 的回复
 8. bot 全局宕机：复用现有 _bot_silence 机制（外部）
 9. 仅落云宗 -> 灵树 那种"按宗门匹配"的 UI（state.py 的 get_available_module_names 处理）
@@ -69,10 +69,13 @@ RE_DEFINE_SUCCESS = re.compile(r"【定星成功】")
 # 引道成功确认后，10-25s 随机延迟联动发 .搜寻节点（链式指令间隔）
 TAIYI_LINKED_SEARCH_DELAY_MIN_SEC = 10
 TAIYI_LINKED_SEARCH_DELAY_MAX_SEC = 25
-# yindao_pending / search_pending / define_pending 等 reply：60s 没回后收口，不补发
+# yindao_pending / search_pending / define_pending 等 reply：60s 没回后兜底；引道本轮最多短补发一次
 TAIYI_REPLY_LOST_TIMEOUT_SEC = 60
 TAIYI_PRESEND_RETRY_MIN_SEC = 60
 TAIYI_PRESEND_RETRY_MAX_SEC = 300
+TAIYI_YINDAO_RESEND_MIN_SEC = 2
+TAIYI_YINDAO_RESEND_MAX_SEC = 3
+TAIYI_YINDAO_RESEND_MAX_PER_CYCLE = 1
 TAIYI_SEARCH_RESEND_MAX_PER_CYCLE = 1
 TAIYI_NODE_SEARCH_RESOURCE_KEY = "taiyi_node_search"
 TAIYI_SEND_EVIDENCE_LOOKBACK_SEC = 120
@@ -371,6 +374,28 @@ def _search_resend_exhausted():
     return _get_search_resend_count() >= TAIYI_SEARCH_RESEND_MAX_PER_CYCLE
 
 
+def _get_yindao_resend_count():
+    try:
+        return int(state.get("taiyi_yindao_resend_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _reset_yindao_resend_count():
+    state["taiyi_yindao_resend_count"] = 0
+
+
+def _mark_yindao_resend(reason):
+    count = _get_yindao_resend_count() + 1
+    state["taiyi_yindao_resend_count"] = count
+    state["taiyi_last_error"] = f"引道补发 {count}/{TAIYI_YINDAO_RESEND_MAX_PER_CYCLE}: {reason}"
+    return count
+
+
+def _yindao_resend_exhausted():
+    return _get_yindao_resend_count() >= TAIYI_YINDAO_RESEND_MAX_PER_CYCLE
+
+
 async def _defer_taiyi_search_after_resend_limit(now, elapsed, reason):
     _set_phase("idle", now)
     state["next_taiyi_cycle_time"] = now + TAIYI_RESOURCE_RETRY_SEC
@@ -388,6 +413,7 @@ async def _fallback_taiyi_pending_to_normal_cycle(now, elapsed, label, reason, *
     _set_phase("idle", now)
     state["next_taiyi_cycle_time"] = _next_fixed_cycle(base_time)
     state["taiyi_pending_node_name"] = ""
+    _reset_yindao_resend_count()
     _clear_chain_msg_ids()
     if record_failure:
         _record_failure(now, f"{label} reply {elapsed}s 未回")
@@ -409,27 +435,40 @@ async def _fallback_taiyi_pending_to_normal_cycle(now, elapsed, label, reason, *
         await _check_failure_breaker(now)
 
 
-async def _retry_taiyi_yindao_presend_boundary(now, elapsed, reason, *, msg_id=0):
+async def _retry_taiyi_yindao_presend_boundary(
+    now,
+    elapsed,
+    reason,
+    *,
+    msg_id=0,
+    delay_min_sec=TAIYI_PRESEND_RETRY_MIN_SEC,
+    delay_max_sec=TAIYI_PRESEND_RETRY_MAX_SEC,
+    action_label="重试",
+    decision="presend_boundary_short_retry",
+):
     try:
         msg_id = int(msg_id or 0)
     except (TypeError, ValueError):
         msg_id = 0
+    delay_sec = random.uniform(delay_min_sec, delay_max_sec)
+    _mark_yindao_resend(reason)
     _set_phase("idle", now)
-    state["next_taiyi_cycle_time"] = now + random.uniform(TAIYI_PRESEND_RETRY_MIN_SEC, TAIYI_PRESEND_RETRY_MAX_SEC)
+    state["next_taiyi_cycle_time"] = now + delay_sec
     state["taiyi_pending_node_name"] = ""
     _clear_chain_msg_ids()
-    state["taiyi_last_error"] = f"引道发送边界不确定：{reason}，已安排短延迟重试"
+    state["taiyi_last_error"] = f"引道{action_label}：{reason}，已安排短延迟{action_label}"
     _record_taiyi_event(
-        "引道发送边界重试",
+        f"引道{action_label}",
+        kind="skipped",
         family="taiyi_yindao",
         phase="idle",
         msg_id=msg_id,
         detail=reason,
-        decision="presend_boundary_short_retry",
+        decision=decision,
     )
     save_state()
     await send_audit_log(
-        f"🧯 太一引道 {reason}（{elapsed}s，msg_id={msg_id}），已安排短延迟重试→{fmt_abs_ts(state['next_taiyi_cycle_time'])}",
+        f"🧯 太一引道 {reason}（{elapsed}s，msg_id={msg_id}），已安排 {delay_sec:.1f}s 后{action_label}→{fmt_abs_ts(state['next_taiyi_cycle_time'])}",
         scope="identity",
     )
 
@@ -470,6 +509,7 @@ async def _pause_taiyi_retry_if_bot_silent(stale_phase, entered_at, now, elapsed
 
 def _finish_yindao_without_search(now):
     _set_phase("idle", now)
+    _reset_yindao_resend_count()
     _clear_chain_msg_ids()
     save_state()
 
@@ -477,6 +517,7 @@ def _finish_yindao_without_search(now):
 async def _apply_yindao_success(now, *, sent_at=None, late=False, matched_text="", reply_msg_id=0):
     _reset_failures()
     _reset_search_resend_count()
+    _reset_yindao_resend_count()
     base_time = sent_at if sent_at is not None else now
     state["next_taiyi_cycle_time"] = _next_fixed_cycle(base_time)
     if late:
@@ -496,6 +537,7 @@ async def _apply_yindao_success(now, *, sent_at=None, late=False, matched_text="
         return
     if state.get("taiyi_node_search_enabled", False):
         _set_phase("search_scheduled", now)
+        _reset_yindao_resend_count()
         state["taiyi_yindao_msg_id"] = 0
         _record_taiyi_event(
             "引道成功已安排搜寻",
@@ -643,6 +685,9 @@ def get_taiyi_status_text():
     fail_count = len(state.get("taiyi_failure_history", []))
     if fail_count > 0:
         lines.append(f"- 24h 失败计数: {fail_count}/{TAIYI_FAILURE_LIMIT}")
+    yindao_resend_count = _get_yindao_resend_count()
+    if yindao_resend_count > 0:
+        lines.append(f"- 本轮引道补发: {yindao_resend_count}/{TAIYI_YINDAO_RESEND_MAX_PER_CYCLE}")
     resend_count = _get_search_resend_count()
     if resend_count > 0:
         lines.append(f"- 本轮搜寻补发: {resend_count}/{TAIYI_SEARCH_RESEND_MAX_PER_CYCLE}")
@@ -740,6 +785,7 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
     # CD：大道感悟需循序渐进
     if RE_YINDAO_CD.search(text):
         _reset_search_resend_count()
+        _reset_yindao_resend_count()
         wait_sec = parse_wait_time(text)
         if has_wait_time(text) and wait_sec > 0:
             state["next_taiyi_cycle_time"] = now + wait_sec + CD_BUFFER_SEC
@@ -763,6 +809,7 @@ async def handle_taiyi_yindao_reply(text, now, reply_to, matched_family=None):
 
     # 非弟子
     if "你并非太一门弟子" in text:
+        _reset_yindao_resend_count()
         _freeze(now, "非太一门弟子")
         _clear_chain_msg_ids()
         _record_taiyi_event(
@@ -1054,7 +1101,7 @@ async def run_taiyi_scheduler(now):
         await send_audit_log("🔓 太一冻结期已过，恢复尝试。")
         phase = "idle"
 
-    # phase 超时兜底：reply 60s 没回时不短补发，按正常周期收口。
+    # phase 超时兜底：引道 reply 60s 没回时本轮最多短补发一次；仍无回复再按正常周期收口。
     if phase != "idle":
         entered_at = state.get("taiyi_phase_entered_at", 0)
         timeout_sec = TAIYI_REPLY_LOST_TIMEOUT_SEC
@@ -1074,20 +1121,42 @@ async def run_taiyi_scheduler(now):
                 entered_at,
                 now,
             )
+            if _yindao_resend_exhausted():
+                _record_taiyi_event(
+                    "引道补发上限收口",
+                    kind="skipped",
+                    reason="taiyi_yindao_resend_exhausted",
+                    family="taiyi_yindao",
+                    msg_id=yindao_msg_id,
+                    phase=stale_phase,
+                    detail=f"elapsed={elapsed}s｜resend_count={_get_yindao_resend_count()}",
+                    decision="timeout_fallback_after_yindao_resend",
+                )
+                await _fallback_taiyi_pending_to_normal_cycle(now, elapsed, "引道", "reply 未回")
+                return
             if yindao_msg_id <= 0 or not has_send_evidence:
                 await _retry_taiyi_yindao_presend_boundary(now, elapsed, "reply 未回且本地无真实出站记录", msg_id=yindao_msg_id)
                 return
             _record_taiyi_event(
-                "引道出站证据确认",
+                "引道出站证据确认后补发",
                 kind="skipped",
                 reason="taiyi_send_evidence_present",
                 family="taiyi_yindao",
                 msg_id=yindao_msg_id,
                 phase=stale_phase,
                 detail=f"elapsed={elapsed}s｜event_type=sent",
-                decision="send_evidence_present_normal_timeout",
+                decision="send_evidence_present_fast_resend",
             )
-            await _fallback_taiyi_pending_to_normal_cycle(now, elapsed, "引道", "reply 未回")
+            await _retry_taiyi_yindao_presend_boundary(
+                now,
+                elapsed,
+                "reply 未回且已确认真实出站",
+                msg_id=yindao_msg_id,
+                delay_min_sec=TAIYI_YINDAO_RESEND_MIN_SEC,
+                delay_max_sec=TAIYI_YINDAO_RESEND_MAX_SEC,
+                action_label="补发",
+                decision="send_evidence_present_fast_resend",
+            )
             return
 
         elif stale_phase == "search_scheduled":

@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -33,8 +34,26 @@ from model import runtime
 
 
 class UiAuthTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._auth_file_patch = patch.object(
+            runtime,
+            "_UI_AUTH_STATE_FILE",
+            str(Path(self._tmpdir.name) / "ui_auth_state.json"),
+        )
+        self._auth_file_patch.start()
+        runtime.clear_ui_auth_state()
+
     def tearDown(self):
         runtime.clear_ui_auth_state()
+        self._auth_file_patch.stop()
+        self._tmpdir.cleanup()
+
+    def _simulate_worker_restart(self):
+        runtime._ui_login_tokens.clear()
+        runtime._ui_sessions.clear()
+        runtime._UI_AUTH_STATE_LOADED = False
+        runtime._UI_AUTH_STATE_LAST_SAVED_AT = 0.0
 
     def test_issue_ui_login_token_rejects_non_admin(self):
         with patch.object(runtime, "ADMIN_IDS", frozenset({123})):
@@ -63,6 +82,24 @@ class UiAuthTests(unittest.TestCase):
 
         with patch.object(runtime, "ADMIN_IDS", frozenset({999})):
             self.assertIsNone(runtime.touch_ui_session(session_token, now=1002))
+
+    def test_login_token_survives_worker_restart_before_exchange(self):
+        with patch.object(runtime, "ADMIN_IDS", frozenset({123})):
+            token = runtime.issue_ui_login_token(123, now=1000)
+            self._simulate_worker_restart()
+            session_token = runtime.redeem_ui_login_token(token, now=1001)
+
+        self.assertIsNotNone(session_token)
+
+    def test_ui_session_survives_worker_restart(self):
+        with patch.object(runtime, "ADMIN_IDS", frozenset({123})):
+            token = runtime.issue_ui_login_token(123, now=1000)
+            session_token = runtime.redeem_ui_login_token(token, now=1001)
+            self._simulate_worker_restart()
+            session = runtime.validate_ui_session(session_token, now=1002)
+
+        self.assertIsNotNone(session)
+        self.assertEqual(123, session["sender_id"])
 
 
 if __name__ == "__main__":

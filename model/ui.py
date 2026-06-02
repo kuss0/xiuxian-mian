@@ -146,6 +146,7 @@ from .state import (
     get_storage_bag_api_config,
     get_storage_bag_item_rules,
     get_storage_bag_records,
+    get_tianjige_dao_path_records,
     get_tianti_rank_choice,
     get_wild_training_strategy,
     set_account,
@@ -177,9 +178,11 @@ from .state import (
     set_storage_bag_api_config,
     set_storage_bag_item_rules,
     set_storage_bag_records,
+    set_tianjige_dao_path_records,
     set_stargazer_star_choice,
     set_tianti_rank_choice,
     state,
+    update_send_as_profile,
     use_identity,
 )
 from .timing import fmt_abs_ts
@@ -216,12 +219,18 @@ UI_STATIC_CONTENT_TYPES = {
 _storage_bag_sync_state = {"running": False, "pending_ids": [], "completed_ids": []}
 _storage_bag_api_state = {
     "running": False,
+    "running_kind": "",
     "keepalive_running": False,
     "last_ok": False,
     "last_message": "",
     "last_updated_at": 0,
     "updated_count": 0,
     "skipped_count": 0,
+    "dao_path_last_ok": False,
+    "dao_path_last_message": "",
+    "dao_path_last_updated_at": 0,
+    "dao_path_updated_count": 0,
+    "dao_path_skipped_count": 0,
 }
 _STORAGE_BAG_API_KEEPALIVE_INTERVAL_SEC = 30 * 60
 _STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC = 10 * 60
@@ -404,6 +413,14 @@ def _is_storage_bag_api_busy():
     return bool(_storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"))
 
 
+def _is_tianjige_manual_api_busy():
+    return bool(_storage_bag_api_state.get("running") or _storage_bag_api_state.get("keepalive_running"))
+
+
+def _storage_bag_api_set_running_kind(kind=""):
+    _storage_bag_api_state["running_kind"] = str(kind or "")
+
+
 def _is_storage_bag_transfer_busy():
     snapshot = get_storage_bag_transfer_snapshot() or {}
     batch = snapshot.get("batch") if isinstance(snapshot.get("batch"), dict) else {}
@@ -435,6 +452,12 @@ def get_storage_bag_api_snapshot():
         "last_updated_at": fmt_abs_ts(_storage_bag_api_state.get("last_updated_at") or 0),
         "updated_count": int(_storage_bag_api_state.get("updated_count") or 0),
         "skipped_count": int(_storage_bag_api_state.get("skipped_count") or 0),
+        "dao_path_running": _is_tianjige_manual_api_busy(),
+        "dao_path_last_ok": bool(_storage_bag_api_state.get("dao_path_last_ok")),
+        "dao_path_last_message": str(_storage_bag_api_state.get("dao_path_last_message") or ""),
+        "dao_path_last_updated_at": fmt_abs_ts(_storage_bag_api_state.get("dao_path_last_updated_at") or 0),
+        "dao_path_updated_count": int(_storage_bag_api_state.get("dao_path_updated_count") or 0),
+        "dao_path_skipped_count": int(_storage_bag_api_state.get("dao_path_skipped_count") or 0),
     }
 
 
@@ -728,6 +751,521 @@ def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_
     return {"updated_count": updated, "skipped_count": skipped, "updated_identity_ids": sorted(updated_identity_ids), "records": records}
 
 
+def _tianjige_string(value):
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    if isinstance(value, (int, float)):
+        return str(value)
+    text = str(value).strip()
+    if text.lower() in {"none", "null"}:
+        return ""
+    return text
+
+
+def _tianjige_number(value, default=0):
+    try:
+        if isinstance(value, str):
+            value = value.replace(",", "").strip()
+        return int(float(value or 0))
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _tianjige_float(value, default=0.0):
+    try:
+        if isinstance(value, str):
+            value = value.replace(",", "").strip()
+        return float(value or default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _tianjige_spirit_root_parts(text):
+    value = _tianjige_string(text)
+    if not value:
+        return "", ""
+    match = re.match(r"^(.*?)[（(]([^()（）]+)[)）]$", value)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return value, ""
+
+
+def _tianjige_clean_sect_name(value):
+    text = _tianjige_string(value)
+    return text.strip("【】[]")
+
+
+def _tianjige_parse_battle_power_value(value):
+    text = _tianjige_string(value)
+    if not text:
+        return 0
+    compact = text.replace(",", "").replace(" ", "")
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([万亿]?)", compact)
+    if match:
+        number = float(match.group(1))
+        unit = match.group(2)
+        if unit == "万":
+            number *= 10_000
+        elif unit == "亿":
+            number *= 100_000_000
+        return int(number)
+    return _tianjige_number(text)
+
+
+def _tianjige_compact_jsonable(value, *, max_items=8, max_depth=2):
+    if max_depth < 0:
+        return _tianjige_string(value)[:120]
+    if isinstance(value, dict):
+        out = {}
+        for key, item in list(value.items())[:max_items]:
+            out[str(key)] = _tianjige_compact_jsonable(item, max_items=max_items, max_depth=max_depth - 1)
+        return out
+    if isinstance(value, list):
+        return [_tianjige_compact_jsonable(item, max_items=max_items, max_depth=max_depth - 1) for item in value[:max_items]]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return _tianjige_string(value)
+
+
+def _tianjige_parse_json_maybe(value):
+    if isinstance(value, str):
+        text = value.strip()
+        if text and text[0] in "[{":
+            try:
+                return json.loads(text)
+            except ValueError:
+                return value
+    return value
+
+
+def _tianjige_extract_known_fields(row, names):
+    result = []
+    seen = set()
+    for key in names:
+        if key in seen or key not in row:
+            continue
+        seen.add(key)
+        value = _tianjige_parse_json_maybe(row.get(key))
+        if value in ("", None, [], {}):
+            continue
+        result.append({
+            "key": key,
+            "value": _tianjige_compact_jsonable(value),
+            "text": _tianjige_string(value) if not isinstance(value, (dict, list)) else json.dumps(_tianjige_compact_jsonable(value), ensure_ascii=False),
+        })
+    return result
+
+
+_DAO_PATH_CAVE_KEYS = (
+    "dongfu", "cave", "home", "residence", "mansion", "abode", "estate",
+    "lingqi_pool", "spirit_pool", "spiritual_pool", "qi_pool",
+    "lingmai_level", "spirit_vein_level", "spiritual_vein_level",
+    "jingshi_level", "quiet_room_level", "meditation_room_level",
+    "danfang_level", "alchemy_room_level", "qishi_level", "artifact_room_level",
+    "shouyuan_level", "lifespan_room_level",
+    "dazhen", "dazhen_level", "dazhen_mode", "dazhen_active", "formation_level", "formation_mode", "formation_active",
+)
+_DAO_PATH_STATUS_KEYS = (
+    "status", "combat_status", "active_buffs", "completed_tasks", "sect_leave_cooldown_until",
+    "weak_until", "cooldown_until", "busy_until", "last_action_at",
+)
+_TIANJIGE_STATUS_LABELS = {
+    "normal": "正常",
+    "idle": "空闲",
+    "busy": "忙碌",
+    "weak": "虚弱",
+    "dead": "死亡",
+    "combat": "战斗中",
+    "in_combat": "战斗中",
+    "retreat": "闭关中",
+}
+
+
+def _tianjige_state_label(*values):
+    parts = []
+    for value in values:
+        text = _tianjige_string(value)
+        if not text:
+            continue
+        for part in re.split(r"\s*/\s*|[，,、]+", text):
+            key = part.strip()
+            if not key:
+                continue
+            label = _TIANJIGE_STATUS_LABELS.get(key.lower(), key)
+            if label and label not in parts:
+                parts.append(label)
+    return " / ".join(parts)
+
+
+def _tianjige_pick_cave_value(cave, keys):
+    cave = cave if isinstance(cave, dict) else {}
+    for key in keys:
+        if key not in cave:
+            continue
+        value = cave.get(key)
+        if value in ("", None, [], {}):
+            continue
+        return key, value
+    return "", None
+
+
+def _tianjige_format_level_value(value):
+    text = _tianjige_string(value)
+    if not text:
+        return ""
+    try:
+        number = float(str(text).replace(",", ""))
+        if number.is_integer():
+            return str(int(number))
+    except (TypeError, ValueError):
+        pass
+    return text
+
+
+def _tianjige_format_amount_value(value):
+    text = _tianjige_string(value)
+    if not text:
+        return ""
+    try:
+        number = float(str(text).replace(",", ""))
+    except (TypeError, ValueError):
+        return text
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.2f}".rstrip("0").rstrip(".")
+
+
+def _tianjige_bool_label(value):
+    if isinstance(value, bool):
+        return "已开启" if value else "未开启"
+    text = _tianjige_string(value).strip().lower()
+    if text in {"1", "true", "yes", "on", "active", "enabled", "启用", "已启用", "已开启"}:
+        return "已开启"
+    if text in {"0", "false", "no", "off", "inactive", "disabled", "未启用", "关闭", "未开启"}:
+        return "未开启"
+    return _tianjige_string(value)
+
+
+def _tianjige_collection_count(value):
+    value = _tianjige_parse_json_maybe(value)
+    if isinstance(value, (list, tuple, set)):
+        return len(value)
+    if isinstance(value, dict):
+        return len(value)
+    return 0
+
+
+def _tianjige_cave_summary_text(cave):
+    cave = cave if isinstance(cave, dict) else {}
+    if not cave:
+        return "未读取"
+    used = set()
+    parts = []
+
+    def add_level(label, keys):
+        key, value = _tianjige_pick_cave_value(cave, keys)
+        if not key:
+            return
+        used.add(key)
+        level = _tianjige_format_level_value(value)
+        if level:
+            parts.append(f"{label} {level}级")
+
+    add_level("灵脉", ("lingmai_level", "spirit_vein_level", "spiritual_vein_level"))
+    add_level("静室", ("jingshi_level", "quiet_room_level", "meditation_room_level"))
+    add_level("丹房", ("danfang_level", "alchemy_room_level"))
+    add_level("器室", ("qishi_level", "artifact_room_level"))
+    add_level("兽园", ("shouyuan_level", "lifespan_room_level"))
+    dazhen_key, dazhen_level = _tianjige_pick_cave_value(cave, ("dazhen_level", "formation_level"))
+    active_key, dazhen_active = _tianjige_pick_cave_value(cave, ("dazhen_active", "formation_active"))
+    mode_key, dazhen_mode = _tianjige_pick_cave_value(cave, ("dazhen_mode", "formation_mode"))
+    if dazhen_key:
+        used.add(dazhen_key)
+        level = _tianjige_format_level_value(dazhen_level)
+        text = f"大阵 {level}级" if level else "大阵"
+        if active_key:
+            used.add(active_key)
+            active_label = _tianjige_bool_label(dazhen_active)
+            if active_label:
+                text += f"（{active_label}"
+                if mode_key:
+                    used.add(mode_key)
+                    mode_text = _tianjige_string(dazhen_mode)
+                    if mode_text:
+                        text += f"·{mode_text}"
+                text += "）"
+        elif mode_key:
+            used.add(mode_key)
+            mode_text = _tianjige_string(dazhen_mode)
+            if mode_text:
+                text += f"（{mode_text}）"
+        parts.append(text)
+    elif active_key:
+        used.add(active_key)
+        active_label = _tianjige_bool_label(dazhen_active)
+        parts.append(f"大阵：{active_label}" if active_label else "大阵")
+
+    lingqi_key, lingqi_pool = _tianjige_pick_cave_value(cave, ("lingqi_pool", "spirit_pool", "spiritual_pool", "qi_pool"))
+    if lingqi_key:
+        used.add(lingqi_key)
+        lingqi_text = _tianjige_format_amount_value(lingqi_pool)
+        if lingqi_text:
+            parts.append(f"灵气池 {lingqi_text}")
+
+    scenery_key, scenery_value = _tianjige_pick_cave_value(cave, ("scenery_slots", "unlocked_scenery"))
+    scenery_count = _tianjige_collection_count(scenery_value)
+    if scenery_key and scenery_count > 0:
+        used.add(scenery_key)
+        parts.append(f"景观 {scenery_count}个")
+
+    pavilion_key, pavilion_value = _tianjige_pick_cave_value(cave, ("pavilion_slots",))
+    pavilion_count = _tianjige_collection_count(pavilion_value)
+    if pavilion_key and pavilion_count > 0:
+        used.add(pavilion_key)
+        parts.append(f"亭台 {pavilion_count}项")
+
+    return "｜".join(parts) if parts else "未读取"
+
+
+def _tianjige_extract_cave_summary(row):
+    cave = {}
+    container_keys = ("dongfu", "cave", "home", "residence", "mansion", "abode", "estate")
+    for key in _DAO_PATH_CAVE_KEYS:
+        if key not in row:
+            continue
+        value = _tianjige_parse_json_maybe(row.get(key))
+        if value in ("", None, [], {}):
+            continue
+        if key in container_keys and isinstance(value, dict):
+            continue
+        cave[key] = _tianjige_compact_jsonable(value)
+    for container_key in container_keys:
+        value = _tianjige_parse_json_maybe(row.get(container_key))
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if item in ("", None, [], {}):
+                    continue
+                cave[str(key)] = _tianjige_compact_jsonable(item)
+    return cave
+
+
+def _tianjige_profile_updates_from_row(row):
+    row = row if isinstance(row, dict) else {}
+    updates = {}
+    username = _tianjige_string(
+        row.get("username")
+        or row.get("owner_username")
+        or row.get("telegram_username")
+    )
+    if username:
+        updates["username"] = username.lstrip("@")
+    role_label = _tianjige_string(row.get("role_name") or row.get("role") or row.get("name") or row.get("display_name"))
+    if role_label:
+        updates["label"] = role_label
+    dao_name = _tianjige_string(row.get("dao_name") or row.get("daohao"))
+    if dao_name:
+        updates["daohao"] = dao_name
+    realm = _tianjige_string(row.get("cultivation_level") or row.get("realm") or row.get("level"))
+    if realm:
+        updates["realm"] = realm
+    sect_name = _tianjige_clean_sect_name(row.get("sect_name") or row.get("sect"))
+    if sect_name:
+        updates["sect_name"] = sect_name
+    root_text = _tianjige_string(row.get("spirit_root") or row.get("spiritual_root") or row.get("spiritual_root_type"))
+    if root_text:
+        root_type, root_attrs = _tianjige_spirit_root_parts(root_text)
+        if root_type:
+            updates["spiritual_root_type"] = root_type
+            if root_attrs:
+                updates["spiritual_root_attrs"] = root_attrs
+    root_attrs_override = _tianjige_string(
+        row.get("spiritual_root_attrs")
+        or row.get("spirit_root_attrs")
+        or row.get("root_attrs")
+    )
+    if root_attrs_override:
+        updates["spiritual_root_attrs"] = root_attrs_override
+    battle_text = _tianjige_string(
+        row.get("battle_power_text")
+        or row.get("battle_power")
+        or row.get("combat_power_text")
+        or row.get("combat_power")
+        or row.get("power_text")
+    )
+    if battle_text:
+        updates["battle_power_text"] = battle_text
+    battle_value = row.get("battle_power_value")
+    if battle_value in (None, ""):
+        battle_value = row.get("battle_power") or row.get("combat_power") or row.get("power")
+    if battle_value not in (None, ""):
+        updates["battle_power_value"] = _tianjige_parse_battle_power_value(battle_value)
+    elif battle_text:
+        updates["battle_power_value"] = _tianjige_parse_battle_power_value(battle_text)
+    return updates
+
+
+def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
+    row = row if isinstance(row, dict) else {}
+    identity_id, owner_text = _storage_bag_api_extract_owner_fields(row)
+    lookup = _storage_bag_api_identity_lookup()
+    identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
+    if identity_id == 0 and int(fallback_identity_id or 0):
+        identity_id = int(fallback_identity_id or 0)
+    if not owner_text:
+        owner_text = fallback_owner_text
+    allowed_ids = {int(item or 0) for item in allowed_identity_ids or []} if allowed_identity_ids is not None else None
+    if identity_id == 0 or identity_id not in get_identity_ids():
+        return None
+    if allowed_ids is not None and identity_id not in allowed_ids:
+        return None
+    profile_updates = _tianjige_profile_updates_from_row(row)
+    if profile_updates:
+        profile_updates["sect_updated_at"] = time.time()
+        profile = update_send_as_profile(identity_id, **profile_updates)
+    else:
+        profile = get_send_as_profile(identity_id)
+    username = _tianjige_string(row.get("username") or profile.get("username"))
+    dao_name = _tianjige_string(row.get("dao_name") or row.get("daohao") or profile.get("daohao"))
+    cultivation_level = _tianjige_string(row.get("cultivation_level") or row.get("level") or profile.get("realm"))
+    sect_name = _tianjige_clean_sect_name(row.get("sect_name") or row.get("sect") or profile.get("sect_name"))
+    spirit_root = _tianjige_string(row.get("spirit_root") or row.get("spiritual_root") or profile.get("spiritual_root_type"))
+    now = time.time()
+    status_text = _tianjige_string(row.get("status"))
+    combat_status = _tianjige_string(row.get("combat_status"))
+    state_label = _tianjige_state_label(status_text, combat_status)
+    return {
+        "identity_id": int(identity_id),
+        "owner": owner_text or username or dao_name or profile.get("label") or str(identity_id),
+        "label": profile.get("label") or profile.get("username") or profile.get("daohao") or str(identity_id),
+        "username": username,
+        "dao_name": dao_name,
+        "telegram_id": _tianjige_number(row.get("telegram_id") or row.get("character_id") or identity_id),
+        "binding_kind": _tianjige_string(row.get("binding_kind")),
+        "binding_kind_label": _tianjige_string(row.get("binding_kind_label")),
+        "cultivation_level": cultivation_level,
+        "cultivation_points": _tianjige_number(row.get("cultivation_points") or row.get("points")),
+        "sect_id": _tianjige_number(row.get("sect_id"), default=0),
+        "sect_name": sect_name,
+        "spirit_root": spirit_root,
+        "status": status_text,
+        "combat_status": combat_status,
+        "state_label": state_label or "未记录",
+        "cave": _tianjige_extract_cave_summary(row),
+        "status_fields": _tianjige_extract_known_fields(row, _DAO_PATH_STATUS_KEYS),
+        "updated_at": float(now),
+        "updated_at_text": fmt_abs_ts(now),
+        "source": source,
+        "raw_keys": sorted(str(key) for key in row.keys()),
+    }
+
+
+def _tianjige_binding_summary(payload):
+    binding = payload.get("binding") if isinstance(payload, dict) else {}
+    binding = binding if isinstance(binding, dict) else {}
+    return {
+        "active_character_id": _tianjige_number(binding.get("active_character_id")),
+        "personal_id": _tianjige_number(binding.get("personal_id")),
+        "bound_character_ids": [_tianjige_number(item) for item in binding.get("bound_character_ids") or []],
+        "bound_personal_character_ids": [_tianjige_number(item) for item in binding.get("bound_personal_character_ids") or []],
+        "bound_channel_character_ids": [_tianjige_number(item) for item in binding.get("bound_channel_character_ids") or []],
+        "verified_channel_ids": [_tianjige_number(item) for item in binding.get("verified_channel_ids") or []],
+        "web_self_service_enabled": bool(binding.get("web_self_service_enabled")),
+    }
+
+
+def _tianjige_apply_dao_path_payload(payload, *, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
+    payload = payload if isinstance(payload, dict) else {}
+    if isinstance(payload.get("data"), dict):
+        payload = payload.get("data") or {}
+    records = dict(get_tianjige_dao_path_records())
+    updated = 0
+    skipped = 0
+    updated_identity_ids = set()
+    rows = []
+    if isinstance(payload.get("characters"), list):
+        rows.extend(row for row in payload.get("characters") or [] if isinstance(row, dict))
+    if any(key in payload for key in ("username", "telegram_id", "dao_name", "cultivation_level", "inventory", "status", "combat_status")):
+        rows.append(payload)
+    if not rows:
+        skipped += 1
+    for row in rows:
+        record = _tianjige_dao_path_record_from_row(
+            row,
+            fallback_identity_id=fallback_identity_id,
+            fallback_owner_text=fallback_owner_text,
+            source=source,
+            allowed_identity_ids=allowed_identity_ids,
+        )
+        if not record:
+            skipped += 1
+            continue
+        records[str(record["identity_id"])] = record
+        updated += 1
+        updated_identity_ids.add(int(record["identity_id"]))
+    meta = records.get("_meta") if isinstance(records.get("_meta"), dict) else {}
+    if payload.get("binding"):
+        meta = {
+            **meta,
+            "binding": _tianjige_binding_summary(payload),
+            "updated_at": time.time(),
+            "updated_at_text": fmt_abs_ts(time.time()),
+        }
+        records["_meta"] = meta
+    if updated > 0 or payload.get("binding"):
+        set_tianjige_dao_path_records(records)
+        save_state()
+    return {"updated_count": updated, "skipped_count": skipped, "updated_identity_ids": sorted(updated_identity_ids), "records": records}
+
+
+def get_tianjige_dao_path_snapshot():
+    records = get_tianjige_dao_path_records()
+    rows = []
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        profile = get_send_as_profile(identity_id)
+        record = records.get(str(identity_id)) if isinstance(records, dict) else {}
+        record = record if isinstance(record, dict) else {}
+        updated_at_raw = _tianjige_float(record.get("updated_at"))
+        rows.append({
+            "identity_id": identity_id,
+            "label": profile.get("label") or profile.get("username") or profile.get("daohao") or str(identity_id),
+            "display_name": get_identity_ui_display_name(identity_id),
+            "username": record.get("username") or profile.get("username") or "",
+            "dao_name": record.get("dao_name") or profile.get("daohao") or "",
+            "cultivation_level": record.get("cultivation_level") or profile.get("realm") or "",
+            "cultivation_points": _tianjige_number(record.get("cultivation_points")),
+            "sect_name": record.get("sect_name") or profile.get("sect_name") or "",
+            "spirit_root": record.get("spirit_root") or profile.get("spiritual_root_type") or "",
+            "status": record.get("status") or "",
+            "combat_status": record.get("combat_status") or "",
+            "state_label": _tianjige_state_label(record.get("status"), record.get("combat_status"), record.get("state_label")) or "未读取",
+            "binding_kind": record.get("binding_kind") or "",
+            "binding_kind_label": record.get("binding_kind_label") or "",
+            "cave": record.get("cave") if isinstance(record.get("cave"), dict) else {},
+            "cave_summary": _tianjige_cave_summary_text(record.get("cave") if isinstance(record.get("cave"), dict) else {}),
+            "status_fields": record.get("status_fields") if isinstance(record.get("status_fields"), list) else [],
+            "raw_keys": record.get("raw_keys") if isinstance(record.get("raw_keys"), list) else [],
+            "updated_at": fmt_abs_ts(updated_at_raw),
+            "updated_at_raw": updated_at_raw,
+            "source": record.get("source") or "",
+            "has_remote": bool(record),
+        })
+    rows.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
+    meta = records.get("_meta") if isinstance(records, dict) and isinstance(records.get("_meta"), dict) else {}
+    return {
+        "rows": rows,
+        "binding": meta.get("binding") if isinstance(meta.get("binding"), dict) else {},
+        "last_updated_at": fmt_abs_ts(_tianjige_float(meta.get("updated_at"))),
+        "dao_path_last_ok": bool(_storage_bag_api_state.get("dao_path_last_ok")),
+        "dao_path_last_message": str(_storage_bag_api_state.get("dao_path_last_message") or ""),
+        "dao_path_last_updated_at": fmt_abs_ts(_tianjige_float(_storage_bag_api_state.get("dao_path_last_updated_at"))),
+        "dao_path_updated_count": _tianjige_number(_storage_bag_api_state.get("dao_path_updated_count")),
+        "dao_path_skipped_count": _tianjige_number(_storage_bag_api_state.get("dao_path_skipped_count")),
+    }
+
+
 def ui_set_storage_bag_api_config(payload):
     payload = payload if isinstance(payload, dict) else {}
     current = get_storage_bag_api_config()
@@ -815,6 +1353,7 @@ async def ui_verify_storage_bag_api(payload=None):
     if not config.get("cookie"):
         return False, "请先填写天机阁 session Cookie", get_storage_bag_api_snapshot()
     _storage_bag_api_state["running"] = True
+    _storage_bag_api_set_running_kind("verify")
     now = time.time()
     ok = False
     try:
@@ -841,6 +1380,7 @@ async def ui_verify_storage_bag_api(payload=None):
         })
     finally:
         _storage_bag_api_state["running"] = False
+        _storage_bag_api_set_running_kind("")
     return ok, message, get_storage_bag_api_snapshot()
 
 
@@ -854,6 +1394,7 @@ async def ui_refresh_storage_bag_from_api(payload=None):
     if not config.get("cookie"):
         return False, "请先配置储物袋 API", get_storage_bag_api_snapshot()
     _storage_bag_api_state["running"] = True
+    _storage_bag_api_set_running_kind("storage_bag")
     ok = False
     message = ""
     try:
@@ -933,7 +1474,148 @@ async def ui_refresh_storage_bag_from_api(payload=None):
         })
     finally:
         _storage_bag_api_state["running"] = False
+        _storage_bag_api_set_running_kind("")
     return ok, message, get_storage_bag_api_snapshot()
+
+
+async def _ui_refresh_tianjige_profile_fields_from_api(payload=None, *, target_identity_id=None, refresh_all=False):
+    if _is_storage_bag_api_busy():
+        return False, "天机阁读取正在进行中", get_storage_bag_api_snapshot()
+    payload = payload if isinstance(payload, dict) else {}
+    if payload:
+        ui_set_storage_bag_api_config(payload)
+    config = get_storage_bag_api_config()
+    if not config.get("cookie"):
+        return False, "请先配置天机阁 Cookie", get_storage_bag_api_snapshot()
+    if target_identity_id is not None:
+        try:
+            target_identity_id = int(target_identity_id or 0)
+        except (TypeError, ValueError):
+            return False, "身份不存在", get_storage_bag_api_snapshot()
+        if target_identity_id <= 0 or target_identity_id not in get_identity_ids():
+            return False, "身份不存在", get_storage_bag_api_snapshot()
+    _storage_bag_api_state["running"] = True
+    _storage_bag_api_set_running_kind("dao_path_all" if refresh_all else "dao_path_single")
+    ok = False
+    message = ""
+    try:
+        active_config = dict(config)
+        updated_identity_ids = set()
+        total_updated = 0
+        total_skipped = 0
+        local_identity_ids = [int(identity_id or 0) for identity_id in get_identity_ids()]
+        allowed_identity_ids = {int(target_identity_id)} if target_identity_id is not None else set(local_identity_ids)
+        if refresh_all:
+            me_result = await fetch_storage_bag_result(active_config, STORAGE_BAG_API_REFRESH_PATH)
+            active_config = _storage_bag_api_store_session(me_result.cookie, me_result.api_token)
+            me_payload = me_result.payload
+            if isinstance(me_payload, dict) and me_payload.get("ok") is False:
+                raise StorageBagApiError(str(me_payload.get("error") or "天机阁道途 API 返回失败"))
+            me_result_data = _tianjige_apply_dao_path_payload(
+                me_payload if isinstance(me_payload, dict) else {},
+                source="tianjige_me",
+                allowed_identity_ids=allowed_identity_ids,
+            )
+            updated_identity_ids.update(me_result_data.get("updated_identity_ids") or [])
+            total_updated += int(me_result_data.get("updated_count") or 0)
+            total_skipped += int(me_result_data.get("skipped_count") or 0)
+
+        target_ids = local_identity_ids if refresh_all else [int(target_identity_id)] if target_identity_id is not None else local_identity_ids
+        for identity_id in target_ids:
+            if identity_id <= 0 or identity_id in updated_identity_ids:
+                continue
+            if identity_id not in allowed_identity_ids:
+                continue
+            candidates = _storage_bag_api_cultivator_candidates(identity_id)
+            if not candidates:
+                if refresh_all:
+                    total_skipped += 1
+                    continue
+            candidate_success = False
+            if not refresh_all and identity_id == int(target_identity_id or 0):
+                candidates = candidates[:1] if candidates else []
+            for candidate in candidates:
+                try:
+                    api_result = await fetch_storage_bag_result(active_config, build_cultivator_path(candidate))
+                    active_config = _storage_bag_api_store_session(api_result.cookie, api_result.api_token)
+                    api_payload = api_result.payload
+                    if isinstance(api_payload, dict) and api_payload.get("ok") is False:
+                        raise StorageBagApiError(str(api_payload.get("error") or "天机阁道途 API 返回失败"))
+                    result = _tianjige_apply_dao_path_payload(
+                        api_payload if isinstance(api_payload, dict) else {},
+                        fallback_identity_id=identity_id,
+                        fallback_owner_text=candidate,
+                        source="tianjige_cultivator",
+                        allowed_identity_ids=allowed_identity_ids,
+                    )
+                    total_updated += int(result.get("updated_count") or 0)
+                    total_skipped += int(result.get("skipped_count") or 0)
+                    updated_identity_ids.update(result.get("updated_identity_ids") or [])
+                    if int(result.get("updated_count") or 0) > 0:
+                        candidate_success = True
+                        break
+                except StorageBagApiError as exc:
+                    _storage_bag_api_store_session(exc.cookie, exc.api_token)
+                    active_config = get_storage_bag_api_config()
+                    if exc.auth_failed or exc.rate_limited:
+                        raise
+                    if exc.status_code == 404:
+                        continue
+                    continue
+            if not candidate_success and not refresh_all:
+                me_result = await fetch_storage_bag_result(active_config, STORAGE_BAG_API_REFRESH_PATH)
+                active_config = _storage_bag_api_store_session(me_result.cookie, me_result.api_token)
+                me_payload = me_result.payload
+                if isinstance(me_payload, dict) and me_payload.get("ok") is False:
+                    raise StorageBagApiError(str(me_payload.get("error") or "天机阁道途 API 返回失败"))
+                result = _tianjige_apply_dao_path_payload(
+                    me_payload if isinstance(me_payload, dict) else {},
+                    fallback_identity_id=identity_id,
+                    fallback_owner_text=candidates[0] if candidates else "",
+                    source="tianjige_me",
+                    allowed_identity_ids=allowed_identity_ids,
+                )
+                total_updated += int(result.get("updated_count") or 0)
+                total_skipped += int(result.get("skipped_count") or 0)
+                updated_identity_ids.update(result.get("updated_identity_ids") or [])
+                if int(result.get("updated_count") or 0) > 0:
+                    candidate_success = True
+            if not candidate_success:
+                total_skipped += 1
+        ok = total_updated > 0
+        message = f"已更新 {total_updated} 个身份的道途快照" if ok else "天机阁已返回，但未匹配到本地身份"
+        _storage_bag_api_state.update({
+            "dao_path_last_ok": ok,
+            "dao_path_last_message": message,
+            "dao_path_last_updated_at": time.time(),
+            "dao_path_updated_count": int(total_updated),
+            "dao_path_skipped_count": int(total_skipped),
+        })
+    except Exception as exc:
+        _storage_bag_api_store_failure(exc, time.time())
+        message = f"天机阁道途读取失败: {exc}"
+        _storage_bag_api_state.update({
+            "dao_path_last_ok": False,
+            "dao_path_last_message": message,
+            "dao_path_last_updated_at": time.time(),
+            "dao_path_updated_count": 0,
+            "dao_path_skipped_count": 0,
+        })
+    finally:
+        _storage_bag_api_state["running"] = False
+        _storage_bag_api_set_running_kind("")
+    return ok, message, get_storage_bag_api_snapshot()
+
+
+async def ui_refresh_tianjige_dao_path_from_api(payload=None):
+    return await _ui_refresh_tianjige_profile_fields_from_api(payload, refresh_all=True)
+
+
+async def ui_refresh_identity_from_api(send_as_id, payload=None, *, refresh_all=False):
+    payload = payload if isinstance(payload, dict) else {}
+    if refresh_all:
+        return await _ui_refresh_tianjige_profile_fields_from_api(payload, refresh_all=True)
+    return await _ui_refresh_tianjige_profile_fields_from_api(payload, target_identity_id=send_as_id, refresh_all=False)
 
 
 async def run_storage_bag_api_keepalive_scheduler(now):
@@ -2063,6 +2745,7 @@ def get_ui_snapshot(session_token=None):
         "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
         "storage_bag_api": get_storage_bag_api_snapshot(),
+        "tianjige_dao_path": get_tianjige_dao_path_snapshot(),
         "storage_bag_sync": get_storage_bag_sync_snapshot(),
         "storage_bag_transfer": get_storage_bag_transfer_snapshot(),
         "dungeon_join": get_dungeon_join_snapshot(),
@@ -3724,6 +4407,22 @@ async def handle_ui_http(reader, writer):
                         extra={"storage_bag_api": api_snapshot},
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/tianjige-dao-path-refresh":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, api_snapshot = await ui_refresh_tianjige_dao_path_from_api(payload)
+                    status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                    body = _make_json_payload(
+                        ok,
+                        message=message if ok else "",
+                        error="" if ok else message,
+                        snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                        extra={"storage_bag_api": api_snapshot},
+                    )
+                    _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/storage-bag-item-rule":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -3886,6 +4585,28 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_refresh_identity_info(send_as_id, actor_id=(session or {}).get("sender_id"))
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/identity-refresh-api":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    scope = str(payload.get("scope") or "").strip().lower()
+                    refresh_all = bool(payload.get("refresh_all")) or scope in {"all", "api_all", "all_roles"}
+                    send_as_id = payload.get("send_as_id")
+                    if not refresh_all and send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message, api_snapshot = await ui_refresh_identity_from_api(send_as_id, refresh_all=refresh_all)
+                        status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
+                        body = _make_json_payload(
+                            ok,
+                            message=message if ok else "",
+                            error="" if ok else message,
+                            snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
+                            extra={"storage_bag_api": api_snapshot},
+                        )
+                        _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
             elif path == "/api/account-logout":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -4262,6 +4983,7 @@ __all__ = [
     "get_storage_bag_api_snapshot",
     "get_storage_bag_snapshot",
     "get_storage_bag_sync_snapshot",
+    "get_tianjige_dao_path_snapshot",
     "get_replica_config_snapshot",
     "get_ui_snapshot",
     "handle_ui_http",
@@ -4275,7 +4997,9 @@ __all__ = [
     "ui_preview_storage_bag_transfer",
     "ui_start_storage_bag_transfer",
     "ui_start_storage_bag_sync",
+    "ui_refresh_identity_from_api",
     "ui_refresh_storage_bag_from_api",
+    "ui_refresh_tianjige_dao_path_from_api",
     "ui_set_storage_bag_api_config",
     "ui_verify_storage_bag_api",
     "run_storage_bag_api_keepalive_scheduler",

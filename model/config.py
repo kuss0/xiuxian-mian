@@ -514,9 +514,9 @@ try:
 except (TypeError, ValueError):
     UI_AUTH_IDLE_TIMEOUT_SEC = 3600
 try:
-    UI_AUTH_SESSION_TIMEOUT_SEC = max(60, int(os.environ.get("CHAOGU_UI_AUTH_SESSION_TIMEOUT_SEC", "86400")))
+    UI_AUTH_SESSION_TIMEOUT_SEC = max(60, int(os.environ.get("CHAOGU_UI_AUTH_SESSION_TIMEOUT_SEC", "604800")))
 except (TypeError, ValueError):
-    UI_AUTH_SESSION_TIMEOUT_SEC = 86400
+    UI_AUTH_SESSION_TIMEOUT_SEC = 604800
 UI_AUTH_COOKIE_NAME = (os.environ.get("CHAOGU_UI_AUTH_COOKIE_NAME") or "chaogu_ui_session").strip() or "chaogu_ui_session"
 
 
@@ -632,6 +632,7 @@ RE_CMD_HELP = re.compile(r'^\.(指令|帮助|help)$', re.I)
 RE_CMD_STATUS = re.compile(r'^\.(状态|模块状态)$')
 RE_CMD_ANALYSIS_SUMMARY = re.compile(r'^\.(离线分析|分析状态|玩法总览|指令总览)$')
 RE_CMD_ANALYSIS_HEALTH = re.compile(r'^\.(发送健康码|发送健康|运行健康码|健康码)$')
+RE_CMD_RUNTIME_HEALTH = re.compile(r'^\.(运行健康|健康摘要|实时健康|运行摘要)$')
 RE_CMD_ANALYSIS_LOG_GROUP = re.compile(r'^\.(日志群分析|日志群指令)$')
 RE_CMD_ANALYSIS_WEBMINI = re.compile(r'^\.(webmini分析|webmini吸收|miniweb分析|miniweb吸收)$', re.I)
 RE_CMD_ANALYSIS_UNKNOWN = re.compile(r'^\.(未知指令|未归类指令)$')

@@ -77,28 +77,42 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         state_module.ensure_identity_registered(self.identity_id)
         state_module.set_send_as_profile(self.identity_id, label="来源号", username="source", daohao="青源")
         state_module.set_storage_bag_records({})
+        state_module.set_tianjige_dao_path_records({})
         state_module.set_storage_bag_api_config({})
         ui._storage_bag_api_state.update({
             "running": False,
+            "running_kind": "",
             "last_ok": False,
             "last_message": "",
             "last_updated_at": 0,
             "updated_count": 0,
             "skipped_count": 0,
             "keepalive_running": False,
+            "dao_path_last_ok": False,
+            "dao_path_last_message": "",
+            "dao_path_last_updated_at": 0,
+            "dao_path_updated_count": 0,
+            "dao_path_skipped_count": 0,
         })
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        state_module.set_tianjige_dao_path_records({})
         ui._storage_bag_api_state.update({
             "running": False,
+            "running_kind": "",
             "last_ok": False,
             "last_message": "",
             "last_updated_at": 0,
             "updated_count": 0,
             "skipped_count": 0,
             "keepalive_running": False,
+            "dao_path_last_ok": False,
+            "dao_path_last_message": "",
+            "dao_path_last_updated_at": 0,
+            "dao_path_updated_count": 0,
+            "dao_path_skipped_count": 0,
         })
 
     def test_storage_bag_api_snapshot_hides_credentials(self):
@@ -398,6 +412,253 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config["last_keepalive_ok"])
         self.assertGreater(config["next_keepalive_at"], 1000)
         self.assertEqual({"旧物": 1}, state_module.get_storage_bag_records()[str(self.identity_id)]["items"])
+
+    async def test_game_identity_refresh_stays_on_game_command_path(self):
+        with patch("model.ui.refresh_identity_info", new=AsyncMock(return_value=(True, "已开始获取角色信息，请等待"))) as refresh_mock:
+            ok, message = await ui.ui_refresh_identity_info(self.identity_id, actor_id=123)
+
+        self.assertTrue(ok)
+        self.assertIn("已开始获取角色信息", message)
+        refresh_mock.assert_awaited_once_with(self.identity_id, source="ui", actor_id=123)
+
+    async def test_manual_dao_path_refresh_updates_readonly_snapshot_without_game_send_or_inventory_mutation(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-from-html",
+            "item_name_map": {"mat_001": "灵石"},
+        })
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"旧物": 1}}})
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "binding": {
+                    "active_character_id": self.identity_id,
+                    "bound_character_ids": [self.identity_id],
+                    "bound_personal_character_ids": [self.identity_id],
+                    "bound_channel_character_ids": [],
+                    "personal_id": 999,
+                    "verified_channel_ids": [],
+                    "web_self_service_enabled": False,
+                },
+                "characters": [
+                    {
+                        "telegram_id": self.identity_id,
+                        "username": "source",
+                        "dao_name": "青源",
+                        "cultivation_level": "元婴初期",
+                        "cultivation_points": 123456,
+                        "sect_id": 9,
+                        "sect_name": "星宫",
+                        "spirit_root": "异灵根(雷)",
+                        "battle_power_text": "211.48亿",
+                        "inventory": {"items": [{"name": "青竹蜂云剑", "quantity": 1}], "materials": {"mat_001": 5000}},
+                        "status": "normal",
+                        "combat_status": "normal",
+                        "dongfu": {
+                            "lingqi_pool": 88.5,
+                            "lingmai_level": 2,
+                            "jingshi_level": 3,
+                            "danfang_level": 3,
+                            "dazhen_level": 4,
+                            "dazhen_active": 1,
+                            "dazhen_last_switch_time": "2026-04-23T15:56:19.457549+00:00",
+                        },
+                    }
+                ],
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/me",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)), \
+                patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, snapshot = await ui.ui_refresh_tianjige_dao_path_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        self.assertTrue(snapshot["dao_path_last_ok"])
+        send_mock.assert_not_called()
+        self.assertEqual({"旧物": 1}, state_module.get_storage_bag_records()[str(self.identity_id)]["items"])
+        records = state_module.get_tianjige_dao_path_records()
+        record = records[str(self.identity_id)]
+        self.assertEqual("青源", record["dao_name"])
+        self.assertEqual("元婴初期", record["cultivation_level"])
+        self.assertEqual("星宫", record["sect_name"])
+        self.assertEqual("正常", record["state_label"])
+        self.assertEqual(88.5, record["cave"]["lingqi_pool"])
+        self.assertEqual(3, record["cave"]["danfang_level"])
+        self.assertEqual(4, record["cave"]["dazhen_level"])
+        self.assertNotIn("dongfu", record["cave"])
+        self.assertNotIn("raw", record)
+        profile = state_module.get_send_as_profile(self.identity_id)
+        self.assertEqual("source", profile["username"])
+        self.assertEqual("青源", profile["daohao"])
+        self.assertEqual("元婴初期", profile["realm"])
+        self.assertEqual("星宫", profile["sect_name"])
+        self.assertEqual("异灵根", profile["spiritual_root_type"])
+        self.assertEqual("雷", profile["spiritual_root_attrs"])
+        self.assertEqual("211.48亿", profile["battle_power_text"])
+        self.assertEqual(21148000000, profile["battle_power_value"])
+        self.assertGreater(profile["sect_updated_at"], 0)
+        ui_snapshot = ui.get_tianjige_dao_path_snapshot()
+        self.assertEqual(self.identity_id, ui_snapshot["binding"]["active_character_id"])
+        self.assertEqual("青源", ui_snapshot["rows"][0]["dao_name"])
+        self.assertEqual("正常", ui_snapshot["rows"][0]["state_label"])
+        self.assertEqual(
+            "灵脉 2级｜静室 3级｜丹房 3级｜大阵 4级（已开启）｜灵气池 88.5",
+            ui_snapshot["rows"][0]["cave_summary"],
+        )
+
+    async def test_manual_identity_api_refresh_single_updates_profile_fields_without_storage_mutation(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-from-html",
+        })
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"旧物": 1}}})
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "telegram_id": self.identity_id,
+                "username": "source",
+                "dao_name": "青源",
+                "cultivation_level": "化神中期",
+                "cultivation_points": 987654,
+                "sect_name": "【太一门】",
+                "spirit_root": "异灵根(雷)",
+                "battle_power": "211.48亿",
+                "status": "normal",
+                "combat_status": "normal",
+                "dongfu": {"lingqi_pool": 12},
+                "inventory": {"materials": {"mat_001": 9999}},
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/cultivator/source",
+        )
+        call_paths = []
+
+        async def fake_fetch(config, path):
+            call_paths.append(path)
+            if path == storage_bag_api_client.build_cultivator_path("source"):
+                return api_result
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("model.ui.fetch_storage_bag_result", new=fake_fetch), \
+                patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+            ok, message, snapshot = await ui.ui_refresh_identity_from_api(self.identity_id)
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        self.assertEqual(["/api/cultivator/source"], call_paths)
+        send_mock.assert_not_called()
+        self.assertEqual({"旧物": 1}, state_module.get_storage_bag_records()[str(self.identity_id)]["items"])
+        profile = state_module.get_send_as_profile(self.identity_id)
+        self.assertEqual("source", profile["username"])
+        self.assertEqual("青源", profile["daohao"])
+        self.assertEqual("化神中期", profile["realm"])
+        self.assertEqual("太一门", profile["sect_name"])
+        self.assertEqual("异灵根", profile["spiritual_root_type"])
+        self.assertEqual("雷", profile["spiritual_root_attrs"])
+        self.assertEqual("211.48亿", profile["battle_power_text"])
+        self.assertEqual(21148000000, profile["battle_power_value"])
+        self.assertTrue(snapshot["dao_path_last_ok"])
+        record = state_module.get_tianjige_dao_path_records()[str(self.identity_id)]
+        self.assertEqual("tianjige_cultivator", record["source"])
+
+    async def test_dao_path_snapshot_tolerates_malformed_persisted_values(self):
+        with patch("model.ui.get_identity_ids", return_value=[self.identity_id]):
+            state_module.set_tianjige_dao_path_records({
+                str(self.identity_id): {
+                    "username": "source",
+                    "dao_name": "青源",
+                    "cultivation_points": "bad-value",
+                    "updated_at": "bad-value",
+                    "cave": [],
+                    "status_fields": {},
+                    "raw_keys": "bad-value",
+                },
+                "_meta": {"updated_at": "bad-value"},
+            })
+
+            snapshot = ui.get_tianjige_dao_path_snapshot()
+
+        row = snapshot["rows"][0]
+        self.assertEqual(0, row["cultivation_points"])
+        self.assertEqual(0.0, row["updated_at_raw"])
+        self.assertEqual("未设置", row["updated_at"])
+        self.assertEqual({}, row["cave"])
+        self.assertEqual([], row["status_fields"])
+        self.assertEqual([], row["raw_keys"])
+        self.assertEqual("未设置", snapshot["last_updated_at"])
+
+    async def test_manual_dao_path_refresh_queries_other_roles_with_same_cookie(self):
+        other_identity_id = 2002
+        state_module.ensure_identity_registered(other_identity_id)
+        state_module.set_send_as_profile(other_identity_id, label="外号", username="other", daohao="外道")
+        with patch("model.ui.get_identity_ids", return_value=[self.identity_id, other_identity_id]):
+            state_module.set_storage_bag_api_config({
+                "base_url": "https://example.invalid",
+                "cookie": "session=old",
+                "api_token": "token-from-html",
+            })
+            me_result = storage_bag_api_client.StorageBagApiResult(
+                payload={
+                    "characters": [
+                        {
+                            "telegram_id": self.identity_id,
+                            "username": "source",
+                            "dao_name": "青源",
+                            "cultivation_level": "结丹后期",
+                            "status": "normal",
+                        }
+                    ]
+                },
+                status_code=200,
+                cookie="session=rotated-me",
+                api_token="token-from-html",
+                path="/api/me",
+            )
+            cultivator_result = storage_bag_api_client.StorageBagApiResult(
+                payload={
+                    "username": "other",
+                    "dao_name": "外道",
+                    "cultivation_level": "化神初期",
+                    "status": "normal",
+                    "combat_status": "normal",
+                },
+                status_code=200,
+                cookie="session=rotated-other",
+                api_token="token-from-html",
+                path="/api/cultivator/other",
+            )
+            call_paths = []
+
+            async def fake_fetch(config, path):
+                call_paths.append(path)
+                if path == storage_bag_api_client.REFRESH_PATH:
+                    return me_result
+                if path == storage_bag_api_client.build_cultivator_path("other"):
+                    return cultivator_result
+                raise AssertionError(f"unexpected path: {path}")
+
+            with patch("model.ui.fetch_storage_bag_result", new=fake_fetch), \
+                    patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+                ok, message, snapshot = await ui.ui_refresh_identity_from_api(self.identity_id, refresh_all=True)
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 2 个身份", message)
+        self.assertEqual([storage_bag_api_client.REFRESH_PATH, "/api/cultivator/other"], call_paths)
+        send_mock.assert_not_called()
+        records = state_module.get_tianjige_dao_path_records()
+        self.assertEqual("结丹后期", records[str(self.identity_id)]["cultivation_level"])
+        self.assertEqual("化神初期", records[str(other_identity_id)]["cultivation_level"])
+        self.assertEqual("青源", state_module.get_send_as_profile(self.identity_id)["daohao"])
+        self.assertEqual("外道", state_module.get_send_as_profile(other_identity_id)["daohao"])
+        self.assertEqual("session=rotated-other", state_module.get_storage_bag_api_config()["cookie"])
+        self.assertEqual(2, snapshot["dao_path_updated_count"])
 
     async def test_manual_api_actions_reject_during_keepalive(self):
         state_module.set_storage_bag_api_config({

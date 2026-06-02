@@ -45,6 +45,7 @@ from .state import (
     get_storage_bag_api_config,
     get_storage_bag_item_rules,
     get_storage_bag_records,
+    get_tianjige_dao_path_records,
     new_identity_state,
     set_auto_delete_sent_messages,
     set_dungeon_join_run_state,
@@ -75,6 +76,7 @@ from .state import (
     set_storage_bag_api_config,
     set_storage_bag_item_rules,
     set_storage_bag_records,
+    set_tianjige_dao_path_records,
     get_accounts,
     set_accounts,
     get_identity_account_map,
@@ -690,6 +692,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_freeze_reason TEXT NOT NULL DEFAULT ''")
     if "taiyi_failure_history" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_failure_history TEXT NOT NULL DEFAULT '[]'")
+    if "taiyi_yindao_resend_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_yindao_resend_count INTEGER NOT NULL DEFAULT 0")
     if "taiyi_search_resend_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN taiyi_search_resend_count INTEGER NOT NULL DEFAULT 0")
     if "taiyi_last_error" not in runtime_columns:
@@ -1709,6 +1713,11 @@ _META_STATE_CODEC = {
         get_storage_bag_item_rules,
         _encode_meta_json,
         lambda value: set_storage_bag_item_rules(_decode_meta_json(value, {})),
+    ),
+    "tianjige_dao_path_records": (
+        get_tianjige_dao_path_records,
+        _encode_meta_json,
+        lambda value: set_tianjige_dao_path_records(_decode_meta_json(value, {})),
     ),
     "dungeon_join_run_state": (
         get_dungeon_join_run_state,

@@ -192,7 +192,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             preach_mock.assert_not_awaited()
             audit_mock.assert_awaited_once()
 
-    async def test_incense_theft_broadcast_backs_off_chain(self):
+    async def test_incense_theft_broadcast_schedules_short_calibration(self):
         send_as_id = 8659059195
         now = 5000.0
         state_module.ensure_identity_registered(send_as_id)
@@ -210,7 +210,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(small_world, "save_state"),
-                patch.object(small_world.random, "uniform", return_value=600),
+                patch.object(small_world.random, "uniform", return_value=45),
             ):
                 handled = await small_world.handle_small_world_disaster_broadcast(
                     "⚡ 【小世界·天降浩劫】 ⚡\n"
@@ -223,12 +223,31 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual("calibration_wait", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_refine_msg_id"])
             self.assertEqual(5, state_module.state["small_world_incense_stock"])
-            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
-            self.assertIn("库存香火失窃 3 点", state_module.state["small_world_last_error"])
+            self.assertEqual(now + 45, state_module.state["next_small_world_time"])
+            self.assertIn("等待面板校准", state_module.state["small_world_last_error"])
             audit_mock.assert_awaited_once()
+            self.assertIn("校准面板", audit_mock.await_args.args[0])
+
+    async def test_incense_theft_calibration_wait_sends_query_when_due(self):
+        send_as_id = 8659059295
+        now = 8000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_phase"] = "calibration_wait"
+            state_module.state["next_small_world_time"] = now - 1
+
+            with (
+                patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            query_mock.assert_awaited_once_with(now, "失窃后校准")
 
     async def test_incense_theft_for_other_identity_is_ignored(self):
         send_as_id = 8659059196
