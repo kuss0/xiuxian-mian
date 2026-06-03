@@ -24,7 +24,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
-BENIGN_WARN_CONTEXT_PATTERN = re.compile(r"无补发|不补发|无需补发|题库内超时未作答|题库匹配")
+BENIGN_HARD_CONTEXT_PATTERN = re.compile(r"already fused:", re.I)
+BENIGN_WARN_CONTEXT_PATTERN = re.compile(r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到")
 
 
 @dataclass
@@ -111,7 +112,7 @@ def read_journal_matches(service: str, window_sec: int, limit: int) -> dict[str,
         timeout=12.0,
     )
     lines = [line for line in stdout.splitlines() if line.strip()]
-    hard = [line for line in lines if HARD_PATTERN.search(line)]
+    hard = [line for line in lines if is_hard_journal_line(line)]
     warn = [line for line in lines if is_warn_journal_line(line)]
     max_items = max(1, int(limit or 1))
     return {
@@ -127,9 +128,16 @@ def read_journal_matches(service: str, window_sec: int, limit: int) -> dict[str,
     }
 
 
+def is_hard_journal_line(line: str) -> bool:
+    text = str(line or "")
+    if BENIGN_HARD_CONTEXT_PATTERN.search(text):
+        return False
+    return bool(HARD_PATTERN.search(text))
+
+
 def is_warn_journal_line(line: str) -> bool:
     text = str(line or "")
-    if HARD_PATTERN.search(text):
+    if is_hard_journal_line(text):
         return False
     if BENIGN_WARN_CONTEXT_PATTERN.search(text):
         return False

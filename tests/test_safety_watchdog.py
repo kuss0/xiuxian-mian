@@ -7,13 +7,20 @@ from unittest.mock import patch
 from tools import safety_watchdog
 
 
-def _event(epoch, sender_id, text):
-    return {
+def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module=""):
+    payload = {
         "event_type": "sent",
         "_epoch": float(epoch),
         "sender_id": int(sender_id),
         "text": text,
     }
+    if reply_to_msg_id:
+        payload["reply_to_msg_id"] = int(reply_to_msg_id)
+    if family:
+        payload["family"] = family
+    if source_module:
+        payload["source_module"] = source_module
+    return payload
 
 
 class SafetyWatchdogTests(unittest.TestCase):
@@ -215,6 +222,55 @@ class SafetyWatchdogTests(unittest.TestCase):
         ]
 
         breach = safety_watchdog.find_send_breach(events, now, self._config())
+        self.assertIn("same command repeat", breach)
+
+    def test_concubine_heart_choice_chain_does_not_fuse(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+        events = [
+            _event(now - 17, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 6, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 1, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_concubine_heart_choice_fourth_still_fuses(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+        events = [
+            _event(now - 20, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 1, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("same command repeat", breach)
+
+    def test_unmarked_heart_choice_repeat_still_fuses(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+        events = [
+            _event(now - 15, sender_id, ".稳", prompt_msg_id),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 0
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
         self.assertIn("same command repeat", breach)
 
     def test_stale_fuse_marker_re_fuses_when_global_enabled(self):

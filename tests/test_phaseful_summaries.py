@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import control, runtime
-from model.features import _phaseful, deep_retreat, yuanying
+from model.features import _phaseful, concubine, deep_retreat, tower, yuanying
 
 
 class _StateIsolationMixin:
@@ -415,6 +415,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(handled)
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 180, state_module.state["next_deep_retreat_time"])
+            self.assertTrue(state_module.state["deep_retreat_probe_pending"])
             audit_mock.assert_awaited_once()
             self.assertTrue(any(
                 call.kwargs.get("family") == "deep_retreat"
@@ -540,7 +541,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 now + deep_retreat.DEEP_RETREAT_CD + deep_retreat.CD_BUFFER_SEC,
             )
 
-    async def test_deep_retreat_summary_due_does_not_send_tagless_status_text(self):
+    async def test_deep_retreat_summary_due_waits_for_passive_trigger_before_grace_expires(self):
         send_as_id = 8659059202
         now = 1_700_000_450.0
         self._prepare_identity(send_as_id, "NoTaglessRetreat")
@@ -548,6 +549,31 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(send_as_id):
             state_module.state["deep_retreat_enabled"] = True
             state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec + 60
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=300),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
+
+    async def test_deep_retreat_summary_due_sends_explicit_status_query_after_grace(self):
+        send_as_id = 8659059202
+        now = 1_700_000_450.0
+        self._prepare_identity(send_as_id, "NoTaglessRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec - 1
             state_module.state["next_deep_retreat_time"] = now - 1
 
             sent_msg = SimpleNamespace(id=901, sent_at=now)
@@ -558,11 +584,16 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
-            send_mock.assert_awaited_once_with("1", track=False, priority="chain", source_module="深度闭关")
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
-            self.assertEqual(-901, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertEqual(901, state_module.state["last_deep_retreat_summary_msg_id"])
 
-    async def test_deep_retreat_passive_timeout_delays_relaunch_without_status_query(self):
+    async def test_deep_retreat_passive_timeout_queries_status_before_relaunch(self):
         send_as_id = 8659059212
         now = 1_700_000_470.0
         self._prepare_identity(send_as_id, "PassiveTimeoutRetreat")
@@ -573,23 +604,28 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.DEEP_RETREAT_SPEC.summary_passive_timeout_sec - 1
             state_module.state["last_deep_retreat_summary_msg_id"] = -901
 
+            sent_msg = SimpleNamespace(id=903, sent_at=now)
             with (
-                patch.object(_phaseful.random, "uniform", return_value=180),
-                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
                 patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(_phaseful, "save_state"),
+                patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock()),
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
-            send_mock.assert_not_awaited()
-            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
-            self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
-            self.assertEqual(now + 180, state_module.state["next_deep_retreat_time"])
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(903, state_module.state["last_deep_retreat_summary_msg_id"])
             self.assertTrue(
-                any("不再状态查询" in str(call.args[0]) for call in audit_mock.await_args_list)
+                any("改用状态查询确认" in str(call.args[0]) for call in audit_mock.await_args_list)
             )
 
-    async def test_deep_retreat_queued_launch_timeout_delays_relaunch_without_status_query(self):
+    async def test_deep_retreat_queued_launch_timeout_queries_status_before_relaunch(self):
         send_as_id = 8659059213
         now = 1_700_000_480.0
         self._prepare_identity(send_as_id, "QueuedTimeoutRetreat")
@@ -600,24 +636,85 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["last_deep_retreat_command_time"] = now - 300
             state_module.state["next_deep_retreat_time"] = now - 1
 
-            sent_msg = SimpleNamespace(id=904, sent_at=now + 181)
+            sent_msg = SimpleNamespace(id=904, sent_at=now)
             with (
-                patch.object(_phaseful.random, "uniform", return_value=180),
                 patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
                 patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(_phaseful, "save_state"),
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
-                send_mock.assert_not_awaited()
-                self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
-                self.assertTrue(
-                    any("不再状态查询" in str(call.args[0]) for call in audit_mock.await_args_list)
-                )
 
-                await deep_retreat.run_deep_retreat_scheduler(now + 181)
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(904, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertTrue(
+                any("先查询状态确认" in str(call.args[0]) for call in audit_mock.await_args_list)
+            )
 
-            send_mock.assert_awaited_once_with(deep_retreat.CMD_DEEP_RETREAT, track=False, priority="chain")
+    async def test_deep_retreat_unconfirmed_post_summary_wait_queries_status_before_relaunch(self):
+        send_as_id = 8659059215
+        now = 1_700_000_485.0
+        self._prepare_identity(send_as_id, "UnconfirmedPostRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = False
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            sent_msg = SimpleNamespace(id=906, sent_at=now)
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+                patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock()),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(906, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertTrue(
+                any("缺少总结/状态确认" in str(call.args[0]) for call in audit_mock.await_args_list)
+            )
+
+    async def test_deep_retreat_confirmed_post_summary_wait_can_relaunch(self):
+        send_as_id = 8659059216
+        now = 1_700_000_486.0
+        self._prepare_identity(send_as_id, "ConfirmedPostRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            sent_msg = SimpleNamespace(id=907, sent_at=now)
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
             self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now, state_module.state["last_deep_retreat_command_time"])
 
     async def test_deep_retreat_already_running_reply_keeps_estimate_without_status_probe(self):
         send_as_id = 8659059214
@@ -648,7 +745,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
             self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
 
-    async def test_yuanying_summary_due_does_not_send_tagless_status_text(self):
+    async def test_yuanying_summary_due_waits_for_passive_trigger_before_grace_expires(self):
         send_as_id = 8659059203
         now = 1_700_000_460.0
         self._prepare_identity(send_as_id, "NoTaglessSoul")
@@ -656,6 +753,31 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(send_as_id):
             state_module.state["yuanying_enabled"] = True
             state_module.state["yuanying_phase"] = "summary_due"
+            state_module.state["yuanying_summary_sent_at"] = now - yuanying.YUANYING_SPEC.summary_active_query_grace_sec + 30
+            state_module.state["next_yuanying_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=45),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await yuanying.run_yuanying_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("summary_due", state_module.state["yuanying_phase"])
+            self.assertEqual(now + 45, state_module.state["next_yuanying_time"])
+            self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
+
+    async def test_yuanying_summary_due_sends_explicit_status_query_after_grace(self):
+        send_as_id = 8659059203
+        now = 1_700_000_460.0
+        self._prepare_identity(send_as_id, "NoTaglessSoul")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "summary_due"
+            state_module.state["yuanying_summary_sent_at"] = now - yuanying.YUANYING_SPEC.summary_active_query_grace_sec - 1
             state_module.state["next_yuanying_time"] = now - 1
 
             sent_msg = SimpleNamespace(id=902, sent_at=now)
@@ -666,9 +788,14 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             ):
                 await yuanying.run_yuanying_scheduler(now)
 
-            send_mock.assert_awaited_once_with("1", track=False, priority="chain", source_module="元婴")
+            send_mock.assert_awaited_once_with(
+                yuanying.CMD_YUANYING_STATUS,
+                track=False,
+                priority="chain",
+                source_module="元婴",
+            )
             self.assertEqual("waiting_summary", state_module.state["yuanying_phase"])
-            self.assertEqual(-902, state_module.state["last_yuanying_summary_msg_id"])
+            self.assertEqual(902, state_module.state["last_yuanying_summary_msg_id"])
 
     def test_yuanying_post_summary_startup_recovery_is_staggered_like_deep_retreat(self):
         send_as_id = 8659059197
@@ -730,6 +857,169 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             await _phaseful._replay_summary_consumed_command(send_as_id, payload)
 
         send_mock.assert_not_awaited()
+
+    async def test_summary_replay_concubine_dream_rebuilds_pending_state(self):
+        send_as_id = 8659059225
+        now = 1_700_001_000.0
+        old_msg_id = 9338504
+        new_msg_id = 9338505
+        self._prepare_identity(send_as_id, "DreamReplay")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_phase"] = "dream_pending"
+            state_module.state["concubine_dream_msg_id"] = old_msg_id
+            state_module.state["next_concubine_time"] = now - 1
+
+        payload = {
+            "cmd": concubine.CMD_CONCUBINE_DREAM,
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": "normal",
+            "max_retry": 0,
+            "send_intent": {"source_module": "侍妾"},
+        }
+        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_awaited_once_with(
+            concubine.CMD_CONCUBINE_DREAM,
+            track=False,
+            send_as_id=send_as_id,
+            priority="normal",
+            max_retry=0,
+            source_module="侍妾",
+        )
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("dream_pending", state_module.state["concubine_phase"])
+            self.assertEqual(new_msg_id, state_module.state["concubine_dream_msg_id"])
+            self.assertEqual(now + 1 + concubine.CONCUBINE_PHASE_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+
+    async def test_summary_replay_tower_sets_explicit_wait_state(self):
+        send_as_id = 8659059223
+        now = 1_700_000_800.0
+        old_msg_id = 9338484
+        new_msg_id = 9338485
+        self._prepare_identity(send_as_id, "TowerReplay")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_msg_id"] = old_msg_id
+            state_module.state["tower_reply_due_at"] = now - 1
+            state_module.state["tower_retry_count"] = 0
+            state_module.state["pending_tasks"] = {
+                old_msg_id: {
+                    "cmd": ".闯塔",
+                    "sent_at": now - 30,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                    "max_retry": 0,
+                }
+            }
+
+        payload = {
+            "cmd": ".闯塔",
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": "normal",
+            "max_retry": 0,
+            "send_intent": {"source_module": "闯塔"},
+        }
+        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_awaited_once_with(
+            ".闯塔",
+            track=False,
+            send_as_id=send_as_id,
+            priority="normal",
+            max_retry=0,
+            source_module="闯塔",
+        )
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(new_msg_id, state_module.state["last_tower_msg_id"])
+            self.assertEqual(1, state_module.state["tower_retry_count"])
+            self.assertEqual(now + 1 + tower.TOWER_REPLY_TIMEOUT_SEC, state_module.state["tower_reply_due_at"])
+            self.assertEqual(state_module.state["tower_reply_due_at"], state_module.state["next_tower_time"])
+            self.assertNotIn(old_msg_id, state_module.state["pending_tasks"])
+
+    async def test_summary_replay_tower_skips_done_today_or_other_pending(self):
+        send_as_id = 8659059224
+        now = 1_700_000_900.0
+        old_msg_id = 9338494
+        other_msg_id = 9338495
+        self._prepare_identity(send_as_id, "TowerReplaySkip")
+
+        payload = {
+            "cmd": ".闯塔",
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": None,
+            "max_retry": 0,
+        }
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = _phaseful.get_day_key(now)
+            state_module.state["last_tower_msg_id"] = old_msg_id
+
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_not_awaited()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["last_tower_day"] = ""
+            state_module.state["tower_retry_count"] = 0
+            state_module.state["pending_tasks"] = {
+                old_msg_id: {"cmd": ".闯塔", "sent_at": now - 30, "retry": 0, "timeout": 10},
+                other_msg_id: {"cmd": ".闯塔", "sent_at": now - 10, "retry": 0, "timeout": 10},
+            }
+
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertNotIn(old_msg_id, state_module.state["pending_tasks"])
+            self.assertIn(other_msg_id, state_module.state["pending_tasks"])
 
 
 if __name__ == "__main__":

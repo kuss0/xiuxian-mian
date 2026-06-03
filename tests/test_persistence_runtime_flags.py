@@ -3,12 +3,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import app
 from model import persistence
 from model import state as state_module
 
@@ -48,6 +49,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     state_module.state["yuanying_protect_logged"] = True
                     state_module.state["deep_retreat_waiting_logged"] = True
                     state_module.state["deep_retreat_protect_logged"] = True
+                    state_module.state["tower_reply_due_at"] = 1_700_000_123.0
+                    state_module.state["tower_retry_count"] = 1
                     state_module.state["concubine_greet_msg_id"] = 123
                     state_module.state["concubine_last_greet_day"] = "2026-05-24"
                     state_module.state["concubine_greet_retry_count"] = 1
@@ -66,6 +69,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertIn("yuanying_protect_logged", columns)
                 self.assertIn("deep_retreat_waiting_logged", columns)
                 self.assertIn("deep_retreat_protect_logged", columns)
+                self.assertIn("tower_reply_due_at", columns)
+                self.assertIn("tower_retry_count", columns)
                 self.assertIn("concubine_greet_msg_id", columns)
                 self.assertIn("concubine_last_greet_day", columns)
                 self.assertIn("concubine_greet_retry_count", columns)
@@ -87,6 +92,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertTrue(state_module.state["yuanying_protect_logged"])
                     self.assertTrue(state_module.state["deep_retreat_waiting_logged"])
                     self.assertTrue(state_module.state["deep_retreat_protect_logged"])
+                    self.assertEqual(1_700_000_123.0, state_module.state["tower_reply_due_at"])
+                    self.assertEqual(1, state_module.state["tower_retry_count"])
                     self.assertEqual(123, state_module.state["concubine_greet_msg_id"])
                     self.assertEqual("2026-05-24", state_module.state["concubine_last_greet_day"])
                     self.assertEqual(1, state_module.state["concubine_greet_retry_count"])
@@ -151,6 +158,37 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual("坠魔谷静场令", state_module.state["dungeon_quiet_reason"])
                 self.assertEqual(12000.0, state_module.state["dungeon_quiet_last_log_at"])
 
+    def test_has_persisted_identity_rows_detects_existing_roster(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                self.assertFalse(persistence.has_persisted_identity_rows())
+                identity_id = 990151
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="persisted")
+
+                self.assertTrue(persistence.save_state())
+                self.assertTrue(persistence.has_persisted_identity_rows())
+
+    def test_has_persisted_identity_rows_treats_unreadable_db_as_existing_state(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            db_path.write_text("not sqlite", encoding="utf-8")
+            with patch.object(persistence, "DB_FILE", str(db_path)):
+                self.assertTrue(persistence.has_persisted_identity_rows())
+
+    def test_save_state_records_persistence_failure(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "state.db"
+            db_path.write_text("not sqlite", encoding="utf-8")
+            with patch.object(persistence, "DB_FILE", str(db_path)):
+                state_module.ensure_identity_registered(990181)
+                self.assertFalse(persistence.save_state())
+                self.assertTrue(persistence.has_persistence_write_failure())
+                failure = persistence.get_persistence_write_failure()
+                self.assertGreater(failure["failed_at"], 0)
+                self.assertTrue(failure["error"])
+
     def test_pending_task_send_intent_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")
@@ -213,6 +251,37 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
 
                 with state_module.use_identity(identity_id):
                     self.assertEqual("ok", state_module.state["ranch_last_result"])
+
+    def test_save_state_migrates_existing_runtime_table_before_upsert(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990351
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="oldruntime")
+                with state_module.use_identity(identity_id):
+                    state_module.state["last_tower_msg_id"] = 7001
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                conn.execute("ALTER TABLE identity_runtime_state DROP COLUMN tower_reply_due_at")
+                conn.execute("ALTER TABLE identity_runtime_state DROP COLUMN tower_retry_count")
+                conn.commit()
+
+                with state_module.use_identity(identity_id):
+                    state_module.state["tower_reply_due_at"] = 1_700_000_321.0
+                    state_module.state["tower_retry_count"] = 1
+
+                self.assertTrue(persistence.save_state())
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+                self.assertIn("tower_reply_due_at", columns)
+                self.assertIn("tower_retry_count", columns)
+                row = conn.execute(
+                    "SELECT tower_reply_due_at, tower_retry_count FROM identity_runtime_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual(1_700_000_321.0, row["tower_reply_due_at"])
+                self.assertEqual(1, row["tower_retry_count"])
 
     def test_save_state_blocks_demo_identity_collapse_over_live_roster(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -285,6 +354,58 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual(12, len(state_module.get_identity_ids()))
                 self.assertNotIn(991201, state_module.get_identity_ids())
                 self.assertTrue(list(Path(tmpdir).glob("state.db.suspicious-*")))
+
+
+class StartupStateLoadSafetyTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        super().tearDown()
+
+    async def test_bootstrap_refuses_first_init_when_existing_state_load_fails(self):
+        with (
+            patch.object(app, "load_state", return_value=False),
+            patch.object(app, "has_persisted_identity_rows", return_value=True),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "状态加载失败"):
+                await app.bootstrap()
+
+    async def test_bootstrap_skips_runtime_recovery_when_global_paused(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+        state_module.ensure_identity_registered(990701)
+        state_module.set_global_enabled(False)
+
+        class FakeClient:
+            async def connect(self):
+                return None
+
+            def is_connected(self):
+                return False
+
+        with (
+            patch.object(app, "load_state", return_value=True),
+            patch.object(app, "get_accounts", return_value={}),
+            patch.object(app, "client", FakeClient()),
+            patch.object(app, "get_all_clients", return_value={}),
+            patch.object(app, "start_ui_server", new=AsyncMock()) as ui_mock,
+            patch.object(app, "run_startup_account_integrity_check", return_value={"audit_lines": []}),
+            patch.object(app, "initialize_identity_runtime") as init_mock,
+            patch.object(app, "scan_startup_timeout_tasks") as scan_mock,
+            patch.object(app, "spread_overdue_runtime_timers") as spread_mock,
+            patch.object(app, "save_state") as save_mock,
+        ):
+            await app.bootstrap()
+
+        ui_mock.assert_awaited_once()
+        init_mock.assert_not_called()
+        scan_mock.assert_not_called()
+        spread_mock.assert_not_called()
+        save_mock.assert_not_called()
 
 
 if __name__ == "__main__":

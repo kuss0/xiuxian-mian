@@ -89,6 +89,8 @@ _db_conn = None
 _db_initialized = False
 _state_dirty = False
 _last_flush_time = 0
+_last_save_failed_at = 0.0
+_last_save_error = ""
 
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
@@ -101,6 +103,29 @@ def get_db_conn():
         _db_conn = sqlite3.connect(DB_FILE)
         _db_conn.row_factory = sqlite3.Row
     return _db_conn
+
+
+def _mark_persistence_save_ok():
+    global _last_save_failed_at, _last_save_error
+    _last_save_failed_at = 0.0
+    _last_save_error = ""
+
+
+def _mark_persistence_save_failed(exc):
+    global _last_save_failed_at, _last_save_error
+    _last_save_failed_at = time.time()
+    _last_save_error = str(exc or "").strip()[:240]
+
+
+def has_persistence_write_failure():
+    return _last_save_failed_at > 0
+
+
+def get_persistence_write_failure():
+    return {
+        "failed_at": _last_save_failed_at,
+        "error": _last_save_error,
+    }
 
 
 def _get_schema_version(conn):
@@ -287,6 +312,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0")
     if "last_tree_status_sent_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tree_status_sent_at REAL NOT NULL DEFAULT 0")
+    if "tower_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tower_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "tower_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tower_retry_count INTEGER NOT NULL DEFAULT 0")
     if "concubine_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_phase TEXT NOT NULL DEFAULT 'idle'")
     if "concubine_availability" not in runtime_columns:
@@ -864,6 +893,8 @@ def init_db():
             tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0,
             last_tree_status_sent_at REAL NOT NULL DEFAULT 0,
             last_tower_msg_id INTEGER NOT NULL,
+            tower_reply_due_at REAL NOT NULL DEFAULT 0,
+            tower_retry_count INTEGER NOT NULL DEFAULT 0,
             pet_last_error TEXT NOT NULL DEFAULT '',
             pet_warm_last_error TEXT NOT NULL DEFAULT '',
             pet_trial_last_error TEXT NOT NULL DEFAULT '',
@@ -1986,8 +2017,10 @@ def save_state():
         _write_live_guard_backup(conn)
         _state_dirty = False
         _last_flush_time = time.time()
+        _mark_persistence_save_ok()
         return True
-    except Exception:
+    except Exception as exc:
+        _mark_persistence_save_failed(exc)
         traceback.print_exc()
         return False
 
@@ -1999,11 +2032,28 @@ def mark_dirty():
 
 def flush_if_dirty(now=None):
     if not _state_dirty:
-        return
+        return True
     if now is None:
         now = time.time()
     if now - _last_flush_time >= FLUSH_INTERVAL_SEC:
-        save_state()
+        return save_state()
+    return True
+
+
+def has_persisted_identity_rows():
+    if not os.path.exists(DB_FILE):
+        return False
+    try:
+        with sqlite3.connect(DB_FILE) as conn:
+            row = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identities'"
+            ).fetchone()
+            if not row:
+                return False
+            count = conn.execute("SELECT COUNT(*) FROM identities").fetchone()[0]
+            return int(count or 0) > 0
+    except Exception:
+        return True
 
 
 def load_state():
@@ -2083,8 +2133,10 @@ def load_state():
                 upsert_identity_to_db(send_as_id)
             conn.commit()
 
+        _mark_persistence_save_ok()
         return True
-    except Exception:
+    except Exception as exc:
+        _mark_persistence_save_failed(exc)
         traceback.print_exc()
         return False
 
@@ -2095,6 +2147,9 @@ configure_timing(save_state)
 __all__ = [
     "flush_if_dirty",
     "get_db_conn",
+    "get_persistence_write_failure",
+    "has_persisted_identity_rows",
+    "has_persistence_write_failure",
     "init_db",
     "load_state",
     "delete_identity_from_db",

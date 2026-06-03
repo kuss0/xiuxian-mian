@@ -871,7 +871,7 @@ def _get_special_tracked_message_family(identity_state, msg_id):
     )
     for state_key, family in tracked_id_families:
         tracked_msg_id = int(identity_state.get(state_key, 0) or 0)
-        if family in {"yuanying", "deep_retreat"}:
+        if family in {"yuanying", "deep_retreat", "tower"}:
             tracked_msg_id = abs(tracked_msg_id)
         if msg_id == tracked_msg_id:
             return family
@@ -2354,7 +2354,7 @@ def _get_tracked_identity_message_ids(identity_state):
     tracked_ids = {
         int(identity_state.get("last_checkin_msg_id", 0) or 0),
         int(identity_state.get("last_sect_teach_msg_id", 0) or 0),
-        int(identity_state.get("last_tower_msg_id", 0) or 0),
+        abs(int(identity_state.get("last_tower_msg_id", 0) or 0)),
         int(identity_state.get("last_identity_info_msg_id", 0) or 0),
         *(int(msg_id or 0) for msg_id in identity_state.get("identity_info_reply_msg_ids", [])),
     }

@@ -3,10 +3,10 @@ import random
 import time
 from dataclasses import dataclass
 
-from ..config import CD_BUFFER_SEC, CMD_TREE_GUARD, CMD_TREE_WATER
+from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER
 from ..runtime import _fire_and_forget, console_log, register_game_command_sent_observer, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_game_group_id, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
-from ..timing import fmt_abs_ts, fmt_remaining
+from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
+from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 
 
 @dataclass(frozen=True)
@@ -57,6 +57,7 @@ class PhasefulSpec:
     summary_passive_timeout_sec: int = 90
     summary_due_delay_min_sec: int = 30 * 60
     summary_due_delay_max_sec: int = 90 * 60
+    summary_active_query_grace_sec: int = 0
     summary_observe_sec: int = 180
     summary_retry_min_sec: int = 10 * 60
     summary_retry_max_sec: int = 30 * 60
@@ -75,7 +76,7 @@ SUMMARY_BLOCKING_PHASES = {"queued_launch"}
 _REGISTERED_SPECS = []
 _SUMMARY_CONSUMED_COMMANDS = {}
 
-SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD}
+SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TOWER, CMD_CONCUBINE_DREAM}
 SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
 SUMMARY_REPLAY_DELAY_MIN_SEC = 1
 SUMMARY_REPLAY_DELAY_MAX_SEC = 5
@@ -209,12 +210,15 @@ def clear_summary_flags(spec):
         set_phase(spec, "idle")
 
 
-def begin_post_summary_wait(spec, now, delay=None):
+def begin_post_summary_wait(spec, now, delay=None, *, confirmed=False):
     if delay is None:
         delay = spec.post_summary_wait_sec
     clear_summary_flags(spec)
     set_phase(spec, "post_summary_wait")
-    state[spec.probe_pending_key] = False
+    # In post_summary_wait, the probe flag is a persisted provenance marker:
+    # True means a real summary or an active status confirmation proved the
+    # phase may safely relaunch; False means query status before any relaunch.
+    state[spec.probe_pending_key] = bool(confirmed)
     state[spec.next_time_key] = now + delay
     save_state()
 
@@ -314,6 +318,82 @@ def _has_other_summary_observation(spec=None):
     return False
 
 
+def _has_pending_command(command, *, ignore_msg_id=0):
+    command = str(command or "").strip()
+    ignore_msg_id = int(ignore_msg_id or 0)
+    for pending_msg_id, item in state.get("pending_tasks", {}).items():
+        try:
+            if int(pending_msg_id) == ignore_msg_id:
+                continue
+        except (TypeError, ValueError):
+            pass
+        if get_pending_command(item) == command:
+            return True
+    return False
+
+
+def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
+    if command == CMD_CONCUBINE_DREAM:
+        from ..config import CONCUBINE_PHASE_TIMEOUT_SEC
+        from .concubine import _phase as concubine_phase
+        from .concubine import _set_phase as set_concubine_phase
+
+        if not state.get("concubine_enabled"):
+            return False
+        if concubine_phase() != "dream_pending":
+            return False
+        if int(state.get("concubine_dream_msg_id", 0) or 0) != int(old_msg_id or 0):
+            return False
+        state["concubine_dream_msg_id"] = 0
+        state["next_concubine_time"] = float(now) + CONCUBINE_PHASE_TIMEOUT_SEC
+        set_concubine_phase("idle")
+        return True
+
+    if command != CMD_TOWER:
+        return True
+    from .tower import TOWER_RETRY_LIMIT
+
+    if not state.get("tower_enabled"):
+        return False
+    if str(state.get("last_tower_day") or "") == get_day_key(now):
+        return False
+    if _has_pending_command(CMD_TOWER, ignore_msg_id=old_msg_id):
+        return False
+    retry_count = int(state.get("tower_retry_count", 0) or 0)
+    if retry_count >= TOWER_RETRY_LIMIT:
+        return False
+    if int(state.get("last_tower_msg_id", 0) or 0) == int(old_msg_id or 0):
+        state["last_tower_msg_id"] = 0
+    state["tower_reply_due_at"] = 0
+    state["tower_retry_count"] = max(retry_count, 1)
+    state["next_tower_time"] = float(now)
+    return True
+
+
+def _finalize_replayed_command_state(command, msg):
+    if command == CMD_CONCUBINE_DREAM and msg:
+        from ..config import CONCUBINE_PHASE_TIMEOUT_SEC
+        from .concubine import _set_phase as set_concubine_phase
+
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        set_concubine_phase("dream_pending")
+        state["concubine_dream_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+        state["concubine_last_error"] = ""
+        return True
+
+    if command != CMD_TOWER or not msg:
+        return False
+    from .tower import TOWER_REPLY_TIMEOUT_SEC
+
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+    due_at = sent_at + TOWER_REPLY_TIMEOUT_SEC
+    state["last_tower_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    state["tower_reply_due_at"] = due_at
+    state["next_tower_time"] = due_at
+    return True
+
+
 async def _replay_summary_consumed_command(send_as_id, payload):
     await asyncio.sleep(random.uniform(SUMMARY_REPLAY_DELAY_MIN_SEC, SUMMARY_REPLAY_DELAY_MAX_SEC))
     if not has_identity(send_as_id):
@@ -329,6 +409,10 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     max_retry = (payload or {}).get("max_retry")
     priority = (payload or {}).get("priority") or "chain"
     send_intent = {key: value for key, value in (payload or {}).get("send_intent", {}).items() if str(value or "").strip()}
+    if command == CMD_TOWER:
+        track = False
+        max_retry = 0
+        send_intent.setdefault("source_module", "闯塔")
 
     with use_identity(send_as_id):
         now = time.time()
@@ -340,7 +424,10 @@ async def _replay_summary_consumed_command(send_as_id, payload):
             return
         if msg_id > 0:
             state.get("pending_tasks", {}).pop(msg_id, None)
+        if not _prepare_replayed_command_state(command, now, old_msg_id=msg_id):
             save_state()
+            return
+        save_state()
 
     msg = await send_game_command(
         command,
@@ -351,6 +438,9 @@ async def _replay_summary_consumed_command(send_as_id, payload):
         **send_intent,
     )
     if msg:
+        with use_identity(send_as_id):
+            if _finalize_replayed_command_state(command, msg):
+                save_state()
         await send_audit_log(
             f"↩️ 归位结算吃掉原指令，已补发一次：{command}",
             scope="identity",
@@ -470,12 +560,23 @@ def has_phaseful_summary_block(now=None):
     return False
 
 
-def _schedule_summary_trigger_retry(spec, now):
+def _schedule_summary_trigger_retry(spec, now, *, preserve_started_at=False):
     set_phase(spec, "summary_due")
-    state[spec.summary_sent_at_key] = float(now)
+    if not preserve_started_at or float(state.get(spec.summary_sent_at_key, 0) or 0) <= 0:
+        state[spec.summary_sent_at_key] = float(now)
     state[spec.last_summary_msg_id_key] = 0
     state[spec.next_time_key] = float(now + random.uniform(spec.summary_retry_min_sec, spec.summary_retry_max_sec))
     save_state()
+
+
+def _summary_due_elapsed(spec, now):
+    started_at = float(state.get(spec.summary_sent_at_key, 0) or 0)
+    return max(0.0, float(now or 0) - started_at) if started_at > 0 else 0.0
+
+
+async def _extend_summary_due_wait(spec, now):
+    _schedule_summary_trigger_retry(spec, now, preserve_started_at=True)
+    console_log(f"{spec.title} 到期后继续等待真实消息顺带触发，暂不主动查询。")
 
 
 def _is_summary_observation_text(spec, text):
@@ -484,31 +585,10 @@ def _is_summary_observation_text(spec, text):
     return text in set(spec.summary_passive_triggers or ())
 
 
-def _is_active_summary_trigger_text(text):
-    text = str(text or "").strip()
-    return text == "1" or text.startswith(".")
-
-
-def _choose_passive_summary_trigger(spec):
-    triggers = tuple(
-        trigger
-        for trigger in tuple(spec.summary_passive_triggers or ())
-        if _is_active_summary_trigger_text(trigger)
-    )
-    if not triggers:
-        return spec.summary_trigger_command
-    weighted = []
-    for trigger in triggers:
-        weight = 1 if trigger == "1" else 3
-        weighted.extend([trigger] * weight)
-    return random.choice(weighted)
-
-
 async def _send_summary_trigger(spec, console_message):
     state[spec.probe_pending_key] = False
     console_log(console_message)
-    command = _choose_passive_summary_trigger(spec)
-    is_passive = command != spec.summary_trigger_command
+    command = spec.summary_trigger_command
     msg = await send_game_command(command, track=False, priority="chain", source_module=spec.source_module or None)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
@@ -517,7 +597,7 @@ async def _send_summary_trigger(spec, console_message):
         return False
 
     begin_summary_wait(spec, sent_at)
-    state[spec.last_summary_msg_id_key] = -int(msg.id) if is_passive else int(msg.id)
+    state[spec.last_summary_msg_id_key] = int(msg.id)
     save_state()
     return True
 
@@ -525,7 +605,12 @@ async def _send_summary_trigger(spec, console_message):
 async def _send_active_summary_query(spec, now):
     await delete_summary_trigger_msg(spec)
     state[spec.probe_pending_key] = False
-    msg = await send_game_command(spec.summary_trigger_command, track=False, priority="chain")
+    msg = await send_game_command(
+        spec.summary_trigger_command,
+        track=False,
+        priority="chain",
+        source_module=spec.source_module or None,
+    )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         _schedule_summary_trigger_retry(spec, sent_at)
@@ -541,7 +626,7 @@ async def _delay_relaunch_without_status_query(spec, now, audit_text):
     await delete_summary_trigger_msg(spec)
     state[spec.probe_pending_key] = False
     delay = random.uniform(spec.timeout_relaunch_min_sec, spec.timeout_relaunch_max_sec)
-    begin_post_summary_wait(spec, now, delay=delay)
+    begin_post_summary_wait(spec, now, delay=delay, confirmed=False)
     await update_block_log_state(spec, waiting=False, protect=False)
     await send_audit_log(f"{audit_text}，不再状态查询，{int(delay / 60)}分钟后重新发起。")
 
@@ -578,7 +663,7 @@ async def delete_summary_trigger_msg(spec):
 async def finalize_summary_broadcast(spec, now):
     await delete_summary_trigger_msg(spec)
     delay = max(float(spec.post_summary_wait_sec), _other_observing_remaining(spec, now))
-    begin_post_summary_wait(spec, now, delay=delay)
+    begin_post_summary_wait(spec, now, delay=delay, confirmed=True)
     await update_block_log_state(spec, waiting=False, protect=False)
     _schedule_summary_consumed_command_replay(spec, now)
     console_log(spec.summary_received_console)
@@ -652,6 +737,10 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
     if _phase(spec) == "summary_due":
         if now < state[spec.next_time_key]:
             return
+        grace_sec = float(spec.summary_active_query_grace_sec or 0)
+        if grace_sec > 0 and _summary_due_elapsed(spec, now) < grace_sec:
+            await _extend_summary_due_wait(spec, now)
+            return
         await _send_summary_trigger(spec, spec.cd_due_console)
         return
 
@@ -660,9 +749,19 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         if now < state[spec.next_time_key]:
             return
 
+        if not state.get(spec.probe_pending_key):
+            await send_audit_log(f"{spec.title} 缓冲到期但缺少总结/状态确认，先查询状态确认，避免重复发起。")
+            await _send_active_summary_query(spec, now)
+            return
+
         console_log(spec.post_wait_console)
         begin_queued_launch(spec, now)
-        msg = await send_game_command(launch_command, track=False, priority="chain")
+        msg = await send_game_command(
+            launch_command,
+            track=False,
+            priority="chain",
+            source_module=spec.source_module or None,
+        )
         if msg:
             sent_at = float(getattr(msg, "sent_at", 0) or time.time())
             mark_launch_command_sent(spec, sent_at)

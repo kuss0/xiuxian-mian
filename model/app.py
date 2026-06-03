@@ -127,13 +127,22 @@ from .features.yuanying import (
     run_yuanying_scheduler,
 )
 from .features.wild_training import handle_wild_training_reply, run_wild_training_scheduler
-from .persistence import flush_if_dirty, load_state, mark_dirty, save_state
+from .persistence import (
+    flush_if_dirty,
+    get_persistence_write_failure,
+    has_persisted_identity_rows,
+    has_persistence_write_failure,
+    load_state,
+    mark_dirty,
+    save_state,
+)
 from .action_guard import close_by_family as close_action_guard_by_family
 from .runtime import (
     _fire_and_forget,
     check_bot_health_timeout,
     clear_all_pending_tasks,
     clear_pending_by_reply,
+    console_log,
     gc_my_msg_ids,
     gc_ui_login_tokens,
     gc_ui_sessions,
@@ -1065,6 +1074,8 @@ def _register_event_handlers(tc):
 
 async def bootstrap():
     loaded = load_state()
+    if not loaded and has_persisted_identity_rows():
+        raise RuntimeError("SQLite 状态加载失败，已阻止首次初始化以避免覆盖既有身份计时器。")
     saved_accounts = get_accounts()
 
     # 多账号模式下只启动账号 client，避免主 session 也挂一个空转 Telegram 会话。
@@ -1170,6 +1181,11 @@ async def bootstrap():
         enforce_identity_module_availability(send_as_id, persist=False)
 
     now = time.time()
+    paused_at_boot = not get_global_enabled()
+    if paused_at_boot:
+        console_log("🚀 自动化系统启动：全局暂停中，仅加载状态与 UI，跳过启动恢复和普通调度。")
+        return
+
     if state.get("guanxing_monitor_enabled"):
         restore_guanxing_monitor_runtime_state(now)
         mark_dirty()
@@ -1241,7 +1257,19 @@ async def main_loop(stop_event=None):
         gc_my_msg_ids(now)
         gc_ui_login_tokens(now)
         gc_ui_sessions(now)
-        flush_if_dirty(now)
+        flushed_ok = flush_if_dirty(now)
+        if (flushed_ok is False or has_persistence_write_failure()) and get_global_enabled():
+            _cancel_identity_schedulers()
+            failure = get_persistence_write_failure()
+            error_text = failure.get("error") or "unknown"
+            await toggle_global_enabled(False, source="persistence_guard")
+            await send_audit_log(
+                f"💾 SQLite 状态保存失败，已暂停普通自动化，避免继续使用不可信计时器：{error_text}",
+                scope="global",
+                limit=360,
+            )
+            await _sleep_or_stop(stop_event, 5)
+            continue
 
         # bot 健康监测：疑似静默/探测中直接全局暂停，避免继续普通发送
         global _bot_silence_auto_paused

@@ -138,6 +138,7 @@ from .features.wild_training import (
     get_wild_training_status_text,
     schedule_wild_training_initial_check,
 )
+from .action_guard import reconcile_identity_sessions
 from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
@@ -776,6 +777,8 @@ def _manual_disable_tower_module_state():
     state["tower_enabled"] = False
     state["next_tower_time"] = 0
     state["last_tower_msg_id"] = 0
+    state["tower_reply_due_at"] = 0
+    state["tower_retry_count"] = 0
     _clear_pending_tasks_by_commands({CMD_TOWER})
 
 
@@ -971,6 +974,8 @@ def _set_tower_module_enabled(enabled, now):
         if state["last_tower_day"] != day_key:
             state["last_tower_day"] = ""
             state["last_tower_msg_id"] = 0
+            state["tower_reply_due_at"] = 0
+            state["tower_retry_count"] = 0
         if state["last_tower_day"] == day_key:
             schedule_next_tower_after_completion(now, persist=False)
         elif _is_within_module_window("闯塔", now):
@@ -980,6 +985,8 @@ def _set_tower_module_enabled(enabled, now):
         return
     state["next_tower_time"] = 0
     state["last_tower_msg_id"] = 0
+    state["tower_reply_due_at"] = 0
+    state["tower_retry_count"] = 0
     _clear_pending_tasks_by_commands({CMD_TOWER})
 
 
@@ -2112,6 +2119,8 @@ def _restore_tower_runtime(now):
 
     state["last_tower_day"] = ""
     state["last_tower_msg_id"] = 0
+    state["tower_reply_due_at"] = 0
+    state["tower_retry_count"] = 0
     _set_tower_module_enabled(True, now)
 
 
@@ -2458,6 +2467,7 @@ def initialize_identity_runtime(send_as_id, now=None):
             restore_concubine_runtime(now)
         if state.get("small_world_enabled") and float(state.get("next_small_world_time", 0) or 0) <= 0:
             schedule_small_world_initial_check(now, persist=False, keep_last_error=True)
+        reconcile_identity_sessions(send_as_id, now)
 
 
 def _get_startup_module_alerts_bucket():

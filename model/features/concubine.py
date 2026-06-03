@@ -98,10 +98,10 @@ CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
 CONCUBINE_HEART_RESOURCE_KEY = "concubine_heart"
 CONCUBINE_LOG_REPLAY_LOOKBACK_SEC = CONCUBINE_PHASE_TIMEOUT_SEC + 5 * 60
 CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC = 5
+CONCUBINE_TIANJI_LOG_GUARD_LOOKBACK_SEC = CONCUBINE_TIANJI_CD_SEC + 2 * CONCUBINE_PHASE_TIMEOUT_SEC
 CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
 CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
 CONCUBINE_HEART_PANEL_MAX_AGE_SEC = 10 * 60
-CONCUBINE_ACTIVE_STATUS_MAX_AGE_SEC = 30 * 60
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
@@ -190,6 +190,83 @@ def _wait_for_existing_heart_choice(now):
     _set_phase("heart_choice_reply_pending")
     state["next_concubine_time"] = max(float(now) + 5, sent_at + 45)
     return state["next_concubine_time"]
+
+
+def _close_heart_action_guard(now, reason):
+    close_action_guard("concubine_heart", send_as_id=get_current_identity_id(), reason=reason, now=now)
+
+
+def _heart_action_guard_session():
+    sessions = state.get("action_guard_sessions")
+    if not isinstance(sessions, dict):
+        return None
+    session = sessions.get("concubine_heart")
+    return session if isinstance(session, dict) else None
+
+
+def _heart_action_guard_last_sent_at():
+    session = _heart_action_guard_session()
+    if not session:
+        return 0.0
+    return max(
+        float(session.get("last_sent_at", 0) or 0),
+        float(session.get("first_sent_at", 0) or 0),
+    )
+
+
+def _heart_action_guard_blocks_until(now):
+    session = _heart_action_guard_session()
+    if not session or float(session.get("closed_at", 0) or 0) > 0:
+        return 0.0
+    attempt = int(session.get("attempt", 0) or 0)
+    next_allowed_at = float(session.get("next_allowed_at", 0) or 0)
+    if attempt > 0 and next_allowed_at > float(now):
+        return next_allowed_at
+    if attempt >= 2:
+        return max(float(now) + 60, _heart_action_guard_last_sent_at() + CONCUBINE_HEART_CD_SEC)
+    return 0.0
+
+
+def _close_heart_chain_without_settlement(now, reason, *, detail=""):
+    choice_sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
+    guard_sent_at = _heart_action_guard_last_sent_at()
+    cooldown_from = max(choice_sent_at, guard_sent_at)
+    if cooldown_from <= 0:
+        cooldown_from = float(now)
+    existing_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
+    retry_at = max(
+        existing_due_at if existing_due_at > float(now) else 0.0,
+        cooldown_from + CONCUBINE_HEART_CD_SEC + CD_BUFFER_SEC,
+    )
+    _close_heart_action_guard(now, reason)
+    state["concubine_heart_due_at"] = retry_at
+    state["concubine_heart_last_error"] = "心劫链路未见结算，按长冷却等待"
+    _set_phase("idle")
+    _clear_pending_msg_ids()
+    _schedule_at_due_or_chain(now, retry_at)
+    detail_parts = [f"due_at={fmt_abs_ts(retry_at)}"]
+    if detail:
+        detail_parts.append(str(detail))
+    _record_concubine_event(
+        "共历心劫链路收尾",
+        kind="skipped",
+        reason=reason,
+        phase="idle",
+        command=CMD_CONCUBINE_HEART,
+        detail="｜".join(detail_parts),
+        decision="heart_chain_closed_without_settlement",
+        workflow_status="skipped",
+    )
+    return retry_at
+
+
+def _reconcile_stale_heart_action_guard(now, reason):
+    if _phase() in CONCUBINE_HEART_ACTIVE_PHASES:
+        return False
+    if not _heart_action_guard_session():
+        return False
+    _close_heart_chain_without_settlement(now, reason)
+    return True
 
 
 def _schedule_heart_choice_followup(send_as_id, due_at, prompt_msg_id, round_no):
@@ -531,6 +608,26 @@ def _msg_id_int(value):
         return 0
 
 
+def _sender_matches_current_identity(sender_id):
+    current_id = int(get_current_identity_id() or 0)
+    try:
+        sender_id = int(sender_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if current_id <= 0 or sender_id == 0:
+        return False
+    if sender_id == current_id:
+        return True
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100"):
+            try:
+                return int(sender_abs[3:] or 0) == current_id
+            except ValueError:
+                return False
+    return False
+
+
 def _parse_message_log_ts(raw_ts):
     ts_text = str(raw_ts or "").strip()
     if not ts_text:
@@ -590,6 +687,101 @@ def _concubine_family_for_command(command):
     if command_text == CMD_STORAGE_BAG:
         return "concubine_storage_bag"
     return "concubine"
+
+
+def _tianji_due_from_logged_reply(text, event_ts):
+    raw_text = str(text or "")
+    event_ts = float(event_ts or 0)
+    if event_ts <= 0:
+        return None
+    if "【天机代卜链】" in raw_text:
+        gua_match = RE_TIANJI_GUA.search(raw_text)
+        return {
+            "due_at": event_ts + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC,
+            "chain": gua_match.group("name").strip() if gua_match else "",
+            "source": "success",
+        }
+    if "天机链路尚未重铸" in raw_text:
+        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_TIANJI_CD_SEC
+        return {
+            "due_at": event_ts + wait_sec + CD_BUFFER_SEC,
+            "chain": "",
+            "source": "cooldown",
+        }
+    return None
+
+
+def _find_recent_logged_tianji_cooldown(now):
+    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - CONCUBINE_TIANJI_LOG_GUARD_LOOKBACK_SEC)
+    sent_msgs = {}
+    best = None
+    for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
+            continue
+        event_type = str(payload.get("event_type") or "").strip()
+        text = str(payload.get("text") or "").strip()
+        msg_id = _msg_id_int(payload.get("message_id"))
+        if (
+            text == CMD_CONCUBINE_TIANJI
+            and event_type in {"sent", "message"}
+            and _sender_matches_current_identity(payload.get("sender_id"))
+            and msg_id > 0
+        ):
+            sent_msgs.setdefault(msg_id, event_ts)
+            continue
+        if event_type not in {"message", "edit"}:
+            continue
+        reply_to_msg_id = _msg_id_int(payload.get("reply_to_msg_id"))
+        if reply_to_msg_id <= 0 or reply_to_msg_id not in sent_msgs:
+            continue
+        due_info = _tianji_due_from_logged_reply(text, event_ts)
+        if not due_info:
+            continue
+        due_at = float(due_info.get("due_at", 0) or 0)
+        if due_at <= float(now or 0):
+            continue
+        if not best or due_at > float(best.get("due_at", 0) or 0):
+            best = {
+                "due_at": due_at,
+                "chain": due_info.get("chain", ""),
+                "source": due_info.get("source", ""),
+                "msg_id": msg_id,
+                "reply_to_msg_id": reply_to_msg_id,
+                "event_ts": event_ts,
+            }
+    return best
+
+
+def _guard_tianji_send_with_message_log(now):
+    logged = _find_recent_logged_tianji_cooldown(now)
+    if not logged:
+        return False
+    due_at = float(logged.get("due_at", 0) or 0)
+    if due_at <= float(now or 0):
+        return False
+    state["concubine_tianji_due_at"] = max(float(state.get("concubine_tianji_due_at", 0) or 0), due_at)
+    chain = str(logged.get("chain") or "").strip()
+    if chain:
+        state["concubine_tianji_chain"] = chain
+        state["concubine_tianji_chain_due_at"] = max(float(state.get("concubine_tianji_chain_due_at", 0) or 0), due_at)
+    state["concubine_tianji_last_error"] = ""
+    if _phase() == "tianji_pending":
+        _set_phase("idle")
+    state["concubine_tianji_msg_id"] = 0
+    _schedule_after_tianji(now)
+    _record_concubine_event(
+        "天机代卜临发拦截",
+        kind="skipped",
+        reason="logged_tianji_cooldown",
+        phase=_phase(),
+        command=CMD_CONCUBINE_TIANJI,
+        msg_id=_msg_id_int(logged.get("msg_id")),
+        detail=f"due_at={fmt_abs_ts(due_at)}｜source={logged.get('source')}",
+        decision="tianji_send_blocked_by_message_log",
+    )
+    return True
 
 
 def _record_concubine_event(
@@ -1428,6 +1620,14 @@ def _parse_status_panel(text, now):
     }
 
 
+def _merge_future_cooldown(state_key, parsed_due_at, now):
+    parsed_due_at = float(parsed_due_at or 0)
+    existing_due_at = float(state.get(state_key, 0) or 0)
+    if existing_due_at > float(now) and parsed_due_at < existing_due_at:
+        return existing_due_at
+    return parsed_due_at
+
+
 def _is_puzzle_ready():
     return bool(_completed_fragment_kinds())
 
@@ -1491,11 +1691,11 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
-    if not _has_heart_due_action(now):
-        return False
-    snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-    return panel_msg_id <= 0 or snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
+    if _has_heart_due_action(now):
+        snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+        panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+        return panel_msg_id <= 0 or snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
+    return False
 
 
 def _has_active_nanlong_pending(now):
@@ -1606,9 +1806,9 @@ def _apply_status_snapshot(parsed, now):
     state["concubine_location"] = parsed.get("location", "")
     state["concubine_affinity"] = int(parsed.get("affinity", 0) or 0)
     state["concubine_oath"] = parsed.get("oath", "")
-    state["concubine_dream_due_at"] = float(parsed.get("dream_due_at", 0) or 0)
-    state["concubine_tianji_due_at"] = float(parsed.get("tianji_due_at", 0) or 0)
-    state["concubine_heart_due_at"] = float(parsed.get("heart_due_at", 0) or 0)
+    state["concubine_dream_due_at"] = _merge_future_cooldown("concubine_dream_due_at", parsed.get("dream_due_at", 0), now)
+    state["concubine_tianji_due_at"] = _merge_future_cooldown("concubine_tianji_due_at", parsed.get("tianji_due_at", 0), now)
+    state["concubine_heart_due_at"] = _merge_future_cooldown("concubine_heart_due_at", parsed.get("heart_due_at", 0), now)
     state["concubine_tianji_chain"] = parsed.get("tianji_chain", "")
     state["concubine_tianji_chain_due_at"] = float(parsed.get("tianji_chain_due_at", 0) or 0)
     _apply_fragment_progresses(parsed.get("fragment_progresses") or {})
@@ -1841,6 +2041,13 @@ def clear_concubine_tianji_state(*, persist=False, keep_last_error=False):
 
 
 def restore_concubine_runtime(now):
+    if _phase() in CONCUBINE_HEART_ACTIVE_PHASES:
+        _close_heart_chain_without_settlement(now, f"{_phase()}_startup_restore")
+        mark_dirty()
+        return float(state.get("next_concubine_time", 0) or 0)
+    if _reconcile_stale_heart_action_guard(now, "heart_stale_guard_startup_restore"):
+        mark_dirty()
+        return float(state.get("next_concubine_time", 0) or 0)
     if _phase() in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
         if _has_available_partner():
             _set_phase("idle")
@@ -2064,6 +2271,9 @@ async def _send_reacquire_command(now):
 
 
 async def _send_tianji_command(now):
+    if _guard_tianji_send_with_message_log(now):
+        save_state()
+        return False
     if _defer_active_for_phaseful_summary(now, "天机代卜", error_key="concubine_tianji_last_error"):
         save_state()
         return False
@@ -2133,8 +2343,17 @@ async def _send_heart_command(now):
         await _send_status_command(now)
         return False
     msg = await send_game_command(CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else float(now)
     if not msg:
+        guard_blocks_until = _heart_action_guard_blocks_until(sent_at)
+        if guard_blocks_until > sent_at:
+            _close_heart_chain_without_settlement(
+                sent_at,
+                "heart_send_blocked_by_stale_guard",
+                detail=f"panel_msg_id={panel_msg_id}｜guard_until={fmt_abs_ts(guard_blocks_until)}",
+            )
+            save_state()
+            return False
         state["concubine_heart_last_error"] = "发送 .共历心劫 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "heart_pending")
@@ -2746,10 +2965,6 @@ def _heart_next_choice_delay():
     return random.uniform(CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC, CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC)
 
 
-def _close_heart_action_guard(now, reason):
-    close_action_guard("concubine_heart", send_as_id=get_current_identity_id(), reason=reason, now=now)
-
-
 async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
     if not state.get("concubine_heart_enabled", False):
         return False
@@ -2799,6 +3014,7 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
         return True
 
     if "你已有一场心劫抉择正在进行" in raw_text:
+        _close_heart_action_guard(now, "heart_already_in_progress")
         state["concubine_heart_last_error"] = "已有心劫抉择进行中，暂停自动补发"
         _set_phase("idle")
         _clear_pending_msg_ids()
@@ -3140,8 +3356,7 @@ async def _run_concubine_scheduler(now):
             await _send_heart_choice(now)
             return
         state["concubine_heart_last_error"] = "心劫抉择轮次异常，暂停自动处理"
-        _set_phase("idle")
-        _backoff_after_pending_timeout(now, "heart_choice_pending")
+        _close_heart_chain_without_settlement(now, "heart_choice_invalid_round")
         save_state()
         return
 
@@ -3151,12 +3366,7 @@ async def _run_concubine_scheduler(now):
             return
         if await _recover_concubine_pending_from_message_log(now, phase):
             return
-        state["concubine_heart_last_error"] = "心劫抉择后未观察到回合推进，已停止当前链路"
-        _set_phase("idle")
-        _clear_pending_msg_ids()
-        retry_at = float(now + CONCUBINE_HEART_CD_SEC + CD_BUFFER_SEC)
-        state["concubine_heart_due_at"] = retry_at
-        _schedule_after_tianji(now)
+        retry_at = _close_heart_chain_without_settlement(now, "heart_choice_reply_timeout")
         save_state()
         await send_audit_log(
             f"⚠️ 共历心劫抉择无回合推进，已停止旧 prompt；按长冷却等待 {fmt_time_after(max(0, retry_at - now))}。",
@@ -3179,7 +3389,10 @@ async def _run_concubine_scheduler(now):
         else:
             _set_phase("idle")
         _clear_pending_msg_ids()
-        retry_at = _backoff_after_pending_timeout(now, phase)
+        if phase in CONCUBINE_HEART_ACTIVE_PHASES:
+            retry_at = _close_heart_chain_without_settlement(now, f"{phase}_timeout")
+        else:
+            retry_at = _backoff_after_pending_timeout(now, phase)
         save_state()
         if phase != "status_pending":
             await send_audit_log(

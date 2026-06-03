@@ -86,10 +86,9 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     summary_passive_timeout_sec=120,
     summary_due_delay_min_sec=5 * 60,
     summary_due_delay_max_sec=15 * 60,
+    summary_active_query_grace_sec=30 * 60,
     summary_retry_min_sec=5 * 60,
     summary_retry_max_sec=10 * 60,
-    passive_timeout_action="relaunch",
-    queued_launch_timeout_action="relaunch",
     timeout_relaunch_min_sec=DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC,
     timeout_relaunch_max_sec=DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC,
 )
@@ -203,8 +202,8 @@ def clear_deep_retreat_summary_flags():
     clear_summary_flags(DEEP_RETREAT_SPEC)
 
 
-def begin_deep_retreat_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC):
-    begin_post_summary_wait(DEEP_RETREAT_SPEC, now, delay=delay)
+def begin_deep_retreat_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC, *, confirmed=False):
+    begin_post_summary_wait(DEEP_RETREAT_SPEC, now, delay=delay, confirmed=confirmed)
 
 
 def begin_deep_retreat_summary_wait(now):
@@ -354,10 +353,10 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
     if "并未处于深度闭关" in text or "未处于深度闭关" in text:
         phase = state.get("deep_retreat_phase", "idle")
         is_due = float(state.get("next_deep_retreat_time", 0) or 0) <= now
-        if phase in ("summary_due", "observing_summary", "waiting_summary", "running") or (phase == "idle" and is_due):
+        if phase in ("summary_due", "observing_summary", "waiting_summary", "running", "queued_launch") or (phase == "idle" and is_due):
             await delete_deep_retreat_summary_trigger_msg()
             delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC)
-            begin_deep_retreat_post_summary_wait(now, delay=delay)
+            begin_deep_retreat_post_summary_wait(now, delay=delay, confirmed=True)
             _record_deep_retreat_event(
                 "确认未处于深闭",
                 reply_to=reply_to,

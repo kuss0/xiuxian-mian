@@ -37,7 +37,7 @@ if CREATED_ENV:
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import control
+from model import action_guard, config, control
 from model import state as state_module
 from model.features import concubine, wild_training
 
@@ -97,6 +97,118 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
             self.assertEqual(0, state_module.state["wild_training_retry_count"])
             self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+
+    def test_startup_recovery_clears_stale_action_guard_sessions(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "idle"
+            state_module.state["next_deep_retreat_time"] = now + 3600
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_phase"] = "idle"
+            state_module.state["next_concubine_time"] = now + 3600
+            state_module.state["action_guard_sessions"] = {
+                "tree_water": {
+                    "action_key": "tree_water",
+                    "attempt": 1,
+                    "last_sent_at": now - 120,
+                    "last_msg_id": 11,
+                    "last_command": ".灵树灌溉",
+                },
+                "deep_retreat": {
+                    "action_key": "deep_retreat",
+                    "attempt": 1,
+                    "last_sent_at": now - 120,
+                    "last_msg_id": 12,
+                    "last_command": ".深度闭关",
+                },
+                "concubine_dream": {
+                    "action_key": "concubine_dream",
+                    "attempt": 1,
+                    "last_sent_at": now - 120,
+                    "last_msg_id": 13,
+                    "last_command": ".入梦寻图",
+                },
+            }
+
+        control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["action_guard_sessions"])
+
+    def test_action_guard_keeps_live_reply_wait_but_allows_after_module_timeout(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        command = wild_training.get_wild_training_command("谨慎")
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_reply_to_msg_id"] = 123
+            state_module.state["wild_training_reply_due_at"] = now + 300
+            state_module.state["action_guard_sessions"] = {
+                "wild_training": {
+                    "action_key": "wild_training",
+                    "attempt": 1,
+                    "last_sent_at": now - 180,
+                    "first_sent_at": now - 180,
+                    "next_allowed_at": now - 1,
+                    "last_msg_id": 123,
+                    "last_command": command,
+                }
+            }
+
+        allowed, reason = action_guard.before_send(command, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+        with state_module.use_identity(send_as_id):
+            self.assertIn("wild_training", state_module.state["action_guard_sessions"])
+            state_module.state["wild_training_reply_due_at"] = now - 1
+
+        allowed, reason = action_guard.before_send(command, send_as_id=send_as_id, now=now)
+
+        self.assertTrue(allowed, reason)
+        with state_module.use_identity(send_as_id):
+            session = state_module.state["action_guard_sessions"].get("wild_training") or {}
+            self.assertEqual(0, int(session.get("attempt", 0) or 0))
+
+    def test_action_guard_allows_phaseful_queued_launch_but_blocks_running_phases(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+
+        allowed, reason = action_guard.before_send(config.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now)
+
+        self.assertTrue(allowed, reason)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_phase"] = "launching"
+
+        allowed, reason = action_guard.before_send(config.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_phase"] = "idle"
+            state_module.state["yuanying_phase"] = "queued_launch"
+
+        allowed, reason = action_guard.before_send(config.CMD_YUANYING, send_as_id=send_as_id, now=now)
+
+        self.assertTrue(allowed, reason)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_phase"] = "running"
+
+        allowed, reason = action_guard.before_send(config.CMD_YUANYING, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
 
     def test_tianti_recovery_queries_status_before_stale_gangfeng(self):
         now = 1_700_000_000.0
@@ -362,7 +474,10 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["concubine_heart_choice_prompt_msg_id"])
             self.assertEqual(0, state_module.state["concubine_heart_choice_round"])
             self.assertEqual(0, state_module.state["concubine_heart_choice_sent_at"])
-            self.assertEqual(now + 90, state_module.state["next_concubine_time"])
+            expected_due = now - 30 + config.CONCUBINE_HEART_CD_SEC + config.CD_BUFFER_SEC
+            self.assertEqual(expected_due, state_module.state["concubine_heart_due_at"])
+            self.assertEqual(expected_due + 90, state_module.state["next_concubine_time"])
+            self.assertNotEqual("发送 .共历心劫 失败", state_module.state["concubine_heart_last_error"])
 
 
 if __name__ == "__main__":

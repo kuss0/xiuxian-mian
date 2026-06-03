@@ -85,6 +85,7 @@ YUANYING_SPEC = PhasefulSpec(
     summary_passive_timeout_sec=45,
     summary_due_delay_min_sec=30,
     summary_due_delay_max_sec=90,
+    summary_active_query_grace_sec=5 * 60,
     summary_observe_sec=45,
     summary_retry_min_sec=45,
     summary_retry_max_sec=90,
@@ -121,8 +122,8 @@ def clear_yuanying_summary_flags():
     clear_summary_flags(YUANYING_SPEC)
 
 
-def begin_yuanying_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC):
-    begin_post_summary_wait(YUANYING_SPEC, now, delay=delay)
+def begin_yuanying_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC, *, confirmed=False):
+    begin_post_summary_wait(YUANYING_SPEC, now, delay=delay, confirmed=confirmed)
 
 
 def begin_yuanying_summary_wait(now):

@@ -395,6 +395,128 @@ def _is_expired(session, now, spec):
     return now - last_sent_at >= _ttl_sec(spec)
 
 
+def _int_state(identity_state, key):
+    try:
+        return int(identity_state.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_state(identity_state, key):
+    try:
+        return float(identity_state.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _phase_is(identity_state, key, phases):
+    return str(identity_state.get(key) or "idle") in set(phases)
+
+
+def _session_has_send_evidence(session):
+    if not isinstance(session, dict):
+        return False
+    return (
+        int(session.get("attempt", 0) or 0) > 0
+        or float(session.get("last_sent_at", 0) or 0) > 0
+        or float(session.get("first_sent_at", 0) or 0) > 0
+        or int(session.get("last_msg_id", 0) or 0) > 0
+    )
+
+
+def _runtime_has_inflight_action(action_key, identity_state, now):
+    """Return True only when local runtime still has concrete reply/phase evidence."""
+    now = float(now or 0)
+    action_key = str(action_key or "").strip()
+    if action_key == "wild_training":
+        return _int_state(identity_state, "wild_training_reply_to_msg_id") > 0 and _float_state(identity_state, "wild_training_reply_due_at") > now
+    if action_key == "ranch":
+        return _int_state(identity_state, "ranch_reply_to_msg_id") > 0 and _float_state(identity_state, "ranch_reply_due_at") > now
+    if action_key == "tower":
+        return _int_state(identity_state, "last_tower_msg_id") > 0 and _float_state(identity_state, "tower_reply_due_at") > now
+    if action_key == "concubine_dream":
+        return _phase_is(identity_state, "concubine_phase", {"dream_pending"}) and _int_state(identity_state, "concubine_dream_msg_id") > 0
+    if action_key == "concubine_tianji":
+        return _phase_is(identity_state, "concubine_phase", {"tianji_pending"}) and _int_state(identity_state, "concubine_tianji_msg_id") > 0
+    if action_key == "concubine_fragment":
+        return _phase_is(identity_state, "concubine_phase", {"fragment_pending"}) and _int_state(identity_state, "concubine_fragment_msg_id") > 0
+    if action_key == "concubine_puzzle":
+        return _phase_is(identity_state, "concubine_phase", {"puzzle_pending"}) and _int_state(identity_state, "concubine_puzzle_msg_id") > 0
+    if action_key == "concubine_reacquire":
+        return _phase_is(identity_state, "concubine_phase", {"reacquire_pending"}) and _int_state(identity_state, "concubine_reacquire_msg_id") > 0
+    if action_key == "concubine_heart":
+        return _phase_is(identity_state, "concubine_phase", {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}) or _int_state(identity_state, "concubine_heart_prompt_msg_id") > 0
+    if action_key == "deep_retreat":
+        return _phase_is(identity_state, "deep_retreat_phase", {"launching", "running"})
+    if action_key == "yuanying_launch":
+        return _phase_is(identity_state, "yuanying_phase", {"launching", "running"})
+    if action_key == "second_soul_train":
+        return _phase_is(identity_state, "second_soul_phase", {"train_pending"}) and _int_state(identity_state, "second_soul_train_msg_id") > 0
+    if action_key == "small_world_preach":
+        return _int_state(identity_state, "small_world_preach_reply_to_msg_id") > 0 and _float_state(identity_state, "small_world_preach_due_at") > now
+    if action_key == "small_world_query":
+        return _int_state(identity_state, "small_world_query_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"query_pending"})
+    if action_key == "small_world_manifest":
+        return _int_state(identity_state, "small_world_manifest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"manifest_pending"})
+    if action_key == "small_world_harvest":
+        return _int_state(identity_state, "small_world_harvest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"harvest_pending"})
+    if action_key == "small_world_refine":
+        return _int_state(identity_state, "small_world_refine_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"refine_pending"})
+    if action_key == "nanlong":
+        return _int_state(identity_state, "nanlong_reply_to_msg_id") > 0 and _float_state(identity_state, "nanlong_reply_due_at") > now
+    if action_key in {"taiyi_yindao", "taiyi_node_search", "taiyi_node_define"}:
+        phase = str(identity_state.get("taiyi_phase") or "idle")
+        if action_key == "taiyi_yindao":
+            return phase in {"yindao_pending", "search_pending", "define_pending"} and _int_state(identity_state, "taiyi_yindao_msg_id") > 0
+        if action_key == "taiyi_node_search":
+            return phase in {"search_pending", "define_pending"} and _int_state(identity_state, "taiyi_node_search_msg_id") > 0
+        return phase == "define_pending" and _int_state(identity_state, "taiyi_node_define_msg_id") > 0
+    return None
+
+
+def _session_should_close(action_key, session, identity_state, now):
+    spec = _spec(action_key)
+    if not spec:
+        return True
+    if not _session_has_send_evidence(session):
+        return True
+    if _is_expired(session, now, spec):
+        return True
+    inflight = _runtime_has_inflight_action(action_key, identity_state, now)
+    if inflight is False:
+        return True
+    return False
+
+
+def _reconcile_action_session(action_key, identity_state, now):
+    sessions = _get_sessions(identity_state)
+    session = sessions.get(action_key)
+    if not isinstance(session, dict):
+        if action_key in sessions:
+            sessions.pop(action_key, None)
+            return True
+        return False
+    if _session_should_close(action_key, session, identity_state, now):
+        sessions.pop(action_key, None)
+        return True
+    return False
+
+
+def reconcile_identity_sessions(send_as_id=None, now=None):
+    if not has_identity(send_as_id):
+        return 0
+    now = float(now if now is not None else time.time())
+    changed = 0
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        for action_key in list(sessions.keys()):
+            if _reconcile_action_session(action_key, identity_state, now):
+                changed += 1
+        if changed:
+            mark_dirty()
+    return changed
+
+
 def _new_session(action_key, now, command):
     spec = _spec(action_key)
     return {
@@ -421,21 +543,34 @@ def before_send(command, send_as_id=None, now=None):
     spec = _spec(action_key)
     max_attempts = _max_attempts(spec)
     with use_identity(send_as_id) as identity_state:
+        changed = _reconcile_action_session(action_key, identity_state, now)
         sessions = _get_sessions(identity_state)
         session = sessions.get(action_key)
         if not isinstance(session, dict) or _is_expired(session, now, spec):
             session = _new_session(action_key, now, command)
             sessions[action_key] = session
+            changed = True
+
+        if _runtime_has_inflight_action(action_key, identity_state, now):
+            if changed:
+                mark_dirty()
+            return False, f"{session.get('label') or action_key} 等待游戏回复/结算中，暂不补发"
 
         attempt = int(session.get("attempt", 0) or 0)
         if attempt >= max_attempts:
+            if changed:
+                mark_dirty()
             return False, f"{session.get('label') or action_key} 本轮已发送 {attempt}/{max_attempts} 次，等待结果或人工处理"
 
         next_allowed_at = float(session.get("next_allowed_at", 0) or 0)
         if attempt > 0 and now < next_allowed_at:
             wait_sec = int(max(1, next_allowed_at - now))
+            if changed:
+                mark_dirty()
             return False, f"{session.get('label') or action_key} 安全补发等待中，剩余约 {wait_sec}s"
 
+        if changed:
+            mark_dirty()
         return True, ""
 
 

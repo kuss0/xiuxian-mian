@@ -56,6 +56,25 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_warn_line_ignores_expected_dungeon_join_miss(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "[2026-06-03 22:48:41] 🧩 自动副本：收到 @，但未找到同话题/同开门人/60s 内的副本公告。"
+            )
+        )
+
+    def test_hard_line_ignores_existing_fuse_marker_notice(self):
+        self.assertFalse(
+            health_observer.is_hard_journal_line(
+                "Jun 03 18:48:25 pve python[1240250]: already fused: /opt/xiuxian-main/data/state/safety_watchdog_fused.json"
+            )
+        )
+        self.assertTrue(
+            health_observer.is_hard_journal_line(
+                "Jun 03 18:48:25 pve python[1240250]: [SAFETY WATCHDOG FUSED]"
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

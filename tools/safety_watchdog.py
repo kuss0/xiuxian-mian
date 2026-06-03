@@ -195,7 +195,11 @@ def is_dungeon_fast_chain_command(text: str) -> bool:
 
 
 def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
-    return is_dungeon_fast_chain_command(str(prev.get("text") or "")) or is_dungeon_fast_chain_command(str(cur.get("text") or ""))
+    return (
+        is_dungeon_fast_chain_command(str(prev.get("text") or ""))
+        or is_dungeon_fast_chain_command(str(cur.get("text") or ""))
+        or is_safe_heart_global_gap_pair(prev, cur)
+    )
 
 
 def is_sect_teach_command(text: str) -> bool:
@@ -207,8 +211,39 @@ def is_heart_choice_command(text: str) -> bool:
     return command_key(text) in HEART_CHOICE_COMMANDS
 
 
+def is_concubine_heart_event(item: dict) -> bool:
+    raw = command_key(str(item.get("text") or ""))
+    if raw != ".共历心劫" and raw not in HEART_CHOICE_COMMANDS:
+        return False
+    return (
+        str(item.get("family") or "") == "concubine_heart"
+        or str(item.get("source_module") or "") == "共历心劫"
+    )
+
+
+def is_safe_heart_global_gap_pair(prev: dict, cur: dict) -> bool:
+    if not is_concubine_heart_event(cur):
+        return False
+    prev_sender = int(prev.get("sender_id", 0) or 0)
+    cur_sender = int(cur.get("sender_id", 0) or 0)
+    if prev_sender <= 0 or prev_sender != cur_sender:
+        return False
+
+    prev_text = command_key(str(prev.get("text") or ""))
+    cur_text = command_key(str(cur.get("text") or ""))
+    if prev_text == ".共历心劫" and cur_text in HEART_CHOICE_COMMANDS and is_concubine_heart_event(prev):
+        return True
+    if prev_text in HEART_CHOICE_COMMANDS and cur_text in HEART_CHOICE_COMMANDS and is_concubine_heart_event(prev):
+        prev_reply = int(prev.get("reply_to_msg_id", 0) or 0)
+        cur_reply = int(cur.get("reply_to_msg_id", 0) or 0)
+        return prev_reply > 0 and prev_reply == cur_reply
+    return False
+
+
 def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
     if len(items) > 3:
+        return False
+    if not all(is_concubine_heart_event(item) for item in items):
         return False
     reply_ids = {
         int(item.get("reply_to_msg_id", 0) or 0)

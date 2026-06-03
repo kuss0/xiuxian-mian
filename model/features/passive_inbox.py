@@ -775,12 +775,26 @@ def _apply_concubine_passive(text, now, family):
         state["concubine_dream_due_at"] = float(now + concubine_mod.CONCUBINE_DREAM_CD_SEC + concubine_mod.CD_BUFFER_SEC)
         state["concubine_last_error"] = ""
         changed = True
+    if family == "concubine_dream" and concubine_mod._is_dream_cooldown_text(raw_text):
+        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else concubine_mod.CONCUBINE_DREAM_CD_SEC
+        state["concubine_dream_due_at"] = float(now + max(wait_sec + concubine_mod.CD_BUFFER_SEC, concubine_mod.CONCUBINE_DREAM_MIN_RETRY_SEC))
+        state["concubine_last_error"] = ""
+        state["concubine_phase"] = "idle"
+        state["concubine_dream_msg_id"] = 0
+        changed = True
     if family == "concubine_tianji" and "【天机代卜链】" in raw_text:
         gua_match = concubine_mod.RE_TIANJI_GUA.search(raw_text)
         state["concubine_tianji_chain"] = gua_match.group("name").strip() if gua_match else ""
         state["concubine_tianji_due_at"] = float(now + concubine_mod.CONCUBINE_TIANJI_CD_SEC + concubine_mod.CD_BUFFER_SEC)
         state["concubine_tianji_chain_due_at"] = state["concubine_tianji_due_at"]
         state["concubine_tianji_last_error"] = ""
+        changed = True
+    if family == "concubine_tianji" and "天机链路尚未重铸" in raw_text:
+        wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else concubine_mod.CONCUBINE_TIANJI_CD_SEC
+        state["concubine_tianji_due_at"] = float(now + wait_sec + concubine_mod.CD_BUFFER_SEC)
+        state["concubine_tianji_last_error"] = ""
+        state["concubine_phase"] = "idle"
+        state["concubine_tianji_msg_id"] = 0
         changed = True
     if family == "concubine_heart" and "【坠魔心劫·结算】" in raw_text:
         state["concubine_heart_due_at"] = float(now + concubine_mod.CONCUBINE_HEART_CD_SEC + 20 * 60)
@@ -929,7 +943,7 @@ def _apply_tower_passive(text, now, family):
     if family != "tower":
         return False
     raw_text = str(text or "")
-    if "【琉璃问心塔】" in raw_text or any(keyword in raw_text for keyword in tower_mod.TOWER_DONE_HINTS):
+    if "【琉璃问心塔】" in raw_text or "【试炼古塔" in raw_text or any(keyword in raw_text for keyword in tower_mod.TOWER_DONE_HINTS):
         tower_mod._mark_tower_done_today(now)
         return True
     if "闯塔" in raw_text or "塔" in raw_text:

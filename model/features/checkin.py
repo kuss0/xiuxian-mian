@@ -161,6 +161,8 @@ def disable_sect_modules_for_current_identity(now=None):
         "last_sect_teach_msg_id",
         "next_tower_time",
         "last_tower_msg_id",
+        "tower_reply_due_at",
+        "tower_retry_count",
         "next_irr_time",
         "next_guard_time",
         "next_ranch_time",
