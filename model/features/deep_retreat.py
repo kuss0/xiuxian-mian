@@ -429,12 +429,59 @@ def match_deep_retreat_summary_identity(text, now=None, reply_context=None):
     return None, matched_ids
 
 
+def _match_deep_retreat_post_summary_identity(text, now=None, reply_context=None):
+    compact_text = RE_WHITESPACE.sub("", text or "")
+    if not _is_deep_retreat_summary_text(text):
+        return 0
+    now = float(now or 0)
+
+    reply_identity_id = _reply_context_identity(reply_context)
+    if reply_identity_id:
+        with use_identity(reply_identity_id):
+            if state["deep_retreat_enabled"] and state.get("deep_retreat_phase") == "post_summary_wait":
+                return reply_identity_id
+        return 0
+
+    if "@" not in compact_text:
+        return 0
+
+    matched_ids = []
+    for identity_id in get_identity_ids():
+        with use_identity(identity_id):
+            if not state["deep_retreat_enabled"]:
+                continue
+            if state.get("deep_retreat_phase") != "post_summary_wait":
+                continue
+            next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+            if now > 0 and next_time > 0 and next_time < now:
+                continue
+            tags = get_send_as_tags(identity_id)
+            if tags:
+                compact_tags = {RE_WHITESPACE.sub("", tag) for tag in tags}
+                if any(tag in compact_text for tag in compact_tags):
+                    matched_ids.append(identity_id)
+
+    return matched_ids[0] if len(matched_ids) == 1 else 0
+
+
 async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=None, reply_context=None):
     if not _is_deep_retreat_summary_text(text):
         return
 
     target_id, matched_ids = match_deep_retreat_summary_identity(text, now=now, reply_context=reply_context)
     if target_id is None:
+        archived_id = _match_deep_retreat_post_summary_identity(text, now=now, reply_context=reply_context)
+        if archived_id:
+            with use_identity(archived_id):
+                _record_deep_retreat_event(
+                    "闭关总结已归档",
+                    kind="skipped",
+                    reason="no_change",
+                    identity_id=archived_id,
+                    matched_text=text,
+                    decision="summary_already_finalized",
+                )
+            return
         if len(matched_ids) > 1:
             names = ", ".join(mono(get_identity_display_name(identity_id)) for identity_id in matched_ids)
             _record_deep_retreat_event(

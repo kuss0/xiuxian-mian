@@ -634,6 +634,16 @@ def _is_tianti_reply(text, reply_to, matched_family=None):
     return any(command in orig_cmd for command in {CMD_TIANTI_STATUS, CMD_TIANTI_WENXIN, CMD_TIANTI_CLIMB, CMD_TIANTI_GANGFENG})
 
 
+def _is_tianti_status_panel_reply(reply_to, matched_family=None):
+    if matched_family == "tianti_status":
+        return True
+    reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0)
+    if reply_to_msg_id > 0 and reply_to_msg_id == int(state.get("tianti_status_reply_to_msg_id", 0) or 0):
+        return True
+    orig_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()
+    return orig_cmd == CMD_TIANTI_STATUS or orig_cmd.startswith(f"{CMD_TIANTI_STATUS} ")
+
+
 def _parse_tianti_panel(text):
     raw_text = str(text or "")
     if not RE_TIANTI_PANEL.search(raw_text):
@@ -820,7 +830,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         state["tianti_last_status_seen_at"] = float(now)
         if _apply_tianti_panel_payload(panel_payload, now=now):
             handled = True
-        if matched_family == "tianti_status":
+        if _is_tianti_status_panel_reply(reply_to, matched_family=matched_family):
             state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
             state["next_tianti_status_time"] = 0

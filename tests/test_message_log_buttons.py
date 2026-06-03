@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -231,6 +232,36 @@ class MessageLogButtonTests(unittest.TestCase):
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(snapshot)
+
+    def test_negative_channel_identity_sender_resolves_known_identity(self):
+        with patch("model.app.get_identity_ids", return_value=[3800619925]):
+            self.assertEqual(3800619925, app._resolve_identity_sender_id(3800619925))
+            self.assertEqual(3800619925, app._resolve_identity_sender_id(-1003800619925))
+            self.assertEqual(0, app._resolve_identity_sender_id(-100123456789))
+            self.assertEqual(0, app._resolve_identity_sender_id("bad"))
+
+    def test_concubine_affinity_fallback_requires_identity_hint_at_dispatch(self):
+        @contextmanager
+        def fake_use_identity(_identity_id):
+            yield
+
+        event = SimpleNamespace(id=93001, chat_id=-100930)
+        text = "侍妾【凌玉灵】向你微微颔首，你们的情缘增加了 30 点。"
+
+        async def run_case():
+            with patch.object(app, "_claim_runtime_event", return_value=True), \
+                    patch.object(app, "get_identity_ids", return_value=[991101]), \
+                    patch.object(app, "get_identity_enabled", return_value=True), \
+                    patch.object(app, "use_identity", fake_use_identity), \
+                    patch.object(app, "handle_concubine_affinity_event", new=AsyncMock(return_value=False)) as handler:
+                await app._dispatch_concubine_affinity_fallbacks(event, text, 1_700_000_000.0)
+
+            handler.assert_awaited_once()
+            args, kwargs = handler.await_args
+            self.assertIs(args[2], event)
+            self.assertTrue(kwargs.get("require_identity_hint"))
+
+        asyncio.run(run_case())
 
 
 if __name__ == "__main__":

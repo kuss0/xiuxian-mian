@@ -246,6 +246,30 @@ def _track_manual_game_command(sender_id, text, msg_id):
         track_reply_chain_message(msg_id, sender_id, family, root_msg_id=msg_id)
 
 
+def _resolve_identity_sender_id(sender_id):
+    try:
+        sender_id = int(sender_id or 0)
+    except (TypeError, ValueError):
+        return 0
+    if sender_id == 0:
+        return 0
+
+    candidates = [sender_id]
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            try:
+                candidates.append(int(sender_abs[3:]))
+            except ValueError:
+                pass
+
+    identity_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    for candidate in candidates:
+        if int(candidate or 0) in identity_ids:
+            return int(candidate)
+    return 0
+
+
 def _looks_like_game_bot_reply(text, family):
     raw_text = str(text or "").strip()
     if not raw_text or raw_text.startswith("."):
@@ -350,7 +374,7 @@ async def _record_suspected_game_bot(sender_id, family, text):
 
 async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
     sender_id = int(getattr(event, "sender_id", 0) or 0)
-    if sender_id in set(int(identity_id) for identity_id in get_identity_ids()):
+    if _resolve_identity_sender_id(sender_id):
         return False
     reply_to, reply_context = await _resolve_event_reply(event)
     routed_identity_id = int((reply_context or {}).get("send_as_id") or 0)
@@ -438,12 +462,12 @@ async def _run_for_all_identities(handler, *args, enabled_only=False):
             await handler(*args)
 
 
-async def _run_until_handled_for_enabled_identities(handler, text, now, event):
+async def _run_until_handled_for_enabled_identities(handler, text, now, event, **handler_kwargs):
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
             continue
         with use_identity(identity_id):
-            if await handler(text, now, event):
+            if await handler(text, now, event, **handler_kwargs):
                 return True
     return False
 
@@ -554,7 +578,13 @@ async def _dispatch_concubine_affinity_fallbacks(event, text, now):
     if not is_concubine_affinity_event_candidate(text):
         return
     if _claim_runtime_event(event, scope="concubine_affinity"):
-        await _run_until_handled_for_enabled_identities(handle_concubine_affinity_event, text, now, event)
+        await _run_until_handled_for_enabled_identities(
+            handle_concubine_affinity_event,
+            text,
+            now,
+            event,
+            require_identity_hint=True,
+        )
 
 
 async def _dispatch_second_soul_broadcast_fallbacks(event, text, now):
@@ -893,14 +923,15 @@ async def on_message(event):
     # bot 健康监测：记录 . 开头指令的触发时间
     raw_text = (event.raw_text or "").strip()
     sender_id = int(event.sender_id or 0)
-    if raw_text.startswith(".") and sender_id in set(int(identity_id) for identity_id in get_identity_ids()) and get_global_enabled():
+    identity_sender_id = _resolve_identity_sender_id(sender_id)
+    if raw_text.startswith(".") and identity_sender_id and get_global_enabled():
         note_game_command_observed(raw_text)
 
     if not sender_is_game_bot:
         text = event.raw_text or ""
-        if sender_id in set(int(identity_id) for identity_id in get_identity_ids()):
-            observe_phaseful_identity_message(sender_id, text, now=now, msg_id=event.id)
-            _track_manual_game_command(sender_id, text, event.id)
+        if identity_sender_id:
+            observe_phaseful_identity_message(identity_sender_id, text, now=now, msg_id=event.id)
+            _track_manual_game_command(identity_sender_id, text, event.id)
         try:
             await handle_dungeon_join_mention(event, text, now)
             await _handle_replica_progress_event(event, now, event_type="message")

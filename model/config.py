@@ -282,6 +282,21 @@ CMD_HEHUAN_CONTRACT = ".缔结同参"
 CMD_HEHUAN_DUAL = ".双修"
 CMD_HEHUAN_SEAL = ".种下心印"
 CMD_HEHUAN_ESCAPE = ".挣脱心印"
+CMD_TIANXING_HELP = ".天星宗帮助"
+CMD_TIANXING_PANEL = ".天机盘"
+CMD_TIANXING_OBSERVE = ".观命"
+CMD_TIANXING_SET_STAR = ".定命"
+CMD_TIANXING_PREDICT = ".推命"
+CMD_TIANXING_CHANGE_FATE = ".改命"
+CMD_TIANXING_CLEAR_CALAMITY = ".消劫"
+CMD_YINLUO_GUIDE = ".阴罗宗帮助"
+CMD_YINLUO_BANNER = ".我的阴罗幡"
+CMD_YINLUO_BLOOD_FOREST = ".血洗山林"
+CMD_YINLUO_DEMON_SUMMON = ".召唤魔影"
+CMD_YINLUO_CONVERT = ".化功为煞"
+CMD_YINLUO_COLLECT = ".收取幡魂"
+CMD_YINLUO_CURSE = ".下咒"
+CMD_YINLUO_POSSESS = ".夺舍"
 CMD_SMALL_WORLD_QUERY = ".小世界"
 CMD_SMALL_WORLD_MANIFEST = ".显灵"
 CMD_SMALL_WORLD_HARVEST = ".收割香火"
@@ -417,6 +432,21 @@ SCRIPT_COMMANDS = [
     CMD_HEHUAN_DUAL,
     CMD_HEHUAN_SEAL,
     CMD_HEHUAN_ESCAPE,
+    CMD_TIANXING_HELP,
+    CMD_TIANXING_PANEL,
+    CMD_TIANXING_OBSERVE,
+    CMD_TIANXING_SET_STAR,
+    CMD_TIANXING_PREDICT,
+    CMD_TIANXING_CHANGE_FATE,
+    CMD_TIANXING_CLEAR_CALAMITY,
+    CMD_YINLUO_GUIDE,
+    CMD_YINLUO_BANNER,
+    CMD_YINLUO_BLOOD_FOREST,
+    CMD_YINLUO_DEMON_SUMMON,
+    CMD_YINLUO_CONVERT,
+    CMD_YINLUO_COLLECT,
+    CMD_YINLUO_CURSE,
+    CMD_YINLUO_POSSESS,
     CMD_SMALL_WORLD_QUERY,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_HARVEST,
@@ -433,7 +463,7 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -451,6 +481,8 @@ MODULE_KEY_MAP = {
     "天机代卜": "concubine_tianji_enabled",
     "共历心劫": "concubine_heart_enabled",
     "合欢宗": "hehuan_enabled",
+    "天星宗": "tianxing_enabled",
+    "阴罗宗": "yinluo_enabled",
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
     "深度闭关": "deep_retreat_enabled",
@@ -656,6 +688,8 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.天机代卜状态$'), "天机代卜"),
     (re.compile(r'^\.共历心劫状态$'), "共历心劫"),
     (re.compile(r'^\.合欢宗状态$'), "合欢宗"),
+    (re.compile(r'^\.天星宗状态$'), "天星宗"),
+    (re.compile(r'^\.阴罗宗状态$'), "阴罗宗"),
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
@@ -699,6 +733,10 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)共历心劫$'), "共历心劫", False),
     (re.compile(r'^\.(开启|打开)合欢宗$'), "合欢宗", True),
     (re.compile(r'^\.(关闭|关掉)合欢宗$'), "合欢宗", False),
+    (re.compile(r'^\.(开启|打开)天星宗$'), "天星宗", True),
+    (re.compile(r'^\.(关闭|关掉)天星宗$'), "天星宗", False),
+    (re.compile(r'^\.(开启|打开)阴罗宗$'), "阴罗宗", True),
+    (re.compile(r'^\.(关闭|关掉)阴罗宗$'), "阴罗宗", False),
     (re.compile(r'^\.(开启|打开)南陇侯$'), "南陇侯", True),
     (re.compile(r'^\.(关闭|关掉)南陇侯$'), "南陇侯", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),

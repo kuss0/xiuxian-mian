@@ -1,12 +1,14 @@
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
+from types import SimpleNamespace
 
 from ..config import STATE_DIR
 from ..persistence import save_state
-from ..state import get_identity_ids, get_send_as_profile, get_send_as_tags, state, use_identity
+from ..state import get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, state, use_identity
 from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait_time
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
@@ -16,18 +18,27 @@ from . import second_soul as second_soul_mod
 from . import small_world as small_world_mod
 from . import stargazer as stargazer_mod
 from . import storage_bag as storage_bag_mod
+from . import tianxing as tianxing_mod
 from . import tianti as tianti_mod
 from . import tower as tower_mod
 from . import tree as tree_mod
 from . import wild_training as wild_training_mod
+from . import yinluo as yinluo_mod
 from .passive_event_ledger import append_passive_event
 
 
 PASSIVE_INBOX_RECENT_LIMIT = 20
 PASSIVE_INBOX_STATS_FILE = os.path.join(STATE_DIR, "passive_inbox_stats.json")
 PASSIVE_INBOX_RECENT_FIELD_LIMIT = 120
-PASSIVE_INBOX_NOISY_SKIP_REASONS = {"no_identity", "no_reply_context", "reply_context_no_identity"}
+PASSIVE_INBOX_NOISY_SKIP_REASONS = {
+    "no_identity",
+    "no_reply_context",
+    "reply_context_no_identity",
+    "external_identity_no_match",
+    "external_owner_no_match",
+}
 PASSIVE_INBOX_OBSERVED_TTL_SEC = 10 * 60
+RE_AT_MENTION = re.compile(r"@([^\s\r\n\t，。！？；：、,.!?;:()（）\[\]【】<>《》]+)")
 _PASSIVE_STATS_DEFAULT = {
     "total": 0,
     "changed": 0,
@@ -347,6 +358,15 @@ def _normalize_tag(text):
     return str(text or "").strip().lstrip("@").casefold()
 
 
+def _extract_at_mentions(text):
+    mentions = set()
+    for match in RE_AT_MENTION.finditer(str(text or "")):
+        mention = _normalize_tag(match.group(1))
+        if mention:
+            mentions.add(mention)
+    return mentions
+
+
 def _match_identity_by_owner_name(owner_name):
     owner_key = _normalize_tag(owner_name)
     if not owner_key:
@@ -366,13 +386,28 @@ def _match_identity_by_owner_name(owner_name):
 
 
 def _match_identity_by_at_text(text):
-    raw_text = str(text or "")
+    mentions = _extract_at_mentions(text)
+    if not mentions:
+        return None
     matched = []
     for identity_id in get_identity_ids():
         tags = get_send_as_tags(identity_id) or []
-        if any(tag and tag in raw_text for tag in tags):
+        identity_tags = {_normalize_tag(tag) for tag in tags if _normalize_tag(tag)}
+        if identity_tags & mentions:
             matched.append(identity_id)
+    matched = sorted({int(identity_id) for identity_id in matched})
     return matched[0] if len(matched) == 1 else None
+
+
+def _resolve_owner_hint(raw_text):
+    raw_text = str(raw_text or "")
+    owner_match = small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text)
+    if owner_match:
+        return True, _match_identity_by_owner_name(owner_match.group("owner")), "owner_name"
+    banner_match = yinluo_mod.RE_BANNER_TITLE.search(raw_text)
+    if banner_match:
+        return True, _match_identity_by_owner_name(banner_match.group("owner")), "owner_name"
+    return False, None, ""
 
 
 def _identity_from_reply_context(reply_context):
@@ -383,8 +418,211 @@ def _identity_from_reply_context(reply_context):
     return identity_id if identity_id > 0 else None
 
 
+def _context_msg_id(reply_context, key):
+    try:
+        return int((reply_context or {}).get(key) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _looks_like_concubine_heart_reply(text):
+    raw_text = str(text or "")
+    return (
+        "【坠魔心劫·" in raw_text
+        or "心劫余波未散" in raw_text
+        or "心劫抉择正在进行" in raw_text
+        or "你已有一场心劫抉择正在进行" in raw_text
+        or "请回复一条包含侍妾/道侣内容的消息" in raw_text
+        or ("修为不足" in raw_text and "开启共历心劫" in raw_text)
+    )
+
+
+def _resolve_concubine_heart_identity_from_context(raw_text, reply_context, observed_msg_id):
+    if _family_from_reply_context(reply_context) != "concubine_heart" or not _looks_like_concubine_heart_reply(raw_text):
+        return None, ""
+
+    observed_msg_id = int(observed_msg_id or 0)
+    reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
+    root_msg_id = _context_msg_id(reply_context, "root_msg_id")
+    context_ids = {msg_id for msg_id in (reply_to_msg_id, root_msg_id) if msg_id > 0}
+    matched = []
+    for identity_id in get_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if not identity_state.get("concubine_heart_enabled"):
+            continue
+        phase = str(identity_state.get("concubine_phase") or "").strip()
+        if phase not in concubine_mod.CONCUBINE_HEART_ACTIVE_PHASES and int(identity_state.get("concubine_heart_prompt_msg_id", 0) or 0) <= 0:
+            continue
+        prompt_msg_id = int(identity_state.get("concubine_heart_prompt_msg_id", 0) or 0)
+        start_msg_id = int(identity_state.get("concubine_heart_msg_id", 0) or 0)
+        choice_prompt_msg_id = int(identity_state.get("concubine_heart_choice_prompt_msg_id", 0) or 0)
+        if (
+            (observed_msg_id > 0 and observed_msg_id in {prompt_msg_id, choice_prompt_msg_id})
+            or (prompt_msg_id > 0 and prompt_msg_id in context_ids)
+            or (start_msg_id > 0 and start_msg_id in context_ids)
+        ):
+            matched.append(int(identity_id))
+    matched = sorted(set(matched))
+    if len(matched) == 1:
+        return matched[0], "concubine_heart_chain"
+    return None, ""
+
+
+def _concubine_pending_context_specs(family):
+    family = str(family or "").strip()
+    specs = {
+        "concubine_status": (
+            {
+                "state_key": "concubine_status_msg_id",
+                "phases": {"status_pending"},
+                "handler": concubine_mod.handle_concubine_status_reply,
+                "current_msg_id": True,
+            },
+            {
+                "state_key": "concubine_gift_status_msg_id",
+                "phases": {"gift_status_pending"},
+                "handler": concubine_mod.handle_concubine_status_reply,
+                "current_msg_id": True,
+            },
+        ),
+        "concubine_greet": (
+            {
+                "state_key": "concubine_greet_msg_id",
+                "phases": {"greet_pending"},
+                "handler": concubine_mod.handle_concubine_greet_reply,
+            },
+        ),
+        "storage_bag": (
+            {
+                "state_key": "concubine_gift_bag_msg_id",
+                "phases": {"gift_bag_pending"},
+                "handler": concubine_mod.handle_concubine_storage_bag_reply,
+                "family": "storage_bag",
+            },
+        ),
+        "concubine_gift": (
+            {
+                "state_key": "concubine_gift_msg_id",
+                "phases": {"gift_pending"},
+                "handler": concubine_mod.handle_concubine_gift_reply,
+            },
+        ),
+        "concubine_dream": (
+            {
+                "state_key": "concubine_dream_msg_id",
+                "phases": {"dream_pending"},
+                "handler": concubine_mod.handle_concubine_dream_reply,
+            },
+        ),
+        "concubine_fragment": (
+            {
+                "state_key": "concubine_fragment_msg_id",
+                "phases": {"fragment_pending"},
+                "handler": concubine_mod.handle_concubine_fragment_reply,
+            },
+        ),
+        "concubine_puzzle": (
+            {
+                "state_key": "concubine_puzzle_msg_id",
+                "phases": {"puzzle_pending"},
+                "handler": concubine_mod.handle_concubine_puzzle_reply,
+            },
+        ),
+        "concubine_reacquire": (
+            {
+                "state_key": "concubine_reacquire_msg_id",
+                "phases": {"reacquire_pending"},
+                "handler": concubine_mod.handle_concubine_reacquire_reply,
+            },
+        ),
+        "concubine_tianji": (
+            {
+                "state_key": "concubine_tianji_msg_id",
+                "phases": {"tianji_pending"},
+                "handler": concubine_mod.handle_concubine_tianji_reply,
+            },
+        ),
+    }
+    return specs.get(family, ())
+
+
+def _resolve_concubine_pending_identity_from_context(family, reply_context):
+    specs = _concubine_pending_context_specs(family)
+    if not specs:
+        return None, "", None
+    reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
+    root_msg_id = _context_msg_id(reply_context, "root_msg_id")
+    context_ids = {msg_id for msg_id in (reply_to_msg_id, root_msg_id) if msg_id > 0}
+    if not context_ids:
+        return None, "", None
+
+    matched = []
+    for identity_id in get_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        phase = str(identity_state.get("concubine_phase") or "").strip()
+        for spec in specs:
+            if phase not in (spec.get("phases") or set()):
+                continue
+            tracked_msg_id = int(identity_state.get(spec.get("state_key") or "", 0) or 0)
+            if tracked_msg_id > 0 and tracked_msg_id in context_ids:
+                matched.append((int(identity_id), spec))
+    identity_ids = sorted({identity_id for identity_id, _spec in matched})
+    if len(identity_ids) != 1:
+        return None, "", None
+    selected_id = identity_ids[0]
+    selected_specs = [spec for identity_id, spec in matched if identity_id == selected_id]
+    if len(selected_specs) != 1:
+        return None, "", None
+    return selected_id, "concubine_pending_chain", selected_specs[0]
+
+
 def _family_from_reply_context(reply_context):
     return str((reply_context or {}).get("family") or "").strip()
+
+
+def _route_source(event_type, route):
+    route = str(route or "").strip()
+    event_type = str(event_type or "").strip()
+    if not route:
+        return event_type
+    return f"{event_type}:{route}" if event_type else route
+
+
+def _resolve_passive_text_identity(raw_text, family):
+    raw_text = str(raw_text or "")
+    family = str(family or "").strip()
+    if not _looks_like_supported_passive(raw_text, family):
+        return None, ""
+
+    has_owner_hint, target_id, owner_route = _resolve_owner_hint(raw_text)
+    if has_owner_hint:
+        if target_id is not None:
+            return target_id, owner_route
+        return None, ""
+
+    target_id = _match_identity_by_at_text(raw_text)
+    if target_id is not None:
+        return target_id, "passive_tag"
+    return None, ""
+
+
+def _has_passive_owner_hint(raw_text):
+    raw_text = str(raw_text or "")
+    return bool(small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text) or yinluo_mod.RE_BANNER_TITLE.search(raw_text))
+
+
+def _missing_identity_reason(raw_text, family):
+    if _has_passive_owner_hint(raw_text):
+        return "external_owner_no_match"
+    if _extract_at_mentions(raw_text):
+        return "external_identity_no_match"
+    return "reply_context_no_identity" if str(family or "").strip() else "no_reply_context"
 
 
 def _apply_tianti_passive(text, now, family):
@@ -758,7 +996,7 @@ def _apply_stargazer_passive(text, now, family):
             state["next_stargazer_panel_time"] = float(now + parse_wait_time(raw_text) + stargazer_mod.CD_BUFFER_SEC)
             state["stargazer_last_action"] = "passive_soothe_cd"
             changed = True
-        elif "安抚完成" in raw_text or stargazer_mod._is_stargazer_soothe_no_need(raw_text):
+        elif stargazer_mod._is_stargazer_soothe_success(raw_text) or stargazer_mod._is_stargazer_soothe_no_need(raw_text):
             state["stargazer_last_action"] = "passive_soothe_done"
             changed = True
     elif family == "stargazer_collect":
@@ -784,6 +1022,8 @@ def _looks_like_supported_passive(text, family):
         or family.startswith("second_soul")
         or family.startswith("concubine_")
         or family.startswith("hehuan_")
+        or family.startswith("tianxing_")
+        or family.startswith("yinluo_")
         or family.startswith("stargazer_")
         or family in {
             "pet",
@@ -807,6 +1047,8 @@ def _looks_like_supported_passive(text, family):
         or _is_tree_panel_text(raw_text)
         or _is_tree_mature_broadcast(raw_text)
         or hehuan_mod.looks_like_hehuan_text(raw_text)
+        or tianxing_mod.looks_like_tianxing_text(raw_text)
+        or yinluo_mod.looks_like_yinluo_text(raw_text)
         or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE)
     ):
         return True
@@ -823,8 +1065,9 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
         return False
     family = _family_from_reply_context(reply_context)
     target_id = _identity_from_reply_context(reply_context)
-    context_route_source = f"{event_type}:reply_context" if event_type else "reply_context"
-    passive_route_source = f"{event_type}:passive_match" if event_type else "passive_match"
+    context_route_source = _route_source(event_type, "reply_context")
+    passive_route_source = _route_source(event_type, "passive_match")
+    target_route_source = context_route_source if target_id is not None else ""
     source_message_id = observed_msg_id
 
     storage_changed, storage_identity_id = _apply_storage_bag_passive(raw_text, now)
@@ -846,19 +1089,49 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
 
     if target_id is None and "【第二元神归位】" in raw_text:
         target_id = _match_identity_by_at_text(raw_text)
+        if target_id is not None:
+            target_route_source = _route_source(event_type, "passive_tag")
+    has_owner_hint, owner_target_id, owner_route = _resolve_owner_hint(raw_text)
+    if target_id is None and has_owner_hint:
+        if owner_target_id is not None:
+            target_id = owner_target_id
+            target_route_source = _route_source(event_type, owner_route)
+    if target_id is None and not has_owner_hint:
+        if family.startswith("hehuan_") or hehuan_mod.looks_like_hehuan_text(raw_text):
+            target_id = _match_identity_by_at_text(raw_text)
+            if target_id is not None:
+                target_route_source = _route_source(event_type, "passive_tag")
+        if target_id is None and (family.startswith("tianxing_") or tianxing_mod.looks_like_tianxing_text(raw_text)):
+            target_id = _match_identity_by_at_text(raw_text)
+            if target_id is not None:
+                target_route_source = _route_source(event_type, "passive_tag")
+        if target_id is None and (family.startswith("yinluo_") or yinluo_mod.looks_like_yinluo_text(raw_text)):
+            target_id = _match_identity_by_at_text(raw_text)
+            if target_id is not None:
+                target_route_source = _route_source(event_type, "passive_tag")
+        if target_id is None:
+            target_id, passive_identity_route = _resolve_passive_text_identity(raw_text, family)
+            if target_id is not None:
+                target_route_source = _route_source(event_type, passive_identity_route)
+    heart_context_resolved = False
+    concubine_pending_context_spec = None
     if target_id is None:
-        owner_match = small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text)
-        if owner_match:
-            target_id = _match_identity_by_owner_name(owner_match.group("owner"))
-    if target_id is None and (family.startswith("hehuan_") or hehuan_mod.looks_like_hehuan_text(raw_text)):
-        target_id = _match_identity_by_at_text(raw_text)
+        target_id, heart_identity_route = _resolve_concubine_heart_identity_from_context(raw_text, reply_context, observed_msg_id)
+        if target_id is not None:
+            heart_context_resolved = True
+            target_route_source = _route_source(event_type, heart_identity_route)
+    if target_id is None:
+        target_id, pending_identity_route, concubine_pending_context_spec = _resolve_concubine_pending_identity_from_context(family, reply_context)
+        if target_id is not None:
+            target_route_source = _route_source(event_type, pending_identity_route)
 
     if target_id is None:
         if _looks_like_supported_passive(raw_text, family):
+            missing_reason = _missing_identity_reason(raw_text, family)
             if family:
                 _record_passive_event(
                     "skipped",
-                    reason="reply_context_no_identity",
+                    reason=missing_reason,
                     summary=family,
                     family=family,
                     chat_id=observed_chat_id,
@@ -874,7 +1147,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             else:
                 _record_passive_event(
                     "skipped",
-                    reason="no_reply_context",
+                    reason=missing_reason,
                     chat_id=observed_chat_id,
                     msg_id=observed_msg_id,
                     event_type=event_type,
@@ -908,7 +1181,43 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append("small_world")
             changed = module_changed or changed
-        if family.startswith("concubine_"):
+        if heart_context_resolved and family == "concubine_heart":
+            reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
+            reply_to = SimpleNamespace(raw_text="", id=reply_to_msg_id) if reply_to_msg_id > 0 else None
+            module_changed = await concubine_mod.handle_concubine_heart_reply(
+                raw_text,
+                now,
+                reply_to,
+                matched_family="concubine_heart",
+                current_msg_id=observed_msg_id,
+            )
+            if module_changed:
+                changed_modules.append("concubine")
+            changed = module_changed or changed
+        elif concubine_pending_context_spec is not None:
+            reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
+            reply_to = SimpleNamespace(raw_text="", id=reply_to_msg_id) if reply_to_msg_id > 0 else None
+            handler = concubine_pending_context_spec["handler"]
+            matched_family = concubine_pending_context_spec.get("family") or family
+            if concubine_pending_context_spec.get("current_msg_id"):
+                module_changed = await handler(
+                    raw_text,
+                    now,
+                    reply_to,
+                    matched_family=matched_family,
+                    current_msg_id=observed_msg_id,
+                )
+            else:
+                module_changed = await handler(
+                    raw_text,
+                    now,
+                    reply_to,
+                    matched_family=matched_family,
+                )
+            if module_changed:
+                changed_modules.append("concubine")
+            changed = module_changed or changed
+        elif family.startswith("concubine_"):
             module_changed = _apply_concubine_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append("concubine")
@@ -917,6 +1226,16 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             module_changed = hehuan_mod.apply_hehuan_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append("hehuan")
+            changed = module_changed or changed
+        if family.startswith("tianxing_") or (not family and tianxing_mod.looks_like_tianxing_text(raw_text)):
+            module_changed = tianxing_mod.apply_tianxing_passive(raw_text, now, family)
+            if module_changed:
+                changed_modules.append("tianxing")
+            changed = module_changed or changed
+        if family.startswith("yinluo_") or (not family and yinluo_mod.looks_like_yinluo_text(raw_text)):
+            module_changed = yinluo_mod.apply_yinluo_passive(raw_text, now, family)
+            if module_changed:
+                changed_modules.append("yinluo")
             changed = module_changed or changed
         if family in {"tree_panel", "tree_guard", "tree_harvest"} or _is_tree_panel_text(raw_text) or _is_tree_mature_broadcast(raw_text):
             module_changed = _apply_tree_passive(raw_text, now, family)
@@ -957,7 +1276,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
             event_type=event_type,
-            route_source=context_route_source if family else passive_route_source,
+            route_source=target_route_source or (context_route_source if family else passive_route_source),
             matched_text=raw_text,
             decision="state_changed",
             source_message_id=source_message_id,
@@ -974,7 +1293,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
             event_type=event_type,
-            route_source=context_route_source if family else passive_route_source,
+            route_source=target_route_source or (context_route_source if family else passive_route_source),
             matched_text=raw_text,
             decision="no_state_change",
             source_message_id=source_message_id,

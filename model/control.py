@@ -113,7 +113,7 @@ from .features.guanxing import (
     restore_guanxing_round_runtime,
 )
 from .features.guanxing_monitor import get_guanxing_monitor_status_text, restore_guanxing_monitor_runtime_state
-from .features.hehuan import get_hehuan_status_text
+from .features.hehuan import execute_hehuan_manual_action, get_hehuan_status_text
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
@@ -123,12 +123,14 @@ from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
 from .features.small_world import clear_small_world_state, get_small_world_status_text, schedule_small_world_initial_check
 from .features.stargazer import get_stargazer_status_text
+from .features.tianxing import execute_tianxing_manual_action, get_tianxing_status_text
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
 from .features.yuanying import get_yuanying_status_detail_text
+from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
 from .features.wild_training import (
     WILD_TRAINING_CYCLE_MAX_SEC,
     WILD_TRAINING_CYCLE_MIN_SEC,
@@ -202,6 +204,9 @@ RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
 RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
+RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
+RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
+RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|召唤魔影|召唤|收取幡魂|收取|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
 RE_STORAGE_BAG_RECENT_DAYS = re.compile(r"近\s*(\d{1,2})\s*天")
 STORAGE_BAG_REPORT_TIMEOUT_SEC = 30
 STORAGE_BAG_REPORT_REPLY_LIMIT = 3300
@@ -1373,6 +1378,8 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "天机代卜": get_concubine_status_text,
         "共历心劫": get_concubine_status_text,
         "合欢宗": get_hehuan_status_text,
+        "天星宗": get_tianxing_status_text,
+        "阴罗宗": get_yinluo_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,
@@ -2014,6 +2021,8 @@ def _format_log_group_help_html(send_as_id=None):
         + "\n".join(f"- {cmd}" for cmd in analysis_commands)
         + "\n\n日志推送：\n"
         + "\n".join(f"- {cmd}" for cmd in audit_commands)
+        + "\n\n三宗门手动发送（必须显式指定单个身份）：\n"
+        + "\n".join(THREE_SECT_MANUAL_USAGE.splitlines()[1:])
         + "\n\n控制指令：\n"
         + "\n".join(f"- {cmd}{suffix if '<模块名>' in cmd or cmd.startswith('.开启全部') or cmd.startswith('.关闭全部') else ''}" for cmd in control_commands)
         + "\n\n副本群轻量指令（在副本群/游戏群使用）：\n"
@@ -2108,9 +2117,9 @@ def _restore_tower_runtime(now):
 
 
 def _restore_tree_runtime(now):
+    state["tree_bootstrap_check_needed"] = False
+    state["tree_bootstrap_check_due_at"] = 0
     if state["is_maturing"]:
-        state["tree_bootstrap_check_needed"] = False
-        state["tree_bootstrap_check_due_at"] = 0
         return
     if state["is_invading"] or state["pending_irrigation"]:
         request_tree_bootstrap_check(now)
@@ -2118,11 +2127,6 @@ def _restore_tree_runtime(now):
     if state["next_irr_time"] <= 0:
         _schedule_module_immediate_retry("灵树", now)
         return
-    if state["next_irr_time"] <= now + 15 * 60:
-        request_tree_bootstrap_check(now, min_sec=15, max_sec=90)
-        return
-    if float(state.get("last_tree_status_sent_at", 0) or 0) <= now - 6 * 3600:
-        request_tree_bootstrap_check(now, min_sec=60, max_sec=180)
 
 
 def _restore_second_soul_runtime(now):
@@ -3859,6 +3863,119 @@ async def _handle_storage_bag_report_command(event, raw_args):
     return True
 
 
+THREE_SECT_MANUAL_USAGE = (
+    "三宗门手动发送必须指定单个身份：\n"
+    "- .合欢温养 @身份\n"
+    "- .天星查盘 @身份\n"
+    "- .天星观命 @身份\n"
+    "- .天星定命 <紫微|天府|太阴|贪狼> @身份\n"
+    "- .天星推命 <闭关|炼制|探索|斗法> @身份\n"
+    "- .天星改命 <闭关|炼制|探索|斗法> @身份\n"
+    "- .天星消劫 @身份\n"
+    "- .阴罗查幡 @身份\n"
+    "- .阴罗召唤 @身份\n"
+    "- .阴罗血洗 @身份\n"
+    "- .阴罗收取 @身份\n"
+    "- .阴罗化煞 <数量> @身份"
+)
+
+
+async def _reply_three_sect_manual_result(event, title, ok, message, identity_id=None, plan=None):
+    lines = []
+    if identity_id is not None:
+        lines.append(f"身份：{get_identity_display_name(identity_id)}")
+    lines.append(f"结果：{'已发送' if ok else '未发送'}")
+    if message:
+        lines.append(f"说明：{message}")
+    if isinstance(plan, dict) and plan.get("command"):
+        lines.append(f"命令：{plan.get('command')}")
+    await _reply_log_group_card(
+        event,
+        title,
+        "\n".join(lines),
+        error_prefix=f"❌ {title}回复失败",
+    )
+    return True
+
+
+async def _handle_three_sect_manual_command(event, text, explicit_identity_id):
+    hehuan_match = RE_CMD_HEHUAN_MANUAL.match(text)
+    tianxing_match = RE_CMD_TIANXING_MANUAL.match(text)
+    yinluo_match = RE_CMD_YINLUO_MANUAL.match(text)
+    if not (hehuan_match or tianxing_match or yinluo_match):
+        return False
+
+    if explicit_identity_id is None:
+        await _reply_log_group_card(
+            event,
+            "三宗门手动发送",
+            THREE_SECT_MANUAL_USAGE,
+            error_prefix="❌ 三宗门手动发送回复失败",
+        )
+        return True
+    if not get_identity_enabled(explicit_identity_id):
+        return await _reply_three_sect_manual_result(
+            event,
+            "三宗门手动发送",
+            False,
+            "身份已停用。",
+            explicit_identity_id,
+        )
+
+    if hehuan_match:
+        module_name = "合欢宗"
+        if not is_module_available(module_name, explicit_identity_id):
+            return await _reply_three_sect_manual_result(
+                event,
+                "合欢宗手动发送",
+                False,
+                f"{module_name}对该身份不可用。",
+                explicit_identity_id,
+            )
+        ok, message, plan = await execute_hehuan_manual_action(
+            "warm",
+            send_as_id=explicit_identity_id,
+        )
+        return await _reply_three_sect_manual_result(event, "合欢宗手动发送", ok, message, explicit_identity_id, plan)
+
+    if tianxing_match:
+        module_name = "天星宗"
+        if not is_module_available(module_name, explicit_identity_id):
+            return await _reply_three_sect_manual_result(
+                event,
+                "天星宗手动发送",
+                False,
+                f"{module_name}对该身份不可用。",
+                explicit_identity_id,
+            )
+        action = tianxing_match.group(1) or ""
+        arg = tianxing_match.group(2) or ""
+        ok, message, plan = await execute_tianxing_manual_action(
+            action,
+            arg,
+            send_as_id=explicit_identity_id,
+        )
+        return await _reply_three_sect_manual_result(event, "天星宗手动发送", ok, message, explicit_identity_id, plan)
+
+    module_name = "阴罗宗"
+    if not is_module_available(module_name, explicit_identity_id):
+        return await _reply_three_sect_manual_result(
+            event,
+            "阴罗宗手动发送",
+            False,
+            f"{module_name}对该身份不可用。",
+            explicit_identity_id,
+        )
+    action = yinluo_match.group(1) or ""
+    arg = yinluo_match.group(2) or ""
+    ok, message, plan = await execute_yinluo_manual_action(
+        action,
+        arg,
+        send_as_id=explicit_identity_id,
+    )
+    return await _reply_three_sect_manual_result(event, "阴罗宗手动发送", ok, message, explicit_identity_id, plan)
+
+
 async def handle_log_group_command(event):
     if event.chat_id != LOG_GROUP_ID:
         return False
@@ -3879,6 +3996,9 @@ async def handle_log_group_command(event):
         return await _handle_storage_bag_report_command(event, storage_bag_match.group(2) or "")
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
+
+    if await _handle_three_sect_manual_command(event, text, explicit_identity_id):
+        return True
 
     if RE_CMD_HELP.match(text):
         await reply_log_group_message(

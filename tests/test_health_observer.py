@@ -44,6 +44,18 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("error", status)
         self.assertIn("xiuxian.service not running: inactive/dead", reasons)
 
+    def test_warn_line_ignores_no_resend_context(self):
+        self.assertFalse(health_observer.is_warn_journal_line("启动校验：查询灵树状态（无补发）。"))
+        self.assertFalse(health_observer.is_warn_journal_line("状态确认，不补发。"))
+        self.assertTrue(health_observer.is_warn_journal_line("野外历练回复超时，准备补发一次。"))
+
+    def test_warn_line_ignores_quiz_business_timeout(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "🦴 <code>@vvlvdfr</code>｜题库内超时未作答｜题库匹配 B.鼎外乾蓝冰焰"
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

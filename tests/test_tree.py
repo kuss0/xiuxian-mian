@@ -66,7 +66,7 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(context["send_as_id"])
         self.assertEqual("tree_panel", context["family"])
 
-    async def test_normal_panel_recovers_stale_maturing_state_for_all_tree_identities(self):
+    async def test_unowned_normal_panel_does_not_recover_stale_maturing_state(self):
         now = 1000.0
         identity_ids = [3756719391, 3800619925]
         for identity_id in identity_ids:
@@ -93,9 +93,51 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
             patch.object(tree, "save_state"),
         ):
-            handled = await tree.handle_tree_panel(panel, now, False)
+            with state_module.use_identity(identity_ids[0]):
+                handled = await tree.handle_tree_panel(panel, now, False)
 
         self.assertFalse(handled)
+        audit_mock.assert_not_awaited()
+        for identity_id in identity_ids:
+            with state_module.use_identity(identity_id):
+                self.assertTrue(state_module.state["is_maturing"])
+                self.assertTrue(state_module.state["is_harvested"])
+                self.assertTrue(state_module.state["pending_irrigation"])
+                self.assertEqual(now + 9999999, state_module.state["next_irr_time"])
+
+    async def test_owned_normal_panel_recovers_stale_maturing_state_for_all_tree_identities(self):
+        now = 1000.0
+        identity_ids = [3756719391, 3800619925]
+        for identity_id in identity_ids:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username=f"user{identity_id}")
+            with state_module.use_identity(identity_id):
+                state_module.state["tree_enabled"] = True
+                state_module.state["is_maturing"] = True
+                state_module.state["is_harvested"] = True
+                state_module.state["pending_irrigation"] = True
+                state_module.state["next_irr_time"] = now + 9999999
+
+        panel = (
+            "【落云宗 · 灵眼之树】\n"
+            "💧 环境: 干渴 (需 水/冰/雾)\n"
+            "🌲 进度:\n"
+            "🟩🟩🟩⬜⬜ 75.08%\n"
+            "🔄 阶段: 4 / 4\n\n"
+            "📊 实时贡献榜:\n"
+            "1. user3756719391 (你): 944\n\n"
+            "👤 你的当前状态: 944 点\n"
+            "🌰 奉养灵树: 需【一截灵眼之树】 0/1 或木髓 0/3"
+        )
+
+        with (
+            patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(tree, "save_state"),
+        ):
+            with state_module.use_identity(identity_ids[0]):
+                handled = await tree.handle_tree_panel(panel, now, False)
+
+        self.assertTrue(handled)
         audit_mock.assert_awaited_once()
         for identity_id in identity_ids:
             with state_module.use_identity(identity_id):
@@ -104,6 +146,52 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(state_module.state["pending_irrigation"])
                 self.assertGreaterEqual(state_module.state["next_irr_time"], now + 45 * 60)
                 self.assertLessEqual(state_module.state["next_irr_time"], now + 75 * 60)
+
+    async def test_recent_normal_startup_tree_status_request_is_suppressed(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["pending_irrigation"] = False
+            state_module.state["last_tree_status_sent_at"] = now - 60
+            state_module.state["tree_bootstrap_check_needed"] = False
+            state_module.state["tree_bootstrap_check_due_at"] = 0
+
+            with patch.object(tree, "save_state") as save_mock:
+                scheduled = tree.request_tree_bootstrap_check(now)
+
+            self.assertFalse(scheduled)
+            self.assertFalse(state_module.state["tree_bootstrap_check_needed"])
+            self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
+            save_mock.assert_not_called()
+
+    async def test_recent_normal_due_tree_bootstrap_check_does_not_send_again(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["pending_irrigation"] = False
+            state_module.state["last_tree_status_sent_at"] = now - 60
+            state_module.state["tree_bootstrap_check_needed"] = True
+            state_module.state["tree_bootstrap_check_due_at"] = now - 1
+
+            with (
+                patch.object(tree, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tree, "save_state"),
+            ):
+                await tree.run_tree_bootstrap_check(now)
+
+            send_mock.assert_not_awaited()
+            self.assertFalse(state_module.state["tree_bootstrap_check_needed"])
+            self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
 
     async def test_passive_guard_success_does_not_end_invasion(self):
         identity_id = 3756719391

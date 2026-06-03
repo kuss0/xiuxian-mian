@@ -3,6 +3,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
@@ -36,17 +37,21 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import small_world, storage_bag
+from model.features import passive_inbox, small_world, storage_bag
 
 
 class _StateIsolationMixin:
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._passive_stats_snapshot = copy.deepcopy(passive_inbox._passive_stats)
+        self._observed_passive_snapshot = dict(passive_inbox._observed_passive_events)
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        passive_inbox._passive_stats = self._passive_stats_snapshot
+        passive_inbox._observed_passive_events = self._observed_passive_snapshot
         super().tearDown()
 
 
@@ -277,6 +282,40 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertFalse(handled)
             self.assertEqual(8, state_module.state["small_world_incense_stock"])
             audit_mock.assert_not_awaited()
+
+    async def test_passive_inbox_owner_hint_wins_over_body_at_mentions(self):
+        send_as_id = 8659059396
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="wxjerry", label="wxjerry")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955048)
+        text = (
+            "【清源子的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 1608.92\n"
+            "🏺 香火库存: 2\n\n"
+            "旁注：@wxjerry 曾路过此界。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_faith_value"] = 7
+            state_module.state["small_world_incense_stock"] = 8
+
+        with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=7000.0,
+                reply_context=None,
+                event=event,
+                event_type="message",
+            )
+
+        self.assertFalse(handled)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(7, state_module.state["small_world_faith_value"])
+            self.assertEqual(8, state_module.state["small_world_incense_stock"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["skip_reasons"]["external_owner_no_match"])
 
     async def test_manifest_success_deducts_cached_storage_cost_from_panel(self):
         send_as_id = 8659059197

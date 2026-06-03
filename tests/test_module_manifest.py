@@ -44,6 +44,8 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("自动副本", module_manifest.get_module_name_for_reply_family("dungeon_join"))
         self.assertEqual("共历心劫", module_manifest.get_module_name_for_reply_family("concubine_heart"))
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_reply_family("hehuan_dual"))
+        self.assertEqual("天星宗", module_manifest.get_module_name_for_reply_family("tianxing_panel"))
+        self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_banner"))
 
     def test_workflow_names_map_to_manifest_owner(self):
         self.assertEqual("太一", module_manifest.get_module_name_for_workflow("taiyi"))
@@ -99,6 +101,8 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("自动副本", module_manifest.get_module_name_for_replay_module("join_dungeon"))
         self.assertEqual("元婴", module_manifest.get_module_name_for_replay_module("yuanying"))
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_replay_module("hehuan"))
+        self.assertEqual("天星宗", module_manifest.get_module_name_for_replay_module("tianxing"))
+        self.assertEqual("阴罗宗", module_manifest.get_module_name_for_replay_module("yinluo"))
 
     def test_phaseful_modules_are_passive_first_last_resort_query(self):
         deep_retreat = module_manifest.get_module_manifest("深度闭关")

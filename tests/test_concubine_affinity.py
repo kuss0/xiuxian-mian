@@ -42,7 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import config
 from model import runtime
 from model import state as state_module
-from model.features import concubine, workflow_log
+from model.features import concubine, passive_inbox, workflow_log
 
 
 def _read_workflow_events(tmpdir):
@@ -57,13 +57,26 @@ def _read_workflow_events(tmpdir):
 class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._passive_stats_snapshot = copy.deepcopy(passive_inbox._passive_stats)
+        self._observed_passive_snapshot = dict(passive_inbox._observed_passive_events)
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
+        passive_inbox._passive_stats = {
+            "total": 0,
+            "changed": 0,
+            "skipped": 0,
+            "modules": {},
+            "skip_reasons": {},
+            "recent": [],
+        }
+        passive_inbox._observed_passive_events = {}
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        passive_inbox._passive_stats = self._passive_stats_snapshot
+        passive_inbox._observed_passive_events = self._observed_passive_snapshot
 
     def _prepare_identity(self, *, affinity=1000, dream_due_at=1_700_000_600.0, tianji_due_at=1_699_999_000.0, sect_name="星宫", kind="道心侍妾"):
         send_as_id = 991101
@@ -186,6 +199,46 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["concubine_tianji_last_error"])
             self.assertEqual(now + 30, state_module.state["next_concubine_time"])
 
+    async def test_affinity_fallback_requires_identity_hint_before_name_match(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=270, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_tianji_last_error"] = "情缘恢复中（270/300），暂缓天机代卜"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state") as mock_save:
+            handled = await concubine.handle_concubine_affinity_event(
+                "侍妾【凌玉灵】向你微微颔首，你们的情缘增加了 30 点。",
+                now,
+                SimpleNamespace(id=3),
+                require_identity_hint=True,
+            )
+
+        self.assertFalse(handled)
+        mock_save.assert_not_called()
+        self.assertEqual(270, state_module.state["concubine_affinity"])
+        self.assertEqual("情缘恢复中（270/300），暂缓天机代卜", state_module.state["concubine_tianji_last_error"])
+
+    async def test_affinity_fallback_accepts_explicit_identity_hint(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=270, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_tianji_last_error"] = "情缘恢复中（270/300），暂缓天机代卜"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=30):
+            handled = await concubine.handle_concubine_affinity_event(
+                "@xinggong 侍妾【凌玉灵】向你微微颔首，你们的情缘增加了 30 点。",
+                now,
+                SimpleNamespace(id=4),
+                require_identity_hint=True,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(300, state_module.state["concubine_affinity"])
+        self.assertEqual("", state_module.state["concubine_tianji_last_error"])
+
     async def test_scheduler_sends_daily_greet_only_when_affinity_below_threshold(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=270, dream_due_at=now + 3600, tianji_due_at=now - 1)
@@ -226,7 +279,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
 
         mock_send.assert_not_awaited()
 
-    async def test_scheduler_calibrates_stale_panel_before_active_cooldown_command(self):
+    async def test_scheduler_skips_status_calibration_before_known_dream_due(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now + 3600)
         with state_module.use_identity(send_as_id) as identity_state:
@@ -238,9 +291,28 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
              patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_DREAM, track=False)
+        self.assertEqual("dream_pending", state_module.state["concubine_phase"])
+        self.assertEqual(987, state_module.state["concubine_dream_msg_id"])
+
+    async def test_scheduler_refreshes_status_when_heart_panel_is_stale(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["concubine_last_panel_msg_id"] = 123
+            identity_state["concubine_last_snapshot_at"] = now - concubine.CONCUBINE_HEART_PANEL_MAX_AGE_SEC - 1
+
+        sent_msg = SimpleNamespace(id=988, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
         mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
         self.assertEqual("status_pending", state_module.state["concubine_phase"])
-        self.assertEqual(987, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(988, state_module.state["concubine_status_msg_id"])
 
     async def test_scheduler_defers_stale_status_calibration_during_phaseful_summary_window(self):
         now = 1_700_000_000.0
@@ -260,7 +332,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("idle", state_module.state["concubine_phase"])
         self.assertEqual(0, state_module.state["concubine_status_msg_id"])
         self.assertEqual(now + 90, state_module.state["next_concubine_time"])
-        self.assertIn("侍妾状态校准等待闭关/元婴结算", state_module.state["concubine_last_error"])
+        self.assertIn("入梦寻图等待闭关/元婴结算", state_module.state["concubine_last_error"])
 
     async def test_scheduler_defers_tianji_command_during_phaseful_summary_window(self):
         now = 1_700_000_000.0
@@ -280,6 +352,28 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("idle", state_module.state["concubine_phase"])
         self.assertEqual(now + 90, state_module.state["next_concubine_time"])
         self.assertIn("天机代卜等待闭关/元婴结算", state_module.state["concubine_tianji_last_error"])
+
+    async def test_dream_reply_keeps_due_tianji_on_short_chain(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "dream_pending"
+            identity_state["concubine_dream_msg_id"] = 321
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=30):
+            handled = await concubine.handle_concubine_dream_reply(
+                "【入梦寻图】\n本次梦兆锁定：【虚天残图】 线路。\n你与侍妾【凌玉灵】共梦乱星海，获得 【虚天残图】 残纹 北阙残纹（新残纹）。\n当前进度：1/4。",
+                now,
+                SimpleNamespace(raw_text=config.CMD_CONCUBINE_DREAM, id=321),
+                matched_family="concubine_dream",
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(now + 30, state_module.state["next_concubine_time"])
+        self.assertLessEqual(state_module.state["concubine_tianji_due_at"], now)
 
     async def test_daily_greet_reply_marks_day_and_clears_block_at_threshold(self):
         now = 1_700_000_000.0
@@ -1063,6 +1157,278 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_prompt_msg_id"])
         self.assertEqual(3, state_module.state["concubine_heart_round"])
         self.assertEqual(now + 3, state_module.state["next_concubine_time"])
+
+    async def test_passive_inbox_recovers_first_heart_prompt_without_send_as_id(self):
+        now = 1_780_413_865.0
+        send_as_id = self._prepare_identity()
+        text = (
+            "【坠魔心劫·第一轮】\n"
+            "你与侍妾【绾绾】步入幻境，前方魔念化形拦路。\n"
+            "请回复本消息 .稳 / .狠 / .骗 进行抉择（共3轮）。\n"
+            "【天机前兆】已生效：本次心劫入场消耗降低，首轮评分+1。"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_pending"
+            identity_state["concubine_heart_msg_id"] = 9746304
+            identity_state["concubine_heart_prompt_msg_id"] = 0
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=2), \
+             patch.object(concubine, "_schedule_heart_choice_followup", return_value=True):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "family": "concubine_heart",
+                    "reply_to_msg_id": 9746304,
+                    "root_msg_id": 9746304,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=9746308),
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
+            self.assertEqual(9746308, state_module.state["concubine_heart_prompt_msg_id"])
+            self.assertEqual(1, state_module.state["concubine_heart_round"])
+            self.assertEqual(now + 2, state_module.state["next_concubine_time"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["changed"])
+        self.assertIn("concubine", snapshot["modules"])
+
+    async def test_passive_inbox_recovers_heart_edit_and_settlement_without_send_as_id(self):
+        now = 1_780_413_875.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9746308
+        edit_text = (
+            "【坠魔心劫·第1轮已定】\n"
+            "你稳守灵台，不贪快功，魔影首轮试探未能动你分毫。\n\n"
+            "【坠魔心劫·第2轮】\n"
+            "幻境再变，请继续回复 .稳 / .狠 / .骗。"
+        )
+        settlement_text = (
+            "【坠魔心劫·结算】\n"
+            "三轮抉择：稳 / 稳 / 稳\n"
+            "你以守代攻，借势封魔，终在险境中稳稳落子。\n"
+            "你以韩立式谨慎贯穿全局，收益最大。\n\n"
+            "修为结算：+823\n"
+            "情缘结算：+7\n"
+            "心魔值结算：-5（当前 0）"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 9746304
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 1
+            identity_state["concubine_heart_choice_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_choice_round"] = 1
+            identity_state["concubine_heart_choice_sent_at"] = now - 10
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=2), \
+             patch.object(concubine, "_schedule_heart_choice_followup", return_value=True), \
+             patch.object(concubine, "send_audit_log", new=AsyncMock()):
+            handled_edit = await passive_inbox.handle_passive_module_card(
+                edit_text,
+                now=now,
+                reply_context={
+                    "family": "concubine_heart",
+                    "reply_to_msg_id": 9746304,
+                    "root_msg_id": 9746304,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=prompt_msg_id),
+                event_type="edit",
+            )
+            handled_settlement = await passive_inbox.handle_passive_module_card(
+                settlement_text,
+                now=now + 20,
+                reply_context={
+                    "family": "concubine_heart",
+                    "reply_to_msg_id": 9746304,
+                    "root_msg_id": 9746304,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=prompt_msg_id),
+                event_type="edit",
+            )
+
+        self.assertTrue(handled_edit)
+        self.assertTrue(handled_settlement)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+            self.assertEqual(0, state_module.state["concubine_heart_prompt_msg_id"])
+            self.assertEqual(0, state_module.state["concubine_heart_round"])
+            self.assertGreater(state_module.state["concubine_heart_due_at"], now)
+
+    async def test_passive_inbox_recovers_dream_reply_from_pending_chain_without_send_as_id(self):
+        now = 1_780_414_158.0
+        send_as_id = self._prepare_identity()
+        text = (
+            "【入梦寻图】\n"
+            "本次梦兆锁定：【苍坤残图】 线路。\n"
+            "你与侍妾【洛神】共入迷梦，终只见荒沙蔽月，未觅得【苍坤残图】碎片。\n"
+            "另一条残图线路仍可能在后续 .入梦寻图 中显化。\n"
+            "本次掉落率：22%（进度衰减 -12%，当前 苍坤残图 2/4）。"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_enabled"] = True
+            identity_state["concubine_phase"] = "dream_pending"
+            identity_state["concubine_dream_msg_id"] = 9746562
+            identity_state["concubine_fragment_cangkun_count"] = 1
+            identity_state["concubine_fragment_cangkun_total"] = 4
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=30), \
+             patch.object(concubine, "send_audit_log", new=AsyncMock()):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "family": "concubine_dream",
+                    "reply_to_msg_id": 9746562,
+                    "root_msg_id": 9746562,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=9746564),
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+            self.assertEqual(0, state_module.state["concubine_dream_msg_id"])
+            self.assertEqual((2, 4), concubine._get_fragment_progress(concubine.DREAM_KIND_CANGKUN))
+            self.assertGreater(state_module.state["concubine_dream_due_at"], now)
+
+    async def test_passive_inbox_recovers_tianji_reply_from_pending_chain_without_send_as_id(self):
+        now = 1_780_417_211.0
+        send_as_id = self._prepare_identity()
+        text = (
+            "【天机代卜链】\n"
+            "侍妾【红莲】焚香推演，为你接引一缕天机。\n"
+            "得卦【心劫前兆】：下一次 .共历心劫 成本降低且首轮评分提高。\n"
+            "本次消耗：180修为。"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_tianji_enabled"] = True
+            identity_state["concubine_phase"] = "tianji_pending"
+            identity_state["concubine_tianji_msg_id"] = 9747210
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=30):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "family": "concubine_tianji",
+                    "reply_to_msg_id": 9747210,
+                    "root_msg_id": 9747210,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=9747211),
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+            self.assertEqual(0, state_module.state["concubine_tianji_msg_id"])
+            self.assertEqual("心劫前兆", state_module.state["concubine_tianji_chain"])
+            self.assertGreater(state_module.state["concubine_tianji_due_at"], now)
+
+    async def test_passive_inbox_does_not_recover_ambiguous_heart_context(self):
+        now = 1_780_413_875.0
+        first_id = self._prepare_identity()
+        second_id = 991102
+        state_module.ensure_identity_registered(second_id)
+        state_module.update_send_as_profile(second_id, username="second")
+        text = (
+            "【坠魔心劫·第1轮已定】\n"
+            "你稳守灵台，不贪快功，魔影首轮试探未能动你分毫。\n\n"
+            "【坠魔心劫·第2轮】\n"
+            "幻境再变，请继续回复 .稳 / .狠 / .骗。"
+        )
+        for identity_id in (first_id, second_id):
+            with state_module.use_identity(identity_id) as identity_state:
+                identity_state["concubine_heart_enabled"] = True
+                identity_state["concubine_phase"] = "heart_choice_reply_pending"
+                identity_state["concubine_heart_msg_id"] = 9746304
+                identity_state["concubine_heart_prompt_msg_id"] = 9746308
+                identity_state["concubine_heart_round"] = 1
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "family": "concubine_heart",
+                    "reply_to_msg_id": 9746304,
+                    "root_msg_id": 9746304,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=9746308),
+                event_type="edit",
+            )
+
+        self.assertFalse(handled)
+        with state_module.use_identity(first_id):
+            self.assertEqual(1, state_module.state["concubine_heart_round"])
+        with state_module.use_identity(second_id):
+            self.assertEqual(1, state_module.state["concubine_heart_round"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["skipped"])
+        self.assertEqual(1, snapshot["skip_reasons"].get("reply_context_no_identity"))
+
+    async def test_passive_inbox_does_not_recover_ambiguous_dream_pending_context(self):
+        now = 1_780_414_158.0
+        first_id = self._prepare_identity()
+        second_id = 991102
+        state_module.ensure_identity_registered(second_id)
+        state_module.update_send_as_profile(second_id, username="second")
+        text = (
+            "【入梦寻图】\n"
+            "本次梦兆锁定：【苍坤残图】 线路。\n"
+            "你与侍妾【洛神】共梦慕兰荒原，获得 【苍坤残图】 残纹 慕兰残纹（新残纹）。\n"
+            "当前进度：3/4。"
+        )
+        for identity_id in (first_id, second_id):
+            with state_module.use_identity(identity_id) as identity_state:
+                identity_state["concubine_enabled"] = True
+                identity_state["concubine_phase"] = "dream_pending"
+                identity_state["concubine_dream_msg_id"] = 9746562
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "family": "concubine_dream",
+                    "reply_to_msg_id": 9746562,
+                    "root_msg_id": 9746562,
+                },
+                event=SimpleNamespace(chat_id=-1001680975844, id=9746564),
+                event_type="message",
+            )
+
+        self.assertFalse(handled)
+        with state_module.use_identity(first_id):
+            self.assertEqual("dream_pending", state_module.state["concubine_phase"])
+        with state_module.use_identity(second_id):
+            self.assertEqual("dream_pending", state_module.state["concubine_phase"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["skipped"])
+        self.assertEqual(1, snapshot["skip_reasons"].get("reply_context_no_identity"))
 
     def test_heart_choice_delay_is_fast_enough_for_edited_prompt(self):
         with patch.object(concubine.random, "uniform", return_value=2) as mock_uniform:

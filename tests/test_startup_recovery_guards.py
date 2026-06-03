@@ -115,6 +115,55 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(now + 1, state_module.state["next_tianti_status_time"])
             self.assertEqual(now + control.RECOVERY_SPREAD_MAX_SEC + 120, state_module.state["next_tianti_gangfeng_time"])
 
+    def test_tree_recovery_does_not_query_status_for_normal_due_timer(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tree_enabled"] = True
+            state_module.state["next_irr_time"] = now + 60
+            state_module.state["last_tree_status_sent_at"] = now - 8 * 3600
+
+        with patch.object(control, "request_tree_bootstrap_check") as request_mock:
+            control.initialize_identity_runtime(send_as_id, now)
+
+        request_mock.assert_not_called()
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["tree_bootstrap_check_needed"])
+            self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
+            self.assertEqual(now + 60, state_module.state["next_irr_time"])
+
+    def test_tree_recovery_clears_stale_normal_bootstrap_probe(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tree_enabled"] = True
+            state_module.state["next_irr_time"] = now + 3600
+            state_module.state["tree_bootstrap_check_needed"] = True
+            state_module.state["tree_bootstrap_check_due_at"] = now - 1
+
+        control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["tree_bootstrap_check_needed"])
+            self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
+            self.assertEqual(now + 3600, state_module.state["next_irr_time"])
+
+    def test_tree_recovery_keeps_invasion_status_probe(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_invading"] = True
+            state_module.state["next_irr_time"] = now + 3600
+
+        with patch.object(control, "request_tree_bootstrap_check", return_value=True) as request_mock:
+            control.initialize_identity_runtime(send_as_id, now)
+
+        request_mock.assert_called_once_with(now)
+
     def test_phaseful_idle_zero_timer_is_not_restored_as_immediate_send(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

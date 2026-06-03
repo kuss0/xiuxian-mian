@@ -272,7 +272,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("old", payload["reason"])
 
-    def test_existing_same_reason_marker_does_not_re_fuse_even_when_global_enabled(self):
+    def test_existing_same_reason_marker_re_fuses_when_global_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = safety_watchdog.Path(tmpdir)
             state_dir = root / "data" / "state"
@@ -297,8 +297,9 @@ class SafetyWatchdogTests(unittest.TestCase):
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
             payload = safety_watchdog.json.loads(marker.read_text(encoding="utf-8"))
 
-        self.assertEqual("1", value)
+        self.assertEqual("0", value)
         self.assertEqual("same breach", payload["reason"])
+        self.assertEqual(["global_enabled=0"], payload["actions"])
 
 
 if __name__ == "__main__":

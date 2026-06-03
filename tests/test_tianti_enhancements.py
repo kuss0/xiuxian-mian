@@ -289,6 +289,40 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertFalse(should_trigger)
             self.assertEqual("gangfeng_status_stale", reason)
 
+    def test_status_panel_reply_without_family_clears_short_retry(self):
+        send_as_id = 95019
+        now = 19_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "【凌霄云阶】\n"
+            "当前进度: 9 / 12 阶\n"
+            "已完成周天: 30 轮\n"
+            "罡风淬体: 12 / 12 层\n"
+            "登阶冷却: 2小时5分钟49秒\n"
+            "问心状态: 今日尚未问心。可使用 .问心台 获取登阶加持。"
+        )
+        reply_to = SimpleNamespace(id=9750205, raw_text=".天阶状态")
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti, "send_audit_log", new=AsyncMock()), \
+                patch.object(tianti, "console_log"), \
+                patch.object(tianti, "save_state"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_status_reply_to_msg_id"] = reply_to.id
+            state_module.state["next_tianti_status_time"] = now + 60
+
+            handled = asyncio.run(tianti.handle_tianti_reply(
+                text,
+                now,
+                reply_to,
+                matched_family=None,
+            ))
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["next_tianti_status_time"])
+            self.assertEqual(reply_to.id, state_module.state["tianti_last_status_msg_id"])
+            self.assertEqual(now, state_module.state["tianti_last_status_seen_at"])
+
     def test_fresh_status_snapshot_allows_due_gangfeng(self):
         send_as_id = 95011
         now = 11_000.0

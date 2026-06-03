@@ -103,11 +103,168 @@ class HehuanParserTests(unittest.TestCase):
         self.assertEqual("realm_blocked", blocked["result"])
         self.assertEqual("双方或其中一方尚未踏入仙途", blocked["error"])
 
+    def test_contract_invalid_clears_contract_hint(self):
+        now = 1_780_391_144.0
+        parsed = hehuan.parse_hehuan_text(
+            real_text("hehuan.dual.contract_invalid"),
+            now=now,
+            family="hehuan_dual",
+        )
+
+        self.assertEqual("同参道", parsed["path"])
+        self.assertEqual("contract_invalid", parsed["result"])
+        self.assertEqual("对方并非你的同参道侣", parsed["error"])
+        self.assertEqual(-1, parsed["contract_until"])
+        self.assertGreater(parsed["next_hehuan_time"], now)
+
     def test_concubine_dream_luding_text_is_not_claimed_without_hehuan_family(self):
         text = "【入梦成功】\n*她轻声道：“主人，这炉鼎…可还合用？”*"
 
         self.assertFalse(hehuan.looks_like_hehuan_text(text))
         self.assertIsNone(hehuan.parse_hehuan_text(text, now=1_779_970_000.0, family=""))
+
+
+class HehuanManualPlanTests(unittest.TestCase):
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state["identity_ids"] = []
+        state_module._meta_state["identity_states"] = {}
+        state_module._meta_state["send_as_profiles"] = {}
+        self.identity_id = 1101
+        state_module.ensure_identity_registered(self.identity_id)
+        state_module.update_send_as_profile(
+            self.identity_id,
+            username="hehuan_manual",
+            label="hehuan_manual",
+            sect_name="合欢宗",
+        )
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+
+    def test_warm_plan_requires_recent_contract_hint_and_clear_cooldown(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+            }
+
+            plan = hehuan.build_hehuan_manual_plan("warm", now=now)
+
+        self.assertTrue(plan["allowed"])
+        self.assertEqual(".双修 温养", plan["command"])
+        self.assertEqual("hehuan_dual", plan["family"])
+        self.assertEqual(0, plan["max_retry"])
+
+    def test_warm_plan_blocks_without_contract_or_during_cooldown(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": 0,
+                "next_hehuan_time": 0,
+                "last_partner": "",
+            }
+            no_contract = hehuan.build_hehuan_manual_plan("warm", now=now)
+
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": now + 600,
+                "last_partner": "@dao_partner",
+            }
+            cooldown = hehuan.build_hehuan_manual_plan("warm", now=now)
+
+        self.assertFalse(no_contract["allowed"])
+        self.assertIn("未确认有效同参契印", no_contract["reason"])
+        self.assertFalse(cooldown["allowed"])
+        self.assertIn("冷却", cooldown["reason"])
+
+
+class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state["identity_ids"] = []
+        state_module._meta_state["identity_states"] = {}
+        state_module._meta_state["send_as_profiles"] = {}
+        self.identity_id = 1102
+        state_module.ensure_identity_registered(self.identity_id)
+        state_module.update_send_as_profile(
+            self.identity_id,
+            username="hehuan_auto",
+            label="hehuan_auto",
+            sect_name="合欢宗",
+        )
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+
+    async def test_scheduler_sends_warm_when_contract_hint_and_due(self):
+        now = 1_780_000_000.0
+        msg = SimpleNamespace(id=9001, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+            }
+            with patch.object(hehuan, "save_state"), patch.object(hehuan, "send_game_command", return_value=msg) as send_mock:
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(".双修 温养", send_mock.await_args.args[0])
+            self.assertEqual("合欢宗", send_mock.await_args.kwargs["source_module"])
+            self.assertEqual(0, send_mock.await_args.kwargs["max_retry"])
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("warm", observed["auto_last_action"])
+            self.assertEqual("", observed["auto_last_error"])
+            self.assertGreater(observed["auto_next_time"], now)
+
+    async def test_scheduler_respects_future_auto_time(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now + 300,
+            }
+            with patch.object(hehuan, "send_game_command") as send_mock:
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_called()
+
+    async def test_scheduler_blocks_without_contract_hint_and_backs_off(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": 0,
+                "next_hehuan_time": 0,
+                "last_partner": "",
+                "auto_next_time": now - 1,
+            }
+            with patch.object(hehuan, "save_state"), patch.object(hehuan, "send_game_command") as send_mock:
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_called()
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("warm", observed["auto_last_action"])
+            self.assertIn("未确认有效同参契印", observed["auto_last_error"])
+            self.assertGreaterEqual(observed["auto_next_time"], now + hehuan.HEHUAN_AUTO_BLOCK_BACKOFF_SEC)
 
 
 class HehuanPassiveInboxTests(unittest.TestCase):
@@ -194,6 +351,38 @@ class HehuanPassiveInboxTests(unittest.TestCase):
             observed = state_module.state["hehuan_observation"]
             self.assertEqual("cooldown", observed["last_result"])
             self.assertEqual("@iceeet1", observed["last_target"])
+
+    def test_passive_inbox_clears_contract_on_invalid_partner_reply(self):
+        send_as_id = self._prepare_identity(username="iceeet1")
+        event = SimpleNamespace(chat_id=-1001680975844, id=9733738)
+        with state_module.use_identity(send_as_id):
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": 1_780_390_000.0,
+                "contract_until": 1_780_999_999.0,
+                "next_hehuan_time": 0,
+                "auto_next_time": 1_780_390_000.0,
+            }
+
+        with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                real_text("hehuan.dual.contract_invalid"),
+                now=1_780_391_144.0,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "hehuan_dual",
+                    "reply_to_msg_id": 9733737,
+                    "root_msg_id": 9733737,
+                },
+                event=event,
+                event_type="message",
+            ))
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("contract_invalid", observed["last_result"])
+            self.assertEqual(0, observed["contract_until"])
+            self.assertGreater(observed["auto_next_time"], 1_780_391_144.0)
 
     def test_real_message_fixture_includes_hehuan_samples(self):
         samples = list(iter_real_message_samples(FIXTURE_PATH, module="hehuan"))

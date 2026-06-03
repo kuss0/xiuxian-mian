@@ -145,6 +145,54 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("soothe", state_module.state["stargazer_last_action"])
             self.assertEqual(0, state_module.state["stargazer_followup_due_at"])
 
+    async def test_real_soothe_success_reply_queues_collect_instead_of_exception_panel(self):
+        now = 1800.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        class Reply:
+            raw_text = ".安抚星辰"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "soothe"
+
+            with patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock(return_value=True)) as queue_mock:
+                handled = await stargazer.handle_stargazer_soothe_reply(
+                    "你消耗了 320 点修为，成功安抚了 8 座引星盘的狂暴星力！\n因有侍妾【妍丽】相助，本次消耗大幅减少。",
+                    now,
+                    Reply(),
+                    matched_family="stargazer_soothe",
+                )
+
+            self.assertTrue(handled)
+            queue_mock.assert_awaited_once()
+            self.assertEqual("collect", queue_mock.await_args.args[1])
+            self.assertIn("安抚完成", queue_mock.await_args.kwargs["audit_text"])
+
+    async def test_passive_real_soothe_success_updates_state(self):
+        now = 1900.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "soothe"
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                "你消耗了 80 点修为，成功安抚了 8 座引星盘的狂暴星力！\n因有侍妾【月婵】相助，本次消耗大幅减少。",
+                now=now,
+                reply_context={"send_as_id": identity_id, "family": "stargazer_soothe"},
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(identity_id):
+            self.assertEqual("passive_soothe_done", state_module.state["stargazer_last_action"])
+
     async def test_collect_success_adds_items_to_cached_storage_bag(self):
         now = 2000.0
         identity_id = 3756719392

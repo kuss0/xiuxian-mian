@@ -24,6 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
+BENIGN_WARN_CONTEXT_PATTERN = re.compile(r"无补发|不补发|无需补发|题库内超时未作答|题库匹配")
 
 
 @dataclass
@@ -111,7 +112,7 @@ def read_journal_matches(service: str, window_sec: int, limit: int) -> dict[str,
     )
     lines = [line for line in stdout.splitlines() if line.strip()]
     hard = [line for line in lines if HARD_PATTERN.search(line)]
-    warn = [line for line in lines if WARN_PATTERN.search(line) and not HARD_PATTERN.search(line)]
+    warn = [line for line in lines if is_warn_journal_line(line)]
     max_items = max(1, int(limit or 1))
     return {
         "service": service,
@@ -124,6 +125,15 @@ def read_journal_matches(service: str, window_sec: int, limit: int) -> dict[str,
         "hard": hard[-max_items:],
         "warn": warn[-max_items:],
     }
+
+
+def is_warn_journal_line(line: str) -> bool:
+    text = str(line or "")
+    if HARD_PATTERN.search(text):
+        return False
+    if BENIGN_WARN_CONTEXT_PATTERN.search(text):
+        return False
+    return bool(WARN_PATTERN.search(text))
 
 
 def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[dict[str, object]]) -> tuple[str, list[str]]:

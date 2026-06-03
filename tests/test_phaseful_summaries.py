@@ -144,6 +144,43 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
 
+    async def test_deep_retreat_full_summary_after_completion_notice_is_archived(self):
+        send_as_id = 8659059222
+        now = 1_700_000_035.0
+        self._prepare_identity(send_as_id, "myios17")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["next_deep_retreat_time"] = now + 30
+
+        text = (
+            "📜 修士 @myios17 深度闭关总结\n"
+            "【深度闭关总结】\n"
+            "本次结算时长: 8.0 小时 (基础上限8小时)\n"
+            "神魂吐纳次数: 32 周天\n\n"
+            "- 修行有成: 20 次\n"
+            "- 心神不宁: 11 次\n"
+            "- 走火入魔: 1 次\n"
+            "本次深度闭关，你的修为最终变化了 6687 点！"
+        )
+
+        with (
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch("model.features.passive_inbox.record_passive_inbox_event") as inbox_mock,
+        ):
+            await deep_retreat.handle_deep_retreat_summary_broadcast(text, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+        audit_mock.assert_not_awaited()
+        self.assertTrue(any(
+            call.kwargs.get("reason") == "no_change"
+            and call.kwargs.get("decision") == "summary_already_finalized"
+            and call.kwargs.get("identity_id") == send_as_id
+            for call in inbox_mock.call_args_list
+        ))
+
     async def test_deep_retreat_tagless_far_future_running_summary_is_ignored(self):
         send_as_id = 8659059208
         now = 1_700_000_040.0

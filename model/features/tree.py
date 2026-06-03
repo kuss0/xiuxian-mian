@@ -36,6 +36,7 @@ TREE_HARVEST_FOLLOWUP_DELAY_SEC = 30 * 60
 TREE_IRRIGATION_INSUFFICIENT_POWER_KEYWORDS = ("修为不足", "无法调动天地灵气")
 TREE_GUARD_FREEZE_THRESHOLD_SEC = FREEZE_CD / 2
 TREE_STATUS_DEDUPE_SEC = 4 * 60
+TREE_STARTUP_STATUS_RECENT_SEC = 30 * 60
 TREE_HARVEST_INFLIGHT_SEC = RETRY_MAX_SEC
 TREE_BOOTSTRAP_CHECK_DELAY_MIN_SEC = 10 * 60
 TREE_BOOTSTRAP_CHECK_DELAY_MAX_SEC = 45 * 60
@@ -189,6 +190,16 @@ def _tree_bootstrap_check_is_useful():
     if state["is_maturing"] and state["is_harvested"] and not state["is_invading"] and not state["pending_irrigation"]:
         return False
     return True
+
+
+def _tree_status_probe_is_urgent():
+    return bool(state["is_maturing"] or state["is_invading"] or state["pending_irrigation"])
+
+
+def _tree_status_probe_is_recent(now=None):
+    now = float(now if now is not None else time.time())
+    last_sent_at = float(state.get("last_tree_status_sent_at", 0) or 0)
+    return last_sent_at > 0 and now - last_sent_at < TREE_STARTUP_STATUS_RECENT_SEC
 
 
 def _clear_redundant_tree_bootstrap_checks_after_normal_panel(now=None):
@@ -397,6 +408,14 @@ def request_tree_bootstrap_check(now=None, *, min_sec=None, max_sec=None):
         return False
 
     now = float(now if now is not None else time.time())
+    if not _tree_status_probe_is_urgent() and _tree_status_probe_is_recent(now):
+        changed = bool(state.get("tree_bootstrap_check_needed") or state.get("tree_bootstrap_check_due_at"))
+        state["tree_bootstrap_check_needed"] = False
+        state["tree_bootstrap_check_due_at"] = 0
+        if changed:
+            save_state()
+        return False
+
     if (
         state["is_maturing"]
         and not state["is_harvested"]
@@ -660,10 +679,10 @@ async def handle_tree_panel(text, now, is_reply_to_me):
 
     current_status_snapshot = "你的当前状态:" in text or "你的当前状态：" in text
     personal_panel_owned = is_reply_to_me or _tree_panel_matches_current_identity(text)
-    if is_tree_panel and current_status_snapshot and "成熟采摘期" not in text:
-        await recover_tree_normal_round_for_all_enabled(now, reason="灵树状态")
     if is_tree_panel and current_status_snapshot and not personal_panel_owned:
         return False
+    if is_tree_panel and current_status_snapshot and "成熟采摘期" not in text:
+        await recover_tree_normal_round_for_all_enabled(now, reason="灵树状态")
     clear_status_pending = is_tree_panel and current_status_snapshot and not is_reply_to_me and personal_panel_owned
 
     if is_maturing_broadcast and not is_tree_panel:
@@ -690,6 +709,8 @@ async def handle_tree_panel(text, now, is_reply_to_me):
 
     state["tree_bootstrap_check_needed"] = False
     state["tree_bootstrap_check_due_at"] = 0
+    if is_tree_panel and current_status_snapshot and personal_panel_owned:
+        state["last_tree_status_sent_at"] = now
     if clear_status_pending:
         _clear_pending_tree_status()
 
@@ -857,8 +878,15 @@ async def run_tree_bootstrap_check(now):
         save_state()
         return
 
+    urgent_probe = _tree_status_probe_is_urgent()
+    if not urgent_probe and _tree_status_probe_is_recent(now):
+        state["tree_bootstrap_check_needed"] = False
+        state["tree_bootstrap_check_due_at"] = 0
+        save_state()
+        return
+
     console_log("🌳 启动校验：查询灵树状态（无补发）。")
-    sent = await _send_tree_status(now, force=True)
+    sent = await _send_tree_status(now, force=urgent_probe)
     if sent:
         state["tree_bootstrap_check_needed"] = False
         state["tree_bootstrap_check_due_at"] = 0

@@ -383,6 +383,8 @@ def _schedule_next_daily_greet_check(now):
 
 
 def _schedule_after_tianji(now):
+    if _has_due_action(now):
+        return _schedule_chain_action(now)
     due_times = []
     tianji_due_at = float(state.get("concubine_tianji_due_at", 0) or 0)
     if tianji_due_at > now:
@@ -1489,10 +1491,11 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
-    if not _has_active_cooldown_action_due(now):
+    if not _has_heart_due_action(now):
         return False
     snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    return snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_ACTIVE_STATUS_MAX_AGE_SEC
+    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+    return panel_msg_id <= 0 or snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
 
 
 def _has_active_nanlong_pending(now):
@@ -2339,7 +2342,7 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
         reset_resource_shortage(CONCUBINE_DREAM_RESOURCE_KEY)
         _set_phase("idle")
         _clear_pending_msg_ids()
-        _schedule_at_due_or_chain(now, state["concubine_dream_due_at"])
+        _schedule_after_tianji(now)
         save_state()
         return True
 
@@ -2380,7 +2383,7 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
             save_state()
             await send_audit_log(f"🌸 入梦寻图已达 4/4（{_format_completed_fragment_progresses()}），将先 .残图 确认。", scope="identity")
         else:
-            _schedule_at_due_or_chain(now, state["concubine_dream_due_at"])
+            _schedule_after_tianji(now)
             save_state()
         return True
 
@@ -2396,7 +2399,7 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
             save_state()
             await send_audit_log(f"🌸 入梦寻图广播已达 4/4（{_format_completed_fragment_progresses()}），将先 .残图 确认。", scope="identity")
         else:
-            _schedule_at_due_or_chain(now, state["concubine_dream_due_at"])
+            _schedule_after_tianji(now)
             save_state()
         return True
 
@@ -2457,7 +2460,7 @@ async def handle_concubine_fragment_reply(text, now, reply_to, matched_family=No
             await send_audit_log(f"🌸 残图确认 4/4（{_format_completed_fragment_progresses()}），已排队自动 .拼图。", scope="identity")
         else:
             state["concubine_last_error"] = ""
-            _schedule_at_due_or_chain(now, state.get("concubine_dream_due_at", 0))
+            _schedule_after_tianji(now)
             save_state()
         return True
 
@@ -2500,7 +2503,7 @@ async def handle_concubine_puzzle_reply(text, now, reply_to, matched_family=None
         state["concubine_last_error"] = ""
         _set_phase("idle")
         _clear_pending_msg_ids()
-        _schedule_at_due_or_chain(now, state["concubine_dream_due_at"])
+        _schedule_after_tianji(now)
         save_state()
         await send_audit_log(f"🌸 {FRAGMENT_LABELS[success_kind]}残图拼合成功，已继续等待下一轮入梦。", scope="identity")
         return True
@@ -2527,7 +2530,7 @@ async def handle_concubine_puzzle_reply(text, now, reply_to, matched_family=None
         state["concubine_last_error"] = ""
         _set_phase("idle")
         _clear_pending_msg_ids()
-        _schedule_at_due_or_chain(now, state["concubine_dream_due_at"])
+        _schedule_after_tianji(now)
         save_state()
         return True
 
@@ -3043,7 +3046,7 @@ async def handle_concubine_gift_reply(text, now, reply_to, matched_family=None):
     return False
 
 
-async def handle_concubine_affinity_event(text, now, event=None, matched_family=None):
+async def handle_concubine_affinity_event(text, now, event=None, matched_family=None, require_identity_hint=False):
     if matched_family in {"concubine_greet", "concubine_gift"}:
         return False
     if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
@@ -3052,6 +3055,8 @@ async def handle_concubine_affinity_event(text, now, event=None, matched_family=
     if _parse_gift_success(raw_text):
         return False
     if not is_concubine_affinity_event_candidate(raw_text):
+        return False
+    if require_identity_hint and not _text_matches_current_identity(raw_text):
         return False
 
     if _is_selfless_affinity_depletion_text(raw_text):

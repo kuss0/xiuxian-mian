@@ -69,6 +69,13 @@
     "event_type": "message",
     "text": "道友 @iceeet1 心神尚未恢复，无法进行双修（冷却中）。"
   },
+  "hehuan.dual.contract_invalid": {
+    "source": "data/state/passive_event_ledger/2026-06-02.jsonl:10178",
+    "module": "hehuan",
+    "family": "hehuan_dual",
+    "event_type": "message",
+    "text": "对方并非你的同参道侣，无法进行灵力交融。"
+  },
   "hehuan.guide.basic": {
     "source": "data/messages/2026-05-21.log:34259",
     "module": "hehuan",
@@ -110,5 +117,131 @@
     "family": "hehuan_dual",
     "event_type": "message",
     "text": "双方或其中一方尚未踏入仙途，无法进行双修。"
+  },
+  "tianxing.panel.basic": {
+    "source": "data/messages/2026-06-02.log:9546",
+    "module": "tianxing",
+    "family": "tianxing_panel",
+    "event_type": "message",
+    "text": "【天机盘】\n今日可选命星: 【贪狼】、【天府】、【紫微】\n今日已定命星: 未定命\n当前推命: 无\n当前改命: 无\n天机值: 63\n逆命劫: 2\n命中 / 落空 / 改命: 189 / 6 / 40"
+  },
+  "tianxing.observe.basic": {
+    "source": "data/messages/2026-06-02.log:9574",
+    "module": "tianxing",
+    "family": "tianxing_observe",
+    "event_type": "message",
+    "text": "【观命结果】\n你引动司命盘，今日可定下的命星如下：\n【天府】 - 主丹器之成与稳守之势，炼制更稳，斗法更耐打，偶有额外成品。\n【太阴】 - 主趋吉避凶，探索更易避祸，斗法更善脱身，但闭关悟性略降。\n【贪狼】 - 主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n\n请使用 .定命 <命星> 锁定今日命轨。"
+  },
+  "tianxing.predict.basic": {
+    "source": "data/messages/2026-06-02.log:9596",
+    "module": "tianxing",
+    "family": "tianxing_predict",
+    "event_type": "message",
+    "text": "你拨动司命盘，为 【炼制】 推下一段命数。\n此推命将在 8 小时 内生效；若你先去做别路之事，便会平添一层逆命劫。"
+  },
+  "tianxing.change_fate.basic": {
+    "source": "data/messages/2026-06-02.log:9727",
+    "module": "tianxing",
+    "family": "tianxing_change_fate",
+    "event_type": "message",
+    "text": "你以 3 点天机值强行撬动命数，为 【探索】 预留了一次改命回天的余地。\n这道后手将在 24 小时 内生效一次。"
+  },
+  "tianxing.modifier.wild": {
+    "source": "data/messages/2026-06-02.log:11167",
+    "module": "tianxing",
+    "family": "tianxing_modifier",
+    "event_type": "message",
+    "text": "【野外历练 · 妖兽遭遇】\n命盘【太阴】照命，主趋吉避凶，探索更易避祸，斗法更善脱身，但闭关悟性略降。\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n【改命待发】此道改命尚可维持 23小时5分钟\n【天星偏转】 趋吉偏转，材料显化上扬\n@PeggyArmstrong_a776 遭遇 独角雷蛟。\n战力对比: 你 268543829 / 妖兽 378146637，胜算 44%。\n一番斗法后，妖兽伏诛。\n获得修为 +45000，获得 【养魂木】x1。\n此战只结算 NPC 历练收益，不触发玩家仇怨。"
+  },
+  "tianxing.clear_calamity.basic": {
+    "source": "data/messages/2026-06-02.log:9563",
+    "module": "tianxing",
+    "family": "tianxing_clear_calamity",
+    "event_type": "message",
+    "text": "你以自身修为祭盘，又请宗门长老代你镇住劫线，成功化去 1 层逆命劫。\n本次消耗：修为 200 点，宗门贡献 50 点。"
+  },
+  "tianxing.join.not_qualified": {
+    "source": "data/messages/2026-06-02.log:4355",
+    "module": "tianxing",
+    "family": "tianxing_help",
+    "event_type": "message",
+    "text": "【天星宗】的观星长老摇头道：“你资质平平，无法感应九天星辰之力，与我宗无缘。”"
+  },
+  "yinluo.banner.basic": {
+    "source": "data/messages/2026-05-16.log:11758",
+    "module": "yinluo",
+    "family": "yinluo_banner",
+    "event_type": "message",
+    "text": "【水镜真人的阴罗幡】\n\n本命魔兵: 灭法幡\n幡体等阶: 三阶中品\n煞气池: 269465 / 25000 (100%)\n幡威状态: 万魂沸腾\n主魂流派: 灭法幡\n幡魂总炼化: 54 缕\n武器战力加成: +11% (幡阶 3% / 主魂 4% / 煞涌 3%)\n幡魂评语: 戾魄蚀法，最易引动真正的魔域异象。\n\n魂魄储备:\n - 妖兽精魄: 191 缕\n - 修士残魂: 134 缕\n - 怨魂: 47 缕\n - 凶兽戾魄: 1 缕\n\n炼化槽:\n1号槽: [空闲]\n2号槽: [空闲]\n3号槽: [空闲]\n4号槽: [精华已成] - 凶兽戾魄\n5号槽: [炼化中] - 凶兽戾魄 (剩余: 3小时28分钟48秒)"
+  },
+  "yinluo.demon_summon.success": {
+    "source": "data/messages/2026-05-16.log:10642",
+    "module": "yinluo",
+    "family": "yinluo_demon_summon",
+    "event_type": "message",
+    "text": "召唤成功，镇压成功！\n魔影被你成功击溃，消散前留下了一道精纯的【凶兽戾魄】，已被你的阴罗幡吸收！"
+  },
+  "yinluo.demon_summon.cooldown": {
+    "source": "data/messages/2026-05-16.log:25168",
+    "module": "yinluo",
+    "family": "yinluo_demon_summon",
+    "event_type": "message",
+    "text": "魔域裂隙尚未平复，请在 7小时54分钟28秒 后再行召唤。"
+  },
+  "yinluo.demon_summon.realm_blocked": {
+    "source": "data/messages/2026-06-02.log:36381",
+    "module": "yinluo",
+    "family": "yinluo_demon_summon",
+    "event_type": "message",
+    "text": "你的境界尚未达到【结丹期】，神魂之力不足以撕开魔域裂隙。"
+  },
+  "yinluo.convert.success": {
+    "source": "data/messages/2026-05-16.log:11867",
+    "module": "yinluo",
+    "family": "yinluo_convert",
+    "event_type": "message",
+    "text": "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 2030 点。\n因你杀戮缠身，额外获得了 1530 点精纯煞气！"
+  },
+  "yinluo.blood_forest.success": {
+    "source": "data/messages/2026-06-02.log:40445",
+    "module": "yinluo",
+    "family": "yinluo_blood_forest",
+    "event_type": "edit",
+    "text": "【血洗功成】\n你在一片山林中掀起了一场腥风血雨！成功捕获了 1 缕【妖兽精魄】！\n在搜刮战场时，你还额外发现了 【一阶妖丹】x1！"
+  },
+  "yinluo.blood_forest.cooldown": {
+    "source": "data/messages/2026-06-02.log:40471",
+    "module": "yinluo",
+    "family": "yinluo_blood_forest",
+    "event_type": "message",
+    "text": "这片山林的生灵尚未恢复，煞气稀薄。请在 3小时59分钟20秒 后再来。"
+  },
+  "yinluo.blood_forest.not_member": {
+    "source": "data/messages/2026-05-19.log:45807",
+    "module": "yinluo",
+    "family": "yinluo_blood_forest",
+    "event_type": "message",
+    "text": "你并非阴罗宗弟子，不懂此等杀伐之术。"
+  },
+  "yinluo.retreat.success_bonus": {
+    "source": "data/messages/2026-05-31.log:44979",
+    "module": "yinluo",
+    "family": "yinluo_retreat",
+    "event_type": "message",
+    "text": "【闭关成功】\n你福至心灵，成功炼化灵气，基础修为增加了 180 点。\n因【阴罗宗】灵脉加持，你额外获得了 68 点修为！\n本次闭关，你的修为最终增加了 248 点。\n\n当前境界: 结丹后期\n当前修为: 1081020 / 200000\n\n你感到一阵疲惫，需要打坐调息 13 分钟方可再次闭关。"
+  },
+  "yinluo.guide.blood_forest": {
+    "source": "data/messages/2026-05-16.log:8936",
+    "module": "yinluo",
+    "family": "yinluo_guide",
+    "event_type": "edit",
+    "text": "道友欲寻一阶妖丹，此物多产自妖兽。\n\n若道友拜入阴罗宗，可通过 .血洗山林 获取妖兽精魄，其中或蕴含一阶妖丹。此法冷却四小时，然有胜败之险。\n\n此外，宗门宝库或万宝楼中，亦有可能寻得一阶妖丹。"
+  },
+  "yinluo.possess.clue": {
+    "source": "data/messages/2026-05-31.log:43656",
+    "module": "yinluo",
+    "family": "yinluo_possess",
+    "event_type": "message",
+    "text": "【凌霄宫 任务板】\n\n- 探查魔功冷却 (ID: 1193)\n  - 描述: 阴罗宗的夺舍神通令人闻风丧胆，你知道施展一次.夺舍需要冷却多久吗？使用.提交任务 <答案>，例如.提交任务 1小时。\n  - 要求: 特殊条件\n  - 报酬: 25 贡献点\n\n使用 .提交任务 ... 来完成任务。"
   }
 }

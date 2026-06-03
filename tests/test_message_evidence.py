@@ -14,7 +14,8 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import runtime
+from model import action_guard, runtime
+from model import state as state_module
 from model.features import passive_event_ledger, passive_inbox, workflow_log
 
 
@@ -314,6 +315,78 @@ class SentMessageEvidenceTests(unittest.TestCase):
 
                     self.assertEqual(source_module, intent["source_module"])
                     self.assertEqual("keep", intent["delete_policy"])
+
+    def test_send_intent_infers_three_sect_modules(self):
+        cases = {
+            ".双修 温养": "合欢宗",
+            ".天机盘": "天星宗",
+            ".观命": "天星宗",
+            ".定命 天府": "天星宗",
+            ".推命 炼制": "天星宗",
+            ".改命 探索": "天星宗",
+            ".消劫": "天星宗",
+            ".我的阴罗幡": "阴罗宗",
+            ".血洗山林": "阴罗宗",
+            ".召唤魔影": "阴罗宗",
+            ".化功为煞 1000": "阴罗宗",
+            ".收取幡魂": "阴罗宗",
+        }
+
+        with patch.object(runtime, "is_auto_delete_sent_messages_enabled", return_value=False):
+            for command, source_module in cases.items():
+                with self.subTest(command=command):
+                    intent = runtime._normalize_send_intent(command)
+
+                    self.assertEqual(source_module, intent["source_module"])
+
+    def test_action_guard_resolves_three_sect_parameterized_commands(self):
+        cases = {
+            ".双修 温养": "hehuan_dual",
+            ".天机盘": "tianxing_panel",
+            ".观命": "tianxing_observe",
+            ".定命 天府": "tianxing_set_star",
+            ".推命 炼制": "tianxing_predict",
+            ".改命 探索": "tianxing_change_fate",
+            ".消劫": "tianxing_clear_calamity",
+            ".我的阴罗幡": "yinluo_banner",
+            ".血洗山林": "yinluo_blood_forest",
+            ".召唤魔影": "yinluo_demon_summon",
+            ".化功为煞 1000": "yinluo_convert",
+            ".收取幡魂": "yinluo_collect",
+            ".下咒 @target": "yinluo_curse",
+            ".夺舍 @target": "yinluo_possess",
+        }
+
+        for command, action_key in cases.items():
+            with self.subTest(command=command):
+                self.assertEqual(action_key, action_guard.resolve_action_key(command))
+
+        self.assertEqual("yinluo_demon_summon", action_guard.resolve_action_key_for_family("yinluo_demon_summon"))
+        self.assertEqual("tianxing_change_fate", action_guard.resolve_action_key_for_family("tianxing_change_fate"))
+
+    def test_action_guard_closes_three_sect_sessions_by_reply_family(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990301
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            commands = {
+                ".双修 温养": "hehuan_dual",
+                ".改命 探索": "tianxing_change_fate",
+                ".召唤魔影": "yinluo_demon_summon",
+            }
+            for command, family in commands.items():
+                with self.subTest(command=command):
+                    action_guard.note_sent(command, identity_id, 100, sent_at=1_780_000_000.0)
+                    self.assertIn(action_guard.resolve_action_key(command), action_guard.get_action_guard_sessions(identity_id))
+
+                    self.assertTrue(action_guard.close_by_family(family, send_as_id=identity_id, now=1_780_000_010.0))
+                    self.assertNotIn(action_guard.resolve_action_key(command), action_guard.get_action_guard_sessions(identity_id))
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
 
 
 if __name__ == "__main__":

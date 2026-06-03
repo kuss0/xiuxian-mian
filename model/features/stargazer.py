@@ -22,6 +22,7 @@ from .storage_bag import apply_storage_bag_item_text_delta
 RE_STARGAZER_SLOT_LINE = re.compile(r"^\s*(\d+)号引星盘[:：]\s*(.+)$")
 RE_STARGAZER_DECLARED_TOTAL_SLOTS = re.compile(r"引星盘总数[:：]\s*(\d+)座")
 RE_STARGAZER_COLLECTED_SLOT_COUNT = re.compile(r"成功从\s*(\d+)\s*座引星盘上收集")
+RE_STARGAZER_SOOTHE_SUCCESS = re.compile(r"成功安抚了\s*\d+\s*座引星盘")
 STARGAZER_CD_HINT_KEYWORDS = ("尚未恢复", "冷却", "等待", "不足", "休息")
 STARGAZER_SOOTHE_INSUFFICIENT_POWER_KEYWORDS = ("灵力不足", "安抚", "座引星盘共需要", "点修为")
 STARGAZER_SOOTHE_NO_NEED_KEYWORDS = ("观星台", "没有需要安抚", "星辰")
@@ -408,6 +409,11 @@ def _is_stargazer_soothe_no_need(text):
     return all(keyword in str(text or "") for keyword in STARGAZER_SOOTHE_NO_NEED_KEYWORDS)
 
 
+def _is_stargazer_soothe_success(text):
+    raw_text = str(text or "")
+    return "安抚完成" in raw_text or bool(RE_STARGAZER_SOOTHE_SUCCESS.search(raw_text))
+
+
 def _is_stargazer_guide_insufficient_power(text):
     return all(keyword in str(text or "") for keyword in STARGAZER_GUIDE_INSUFFICIENT_POWER_KEYWORDS)
 
@@ -481,7 +487,7 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
         await send_audit_log(f"⏳ 安抚 CD→{fmt_time_after(follow_delay)}")
         return True
 
-    if "安抚完成" in text:
+    if _is_stargazer_soothe_success(text):
         _clear_stargazer_collect_flags()
         await _queue_stargazer_action(now, "collect", audit_text="🌠 安抚完成，收集")
         return True

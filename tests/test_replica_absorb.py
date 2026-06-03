@@ -102,7 +102,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         state_module.set_replica_participant_identity_ids([identity_id])
         return identity_id
 
-    def _register_replica_identity(self, identity_id, username, root_attrs="金", professions="破军", realm="结丹初期", root_type="真灵根"):
+    def _register_replica_identity(self, identity_id, username, root_attrs="金", professions="破军", realm="结丹初期", root_type="真灵根", sect_name=""):
         state_module.ensure_identity_registered(identity_id)
         state_module.update_send_as_profile(
             identity_id,
@@ -112,6 +112,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             spiritual_root_type=root_type,
             spiritual_root_attrs=root_attrs,
             replica_professions=professions,
+            sect_name=sect_name,
         )
         return identity_id
 
@@ -374,6 +375,44 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual("123", parsed["room_id"])
         self.assertEqual(["@leader", "@bbtest"], parsed["team_usernames"])
 
+    def test_parse_cangkun_real_join_reply(self):
+        parsed = app_replica._parse_replica_join_reply(
+            "@boxboxji 已加入苍坤上人洞府队伍！\n"
+            "当前队伍 (3/5):\n"
+            "- @zhengyuan0213 (御山)\n"
+            "- @WalterWA2000 (破军)\n"
+            "- @boxboxji (灵医)",
+            reply_to=SimpleNamespace(raw_text=".加入苍坤洞府 35"),
+        )
+
+        self.assertEqual("joined", parsed["kind"])
+        self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, parsed["replica_kind"])
+        self.assertEqual("35", parsed["room_id"])
+        self.assertEqual(["@zhengyuan0213", "@walterwa2000", "@boxboxji"], parsed["team_usernames"])
+
+    def test_mark_cangkun_team_joined_from_real_join_text(self):
+        leader_id = self._register_replica_identity(991201, "zhengyuan0213", professions="御山|咒师")
+        wa_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")
+        box_id = self._register_replica_identity(991203, "boxboxji", professions="御山|灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, wa_id, box_id])
+
+        changed = app_replica._mark_replica_team_joined_from_text(
+            "@boxboxji 已加入苍坤上人洞府队伍！\n"
+            "当前队伍 (3/5):\n"
+            "- @zhengyuan0213 (御山)\n"
+            "- @WalterWA2000 (破军)\n"
+            "- @boxboxji (灵医)",
+            now=1000.0,
+            msg_id=35,
+        )
+
+        self.assertTrue(changed)
+        records = state_module.get_replica_run_state()["by_identity"]
+        for identity_id in (leader_id, wa_id, box_id):
+            state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
+            self.assertTrue(state_item["participating"])
+            self.assertEqual(["@zhengyuan0213", "@walterwa2000", "@boxboxji"], state_item["team_usernames"])
+
     def test_runtime_resolves_cangkun_join_reply_family(self):
         self.assertEqual("replica_join", runtime.resolve_reply_family(".加入苍坤洞府 123"))
 
@@ -587,6 +626,22 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("缺职业：咒师", section)
         self.assertNotIn("@low_curse", section)
 
+    def test_cangkun_recommendation_does_not_count_one_identity_as_multiple_professions(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山|咒师", realm="结丹初期")
+        attacker_id = self._register_replica_identity(991202, "attacker", professions="破军", realm="结丹初期")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="结丹初期")
+        blade_curse_id = self._register_replica_identity(991204, "bladecurse", professions="影刃|咒师", realm="结丹初期")
+        state_module.set_replica_participant_identity_ids([leader_id, attacker_id, healer_id, blade_curse_id])
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+
+        self.assertIn(".加入副本 @attacker @healer @bladecurse", section)
+        self.assertIn("缺职业：", section)
+        self.assertNotIn("五职业已齐", section)
+
     def test_cangkun_recommendation_prefers_root_grade_for_same_profession(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
         shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="结丹初期")
@@ -616,6 +671,30 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("@aa_pseudo_curse", section)
         self.assertNotIn("@bb_true_curse", section)
         self.assertNotIn("@cc_exotic_curse", section)
+
+    def test_cangkun_recommendation_prefers_taiyi_for_same_profession(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
+        normal_shield_id = self._register_replica_identity(991202, "aa_normal_shield", professions="御山", realm="结丹初期", root_type="天灵根")
+        taiyi_shield_id = self._register_replica_identity(991203, "zz_taiyi_shield", professions="御山", realm="结丹初期", root_type="伪灵根", sect_name="太一门")
+        healer_id = self._register_replica_identity(991204, "healer", professions="灵医", realm="结丹初期")
+        blade_id = self._register_replica_identity(991205, "blade", professions="影刃", realm="结丹初期")
+        curse_id = self._register_replica_identity(991206, "curse", professions="咒师", realm="结丹初期")
+        state_module.set_replica_participant_identity_ids([
+            leader_id,
+            normal_shield_id,
+            taiyi_shield_id,
+            healer_id,
+            blade_id,
+            curse_id,
+        ])
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+
+        self.assertIn(".加入副本 @zz_taiyi_shield @healer @blade @curse", section)
+        self.assertNotIn("@aa_normal_shield", section)
 
     def test_virtual_hall_recommendation_includes_copyable_route_advice(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
@@ -731,6 +810,66 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("自动解散", text)
         self.assertIn("@wa2000", text)
         self.assertIn("<code>.加入副本 @wa2000 @healer</code>", text)
+
+    def test_lightweight_virtual_hall_command_keeps_dps_when_leader_occupies_slot(self):
+        leader_id = self._register_replica_identity(991201, "myios7", root_attrs="水木金土", professions="御山|灵医|破军")
+        grow_id = self._register_replica_identity(991202, "growrdick", root_attrs="金木水土", professions="御山|灵医|破军")
+        fan_id = self._register_replica_identity(991203, "fanb0x", root_attrs="金木水", professions="灵医|破军")
+        jihe_id = self._register_replica_identity(991204, "jihejish", root_attrs="金木水", professions="灵医|破军")
+        myios17_id = self._register_replica_identity(991205, "myios17", root_attrs="木火金土", professions="御山|灵医|破军|咒师")
+        wa_id = self._register_replica_identity(991206, "walterwa2000", root_attrs="雷", professions="破军")
+        state_module.set_replica_participant_identity_ids([leader_id, grow_id, fan_id, jihe_id, myios17_id, wa_id])
+        state_module.set_replica_gold_dps_enabled(wa_id, True)
+        gua_record = {
+            "room_id": "1203",
+            "leader_username": "@myios7",
+            "gua_title": "巽风上坤地下 · 三爻争锋",
+            "requirements": [
+                {"role": "阵骨", "element": "土", "count": 1, "required": True},
+                {"role": "主锋", "element": "木", "count": 2, "required": True},
+                {"role": "引灵", "element": "土", "count": 1, "required": True, "fallback_element": "火", "fallback_type": "借生"},
+                {"role": "旁合", "element": "金", "count": 1, "required": False, "fallback_element": "土", "fallback_type": "偏配"},
+            ],
+        }
+        candidates = app_replica._parse_replica_query_reply_text(app_replica._format_replica_query_reply(""))
+        recommendations = app_replica._build_virtual_hall_recommendations(gua_record, candidates, limit=1)
+
+        text = app_replica._format_virtual_hall_recommendations("1203", gua_record, recommendations, candidates, lightweight=True, html=True)
+
+        self.assertIn("DPS：<code>@walterwa2000</code>", text)
+        self.assertIn("@walterwa2000", app_replica._virtual_hall_recommendation_command_key(recommendations[0], leader_username="@myios7"))
+        self.assertIn("<code>.加入副本", text)
+        command_line = next(line for line in text.splitlines() if ".加入副本" in line and "推荐加入" in line)
+        self.assertIn("@walterwa2000", command_line)
+        self.assertNotIn("@myios7", command_line)
+
+        event = self._prepare_replica_group([leader_id, grow_id, fan_id, jihe_id, myios17_id, wa_id])
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "1203",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@myios7",
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+        event.raw_text = ".加入副本 " + command_line.rsplit(".加入副本 ", 1)[1].split("</code>", 1)[0]
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=800))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=701))):
+                handled = await app_replica._handle_lightweight_join_command(event)
+                return handled, app_replica.send_game_command.await_args_list
+
+        handled, calls = asyncio.run(run_test())
+        self.assertTrue(handled)
+        sent_ids = [call.kwargs["send_as_id"] for call in calls]
+        self.assertIn(wa_id, sent_ids)
+        self.assertNotIn(leader_id, sent_ids)
 
     def test_virtual_hall_old_ticket_query_text_uses_local_dps_mark(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
@@ -1332,6 +1471,42 @@ class ReplicaAbsorbTests(unittest.TestCase):
         state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
         self.assertEqual(1, state_item["dispatch_retry_count"])
         self.assertEqual(779, state_item["dispatch_pending_msg_id"])
+
+    def test_external_dispatch_full_reply_after_success_does_not_clear_joined_state(self):
+        first_id = self._register_replica_identity(991205, "first")
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        state_module.set_replica_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_group_ids([-100888])
+        state_module.set_replica_dispatch_listener_account_map({"-100888": 9001})
+        now = time.time()
+
+        async def run_test():
+            with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=778, sent_at=now))) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                first_event = SimpleNamespace(raw_text=".虚天殿 456 @first", chat_id=-100888, sender_id=4444, id=88006, client=listener_client)
+                later_event = SimpleNamespace(raw_text=".虚天殿 456 @first", chat_id=-100888, sender_id=4444, id=88007, client=listener_client)
+                first_handled = await app_replica._handle_replica_external_dispatch_command(first_event)
+                app_replica._mark_replica_join_success(first_id, "456", ["@leader", "@other", "@first"], now + 1, msg_id=779)
+                app_replica._mark_replica_join_not_joined(first_id, "456", "full", now + 2, msg_id=780)
+                later_handled = await app_replica._handle_replica_external_dispatch_command(later_event)
+                return first_handled, later_handled, send_mock.await_args_list
+
+        first_handled, later_handled, send_calls = asyncio.run(run_test())
+
+        self.assertTrue(first_handled)
+        self.assertTrue(later_handled)
+        self.assertEqual(1, len(send_calls))
+        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertTrue(state_item["participating"])
+        self.assertEqual("456", state_item["room_id"])
+        self.assertNotIn("dispatch_pending_room_id", state_item)
+        self.assertNotIn("dispatch_pending_msg_id", state_item)
+        self.assertEqual(779, state_item["last_join_msg_id"])
+        record = state_module.get_replica_run_state()["by_identity"][str(first_id)]
+        self.assertEqual("joined", record["last_join_result"])
+        self.assertEqual(779, record["last_join_msg_id"])
 
     def test_lightweight_dissolve_refuses_room_without_leader_identity(self):
         event = self._prepare_replica_group([])

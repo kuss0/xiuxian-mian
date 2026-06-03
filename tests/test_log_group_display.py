@@ -1,5 +1,6 @@
 import atexit
 import asyncio
+import copy
 import os
 import sys
 import unittest
@@ -39,6 +40,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import control
+from model import state as state_module
 from model.config import (
     RE_CMD_ANALYSIS_HEALTH,
     RE_CMD_ANALYSIS_LOG_GROUP,
@@ -88,6 +90,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("放养", module_names)
         self.assertIn("野外历练", module_names)
         self.assertIn("自动副本", module_names)
+        self.assertIn("天星宗", module_names)
+        self.assertIn("阴罗宗", module_names)
 
     def test_user_facing_status_commands_all_match(self):
         commands = [
@@ -103,6 +107,9 @@ class LogGroupDisplayTests(unittest.TestCase):
             ".侍妾状态",
             ".天机代卜状态",
             ".共历心劫状态",
+            ".合欢宗状态",
+            ".天星宗状态",
+            ".阴罗宗状态",
             ".南陇侯状态",
             ".元婴状态",
             ".深度闭关状态",
@@ -128,6 +135,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(("放养", True), toggles)
         self.assertIn(("野外历练", True), toggles)
         self.assertIn(("第二元神", True), toggles)
+        self.assertIn(("天星宗", True), toggles)
+        self.assertIn(("阴罗宗", True), toggles)
         self.assertIn(("太一", False), toggles)
         self.assertIn(("自动副本", True), toggles)
 
@@ -177,6 +186,11 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("日志推送", html_text)
         self.assertIn(".日志推送状态", html_text)
         self.assertIn(".发送日志汇总", html_text)
+        self.assertIn("三宗门手动发送", html_text)
+        self.assertIn(".合欢温养 @身份", html_text)
+        self.assertIn(".天星查盘 @身份", html_text)
+        self.assertIn(".阴罗血洗 @身份", html_text)
+        self.assertIn(".阴罗化煞 &lt;数量&gt; @身份", html_text)
         self.assertIn("副本群轻量指令", html_text)
         self.assertIn(".查询副本", html_text)
         self.assertIn(".开启副本 @用户名", html_text)
@@ -185,6 +199,60 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("主线拉人群兼容指令", html_text)
         self.assertIn(".苍坤洞府 123 @用户名", html_text)
         self.assertIn("只读", html_text)
+
+    def test_three_sect_manual_command_without_identity_only_replies_usage(self):
+        event = SimpleNamespace()
+
+        with patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                patch.object(control, "execute_tianxing_manual_action", new=AsyncMock()) as execute_mock:
+            handled = asyncio.run(control._handle_three_sect_manual_command(event, ".天星查盘", None))
+
+        self.assertTrue(handled)
+        execute_mock.assert_not_awaited()
+        reply_mock.assert_awaited_once()
+        args = reply_mock.await_args.args
+        self.assertIn("必须指定单个身份", args[2])
+
+    def test_three_sect_manual_command_with_identity_dispatches_once(self):
+        event = SimpleNamespace()
+
+        with patch.object(control, "get_identity_enabled", return_value=True), \
+                patch.object(control, "is_module_available", return_value=True), \
+                patch.object(control, "get_identity_display_name", return_value="tx[2101]"), \
+                patch.object(control, "execute_tianxing_manual_action", new=AsyncMock(return_value=(True, "ok", {"command": ".天机盘"}))) as execute_mock, \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+            handled = asyncio.run(control._handle_three_sect_manual_command(event, ".天星查盘", 2101))
+
+        self.assertTrue(handled)
+        execute_mock.assert_awaited_once_with("查盘", "", send_as_id=2101)
+        reply_mock.assert_awaited_once()
+
+    def test_log_group_three_sect_command_uses_identity_selector(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(3101)
+            state_module.update_send_as_profile(3101, username="yinluo_manual", label="yinluo_manual", sect_name="阴罗宗")
+
+            event = SimpleNamespace(
+                chat_id=control.LOG_GROUP_ID,
+                sender_id=123456,
+                raw_text=".阴罗化煞 1000 @yinluo_manual",
+            )
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(control, "is_module_available", return_value=True), \
+                    patch.object(control, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "ok", {"command": ".化功为煞 1000"}))) as execute_mock, \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+
+            self.assertTrue(handled)
+            execute_mock.assert_awaited_once_with("化煞", "1000", send_as_id=3101)
+            reply_mock.assert_awaited_once()
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
 
     def test_staging_preflight_formatter_includes_guards(self):
         payload = {

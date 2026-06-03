@@ -478,6 +478,15 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual("411", join_dungeon._parse_dungeon_id(".加入坠魔谷 411"))
         self.assertEqual("411", join_dungeon._parse_dungeon_id(".加入黄龙山 411"))
         self.assertEqual("", join_dungeon._parse_dungeon_id("hello world 411"))
+        self.assertEqual(
+            "",
+            join_dungeon._parse_dungeon_id(
+                "【血色试炼·集结】\n"
+                "@fixuuu 正在召集同伴，准备进入【血色禁地】采药试炼！\n"
+                "房间ID: 707\n"
+                "其他道友可使用 .加入血色试炼 707 加入队伍！(最多 3 人)"
+            ),
+        )
 
     def test_infer_dungeon_kind_from_mainline_formats(self):
         self.assertEqual(join_dungeon.DUNGEON_KIND_VIRTUAL_HALL, join_dungeon._infer_dungeon_kind("【虚天殿已开启】\n副本ID: 411"))
@@ -610,6 +619,37 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled)
         send_mock.assert_awaited_once_with(".加入黄龙山 513", track=False, send_as_id=identity_id, priority="urgent_reactive")
+
+    async def test_blood_trial_room_id_is_not_treated_as_supported_join_dungeon(self):
+        self._prepare_identity()
+        now = 16650.0
+        opener = _event(185, 111, ".开启血色试炼")
+        announce = _event(
+            186,
+            7900199668,
+            "【血色试炼·集结】\n"
+            "@fixuuu 正在召集同伴，准备进入【血色禁地】采药试炼！\n"
+            "房间ID: 707\n"
+            "准入境界：炼气五层 - 筑基后期\n"
+            "进入次数：每日 1 次\n"
+            "副本内采得的灵草会先暂存于队伍药篓，只有成功撤离时才会统一发到储物袋。\n"
+            "其他道友可使用 .加入血色试炼 707 加入队伍！(最多 3 人)\n"
+            "队长可随时使用 .进入血色试炼 出发。",
+            reply_to=185,
+        )
+        at_text = "@bbtest 来"
+        at = _event(187, 111, at_text, entities=[MessageEntityMention(0, 7)])
+
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), \
+                patch.object(join_dungeon, "send_game_command", new=AsyncMock()) as send_mock:
+            join_dungeon.record_game_group_message(opener, now=now)
+            join_dungeon.record_game_group_message(announce, now=now + 1)
+            join_dungeon.record_game_group_message(at, now=now + 2)
+            handled = await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2)
+
+        self.assertFalse(handled)
+        self.assertEqual([], join_dungeon.get_dungeon_join_inbox_snapshot())
+        send_mock.assert_not_awaited()
 
     async def test_duplicate_mentions_during_send_queue_are_reserved(self):
         identity_id = self._prepare_identity()

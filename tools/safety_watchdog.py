@@ -522,13 +522,14 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
     marker = fuse_marker_path(cfg.project_root)
     marker_existed = marker.exists()
     if marker.exists():
-        if read_fuse_marker_reason(cfg.project_root) == reason:
-            print(f"already fused: {marker}")
-            return
         if cfg.dry_run or not is_global_switch_enabled(cfg.project_root):
             print(f"already fused: {marker}")
             return
-        print(f"stale fuse marker with global enabled, re-fusing silently: {marker}")
+        marker_reason = read_fuse_marker_reason(cfg.project_root)
+        if marker_reason == reason:
+            print(f"existing fuse marker but global enabled, re-fusing silently: {marker}")
+        else:
+            print(f"stale fuse marker with global enabled, re-fusing silently: {marker}")
     actions: list[str] = []
     if cfg.dry_run:
         actions.append("dry-run: no action")

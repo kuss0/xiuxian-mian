@@ -137,6 +137,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1")
     if "hehuan_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN hehuan_enabled INTEGER NOT NULL DEFAULT 0")
+    if "tianxing_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianxing_enabled INTEGER NOT NULL DEFAULT 0")
+    if "yinluo_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN yinluo_enabled INTEGER NOT NULL DEFAULT 0")
     if "nanlong_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN nanlong_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_monitor_enabled" not in module_columns:
@@ -396,6 +400,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_last_error TEXT NOT NULL DEFAULT ''")
     if "hehuan_observation" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN hehuan_observation TEXT NOT NULL DEFAULT '{}' ")
+    if "tianxing_observation" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_observation TEXT NOT NULL DEFAULT '{}' ")
+    if "yinluo_observation" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yinluo_observation TEXT NOT NULL DEFAULT '{}' ")
     if "pet_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_trial_last_error" not in runtime_columns:
@@ -782,6 +790,8 @@ def init_db():
             concubine_heart_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1,
             hehuan_enabled INTEGER NOT NULL DEFAULT 0,
+            tianxing_enabled INTEGER NOT NULL DEFAULT 0,
+            yinluo_enabled INTEGER NOT NULL DEFAULT 0,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_preach_enabled INTEGER NOT NULL DEFAULT 1,
@@ -993,6 +1003,8 @@ def init_db():
             concubine_tianji_last_error TEXT NOT NULL DEFAULT '',
             concubine_heart_last_error TEXT NOT NULL DEFAULT '',
             hehuan_observation TEXT NOT NULL DEFAULT '{}',
+            tianxing_observation TEXT NOT NULL DEFAULT '{}',
+            yinluo_observation TEXT NOT NULL DEFAULT '{}',
             nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
             nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0,

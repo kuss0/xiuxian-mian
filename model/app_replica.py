@@ -128,7 +128,10 @@ _REPLICA_OPENED_RE = re.compile(
     r"\s*(?:队长\s*)?(?P<leader>@[^\s，。！？、；：:,.!?()（）【】\[\]]+).*?(?:副本ID|房间ID)\s*[:：]\s*(?P<room_id>\d+)",
     re.S,
 )
-_REPLICA_JOINED_RE = re.compile(r"(@[^\s，。！？、；：:,.!?()（）【】\[\]]+)\s*已成功加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|苍坤洞府(?:队伍)?(?:\s*(\d+))?)")
+_REPLICA_JOINED_RE = re.compile(
+    r"(@[^\s，。！？、；：:,.!?()（）【】\[\]]+)\s*已(?:成功)?加入"
+    r"(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|苍坤(?:上人)?洞府(?:队伍)?(?:\s*(\d+))?)"
+)
 _REPLICA_ROOM_GUA_TTL_SEC = 6 * 60 * 60
 _REPLICA_ROOM_GUA_MAX_PER_KIND = 100
 _VIRTUAL_HALL_MATCH_QUERY_WAIT_SEC = 10
@@ -154,6 +157,14 @@ _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC = 5 * 60
 _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC = 2
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_DELAY_SEC = 2.5
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_LIMIT = 1
+_REPLICA_EXTERNAL_DISPATCH_PENDING_KEYS = (
+    "dispatch_pending_room_id",
+    "dispatch_pending_until",
+    "dispatch_pending_msg_id",
+    "dispatch_pending_source_chat_id",
+    "dispatch_pending_source_msg_id",
+    "dispatch_retry_count",
+)
 _REPLICA_SEND_SOURCE_MODULE = "自动副本"
 _VIRTUAL_HALL_ELEMENT_ALIASES = {
     "金": {"金", "雷"},
@@ -188,6 +199,7 @@ _CANGKUN_REQUIRED_PROFESSIONS = ("破军", "御山", "灵医", "影刃", "咒师
 _CANGKUN_MIN_REALM = "结丹初期"
 _CANGKUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_CANGKUN_MIN_REALM)
 _CANGKUN_ROOT_GRADE_PRIORITY = ("天", "异", "真", "伪")
+_CANGKUN_PREFERRED_SECT = "太一门"
 _XUTIAN_ORACLE_EXPLICIT = {
     "乾天上坤地下 · 三爻争锋": ("火路", "压策", "#528 明示"),
     "震雷上艮山下 · 五爻乘时": ("火路", "势策", "#529 明示"),
@@ -916,17 +928,105 @@ def _get_cangkun_root_grade_rank(identity_id):
     return len(_CANGKUN_ROOT_GRADE_PRIORITY)
 
 
-def _get_cangkun_profession_coverage(identity_ids):
-    covered = set()
+def _normalize_replica_sect_name(text):
+    return str(text or "").strip().strip("【】[]")
+
+
+def _is_cangkun_preferred_sect_identity(identity_id):
+    profile = get_send_as_profile(identity_id)
+    return _normalize_replica_sect_name(profile.get("sect_name") or "") == _CANGKUN_PREFERRED_SECT
+
+
+def _best_cangkun_profession_assignment(identity_ids, *, leader_identity_id=0):
+    leader_identity_id = int(leader_identity_id or 0)
+    normalized_ids = []
+    seen = set()
     for identity_id in identity_ids or []:
-        if int(identity_id or 0) <= 0 or not _is_cangkun_realm_available(identity_id):
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or identity_id in seen or not _is_cangkun_realm_available(identity_id):
             continue
-        covered.update(_get_replica_profile_professions(identity_id))
-    return {role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in covered}
+        if not set(_get_replica_profile_professions(identity_id)).intersection(_CANGKUN_REQUIRED_PROFESSIONS):
+            continue
+        seen.add(identity_id)
+        normalized_ids.append(identity_id)
+
+    if not normalized_ids:
+        return []
+
+    leader_roles = set(_get_replica_profile_professions(leader_identity_id)).intersection(_CANGKUN_REQUIRED_PROFESSIONS)
+    require_leader = leader_identity_id in seen and bool(leader_roles)
+    role_candidates = {
+        role: [
+            identity_id
+            for identity_id in normalized_ids
+            if role in _get_replica_profile_professions(identity_id)
+        ]
+        for role in _CANGKUN_REQUIRED_PROFESSIONS
+    }
+
+    def role_identity_sort_key(identity_id):
+        professions = _get_replica_profile_professions(identity_id)
+        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        return (
+            0 if _is_cangkun_preferred_sect_identity(identity_id) else 1,
+            _get_cangkun_root_grade_rank(identity_id),
+            -sum(1 for role in _CANGKUN_REQUIRED_PROFESSIONS if role in professions),
+            username,
+        )
+
+    best_assignments = []
+    best_score = None
+    best_key = ""
+
+    def consider(assignments):
+        nonlocal best_assignments, best_score, best_key
+        if require_leader and not any(identity_id == leader_identity_id for _role, identity_id in assignments):
+            return
+        assigned_ids = [identity_id for _role, identity_id in assignments]
+        coverage_count = len(assignments)
+        preferred_count = sum(1 for identity_id in assigned_ids if _is_cangkun_preferred_sect_identity(identity_id))
+        root_score = sum(_get_cangkun_root_grade_rank(identity_id) for identity_id in assigned_ids)
+        role_count_score = sum(
+            sum(1 for role in _CANGKUN_REQUIRED_PROFESSIONS if role in _get_replica_profile_professions(identity_id))
+            for identity_id in assigned_ids
+        )
+        score = (coverage_count, preferred_count, -root_score, role_count_score)
+        key = "|".join(
+            f"{role}:{_normalize_replica_username(get_send_as_profile(identity_id).get('username') or identity_id)}"
+            for role, identity_id in assignments
+        )
+        if best_score is None or score > best_score or (score == best_score and key < best_key):
+            best_score = score
+            best_key = key
+            best_assignments = list(assignments)
+
+    def dfs(index, used_ids, assignments):
+        if index >= len(_CANGKUN_REQUIRED_PROFESSIONS):
+            consider(assignments)
+            return
+        role = _CANGKUN_REQUIRED_PROFESSIONS[index]
+        dfs(index + 1, used_ids, assignments)
+        for identity_id in sorted(role_candidates.get(role) or [], key=role_identity_sort_key):
+            if identity_id in used_ids:
+                continue
+            used_ids.add(identity_id)
+            assignments.append((role, identity_id))
+            dfs(index + 1, used_ids, assignments)
+            assignments.pop()
+            used_ids.remove(identity_id)
+
+    dfs(0, set(), [])
+    return best_assignments
 
 
-def _format_cangkun_profession_coverage(identity_ids):
-    covered = _get_cangkun_profession_coverage(identity_ids)
+def _get_cangkun_profession_coverage(identity_ids):
+    assignments = _best_cangkun_profession_assignment(identity_ids)
+    return {role for role, _identity_id in assignments}
+
+
+def _format_cangkun_profession_coverage(identity_ids, *, leader_identity_id=0):
+    assignments = _best_cangkun_profession_assignment(identity_ids, leader_identity_id=leader_identity_id)
+    covered = {role for role, _identity_id in assignments}
     covered_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in covered) or "无"
     missing_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered) or "无"
     return covered_text, missing_text
@@ -962,8 +1062,15 @@ def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, lim
         return []
     if replica_kind == _REPLICA_KIND_CANGKUN:
         candidates = [identity_id for identity_id in candidates if _is_cangkun_realm_available(identity_id)]
-        role_priority = list(_CANGKUN_REQUIRED_PROFESSIONS)
-        covered = _get_cangkun_profession_coverage([leader_identity_id])
+        assignments = _best_cangkun_profession_assignment(
+            ([leader_identity_id] if leader_identity_id else []) + candidates,
+            leader_identity_id=leader_identity_id,
+        )
+        return [
+            identity_id
+            for _role, identity_id in assignments
+            if identity_id != leader_identity_id
+        ][:limit]
     else:
         role_priority = ["破军", "御山", "灵医", "影刃", "咒师"]
         covered = set(_get_replica_profile_professions(leader_identity_id)) if leader_identity_id else set()
@@ -1028,7 +1135,10 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     else:
         lines.append("暂未找到可参加且带 username 的补位身份。")
     if replica_kind == _REPLICA_KIND_CANGKUN:
-        covered_text, missing_text = _format_cangkun_profession_coverage(([leader_identity_id] if leader_identity_id else []) + team_ids)
+        covered_text, missing_text = _format_cangkun_profession_coverage(
+            ([leader_identity_id] if leader_identity_id else []) + team_ids,
+            leader_identity_id=leader_identity_id,
+        )
         lines.append(f"覆盖职业：{covered_text}")
         if missing_text == "无":
             lines.append("五职业已齐。")
@@ -2084,19 +2194,44 @@ def _has_virtual_hall_core_slots_filled(slots, assignments):
     return bool(core_slots) and all(id(slot) in assigned_slot_ids for slot in core_slots)
 
 
-def _virtual_hall_recommendation_command_usernames(assignments, leader_username=""):
+def _virtual_hall_recommendation_command_limit(leader_username=""):
+    return 4 if _normalize_replica_username(leader_username) else 5
+
+
+def _virtual_hall_recommendation_command_usernames(assignments, leader_username="", limit=None):
     leader_username = _normalize_replica_username(leader_username)
     usernames = []
+    dps_usernames = []
+    seen = set()
     for assignment in assignments or []:
-        username = (assignment.get("candidate") or {}).get("username")
-        if username and _normalize_replica_username(username) != leader_username:
-            usernames.append(_normalize_replica_username(username))
-    return usernames
+        candidate = assignment.get("candidate") or {}
+        username = _normalize_replica_username(candidate.get("username") or "")
+        if not username or username == leader_username or username in seen:
+            continue
+        seen.add(username)
+        usernames.append(username)
+        if _candidate_has_virtual_hall_gold_dps(candidate):
+            dps_usernames.append(username)
+    if limit is None or len(usernames) <= int(limit or 0):
+        return usernames
+    limit = max(0, int(limit or 0))
+    if limit <= 0:
+        return []
+    selected = set(dps_usernames[:limit])
+    for username in usernames:
+        if len(selected) >= limit:
+            break
+        selected.add(username)
+    return [username for username in usernames if username in selected]
 
 
 def _virtual_hall_recommendation_command_key(recommendation, leader_username=""):
-    usernames = _virtual_hall_recommendation_command_usernames(recommendation.get("assignments") or [], leader_username)
-    return tuple(sorted(usernames[:4 if _normalize_replica_username(leader_username) else 5]))
+    usernames = _virtual_hall_recommendation_command_usernames(
+        recommendation.get("assignments") or [],
+        leader_username,
+        limit=_virtual_hall_recommendation_command_limit(leader_username),
+    )
+    return tuple(sorted(usernames))
 
 
 def _virtual_hall_recommendation_dps_usernames(recommendation):
@@ -2311,6 +2446,13 @@ def _build_virtual_hall_recommendations(gua_record, candidates, limit=3):
     def search(index, used_usernames, assignments):
         if index >= len(slots_for_search):
             ordered_assignments = sorted(assignments, key=lambda item: slots.index(item["slot"]))
+            command_usernames = _virtual_hall_recommendation_command_usernames(
+                ordered_assignments,
+                leader_username,
+                limit=None,
+            )
+            if len(command_usernames) > _virtual_hall_recommendation_command_limit(leader_username):
+                return
             if has_available_gold_dps and not _assignments_have_virtual_hall_gold_dps(ordered_assignments):
                 return
             gold_fallback_used = _assignments_use_virtual_hall_gold_fallback(ordered_assignments)
@@ -2372,13 +2514,11 @@ def _build_virtual_hall_recommendations(gua_record, candidates, limit=3):
 
 def _format_virtual_hall_recommendation_line(room_id, recommendation, leader_username=""):
     assignments = recommendation.get("assignments") or []
-    leader_username = _normalize_replica_username(leader_username)
-    usernames = []
-    for assignment in assignments:
-        username = (assignment.get("candidate") or {}).get("username")
-        if username and _normalize_replica_username(username) != leader_username:
-            usernames.append(username)
-    usernames = usernames[:4 if leader_username else 5]
+    usernames = _virtual_hall_recommendation_command_usernames(
+        assignments,
+        leader_username,
+        limit=_virtual_hall_recommendation_command_limit(leader_username),
+    )
     command = f".虚天殿 {room_id}" + (" " + " ".join(usernames) if usernames else "")
     missing = recommendation.get("missing") or []
     notes = recommendation.get("notes") or []
@@ -2396,8 +2536,11 @@ def _format_virtual_hall_recommendation_line(room_id, recommendation, leader_use
 
 
 def _format_virtual_hall_lightweight_recommendation_line(recommendation, leader_username="", *, html=False):
-    usernames = _virtual_hall_recommendation_command_usernames(recommendation.get("assignments") or [], leader_username)
-    usernames = usernames[:4 if _normalize_replica_username(leader_username) else 5]
+    usernames = _virtual_hall_recommendation_command_usernames(
+        recommendation.get("assignments") or [],
+        leader_username,
+        limit=_virtual_hall_recommendation_command_limit(leader_username),
+    )
     command = ".加入副本" + (" " + " ".join(usernames) if usernames else " @用户名 @用户名")
     missing = recommendation.get("missing") or []
     notes = recommendation.get("notes") or []
@@ -2595,7 +2738,7 @@ def _parse_replica_join_reply(text, reply_to=None):
     if joined_match and not room_id:
         room_id = next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
     team_usernames = _extract_replica_team_usernames(raw_text) or _extract_replica_usernames(raw_text)
-    if any(keyword in raw_text for keyword in ("已成功加入副本", "已成功加入坠魔谷", "已成功加入黄龙山", "已成功加入苍坤洞府")) or "你已在队伍中" in raw_text:
+    if joined_match or "你已在队伍中" in raw_text:
         return {"kind": "joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "wait_sec": 0, "reason": ""}
     if "此队伍已满员" in raw_text:
         return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "wait_sec": 0, "reason": "full"}
@@ -2642,15 +2785,7 @@ def _cleanup_replica_run_state(now=None):
                 changed = True
             dispatch_pending_until = float(state_item.get("dispatch_pending_until") or 0)
             if dispatch_pending_until > 0 and now >= dispatch_pending_until:
-                for key in (
-                    "dispatch_pending_room_id",
-                    "dispatch_pending_until",
-                    "dispatch_pending_msg_id",
-                    "dispatch_pending_source_chat_id",
-                    "dispatch_pending_source_msg_id",
-                    "dispatch_retry_count",
-                ):
-                    state_item.pop(key, None)
+                _clear_replica_dispatch_pending_fields(state_item)
                 changed = True
         failure_pending_until = float(record.get("failure_pending_until") or 0)
         if failure_pending_until > 0 and now >= failure_pending_until:
@@ -2667,6 +2802,11 @@ def _cleanup_replica_run_state(now=None):
     if changed:
         _save_replica_run_records(records)
     return records
+
+
+def _clear_replica_dispatch_pending_fields(state_item):
+    for key in _REPLICA_EXTERNAL_DISPATCH_PENDING_KEYS:
+        state_item.pop(key, None)
 
 
 def _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
@@ -2687,10 +2827,8 @@ def _update_replica_join_record(record, identity_id, room_id, team_usernames, no
         "active_until": float(now or 0) + REPLICA_ACTIVE_TTL_SEC,
         "last_join_msg_id": int(msg_id or 0),
         "failure_pending_until": 0,
-        "dispatch_pending_until": 0,
-        "dispatch_pending_room_id": "",
-        "dispatch_retry_count": 0,
     })
+    _clear_replica_dispatch_pending_fields(state_item)
     record.update({
         "replica_kind": replica_kind,
         "last_join_msg_id": int(msg_id or 0),
@@ -2713,20 +2851,38 @@ def _mark_replica_join_success(identity_id, room_id, team_usernames, now, msg_id
         _save_replica_run_records(records)
 
 
+def _preserve_confirmed_replica_join(records, record, state_item, room_id, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
+    if (
+        state_item.get("participating")
+        and str(state_item.get("room_id") or "") == str(room_id or state_item.get("room_id") or "")
+        and _get_replica_active_until(record, replica_kind) > float(now or 0)
+    ):
+        _clear_replica_dispatch_pending_fields(state_item)
+        record.update({
+            "replica_kind": replica_kind,
+            "last_join_result": "joined",
+            "last_join_error": "",
+            "updated_at": float(now or 0),
+        })
+        _save_replica_run_records(records)
+        return True
+    return False
+
+
 def _mark_replica_join_not_joined(identity_id, room_id, reason, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
     records = _get_replica_run_records()
     record = _get_replica_identity_record(records, identity_id)
     state_item = _get_replica_kind_state(record, replica_kind, create=True)
+    if _preserve_confirmed_replica_join(records, record, state_item, room_id, now, msg_id=msg_id, replica_kind=replica_kind):
+        return
     state_item.update({
         "participating": False,
         "room_id": str(room_id or state_item.get("room_id") or ""),
         "team_usernames": [],
         "team_identity_ids": [],
         "failure_pending_until": 0,
-        "dispatch_pending_until": 0,
-        "dispatch_pending_room_id": "",
-        "dispatch_retry_count": 0,
     })
+    _clear_replica_dispatch_pending_fields(state_item)
     record.update({
         "replica_kind": replica_kind,
         "last_join_msg_id": int(msg_id or 0),
@@ -2737,20 +2893,21 @@ def _mark_replica_join_not_joined(identity_id, room_id, reason, now, msg_id=0, r
     _save_replica_run_records(records)
 
 
-def _mark_replica_join_cooldown(identity_id, wait_sec, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
+def _mark_replica_join_cooldown(identity_id, room_id, wait_sec, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
     records = _get_replica_run_records()
     record = _get_replica_identity_record(records, identity_id)
     state_item = _get_replica_kind_state(record, replica_kind, create=True)
+    if _preserve_confirmed_replica_join(records, record, state_item, room_id, now, msg_id=msg_id, replica_kind=replica_kind):
+        return
     state_item.update({
         "participating": False,
+        "room_id": str(room_id or state_item.get("room_id") or ""),
         "cooldown_until": float(now or 0) + max(0, int(wait_sec or 0)),
         "team_usernames": [],
         "team_identity_ids": [],
         "failure_pending_until": 0,
-        "dispatch_pending_until": 0,
-        "dispatch_pending_room_id": "",
-        "dispatch_retry_count": 0,
     })
+    _clear_replica_dispatch_pending_fields(state_item)
     record.update({
         "replica_kind": replica_kind,
         "last_join_msg_id": int(msg_id or 0),
@@ -4580,7 +4737,7 @@ async def _handle_replica_join_reply(text, now, reply_to, matched_family=None, e
     elif kind == "not_joined":
         _mark_replica_join_not_joined(identity_id, parsed.get("room_id"), parsed.get("reason"), now, msg_id=msg_id, replica_kind=parsed.get("replica_kind") or _REPLICA_KIND_VIRTUAL_HALL)
     elif kind == "cooldown":
-        _mark_replica_join_cooldown(identity_id, parsed.get("wait_sec") or 0, now, msg_id=msg_id, replica_kind=parsed.get("replica_kind") or _REPLICA_KIND_VIRTUAL_HALL)
+        _mark_replica_join_cooldown(identity_id, parsed.get("room_id"), parsed.get("wait_sec") or 0, now, msg_id=msg_id, replica_kind=parsed.get("replica_kind") or _REPLICA_KIND_VIRTUAL_HALL)
     return True
 
 
@@ -4689,15 +4846,7 @@ def _clear_external_dispatch_join_pending(identity_id, replica_kind, room_id="",
         return
     if source_msg_id and int(state_item.get("dispatch_pending_source_msg_id") or 0) != int(source_msg_id or 0):
         return
-    for key in (
-        "dispatch_pending_room_id",
-        "dispatch_pending_until",
-        "dispatch_pending_msg_id",
-        "dispatch_pending_source_chat_id",
-        "dispatch_pending_source_msg_id",
-        "dispatch_retry_count",
-    ):
-        state_item.pop(key, None)
+    _clear_replica_dispatch_pending_fields(state_item)
     record["updated_at"] = time.time()
     _save_replica_run_records(records)
 

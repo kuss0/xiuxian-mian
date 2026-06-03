@@ -45,6 +45,7 @@ DUNGEON_JOIN_FAST_RETRY_LIMIT = 1
 
 _JOIN_COMMANDS_RE = "|".join(re.escape(meta["join_command"]) for meta in DUNGEON_KIND_META.values())
 _DUNGEON_ID_RE = re.compile(rf"(?:(?:副本|房间)ID\s*[:：]\s*|(?:{_JOIN_COMMANDS_RE})\s+)(\d+)")
+_UNSUPPORTED_DUNGEON_MARKERS = ("血色试炼", "加入血色试炼", "进入血色试炼", "血色抉择")
 _USERNAME_PATTERN = r"@[^\s，。！？、；：:,.!?()（）【】\[\]]+"
 _USERNAME_RE = re.compile(_USERNAME_PATTERN)
 _JOINED_RE = re.compile(rf"({_USERNAME_PATTERN})\s*已成功加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?)")
@@ -229,21 +230,25 @@ def record_game_group_message(event, *, now=None, event_type="message"):
 
 def _parse_dungeon_id(text):
     raw = str(text or "")
-    if (
-        "虚天殿" not in raw
-        and "坠魔谷" not in raw
-        and "黄龙山" not in raw
-        and "加入副本" not in raw
-        and "副本ID" not in raw
-        and "房间ID" not in raw
-    ):
+    if not _is_supported_dungeon_join_text(raw):
         return ""
     match = _DUNGEON_ID_RE.search(raw)
     return str(match.group(1) or "").strip() if match else ""
 
 
+def _is_supported_dungeon_join_text(text):
+    raw = str(text or "")
+    if any(marker in raw for marker in _UNSUPPORTED_DUNGEON_MARKERS):
+        return False
+    if any(meta["name"] in raw or meta["join_command"] in raw for meta in DUNGEON_KIND_META.values()):
+        return True
+    return "副本ID" in raw or CMD_DUNGEON_JOIN in raw
+
+
 def _infer_dungeon_kind(text):
     raw = str(text or "")
+    if not _is_supported_dungeon_join_text(raw):
+        return ""
     for kind, meta in DUNGEON_KIND_META.items():
         if meta["name"] in raw or meta["join_command"] in raw:
             return kind

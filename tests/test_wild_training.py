@@ -286,6 +286,67 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1_700_000_600.0, state_module.state["wild_training_reply_due_at"])
         self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 
+    async def test_passive_result_with_unique_text_tag_routes_without_reply_context(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        text = (
+            "【野外历练 · 灵机暗藏】\n"
+            "@wild 在山涧残阵旁避开妖兽踪迹，采得一份机缘。\n"
+            "获得修为 +392，获得 【清灵草】x1。"
+        )
+        event = SimpleNamespace(chat_id=-1001680975844, id=202)
+        before_snapshot = passive_inbox.get_passive_inbox_snapshot()
+        before_changed = before_snapshot.get("changed", 0)
+        before_wild = before_snapshot.get("modules", {}).get("wild_training", 0)
+
+        with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={},
+                event=event,
+                event_type="edit",
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+            self.assertIn("修为+392", state_module.state["wild_training_last_result"])
+            self.assertIn("清灵草x1", state_module.state["wild_training_last_result"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(before_changed + 1, snapshot["changed"])
+        self.assertEqual(before_wild + 1, snapshot["modules"]["wild_training"])
+        self.assertEqual("edit:passive_tag", snapshot["recent"][-1]["route_source"])
+
+    async def test_passive_short_tag_does_not_match_longer_mention(self):
+        send_as_id = self._prepare_identity()
+        state_module.update_send_as_profile(send_as_id, username="q")
+        now = 1_700_000_010.0
+        text = (
+            "【野外历练 · 灵机暗藏】\n"
+            "@qaq_noaobot 在山涧残阵旁避开妖兽踪迹，采得一份机缘。\n"
+            "获得修为 +392，获得 【清灵草】x1。"
+        )
+        event = SimpleNamespace(chat_id=-1001680975844, id=203)
+        before_count = passive_inbox.get_passive_inbox_snapshot().get("skip_reasons", {}).get("external_identity_no_match", 0)
+
+        with state_module.use_identity(send_as_id), patch.object(passive_inbox, "_save_passive_stats"):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={},
+                event=event,
+                event_type="edit",
+            )
+
+        self.assertFalse(handled)
+        self.assertEqual(101, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(1_700_000_600.0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(before_count + 1, snapshot["skip_reasons"]["external_identity_no_match"])
+
     async def test_pending_message_id_routes_after_restart(self):
         send_as_id = self._prepare_identity()
 
