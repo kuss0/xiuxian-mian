@@ -18,6 +18,7 @@ from .app_runtime import (
     _mark_runtime_message_consumed,
 )
 from .app_replica import (
+    handle_replica_button_callback,
     _handle_replica_dispatch_group_command,
     _handle_replica_group_command,
     _handle_replica_join_reply,
@@ -163,6 +164,7 @@ from .runtime import (
     should_pause_for_bot_health,
     track_reply_chain_message,
     mono,
+    run_log_bot_callback_poller,
     send_audit_log,
 )
 from .state import (
@@ -187,6 +189,7 @@ _bot_silence_auto_paused = False
 _identity_scheduler_task = None
 _identity_scheduler_started_at = 0.0
 _identity_scheduler_last_warn_at = 0.0
+_log_bot_callback_task = None
 _suspected_game_bot_hits = {}
 
 IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
@@ -1348,6 +1351,7 @@ async def main_loop(stop_event=None):
 
 
 async def main():
+    global _log_bot_callback_task
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -1362,13 +1366,24 @@ async def main():
 
     try:
         await bootstrap()
+        _log_bot_callback_task = asyncio.create_task(
+            run_log_bot_callback_poller(handle_replica_button_callback, stop_event)
+        )
         await main_loop(stop_event)
     finally:
         await shutdown()
 
 
 async def shutdown():
+    global _log_bot_callback_task
     _cancel_identity_schedulers()
+    if _log_bot_callback_task and not _log_bot_callback_task.done():
+        _log_bot_callback_task.cancel()
+        try:
+            await _log_bot_callback_task
+        except asyncio.CancelledError:
+            pass
+    _log_bot_callback_task = None
     save_state()
     await stop_ui_server()
     clients = [client]

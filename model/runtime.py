@@ -218,9 +218,12 @@ _GAME_LAST_SEND_AT = 0.0
 _GAME_SEND_QUEUE_SEQ = 0
 _GAME_SEND_QUEUE_ITEMS = {}
 _GAME_COMMAND_SENT_OBSERVERS = []
+_LOG_BOT_UPDATE_OFFSET = None
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
 LOG_BOT_READ_TIMEOUT_SEC = 8
 LOG_BOT_TOTAL_TIMEOUT_SEC = 12
+LOG_BOT_POLL_READ_TIMEOUT_SEC = 35
+LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
@@ -244,6 +247,18 @@ BUSY_CRITICAL_ALLOWED_PREFIXES = (
     ".验证",
     ".自证",
     ".作答",
+)
+DUNGEON_QUIET_ALLOWED_PREFIXES = (
+    ".进入虚天殿",
+    ".进入坠魔谷",
+    ".进入黄龙山",
+    ".进入苍坤洞府",
+    ".选择道路",
+    ".阵策",
+    ".争鼎",
+    ".后殿抉择",
+    ".后殿阵策",
+    ".苍坤抉择",
 )
 
 
@@ -1088,7 +1103,24 @@ def clear_pending_tasks_by_commands(commands, send_as_id=None):
     return removed_ids
 
 
-def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None):
+def _normalize_inline_keyboard_buttons(buttons):
+    rows = []
+    for raw_row in buttons or []:
+        row_items = raw_row if isinstance(raw_row, (list, tuple)) else [raw_row]
+        row = []
+        for raw_item in row_items:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            text = str(item.get("text") or "").strip()
+            callback_data = str(item.get("callback_data") or item.get("data") or "").strip()
+            if not text or not callback_data:
+                continue
+            row.append({"text": text[:64], "callback_data": callback_data[:64]})
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
     if not LOG_BOT_TOKEN:
         return False, "missing bot token"
     payload = {
@@ -1096,6 +1128,9 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
         "text": text,
         "disable_web_page_preview": not link_preview,
     }
+    keyboard = _normalize_inline_keyboard_buttons(buttons)
+    if keyboard:
+        payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if int(reply_to_msg_id or 0) > 0:
@@ -1129,7 +1164,93 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
     return False, body or "bot api returned non-ok response"
 
 
-async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None):
+def _call_log_bot_api(method, payload=None, *, read_timeout=LOG_BOT_READ_TIMEOUT_SEC):
+    if not LOG_BOT_TOKEN:
+        return False, None, "missing bot token"
+    url = f"https://api.telegram.org/bot{LOG_BOT_TOKEN}/{method}"
+    try:
+        response = requests.post(
+            url,
+            data=payload or {},
+            timeout=(LOG_BOT_CONNECT_TIMEOUT_SEC, read_timeout),
+            proxies=TG_REQUESTS_PROXIES,
+        )
+    except requests.exceptions.Timeout as e:
+        return False, None, f"timeout: {e}"
+    except requests.exceptions.ProxyError as e:
+        return False, None, f"proxy error: {e}"
+    except requests.exceptions.RequestException as e:
+        return False, None, str(e)
+    body = response.text
+    if not response.ok:
+        return False, None, f"HTTP {response.status_code}: {body}"
+    try:
+        data = response.json()
+    except Exception:
+        return False, None, body or "bot api returned non-json response"
+    if isinstance(data, dict) and data.get("ok") is True:
+        return True, data.get("result"), ""
+    return False, data, body or "bot api returned non-ok response"
+
+
+async def answer_log_bot_callback(callback_query_id, text="", *, show_alert=False):
+    callback_query_id = str(callback_query_id or "").strip()
+    if not callback_query_id:
+        return False
+    payload = {
+        "callback_query_id": callback_query_id,
+        "text": str(text or "")[:200],
+        "show_alert": bool(show_alert),
+    }
+    ok, _result, error_text = await asyncio.to_thread(_call_log_bot_api, "answerCallbackQuery", payload)
+    if not ok:
+        print(f"answerCallbackQuery failed: {error_text}")
+    return bool(ok)
+
+
+async def run_log_bot_callback_poller(callback_handler, stop_event=None):
+    global _LOG_BOT_UPDATE_OFFSET
+    if not LOG_BOT_TOKEN:
+        return
+    while stop_event is None or not stop_event.is_set():
+        payload = {
+            "timeout": 30,
+            "allowed_updates": json.dumps(["callback_query"]),
+        }
+        if _LOG_BOT_UPDATE_OFFSET is not None:
+            payload["offset"] = int(_LOG_BOT_UPDATE_OFFSET)
+        ok, result, error_text = await asyncio.to_thread(
+            _call_log_bot_api,
+            "getUpdates",
+            payload,
+            read_timeout=LOG_BOT_POLL_READ_TIMEOUT_SEC,
+        )
+        if not ok:
+            print(f"log bot callback poll failed: {error_text}")
+            await asyncio.sleep(LOG_BOT_POLL_INTERVAL_SEC)
+            continue
+        updates = result if isinstance(result, list) else []
+        for update in updates:
+            try:
+                update_id = int((update or {}).get("update_id") or 0)
+            except (TypeError, ValueError):
+                update_id = 0
+            if update_id:
+                next_offset = update_id + 1
+                if _LOG_BOT_UPDATE_OFFSET is None or next_offset > _LOG_BOT_UPDATE_OFFSET:
+                    _LOG_BOT_UPDATE_OFFSET = next_offset
+            callback_query = (update or {}).get("callback_query")
+            if not isinstance(callback_query, dict):
+                continue
+            try:
+                await callback_handler(callback_query)
+            except Exception:
+                traceback.print_exc()
+        if not updates:
+            await asyncio.sleep(0)
+
+
+async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
     if LOG_SEND_MODE == "bot":
         try:
             ok, error_text = await asyncio.wait_for(
@@ -1140,6 +1261,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
                     message_thread_id=message_thread_id,
                     link_preview=link_preview,
                     parse_mode=parse_mode,
+                    buttons=buttons,
                 ),
                 timeout=LOG_BOT_TOTAL_TIMEOUT_SEC,
             )
@@ -1152,6 +1274,17 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
             print(f"_send_log_group_message bot failed: {e} | text={text}")
     try:
         _fb = _get_any_authed_client()
+        send_kwargs = {}
+        keyboard = _normalize_inline_keyboard_buttons(buttons)
+        if keyboard:
+            try:
+                from telethon import Button
+                send_kwargs["buttons"] = [
+                    [Button.inline(item["text"], data=item["callback_data"].encode("utf-8")) for item in row]
+                    for row in keyboard
+                ]
+            except Exception:
+                traceback.print_exc()
         await asyncio.wait_for(
             _fb.send_message(
                 LOG_GROUP_ID,
@@ -1159,6 +1292,7 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
                 reply_to=int(reply_to_msg_id or 0) or None,
                 link_preview=link_preview,
                 parse_mode=parse_mode or None,
+                **send_kwargs,
             ),
             timeout=LOG_ACCOUNT_SEND_TIMEOUT_SEC,
         )
@@ -1469,7 +1603,7 @@ async def _flush_low_priority_audit_after_delay():
     await flush_low_priority_audit_summary()
 
 
-async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto"):
+async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto", buttons=None):
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     audit_priority = _resolve_audit_priority(content, priority)
     message_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=True, limit=limit)
@@ -1484,7 +1618,7 @@ async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, p
         if mentions:
             attention_line = f"\n关注：{mentions}"
     message = f"【🍃 监控日志 {now}】\n{message_body}{attention_line}"
-    ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML")
+    ok = await _send_log_group_message(message, link_preview=False, parse_mode="HTML", buttons=buttons)
     if not ok:
         print(f"send_audit_log failed | content={_truncate_log_text(content, limit=240)}")
     return ok
@@ -1508,6 +1642,7 @@ async def reply_log_group_message(
     limit=350,
     parse_mode=None,
     preformatted=False,
+    buttons=None,
 ):
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     # forum 群需要 message_thread_id 才能回复
@@ -1520,9 +1655,10 @@ async def reply_log_group_message(
         message_thread_id=thread_id,
         link_preview=link_preview,
         parse_mode=parse_mode,
+        buttons=buttons,
     )
     if not ok and reply_to_msg_id:
-        ok = await _send_log_group_message(message, link_preview=link_preview, parse_mode=parse_mode)
+        ok = await _send_log_group_message(message, link_preview=link_preview, parse_mode=parse_mode, buttons=buttons)
     if ok:
         return True
     print(f"reply_log_group_message failed | text={_truncate_log_text(text, limit=240)}")
@@ -2117,6 +2253,8 @@ async def _log_weakness_blocked(command, *, send_as_id):
 async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         return False
+    if _command_matches_prefixes(command, DUNGEON_QUIET_ALLOWED_PREFIXES):
+        return False
     if not is_dungeon_quiet_active():
         return False
     if should_log_dungeon_quiet_block():
@@ -2216,18 +2354,6 @@ async def send_game_command(
                 return None
             if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
                 await _log_weakness_blocked(command, send_as_id=send_as_id)
-                return None
-            if _bot_health_blocks_send(send_priority):
-                await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
-                return None
-            _refresh_bot_health_timeout_before_send()
-            if account_id and is_account_offline(account_id):
-                await _log_account_offline_blocked(
-                    command,
-                    send_as_id=send_as_id,
-                    account_id=account_id,
-                    reason=get_account_offline_reason(account_id) or "账号离线",
-                )
                 return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)

@@ -27,7 +27,9 @@ DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(r"already fused:", re.I)
-BENIGN_WARN_CONTEXT_PATTERN = re.compile(r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到")
+BENIGN_WARN_CONTEXT_PATTERN = re.compile(
+    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束"
+)
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
 )
@@ -89,6 +91,13 @@ def parse_local_ts(raw: str) -> float:
         return 0.0
 
 
+def parse_systemd_start_timestamp(raw: str) -> float:
+    match = re.search(r"(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})", str(raw or ""))
+    if not match:
+        return 0.0
+    return parse_local_ts(f"{match.group(1)} {match.group(2)}")
+
+
 def run_command(args: list[str], *, timeout: float = 8.0) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
@@ -138,13 +147,15 @@ def read_service_states(services: Iterable[str]) -> dict[str, dict[str, str]]:
     return parsed
 
 
-def journal_since_text(window_sec: int) -> str:
+def journal_since_text(window_sec: int, *, service_start_epoch: float = 0.0) -> str:
     since_epoch = time.time() - max(10, int(window_sec or 0))
+    if service_start_epoch > 0:
+        since_epoch = max(since_epoch, float(service_start_epoch))
     return local_ts(since_epoch)
 
 
-def read_journal_matches(service: str, window_sec: int, limit: int) -> dict[str, object]:
-    since = journal_since_text(window_sec)
+def read_journal_matches(service: str, window_sec: int, limit: int, *, service_start_epoch: float = 0.0) -> dict[str, object]:
+    since = journal_since_text(window_sec, service_start_epoch=service_start_epoch)
     code, stdout, stderr = run_command(
         ["journalctl", "-u", service, "--since", since, "--no-pager"],
         timeout=12.0,
@@ -507,7 +518,14 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
     now = time.time()
     service_states = read_service_states(cfg.services)
     journals = [
-        read_journal_matches(service, cfg.journal_window_sec, cfg.max_journal_matches)
+        read_journal_matches(
+            service,
+            cfg.journal_window_sec,
+            cfg.max_journal_matches,
+            service_start_epoch=parse_systemd_start_timestamp(
+                service_states.get(service, {}).get("ExecMainStartTimestamp", "")
+            ),
+        )
         for service in cfg.services
     ]
     status, reasons = classify_snapshot(service_states, journals)

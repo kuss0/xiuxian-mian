@@ -135,6 +135,17 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_virtual_hall_late_stage_fast_chain_is_not_global_lock_breach(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(now - 10, 3581351795, ".争鼎 夺鼎"),
+            _event(now, 3581351795, ".后殿抉择 冲关"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
     def test_dungeon_open_repeat_still_fuses(self):
         now = time.time()
         events = [

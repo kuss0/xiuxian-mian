@@ -217,6 +217,7 @@ RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
 RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
 RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|召唤魔影|召唤|收取幡魂|收取|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
+RE_CMD_XUTIAN_FOLLOWUP_MANUAL = re.compile(r"^(?:\.选择道路\s+(?:冰|火)|\.阵策\s+(?:稳|压|势)|\.争鼎\s+(?:求稳|夺鼎)|\.后殿抉择\s+(?:收手|冲关)|\.后殿阵策\s+(?:镇|夺|卦))$")
 RE_STORAGE_BAG_RECENT_DAYS = re.compile(r"近\s*(\d{1,2})\s*天")
 STORAGE_BAG_REPORT_TIMEOUT_SEC = 30
 STORAGE_BAG_REPORT_REPLY_LIMIT = 3300
@@ -2158,6 +2159,8 @@ def _format_log_group_help_html(send_as_id=None):
         + "\n".join(f"- {cmd}" for cmd in audit_commands)
         + "\n\n三宗门手动发送（必须显式指定单个身份）：\n"
         + "\n".join(THREE_SECT_MANUAL_USAGE.splitlines()[1:])
+        + "\n\n虚天后续兜底（必须显式指定单个身份，优先点日志按钮）：\n"
+        + "\n".join(f"- {line}" for line in XUTIAN_FOLLOWUP_MANUAL_USAGE.splitlines()[1:])
         + "\n\n控制指令：\n"
         + "\n".join(f"- {cmd}{suffix if '<模块名>' in cmd or cmd.startswith('.开启全部') or cmd.startswith('.关闭全部') else ''}" for cmd in control_commands)
         + "\n\n副本群轻量指令（在副本群/游戏群使用）：\n"
@@ -2276,6 +2279,12 @@ def _restore_tree_runtime(now):
     state["tree_bootstrap_check_needed"] = False
     state["tree_bootstrap_check_due_at"] = 0
     if state["is_maturing"]:
+        if not state["is_harvested"] and float(state.get("tree_harvest_inflight_until", 0) or 0) <= now:
+            request_tree_bootstrap_check(
+                now,
+                min_sec=30,
+                max_sec=90,
+            )
         return
     if state["is_invading"] or state["pending_irrigation"]:
         request_tree_bootstrap_check(now)
@@ -4113,6 +4122,16 @@ THREE_SECT_MANUAL_USAGE = (
 )
 
 
+XUTIAN_FOLLOWUP_MANUAL_USAGE = (
+    "虚天后续抉择必须指定单个身份：\n"
+    "- .选择道路 火 @身份\n"
+    "- .阵策 稳 @身份\n"
+    "- .争鼎 夺鼎 @身份\n"
+    "- .后殿抉择 冲关 @身份\n"
+    "- .后殿阵策 卦 @身份"
+)
+
+
 async def _reply_three_sect_manual_result(event, title, ok, message, identity_id=None, plan=None):
     lines = []
     if identity_id is not None:
@@ -4127,6 +4146,50 @@ async def _reply_three_sect_manual_result(event, title, ok, message, identity_id
         title,
         "\n".join(lines),
         error_prefix=f"❌ {title}回复失败",
+    )
+    return True
+
+
+async def _handle_xutian_followup_manual_command(event, text, explicit_identity_id):
+    if not RE_CMD_XUTIAN_FOLLOWUP_MANUAL.match(text):
+        return False
+    if explicit_identity_id is None:
+        await _reply_log_group_card(
+            event,
+            "虚天后续抉择",
+            XUTIAN_FOLLOWUP_MANUAL_USAGE,
+            error_prefix="❌ 虚天后续抉择回复失败",
+        )
+        return True
+    if not get_identity_enabled(explicit_identity_id):
+        await _reply_log_group_card(
+            event,
+            "虚天后续抉择",
+            f"身份：{get_identity_display_name(explicit_identity_id)}\n结果：未发送\n说明：身份已停用。",
+            error_prefix="❌ 虚天后续抉择回复失败",
+        )
+        return True
+    msg = await send_game_command(
+        text,
+        track=False,
+        send_as_id=explicit_identity_id,
+        priority="urgent_reactive",
+        source_module="自动副本",
+        op_id=f"xutian_followup_manual:{int(getattr(event, 'id', 0) or 0)}:{explicit_identity_id}:{text}",
+        chain_id="xutian_followup",
+        delete_policy="keep",
+    )
+    ok = bool(msg)
+    await _reply_log_group_card(
+        event,
+        "虚天后续抉择",
+        "\n".join([
+            f"身份：{get_identity_display_name(explicit_identity_id)}",
+            f"结果：{'已发送' if ok else '未发送'}",
+            f"命令：{text}",
+            *([] if ok else ["说明：发送失败或被安全锁拦截。"]),
+        ]),
+        error_prefix="❌ 虚天后续抉择回复失败",
     )
     return True
 
@@ -4232,6 +4295,9 @@ async def handle_log_group_command(event):
         return await _handle_storage_bag_simple_find_command(event, storage_bag_simple_find_match.group(1) or "")
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
+
+    if await _handle_xutian_followup_manual_command(event, text, explicit_identity_id):
+        return True
 
     if await _handle_three_sect_manual_command(event, text, explicit_identity_id):
         return True

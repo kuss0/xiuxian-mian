@@ -858,6 +858,100 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(record["participating"])
         self.assertGreater(record["cooldown_until"], now + 120 * 60)
 
+    async def test_success_progress_clears_same_room_participants_from_leader_text(self):
+        leader_id = self._prepare_identity(identity_id=90001, username="leader")
+        member_id = self._prepare_identity(identity_id=90002, username="member")
+        other_id = self._prepare_identity(identity_id=90003, username="other")
+        now = 20200.0
+        state_module.set_dungeon_join_run_state({
+            str(leader_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 600,
+                "active_until": now + 3000,
+            },
+            str(member_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 590,
+                "active_until": now + 3000,
+            },
+            str(other_id): {
+                "participating": True,
+                "room_id": "1326",
+                "joined_at": now - 300,
+                "active_until": now + 3000,
+            },
+        })
+        progress = _event(
+            211,
+            7900199668,
+            "【鼎前抉择】\n队长 @leader，请在 120秒 内抉择：\n- 输入 .争鼎 求稳 / .争鼎 夺鼎",
+        )
+
+        handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
+
+        self.assertTrue(handled)
+        records = state_module.get_dungeon_join_run_state()
+        self.assertFalse(records[str(leader_id)]["participating"])
+        self.assertFalse(records[str(member_id)]["participating"])
+        self.assertTrue(records[str(other_id)]["participating"])
+
+    async def test_external_success_progress_does_not_clear_local_active_room(self):
+        identity_id = self._prepare_identity(username="bbtest")
+        now = 20300.0
+        state_module.set_dungeon_join_run_state({
+            str(identity_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 600,
+                "active_until": now + 3000,
+            }
+        })
+        progress = _event(
+            212,
+            7900199668,
+            "【鼎前抉择】\n队长 @TrickPlayer，请在 120秒 内抉择：\n- 点击下方按钮，或输入 .争鼎 求稳 / .争鼎 夺鼎",
+        )
+
+        handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
+
+        self.assertFalse(handled)
+        record = state_module.get_dungeon_join_run_state()[str(identity_id)]
+        self.assertTrue(record["participating"])
+        self.assertEqual("1325", record["room_id"])
+
+    async def test_terminal_afterhall_text_clears_single_active_room(self):
+        first_id = self._prepare_identity(identity_id=90001, username="first")
+        second_id = self._prepare_identity(identity_id=90002, username="second")
+        now = 20400.0
+        state_module.set_dungeon_join_run_state({
+            str(first_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 600,
+                "active_until": now + 3000,
+            },
+            str(second_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 590,
+                "active_until": now + 3000,
+            },
+        })
+        progress = _event(
+            213,
+            7900199668,
+            "【后殿冲关止步】\n鼎压攀至极限，后殿炉心彻底失控，将众人尽数震退。\n好在第三关结算所得早已锁定，这次失去的只有后殿追加机缘。",
+        )
+
+        handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
+
+        self.assertTrue(handled)
+        records = state_module.get_dungeon_join_run_state()
+        self.assertFalse(records[str(first_id)]["participating"])
+        self.assertFalse(records[str(second_id)]["participating"])
+
     async def test_progress_mentions_after_team_section_do_not_clear_identity(self):
         identity_id = self._prepare_identity(username="bbtest")
         now = 20500.0

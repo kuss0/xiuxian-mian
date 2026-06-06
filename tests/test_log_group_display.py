@@ -196,6 +196,9 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".天星查盘 @身份", html_text)
         self.assertIn(".阴罗血洗 @身份", html_text)
         self.assertIn(".阴罗化煞 &lt;数量&gt; @身份", html_text)
+        self.assertIn("虚天后续兜底", html_text)
+        self.assertIn(".选择道路 火 @身份", html_text)
+        self.assertIn(".后殿阵策 卦 @身份", html_text)
         self.assertIn("副本群轻量指令", html_text)
         self.assertIn(".查询副本", html_text)
         self.assertIn(".开启副本 @用户名", html_text)
@@ -297,6 +300,49 @@ class LogGroupDisplayTests(unittest.TestCase):
             self.assertTrue(handled)
             execute_mock.assert_awaited_once_with("化煞", "1000", send_as_id=3101)
             reply_mock.assert_awaited_once()
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_xutian_followup_manual_without_identity_only_replies_usage(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".选择道路 火", id=9101)
+
+        with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+            handled = asyncio.run(control.handle_log_group_command(event))
+
+        self.assertTrue(handled)
+        send_mock.assert_not_awaited()
+        reply_mock.assert_awaited_once()
+        self.assertIn("必须指定单个身份", reply_mock.await_args.args[2])
+
+    def test_xutian_followup_manual_uses_identity_selector(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            state_module.ensure_identity_registered(3101)
+            state_module.update_send_as_profile(3101, username="leader", label="leader", enabled=True)
+            event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".后殿阵策 卦 @leader", id=9102)
+
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                    patch.object(control, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=778))) as send_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+
+            self.assertTrue(handled)
+            send_mock.assert_awaited_once()
+            send_args = send_mock.await_args
+            self.assertEqual(".后殿阵策 卦", send_args.args[0])
+            self.assertFalse(send_args.kwargs["track"])
+            self.assertEqual(3101, send_args.kwargs["send_as_id"])
+            self.assertEqual("urgent_reactive", send_args.kwargs["priority"])
+            self.assertEqual("自动副本", send_args.kwargs["source_module"])
+            self.assertEqual("xutian_followup", send_args.kwargs["chain_id"])
+            self.assertEqual("keep", send_args.kwargs["delete_policy"])
+            reply_mock.assert_awaited_once()
+            self.assertIn("结果：已发送", reply_mock.await_args.args[2])
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)

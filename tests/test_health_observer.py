@@ -68,6 +68,28 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_warn_line_ignores_worker_shutdown_timeout_during_code_reload(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jun 06 14:50:10 pve python[2948600]: worker 优雅退出超时，强制结束。"
+            )
+        )
+
+    def test_journal_since_is_not_before_current_service_start(self):
+        start_epoch = health_observer.parse_local_ts("2026-06-06 14:38:55")
+        with patch.object(health_observer.time, "time", return_value=health_observer.parse_local_ts("2026-06-06 14:42:18")):
+            self.assertEqual(
+                "2026-06-06 14:38:55",
+                health_observer.journal_since_text(600, service_start_epoch=start_epoch),
+            )
+
+    def test_parse_systemd_start_timestamp(self):
+        self.assertEqual(
+            health_observer.parse_local_ts("2026-06-06 14:38:55"),
+            health_observer.parse_systemd_start_timestamp("Sat 2026-06-06 14:38:55 CST"),
+        )
+        self.assertEqual(0.0, health_observer.parse_systemd_start_timestamp(""))
+
     def test_warn_line_ignores_external_dispatch_skip_but_flags_send_failure(self):
         self.assertFalse(
             health_observer.is_warn_journal_line(

@@ -165,6 +165,41 @@ def _tree_panel_matches_current_identity(text):
     return False
 
 
+def _line_matches_tree_identity(line, identity_id):
+    compact_line = _normalize_tree_identity_text(line)
+    for tag in get_send_as_tags(identity_id):
+        normalized_tag = _normalize_tree_identity_text(tag)
+        if len(normalized_tag) >= 3 and normalized_tag in compact_line:
+            return True
+    return False
+
+
+def _tree_final_board_unclaimed_identity_ids(text):
+    raw_text = str(text or "")
+    if not (
+        "本轮最终贡献榜" in raw_text
+        or "本轮最终分枝榜" in raw_text
+        or "天道榜单已定格" in raw_text
+        or "天道快照" in raw_text
+    ):
+        return []
+
+    matched_ids = []
+    seen_ids = set()
+    for line in raw_text.splitlines():
+        if "已领" in line:
+            continue
+        if "未领" not in line and "⏳" not in line:
+            continue
+        for identity_id in _iter_tree_enabled_identity_ids():
+            if int(identity_id or 0) in seen_ids:
+                continue
+            if _line_matches_tree_identity(line, identity_id):
+                seen_ids.add(int(identity_id))
+                matched_ids.append(int(identity_id))
+    return matched_ids
+
+
 def _has_pending_tree_command(*commands):
     command_set = {str(command or "").strip() for command in commands if str(command or "").strip()}
     for pending in state.get("pending_tasks", {}).values():
@@ -283,14 +318,22 @@ def _mark_tree_maturing_from_trusted_signal(now, *, reset_harvest=False):
     state["tree_maturing_logged"] = True
 
 
-async def queue_tree_harvest_for_all_enabled(now=None, *, reason="成熟采摘期"):
+async def queue_tree_harvest_for_identity_ids(identity_ids, now=None, *, reason="成熟采摘期"):
     now = float(now if now is not None else time.time())
     queued = 0
     skipped = 0
     target_ids = []
+    seen_ids = set()
 
-    for identity_id in _iter_tree_enabled_identity_ids():
+    for identity_id in identity_ids or []:
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or identity_id in seen_ids:
+            continue
+        seen_ids.add(identity_id)
         with use_identity(identity_id):
+            if not state["tree_enabled"] or not get_identity_enabled(identity_id):
+                skipped += 1
+                continue
             _mark_tree_maturing_from_trusted_signal(now)
             if state["is_harvested"] or _has_tree_harvest_inflight(now):
                 skipped += 1
@@ -302,7 +345,7 @@ async def queue_tree_harvest_for_all_enabled(now=None, *, reason="成熟采摘�
     async def harvest_batch(send_as_ids):
         for idx, send_as_id in enumerate(send_as_ids):
             if idx > 0:
-                await asyncio.sleep(random.uniform(1.0, 5.0))
+                await asyncio.sleep(random.uniform(12.5, 16.0))
             with use_identity(send_as_id):
                 if not state["tree_enabled"] or not state["is_maturing"] or state["is_harvested"]:
                     state["tree_harvest_inflight_until"] = 0
@@ -324,6 +367,14 @@ async def queue_tree_harvest_for_all_enabled(now=None, *, reason="成熟采摘�
             limit=220,
         )
     return queued
+
+
+async def queue_tree_harvest_for_all_enabled(now=None, *, reason="成熟采摘期"):
+    return await queue_tree_harvest_for_identity_ids(
+        list(_iter_tree_enabled_identity_ids()),
+        now,
+        reason=reason,
+    )
 
 
 async def recover_tree_normal_round_for_all_enabled(now=None, *, reason="普通灵树面板"):
@@ -690,7 +741,21 @@ async def handle_tree_panel(text, now, is_reply_to_me):
 
     current_status_snapshot = "你的当前状态:" in text or "你的当前状态：" in text
     personal_panel_owned = is_reply_to_me or _tree_panel_matches_current_identity(text)
+    confirmed_final_board = (
+        "本轮最终贡献榜" in text
+        or "本轮最终分枝榜" in text
+        or "天道榜单已定格" in text
+        or "天道快照" in text
+    )
+    final_board_unclaimed_ids = _tree_final_board_unclaimed_identity_ids(text) if confirmed_final_board else []
     if is_tree_panel and current_status_snapshot and not personal_panel_owned:
+        if confirmed_final_board and final_board_unclaimed_ids:
+            await queue_tree_harvest_for_identity_ids(
+                final_board_unclaimed_ids,
+                now,
+                reason="灵树最终榜",
+            )
+            return True
         return False
     if is_tree_panel and current_status_snapshot and "成熟采摘期" not in text:
         await recover_tree_normal_round_for_all_enabled(now, reason="灵树状态")
@@ -756,8 +821,6 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             return True
 
         state["tree_harvest_followup_due_at"] = 0
-        confirmed_final_board = "本轮最终贡献榜" in text or "天道榜单已定格" in text
-
         already_harvested_snapshot = "你的当前状态: 已采摘" in text or "你的当前状态：已采摘" in text
         if current_status_snapshot:
             if already_harvested_snapshot:

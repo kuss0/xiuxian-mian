@@ -37,6 +37,77 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         passive_inbox._passive_stats = self._stats_snapshot
         passive_inbox._observed_passive_events = self._observed_snapshot
 
+    def test_you_marker_line_can_route_tree_panel_without_reply_identity(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 3800619925
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="growrdick", label="丁丁", daohao="随缘子")
+            event = SimpleNamespace(chat_id=-1001680975844, id=9512605)
+            text = "\n".join([
+                "【落云宗 · 灵眼之树】",
+                "✨ 状态: 成熟采摘期",
+                "🏆 本轮最终分枝榜 (天道快照):",
+                "7. growrdick (你): 1039 ⏳(未领)",
+                "",
+                "👤 你的当前状态: 1039 点",
+            ])
+
+            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    text,
+                    now=1_779_978_314.0,
+                    reply_context={"family": "tree_panel", "reply_to_msg_id": 9512604, "root_msg_id": 9512604},
+                    event=event,
+                    event_type="message",
+                ))
+
+            self.assertTrue(handled)
+            with state_module.use_identity(identity_id):
+                self.assertTrue(state_module.state["is_maturing"])
+                self.assertFalse(state_module.state["pending_irrigation"])
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(1, snapshot["changed"])
+            self.assertEqual(1, snapshot["modules"]["tree"])
+            self.assertEqual(identity_id, snapshot["recent"][-1]["identity_id"])
+            self.assertEqual("message:passive_you_line", snapshot["recent"][-1]["route_source"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_you_marker_line_requires_unique_identity_match(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            for identity_id in (1001, 1002):
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="sameuser", label=f"same-{identity_id}")
+
+            event = SimpleNamespace(chat_id=-1001680975844, id=9512606)
+            text = "【落云宗 · 灵眼之树】\n🏆 本轮最终分枝榜 (天道快照):\n7. sameuser (你): 1039 ⏳(未领)\n👤 你的当前状态: 1039 点"
+
+            with patch.object(passive_inbox, "_save_passive_stats"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    text,
+                    now=1_779_978_314.0,
+                    reply_context={"family": "tree_panel", "reply_to_msg_id": 9512604, "root_msg_id": 9512604},
+                    event=event,
+                    event_type="message",
+                ))
+
+            self.assertFalse(handled)
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(1, snapshot["skipped"])
+            self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
     def test_no_reply_context_counts_without_recent_noise(self):
         with patch.object(passive_inbox, "_save_passive_stats"):
             ok = passive_inbox.record_passive_inbox_event(

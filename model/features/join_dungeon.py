@@ -504,6 +504,61 @@ def _active_identity_ids(now):
     return identity_ids
 
 
+def _active_room_ids(now):
+    records = _get_run_records()
+    room_ids = []
+    for record in records.values():
+        normalized = _normalize_run_record(record)
+        if not normalized.get("participating") or _get_active_until(normalized) <= now:
+            continue
+        room_id = str(normalized.get("room_id") or "").strip()
+        if room_id and room_id not in room_ids:
+            room_ids.append(room_id)
+    return room_ids
+
+
+def _active_identity_ids_for_room(room_id, now):
+    room_id = str(room_id or "").strip()
+    if not room_id:
+        return []
+    records = _get_run_records()
+    identity_ids = []
+    for raw_identity_id, record in records.items():
+        normalized = _normalize_run_record(record)
+        if not normalized.get("participating") or _get_active_until(normalized) <= now:
+            continue
+        if str(normalized.get("room_id") or "").strip() != room_id:
+            continue
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id > 0 and identity_id not in identity_ids:
+            identity_ids.append(identity_id)
+    return identity_ids
+
+
+def _expand_to_active_room_participants(identity_ids, now):
+    records = _get_run_records()
+    expanded = []
+    for identity_id in identity_ids or []:
+        try:
+            identity_id = int(identity_id or 0)
+        except (TypeError, ValueError):
+            identity_id = 0
+        if identity_id <= 0:
+            continue
+        record = _get_identity_run_record(records, identity_id)
+        if not record.get("participating") or _get_active_until(record) <= float(now or 0):
+            continue
+        room_id = str(record.get("room_id") or record.get("pending_room_id") or "").strip()
+        room_participants = _active_identity_ids_for_room(room_id, now) if room_id else []
+        for candidate_id in room_participants or [identity_id]:
+            if candidate_id > 0 and candidate_id not in expanded:
+                expanded.append(candidate_id)
+    return expanded
+
+
 def _identity_ids_from_text_usernames(text):
     identity_ids = []
     for username in _extract_usernames(text):
@@ -529,10 +584,26 @@ def _identity_ids_from_progress_usernames(text):
 
 
 def _resolve_progress_identity_ids(text, now):
-    identity_ids = _identity_ids_from_progress_usernames(text)
-    if identity_ids or _extract_team_section(text):
-        return identity_ids
-    return _active_identity_ids(now)
+    if _extract_team_section(text):
+        return _expand_to_active_room_participants(_identity_ids_from_team_usernames(text), now)
+    usernames = _extract_usernames(text)
+    if usernames:
+        return _expand_to_active_room_participants(_identity_ids_from_text_usernames(text), now)
+    active_room_ids = _active_room_ids(now)
+    if len(active_room_ids) == 1:
+        return _active_identity_ids_for_room(active_room_ids[0], now)
+    return []
+
+
+def _is_success_progress_text(text):
+    raw = str(text or "")
+    if "【鼎前抉择】" in raw:
+        return True
+    if "【战利品结算" in raw:
+        return True
+    if "【后殿冲关止步】" in raw and "结算所得早已锁定" in raw:
+        return True
+    return False
 
 
 def _mark_success_cooldown(identity_ids, now):
@@ -1049,7 +1120,7 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
     if not raw:
         return False
 
-    if "【鼎前抉择】" in raw:
+    if _is_success_progress_text(raw):
         identity_ids = _resolve_progress_identity_ids(raw, now)
         return _mark_success_cooldown(identity_ids, now)
     if "挑战失败！" in raw:

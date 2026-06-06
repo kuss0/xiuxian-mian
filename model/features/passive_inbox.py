@@ -39,6 +39,7 @@ PASSIVE_INBOX_NOISY_SKIP_REASONS = {
 }
 PASSIVE_INBOX_OBSERVED_TTL_SEC = 10 * 60
 RE_AT_MENTION = re.compile(r"@([^\s\r\n\t，。！？；：、,.!?;:()（）\[\]【】<>《》]+)")
+RE_YOU_MARKER = re.compile(r"[(（]\s*你\s*[)）]")
 _PASSIVE_STATS_DEFAULT = {
     "total": 0,
     "changed": 0,
@@ -358,6 +359,10 @@ def _normalize_tag(text):
     return str(text or "").strip().lstrip("@").casefold()
 
 
+def _normalize_loose_identity_text(text):
+    return "".join(str(text or "").strip().lstrip("@").split()).casefold()
+
+
 def _extract_at_mentions(text):
     mentions = set()
     for match in RE_AT_MENTION.finditer(str(text or "")):
@@ -396,6 +401,34 @@ def _match_identity_by_at_text(text):
         if identity_tags & mentions:
             matched.append(identity_id)
     matched = sorted({int(identity_id) for identity_id in matched})
+    return matched[0] if len(matched) == 1 else None
+
+
+def _match_identity_by_you_line(text):
+    matched = []
+    for raw_line in str(text or "").splitlines():
+        if not RE_YOU_MARKER.search(raw_line):
+            continue
+        line_key = _normalize_loose_identity_text(RE_YOU_MARKER.sub("", raw_line))
+        if not line_key:
+            continue
+        for identity_id in get_identity_ids():
+            candidates = []
+            profile = get_send_as_profile(identity_id)
+            candidates.extend(get_send_as_tags(identity_id) or [])
+            candidates.extend([
+                profile.get("username"),
+                profile.get("label"),
+                profile.get("daohao"),
+            ])
+            for candidate in candidates:
+                candidate_key = _normalize_loose_identity_text(candidate)
+                if len(candidate_key) < 3:
+                    continue
+                if candidate_key in line_key:
+                    matched.append(int(identity_id))
+                    break
+    matched = sorted(set(matched))
     return matched[0] if len(matched) == 1 else None
 
 
@@ -1124,6 +1157,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             target_id, passive_identity_route = _resolve_passive_text_identity(raw_text, family)
             if target_id is not None:
                 target_route_source = _route_source(event_type, passive_identity_route)
+        if target_id is None:
+            target_id = _match_identity_by_you_line(raw_text)
+            if target_id is not None:
+                target_route_source = _route_source(event_type, "passive_you_line")
     heart_context_resolved = False
     concubine_pending_context_spec = None
     if target_id is None:

@@ -209,7 +209,27 @@ def _append_replica_dispatch_group_message_log(event, *, event_type="message"):
     return True
 
 
-def _append_sent_replica_group_message_log(chat_id, msg_id, text, listener_account_id=0, reply_to_msg_id=0, sent_via="account"):
+def _normalize_sent_button_log_rows(buttons):
+    rows = []
+    for raw_row in buttons or []:
+        row_items = raw_row if isinstance(raw_row, (list, tuple)) else [raw_row]
+        row = []
+        for raw_item in row_items:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            text = _truncate_message_log_button_text(item.get("text") or "")
+            callback_data = str(item.get("callback_data") or item.get("data") or "").strip()
+            if not text:
+                continue
+            button_item = {"text": text, "type": "callback" if callback_data else "unknown"}
+            if callback_data:
+                button_item["has_callback_data"] = True
+            row.append(button_item)
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _append_sent_replica_group_message_log(chat_id, msg_id, text, listener_account_id=0, reply_to_msg_id=0, sent_via="account", buttons=None):
     sent_via = str(sent_via or "account").strip().lower() or "account"
     now = datetime.now(TZ_LOCAL)
     payload = {
@@ -224,10 +244,30 @@ def _append_sent_replica_group_message_log(chat_id, msg_id, text, listener_accou
         "listener_account_id": int(listener_account_id or 0),
         "sent_via": sent_via,
     }
+    button_rows = _normalize_sent_button_log_rows(buttons)
+    if button_rows:
+        payload["buttons"] = button_rows
     _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload)
 
 
-def _send_replica_group_via_bot(chat_id, text, *, parse_mode=None, reply_to=None):
+def _normalize_inline_keyboard_buttons(buttons):
+    rows = []
+    for raw_row in buttons or []:
+        row_items = raw_row if isinstance(raw_row, (list, tuple)) else [raw_row]
+        row = []
+        for raw_item in row_items:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            text = str(item.get("text") or "").strip()
+            callback_data = str(item.get("callback_data") or item.get("data") or "").strip()
+            if not text or not callback_data:
+                continue
+            row.append({"text": text[:64], "callback_data": callback_data[:64]})
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _send_replica_group_via_bot(chat_id, text, *, parse_mode=None, reply_to=None, buttons=None):
     if not LOG_BOT_TOKEN:
         return False, 0, "missing bot token"
     payload = {
@@ -235,6 +275,9 @@ def _send_replica_group_via_bot(chat_id, text, *, parse_mode=None, reply_to=None
         "text": str(text or ""),
         "disable_web_page_preview": True,
     }
+    keyboard = _normalize_inline_keyboard_buttons(buttons)
+    if keyboard:
+        payload["reply_markup"] = json.dumps({"inline_keyboard": keyboard}, ensure_ascii=False)
     if parse_mode:
         payload["parse_mode"] = parse_mode
     if int(reply_to or 0) > 0:
@@ -272,7 +315,7 @@ def _send_replica_group_via_bot(chat_id, text, *, parse_mode=None, reply_to=None
     return True, msg_id, ""
 
 
-async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=None, reply_to=None, listener_account_id=0, log_text=None):
+async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=None, reply_to=None, listener_account_id=0, log_text=None, buttons=None):
     log_payload_text = log_text if log_text is not None else str(text or "")
     if LOG_SEND_MODE == "bot":
         try:
@@ -283,6 +326,7 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
                     str(text or ""),
                     parse_mode=parse_mode or None,
                     reply_to=int(reply_to or 0) or None,
+                    buttons=buttons,
                 ),
                 timeout=_REPLICA_BOT_TOTAL_TIMEOUT_SEC,
             )
@@ -294,6 +338,7 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
                     listener_account_id=listener_account_id,
                     reply_to_msg_id=int(reply_to or 0),
                     sent_via="bot",
+                    buttons=buttons,
                 )
                 return SimpleNamespace(id=msg_id)
             await send_audit_log(f"❌ 副本群 bot 消息发送失败：{error_text}", scope="global", limit=200)
@@ -308,11 +353,23 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
             print(traceback.format_exc())
             return None
     try:
+        send_kwargs = {}
+        keyboard = _normalize_inline_keyboard_buttons(buttons)
+        if keyboard:
+            try:
+                from telethon import Button
+                send_kwargs["buttons"] = [
+                    [Button.inline(item["text"], data=item["callback_data"].encode("utf-8")) for item in row]
+                    for row in keyboard
+                ]
+            except Exception:
+                traceback.print_exc()
         msg = await client_obj.send_message(
             int(chat_id or 0),
             str(text or ""),
             parse_mode=parse_mode or None,
             reply_to=int(reply_to or 0) or None,
+            **send_kwargs,
         )
         msg_id = int(getattr(msg, "id", 0) or 0)
         if msg_id <= 0:
@@ -324,6 +381,7 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
             listener_account_id=listener_account_id,
             reply_to_msg_id=int(reply_to or 0),
             sent_via="account",
+            buttons=buttons,
         )
         return msg
     except Exception:

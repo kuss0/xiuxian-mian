@@ -133,6 +133,24 @@ class ReplicaAbsorbTests(unittest.TestCase):
             state_module.set_replica_participant_identity_ids(participant_ids)
         return SimpleNamespace(raw_text="", chat_id=-100777, sender_id=9001, id=100, client=SimpleNamespace(name="listener"))
 
+    def _button_texts(self, buttons):
+        texts = []
+        for row in buttons or []:
+            row_items = row if isinstance(row, (list, tuple)) else [row]
+            for item in row_items:
+                if isinstance(item, dict) and item.get("text"):
+                    texts.append(item["text"])
+        return texts
+
+    def _button_payload_by_text(self, buttons, text):
+        for row in buttons or []:
+            row_items = row if isinstance(row, (list, tuple)) else [row]
+            for item in row_items:
+                if not isinstance(item, dict) or item.get("text") != text:
+                    continue
+                return app_replica._get_replica_button_action(item.get("callback_data") or "")[1].get("payload", {})
+        return {}
+
     def test_replica_group_listener_falls_back_to_registered_event_client(self):
         listener_client = SimpleNamespace(name="listener")
         state_module.set_replica_group_ids([-100777])
@@ -703,8 +721,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("苍x2", reply)
         self.assertIn("虚:可", reply)
         self.assertIn("苍:可", reply)
-        self.assertIn("可复制命令", reply)
-        self.assertIn("可复制开房命令（按副本）", reply)
+        self.assertIn("兜底命令", reply)
+        self.assertIn("开房兜底命令（按副本）", reply)
         self.assertIn("虚天殿：", reply)
         self.assertIn("苍坤洞府：", reply)
         self.assertIn(".开启副本 @leader 虚", reply)
@@ -712,7 +730,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn(".加入副本 @用户名 @用户名", reply)
         self.assertIn(".解散副本", reply)
         self.assertNotIn("推荐配置：苍坤洞府", reply)
-        opener_section = reply.split("可复制命令：", 1)[0]
+        opener_section = reply.split("兜底命令：", 1)[0]
         self.assertNotIn("@empty", opener_section)
 
         html_reply = app_replica._format_replica_ticket_query_reply(html=True)
@@ -721,6 +739,27 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("<code>.开启副本 @leader 苍</code>", html_reply)
         self.assertIn("<code>.加入副本 @用户名 @用户名</code>", html_reply)
         self.assertIn("<code>.解散副本</code>", html_reply)
+
+    def test_ticket_query_sends_open_choice_buttons(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".查询副本"
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))):
+                handled = await app_replica._handle_replica_ticket_query_command(event)
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, self._button_texts(buttons)
+
+        handled, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("开虚 @leader", button_texts)
+        self.assertIn("开苍 @leader", button_texts)
 
     def test_ticket_query_shows_cd_and_hides_cd_open_command(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
@@ -755,7 +794,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
             leader_id,
         )
 
-        self.assertIn(".加入副本 @shield @healer @blade @curse", section)
+        self.assertIn("推荐加入：@shield @healer @blade @curse", section)
+        self.assertNotIn(".加入副本", section)
         self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师", section)
         self.assertIn("五职业已齐", section)
         self.assertNotIn("@aaa_low", section)
@@ -773,7 +813,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
             leader_id,
         )
 
-        self.assertIn(".加入副本 @shield @healer @blade", section)
+        self.assertIn("推荐加入：@shield @healer @blade", section)
+        self.assertNotIn(".加入副本", section)
         self.assertIn("缺职业：咒师", section)
         self.assertNotIn("@low_curse", section)
 
@@ -789,7 +830,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
             leader_id,
         )
 
-        self.assertIn(".加入副本 @attacker @healer @bladecurse", section)
+        self.assertIn("推荐加入：@attacker @healer @bladecurse", section)
+        self.assertNotIn(".加入副本", section)
         self.assertIn("缺职业：", section)
         self.assertNotIn("五职业已齐", section)
 
@@ -818,7 +860,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
             leader_id,
         )
 
-        self.assertIn(".加入副本 @shield @healer @blade @zz_heaven_curse", section)
+        self.assertIn("推荐加入：@shield @healer @blade @zz_heaven_curse", section)
+        self.assertNotIn(".加入副本", section)
         self.assertNotIn("@aa_pseudo_curse", section)
         self.assertNotIn("@bb_true_curse", section)
         self.assertNotIn("@cc_exotic_curse", section)
@@ -844,10 +887,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
             leader_id,
         )
 
-        self.assertIn(".加入副本 @zz_taiyi_shield @healer @blade @curse", section)
+        self.assertIn("推荐加入：@zz_taiyi_shield @healer @blade @curse", section)
+        self.assertNotIn(".加入副本", section)
         self.assertNotIn("@aa_normal_shield", section)
 
-    def test_virtual_hall_recommendation_includes_copyable_route_advice(self):
+    def test_virtual_hall_recommendation_summarizes_route_advice_without_commands(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
         first_id = self._register_replica_identity(991202, "first", root_attrs="金", professions="破军")
         second_id = self._register_replica_identity(991203, "second", root_attrs="木", professions="灵医")
@@ -871,19 +915,139 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("路策：冰路 / 稳策", text)
         self.assertIn("实测顺合", text)
         self.assertIn("正1", text)
-        self.assertIn(".选择道路 冰", text)
-        self.assertIn(".阵策 稳", text)
-        self.assertIn(".争鼎 夺鼎", text)
-        self.assertIn(".后殿抉择 冲关", text)
-        self.assertIn(".争鼎 求稳", text)
-        self.assertIn(".后殿抉择 收手", text)
+        self.assertIn("后续候选：争鼎夺鼎 / 后殿冲关", text)
+        self.assertNotIn(".选择道路 冰", text)
+        self.assertNotIn(".阵策 稳", text)
+        self.assertNotIn(".争鼎 夺鼎", text)
+        self.assertNotIn(".后殿抉择 冲关", text)
         self.assertNotIn("脚本不会自动发送", text)
 
         html_text = app_replica._format_virtual_hall_recommendations("777", gua_record, recommendations, candidates, lightweight=True, html=True)
-        self.assertIn("<code>.选择道路 冰</code>", html_text)
-        self.assertIn("<code>.阵策 稳</code>", html_text)
-        self.assertIn("<code>.争鼎 夺鼎</code>", html_text)
-        self.assertIn("<code>.后殿抉择 冲关</code>", html_text)
+        self.assertIn("路策：冰路 / 稳策", html_text)
+        self.assertNotIn("<code>.选择道路 冰</code>", html_text)
+        self.assertNotIn("<code>.阵策 稳</code>", html_text)
+        self.assertNotIn("<code>.争鼎 夺鼎</code>", html_text)
+        self.assertNotIn("<code>.后殿抉择 冲关</code>", html_text)
+
+    def test_xutian_real_prompt_sends_decision_buttons_only_once(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        text = "\n".join([
+            "【第二关·冰火之路】",
+            "队长 @leader 需选择前路。",
+            ".选择道路 冰",
+            ".选择道路 火",
+        ])
+        event = SimpleNamespace(id=8801, chat_id=-100777, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                first = await app_replica._handle_replica_progress_event(event, 1000.0)
+                second = await app_replica._handle_replica_progress_event(event, 1001.0)
+                send_mock.assert_not_awaited()
+                buttons = audit_mock.await_args.kwargs["buttons"]
+                return first, second, audit_mock.await_count, audit_mock.await_args.args[0], self._button_texts(buttons), buttons
+
+        first, second, audit_count, notice_text, button_texts, buttons = asyncio.run(run_test())
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(1, audit_count)
+        self.assertIn("虚天后续抉择：第二关·冰火之路", notice_text)
+        self.assertIn("冰路", button_texts)
+        self.assertIn("火路", button_texts)
+        action_payloads = [
+            app_replica._get_replica_button_action(button["callback_data"])[1]["payload"]
+            for row in buttons
+            for button in row
+        ]
+        self.assertEqual({".选择道路 冰", ".选择道路 火"}, {payload["command"] for payload in action_payloads})
+        self.assertEqual({leader_id}, {payload["identity_id"] for payload in action_payloads})
+
+    def test_xutian_external_leader_prompt_does_not_send_local_buttons(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        state_module.set_replica_run_state({
+            "by_identity": {
+                str(leader_id): {
+                    "replica_states": {
+                        app_replica._REPLICA_KIND_VIRTUAL_HALL: {
+                            "participating": True,
+                            "room_id": "1325",
+                            "joined_at": 900.0,
+                            "active_until": 5000.0,
+                            "team_usernames": ["@leader"],
+                            "team_identity_ids": [leader_id],
+                        }
+                    },
+                    "leader_username": "@leader",
+                    "updated_at": 900.0,
+                }
+            },
+            "room_gua": {
+                app_replica._REPLICA_KIND_VIRTUAL_HALL: {
+                    "1325": {
+                        "room_id": "1325",
+                        "leader_username": "@leader",
+                        "opened_at": 900.0,
+                        "updated_at": 900.0,
+                        "expires_at": 5000.0,
+                    }
+                }
+            },
+        })
+        text = "\n".join([
+            "【鼎前抉择】",
+            "队长 @TrickPlayer，请在 120秒 内抉择：",
+            "- 点击下方按钮，或输入 .争鼎 求稳 / .争鼎 夺鼎",
+        ])
+        event = SimpleNamespace(id=8803, chat_id=-100777, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_replica_progress_event(event, 1000.0)
+                send_mock.assert_not_awaited()
+                audit_mock.assert_not_awaited()
+                return handled
+
+        self.assertFalse(asyncio.run(run_test()))
+
+    def test_xutian_decision_buttons_send_one_choice_per_stage(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        text = "【鼎前抉择】\n队长 @leader 需抉择。\n.争鼎 求稳\n.争鼎 夺鼎"
+        event = SimpleNamespace(id=8802, chat_id=-100777, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+                handled = await app_replica._handle_replica_progress_event(event, 1000.0)
+                buttons = audit_mock.await_args.kwargs["buttons"]
+            stable_button = buttons[0][0]
+            rush_button = buttons[0][1]
+            with patch("model.app_replica.ADMIN_IDS", frozenset({123456})), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=901))) as send_mock, \
+                    patch("model.app_replica.answer_log_bot_callback", new=AsyncMock()) as answer_mock:
+                first = await app_replica.handle_replica_button_callback({
+                    "id": "cb1",
+                    "data": rush_button["callback_data"],
+                    "from": {"id": 123456},
+                })
+                second = await app_replica.handle_replica_button_callback({
+                    "id": "cb2",
+                    "data": stable_button["callback_data"],
+                    "from": {"id": 123456},
+                })
+                return handled, first, second, send_mock.await_args_list, answer_mock.await_args_list
+
+        handled, first, second, send_calls, answer_calls = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".争鼎 夺鼎", send_calls[0].args[0])
+        self.assertEqual(leader_id, send_calls[0].kwargs["send_as_id"])
+        self.assertEqual("urgent_reactive", send_calls[0].kwargs["priority"])
+        self.assertEqual("自动副本", send_calls[0].kwargs["source_module"])
+        self.assertEqual("keep", send_calls[0].kwargs["delete_policy"])
+        self.assertEqual("本阶段已处理过。", answer_calls[1].args[1])
 
     def test_virtual_hall_no_dps_suppresses_join_recommendations(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
@@ -960,7 +1124,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("无DPS可用", text)
         self.assertNotIn("自动解散", text)
         self.assertIn("@wa2000", text)
-        self.assertIn("<code>.加入副本 @wa2000 @healer</code>", text)
+        self.assertIn("推荐加入：全匹配：<code>@wa2000</code> <code>@healer</code>", text)
+        self.assertNotIn("<code>.加入副本", text)
 
     def test_lightweight_virtual_hall_command_keeps_dps_when_leader_occupies_slot(self):
         leader_id = self._register_replica_identity(991201, "myios7", root_attrs="水木金土", professions="御山|灵医|破军")
@@ -989,10 +1154,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertIn("DPS：<code>@walterwa2000</code>", text)
         self.assertIn("@walterwa2000", app_replica._virtual_hall_recommendation_command_key(recommendations[0], leader_username="@myios7"))
-        self.assertIn("<code>.加入副本", text)
-        command_line = next(line for line in text.splitlines() if ".加入副本" in line and "推荐加入" in line)
-        self.assertIn("@walterwa2000", command_line)
-        self.assertNotIn("@myios7", command_line)
+        self.assertIn("<code>@walterwa2000</code>", text)
+        self.assertNotIn("<code>@myios7</code>", text)
+        self.assertNotIn("<code>.加入副本", text)
 
         event = self._prepare_replica_group([leader_id, grow_id, fan_id, jihe_id, myios17_id, wa_id])
         app_replica._set_lightweight_last_room({
@@ -1006,7 +1170,13 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "expires_at": 9999999999,
             "updated_at": 1000,
         })
-        event.raw_text = ".加入副本 " + command_line.rsplit(".加入副本 ", 1)[1].split("</code>", 1)[0]
+        join_command = app_replica._virtual_hall_join_command_from_recommendation(
+            recommendations[0],
+            leader_username="@myios7",
+        )
+        self.assertIn("@walterwa2000", join_command)
+        self.assertNotIn("@myios7", join_command)
+        event.raw_text = join_command
 
         async def run_test():
             with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
@@ -1050,7 +1220,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
         text = app_replica._format_virtual_hall_recommendations("919", gua_record, recommendations, candidates, lightweight=True, html=True)
 
         self.assertNotIn("无DPS可用", text)
-        self.assertIn("<code>.加入副本 @wa2000 @healer</code>", text)
+        self.assertIn("推荐加入：全匹配：<code>@wa2000</code> <code>@healer</code>", text)
+        self.assertNotIn("<code>.加入副本", text)
         self.assertIn("DPS：<code>@wa2000</code>", text)
 
     def test_ticket_query_displays_marked_thunder_dps(self):
@@ -1090,7 +1261,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertIn("@leader", reply)
         self.assertIn("苍x1", reply)
-        opener_section = reply.split("可复制命令：", 1)[0]
+        opener_section = reply.split("兜底命令：", 1)[0]
         self.assertNotIn("@listener", opener_section)
         self.assertNotIn("@empty", opener_section)
         self.assertEqual({"@leader": leader_id, "@empty": empty_id}, app_replica._get_replica_identity_ids_by_username())
@@ -1106,7 +1277,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         reply = app_replica._format_replica_ticket_query_reply()
 
-        opener_section = reply.split("可复制命令：", 1)[0]
+        opener_section = reply.split("兜底命令：", 1)[0]
         self.assertNotIn("@low", opener_section)
         self.assertIn("@ready", opener_section)
         self.assertIn(".开启副本 @ready 苍", reply)
@@ -1126,9 +1297,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
                 handled = await app_replica._handle_lightweight_open_command(event)
                 send_args = app_replica.send_game_command.await_args
                 reply_text = app_replica._send_replica_group_message.await_args.args[2]
-                return handled, reply_text, send_args
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, send_args, self._button_texts(buttons)
 
-        handled, reply_text, send_args = asyncio.run(run_test())
+        handled, reply_text, send_args, button_texts = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertEqual(".开启苍坤洞府", send_args.args[0])
         self.assertFalse(send_args.kwargs["track"])
@@ -1143,6 +1315,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("<code>.解散副本</code>", reply_text)
         self.assertIn(".加入副本 @用户名 @用户名", reply_text)
         self.assertIn(".解散副本", reply_text)
+        self.assertIn("刷新副本", button_texts)
+        self.assertIn("解散副本", button_texts)
         pending = state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"]
         self.assertEqual(1, len(pending))
         flow = next(iter(pending.values()))
@@ -1166,15 +1340,18 @@ class ReplicaAbsorbTests(unittest.TestCase):
                 handled = await app_replica._handle_lightweight_open_command(event)
                 send_mock.assert_not_awaited()
                 reply_text = app_replica._send_replica_group_message.await_args.args[2]
-                return handled, reply_text
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, self._button_texts(buttons)
 
-        handled, reply_text = asyncio.run(run_test())
+        handled, reply_text, button_texts = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertIn("多种可开副本", reply_text)
         self.assertIn("请指定类型", reply_text)
         self.assertIn("避免默认误开虚天殿", reply_text)
         self.assertIn("<code>.开启副本 @leader 虚</code>", reply_text)
         self.assertIn("<code>.开启副本 @leader 苍</code>", reply_text)
+        self.assertIn("开虚 @leader", button_texts)
+        self.assertIn("开苍 @leader", button_texts)
         self.assertEqual({}, state_module.get_replica_run_state().get("lightweight_dungeon", {}).get("pending_open", {}))
 
     def test_lightweight_open_command_allows_unambiguous_single_ticket_without_type(self):
@@ -1483,7 +1660,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_opened_text_records_latest_room_for_lightweight_flow(self):
         leader_id = self._register_replica_identity(991201, "leader")
+        first_id = self._register_replica_identity(991202, "first", professions="御山")
         event = self._prepare_replica_group([leader_id])
+        state_module.set_replica_participant_identity_ids([leader_id, first_id])
         now = 1000.0
         flow = {
             "flow_id": "flow-1",
@@ -1502,17 +1681,80 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         async def run_test():
             with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))):
-                return await app_replica._handle_virtual_hall_auto_game_event(
+                handled = await app_replica._handle_virtual_hall_auto_game_event(
                     SimpleNamespace(id=601, chat_id=1),
                     opened,
                     now,
                     reply_context={"reply_to_msg_id": 501, "send_as_id": leader_id},
                 )
+                buttons = app_replica._send_lightweight_replica_notice.await_args.kwargs["buttons"]
+                return handled, self._button_texts(buttons), self._button_payload_by_text(buttons, "加入推荐")
 
-        self.assertTrue(asyncio.run(run_test()))
+        handled, button_texts, join_payload = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("加入推荐", button_texts)
+        self.assertIn("进入苍坤洞府", button_texts)
+        self.assertIn("解散副本", button_texts)
+        self.assertIn("刷新副本", button_texts)
+        self.assertEqual(".加入副本 @first", join_payload.get("command"))
         room = app_replica._get_lightweight_last_room(event.chat_id, now=now)
         self.assertEqual("16", room["room_id"])
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, room["replica_kind"])
+
+    def test_lightweight_enter_command_sends_leader_enter_once(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".进入苍坤洞府"
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "16",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=901))):
+                handled = await app_replica._handle_lightweight_enter_command(event)
+                send_args = app_replica.send_game_command.await_args
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, send_args, reply_text, self._button_texts(buttons)
+
+        handled, send_args, reply_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(".进入苍坤洞府", send_args.args[0])
+        self.assertEqual(leader_id, send_args.kwargs["send_as_id"])
+        self.assertEqual("urgent_reactive", send_args.kwargs["priority"])
+        self.assertEqual("自动副本", send_args.kwargs["source_module"])
+        self.assertIn("replica_lightweight_enter", send_args.kwargs["op_id"])
+        self.assertEqual("replica_lightweight_room:cangkun:16", send_args.kwargs["chain_id"])
+        self.assertIn("等待游戏确认进入", reply_text)
+        self.assertNotIn("进入苍坤洞府", button_texts)
+        self.assertIn("解散副本", button_texts)
+        saved_room = app_replica._get_lightweight_last_room(event.chat_id, now=time.time())
+        self.assertEqual(901, saved_room["enter_msg_id"])
+
+        async def run_duplicate():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=701))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                duplicate_handled = await app_replica._handle_lightweight_enter_command(event)
+                send_mock.assert_not_awaited()
+                duplicate_text = app_replica._send_replica_group_message.await_args.args[2]
+                return duplicate_handled, duplicate_text
+
+        duplicate_handled, duplicate_text = asyncio.run(run_duplicate())
+        self.assertTrue(duplicate_handled)
+        self.assertIn("已请求进入", duplicate_text)
 
     def test_opened_text_recommendation_is_deduped_by_opened_message(self):
         leader_id = self._register_replica_identity(991201, "leader")
@@ -1694,7 +1936,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("<code>.查询副本</code>", notice_text)
         self.assertEqual("dissolved", saved_room["phase"])
 
-    def test_open_failure_notice_includes_copyable_next_commands(self):
+    def test_open_failure_notice_includes_fallback_next_commands(self):
         leader_id = self._register_replica_identity(991201, "leader")
         event = self._prepare_replica_group([leader_id])
         now = 1000.0
@@ -1726,7 +1968,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         handled, notice_text = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertIn("开启苍坤洞府失败：缺少苍坤残图", notice_text)
-        self.assertIn("可复制命令", notice_text)
+        self.assertIn("兜底命令", notice_text)
         self.assertIn("<code>.查询副本</code>", notice_text)
         self.assertIn("<code>.开启副本 @leader 苍</code>", notice_text)
         self.assertIn(".查询副本", notice_text)
@@ -2038,9 +2280,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
                 handled = await app_replica._handle_lightweight_join_command(event)
                 calls = app_replica.send_game_command.await_args_list
                 reply_text = app_replica._send_replica_group_message.await_args.args[2]
-                return handled, calls, reply_text
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, calls, reply_text, self._button_texts(buttons)
 
-        handled, calls, join_reply = asyncio.run(run_join())
+        handled, calls, join_reply, button_texts = asyncio.run(run_join())
         self.assertTrue(handled)
         self.assertEqual(2, len(calls))
         self.assertEqual(".加入苍坤洞府 16", calls[0].args[0])
@@ -2053,6 +2296,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("已发送加入苍坤洞府 16", join_reply)
         self.assertIn("<code>.解散副本</code>", join_reply)
         self.assertIn(".解散副本", join_reply)
+        self.assertIn("进入苍坤洞府", button_texts)
+        self.assertIn("解散副本", button_texts)
+        self.assertIn("刷新副本", button_texts)
 
         low_id = self._register_replica_identity(991204, "low", realm="筑基后期")
         state_module.set_replica_participant_identity_ids([leader_id, first_id, second_id, low_id])

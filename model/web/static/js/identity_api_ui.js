@@ -18,6 +18,11 @@
     }) || null;
   }
 
+  function getDaoPathRows() {
+    const data = snapshot().tianjige_dao_path || {};
+    return Array.isArray(data.rows) ? data.rows : [];
+  }
+
   function formatField(value) {
     if (value == null || value === '') return '-';
     if (typeof value === 'object') {
@@ -154,6 +159,50 @@
     return parts.length ? parts.join('｜') : '未读取';
   }
 
+  function formatDaoPathRowName(row) {
+    return String(
+      (row && (row.display_name || row.label || row.username || row.dao_name || row.identity_id)) || ''
+    ).trim();
+  }
+
+  function renderDaoPathSummary(section, currentIdentityId) {
+    const data = snapshot().tianjige_dao_path || {};
+    const rows = getDaoPathRows();
+    const remoteRows = rows.filter(function (row) { return row && row.has_remote; });
+    const oldBox = section.querySelector('.tianjige-all-summary');
+    if (!remoteRows.length) {
+      if (oldBox) oldBox.remove();
+      return;
+    }
+    const latestRows = remoteRows.slice().sort(function (a, b) {
+      return Number(b.updated_at_raw || 0) - Number(a.updated_at_raw || 0);
+    }).slice(0, 6);
+    const updatedCount = Number(data.dao_path_updated_count || 0);
+    const skippedCount = Number(data.dao_path_skipped_count || 0);
+    const lastMessage = String(data.dao_path_last_message || '').trim();
+    const latestHtml = latestRows.map(function (row) {
+      const active = Number(row.identity_id || 0) === Number(currentIdentityId || 0) ? ' tianjige-all-row-active' : '';
+      const details = [
+        row.cultivation_level,
+        row.sect_name,
+        row.updated_at && row.updated_at !== '未设置' ? row.updated_at : '',
+      ].filter(Boolean).join('｜');
+      return '<div class="tianjige-all-row' + active + '"><strong>' + esc(formatDaoPathRowName(row)) + '</strong><span>' + esc(details || '已更新') + '</span></div>';
+    }).join('');
+    const box = oldBox || document.createElement('div');
+    box.className = 'tianjige-all-summary';
+    box.innerHTML = [
+      '<div class="tianjige-all-summary-head"><strong>天机阁全体</strong><span>' + esc(lastMessage || ('已记录 ' + remoteRows.length + ' 个身份')) + '</span></div>',
+      '<div class="tianjige-all-summary-meta">最近全体读取：更新 ' + esc(updatedCount) + '｜跳过 ' + esc(skippedCount) + '｜远端快照 ' + esc(remoteRows.length) + '</div>',
+      '<div class="tianjige-all-rows">' + latestHtml + '</div>',
+    ].join('');
+    if (!oldBox) {
+      const line = section.querySelector('.tianjige-summary-line');
+      if (line) line.insertAdjacentElement('afterend', box);
+      else section.appendChild(box);
+    }
+  }
+
   function enhanceSummary(identity) {
     if (!identity) return;
     const panel = document.getElementById('summary-panel');
@@ -190,6 +239,7 @@
     const oldLine = section.querySelector('.tianjige-summary-line');
     if (!row || !row.has_remote) {
       if (oldLine) oldLine.remove();
+      renderDaoPathSummary(section, identity.send_as_id);
       return;
     }
     const line = oldLine || document.createElement('div');
@@ -199,6 +249,7 @@
       const firstMeta = section.querySelector('.meta');
       if (firstMeta) firstMeta.insertAdjacentElement('afterend', line);
     }
+    renderDaoPathSummary(section, identity.send_as_id);
   }
 
   async function refreshIdentityInfoFromApi(sendAsId, scope) {
@@ -208,7 +259,8 @@
         scope: scope || 'single',
       });
       updateFlash(data.message || '已通过天机阁更新角色信息', false);
-      applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
+      const changed = applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
+      if (!changed && typeof renderAll === 'function') renderAll();
     } catch (error) {
       updateFlash((error && error.message) || '天机阁角色信息读取失败', true);
       renderAll();

@@ -148,6 +148,99 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 self.assertGreaterEqual(state_module.state["next_irr_time"], now + 45 * 60)
                 self.assertLessEqual(state_module.state["next_irr_time"], now + 75 * 60)
 
+    async def test_mature_panel_final_branch_board_queues_all_enabled_harvest(self):
+        now = 1000.0
+        identity_ids = [3756719391, 3800619925]
+        for identity_id in identity_ids:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username=f"user{identity_id}")
+            with state_module.use_identity(identity_id):
+                state_module.state["tree_enabled"] = True
+                state_module.state["is_maturing"] = True
+                state_module.state["is_harvested"] = False
+                state_module.state["tree_harvest_inflight_until"] = 0
+
+        panel = (
+            "【落云宗 · 灵眼之树】\n"
+            "✨ 状态: 成熟采摘期\n"
+            "⏳ 剩余: 23小时50分钟20秒\n"
+            "🏆 本轮最终分枝榜 (天道快照):\n"
+            "🥇 user3800619925 (你): 1039 ⏳(未领)\n"
+            "🥈 user3756719391: 957 ⏳(未领)\n\n"
+            "👤 你的当前状态: 1039 点\n"
+            "🌰 奉养灵树: 凝液需木髓 11/12"
+        )
+        captured_batches = []
+
+        def capture_fire_and_forget(coro):
+            captured_batches.append(list(coro.cr_frame.f_locals["send_as_ids"]))
+            coro.close()
+
+        with (
+            patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(tree, "_iter_tree_enabled_identity_ids", side_effect=lambda: iter(identity_ids)),
+            patch.object(tree, "_fire_and_forget", side_effect=capture_fire_and_forget) as fire_mock,
+            patch.object(tree, "save_state"),
+        ):
+            with state_module.use_identity(identity_ids[1]):
+                handled = await tree.handle_tree_panel(panel, now, False)
+
+        self.assertTrue(handled)
+        fire_mock.assert_called_once()
+        audit_mock.assert_awaited_once()
+        self.assertEqual([identity_ids], captured_batches)
+        for identity_id in identity_ids:
+            with state_module.use_identity(identity_id):
+                self.assertTrue(state_module.state["is_maturing"])
+                self.assertFalse(state_module.state["is_harvested"])
+                self.assertGreater(state_module.state["tree_harvest_inflight_until"], now)
+
+    async def test_unowned_final_branch_board_queues_only_local_unclaimed_tree_identity(self):
+        now = 1000.0
+        identity_ids = [3756719391, 3800619925]
+        for identity_id in identity_ids:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username=f"user{identity_id}")
+            with state_module.use_identity(identity_id):
+                state_module.state["tree_enabled"] = True
+                state_module.state["is_maturing"] = True
+                state_module.state["is_harvested"] = False
+                state_module.state["tree_harvest_inflight_until"] = 0
+
+        panel = (
+            "【落云宗 · 灵眼之树】\n"
+            "✨ 状态: 成熟采摘期\n"
+            "🏆 本轮最终分枝榜 (天道快照):\n"
+            "5. outsider (你): 1106 ⏳(未领)\n"
+            "7. user3800619925: 1039 ⏳(未领)\n"
+            "8. user3756719391: 957 ✅(已领)\n\n"
+            "👤 你的当前状态: 1106 点"
+        )
+        captured_batches = []
+
+        def capture_fire_and_forget(coro):
+            captured_batches.append(list(coro.cr_frame.f_locals["send_as_ids"]))
+            coro.close()
+
+        with (
+            patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(tree, "_iter_tree_enabled_identity_ids", side_effect=lambda: iter(identity_ids)),
+            patch.object(tree, "_fire_and_forget", side_effect=capture_fire_and_forget) as fire_mock,
+            patch.object(tree, "save_state"),
+        ):
+            with state_module.use_identity(identity_ids[0]):
+                handled = await tree.handle_tree_panel(panel, now, False)
+
+        self.assertTrue(handled)
+        fire_mock.assert_called_once()
+        audit_mock.assert_awaited_once()
+        self.assertEqual([[identity_ids[1]]], captured_batches)
+        with state_module.use_identity(identity_ids[1]):
+            self.assertTrue(state_module.state["is_maturing"])
+            self.assertGreater(state_module.state["tree_harvest_inflight_until"], now)
+        with state_module.use_identity(identity_ids[0]):
+            self.assertEqual(0, state_module.state["tree_harvest_inflight_until"])
+
     async def test_recent_normal_startup_tree_status_request_is_suppressed(self):
         now = 1000.0
         identity_id = 3800619925

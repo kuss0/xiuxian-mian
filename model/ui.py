@@ -625,7 +625,19 @@ def _storage_bag_api_extract_owner_fields(row):
     if not isinstance(row, dict):
         return 0, ""
     identity_id = 0
-    for key in ("identity_id", "send_as_id", "telegram_id", "character_id", "owner_id", "id"):
+    row = _tianjige_flatten_api_row(row)
+    for key in (
+        "identity_id",
+        "send_as_id",
+        "telegram_id",
+        "telegram_user_id",
+        "tg_id",
+        "user_id",
+        "character_id",
+        "cultivator_id",
+        "owner_id",
+        "id",
+    ):
         try:
             candidate = int(row.get(key) or 0)
         except (TypeError, ValueError):
@@ -634,7 +646,7 @@ def _storage_bag_api_extract_owner_fields(row):
             identity_id = candidate
             break
     owner_text = ""
-    for key in ("owner", "owner_username", "username", "dao_name", "daohao", "label", "name"):
+    for key in ("owner", "owner_username", "username", "telegram_username", "dao_name", "daohao", "label", "role_name", "name"):
         value = str(row.get(key) or "").strip()
         if value:
             owner_text = value
@@ -842,9 +854,36 @@ def _tianjige_parse_json_maybe(value):
     return value
 
 
+def _tianjige_flatten_api_row(row):
+    row = row if isinstance(row, dict) else {}
+    flat = {}
+    containers = (
+        "user",
+        "owner",
+        "profile",
+        "character",
+        "cultivator",
+        "role",
+        "player",
+        "status_info",
+        "state",
+    )
+    for key in containers:
+        value = _tianjige_parse_json_maybe(row.get(key))
+        if isinstance(value, dict):
+            flat.update(value)
+    flat.update(row)
+
+    dongfu = _tianjige_parse_json_maybe(row.get("dongfu") or row.get("cave"))
+    if isinstance(dongfu, dict):
+        flat.setdefault("dongfu", dongfu)
+    return flat
+
+
 def _tianjige_extract_known_fields(row, names):
     result = []
     seen = set()
+    row = _tianjige_flatten_api_row(row)
     for key in names:
         if key in seen or key not in row:
             continue
@@ -1032,6 +1071,7 @@ def _tianjige_cave_summary_text(cave):
 
 
 def _tianjige_extract_cave_summary(row):
+    row = _tianjige_flatten_api_row(row)
     cave = {}
     container_keys = ("dongfu", "cave", "home", "residence", "mansion", "abode", "estate")
     for key in _DAO_PATH_CAVE_KEYS:
@@ -1054,7 +1094,7 @@ def _tianjige_extract_cave_summary(row):
 
 
 def _tianjige_profile_updates_from_row(row):
-    row = row if isinstance(row, dict) else {}
+    row = _tianjige_flatten_api_row(row)
     updates = {}
     username = _tianjige_string(
         row.get("username")
@@ -1109,7 +1149,7 @@ def _tianjige_profile_updates_from_row(row):
 
 
 def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_owner_text="", source="tianjige", allowed_identity_ids=None):
-    row = row if isinstance(row, dict) else {}
+    row = _tianjige_flatten_api_row(row)
     identity_id, owner_text = _storage_bag_api_extract_owner_fields(row)
     lookup = _storage_bag_api_identity_lookup()
     identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
@@ -1188,7 +1228,23 @@ def _tianjige_apply_dao_path_payload(payload, *, fallback_identity_id=0, fallbac
     rows = []
     if isinstance(payload.get("characters"), list):
         rows.extend(row for row in payload.get("characters") or [] if isinstance(row, dict))
-    if any(key in payload for key in ("username", "telegram_id", "dao_name", "cultivation_level", "inventory", "status", "combat_status")):
+    candidate_payload = _tianjige_flatten_api_row(payload)
+    if any(key in candidate_payload for key in (
+        "username",
+        "telegram_id",
+        "telegram_user_id",
+        "tg_id",
+        "user_id",
+        "character_id",
+        "dao_name",
+        "daohao",
+        "cultivation_level",
+        "inventory",
+        "status",
+        "combat_status",
+        "dongfu",
+        "cave",
+    )):
         rows.append(payload)
     if not rows:
         skipped += 1
@@ -4652,7 +4708,7 @@ async def handle_ui_http(reader, writer):
                     if not refresh_all and send_as_id in {None, ""}:
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
-                        ok, message, api_snapshot = await ui_refresh_identity_from_api(send_as_id, refresh_all=refresh_all)
+                        ok, message, api_snapshot = await ui_refresh_identity_from_api(send_as_id, payload, refresh_all=refresh_all)
                         status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                         body = _make_json_payload(
                             ok,
