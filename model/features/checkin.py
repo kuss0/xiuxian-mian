@@ -142,6 +142,7 @@ def disable_sect_modules_for_current_identity(now=None):
 
     for field_name in (
         "checkin_enabled",
+        "sect_teach_enabled",
         "tower_enabled",
         "tree_enabled",
         "ranch_enabled",
@@ -255,7 +256,7 @@ def _mark_checkin_done_and_schedule_teach(now, status_text):
     day_key = get_checkin_day_key(now)
     state["last_checkin_done_day"] = day_key
     next_ts = _schedule_checkin_next_day(now)
-    scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"])
+    scheduled = schedule_sect_teach_chain(now, state["last_checkin_msg_id"]) if state.get("sect_teach_enabled") else False
     save_state()
     console_log(f"📝 {status_text}→{fmt_abs_ts(next_ts)}")
     if scheduled:
@@ -300,10 +301,19 @@ def get_checkin_status_text():
     lines = [
         "📝 点卯",
         f"- 今日点卯是否已完成：{'是' if state['last_checkin_done_day'] == today_key else '否'}",
-        f"- 今日传功是否已完成：{'是' if state['checkin_teach_count'] >= 3 else '否'}（{state['checkin_teach_count']}/3）",
         f"- 下次执行：{fmt_abs_ts(state['next_checkin_time'])}（{fmt_remaining(state['next_checkin_time'])}）",
         f"- 执行窗口：{format_window_text('点卯')}",
+    ]
+    return "\n".join(lines)
+
+
+def get_sect_teach_status_text():
+    today_key = get_checkin_day_key()
+    lines = [
+        "📘 宗门传功",
+        f"- 今日传功是否已完成：{'是' if state['checkin_teach_count'] >= 3 else '否'}（{state['checkin_teach_count']}/3）",
         f"- 下次传功：{fmt_abs_ts(state['next_sect_teach_time'])}（{fmt_remaining(state['next_sect_teach_time'])}）",
+        f"- 点卯锚点：{'今日已记录' if state['last_checkin_done_day'] == today_key and state.get('last_checkin_msg_id') else '未记录'}",
     ]
     return "\n".join(lines)
 
@@ -313,7 +323,7 @@ def schedule_sect_teach_chain(now, reply_to_msg_id):
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
 
-    if state["checkin_teach_count"] >= 3 or not reply_to_msg_id:
+    if not state.get("sect_teach_enabled") or state["checkin_teach_count"] >= 3 or not reply_to_msg_id:
         state["next_sect_teach_time"] = 0
         state["sect_teach_reply_to_msg_id"] = 0
         save_state()
@@ -403,7 +413,7 @@ async def handle_checkin_reply(text, now, reply_to, matched_family=None):
 
 
 async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
-    if not state["checkin_enabled"]:
+    if not state.get("sect_teach_enabled"):
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
@@ -420,7 +430,7 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
 
     if "传功玉简已记录！" in text:
         state["checkin_teach_count"] = min(3, state["checkin_teach_count"] + 1)
-        if state["checkin_teach_count"] < 3:
+        if state["checkin_teach_count"] < 3 and state.get("sect_teach_enabled"):
             schedule_sect_teach_chain(now, state["last_sect_teach_msg_id"])
             console_log(f"📘 传功成功 {state['checkin_teach_count']}/3")
         else:
@@ -444,7 +454,7 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
 
 
 async def run_checkin_scheduler(now):
-    if not state["checkin_enabled"]:
+    if not state.get("checkin_enabled") and not state.get("sect_teach_enabled"):
         return
 
     day_key = get_checkin_day_key(now)
@@ -452,7 +462,7 @@ async def run_checkin_scheduler(now):
         reset_checkin_daily_state(now)
         mark_dirty()
 
-    if state["next_sect_teach_time"] > 0 and now >= state["next_sect_teach_time"]:
+    if state.get("sect_teach_enabled") and state["next_sect_teach_time"] > 0 and now >= state["next_sect_teach_time"]:
         reply_to_msg_id = state.get("sect_teach_reply_to_msg_id", 0)
         if reply_to_msg_id and state["checkin_teach_count"] < 3:
             msg = await send_game_command(CMD_SECT_TEACH, track=False, reply_to=reply_to_msg_id)
@@ -471,6 +481,9 @@ async def run_checkin_scheduler(now):
             state["next_sect_teach_time"] = 0
             state["sect_teach_reply_to_msg_id"] = 0
             mark_dirty()
+
+    if not state.get("checkin_enabled"):
+        return
 
     next_checkin_time, should_return = _normalize_checkin_schedule(now)
     if should_return:
@@ -493,6 +506,7 @@ async def run_checkin_scheduler(now):
 __all__ = [
     "cleanup_checkin_chain_messages",
     "get_checkin_status_text",
+    "get_sect_teach_status_text",
     "handle_checkin_reply",
     "handle_sect_teach_reply",
     "is_checkin_already_done_text",

@@ -109,6 +109,8 @@
 <span>开启后，全局监听群内星盘显化广播，并按 3 小时时段收口</span>
 </label>
 </label>      <label class='field-label'>观星改换目标<input class='text-input' name='guanxing_shift_target' placeholder='例如 @wxjerry' />
+</label>      <label class='field-label'>观星首发偏移秒数<input class='text-input' name='guanxing_shift_delay_sec' type='number' min='-180' step='1' inputmode='numeric' placeholder='10' />
+<span class='form-label form-label-inline'>相对天机演化时刻；负数提前发，最早提前 180 秒。</span>
 </label>      <div class='field-label'>
 <span>观星监控命中结果</span>
 <div id='guanxing-monitor-target-options' class='checkbox-grid'></div>
@@ -246,6 +248,7 @@
 </div>
 <script>const CHAOGU_BOOT_DATA={{boot_data}};const POLL_INTERVAL_MS={{poll_interval_ms}};</script>
 <script src='/static/js/app.js'></script>
+<script src='/static/js/guanxing_config_ui.js'></script>
 <script src='/static/js/identity_api_ui.js'></script>
 <script src='/static/js/passive_inbox_ui.js'></script>
 <script src='/static/js/queue_ui.js'></script>

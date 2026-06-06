@@ -568,6 +568,13 @@
   word-break: break-word;
 }
 
+.replica-opener-commands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
 .replica-aggregator-grid {
   display: grid;
   grid-template-columns: minmax(180px, 1.2fr) minmax(140px, 0.9fr) minmax(140px, 0.9fr);

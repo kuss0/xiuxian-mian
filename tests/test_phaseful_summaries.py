@@ -565,7 +565,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
-    async def test_deep_retreat_summary_due_sends_explicit_status_query_after_grace(self):
+    async def test_deep_retreat_summary_due_keeps_waiting_passively_after_grace(self):
         send_as_id = 8659059202
         now = 1_700_000_450.0
         self._prepare_identity(send_as_id, "NoTaglessRetreat")
@@ -576,22 +576,18 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec - 1
             state_module.state["next_deep_retreat_time"] = now - 1
 
-            sent_msg = SimpleNamespace(id=901, sent_at=now)
             with (
-                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful.random, "uniform", return_value=300),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(_phaseful, "console_log"),
                 patch.object(_phaseful, "save_state"),
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)
 
-            send_mock.assert_awaited_once_with(
-                deep_retreat.CMD_DEEP_RETREAT_QUERY,
-                track=False,
-                priority="chain",
-                source_module="深度闭关",
-            )
-            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
-            self.assertEqual(901, state_module.state["last_deep_retreat_summary_msg_id"])
+            send_mock.assert_not_awaited()
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
     async def test_deep_retreat_passive_timeout_queries_status_before_relaunch(self):
         send_as_id = 8659059212
@@ -954,7 +950,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             ".闯塔",
             track=False,
             send_as_id=send_as_id,
-            priority="normal",
+            priority="retry",
             max_retry=0,
             source_module="闯塔",
         )

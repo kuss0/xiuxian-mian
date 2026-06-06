@@ -46,6 +46,12 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_reply_family("hehuan_dual"))
         self.assertEqual("天星宗", module_manifest.get_module_name_for_reply_family("tianxing_panel"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_banner"))
+        self.assertEqual("点卯", module_manifest.get_module_name_for_reply_family("checkin"))
+        self.assertEqual("宗门传功", module_manifest.get_module_name_for_reply_family("sect_teach"))
+        self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_reply_family("explore_rift"))
+        self.assertEqual("问道", module_manifest.get_module_name_for_reply_family("wendao"))
+        self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_start"))
+        self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_assist"))
 
     def test_workflow_names_map_to_manifest_owner(self):
         self.assertEqual("太一", module_manifest.get_module_name_for_workflow("taiyi"))
@@ -103,15 +109,24 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_replay_module("hehuan"))
         self.assertEqual("天星宗", module_manifest.get_module_name_for_replay_module("tianxing"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_replay_module("yinluo"))
+        self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_replay_module("explore_rift"))
+        self.assertEqual("问道", module_manifest.get_module_name_for_replay_module("wendao"))
+        self.assertEqual("周天星斗", module_manifest.get_module_name_for_replay_module("formation"))
 
     def test_phaseful_modules_are_passive_first_last_resort_query(self):
         deep_retreat = module_manifest.get_module_manifest("深度闭关")
         yuanying = module_manifest.get_module_manifest("元婴")
+        explore_rift = module_manifest.get_module_manifest("探寻裂缝")
+        formation = module_manifest.get_module_manifest("周天星斗")
 
         self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, deep_retreat.send_policy)
         self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, deep_retreat.active_query_policy)
         self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, yuanying.send_policy)
         self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, yuanying.active_query_policy)
+        self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, explore_rift.send_policy)
+        self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, explore_rift.active_query_policy)
+        self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, formation.send_policy)
+        self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, formation.active_query_policy)
 
 
 if __name__ == "__main__":

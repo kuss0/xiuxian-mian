@@ -91,6 +91,16 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertEqual([], missing_lines)
 
+    def test_replica_group_branch_processes_game_text_before_commands(self):
+        source_text = (PROJECT_ROOT / "model" / "app.py").read_text(encoding="utf-8")
+        branch_pos = source_text.index('if _append_replica_group_message_log(event, event_type="message"):')
+        auto_pos = source_text.index("_handle_virtual_hall_auto_game_event", branch_pos)
+        progress_pos = source_text.index("_handle_replica_progress_event", branch_pos)
+        command_pos = source_text.index("_handle_replica_group_command", branch_pos)
+
+        self.assertLess(auto_pos, command_pos)
+        self.assertLess(progress_pos, command_pos)
+
     def _prepare_replica_identity(self, identity_id=991201, username="leader"):
         state_module.ensure_identity_registered(identity_id)
         state_module.update_send_as_profile(
@@ -209,6 +219,28 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(9001, submit_kwargs["listener_account_id"])
         self.assertEqual("client-a", submit_kwargs["client_id"])
         self.assertEqual(0, send_count)
+
+    def test_replica_query_command_falls_back_when_aggregator_fails(self):
+        state_module.set_replica_query_aggregator_config({
+            "base_url": "https://example.invalid/api",
+            "client_id": "client-a",
+            "secret": "secret-a",
+        })
+        event = self._prepare_replica_group([])
+        event.raw_text = ".查询"
+        event.id = 457
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica.submit_replica_query_result", new=AsyncMock(side_effect=replica_query_aggregator_client.ReplicaQueryAggregatorError("down"))), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=705))) as send_mock:
+                handled = await app_replica._handle_replica_query_command(event)
+                return handled, send_mock.await_count, send_mock.await_args.args[2]
+
+        handled, send_count, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(1, send_count)
+        self.assertIn("当前没有已勾选且带 username 的副本参与身份", reply_text)
 
     def test_replica_query_command_replies_when_no_candidates(self):
         event = self._prepare_replica_group([])
@@ -334,6 +366,125 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual("914", call_args.args[0])
         self.assertEqual(9001, call_args.kwargs["listener_account_id"])
+
+    def test_virtual_hall_match_text_falls_back_when_aggregator_fails(self):
+        state_module.set_replica_query_aggregator_config({
+            "base_url": "https://example.invalid/api",
+            "client_id": "client-a",
+            "secret": "secret-a",
+        })
+
+        async def run_test():
+            with patch("model.app_replica.submit_virtual_hall_recommendation", new=AsyncMock(side_effect=replica_query_aggregator_client.ReplicaQueryAggregatorError("down"))), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=706))) as send_mock:
+                await app_replica._send_virtual_hall_match_text(
+                    SimpleNamespace(name="listener"),
+                    -100777,
+                    "推荐配置：虚天殿",
+                    listener_account_id=9001,
+                    html=True,
+                    room_id="914",
+                    query_message_id=456,
+                )
+                return send_mock.await_count, send_mock.await_args.args[2]
+
+        send_count, sent_text = asyncio.run(run_test())
+        self.assertEqual(1, send_count)
+        self.assertEqual("推荐配置：虚天殿", sent_text)
+
+    def test_virtual_hall_query_wait_returns_first_seen_candidates(self):
+        candidate = {"username": "@first", "username_key": "@first"}
+
+        async def run_test():
+            with patch("model.app_replica._find_replica_query_log_candidates", side_effect=[[], [candidate]]) as find_mock, \
+                    patch("model.app_replica.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+                result = await app_replica._wait_replica_query_log_candidates(
+                    456,
+                    time.time(),
+                    timeout_sec=1,
+                    chat_id=-100777,
+                )
+                return result, find_mock.call_count, sleep_mock.await_count
+
+        result, find_count, sleep_count = asyncio.run(run_test())
+        self.assertEqual([candidate], result)
+        self.assertEqual(2, find_count)
+        self.assertEqual(1, sleep_count)
+
+    def test_virtual_hall_missing_dispatch_preclaims_before_send_returns(self):
+        flow = {
+            "flow_id": "flow-missing",
+            "phase": "monitoring",
+            "room_id": "456",
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "missing_join_requests": {},
+        }
+        accounting = {
+            "missing_dispatch": ["@first"],
+            "shortage": 0,
+        }
+        now = 1000.0
+        send_calls = []
+        requests_seen_during_send = {}
+        second_result = []
+
+        async def fake_send(send_flow, command, **_kwargs):
+            send_calls.append(command)
+            if len(send_calls) == 1:
+                requests_seen_during_send.update(copy.deepcopy(send_flow.get("missing_join_requests") or {}))
+                second_result.append(
+                    await app_replica._maybe_send_virtual_hall_auto_missing_dispatch_command(
+                        send_flow,
+                        accounting,
+                        now + 0.1,
+                    )
+                )
+            return SimpleNamespace(id=901)
+
+        async def run_test():
+            with patch("model.app_replica._send_virtual_hall_auto_replica_notice", side_effect=fake_send), \
+                    patch("model.app_replica._schedule_virtual_hall_auto_deferred_team_check", return_value=True):
+                return await app_replica._maybe_send_virtual_hall_auto_missing_dispatch_command(flow, accounting, now)
+
+        handled = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual([False], second_result)
+        self.assertEqual([".虚天殿 456 @first"], send_calls)
+        self.assertEqual(1, requests_seen_during_send["@first"]["count"])
+        self.assertTrue(requests_seen_during_send["@first"]["pending"])
+        self.assertEqual(1, flow["missing_join_requests"]["@first"]["count"])
+        self.assertFalse(flow["missing_join_requests"]["@first"]["pending"])
+        self.assertEqual(901, flow["missing_join_requests"]["@first"]["msg_id"])
+
+    def test_virtual_hall_missing_dispatch_send_failure_rolls_back_preclaim(self):
+        flow = {
+            "flow_id": "flow-missing-fail",
+            "phase": "monitoring",
+            "room_id": "456",
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "missing_join_requests": {},
+        }
+        accounting = {
+            "missing_dispatch": ["@first"],
+            "shortage": 0,
+        }
+        now = 1000.0
+
+        async def run_test():
+            with patch("model.app_replica._send_virtual_hall_auto_replica_notice", new=AsyncMock(return_value=None)):
+                return await app_replica._maybe_send_virtual_hall_auto_missing_dispatch_command(flow, accounting, now)
+
+        handled = asyncio.run(run_test())
+
+        self.assertFalse(handled)
+        request = flow["missing_join_requests"]["@first"]
+        self.assertEqual(0, request["count"])
+        self.assertEqual(0, request["last_sent_at"])
+        self.assertFalse(request["pending"])
+        self.assertEqual(now, request["send_failed_at"])
 
     def test_parse_cangkun_dispatch_command(self):
         replica_kind, room_id, usernames = app_replica._parse_replica_dispatch_command(".苍坤洞府 123 @foo @bar @foo")
@@ -998,6 +1149,231 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, flow["replica_kind"])
         self.assertEqual(501, flow["open_command_msg_id"])
 
+    def test_lightweight_open_command_rejects_ambiguous_multi_ticket_without_sending(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader"
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_open_command(event)
+                send_mock.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, reply_text
+
+        handled, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("多种可开副本", reply_text)
+        self.assertIn("请指定类型", reply_text)
+        self.assertIn("避免默认误开虚天殿", reply_text)
+        self.assertIn("<code>.开启副本 @leader 虚</code>", reply_text)
+        self.assertIn("<code>.开启副本 @leader 苍</code>", reply_text)
+        self.assertEqual({}, state_module.get_replica_run_state().get("lightweight_dungeon", {}).get("pending_open", {}))
+
+    def test_lightweight_open_command_allows_unambiguous_single_ticket_without_type(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader"
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=501))):
+                handled = await app_replica._handle_lightweight_open_command(event)
+                send_args = app_replica.send_game_command.await_args
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, send_args, reply_text
+
+        handled, send_args, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(".开启苍坤洞府", send_args.args[0])
+        self.assertIn("已用 @leader 发送 .开启苍坤洞府", reply_text)
+
+    def test_lightweight_open_command_accepts_short_kind_for_multi_ticket_opener(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader 虚"
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=501))):
+                handled = await app_replica._handle_lightweight_open_command(event)
+                send_args = app_replica.send_game_command.await_args
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, send_args, reply_text
+
+        handled, send_args, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(".开启虚天殿", send_args.args[0])
+        self.assertNotIn("多种可开副本", reply_text)
+        self.assertIn("已用 @leader 发送 .开启虚天殿", reply_text)
+
+    def test_lightweight_open_command_accepts_each_short_kind_alias(self):
+        cases = [
+            ("虚", "虚天残图", ".开启虚天殿", "虚天殿"),
+            ("苍", "苍坤残图", ".开启苍坤洞府", "苍坤洞府"),
+            ("坠", "坠魔谷禁制令", ".开启坠魔谷", "坠魔谷"),
+            ("黄", "黄龙急援令", ".开启黄龙山", "黄龙山"),
+        ]
+        for index, (short_kind, ticket_item, expected_command, expected_name) in enumerate(cases, start=1):
+            with self.subTest(short_kind=short_kind):
+                state_module.set_replica_run_state({})
+                leader_id = self._register_replica_identity(991200 + index, f"leader{index}", realm="结丹初期")
+                event = self._prepare_replica_group([leader_id])
+                event.sender_id = 4242
+                event.id = 4300 + index
+                event.raw_text = f".开启副本 @leader{index} {short_kind}"
+                state_module.set_storage_bag_records({
+                    str(leader_id): {
+                        "items": {"虚天残图": 1, ticket_item: 1},
+                        "sections": {},
+                    },
+                })
+
+                async def run_test():
+                    with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                            patch("model.app_replica._claim_runtime_event", return_value=True), \
+                            patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                            patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=501))):
+                        handled = await app_replica._handle_lightweight_open_command(event)
+                        send_args = app_replica.send_game_command.await_args
+                        reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                        return handled, send_args, reply_text
+
+                handled, send_args, reply_text = asyncio.run(run_test())
+                self.assertTrue(handled)
+                self.assertEqual(expected_command, send_args.args[0])
+                self.assertIn(f"已用 @leader{index} 发送 {expected_command}", reply_text)
+                self.assertNotIn("多种可开副本", reply_text)
+                flow = next(iter(state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"].values()))
+                self.assertEqual(expected_name, app_replica._REPLICA_KIND_META[flow["replica_kind"]]["name"])
+
+    def test_lightweight_open_command_reports_global_pause_without_sending(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader 虚"
+        state_module.set_storage_bag_records({str(leader_id): {"items": {"虚天残图": 1}, "sections": {}}})
+        state_module.set_global_enabled(False)
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_open_command(event)
+                send_mock.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, reply_text
+
+        handled, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn(".开启虚天殿 未发送", reply_text)
+        self.assertIn("全局暂停", reply_text)
+        self.assertEqual({}, state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"])
+        state_module.set_global_enabled(True)
+
+    def test_lightweight_open_command_allows_retry_after_stale_pending_open(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader 虚"
+        state_module.set_storage_bag_records({str(leader_id): {"items": {"虚天残图": 1}, "sections": {}}})
+        app_replica._upsert_lightweight_open_flow({
+            "flow_id": "stale-flow",
+            "phase": "opening",
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "selector": "@leader",
+            "replica_command_msg_id": 666,
+            "open_command_msg_id": 501,
+            "open_requested_at": 1000.0,
+            "updated_at": 1000.0,
+            "expires_at": 2000.0,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=2001.0), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=502))):
+                handled = await app_replica._handle_lightweight_open_command(event)
+                send_args = app_replica.send_game_command.await_args
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, send_args, reply_text
+
+        handled, send_args, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(".开启虚天殿", send_args.args[0])
+        self.assertIn("已用 @leader 发送 .开启虚天殿", reply_text)
+        pending = state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"]
+        self.assertEqual(1, len(pending))
+        flow = next(iter(pending.values()))
+        self.assertNotEqual("stale-flow", flow["flow_id"])
+        self.assertEqual(502, flow["open_command_msg_id"])
+
+    def test_lightweight_open_command_blocks_immediate_duplicate_pending_open(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader 虚"
+        state_module.set_storage_bag_records({str(leader_id): {"items": {"虚天残图": 1}, "sections": {}}})
+        app_replica._upsert_lightweight_open_flow({
+            "flow_id": "fresh-flow",
+            "phase": "opening",
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "selector": "@leader",
+            "replica_command_msg_id": 666,
+            "open_command_msg_id": 501,
+            "open_requested_at": 1000.0,
+            "updated_at": 1000.0,
+            "expires_at": 2000.0,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=1001.0), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=502))):
+                handled = await app_replica._handle_lightweight_open_command(event)
+                app_replica.send_game_command.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, reply_text
+
+        handled, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("已有虚天殿开房请求", reply_text)
+        self.assertIn("如果确认开房指令被吞", reply_text)
+        pending = state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"]
+        self.assertEqual(["fresh-flow"], sorted(pending.keys()))
+
     def test_lightweight_cleanup_drops_corrupt_persisted_state(self):
         state_module.set_replica_run_state({
             "lightweight_dungeon": {
@@ -1251,6 +1627,38 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual("replica_lightweight_room:virtual_hall:914", call_args.kwargs["chain_id"])
         self.assertEqual("dissolve_requested", saved_room["phase"])
 
+    def test_lightweight_manual_dissolve_does_not_resend_when_already_pending(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".解散副本"
+        app_replica._set_lightweight_last_room({
+            "phase": "dissolve_requested",
+            "room_id": "914",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "dissolve_msg_id": 802,
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=803))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=804))) as send_mock:
+                handled = await app_replica._handle_lightweight_dissolve_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, reply_text, send_mock.await_args_list
+
+        handled, reply_text, send_calls = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual([], send_calls)
+        self.assertIn("已请求解散", reply_text)
+        self.assertIn("未重复发送解散命令", reply_text)
+
     def test_lightweight_dissolve_confirmation_sends_realtime_notice(self):
         leader_id = self._register_replica_identity(991201, "leader")
         event = self._prepare_replica_group([leader_id])
@@ -1419,15 +1827,43 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
                     patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)), \
-                    patch("model.app_replica.console_log"):
-                return await app_replica._handle_replica_external_dispatch_command(event)
+                    patch("model.app_replica.console_log") as log_mock:
+                handled = await app_replica._handle_replica_external_dispatch_command(event)
+                return handled, log_mock.call_args_list
 
-        handled = asyncio.run(run_test())
+        handled, log_calls = asyncio.run(run_test())
 
         self.assertTrue(handled)
         state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
         self.assertNotIn("dispatch_pending_room_id", state_item)
         self.assertNotIn("dispatch_pending_until", state_item)
+        self.assertTrue(any("主线拉人发送失败" in str(call.args[0]) for call in log_calls))
+
+    def test_external_dispatch_unknown_user_logs_skip_not_send_failure(self):
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        state_module.set_replica_dispatch_group_ids([-100888])
+        state_module.set_replica_dispatch_listener_account_map({"-100888": 9001})
+        event = SimpleNamespace(
+            raw_text=".虚天殿 456 @missing",
+            chat_id=-100888,
+            sender_id=4444,
+            id=88004,
+            client=listener_client,
+        )
+
+        async def run_test():
+            with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.app_replica.console_log") as log_mock:
+                handled = await app_replica._handle_replica_external_dispatch_command(event)
+                return handled, send_mock.await_args_list, log_mock.call_args_list
+
+        handled, send_calls, log_calls = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual([], send_calls)
+        self.assertTrue(any("主线拉人已跳过" in str(call.args[0]) for call in log_calls))
+        self.assertFalse(any("主线拉人发送失败" in str(call.args[0]) for call in log_calls))
 
     def test_external_dispatch_fast_retry_resends_once_while_pending(self):
         first_id = self._register_replica_identity(991205, "first")
@@ -1537,6 +1973,43 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertIn("缺少开房身份", reply_text)
         self.assertIn(".查询副本", reply_text)
+
+    def test_lightweight_dissolve_cancels_pending_open_without_room(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".解散副本"
+        app_replica._upsert_lightweight_open_flow({
+            "flow_id": "pending-open",
+            "phase": "opening",
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "selector": "@leader",
+            "replica_command_msg_id": 666,
+            "open_command_msg_id": 501,
+            "open_requested_at": 1000.0,
+            "updated_at": 1000.0,
+            "expires_at": 2000.0,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=1001.0), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=803))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=702))):
+                handled = await app_replica._handle_lightweight_dissolve_command(event)
+                app_replica.send_game_command.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, reply_text
+
+        handled, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("已取消等待中的虚天殿开房请求", reply_text)
+        self.assertIn("未发送解散命令", reply_text)
+        self.assertEqual({}, state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"])
 
     def test_lightweight_join_and_dissolve_use_latest_room(self):
         leader_id = self._register_replica_identity(991201, "leader")

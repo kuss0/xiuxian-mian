@@ -107,6 +107,40 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual(123, rows[0]["reply_to_msg_id"])
         self.assertEqual(456, rows[0]["topic_id"])
 
+    def test_game_group_edit_log_keeps_distinct_text_for_same_message(self):
+        first_edit = SimpleNamespace(
+            id=91002,
+            chat_id=-100910,
+            sender_id=7900199668,
+            raw_text="【坠魔心劫·第1轮已定】\n【坠魔心劫·第2轮】",
+            reply_to=SimpleNamespace(reply_to_msg_id=123, reply_to_top_id=456),
+            message=SimpleNamespace(buttons=[]),
+        )
+        second_edit = SimpleNamespace(
+            id=91002,
+            chat_id=-100910,
+            sender_id=7900199668,
+            raw_text="【坠魔心劫·第2轮已定】\n【坠魔心劫·第3轮】",
+            reply_to=SimpleNamespace(reply_to_msg_id=123, reply_to_top_id=456),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(app_message_log, "MESSAGES_DIR", tmpdir), \
+                patch.object(app_message_log, "get_game_group_id", return_value=-100910):
+            app_message_log._append_game_group_message_log(first_edit, event_type="edit")
+            app_message_log._append_game_group_message_log(second_edit, event_type="edit")
+            app_message_log._append_game_group_message_log(second_edit, event_type="edit")
+            rows = [
+                json.loads(line)
+                for line in next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(2, len(rows))
+        self.assertEqual([91002, 91002], [row["message_id"] for row in rows])
+        self.assertIn("第2轮", rows[0]["text"])
+        self.assertIn("第3轮", rows[1]["text"])
+
     def test_replica_group_message_log_deduplicates_but_still_claims_group(self):
         listener_client = SimpleNamespace(name="listener")
         event = SimpleNamespace(

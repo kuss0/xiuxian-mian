@@ -37,6 +37,20 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 8, state_module.state["stargazer_followup_due_at"])
             self.assertEqual(0, state_module.state["next_stargazer_panel_time"])
 
+    def test_panel_parser_accepts_collectible_slot_wording(self):
+        text = (
+            "【星宫 · 观星台】 (引星盘总数: 2座)\n\n"
+            "1号引星盘: 庚金星 - 可收集 💎\n"
+            "2号引星盘: 庚金星 - 精华已成 💎"
+        )
+
+        parsed = stargazer._parse_stargazer_panel(text)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(2, parsed["total_slots"])
+        self.assertEqual(2, parsed["ready_slot_count"])
+        self.assertTrue(parsed["all_ready"])
+
     async def test_scheduler_uses_durable_queued_action_when_last_action_changes(self):
         now = 1000.0
         identity_id = 3756719391

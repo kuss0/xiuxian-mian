@@ -51,11 +51,19 @@ RE_SMALL_WORLD_PREACH_PANEL = re.compile(r"【神音浩荡】")
 RE_SMALL_WORLD_FAITH_VALUE = re.compile(r"信仰值大幅提升至\s*(\d+)\s*[！!]")
 
 RE_SMALL_WORLD_PANEL = re.compile(r"【(?P<owner>[^】]+)的小世界】")
+RE_TEMPLE = re.compile(r"神庙\s*[:：]\s*Lv\.(\d+)(?:【([^】]+)】)?")
+RE_POPULATION = re.compile(r"人口\s*[:：]\s*(\d+)\s*人")
+RE_CAPACITY = re.compile(r"承载上限\s*[:：]\s*(\d+)\s*人")
 RE_PANEL_FAITH = re.compile(r"信仰\s*[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_STABILITY = re.compile(r"稳定\s*[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_PENDING_INCENSE = re.compile(r"待收香火\s*[:：]\s*([0-9]+(?:\.[0-9]+)?)")
 RE_INCENSE_STOCK = re.compile(r"香火库存\s*[:：]\s*(\d+)")
+RE_INCENSE_OUTPUT = re.compile(r"预计产出\s*[:：]\s*([0-9]+(?:\.[0-9]+)?)\s*香火/小时")
+RE_BARRIER_STATUS = re.compile(r"护界禁制\s*[:：]\s*([^\n]+)")
+RE_SPIRITUAL_STRENGTH = re.compile(r"神识强度\s*[:：]\s*(\d+)")
 RE_PRAYER = re.compile(r"凡人祈愿\s*[：:]\s*([^\n]+)")
 RE_PRAYER_WAIT = re.compile(r"下一次祈愿感应需等待\s*[：:]\s*([^\n)）]+)")
+RE_NEXT_TEMPLE_COST = re.compile(r"下一阶【([^】]+)】消耗\s*[:：]\s*([^\n]+)")
 RE_MANIFEST_COST = re.compile(r"显灵消耗\s*[:：]\s*([^\n]+)")
 RE_HARVEST_STOCK = re.compile(r"当前香火库存\s*[:：]\s*(\d+)")
 RE_REFINE_BURNED = re.compile(r"燃烧了\s*(\d+)\s*点香火")
@@ -220,12 +228,51 @@ def _has_active_small_world_pending(now):
     return reply_to_msg_id > 0 and deadline > now
 
 
+def _int_match(pattern, raw_text, default=0):
+    matched = pattern.search(raw_text)
+    if not matched:
+        return default
+    try:
+        return int(matched.group(1))
+    except (TypeError, ValueError):
+        return default
+
+
+def _float_match(pattern, raw_text, default=0.0):
+    matched = pattern.search(raw_text)
+    if not matched:
+        return default
+    try:
+        return float(matched.group(1))
+    except (TypeError, ValueError):
+        return default
+
+
+def _apply_small_world_panel_snapshot(now, panel):
+    state["small_world_last_panel_at"] = float(now)
+    state["small_world_faith_value"] = int(panel.get("faith", 0) or 0)
+    state["small_world_pending_incense"] = float(panel.get("pending_incense", 0) or 0)
+    state["small_world_incense_stock"] = int(panel.get("stock", 0) or 0)
+    snapshot = dict(panel)
+    snapshot.pop("realm_blocked", None)
+    snapshot["updated_at"] = float(now)
+    state["small_world_panel_snapshot"] = snapshot
+
+
 def _parse_small_world_panel(text):
     raw_text = str(text or "")
     if "境界不足" in raw_text and "紫府小世界" in raw_text:
         return {"realm_blocked": True}
-    if not RE_SMALL_WORLD_PANEL.search(raw_text):
+    owner_matched = RE_SMALL_WORLD_PANEL.search(raw_text)
+    if not owner_matched:
         return None
+
+    temple_level = 0
+    temple_name = ""
+    matched = RE_TEMPLE.search(raw_text)
+    if matched:
+        temple_level = int(matched.group(1))
+        temple_name = (matched.group(2) or "").strip()
 
     faith = 0
     faith_max = 0
@@ -234,17 +281,15 @@ def _parse_small_world_panel(text):
         faith = int(matched.group(1))
         faith_max = int(matched.group(2))
 
-    pending_incense = 0.0
-    matched = RE_PENDING_INCENSE.search(raw_text)
+    stability = 0
+    stability_max = 0
+    matched = RE_STABILITY.search(raw_text)
     if matched:
-        pending_incense = float(matched.group(1))
-
-    stock = 0
-    matched = RE_INCENSE_STOCK.search(raw_text)
-    if matched:
-        stock = int(matched.group(1))
+        stability = int(matched.group(1))
+        stability_max = int(matched.group(2))
 
     wait_sec = 0
+    wait_text = ""
     matched = RE_PRAYER_WAIT.search(raw_text)
     if matched:
         wait_text = matched.group(1)
@@ -253,17 +298,32 @@ def _parse_small_world_panel(text):
 
     prayer_matched = RE_PRAYER.search(raw_text)
     cost_matched = RE_MANIFEST_COST.search(raw_text)
+    next_temple_matched = RE_NEXT_TEMPLE_COST.search(raw_text)
+    barrier_matched = RE_BARRIER_STATUS.search(raw_text)
     return {
         "realm_blocked": False,
+        "owner": owner_matched.group("owner").strip(),
+        "temple_level": temple_level,
+        "temple_name": temple_name,
+        "population": _int_match(RE_POPULATION, raw_text),
+        "capacity": _int_match(RE_CAPACITY, raw_text),
         "faith": faith,
         "faith_max": faith_max,
-        "pending_incense": pending_incense,
-        "stock": stock,
+        "stability": stability,
+        "stability_max": stability_max,
+        "pending_incense": _float_match(RE_PENDING_INCENSE, raw_text),
+        "stock": _int_match(RE_INCENSE_STOCK, raw_text),
+        "hourly_output": _float_match(RE_INCENSE_OUTPUT, raw_text),
+        "barrier_status": barrier_matched.group(1).strip() if barrier_matched else "",
+        "spiritual_strength": _int_match(RE_SPIRITUAL_STRENGTH, raw_text),
         "has_prayer": bool(prayer_matched),
         "prayer_name": prayer_matched.group(1).strip() if prayer_matched else "",
         "manifest_cost": cost_matched.group(1).strip() if cost_matched else "",
         "wait_sec": wait_sec,
+        "wait_text": wait_text.strip(),
         "has_wait": wait_sec > 0,
+        "next_temple_name": next_temple_matched.group(1).strip() if next_temple_matched else "",
+        "next_temple_cost": next_temple_matched.group(2).strip() if next_temple_matched else "",
     }
 
 
@@ -387,11 +447,8 @@ async def _send_harvest(now):
 
     _set_phase("harvest_sent")
     state["small_world_harvest_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    estimated_stock = int(state.get("small_world_incense_stock", 0) or 0) + int(float(state.get("small_world_pending_incense", 0) or 0))
-    state["small_world_incense_stock"] = max(0, estimated_stock)
-    state["small_world_pending_incense"] = 0
     _schedule_tool_step(sent_at)
-    state["small_world_last_error"] = ""
+    state["small_world_last_error"] = "收割香火已发送，等待回执确认"
     save_state()
     return True
 
@@ -414,9 +471,8 @@ async def _send_refine(now, amount):
 
     _set_phase("refine_sent")
     state["small_world_refine_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    state["small_world_incense_stock"] = max(0, int(state.get("small_world_incense_stock", 0) or 0) - amount)
     _schedule_tool_step(sent_at)
-    state["small_world_last_error"] = ""
+    state["small_world_last_error"] = "神识淬炼已发送，等待回执确认"
     save_state()
     return True
 
@@ -465,10 +521,7 @@ async def _handle_panel_decision(now, panel):
     if panel.get("realm_blocked"):
         return await _disable_for_realm("境界不足")
 
-    state["small_world_last_panel_at"] = float(now)
-    state["small_world_faith_value"] = int(panel.get("faith", 0) or 0)
-    state["small_world_pending_incense"] = float(panel.get("pending_incense", 0) or 0)
-    state["small_world_incense_stock"] = int(panel.get("stock", 0) or 0)
+    _apply_small_world_panel_snapshot(now, panel)
 
     if panel.get("has_prayer"):
         state["small_world_refresh_count"] = 0
@@ -518,6 +571,9 @@ def get_small_world_status_text():
     faith_value = int(state.get("small_world_faith_value", 0) or 0)
     preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
     next_time = float(state.get("next_small_world_time", 0) or 0)
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
     lines = [
         "🌍 小世界",
         f"- 已启用：{'是' if state.get('small_world_enabled') else '否'}",
@@ -530,11 +586,41 @@ def get_small_world_status_text():
         f"- 当前信仰：{faith_value if faith_value > 0 else '未记录'}",
         f"- 待收香火：{state.get('small_world_pending_incense', 0) or 0}",
         f"- 香火库存：{state.get('small_world_incense_stock', 0) or 0}",
+    ]
+    if snapshot:
+        temple_parts = []
+        if snapshot.get("owner"):
+            temple_parts.append(str(snapshot.get("owner")))
+        if snapshot.get("temple_level"):
+            temple_text = f"Lv.{int(snapshot.get('temple_level') or 0)}"
+            if snapshot.get("temple_name"):
+                temple_text += f"【{snapshot.get('temple_name')}】"
+            temple_parts.append(temple_text)
+        if temple_parts:
+            lines.append(f"- 神庙：{' / '.join(temple_parts)}")
+        if snapshot.get("population") or snapshot.get("capacity"):
+            lines.append(f"- 人口：{int(snapshot.get('population') or 0)} / {int(snapshot.get('capacity') or 0)}")
+        if snapshot.get("stability") or snapshot.get("stability_max"):
+            lines.append(f"- 稳定：{int(snapshot.get('stability') or 0)} / {int(snapshot.get('stability_max') or 0)}")
+        if snapshot.get("hourly_output"):
+            lines.append(f"- 预计产出：{float(snapshot.get('hourly_output') or 0):.2f} 香火/小时")
+        if snapshot.get("barrier_status"):
+            lines.append(f"- 护界禁制：{snapshot.get('barrier_status')}")
+        if snapshot.get("spiritual_strength"):
+            lines.append(f"- 神识强度：{int(snapshot.get('spiritual_strength') or 0)}")
+        if snapshot.get("prayer_name"):
+            cost_text = f"（{snapshot.get('manifest_cost')}）" if snapshot.get("manifest_cost") else ""
+            lines.append(f"- 当前祈愿：{snapshot.get('prayer_name')}{cost_text}")
+        elif snapshot.get("wait_text"):
+            lines.append(f"- 祈愿感应：{snapshot.get('wait_text')}")
+        if snapshot.get("next_temple_name") or snapshot.get("next_temple_cost"):
+            lines.append(f"- 下一阶：{snapshot.get('next_temple_name') or '未记录'} / {snapshot.get('next_temple_cost') or '未记录'}")
+    lines.extend([
         f"- 本轮刷新：{int(state.get('small_world_refresh_count', 0) or 0)}/{SMALL_WORLD_MAX_REFRESH_ATTEMPTS}",
         f"- 待布道消息ID：{preach_msg_id or '无'}",
         f"- 下次动作：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）",
         f"- 最近错误：{state.get('small_world_last_error') or '无'}",
-    ]
+    ])
     return "\n".join(lines)
 
 
@@ -544,6 +630,7 @@ def clear_small_world_state(*, persist=False, keep_last_error=False):
     state["small_world_faith_value"] = 0
     state["small_world_pending_incense"] = 0
     state["small_world_incense_stock"] = 0
+    state["small_world_panel_snapshot"] = {}
     state["small_world_last_panel_at"] = 0
     clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | {CMD_SMALL_WORLD_PREACH}, send_as_id=get_current_identity_id())
     if not keep_last_error:
@@ -838,10 +925,8 @@ async def _run_small_world_scheduler(now):
         next_time = float(state.get("next_small_world_time", 0) or 0)
         if next_time > 0 and now < next_time:
             return
-        refine_amount = _calc_refine_amount(state.get("small_world_incense_stock", 0))
-        if state.get("small_world_refine_enabled") and refine_amount >= 10:
-            await _send_refine(now, refine_amount)
-            return
+        _clear_chain_pending()
+        state["small_world_last_error"] = "收割香火未收到可解析回执，复查面板校准"
         await _send_query(now, "收割后复查")
         return
 
@@ -849,6 +934,8 @@ async def _run_small_world_scheduler(now):
         next_time = float(state.get("next_small_world_time", 0) or 0)
         if next_time > 0 and now < next_time:
             return
+        _clear_chain_pending()
+        state["small_world_last_error"] = "神识淬炼未收到可解析回执，复查面板校准"
         await _send_query(now, "淬炼后复查")
         return
 

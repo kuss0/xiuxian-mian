@@ -29,8 +29,12 @@ from .config import (
     REPLICA_FAILURE_GRACE_SEC,
     REPLICA_SUCCESS_COOLDOWN_SEC,
     TZ_LOCAL,
+    get_account_offline_reason,
     get_all_clients,
+    get_registered_client,
+    is_account_offline,
 )
+from .features.dungeon_quiet import format_dungeon_quiet_until, get_dungeon_quiet_reason, is_dungeon_quiet_active
 from .features.storage_bag import apply_storage_bag_item_deltas
 from .persistence import mark_dirty
 from .replica_query_aggregator_client import (
@@ -45,12 +49,15 @@ from .runtime import (
     mono,
     send_audit_log,
     send_game_command,
+    should_pause_for_bot_health,
 )
 from .state import (
     REALM_SORT_ORDER,
+    get_global_enabled,
     get_identity_account,
     get_identity_enabled,
     get_identity_ids,
+    get_identity_state,
     get_replica_gold_dps_enabled,
     get_replica_dispatch_listener_account_map,
     get_replica_dispatch_participant_identity_ids,
@@ -64,7 +71,7 @@ from .state import (
     resolve_identity_selector,
     set_replica_run_state,
 )
-from .timing import fmt_time_after, parse_wait_time
+from .timing import fmt_abs_ts, fmt_remaining, fmt_time_after, parse_wait_time
 
 _REPLICA_KIND_VIRTUAL_HALL = "virtual_hall"
 _REPLICA_KIND_ZHUIMO = "zhuimo"
@@ -134,7 +141,8 @@ _REPLICA_JOINED_RE = re.compile(
 )
 _REPLICA_ROOM_GUA_TTL_SEC = 6 * 60 * 60
 _REPLICA_ROOM_GUA_MAX_PER_KIND = 100
-_VIRTUAL_HALL_MATCH_QUERY_WAIT_SEC = 10
+_VIRTUAL_HALL_MATCH_QUERY_WAIT_SEC = 15
+_VIRTUAL_HALL_MATCH_QUERY_POLL_SEC = 0.5
 _VIRTUAL_HALL_MATCH_LOG_WINDOW_SEC = 20
 _VIRTUAL_HALL_OPEN_COMMAND = ".开启虚天殿"
 _VIRTUAL_HALL_KICK_COMMAND = ".请离"
@@ -504,10 +512,34 @@ def _format_lightweight_existing_open_notice(flow, *, html=False):
     leader = flow.get("leader_username") or flow.get("selector") or ""
     lines = [
         f"已有{replica_name}开房请求：{leader or '未知队长'}，未重复发送开房命令。",
-        "等开房广播出现后再加入；如果要换人开房，先解散当前房间。",
+        "等开房广播出现后再加入；如果确认开房指令被吞，可先解散副本取消等待。",
         _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=html),
     ]
     return "\n".join(line for line in lines if line)
+
+
+def _format_lightweight_cancel_open_notice(flow, *, html=False):
+    flow = flow if isinstance(flow, dict) else {}
+    replica_kind = flow.get("replica_kind")
+    replica_name = (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本"
+    leader = flow.get("leader_username") or flow.get("selector") or ""
+    lines = [
+        f"已取消等待中的{replica_name}开房请求" + (f"：{leader}" if leader else "") + "。",
+        "未发送解散命令；当前还没有记录到可解散的房间。",
+        _format_lightweight_next_commands(".查询副本", ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>", html=html),
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def _is_lightweight_open_flow_active(flow, now=None):
+    if not isinstance(flow, dict):
+        return False
+    now = float(now or time.time())
+    try:
+        expires_at = float(flow.get("expires_at") or 0)
+    except (TypeError, ValueError):
+        expires_at = 0.0
+    return expires_at <= 0 or now < expires_at
 
 
 def _format_lightweight_existing_room_notice(room, *, html=False):
@@ -528,6 +560,97 @@ def _format_lightweight_existing_room_notice(room, *, html=False):
             _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=html),
         ]
     return "\n".join(line for line in lines if line)
+
+
+def _format_lightweight_dissolve_pending_notice(room, *, html=False):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    replica_name = (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本"
+    room_id = str(room.get("room_id") or "-")
+    lines = [
+        f"{replica_name}房间 {room_id} 已请求解散，未重复发送解散命令。",
+        _format_lightweight_next_commands(".查询副本", html=html),
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def _reserve_lightweight_room_dissolve(room, now=None, *, source="", source_msg_id=0):
+    room = room if isinstance(room, dict) else {}
+    chat_id = int(room.get("replica_chat_id") or 0)
+    room_id = str(room.get("room_id") or "").strip()
+    replica_kind = room.get("replica_kind")
+    leader_identity_id = int(room.get("leader_identity_id") or 0)
+    if chat_id == 0 or not room_id or replica_kind not in _REPLICA_KINDS or leader_identity_id <= 0:
+        return "missing", {}
+    now = float(now or time.time())
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    current = rooms.get(str(chat_id))
+    if not isinstance(current, dict):
+        return "missing", {}
+    if (
+        str(current.get("room_id") or "").strip() != room_id
+        or current.get("replica_kind") != replica_kind
+        or int(current.get("leader_identity_id") or 0) != leader_identity_id
+    ):
+        return "missing", dict(current)
+    phase = str(current.get("phase") or "")
+    if phase == "dissolve_requested":
+        return "pending", dict(current)
+    if phase in {"dissolved", "entered"}:
+        return "closed", dict(current)
+    current.update({
+        "phase": "dissolve_requested",
+        "dissolve_previous_phase": phase or "opened",
+        "dissolve_requested_at": now,
+        "dissolve_source": str(source or ""),
+        "dissolve_source_msg_id": int(source_msg_id or 0),
+        "updated_at": now,
+    })
+    rooms[str(chat_id)] = current
+    state_item["last_room_by_chat"] = rooms
+    _save_lightweight_dungeon_state(state_item)
+    room.update(current)
+    return "reserved", dict(current)
+
+
+def _finish_lightweight_room_dissolve_send(room, msg_id=0, now=None, *, error=""):
+    room = room if isinstance(room, dict) else {}
+    chat_id = int(room.get("replica_chat_id") or 0)
+    room_id = str(room.get("room_id") or "").strip()
+    replica_kind = room.get("replica_kind")
+    if chat_id == 0 or not room_id or replica_kind not in _REPLICA_KINDS:
+        return False
+    now = float(now or time.time())
+    state_item = _get_lightweight_dungeon_state()
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    current = rooms.get(str(chat_id))
+    if not isinstance(current, dict):
+        return False
+    if str(current.get("room_id") or "").strip() != room_id or current.get("replica_kind") != replica_kind:
+        return False
+    msg_id = int(msg_id or 0)
+    if msg_id > 0:
+        current.update({
+            "phase": "dissolve_requested",
+            "dissolve_msg_id": msg_id,
+            "updated_at": now,
+            "last_error": "",
+        })
+    else:
+        previous_phase = str(current.get("dissolve_previous_phase") or "opened")
+        if previous_phase in {"dissolve_requested", "dissolved", "entered"}:
+            previous_phase = "opened"
+        current.update({
+            "phase": previous_phase,
+            "updated_at": now,
+            "last_error": str(error or "解散命令发送失败"),
+        })
+    rooms[str(chat_id)] = current
+    state_item["last_room_by_chat"] = rooms
+    _save_lightweight_dungeon_state(state_item)
+    room.update(current)
+    return True
 
 
 def _mark_lightweight_room_recommendation_sent(room, now=None):
@@ -697,13 +820,18 @@ def _get_replica_ticket_counts(identity_id):
     return {replica_kind: _get_replica_ticket_kind_count(identity_id, replica_kind) for replica_kind in _REPLICA_KINDS}
 
 
-def _has_openable_replica_ticket(identity_id):
-    for replica_kind in _REPLICA_KINDS:
+def _get_openable_replica_kinds(identity_id):
+    openable_kinds = []
+    for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
         if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
             continue
         if _get_replica_ticket_kind_count(identity_id, replica_kind) > 0:
-            return True
-    return False
+            openable_kinds.append(replica_kind)
+    return openable_kinds
+
+
+def _has_openable_replica_ticket(identity_id):
+    return bool(_get_openable_replica_kinds(identity_id))
 
 
 def _resolve_replica_kind_alias(text):
@@ -712,7 +840,9 @@ def _resolve_replica_kind_alias(text):
         return ""
     for replica_kind, meta in _REPLICA_TICKET_META.items():
         aliases = set(meta.get("aliases") or ())
-        aliases.add((_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "")
+        kind_meta = _REPLICA_KIND_META.get(replica_kind) or {}
+        aliases.add(kind_meta.get("name") or "")
+        aliases.add(kind_meta.get("short") or "")
         if raw_text in aliases:
             return replica_kind
     return ""
@@ -726,12 +856,8 @@ def _select_open_replica_kind(identity_id, requested_kind=""):
         if requested_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
             return ""
         return requested_kind
-    for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
-        if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
-            continue
-        if _get_replica_ticket_kind_count(identity_id, replica_kind) > 0:
-            return replica_kind
-    return ""
+    openable_kinds = _get_openable_replica_kinds(identity_id)
+    return openable_kinds[0] if len(openable_kinds) == 1 else ""
 
 
 def _get_replica_listener_account_ids():
@@ -841,6 +967,52 @@ def _format_lightweight_reply_text(text, *, html=False):
     return escape(str(text or "")) if html else str(text or "")
 
 
+def _get_replica_identity_block_reason(identity_id, *, now=None):
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError):
+        return "身份无效"
+    if identity_id <= 0:
+        return "身份无效"
+    if not get_identity_enabled(identity_id):
+        return "身份未启用"
+    if not get_global_enabled():
+        return "全局暂停"
+    if is_dungeon_quiet_active(now):
+        quiet_reason = get_dungeon_quiet_reason() or "副本静场令"
+        return f"{quiet_reason}生效中，恢复 {format_dungeon_quiet_until()}"
+    account_id = int(get_identity_account(identity_id) or 0)
+    if account_id and is_account_offline(account_id):
+        offline_reason = get_account_offline_reason(account_id) or "账号离线"
+        return f"账号离线:{offline_reason}"
+    if account_id and get_registered_client(account_id) is None:
+        return f"账号未连接:acc={account_id}"
+    try:
+        if should_pause_for_bot_health():
+            return "天尊静默/暂停"
+    except Exception:
+        traceback.print_exc()
+    try:
+        identity_state = get_identity_state(identity_id)
+    except Exception:
+        return ""
+    try:
+        weak_until = float(identity_state.get("weak_until", 0) or 0)
+    except (TypeError, ValueError):
+        weak_until = 0.0
+    now = float(now or time.time())
+    if weak_until > now:
+        weak_label = "静思悟道" if str(identity_state.get("weak_source") or "") == "jingsi" else "虚弱状态"
+        return f"{weak_label}至 {fmt_abs_ts(weak_until)}（{fmt_remaining(weak_until)}）"
+    return ""
+
+
+def _format_replica_skipped_selector(selector, reason=""):
+    selector = str(selector or "").strip() or "未知身份"
+    reason = str(reason or "").strip()
+    return f"{selector}({reason})" if reason else selector
+
+
 def _format_lightweight_join_command_for_room(room, selectors="@用户名 @用户名"):
     if not room:
         return ""
@@ -856,6 +1028,16 @@ def _format_lightweight_open_command_for_identity(identity_id, replica_kind=""):
     selector = username or str(identity_id)
     kind_text = (_REPLICA_KIND_META.get(replica_kind) or {}).get("short") or (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or ""
     return f".开启副本 {selector}" + (f" {kind_text}" if kind_text else "")
+
+
+def _format_lightweight_open_commands_for_identity(identity_id, *, html=False):
+    return _format_lightweight_command_lines(
+        *[
+            _format_lightweight_open_command_for_identity(identity_id, replica_kind)
+            for replica_kind in _get_openable_replica_kinds(identity_id)
+        ],
+        html=html,
+    )
 
 
 def _format_lightweight_open_command_sections(*, html=False, limit_per_kind=8, now=None, records=None):
@@ -2048,6 +2230,25 @@ def _find_replica_query_log_candidates(query_msg_id, query_sent_at, wait_sec=_VI
         if parsed:
             candidates.extend(parsed)
     return _dedupe_replica_query_candidates(candidates)
+
+
+async def _wait_replica_query_log_candidates(query_msg_id, query_sent_at, timeout_sec, chat_id=0):
+    deadline = time.time() + max(0.0, float(timeout_sec or 0))
+    poll_sec = max(0.1, float(_VIRTUAL_HALL_MATCH_QUERY_POLL_SEC))
+    while True:
+        elapsed = max(0.0, time.time() - float(query_sent_at or 0))
+        candidates = _find_replica_query_log_candidates(
+            query_msg_id,
+            query_sent_at,
+            wait_sec=elapsed,
+            chat_id=chat_id,
+        )
+        if candidates:
+            return candidates
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return []
+        await asyncio.sleep(min(poll_sec, remaining))
 
 
 def _expand_virtual_hall_gua_slots(requirements):
@@ -3310,7 +3511,7 @@ async def _maybe_submit_replica_query_reply_to_aggregator(
         query_message_id = 0
     if query_message_id <= 0:
         console_log("副本查询汇聚提交失败：缺少 query_message_id", scope="global", limit=180)
-        return True
+        return False
     source_chat_id = _coerce_replica_metadata_int(source_chat_id)
     source_message_id = _coerce_replica_metadata_int(source_message_id or query_message_id)
     listener_account_id = _coerce_replica_metadata_int(listener_account_id)
@@ -3334,13 +3535,14 @@ async def _maybe_submit_replica_query_reply_to_aggregator(
         session_id = str(response.get("session_id") or f"msg:{query_message_id}")
         accepted_lines = int(response.get("accepted_lines") or 0)
         console_log(f"已提交副本查询结果到汇聚服务：{session_id} lines={accepted_lines}", scope="global", limit=180)
+        return True
     except Exception as exc:
         error_text = str(exc) or exc.__class__.__name__
         if isinstance(exc, ReplicaQueryAggregatorError):
             console_log(f"副本查询汇聚提交失败：{error_text}", scope="global", limit=240)
         else:
             console_log(f"副本查询汇聚提交异常：{error_text}", scope="global", limit=240)
-    return True
+    return False
 
 
 def _parse_replica_leader_username(text):
@@ -3745,13 +3947,36 @@ async def _maybe_send_virtual_hall_auto_missing_dispatch_command(flow, accountin
     if not eligible:
         return False
     command = f".虚天殿 {room_id} {' '.join(eligible)}"
-    msg = await _send_virtual_hall_auto_replica_notice(flow, command)
-    if not msg:
-        return False
     for username in eligible:
         item = requests.get(username)
         item = item if isinstance(item, dict) else {}
-        requests[username] = {"count": int(item.get("count") or 0) + 1, "last_sent_at": float(now or 0)}
+        requests[username] = {
+            "count": int(item.get("count") or 0) + 1,
+            "last_sent_at": float(now or 0),
+            "pending": True,
+        }
+    flow["missing_join_requests"] = requests
+    flow["updated_at"] = float(now or 0)
+    _upsert_virtual_hall_auto_flow(flow)
+
+    msg = await _send_virtual_hall_auto_replica_notice(flow, command)
+    if not msg:
+        for username in eligible:
+            item = requests.get(username)
+            if isinstance(item, dict):
+                item["count"] = max(0, int(item.get("count") or 0) - 1)
+                item["last_sent_at"] = 0
+                item["pending"] = False
+                item["send_failed_at"] = float(now or 0)
+        flow["missing_join_requests"] = requests
+        flow["updated_at"] = time.time()
+        _upsert_virtual_hall_auto_flow(flow)
+        return False
+    for username in eligible:
+        item = requests.get(username)
+        if isinstance(item, dict):
+            item["pending"] = False
+            item["msg_id"] = int(getattr(msg, "id", 0) or 0)
     flow["missing_join_requests"] = requests
     delay = _set_virtual_hall_auto_missing_check_after(flow, now, len(eligible))
     flow["updated_at"] = float(now or 0)
@@ -4109,7 +4334,7 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
             await _send_lightweight_replica_notice(
                 flow,
                 f"开启{escape(_REPLICA_KIND_META.get(flow.get('replica_kind'), {}).get('name') or '副本')}失败：{escape(open_failure)}\n\n"
-                + _format_lightweight_next_commands(".查询副本", retry_command or ".开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]", html=True),
+                + _format_lightweight_next_commands(".查询副本", retry_command or ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>", html=True),
                 html=True,
             )
             _remove_lightweight_open_flow(flow.get("flow_id"))
@@ -4212,13 +4437,14 @@ async def _submit_virtual_hall_match_text_to_aggregator(
         )
         message_ids = response.get("message_ids") or []
         console_log(f"已提交虚天殿推荐到汇聚服务：room={room_id} messages={len(message_ids)}", scope="global", limit=180)
+        return True
     except Exception as exc:
         error_text = str(exc) or exc.__class__.__name__
         if isinstance(exc, ReplicaQueryAggregatorError):
             console_log(f"虚天殿推荐汇聚提交失败：{error_text}", scope="global", limit=240)
         else:
             console_log(f"虚天殿推荐汇聚提交异常：{error_text}", scope="global", limit=240)
-    return True
+    return False
 
 
 async def _send_virtual_hall_match_text(client_obj, chat_id, text, listener_account_id=0, html=False, room_id="", query_message_id=0):
@@ -4266,10 +4492,13 @@ async def _run_virtual_hall_match(room_id, client_obj, chat_id, listener_account
             listener_account_id=listener_account_id,
             identity_id=listener_account_id,
         )
-    aggregator_configured = bool(_get_replica_query_aggregator_submit_config())
-    query_wait_sec = _VIRTUAL_HALL_MATCH_QUERY_WAIT_SEC + (5 if aggregator_configured else 0)
-    await asyncio.sleep(query_wait_sec)
-    candidates = _find_replica_query_log_candidates(query_message_id, query_sent_at, wait_sec=query_wait_sec, chat_id=chat_id)
+    query_wait_sec = _VIRTUAL_HALL_MATCH_QUERY_WAIT_SEC
+    candidates = await _wait_replica_query_log_candidates(
+        query_message_id,
+        query_sent_at,
+        timeout_sec=query_wait_sec,
+        chat_id=chat_id,
+    )
     if not candidates:
         await _send_virtual_hall_match_text(client_obj, chat_id, f"未在 {int(query_wait_sec)} 秒内解析到 .查询 结果，无法推荐虚天殿 {room_id}。", listener_account_id=listener_account_id)
         return
@@ -4340,7 +4569,34 @@ async def _run_lightweight_room_auto_dissolve(room_snapshot, delay):
         or current.get("phase") in {"dissolved", "dissolve_requested"}
     ):
         return False
+    reserve_status, current = _reserve_lightweight_room_dissolve(
+        current,
+        now,
+        source="auto",
+        source_msg_id=int(room_snapshot.get("recommendation_sent_opened_msg_id") or room_snapshot.get("opened_msg_id") or 0),
+    )
+    if reserve_status != "reserved":
+        return False
     command = (_REPLICA_TICKET_META.get(replica_kind) or {}).get("dissolve_command") or _VIRTUAL_HALL_DISSOLVE_COMMAND
+    blocked_reason = _get_replica_identity_block_reason(leader_identity_id, now=now)
+    if blocked_reason:
+        _finish_lightweight_room_dissolve_send(
+            current,
+            0,
+            now,
+            error=blocked_reason,
+        )
+        current.update({
+            "auto_dissolve_reason": room_snapshot.get("auto_dissolve_reason") or "no_dps",
+            "auto_dissolve_requested_at": current.get("auto_dissolve_requested_at"),
+        })
+        _set_lightweight_last_room(current)
+        await _send_lightweight_replica_notice(
+            current,
+            f"无DPS可用，自动解散命令未发送：{escape(blocked_reason)}\n\n" + _format_lightweight_next_commands(".解散副本", html=True),
+            html=True,
+        )
+        return False
     msg = await send_game_command(
         command,
         track=False,
@@ -4352,15 +4608,16 @@ async def _run_lightweight_room_auto_dissolve(room_snapshot, delay):
         ),
     )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
+    _finish_lightweight_room_dissolve_send(
+        current,
+        msg_id,
+        now,
+        error="无DPS自动解散命令发送失败",
+    )
     current.update({
-        "phase": "dissolve_requested" if msg_id > 0 else current.get("phase"),
         "auto_dissolve_reason": room_snapshot.get("auto_dissolve_reason") or "no_dps",
         "auto_dissolve_requested_at": now if msg_id > 0 else current.get("auto_dissolve_requested_at"),
-        "dissolve_msg_id": msg_id or current.get("dissolve_msg_id") or 0,
-        "updated_at": now,
     })
-    if msg_id <= 0:
-        current["last_error"] = "无DPS自动解散命令发送失败"
     _set_lightweight_last_room(current)
     if msg_id > 0:
         await _send_lightweight_replica_notice(
@@ -4369,7 +4626,8 @@ async def _run_lightweight_room_auto_dissolve(room_snapshot, delay):
             html=True,
         )
     else:
-        await _send_lightweight_replica_notice(current, "无DPS可用，自动解散命令发送失败。\n\n" + _format_lightweight_next_commands(".解散副本", html=True), html=True)
+        blocked_reason = _get_replica_identity_block_reason(leader_identity_id) or "发送失败"
+        await _send_lightweight_replica_notice(current, f"无DPS可用，自动解散命令发送失败：{escape(blocked_reason)}\n\n" + _format_lightweight_next_commands(".解散副本", html=True), html=True)
     return msg_id > 0
 
 
@@ -4510,7 +4768,7 @@ async def _handle_lightweight_open_command(event):
         return True
     selector, requested_kind = _parse_lightweight_open_command(raw_text)
     if not selector:
-        text = "用法：.开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+        text = "用法：.开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
     identity_id = _resolve_replica_command_identity(selector)
@@ -4523,6 +4781,17 @@ async def _handle_lightweight_open_command(event):
         ticket_text = _format_replica_ticket_counts(identity_id) or "无可用门票"
         requested_text = _REPLICA_KIND_META.get(requested_kind, {}).get("name") if requested_kind else "副本"
         reason_text = ticket_text
+        openable_kinds = _get_openable_replica_kinds(identity_id)
+        if not requested_kind and len(openable_kinds) > 1:
+            open_commands = _format_lightweight_open_commands_for_identity(identity_id, html=True)
+            text = (
+                f"{escape(selector)} 有多种可开副本（{escape(ticket_text)}），请指定类型，避免默认误开虚天殿。\n\n"
+                "可复制开房命令：\n"
+                f"{open_commands}\n\n"
+                + _format_lightweight_next_commands(".查询副本", html=True)
+            )
+            await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+            return True
         if (
             (requested_kind == _REPLICA_KIND_CANGKUN or not requested_kind)
             and _get_replica_ticket_kind_count(identity_id, _REPLICA_KIND_CANGKUN) > 0
@@ -4542,9 +4811,11 @@ async def _handle_lightweight_open_command(event):
         return True
     active_flow = _find_active_lightweight_open_flow(chat_id, now=now)
     if active_flow:
-        text = _format_lightweight_existing_open_notice(active_flow, html=True)
-        await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
-        return True
+        if _is_lightweight_open_flow_active(active_flow, now=now):
+            text = _format_lightweight_existing_open_notice(active_flow, html=True)
+            await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+            return True
+        _remove_lightweight_open_flow(active_flow.get("flow_id"))
     flow = {
         "flow_id": _make_lightweight_flow_id(chat_id, identity_id, now),
         "phase": "opening",
@@ -4563,6 +4834,15 @@ async def _handle_lightweight_open_command(event):
     }
     _upsert_lightweight_open_flow(flow)
     command = (_REPLICA_TICKET_META.get(replica_kind) or {}).get("open_command")
+    blocked_reason = _get_replica_identity_block_reason(identity_id, now=now)
+    if blocked_reason:
+        _remove_lightweight_open_flow(flow.get("flow_id"))
+        text = (
+            f"{escape(command)} 未发送：{escape(selector)}（{escape(blocked_reason)}）\n\n"
+            + _format_lightweight_next_commands(_format_lightweight_open_command_for_identity(identity_id, replica_kind), html=True)
+        )
+        await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+        return True
     msg = await send_game_command(
         command,
         track=False,
@@ -4576,7 +4856,8 @@ async def _handle_lightweight_open_command(event):
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
         _remove_lightweight_open_flow(flow.get("flow_id"))
-        text = f"{escape(command)} 发送失败：{escape(selector)}\n\n" + _format_lightweight_next_commands(_format_lightweight_open_command_for_identity(identity_id, replica_kind), html=True)
+        blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送失败"
+        text = f"{escape(command)} 发送失败：{escape(selector)}（{escape(blocked_reason)}）\n\n" + _format_lightweight_next_commands(_format_lightweight_open_command_for_identity(identity_id, replica_kind), html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
     flow.update({"open_command_msg_id": msg_id, "updated_at": time.time()})
@@ -4620,7 +4901,7 @@ async def _handle_lightweight_join_command(event):
         return True
     room = _get_lightweight_last_room(int(getattr(event, "chat_id", 0) or 0), now=time.time())
     if not room:
-        text = "没有已记录的副本房间，请先开房。\n\n" + _format_lightweight_next_commands(".查询副本", ".开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]", html=True)
+        text = "没有已记录的副本房间，请先开房。\n\n" + _format_lightweight_next_commands(".查询副本", ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
     selectors = _parse_lightweight_join_usernames(raw_text)
@@ -4637,15 +4918,22 @@ async def _handle_lightweight_join_command(event):
     seen_identity_ids = set()
     for selector in selectors:
         identity_id = _resolve_replica_command_identity(selector)
-        if identity_id <= 0 or not get_identity_enabled(identity_id):
-            skipped.append(selector)
+        if identity_id <= 0:
+            skipped.append(_format_replica_skipped_selector(selector, "未找到身份"))
+            continue
+        if not get_identity_enabled(identity_id):
+            skipped.append(_format_replica_skipped_selector(selector, "身份未启用"))
             continue
         if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
-            skipped.append(f"{selector}({_format_cangkun_realm_requirement(identity_id)})")
+            skipped.append(_format_replica_skipped_selector(selector, _format_cangkun_realm_requirement(identity_id)))
             continue
         if identity_id == leader_identity_id or identity_id in seen_identity_ids:
             continue
         seen_identity_ids.add(identity_id)
+        blocked_reason = _get_replica_identity_block_reason(identity_id)
+        if blocked_reason:
+            skipped.append(_format_replica_skipped_selector(selector, blocked_reason))
+            continue
         msg = await send_game_command(
             command,
             track=False,
@@ -4659,11 +4947,13 @@ async def _handle_lightweight_join_command(event):
         if msg:
             sent_usernames.append(_normalize_replica_username(get_send_as_profile(identity_id).get("username") or selector))
         else:
-            skipped.append(selector)
+            blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送失败"
+            skipped.append(_format_replica_skipped_selector(selector, blocked_reason))
     room["join_requested_usernames"] = _normalize_replica_username_list((room.get("join_requested_usernames") or []) + sent_usernames)
     room["updated_at"] = time.time()
     _set_lightweight_last_room(room)
-    summary = f"已发送加入{_REPLICA_KIND_META[replica_kind]['name']} {room_id}：{' '.join(sent_usernames) if sent_usernames else '无'}"
+    action_label = "已发送加入" if sent_usernames else "未发送加入"
+    summary = f"{action_label}{_REPLICA_KIND_META[replica_kind]['name']} {room_id}：{' '.join(sent_usernames) if sent_usernames else '无'}"
     if skipped:
         summary += f"\n未发送：{' '.join(skipped)}"
     summary = escape(summary)
@@ -4681,8 +4971,16 @@ async def _handle_lightweight_dissolve_command(event):
         return False
     if not _claim_runtime_event(event, scope="replica_lightweight_dissolve"):
         return True
-    room = _get_lightweight_last_room(int(getattr(event, "chat_id", 0) or 0), now=time.time())
+    now = time.time()
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    room = _get_lightweight_last_room(chat_id, now=now)
     if not room:
+        active_flow = _find_active_lightweight_open_flow(chat_id, now=now)
+        if active_flow:
+            _remove_lightweight_open_flow(active_flow.get("flow_id"))
+            text = _format_lightweight_cancel_open_notice(active_flow, html=True)
+            await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+            return True
         text = "没有已记录的副本房间可解散。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
@@ -4690,7 +4988,31 @@ async def _handle_lightweight_dissolve_command(event):
     command = (_REPLICA_TICKET_META.get(replica_kind) or {}).get("dissolve_command")
     leader_identity_id = int(room.get("leader_identity_id") or 0)
     if leader_identity_id <= 0:
-        text = "已记录副本房间，但缺少开房身份，不能自动解散。\n\n" + _format_lightweight_next_commands(".查询副本", ".开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]", html=True)
+        text = "已记录副本房间，但缺少开房身份，不能自动解散。\n\n" + _format_lightweight_next_commands(".查询副本", ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>", html=True)
+        await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+        return True
+    reserve_status, room = _reserve_lightweight_room_dissolve(
+        room,
+        now,
+        source="manual",
+        source_msg_id=int(getattr(event, "id", 0) or 0),
+    )
+    if reserve_status == "pending":
+        text = _format_lightweight_dissolve_pending_notice(room, html=True)
+        await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+        return True
+    if reserve_status == "closed":
+        text = "该副本房间已结束，未重复发送解散命令。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+        await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+        return True
+    if reserve_status != "reserved":
+        text = "没有已记录的副本房间可解散。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+        await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
+        return True
+    blocked_reason = _get_replica_identity_block_reason(leader_identity_id, now=now)
+    if blocked_reason:
+        _finish_lightweight_room_dissolve_send(room, 0, time.time(), error=blocked_reason)
+        text = f"{escape(command)} 未发送：{escape(blocked_reason)}\n\n" + _format_lightweight_next_commands(".解散副本", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
     msg = await send_game_command(
@@ -4704,11 +5026,12 @@ async def _handle_lightweight_dissolve_command(event):
         ),
     )
     if not msg:
-        text = f"{escape(command)} 发送失败。\n\n" + _format_lightweight_next_commands(".解散副本", html=True)
+        blocked_reason = _get_replica_identity_block_reason(leader_identity_id) or "解散命令发送失败"
+        _finish_lightweight_room_dissolve_send(room, 0, time.time(), error=blocked_reason)
+        text = f"{escape(command)} 发送失败：{escape(blocked_reason)}\n\n" + _format_lightweight_next_commands(".解散副本", html=True)
         await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
         return True
-    room.update({"phase": "dissolve_requested", "dissolve_msg_id": int(getattr(msg, "id", 0) or 0), "updated_at": time.time()})
-    _set_lightweight_last_room(room)
+    _finish_lightweight_room_dissolve_send(room, int(getattr(msg, "id", 0) or 0), time.time())
     leader_username = room.get("leader_username") or get_send_as_profile(leader_identity_id).get("username") or str(leader_identity_id)
     text = f"已用 {escape(str(leader_username))} 发送 {escape(str(command))}，房间 {escape(str(room.get('room_id') or '-'))}，等待游戏确认解散。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
     await _send_replica_group_message(event.client, event.chat_id, text, parse_mode="html", listener_account_id=listener_account_id, log_text=_strip_html_code_tags(text))
@@ -4956,12 +5279,16 @@ async def _handle_replica_external_dispatch_command(event, participant_identity_
     for username in usernames:
         identity_id = identity_ids_by_username.get(username)
         if not identity_id or identity_id in seen_identity_ids:
-            skipped.append(username)
+            skipped.append(_format_replica_skipped_selector(username, "未找到身份" if not identity_id else "重复身份"))
             continue
         seen_identity_ids.add(identity_id)
+        blocked_reason = _get_replica_identity_block_reason(identity_id, now=now)
+        if blocked_reason:
+            skipped.append(_format_replica_skipped_selector(username, blocked_reason))
+            continue
         allowed, reason = _reserve_external_dispatch_join(identity_id, replica_kind, replica_id, event, now)
         if not allowed:
-            skipped.append(f"{username}({reason})" if reason else username)
+            skipped.append(_format_replica_skipped_selector(username, reason))
             continue
         delay_sec = max(0, len(sent_usernames)) * _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC
         wait_sec = delay_sec - (time.monotonic() - started_at)
@@ -5006,10 +5333,19 @@ async def _handle_replica_external_dispatch_command(event, participant_identity_
                 replica_id,
                 source_msg_id=int(getattr(event, "id", 0) or 0),
             )
-            skipped.append(f"{username}(send_failed)")
+            blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送失败"
+            skipped.append(_format_replica_skipped_selector(username, blocked_reason))
     if skipped and not sent_usernames:
+        skipped_text = " ".join(skipped[:8])
+        if any("发送失败" in item for item in skipped):
+            console_log(
+                f"🧩 主线拉人发送失败：{_REPLICA_KIND_META[replica_kind]['name']} {replica_id}｜{skipped_text}",
+                scope="global",
+                limit=240,
+            )
+            return True
         console_log(
-            f"🧩 主线拉人未发送：{_REPLICA_KIND_META[replica_kind]['name']} {replica_id}｜{' '.join(skipped[:8])}",
+            f"🧩 主线拉人已跳过：{_REPLICA_KIND_META[replica_kind]['name']} {replica_id}｜{skipped_text}",
             scope="global",
             limit=240,
         )

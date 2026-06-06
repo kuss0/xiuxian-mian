@@ -40,6 +40,25 @@ from model import state as state_module
 from model.features import passive_inbox, small_world, storage_bag
 
 
+LATEST_SMALL_WORLD_PANEL = (
+    "【获赦之人_cu的小世界】\n\n"
+    "⛩️ 神庙: Lv.1【草创神龛】\n"
+    "👥 人口: 100000 人\n"
+    "🏙️ 承载上限: 100000 人\n"
+    "🙏 信仰: 97 / 100\n"
+    "⚖️ 稳定: 50 / 100\n"
+    "☁️ 待收香火: 725.25\n"
+    "🏺 香火库存: 4\n"
+    "🔥 预计产出: 116.40 香火/小时\n"
+    "🛡️ 护界禁制: 未开启\n"
+    "🧠 神识强度: 17878\n\n"
+    "暂无祈愿，凡间风调雨顺。\n"
+    "(下一次祈愿感应需等待: 8分钟59秒)\n\n"
+    "下一阶【乡土神庙】消耗：香火x3000、灵石x10000\n\n"
+    "指令: .收割香火 | .神识淬炼 <数量> | .神迹 赈灾/布道 | .升级神庙 | .护界禁制 | .神庙"
+)
+
+
 class _StateIsolationMixin:
     def setUp(self):
         super().setUp()
@@ -56,6 +75,61 @@ class _StateIsolationMixin:
 
 
 class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_parse_latest_temple_panel_fields(self):
+        panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)
+
+        self.assertIsNotNone(panel)
+        self.assertEqual("获赦之人_cu", panel["owner"])
+        self.assertEqual(1, panel["temple_level"])
+        self.assertEqual("草创神龛", panel["temple_name"])
+        self.assertEqual(100000, panel["population"])
+        self.assertEqual(100000, panel["capacity"])
+        self.assertEqual(97, panel["faith"])
+        self.assertEqual(100, panel["faith_max"])
+        self.assertEqual(50, panel["stability"])
+        self.assertEqual(100, panel["stability_max"])
+        self.assertEqual(725.25, panel["pending_incense"])
+        self.assertEqual(4, panel["stock"])
+        self.assertEqual(116.40, panel["hourly_output"])
+        self.assertEqual("未开启", panel["barrier_status"])
+        self.assertEqual(17878, panel["spiritual_strength"])
+        self.assertFalse(panel["has_prayer"])
+        self.assertTrue(panel["has_wait"])
+        self.assertEqual(8 * 60 + 59, panel["wait_sec"])
+        self.assertEqual("乡土神庙", panel["next_temple_name"])
+        self.assertEqual("香火x3000、灵石x10000", panel["next_temple_cost"])
+
+    async def test_latest_temple_panel_updates_snapshot_and_wait(self):
+        send_as_id = 8659059188
+        now = 9000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            with (
+                patch.object(small_world, "save_state"),
+                patch.object(small_world.random, "uniform", return_value=60),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(97, state_module.state["small_world_faith_value"])
+            self.assertEqual(725.25, state_module.state["small_world_pending_incense"])
+            self.assertEqual(4, state_module.state["small_world_incense_stock"])
+            self.assertEqual(
+                now + (8 * 60 + 59) + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertEqual("获赦之人_cu", snapshot["owner"])
+            self.assertEqual("草创神龛", snapshot["temple_name"])
+            self.assertEqual(50, snapshot["stability"])
+            self.assertEqual(116.40, snapshot["hourly_output"])
+            self.assertEqual("未开启", snapshot["barrier_status"])
+            self.assertEqual("8分钟59秒", snapshot["wait_text"])
+
     async def test_no_prayer_small_incense_does_not_harvest_again(self):
         send_as_id = 8659059191
         now = 1000.0
@@ -172,6 +246,117 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             harvest_mock.assert_not_awaited()
             self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
+
+    async def test_send_harvest_waits_for_reply_before_changing_inventory(self):
+        send_as_id = 8659059293
+        now = 3100.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_incense_stock"] = 2
+            state_module.state["small_world_pending_incense"] = 1035.59
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7601, sent_at=now + 1))) as send_mock,
+                patch.object(small_world.random, "uniform", return_value=120),
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_harvest(now)
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once_with(small_world.CMD_SMALL_WORLD_HARVEST, track=False, priority="chain")
+            self.assertEqual("harvest_sent", state_module.state["small_world_phase"])
+            self.assertEqual(7601, state_module.state["small_world_harvest_msg_id"])
+            self.assertEqual(2, state_module.state["small_world_incense_stock"])
+            self.assertEqual(1035.59, state_module.state["small_world_pending_incense"])
+            self.assertEqual(now + 1 + 120, state_module.state["next_small_world_time"])
+            self.assertIn("等待回执", state_module.state["small_world_last_error"])
+
+    async def test_send_refine_waits_for_reply_before_changing_stock(self):
+        send_as_id = 8659059294
+        now = 3200.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_incense_stock"] = 1038
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7602, sent_at=now + 1))) as send_mock,
+                patch.object(small_world.random, "uniform", return_value=120),
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_refine(now, 1030)
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once_with(f"{small_world.CMD_SMALL_WORLD_REFINE} 1030", track=False, priority="chain")
+            self.assertEqual("refine_sent", state_module.state["small_world_phase"])
+            self.assertEqual(7602, state_module.state["small_world_refine_msg_id"])
+            self.assertEqual(1038, state_module.state["small_world_incense_stock"])
+            self.assertEqual(now + 1 + 120, state_module.state["next_small_world_time"])
+            self.assertIn("等待回执", state_module.state["small_world_last_error"])
+
+    async def test_harvest_timeout_rechecks_panel_instead_of_refining_from_local_stock(self):
+        send_as_id = 8659059296
+        now = 3300.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_phase"] = "harvest_sent"
+            state_module.state["small_world_harvest_msg_id"] = 7603
+            state_module.state["small_world_incense_stock"] = 1038
+            state_module.state["next_small_world_time"] = now - 1
+
+            with (
+                patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock,
+                patch.object(small_world, "_send_refine", new=AsyncMock(return_value=True)) as refine_mock,
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            query_mock.assert_awaited_once_with(now, "收割后复查")
+            refine_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_harvest_msg_id"])
+            self.assertIn("复查面板", state_module.state["small_world_last_error"])
+
+    async def test_harvest_reply_updates_inventory_only_from_real_receipt(self):
+        send_as_id = 8659059297
+        now = 3400.0
+        state_module.ensure_identity_registered(send_as_id)
+        reply_to = SimpleNamespace(id=7604, raw_text=small_world.CMD_SMALL_WORLD_HARVEST)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = False
+            state_module.state["small_world_phase"] = "harvest_sent"
+            state_module.state["small_world_harvest_msg_id"] = 7604
+            state_module.state["small_world_incense_stock"] = 2
+            state_module.state["small_world_pending_incense"] = 1035.59
+
+            with (
+                patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_harvest_reply(
+                    "你大手一挥，收割了凡人供奉的香火。\n当前香火库存: 1038",
+                    now,
+                    reply_to=reply_to,
+                    matched_family="small_world_harvest",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(1038, state_module.state["small_world_incense_stock"])
+            self.assertEqual(0, state_module.state["small_world_pending_incense"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            query_mock.assert_awaited_once_with(now, "收割后复查")
 
     async def test_preach_reply_uses_threshold_not_full_faith(self):
         send_as_id = 8659059194
@@ -367,6 +552,58 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled_manifest)
             record = state_module.get_storage_bag_records()[str(send_as_id)]
             self.assertEqual(3, record["items"]["清灵丹"])
+            self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
+
+    async def test_manifest_success_does_not_deduct_cultivation_as_storage_item(self):
+        send_as_id = 8659059198
+        now = 7200.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【清源子的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 815.83\n"
+            "🏺 香火库存: 4\n\n"
+            "🔥 凡人祈愿：妖兽袭村\n"
+            "⚡ 显灵消耗: 修为x500、清灵丹x2\n"
+            "请使用 .显灵 响应祈愿，或忽略之。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.set_storage_bag_records({
+                str(send_as_id): {
+                    "updated_at": 7100,
+                    "items": {"清灵丹": 5},
+                    "sections": {"法宝/丹药/杂物": {"清灵丹": 5}},
+                }
+            })
+
+            with (
+                patch.object(small_world, "_send_manifest", new=AsyncMock(return_value=True)),
+                patch.object(small_world, "save_state"),
+            ):
+                handled_panel = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled_panel)
+            self.assertEqual("修为x500、清灵丹x2", state_module.state["small_world_manifest_cost_text"])
+
+            with (
+                patch.object(small_world, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(small_world.random, "uniform", return_value=60),
+            ):
+                handled_manifest = await small_world.handle_small_world_manifest_reply(
+                    "显灵成功，凡人祈愿已平息。",
+                    now + 1,
+                    reply_to=None,
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled_manifest)
+            record = state_module.get_storage_bag_records()[str(send_as_id)]
+            self.assertEqual(3, record["items"]["清灵丹"])
+            self.assertNotIn("修为", record["items"])
             self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
 
 

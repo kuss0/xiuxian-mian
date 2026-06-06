@@ -18,6 +18,7 @@ PET_NOT_FOUND_KEYWORDS = ("没有这件拥有器灵的法宝", "名字输入错�
 PET_NOT_FOUND_ERROR = "法宝不存在或名称错误，已关闭法宝模块"
 PET_WARM_NOT_FOUND_ERROR = "法宝不存在或名称错误，已关闭温养器灵"
 PET_TRIAL_NOT_FOUND_ERROR = "法宝不存在或器灵未回应，已关闭器灵试炼"
+PET_REPLY_TIMEOUT_SEC = 30
 RE_PET_TOUCH_SUCCESS = re.compile(r"[(（]\s*默契\s*\+\s*\d+\s*[,，]\s*经验\s*\+\s*\d+\s*[)）]")
 RE_PET_WARM_SUCCESS = re.compile(r"【温养器灵】")
 RE_PET_TRIAL_SUCCESS = re.compile(r"【器灵试炼[·・][^】]+】")
@@ -98,12 +99,26 @@ def _is_pet_warm_reply(text, reply_to, matched_family=None):
     )
 
 
-def _has_pending_pet_warm_command():
+def _command_matches_prefix(command, prefix):
+    raw_command = str(command or "").strip()
+    prefix = str(prefix or "").strip()
+    return bool(prefix) and (raw_command == prefix or raw_command.startswith(f"{prefix} "))
+
+
+def _has_pending_pet_command(*prefixes):
     for pending in state.get("pending_tasks", {}).values():
         pending_command = get_pending_command(pending)
-        if pending_command == CMD_PET_WARM or pending_command.startswith(f"{CMD_PET_WARM} "):
+        if any(_command_matches_prefix(pending_command, prefix) for prefix in prefixes):
             return True
     return False
+
+
+def _has_pending_pet_warm_command():
+    return _has_pending_pet_command(CMD_PET_WARM)
+
+
+def _clear_pet_pending(*prefixes):
+    clear_pending_tasks_by_commands(set(prefixes), send_as_id=get_current_identity_id())
 
 
 def _is_pet_warm_resource_shortage(text):
@@ -141,6 +156,7 @@ async def handle_pet_cd_fix(text, now, reply_to, matched_family=None):
 
     if RE_PET_TOUCH_SUCCESS.search(str(text or "")) and _is_pet_cd_reply(text, reply_to, matched_family=matched_family):
         state["pet_last_error"] = ""
+        _clear_pet_pending(CMD_PET)
         _set_pet_next_time(now + PET_CD + CD_BUFFER_SEC)
         return True
 
@@ -148,6 +164,7 @@ async def handle_pet_cd_fix(text, now, reply_to, matched_family=None):
         state["pet_enabled"] = False
         state["next_pet_time"] = 0
         state["pet_last_error"] = PET_NOT_FOUND_ERROR
+        _clear_pet_pending(CMD_PET)
         save_state()
         await send_audit_log("⚠️ 法宝名称错误，已关闭法宝模块。")
         return True
@@ -160,6 +177,7 @@ async def handle_pet_cd_fix(text, now, reply_to, matched_family=None):
         return False
 
     state["pet_last_error"] = ""
+    _clear_pet_pending(CMD_PET)
     _set_pet_next_time(now + wait_sec + CD_BUFFER_SEC)
     target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
     await send_audit_log(f"⏳ 法宝 CD→{target_time}")
@@ -176,6 +194,7 @@ async def handle_pet_trial_reply(text, now, reply_to, matched_family=None):
     if RE_PET_TRIAL_SUCCESS.search(raw_text):
         state["pet_trial_last_error"] = ""
         reset_resource_shortage(PET_TRIAL_RESOURCE_KEY)
+        _clear_pet_pending(CMD_PET_TRIAL)
         _set_pet_trial_next_time(now + PET_TRIAL_CD + CD_BUFFER_SEC)
         return True
 
@@ -183,6 +202,7 @@ async def handle_pet_trial_reply(text, now, reply_to, matched_family=None):
         state["pet_trial_enabled"] = False
         state["next_pet_trial_time"] = 0
         state["pet_trial_last_error"] = PET_TRIAL_NOT_FOUND_ERROR
+        _clear_pet_pending(CMD_PET_TRIAL)
         save_state()
         await send_audit_log("⚠️ 器灵试炼法宝名称异常，已关闭器灵试炼模块。")
         return True
@@ -192,6 +212,7 @@ async def handle_pet_trial_reply(text, now, reply_to, matched_family=None):
         if has_wait_time(raw_text):
             state["pet_trial_last_error"] = ""
             reset_resource_shortage(PET_TRIAL_RESOURCE_KEY)
+            _clear_pet_pending(CMD_PET_TRIAL)
             _set_pet_trial_next_time(now + wait_sec + CD_BUFFER_SEC)
             await send_audit_log(f"⏳ 器灵试炼 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
             return True
@@ -200,6 +221,7 @@ async def handle_pet_trial_reply(text, now, reply_to, matched_family=None):
         backoff = record_resource_shortage(PET_TRIAL_RESOURCE_KEY, now, reason=raw_text)
         due_at = float(backoff.get("next_at", 0) or 0)
         state["pet_trial_last_error"] = f"器灵试炼资源不足: {raw_text[:80]}"
+        _clear_pet_pending(CMD_PET_TRIAL)
         _set_pet_trial_next_time(due_at)
         await send_audit_log(
             f"⚠️ 器灵试炼资源不足，第 {int(backoff.get('count', 1) or 1)} 档退避→{fmt_time_after(max(0, due_at - now))}"
@@ -207,6 +229,7 @@ async def handle_pet_trial_reply(text, now, reply_to, matched_family=None):
         return True
 
     state["pet_trial_last_error"] = f"未识别的器灵试炼回复: {raw_text[:60]}"
+    _clear_pet_pending(CMD_PET_TRIAL)
     _set_pet_trial_next_time(now + RETRY_MAX_SEC)
     return False
 
@@ -221,7 +244,7 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
     if RE_PET_WARM_SUCCESS.search(raw_text):
         state["pet_warm_last_error"] = ""
         reset_resource_shortage(PET_WARM_RESOURCE_KEY)
-        clear_pending_tasks_by_commands({CMD_PET_WARM})
+        _clear_pet_pending(CMD_PET_WARM)
         apply_storage_bag_item_text_delta(get_current_identity_id(), raw_text, sign=-1, allow_plain=True)
         _set_pet_warm_next_time(now + PET_WARM_CD + random.uniform(60, 300))
         return True
@@ -230,6 +253,7 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
         state["pet_warm_enabled"] = False
         state["next_pet_warm_time"] = 0
         state["pet_warm_last_error"] = PET_WARM_NOT_FOUND_ERROR
+        _clear_pet_pending(CMD_PET_WARM)
         save_state()
         await send_audit_log("⚠️ 温养器灵法宝名称异常，已关闭温养器灵模块。")
         return True
@@ -239,6 +263,7 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
         if has_wait_time(raw_text):
             state["pet_warm_last_error"] = ""
             reset_resource_shortage(PET_WARM_RESOURCE_KEY)
+            _clear_pet_pending(CMD_PET_WARM)
             _set_pet_warm_next_time(now + wait_sec + CD_BUFFER_SEC)
             await send_audit_log(f"⏳ 温养器灵 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
             return True
@@ -247,6 +272,7 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
         backoff = record_resource_shortage(PET_WARM_RESOURCE_KEY, now, reason=raw_text)
         due_at = float(backoff.get("next_at", 0) or 0)
         state["pet_warm_last_error"] = f"温养器灵资源不足: {raw_text[:80]}"
+        _clear_pet_pending(CMD_PET_WARM)
         _set_pet_warm_next_time(due_at)
         await send_audit_log(
             f"⚠️ 温养器灵资源不足，第 {int(backoff.get('count', 1) or 1)} 档退避→{fmt_time_after(max(0, due_at - now))}"
@@ -254,6 +280,7 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
         return True
 
     state["pet_warm_last_error"] = f"未识别的温养器灵回复: {raw_text[:60]}"
+    _clear_pet_pending(CMD_PET_WARM)
     _set_pet_warm_next_time(now + RETRY_MAX_SEC)
     return False
 
@@ -267,8 +294,10 @@ async def run_pet_scheduler(now):
 
 async def _run_pet_scheduler(now):
     if state.get("pet_enabled") and now >= float(state.get("next_pet_time", 0) or 0):
+        if _has_pending_pet_command(CMD_PET):
+            return
         p_delay = PET_CD + random.uniform(0, 30)
-        msg = await send_game_command(get_pet_command(), track=True, max_retry=1)
+        msg = await send_game_command(get_pet_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
             state["pet_last_error"] = "法宝发送失败"
@@ -276,14 +305,16 @@ async def _run_pet_scheduler(now):
             await send_audit_log("❌ 法宝发送失败，稍后重试。")
             return
         _set_pet_next_time(sent_at + p_delay)
-        state["pet_last_error"] = ""
+        state["pet_last_error"] = "法宝已发送，等待回执确认"
         save_state()
         console_log(f"🗡️ 法宝[{get_pet_name()}]已发送，等待回复确认。")
         return
 
     if state.get("pet_trial_enabled") and now >= float(state.get("next_pet_trial_time", 0) or 0):
+        if _has_pending_pet_command(CMD_PET_TRIAL):
+            return
         trial_delay = PET_TRIAL_CD + random.uniform(0, 60)
-        msg = await send_game_command(get_pet_trial_command(), track=True, max_retry=1)
+        msg = await send_game_command(get_pet_trial_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
             state["pet_trial_last_error"] = "器灵试炼发送失败"
@@ -291,14 +322,16 @@ async def _run_pet_scheduler(now):
             await send_audit_log("❌ 器灵试炼发送失败，稍后重试。")
             return
         _set_pet_trial_next_time(sent_at + trial_delay)
-        state["pet_trial_last_error"] = ""
+        state["pet_trial_last_error"] = "器灵试炼已发送，等待回执确认"
         save_state()
         console_log(f"🗡️ 器灵试炼[{get_pet_trial_name()}]已发送，等待回复确认。")
         return
 
     if state.get("pet_warm_enabled") and now >= float(state.get("next_pet_warm_time", 0) or 0):
+        if _has_pending_pet_command(CMD_PET_WARM):
+            return
         warm_delay = PET_WARM_CD + random.uniform(60, 300)
-        msg = await send_game_command(get_pet_warm_command(), track=True, max_retry=1)
+        msg = await send_game_command(get_pet_warm_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
             state["pet_warm_last_error"] = "温养器灵发送失败"
@@ -306,7 +339,7 @@ async def _run_pet_scheduler(now):
             await send_audit_log("❌ 温养器灵发送失败，稍后重试。")
             return
         _set_pet_warm_next_time(sent_at + warm_delay)
-        state["pet_warm_last_error"] = ""
+        state["pet_warm_last_error"] = "温养器灵已发送，等待回执确认"
         save_state()
         console_log(f"🗡️ 温养器灵[{get_pet_warm_name()}]已发送，等待回复确认。")
 

@@ -2,6 +2,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 
@@ -192,6 +193,59 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertFalse(state_module.state["tree_bootstrap_check_needed"])
             self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
+
+    async def test_irrigation_scheduler_allows_one_short_retry_while_keeping_conservative_fallback(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["next_irr_time"] = now - 1
+
+            with (
+                patch.object(tree, "_next_irrigation_delay", return_value=7200),
+                patch.object(tree, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9911628, sent_at=now + 1))) as send_mock,
+                patch.object(tree, "send_audit_log", new=AsyncMock()),
+                patch.object(tree, "save_state"),
+            ):
+                await tree.run_tree_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                tree.CMD_TREE_WATER,
+                max_retry=tree.TREE_IRRIGATION_RETRY_LIMIT,
+                reply_timeout=tree.TREE_IRRIGATION_REPLY_TIMEOUT_SEC,
+            )
+            self.assertEqual(now + 1 + 7200, state_module.state["next_irr_time"])
+
+    async def test_irrigation_success_reply_confirms_next_time_from_real_receipt(self):
+        now = 2000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        reply_to = SimpleNamespace(id=9911628, raw_text=".灵树灌溉")
+        text = (
+            "【🌿 灵树灌溉】\n"
+            "当前环境: 生机萎靡 (需 木/森/草)\n"
+            "你注入了: 木行 灵气\n"
+            "🌳 成熟度: 72.93% -> 73.08%"
+        )
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["next_irr_time"] = now + 60
+
+            with (
+                patch.object(tree, "_next_irrigation_delay", return_value=7200),
+                patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(tree, "save_state"),
+            ):
+                handled = await tree.handle_tree_cd_fix(text, now, reply_to, matched_family="tree_panel")
+
+            self.assertTrue(handled)
+            self.assertEqual(now + 7200, state_module.state["next_irr_time"])
+            audit_mock.assert_awaited_once()
 
     async def test_passive_guard_success_does_not_end_invasion(self):
         identity_id = 3756719391

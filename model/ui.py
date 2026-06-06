@@ -127,6 +127,7 @@ from .state import (
     get_guanxing_monitor_enabled,
     get_guanxing_monitor_target_options,
     get_guanxing_monitor_targets,
+    get_guanxing_shift_delay_sec,
     get_guanxing_shift_target,
     is_auto_delete_sent_messages_enabled,
     get_identity_display_name,
@@ -159,6 +160,7 @@ from .state import (
     set_game_topic_id,
     set_guanxing_monitor_enabled,
     set_guanxing_monitor_targets,
+    set_guanxing_shift_delay_sec,
     set_guanxing_shift_target,
     set_identity_account,
     set_identity_account_map,
@@ -1318,7 +1320,7 @@ def _storage_bag_api_store_verified_result(result, now):
 def _storage_bag_api_store_failure(exc, now):
     current = get_storage_bag_api_config()
     keepalive_enabled = bool(current.get("keepalive_enabled"))
-    if isinstance(exc, StorageBagApiError) and exc.auth_failed:
+    if isinstance(exc, StorageBagApiError) and exc.status_code == 401:
         keepalive_enabled = False
     set_storage_bag_api_config({
         **current,
@@ -2213,11 +2215,46 @@ def _format_replica_ui_ticket_summary(counts):
     return " ".join(parts)
 
 
-def _select_replica_ui_open_kind(counts):
+def _is_replica_ui_cangkun_realm_available(profile):
+    realm = str((profile or {}).get("realm") or "").strip()
+    try:
+        xiuwei_max = int((profile or {}).get("xiuwei_max") or 0)
+    except (TypeError, ValueError):
+        xiuwei_max = 0
+    if not realm and xiuwei_max <= 0:
+        return False
+    return get_realm_sort_key(realm, xiuwei_max=xiuwei_max) <= get_realm_sort_key("结丹初期")
+
+
+def _get_replica_ui_openable_kinds(counts, profile=None):
+    openable_kinds = []
     for replica_kind in _REPLICA_UI_OPEN_PRIORITY:
+        if replica_kind == _REPLICA_UI_KIND_CANGKUN and not _is_replica_ui_cangkun_realm_available(profile):
+            continue
         if int((counts or {}).get(replica_kind) or 0) > 0:
-            return replica_kind
-    return ""
+            openable_kinds.append(replica_kind)
+    return openable_kinds
+
+
+def _select_replica_ui_open_kind(openable_kinds):
+    return openable_kinds[0] if len(openable_kinds or []) == 1 else ""
+
+
+def _format_replica_ui_open_commands(identity_id, username, openable_kinds):
+    selector = ("@" + str(username or "").lstrip("@")) if str(username or "").strip() else str(identity_id)
+    commands = []
+    for replica_kind in openable_kinds or []:
+        meta = _REPLICA_UI_TICKET_META.get(replica_kind) or {}
+        short = meta.get("short") or meta.get("name") or ""
+        if not short:
+            continue
+        commands.append({
+            "kind": replica_kind,
+            "label": meta.get("name") or short,
+            "short": short,
+            "command": f".开启副本 {selector} {short}",
+        })
+    return commands
 
 
 def get_replica_config_snapshot():
@@ -2236,7 +2273,9 @@ def get_replica_config_snapshot():
         identity_id = int(identity_id)
         profile = get_send_as_profile(identity_id)
         ticket_counts = _get_replica_ui_ticket_counts(storage_records, identity_id)
-        preferred_open_kind = _select_replica_ui_open_kind(ticket_counts)
+        openable_kinds = _get_replica_ui_openable_kinds(ticket_counts, profile)
+        preferred_open_kind = _select_replica_ui_open_kind(openable_kinds)
+        open_commands = _format_replica_ui_open_commands(identity_id, profile.get("username") or "", openable_kinds)
         identity_options.append({
             "identity_id": identity_id,
             "display_name": get_identity_ui_display_name(identity_id),
@@ -2252,9 +2291,15 @@ def get_replica_config_snapshot():
             "gold_dps_enabled": get_replica_gold_dps_enabled(identity_id),
             "ticket_counts": ticket_counts,
             "ticket_summary": _format_replica_ui_ticket_summary(ticket_counts),
-            "can_open": bool(preferred_open_kind),
+            "can_open": bool(openable_kinds),
+            "openable_kinds": openable_kinds,
+            "open_commands": open_commands,
             "preferred_open_kind": preferred_open_kind,
-            "preferred_open_label": (_REPLICA_UI_TICKET_META.get(preferred_open_kind) or {}).get("name", ""),
+            "preferred_open_label": (
+                (_REPLICA_UI_TICKET_META.get(preferred_open_kind) or {}).get("name")
+                if preferred_open_kind
+                else ("需指定类型" if len(openable_kinds) > 1 else "")
+            ),
         })
     identity_options.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
     return {
@@ -2278,7 +2323,7 @@ def get_replica_config_snapshot():
         "account_options": _get_replica_account_options(),
         "identity_options": identity_options,
         "commands": [
-            {"name": "轻量副本", "query_command": ".查询副本", "auto_open_command": ".开启副本 @用户名 [类型]", "join_command": ".加入副本 @用户名...", "dissolve_command": ".解散副本"},
+            {"name": "轻量副本", "query_command": ".查询副本", "auto_open_command": ".开启副本 @用户名 <类型>", "join_command": ".加入副本 @用户名...", "dissolve_command": ".解散副本"},
         ],
     }
 
@@ -2728,6 +2773,7 @@ def get_ui_snapshot(session_token=None):
         "guanxing_monitor_target_options": get_guanxing_monitor_target_options(),
         "guanxing_monitor_targets": get_guanxing_monitor_targets(),
         "guanxing_shift_target": get_guanxing_shift_target(),
+        "guanxing_shift_delay_sec": get_guanxing_shift_delay_sec(),
         "guanxing_monitor_summary": get_guanxing_monitor_summary_text(),
         "guanxing_round_summary": get_guanxing_round_summary_text(),
         "auth_idle_timeout_sec": UI_AUTH_IDLE_TIMEOUT_SEC,
@@ -3923,7 +3969,7 @@ async def ui_refresh_forum_topics(game_group_id, actor_id=None):
     return True, message, topics
 
 
-async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target=None, guanxing_monitor_targets=None, actor_id=None):
+async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_delete_sent_messages, tiandao_judgement_enabled=False, guanxing_monitor_enabled=False, guanxing_shift_target=None, guanxing_shift_delay_sec=None, guanxing_monitor_targets=None, actor_id=None):
     raw_group_id = (str(game_group_id or "")).strip()
     if not raw_group_id:
         return False, "游戏群聊 ID 不能为空"
@@ -3974,6 +4020,13 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
         return False, "观星改换目标不能包含空白字符"
     if raw_shift_target == "@":
         return False, "观星改换目标需填写用户名或 @用户名"
+    raw_shift_delay = str(guanxing_shift_delay_sec if guanxing_shift_delay_sec is not None else get_guanxing_shift_delay_sec()).strip()
+    try:
+        shift_delay_sec = int(float(raw_shift_delay))
+    except (TypeError, ValueError):
+        return False, "观星首发偏移秒数必须是数字"
+    if shift_delay_sec < -180:
+        return False, "观星首发偏移秒数不能小于 -180 秒"
     if isinstance(guanxing_monitor_targets, str):
         raw_monitor_targets = [guanxing_monitor_targets]
     elif guanxing_monitor_targets is None:
@@ -4000,6 +4053,7 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     set_guanxing_monitor_enabled(guanxing_monitor_switch_enabled)
     set_guanxing_monitor_targets(normalized_monitor_targets)
     normalized_shift_target = set_guanxing_shift_target(shift_target_value)
+    normalized_shift_delay_sec = set_guanxing_shift_delay_sec(shift_delay_sec)
     save_state()
     actor_suffix = f"｜操作者：{actor_id}" if actor_id is not None else ""
     display_topic = str(topic_id) if topic_id > 0 else "未启用"
@@ -4008,12 +4062,13 @@ async def ui_set_basic_config(game_group_id, game_bot_ids, game_topic_id, auto_d
     display_tiandao_judgement = "开启" if tiandao_judgement_switch_enabled else "关闭"
     display_guanxing_monitor = "开启" if guanxing_monitor_switch_enabled else "关闭"
     display_monitor_targets = ", ".join(normalized_monitor_targets) or "未选择"
+    display_shift_delay = f"{normalized_shift_delay_sec:+d}秒"
     console_log(
-        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}{actor_suffix}",
+        f"🧩 已更新基础配置：群={group_id}｜bot={display_bots}｜话题={display_topic}｜自动删消息={display_auto_delete}｜天道审判={display_tiandao_judgement}｜观星监控={display_guanxing_monitor}｜观星监控目标={display_monitor_targets}｜观星目标={normalized_shift_target or '未设置'}｜观星首发偏移={display_shift_delay}{actor_suffix}",
         scope="global",
-        limit=320,
+        limit=340,
     )
-    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'}"
+    return True, f"已更新基础配置：群聊 {group_id} ｜ bot {display_bots} ｜ 话题 {display_topic} ｜ 自动删消息 {display_auto_delete} ｜ 天道审判 {display_tiandao_judgement} ｜ 观星监控 {display_guanxing_monitor} ｜ 观星监控目标 {display_monitor_targets} ｜ 观星目标 {normalized_shift_target or '未设置'} ｜ 观星首发偏移 {display_shift_delay}"
 
 
 def _write_response(writer, status_line, body, *, content_type, extra_headers=None):
@@ -4489,7 +4544,7 @@ async def handle_ui_http(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("tiandao_judgement_enabled"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"))
+                    ok, message = await ui_set_basic_config(payload.get("game_group_id"), payload.get("game_bot_ids"), payload.get("game_topic_id"), payload.get("auto_delete_sent_messages"), payload.get("tiandao_judgement_enabled"), payload.get("guanxing_monitor_enabled"), payload.get("guanxing_shift_target"), payload.get("guanxing_shift_delay_sec"), payload.get("guanxing_monitor_targets"), actor_id=(session or {}).get("sender_id"))
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(ok, message=message if ok else "", error="" if ok else message, snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None)
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)

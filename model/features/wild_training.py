@@ -1,7 +1,6 @@
 import json
 import random
 import re
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
 
 
 WILD_TRAINING_CYCLE_MIN_SEC = 2 * 3600
@@ -17,6 +17,8 @@ WILD_TRAINING_CYCLE_MAX_SEC = 3 * 3600
 WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
+WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
+WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
 WILD_TRAINING_TITLE = "【野外历练"
@@ -50,6 +52,26 @@ def _schedule_next(now):
 
 def _schedule_retry(now):
     state["next_wild_training_time"] = float(now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC))
+
+
+def _schedule_after_dungeon_quiet(now):
+    if not is_dungeon_quiet_active(now):
+        return 0.0
+    until = get_dungeon_quiet_until()
+    next_time = float(until + random.uniform(WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC, WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC))
+    state["next_wild_training_time"] = next_time
+    return next_time
+
+
+async def _defer_wild_training_for_dungeon_quiet(now, *, action):
+    next_time = _schedule_after_dungeon_quiet(now)
+    if next_time <= 0:
+        return False
+    reason = get_dungeon_quiet_reason() or "副本静场令"
+    state["wild_training_last_error"] = f"野外历练{action}撞到{reason}，延后至 {fmt_abs_ts(next_time)}"
+    save_state()
+    await send_audit_log(f"🤫 {state['wild_training_last_error']}。", scope="identity")
+    return True
 
 
 def _parse_message_log_ts(raw_ts):
@@ -349,9 +371,22 @@ async def run_wild_training_scheduler(now):
         return
 
     strategy = normalize_wild_training_strategy(get_wild_training_strategy())
+    retry_count = int(state.get("wild_training_retry_count", 0) or 0)
+    if await _defer_wild_training_for_dungeon_quiet(
+        now,
+        action="补发" if retry_count > 0 else "发送",
+    ):
+        return
+
     msg = await send_game_command(get_wild_training_command(strategy), track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
+        retry_count = int(state.get("wild_training_retry_count", 0) or 0)
+        if await _defer_wild_training_for_dungeon_quiet(
+            sent_at,
+            action="补发" if retry_count > 0 else "发送",
+        ):
+            return
         if int(state.get("wild_training_retry_count", 0) or 0) < 1:
             state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
             _schedule_retry(sent_at)

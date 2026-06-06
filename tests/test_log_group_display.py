@@ -92,6 +92,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("自动副本", module_names)
         self.assertIn("天星宗", module_names)
         self.assertIn("阴罗宗", module_names)
+        self.assertIn("探寻裂缝", module_names)
+        self.assertIn("宗门传功", module_names)
 
     def test_user_facing_status_commands_all_match(self):
         commands = [
@@ -112,11 +114,13 @@ class LogGroupDisplayTests(unittest.TestCase):
             ".阴罗宗状态",
             ".南陇侯状态",
             ".元婴状态",
+            ".探寻裂缝状态",
             ".深度闭关状态",
             ".第二元神状态",
             ".太一状态",
             ".小世界状态",
             ".点卯状态",
+            ".宗门传功状态",
             ".闯塔状态",
             ".自动副本状态",
         ]
@@ -179,6 +183,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".野外历练状态", html_text)
         self.assertIn(".自动副本状态", html_text)
         self.assertIn(".储物袋汇总", html_text)
+        self.assertIn(".还有多少 &lt;物品名&gt;", html_text)
         self.assertIn(".玩法总览", html_text)
         self.assertIn(".上线预检", html_text)
         self.assertIn(".运行健康", html_text)
@@ -199,6 +204,48 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("主线拉人群兼容指令", html_text)
         self.assertIn(".苍坤洞府 123 @用户名", html_text)
         self.assertIn("只读", html_text)
+
+    def test_storage_bag_simple_find_uses_desensitized_totals(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            state_module.ensure_identity_registered(3101)
+            state_module.ensure_identity_registered(3102)
+            state_module.update_send_as_profile(3101, username="boxboxji", label="boxboxji")
+            state_module.update_send_as_profile(3102, username="WalterWA2000", label="wa2000")
+            state_module.set_storage_bag_records({
+                "3101": {"items": {"木髓": 5, "木髓精华": 2, "灵石": 100}},
+                "3102": {"items": {"木髓": 999}},
+            })
+
+            text = control._format_storage_bag_simple_find_text("木髓")
+
+            self.assertIn("查询：木髓", text)
+            self.assertIn("保护账号已排除", text)
+            self.assertIn("匹配：2 项", text)
+            self.assertIn("合计：7", text)
+            self.assertIn("- 木髓: 5", text)
+            self.assertIn("- 木髓精华: 2", text)
+            self.assertNotIn("999", text)
+            self.assertNotIn("3101", text)
+            self.assertNotIn("boxboxji", text)
+            self.assertNotIn("wa2000", text.casefold())
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_log_group_storage_bag_simple_find_is_read_only(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".还有多少 木髓")
+
+        with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+            handled = asyncio.run(control.handle_log_group_command(event))
+
+        self.assertTrue(handled)
+        reply_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
 
     def test_three_sect_manual_command_without_identity_only_replies_usage(self):
         event = SimpleNamespace()

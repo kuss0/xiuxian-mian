@@ -23,9 +23,11 @@ from .state import (
     get_global_enabled,
     get_tiandao_judgement_enabled,
     get_dungeon_join_run_state,
+    get_formation_run_state,
     get_guanxing_monitor_enabled,
     get_guanxing_monitor_targets,
     get_guanxing_round_state,
+    get_guanxing_shift_delay_sec,
     get_guanxing_shift_target,
     get_identity_ids,
     get_identity_state,
@@ -49,6 +51,7 @@ from .state import (
     new_identity_state,
     set_auto_delete_sent_messages,
     set_dungeon_join_run_state,
+    set_formation_run_state,
     set_forum_topics,
     set_global_enabled,
     set_tiandao_judgement_enabled,
@@ -59,6 +62,7 @@ from .state import (
     set_guanxing_monitor_enabled,
     set_guanxing_monitor_targets,
     set_guanxing_round_state,
+    set_guanxing_shift_delay_sec,
     set_guanxing_shift_target,
     set_quiz_learning_watchers,
     set_replica_group_id,
@@ -172,6 +176,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN guanxing_enabled INTEGER NOT NULL DEFAULT 0")
+    if "formation_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN formation_enabled INTEGER NOT NULL DEFAULT 0")
     if "last_guanxing_done_day" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN last_guanxing_done_day TEXT NOT NULL DEFAULT ''")
     if "tianti_enabled" not in module_columns:
@@ -194,6 +200,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
     if "dungeon_join_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN dungeon_join_enabled INTEGER NOT NULL DEFAULT 0")
+    if "wendao_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN wendao_enabled INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN explore_rift_enabled INTEGER NOT NULL DEFAULT 0")
+    if "sect_teach_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN sect_teach_enabled INTEGER NOT NULL DEFAULT 0")
 
     identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(identities)").fetchall()}
     if "pet_name" not in identity_columns:
@@ -280,6 +292,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_tianti_gangfeng_time REAL NOT NULL DEFAULT 0")
     if "next_small_world_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_small_world_time REAL NOT NULL DEFAULT 0")
+    if "next_explore_rift_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_explore_rift_time REAL NOT NULL DEFAULT 0")
+    if "next_wendao_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wendao_time REAL NOT NULL DEFAULT 0")
+    if "next_formation_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_formation_time REAL NOT NULL DEFAULT 0")
+    if "formation_cooldown_until" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN formation_cooldown_until REAL NOT NULL DEFAULT 0")
     if "weak_until" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN weak_until REAL NOT NULL DEFAULT 0")
 
@@ -529,6 +549,20 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_shift_target TEXT NOT NULL DEFAULT ''")
     if "guanxing_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN guanxing_last_error TEXT NOT NULL DEFAULT ''")
+    if "last_formation_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_formation_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "formation_pending_invite_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_pending_invite_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "formation_pending_assist_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_pending_assist_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "formation_last_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_action TEXT NOT NULL DEFAULT ''")
+    if "formation_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_result TEXT NOT NULL DEFAULT ''")
+    if "formation_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_error TEXT NOT NULL DEFAULT ''")
+    if "formation_last_success_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN formation_last_success_at REAL NOT NULL DEFAULT 0")
     if "tianti_status_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "tianti_last_status_msg_id" not in runtime_columns:
@@ -643,6 +677,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_incense_stock INTEGER NOT NULL DEFAULT 0")
     if "small_world_faith_value" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_faith_value INTEGER NOT NULL DEFAULT 0")
+    if "small_world_panel_snapshot" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_panel_snapshot TEXT NOT NULL DEFAULT '{}' ")
     if "small_world_last_panel_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_panel_at REAL NOT NULL DEFAULT 0")
     if "small_world_last_error" not in runtime_columns:
@@ -651,6 +687,36 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}' ")
     if "action_guard_sessions" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN action_guard_sessions TEXT NOT NULL DEFAULT '{}' ")
+    if "wendao_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "wendao_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "wendao_pending_result_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_pending_result_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "wendao_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_sent_at REAL NOT NULL DEFAULT 0")
+    if "wendao_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "wendao_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_result TEXT NOT NULL DEFAULT ''")
+    if "wendao_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_error TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "explore_rift_pending_result_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_pending_result_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_result TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_error TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_last_result_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_result_key TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_manual_required" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_manual_required INTEGER NOT NULL DEFAULT 0")
 
     pending_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
     if "max_retry" not in pending_columns:
@@ -809,6 +875,7 @@ def init_db():
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_monitor_enabled INTEGER NOT NULL DEFAULT 0,
             guanxing_enabled INTEGER NOT NULL DEFAULT 0,
+            formation_enabled INTEGER NOT NULL DEFAULT 0,
             tianti_enabled INTEGER NOT NULL DEFAULT 0,
             tianti_wenxin_enabled INTEGER NOT NULL DEFAULT 1,
             tianti_gangfeng_enabled INTEGER NOT NULL DEFAULT 1,
@@ -822,6 +889,7 @@ def init_db():
             tianxing_enabled INTEGER NOT NULL DEFAULT 0,
             yinluo_enabled INTEGER NOT NULL DEFAULT 0,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
+            explore_rift_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_preach_enabled INTEGER NOT NULL DEFAULT 1,
             small_world_manifest_enabled INTEGER NOT NULL DEFAULT 0,
@@ -831,9 +899,11 @@ def init_db():
             dungeon_join_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1,
+            wendao_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
+            sect_teach_enabled INTEGER NOT NULL DEFAULT 0,
             tower_enabled INTEGER NOT NULL,
             is_maturing INTEGER NOT NULL,
             is_invading INTEGER NOT NULL,
@@ -872,6 +942,10 @@ def init_db():
             next_nanlong_time REAL NOT NULL DEFAULT 0,
             next_small_world_time REAL NOT NULL DEFAULT 0,
             next_yuanying_time REAL NOT NULL,
+            next_explore_rift_time REAL NOT NULL DEFAULT 0,
+            next_wendao_time REAL NOT NULL DEFAULT 0,
+            next_formation_time REAL NOT NULL DEFAULT 0,
+            formation_cooldown_until REAL NOT NULL DEFAULT 0,
             next_deep_retreat_time REAL NOT NULL,
             weak_until REAL NOT NULL DEFAULT 0
         );
@@ -934,6 +1008,13 @@ def init_db():
             guanxing_last_shift_slot_key TEXT NOT NULL DEFAULT '',
             guanxing_last_shift_target TEXT NOT NULL DEFAULT '',
             guanxing_last_error TEXT NOT NULL DEFAULT '',
+            last_formation_msg_id INTEGER NOT NULL DEFAULT 0,
+            formation_pending_invite_msg_id INTEGER NOT NULL DEFAULT 0,
+            formation_pending_assist_msg_id INTEGER NOT NULL DEFAULT 0,
+            formation_last_action TEXT NOT NULL DEFAULT '',
+            formation_last_result TEXT NOT NULL DEFAULT '',
+            formation_last_error TEXT NOT NULL DEFAULT '',
+            formation_last_success_at REAL NOT NULL DEFAULT 0,
             tianti_status_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             tianti_last_status_msg_id INTEGER NOT NULL DEFAULT 0,
             tianti_last_status_seen_at REAL NOT NULL DEFAULT 0,
@@ -1054,6 +1135,7 @@ def init_db():
             small_world_pending_incense REAL NOT NULL DEFAULT 0,
             small_world_incense_stock INTEGER NOT NULL DEFAULT 0,
             small_world_faith_value INTEGER NOT NULL DEFAULT 0,
+            small_world_panel_snapshot TEXT NOT NULL DEFAULT '{}',
             small_world_last_panel_at REAL NOT NULL DEFAULT 0,
             small_world_last_error TEXT NOT NULL DEFAULT '',
             resource_shortage_backoffs TEXT NOT NULL DEFAULT '{}',
@@ -1065,6 +1147,21 @@ def init_db():
             yuanying_summary_sent_at REAL NOT NULL,
             last_yuanying_summary_msg_id INTEGER NOT NULL,
             last_yuanying_command_time REAL NOT NULL,
+            explore_rift_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_reply_due_at REAL NOT NULL DEFAULT 0,
+            explore_rift_pending_result_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_last_result TEXT NOT NULL DEFAULT '',
+            explore_rift_last_error TEXT NOT NULL DEFAULT '',
+            explore_rift_last_result_key TEXT NOT NULL DEFAULT '',
+            explore_rift_manual_required INTEGER NOT NULL DEFAULT 0,
+            wendao_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            wendao_reply_due_at REAL NOT NULL DEFAULT 0,
+            wendao_pending_result_msg_id INTEGER NOT NULL DEFAULT 0,
+            wendao_sent_at REAL NOT NULL DEFAULT 0,
+            wendao_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            wendao_last_result TEXT NOT NULL DEFAULT '',
+            wendao_last_error TEXT NOT NULL DEFAULT '',
             deep_retreat_phase TEXT NOT NULL,
             deep_retreat_probe_pending INTEGER NOT NULL,
             deep_retreat_waiting_logged INTEGER NOT NULL DEFAULT 0,
@@ -1209,6 +1306,10 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("guanxing_shift_delay_sec", "10"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("next_guanxing_monitor_notify_time", "0"),
     )
     conn.execute(
@@ -1250,6 +1351,10 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("guanxing_round_state", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("formation_run_state", "{}"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -1632,6 +1737,11 @@ _META_STATE_CODEC = {
         lambda value: str(value or ""),
         lambda value: set_guanxing_shift_target(str(value or "")),
     ),
+    "guanxing_shift_delay_sec": (
+        get_guanxing_shift_delay_sec,
+        lambda value: str(int(value)),
+        set_guanxing_shift_delay_sec,
+    ),
     "next_guanxing_monitor_notify_time": (
         lambda: float(_meta_state.get("next_guanxing_monitor_notify_time", 0) or 0),
         lambda value: str(value),
@@ -1686,6 +1796,11 @@ _META_STATE_CODEC = {
         get_guanxing_round_state,
         _encode_meta_json,
         lambda value: set_guanxing_round_state(_decode_meta_json(value, {})),
+    ),
+    "formation_run_state": (
+        get_formation_run_state,
+        _encode_meta_json,
+        lambda value: set_formation_run_state(_decode_meta_json(value, {})),
     ),
     "replica_group_id": (
         get_replica_group_id,

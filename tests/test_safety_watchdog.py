@@ -7,7 +7,7 @@ from unittest.mock import patch
 from tools import safety_watchdog
 
 
-def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module=""):
+def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority=""):
     payload = {
         "event_type": "sent",
         "_epoch": float(epoch),
@@ -20,6 +20,8 @@ def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="
         payload["family"] = family
     if source_module:
         payload["source_module"] = source_module
+    if priority:
+        payload["priority"] = priority
     return payload
 
 
@@ -144,6 +146,64 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("same command repeat", breach)
 
+    def test_tower_controlled_retry_does_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3504367852
+        events = [
+            _event(now - 55, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
+            _event(now, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="retry"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_tower_retry_after_normal_command_does_not_global_fuse(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(now - 11, 8659059191, ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）", family="pet", source_module="法宝", priority="normal"),
+            _event(now, 3504367852, ".闯塔", family="tower", source_module="闯塔", priority="retry"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_unmarked_tower_repeat_still_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        events = [
+            _event(now - 55, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
+            _event(now, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_tower_retry_without_intent_metadata_still_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        events = [
+            _event(now - 55, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
+            _event(now, sender_id, ".闯塔", priority="retry"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_uncontrolled_short_gap_still_global_fuses(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(now - 11, 8659059191, ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）", family="pet", source_module="法宝", priority="normal"),
+            _event(now, 3504367852, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("global lock breach", breach)
+
     def test_non_dungeon_commands_still_send_burst(self):
         now = time.time()
         events = [
@@ -239,6 +299,20 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_concubine_heart_choice_after_unrelated_command_does_not_global_fuse(self):
+        now = time.time()
+        prompt_msg_id = 9754425
+        events = [
+            _event(now - 12, 3870643893, ".天机代卜", 0, "concubine_tianji", "天机代卜"),
+            _event(now - 10, 8659059191, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 4, 8659059191, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 1, 8659059191, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
     def test_concubine_heart_choice_fourth_still_fuses(self):
         now = time.time()
         sender_id = 8659059191
@@ -328,7 +402,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("old", payload["reason"])
 
-    def test_existing_same_reason_marker_re_fuses_when_global_enabled(self):
+    def test_existing_same_reason_marker_silently_refuses_when_global_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = safety_watchdog.Path(tmpdir)
             state_dir = root / "data" / "state"
@@ -347,7 +421,8 @@ class SafetyWatchdogTests(unittest.TestCase):
             cfg.action = "soft"
             cfg.dry_run = False
 
-            safety_watchdog.perform_fuse(cfg, {}, "same breach")
+            with patch("builtins.print") as print_mock:
+                safety_watchdog.perform_fuse(cfg, {}, "same breach")
 
             with sqlite3.connect(str(state_dir / "chaogu_state.db")) as conn:
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
@@ -355,7 +430,57 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("0", value)
         self.assertEqual("same breach", payload["reason"])
-        self.assertEqual(["global_enabled=0"], payload["actions"])
+        self.assertEqual([], payload["actions"])
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertNotIn("[SAFETY WATCHDOG FUSED]", printed)
+
+    def test_reset_marker_without_epoch_falls_back_to_file_mtime(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = safety_watchdog.Path(tmpdir)
+            state_dir = root / "data" / "state"
+            state_dir.mkdir(parents=True)
+            marker = state_dir / "safety_watchdog_reset.json"
+            marker.write_text(
+                safety_watchdog.json.dumps({"reset_at": "2026-06-06 09:48:44 CST"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            reset_after = safety_watchdog.get_reset_after_epoch(root)
+
+        self.assertGreater(reset_after, 0)
+
+    def test_controlled_retry_same_command_generic_does_not_fuse(self):
+        now = time.time()
+        sender_id = 3504367852
+        events = [
+            _event(now - 55, sender_id, ".灵树灌溉", family="tree_water", source_module="灵树", priority="normal"),
+            _event(now, sender_id, ".灵树灌溉", family="tree_water", source_module="灵树", priority="retry"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_controlled_retry_after_normal_command_does_not_global_fuse(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(now - 11, 8659059191, ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）", family="pet", source_module="法宝", priority="normal"),
+            _event(now, 3504367852, ".灵树灌溉", family="tree_water", source_module="灵树", priority="retry"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_retry_without_intent_metadata_still_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        events = [
+            _event(now - 55, sender_id, ".灵树灌溉", family="tree_water", source_module="灵树", priority="normal"),
+            _event(now, sender_id, ".灵树灌溉", priority="retry"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
 
 
 if __name__ == "__main__":

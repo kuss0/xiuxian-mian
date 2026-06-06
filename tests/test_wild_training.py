@@ -173,6 +173,58 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("准备补发一次", state_module.state["wild_training_last_error"])
 
+    async def test_retry_due_during_dungeon_quiet_defers_without_consuming_retry(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        quiet_until = now + 120
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 1
+            identity_state["next_wild_training_time"] = now - 1
+        state_module.state["dungeon_quiet_until"] = quiet_until
+        state_module.state["dungeon_quiet_reason"] = "虚天殿静场令"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training.random, "uniform", return_value=20), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()), \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertEqual(1, state_module.state["wild_training_retry_count"])
+        self.assertEqual(quiet_until + 20, state_module.state["next_wild_training_time"])
+        self.assertIn("补发撞到虚天殿静场令", state_module.state["wild_training_last_error"])
+        self.assertNotIn("进入下一轮", state_module.state["wild_training_last_error"])
+
+    async def test_send_blocked_by_dungeon_quiet_after_queue_defers_without_retry(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        quiet_until = now + 120
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+
+        async def fake_send(*_args, **_kwargs):
+            state_module.state["dungeon_quiet_until"] = quiet_until
+            state_module.state["dungeon_quiet_reason"] = "坠魔谷静场令"
+            return None
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training.random, "uniform", return_value=20), \
+             patch.object(wild_training, "send_game_command", new=fake_send), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()), \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        self.assertEqual(0, state_module.state["wild_training_retry_count"])
+        self.assertEqual(quiet_until + 20, state_module.state["next_wild_training_time"])
+        self.assertIn("发送撞到坠魔谷静场令", state_module.state["wild_training_last_error"])
+        self.assertNotIn("准备补发", state_module.state["wild_training_last_error"])
+
     async def test_started_timeout_recovers_final_edit_from_message_log(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

@@ -51,6 +51,7 @@ class GuanxingConfigTests(unittest.TestCase):
     def test_basic_config_preserves_guanxing_settings_when_fields_are_omitted(self):
         state_module.set_guanxing_monitor_targets(["地磁暴动", "星辰异象"])
         state_module.set_guanxing_shift_target("@target_user")
+        state_module.set_guanxing_shift_delay_sec(25)
 
         with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
             ok, message = asyncio.run(
@@ -70,6 +71,65 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertIn("观星监控 开启", message)
         self.assertEqual(["地磁暴动", "星辰异象"], state_module.get_guanxing_monitor_targets())
         self.assertEqual("@target_user", state_module.get_guanxing_shift_target())
+        self.assertEqual(25, state_module.get_guanxing_shift_delay_sec())
+
+    def test_basic_config_accepts_guanxing_negative_shift_delay(self):
+        with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
+            ok, message = asyncio.run(
+                ui.ui_set_basic_config(
+                    "-100123",
+                    "8388633812",
+                    "0",
+                    True,
+                    tiandao_judgement_enabled=False,
+                    guanxing_monitor_enabled=False,
+                    guanxing_shift_target="@target_user",
+                    guanxing_shift_delay_sec="-60",
+                    guanxing_monitor_targets=[],
+                )
+            )
+
+        self.assertTrue(ok, message)
+        self.assertIn("观星首发偏移 -60秒", message)
+        self.assertEqual(-60, state_module.get_guanxing_shift_delay_sec())
+
+    def test_basic_config_rejects_guanxing_shift_delay_too_early(self):
+        with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
+            ok, message = asyncio.run(
+                ui.ui_set_basic_config(
+                    "-100123",
+                    "8388633812",
+                    "0",
+                    True,
+                    tiandao_judgement_enabled=False,
+                    guanxing_monitor_enabled=False,
+                    guanxing_shift_target="@target_user",
+                    guanxing_shift_delay_sec="-181",
+                    guanxing_monitor_targets=[],
+                )
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("不能小于 -180 秒", message)
+
+    def test_basic_config_rejects_guanxing_shift_delay_non_numeric(self):
+        with patch.object(ui, "save_state"), patch.object(ui, "console_log"):
+            ok, message = asyncio.run(
+                ui.ui_set_basic_config(
+                    "-100123",
+                    "8388633812",
+                    "0",
+                    True,
+                    tiandao_judgement_enabled=False,
+                    guanxing_monitor_enabled=False,
+                    guanxing_shift_target="@target_user",
+                    guanxing_shift_delay_sec="abc",
+                    guanxing_monitor_targets=[],
+                )
+            )
+
+        self.assertFalse(ok)
+        self.assertIn("必须是数字", message)
 
     def test_ui_bool_parser_handles_form_strings(self):
         for value in ("false", "0", "off", "关闭", ""):
@@ -193,6 +253,38 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertEqual([9003001, 9003002], state_module.get_replica_dispatch_participant_identity_ids())
         snapshot = ui.get_replica_config_snapshot()
         self.assertEqual([9003001, 9003002], snapshot["dispatch_participant_identity_ids"])
+
+    def test_replica_config_snapshot_uses_typed_open_commands(self):
+        leader_id = 9003101
+        low_id = 9003102
+        state_module.ensure_identity_registered(leader_id)
+        state_module.ensure_identity_registered(low_id)
+        state_module.update_send_as_profile(leader_id, username="leader", realm="结丹初期", enabled=True)
+        state_module.update_send_as_profile(low_id, username="low", realm="筑基后期", enabled=True)
+        state_module.set_replica_participant_identity_ids([leader_id, low_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 2}, "sections": {}},
+            str(low_id): {"items": {"苍坤残图": 1}, "sections": {}},
+        })
+
+        snapshot = ui.get_replica_config_snapshot()
+        identities = {int(item["identity_id"]): item for item in snapshot["identity_options"]}
+
+        leader = identities[leader_id]
+        self.assertTrue(leader["can_open"])
+        self.assertEqual(["virtual_hall", "cangkun"], leader["openable_kinds"])
+        self.assertEqual("", leader["preferred_open_kind"])
+        self.assertEqual("需指定类型", leader["preferred_open_label"])
+        self.assertEqual(
+            [".开启副本 @leader 虚", ".开启副本 @leader 苍"],
+            [item["command"] for item in leader["open_commands"]],
+        )
+        self.assertNotIn(".开启副本 @leader", [item["command"] for item in leader["open_commands"]])
+
+        low = identities[low_id]
+        self.assertFalse(low["can_open"])
+        self.assertEqual([], low["open_commands"])
+        self.assertEqual("", low["preferred_open_label"])
 
     def test_replica_config_saves_query_aggregator_separately_and_preserves_blank_secret(self):
         state_module.set_replica_query_aggregator_config({

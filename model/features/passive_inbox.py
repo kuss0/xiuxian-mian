@@ -745,10 +745,7 @@ def _apply_small_world_passive(text, now):
     panel = small_world_mod._parse_small_world_panel(text)
     if not panel or panel.get("realm_blocked"):
         return False
-    state["small_world_last_panel_at"] = float(now)
-    state["small_world_faith_value"] = int(panel.get("faith", 0) or 0)
-    state["small_world_pending_incense"] = float(panel.get("pending_incense", 0) or 0)
-    state["small_world_incense_stock"] = int(panel.get("stock", 0) or 0)
+    small_world_mod._apply_small_world_panel_snapshot(now, panel)
     if state.get("small_world_phase") == "calibration_wait":
         state["small_world_phase"] = "idle"
     if panel.get("has_wait"):

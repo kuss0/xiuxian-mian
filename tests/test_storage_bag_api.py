@@ -349,6 +349,64 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("session=rotated-other", state_module.get_storage_bag_api_config()["cookie"])
         self.assertEqual(2, snapshot["updated_count"])
 
+    async def test_manual_api_refresh_skips_cultivator_404_without_disabling_cookie(self):
+        other_identity_id = 2002
+        state_module.ensure_identity_registered(other_identity_id)
+        state_module.set_send_as_profile(other_identity_id, label="外号", username="other", daohao="外道")
+        with patch("model.ui.get_identity_ids", return_value=[self.identity_id, other_identity_id]):
+            state_module.set_storage_bag_api_config({
+                "base_url": "https://example.invalid",
+                "cookie": "session=old",
+                "api_token": "token-from-html",
+                "keepalive_enabled": True,
+                "item_name_map": {"mat_001": "灵石"},
+            })
+            me_result = storage_bag_api_client.StorageBagApiResult(
+                payload={
+                    "characters": [
+                        {
+                            "telegram_id": self.identity_id,
+                            "username": "source",
+                            "dao_name": "青源",
+                            "inventory": {"materials": {"mat_001": 5000}},
+                        }
+                    ]
+                },
+                status_code=200,
+                cookie="session=rotated-me",
+                api_token="token-from-html",
+                path="/api/me",
+            )
+            call_paths = []
+
+            async def fake_fetch(config, path):
+                call_paths.append(path)
+                if path == storage_bag_api_client.REFRESH_PATH:
+                    return me_result
+                if str(path).startswith(storage_bag_api_client.CULTIVATOR_PATH_PREFIX):
+                    raise storage_bag_api_client.StorageBagApiError(
+                        "HTTP 404",
+                        status_code=404,
+                        cookie="session=rotated-404",
+                        api_token="token-from-html",
+                    )
+                raise AssertionError(f"unexpected path: {path}")
+
+            with patch("model.ui.fetch_storage_bag_result", new=fake_fetch):
+                ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        self.assertEqual(storage_bag_api_client.REFRESH_PATH, call_paths[0])
+        self.assertIn("/api/cultivator/other", call_paths)
+        self.assertTrue(all(path == storage_bag_api_client.REFRESH_PATH or str(path).startswith(storage_bag_api_client.CULTIVATOR_PATH_PREFIX) for path in call_paths))
+        self.assertEqual(1, snapshot["updated_count"])
+        self.assertEqual(1, snapshot["skipped_count"])
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated-404", config["cookie"])
+        self.assertTrue(config["keepalive_enabled"])
+        self.assertNotIn(str(other_identity_id), state_module.get_storage_bag_records())
+
     async def test_manual_api_refresh_does_not_mutate_on_unmatched_payload(self):
         state_module.set_storage_bag_api_config({
             "base_url": "https://example.invalid",
@@ -660,6 +718,66 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("session=rotated-other", state_module.get_storage_bag_api_config()["cookie"])
         self.assertEqual(2, snapshot["dao_path_updated_count"])
 
+    async def test_manual_dao_path_refresh_skips_cultivator_404_without_disabling_cookie(self):
+        other_identity_id = 2002
+        state_module.ensure_identity_registered(other_identity_id)
+        state_module.set_send_as_profile(other_identity_id, label="外号", username="other", daohao="外道")
+        with patch("model.ui.get_identity_ids", return_value=[self.identity_id, other_identity_id]):
+            state_module.set_storage_bag_api_config({
+                "base_url": "https://example.invalid",
+                "cookie": "session=old",
+                "api_token": "token-from-html",
+                "keepalive_enabled": True,
+            })
+            me_result = storage_bag_api_client.StorageBagApiResult(
+                payload={
+                    "characters": [
+                        {
+                            "telegram_id": self.identity_id,
+                            "username": "source",
+                            "dao_name": "青源",
+                            "cultivation_level": "结丹后期",
+                            "status": "normal",
+                        }
+                    ]
+                },
+                status_code=200,
+                cookie="session=rotated-me",
+                api_token="token-from-html",
+                path="/api/me",
+            )
+            call_paths = []
+
+            async def fake_fetch(config, path):
+                call_paths.append(path)
+                if path == storage_bag_api_client.REFRESH_PATH:
+                    return me_result
+                if str(path).startswith(storage_bag_api_client.CULTIVATOR_PATH_PREFIX):
+                    raise storage_bag_api_client.StorageBagApiError(
+                        "HTTP 404",
+                        status_code=404,
+                        cookie="session=rotated-404",
+                        api_token="token-from-html",
+                    )
+                raise AssertionError(f"unexpected path: {path}")
+
+            with patch("model.ui.fetch_storage_bag_result", new=fake_fetch):
+                ok, message, snapshot = await ui.ui_refresh_identity_from_api(self.identity_id, refresh_all=True)
+
+        self.assertTrue(ok)
+        self.assertIn("已更新 1 个身份", message)
+        self.assertEqual(storage_bag_api_client.REFRESH_PATH, call_paths[0])
+        self.assertIn("/api/cultivator/other", call_paths)
+        self.assertTrue(all(path == storage_bag_api_client.REFRESH_PATH or str(path).startswith(storage_bag_api_client.CULTIVATOR_PATH_PREFIX) for path in call_paths))
+        self.assertEqual(1, snapshot["dao_path_updated_count"])
+        self.assertEqual(1, snapshot["dao_path_skipped_count"])
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated-404", config["cookie"])
+        self.assertTrue(config["keepalive_enabled"])
+        records = state_module.get_tianjige_dao_path_records()
+        self.assertIn(str(self.identity_id), records)
+        self.assertNotIn(str(other_identity_id), records)
+
     async def test_manual_api_actions_reject_during_keepalive(self):
         state_module.set_storage_bag_api_config({
             "base_url": "https://example.invalid",
@@ -725,6 +843,34 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(config["keepalive_enabled"])
         self.assertFalse(config["last_keepalive_ok"])
         self.assertIn("401", config["last_keepalive_error"])
+
+    async def test_keepalive_scheduler_keeps_enabled_on_forbidden_backoff(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-old",
+            "keepalive_enabled": True,
+            "verified_at": 1,
+            "next_keepalive_at": 0,
+        })
+        exc = storage_bag_api_client.StorageBagApiError(
+            "HTTP 403",
+            status_code=403,
+            auth_failed=True,
+            cookie="session=rotated",
+            api_token="token-new",
+        )
+
+        with patch("model.ui.verify_storage_bag_api", new=AsyncMock(side_effect=exc)):
+            await ui.run_storage_bag_api_keepalive_scheduler(1000)
+
+        config = state_module.get_storage_bag_api_config()
+        self.assertEqual("session=rotated", config["cookie"])
+        self.assertEqual("token-new", config["api_token"])
+        self.assertTrue(config["keepalive_enabled"])
+        self.assertFalse(config["last_keepalive_ok"])
+        self.assertGreater(config["next_keepalive_at"], 1000)
+        self.assertIn("403", config["last_keepalive_error"])
 
 
 if __name__ == "__main__":

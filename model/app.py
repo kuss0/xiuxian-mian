@@ -44,6 +44,7 @@ from .features.guanxing import (
     restore_guanxing_round_runtime,
     run_guanxing_scheduler,
 )
+from .features.formation import handle_formation_event, is_formation_reply_text, run_formation_scheduler
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
 from .features.concubine import (
     handle_concubine_affinity_event,
@@ -126,6 +127,7 @@ from .features.yuanying import (
     handle_yuanying_summary_broadcast,
     run_yuanying_scheduler,
 )
+from .features.wendao import handle_wendao_reply, run_wendao_scheduler
 from .features.wild_training import handle_wild_training_reply, run_wild_training_scheduler
 from .persistence import (
     flush_if_dirty,
@@ -211,11 +213,14 @@ BOT_REPLY_FAMILY_HINTS = {
     "stargazer_sync": ("观星台", "引星盘", "星辰"),
     "guanxing_query": ("观星台", "引星盘", "空闲", "精华"),
     "guanxing_shift": ("牵引", "星辰", "引星盘", "星力"),
+    "formation_start": ("周天星斗", "大阵", "启阵", "助阵", "星宫"),
+    "formation_assist": ("周天星斗", "大阵", "助阵", "成阵", "心神消耗巨大"),
     "tianti_status": ("天梯", "问心", "罡风", "登天"),
     "tianti_wenxin": ("问心", "天梯", "道心"),
     "tianti_climb": ("天梯", "登天", "层", "修为"),
     "tianti_gangfeng": ("九天罡风", "罡风", "再聚"),
     "yuanying": ("元婴", "出窍", "归窍", "法则碎片", "探寻"),
+    "wendao": ("问道", "问道得宝", "宗门长老", "天机不可频繁窥探"),
     "deep_retreat": ("深度闭关", "闭关", "神魂", "功成圆满", "总结"),
     "small_world_preach": ("小世界", "香火", "信仰", "神识", "神迹"),
     "small_world_query": ("小世界", "香火", "祈愿", "显灵", "紫府"),
@@ -573,6 +578,14 @@ async def _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now):
         await handle_guanxing_monitor_broadcast(text, now)
 
 
+async def _dispatch_formation_broadcast_fallbacks(event, text, now, *, reply_to=None, reply_context=None, event_type="message"):
+    if not is_formation_reply_text(text):
+        return
+    scope = "formation_event_edit" if event_type == "edit" else "formation_event"
+    if _claim_runtime_event(event, scope=scope):
+        await handle_formation_event(text, now, event, reply_to=reply_to, reply_context=reply_context)
+
+
 async def _dispatch_small_world_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="small_world_disaster"):
         await _run_until_handled_for_enabled_identities(handle_small_world_disaster_broadcast, text, now, event)
@@ -686,12 +699,14 @@ async def _run_identity_schedulers(now):
         run_ranch_scheduler,
         run_wild_training_scheduler,
         run_stargazer_scheduler,
+        run_formation_scheduler,
         run_tianti_scheduler,
         run_quiz_scheduler,
         run_jiyin_scheduler,
         run_concubine_scheduler,
         run_nanlong_scheduler,
         run_small_world_scheduler,
+        run_wendao_scheduler,
         run_checkin_scheduler,
         run_tower_scheduler,
         run_second_soul_bootstrap_check,
@@ -872,6 +887,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_concubine_affinity_event(text, now, event, matched_family=matched_family) or handled_any
             handled_any = await handle_nanlong_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_guanxing_query_reply(text, now, reply_to, event.id, matched_family=matched_family) or handled_any
+            handled_any = await handle_formation_event(text, now, event, reply_to=reply_to, reply_context=reply_context) or handled_any
             handled_any = await handle_identity_info_reply(text, now, reply_to, event.id) or handled_any
             deep_retreat_done = await handle_deep_retreat_success_reply(text, now, reply_to, matched_family=matched_family)
             handled_any = handled_any or deep_retreat_done
@@ -887,6 +903,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 handled_any = handled_any or yuanying_done
             if not yuanying_done:
                 handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_wendao_reply(
+                text,
+                now,
+                reply_to,
+                matched_family=matched_family,
+                result_msg_id=event.id,
+            ) or handled_any
             handled_any = await handle_tree_exception_prompt(text, now) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_query_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -911,6 +934,21 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 @client.on(events.NewMessage())
 async def on_message(event):
     if _append_replica_group_message_log(event, event_type="message"):
+        now = time.time()
+        text = event.raw_text or ""
+        try:
+            reply_to, reply_context = await _resolve_event_reply(event)
+            await _handle_virtual_hall_auto_game_event(
+                event,
+                text,
+                now,
+                reply_to=reply_to,
+                reply_context=reply_context,
+                event_type="message",
+            )
+            await _handle_replica_progress_event(event, now, event_type="message")
+        except Exception:
+            print(traceback.format_exc())
         await _handle_replica_group_command(event)
         return
     if _append_replica_dispatch_group_message_log(event, event_type="message"):
@@ -985,6 +1023,7 @@ async def on_message(event):
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
         await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
+        await _dispatch_formation_broadcast_fallbacks(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="message")
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
@@ -1000,6 +1039,21 @@ async def on_message(event):
 @client.on(events.MessageEdited())
 async def on_message_edited(event):
     if _append_replica_group_message_log(event, event_type="edit"):
+        now = time.time()
+        text = event.raw_text or ""
+        try:
+            reply_to, reply_context = await _resolve_event_reply(event)
+            await _handle_virtual_hall_auto_game_event(
+                event,
+                text,
+                now,
+                reply_to=reply_to,
+                reply_context=reply_context,
+                event_type="edit",
+            )
+            await _handle_replica_progress_event(event, now, event_type="edit")
+        except Exception:
+            print(traceback.format_exc())
         return
     if _append_replica_dispatch_group_message_log(event, event_type="edit"):
         return
@@ -1057,6 +1111,7 @@ async def on_message_edited(event):
         await _dispatch_message_edited_tree_panel(event, text, now)
         await _dispatch_message_edited_stargazer_panel(event, text, now)
         await _dispatch_message_edited_guanxing_monitor(event, text, now)
+        await _dispatch_formation_broadcast_fallbacks(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")
         await _dispatch_message_edited_tiandao_judgement_prompt(event, text, now)
         await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
         await _dispatch_concubine_affinity_fallbacks(event, text, now)

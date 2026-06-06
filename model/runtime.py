@@ -29,6 +29,8 @@ from .config import (
     CMD_CONCUBINE_TIANJI,
     CMD_CONCUBINE_HEART,
     CMD_CONCUBINE_HEART_STEADY,
+    CMD_FORMATION_ASSIST,
+    CMD_FORMATION_START,
     CMD_HEHUAN_CONTRACT,
     CMD_HEHUAN_DUAL,
     CMD_HEHUAN_ESCAPE,
@@ -43,6 +45,7 @@ from .config import (
     CMD_TIANXING_SET_STAR,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    CMD_EXPLORE_RIFT,
     CMD_GUANXING,
     CMD_GUANXING_SHIFT,
     CMD_IDENTITY_INFO,
@@ -96,6 +99,7 @@ from .config import (
     CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
+    CMD_WENDAO,
     LOG_BOT_TOKEN,
     LOG_GROUP_ID,
     LOG_GROUP_LOW_PRIORITY_SUMMARY_INTERVAL_SEC,
@@ -542,11 +546,15 @@ REPLY_FAMILY_COMMANDS = {
     "stargazer_collect": {CMD_STARGAZER_COLLECT},
     "guanxing_query": {CMD_GUANXING},
     "guanxing_shift": {CMD_GUANXING_SHIFT},
+    "formation_start": {CMD_FORMATION_START},
+    "formation_assist": {CMD_FORMATION_ASSIST},
     "tianti_status": {CMD_TIANTI_STATUS},
     "tianti_wenxin": {CMD_TIANTI_WENXIN},
     "tianti_climb": {CMD_TIANTI_CLIMB},
     "tianti_gangfeng": {CMD_TIANTI_GANGFENG},
     "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
+    "explore_rift": {CMD_EXPLORE_RIFT},
+    "wendao": {CMD_WENDAO},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
     "small_world_preach": {CMD_SMALL_WORLD_PREACH},
     "small_world_query": {CMD_SMALL_WORLD_QUERY},
@@ -824,6 +832,36 @@ def get_reply_family_commands(family):
     return set(REPLY_FAMILY_COMMANDS.get(str(family or "").strip(), set()))
 
 
+def has_active_reply_dispatch(send_as_id=None, family=None):
+    target_ids = [int(send_as_id)] if send_as_id is not None else get_identity_ids()
+    family_text = str(family or "").strip()
+
+    def family_matches(candidate):
+        candidate = str(candidate or "").strip()
+        if not family_text:
+            return bool(candidate)
+        if family_text == "formation":
+            return candidate.startswith("formation_")
+        return candidate == family_text
+
+    for identity_id in target_ids:
+        if not has_identity(identity_id):
+            continue
+        identity_state = get_identity_state(identity_id)
+        for pending in (identity_state.get("pending_tasks") or {}).values():
+            if family_matches(resolve_reply_family(get_pending_command(pending))):
+                return True
+
+        tracked_msg_ids = (
+            "formation_pending_invite_msg_id",
+            "formation_pending_assist_msg_id",
+        ) if family_text == "formation" else ()
+        for state_key in tracked_msg_ids:
+            if int(identity_state.get(state_key, 0) or 0) > 0:
+                return True
+    return False
+
+
 def _get_special_tracked_message_family(identity_state, msg_id):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
@@ -839,12 +877,18 @@ def _get_special_tracked_message_family(identity_state, msg_id):
         ("stargazer_last_panel_msg_id", "stargazer_panel"),
         ("guanxing_last_query_msg_id", "guanxing_query"),
         ("guanxing_last_shift_msg_id", "guanxing_shift"),
+        ("last_formation_msg_id", "formation_assist"),
+        ("formation_pending_invite_msg_id", "formation_start"),
+        ("formation_pending_assist_msg_id", "formation_assist"),
         ("tianti_status_reply_to_msg_id", "tianti_status"),
         ("tianti_last_status_msg_id", "tianti_status"),
         ("tianti_last_wenxin_msg_id", "tianti_wenxin"),
         ("tianti_last_climb_msg_id", "tianti_climb"),
         ("tianti_last_gangfeng_msg_id", "tianti_gangfeng"),
         ("last_yuanying_summary_msg_id", "yuanying"),
+        ("wendao_reply_to_msg_id", "wendao"),
+        ("wendao_pending_result_msg_id", "wendao"),
+        ("wendao_last_msg_id", "wendao"),
         ("last_deep_retreat_summary_msg_id", "deep_retreat"),
         ("small_world_preach_reply_to_msg_id", "small_world_preach"),
         ("small_world_query_msg_id", "small_world_query"),
@@ -2096,6 +2140,7 @@ async def send_game_command(
     priority=None,
     max_retry=None,
     *,
+    reply_timeout=None,
     intent=None,
     source_module=None,
     op_id=None,
@@ -2291,7 +2336,13 @@ async def send_game_command(
             with use_identity(send_as_id) as identity_state:
                 identity_state["my_msg_ids"][msg_id] = sent_at
                 if track:
-                    timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
+                    if reply_timeout is not None:
+                        try:
+                            timeout = max(1, int(float(reply_timeout)))
+                        except (TypeError, ValueError):
+                            timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
+                    else:
+                        timeout = random.randint(RETRY_MIN_SEC, RETRY_MAX_SEC)
                     retry_limit = max(0, int(max_retry if max_retry is not None else RETRY_LIMIT))
                     if action_guard_is_guarded_command(command):
                         next_allowed_at = action_guard_next_allowed_at(command, send_as_id=send_as_id)
@@ -2566,11 +2617,17 @@ async def run_retry_scheduler(now, send_as_id=None):
                 scope="identity",
                 send_as_id=identity_id,
             )
+            reply_to_kwargs = {}
+            reply_to_msg_id = int((current_item or {}).get("reply_to_msg_id", 0) or 0)
+            if reply_to_msg_id > 0:
+                reply_to_kwargs["reply_to"] = reply_to_msg_id
             new_msg = await send_game_command(
                 cmd,
                 send_as_id=identity_id,
                 priority=SEND_PRIORITY_RETRY,
                 max_retry=retry_limit,
+                reply_timeout=threshold,
+                **reply_to_kwargs,
                 **_pending_send_intent_kwargs(current_item),
             )
             if not has_identity(identity_id):
@@ -2582,6 +2639,7 @@ async def run_retry_scheduler(now, send_as_id=None):
                 if new_msg and new_msg.id in identity_state["pending_tasks"]:
                     identity_state["pending_tasks"][new_msg.id]["retry"] = retry + 1
                     identity_state["pending_tasks"][new_msg.id]["max_retry"] = retry_limit
+                    identity_state["pending_tasks"][new_msg.id]["timeout"] = threshold
                     if _is_identity_refresh_command(cmd):
                         sent_at = float(getattr(new_msg, "sent_at", 0) or time.time())
                         _refresh_identity_info_retry_tracking(identity_state, int(new_msg.id), sent_at)
@@ -2654,6 +2712,7 @@ __all__ = [
     "get_bot_health_snapshot",
     "get_bot_last_seen_at",
     "get_game_send_queue_snapshot",
+    "has_active_reply_dispatch",
     "get_low_priority_audit_pending_counts",
     "get_reply_context",
     "get_reply_family_commands",

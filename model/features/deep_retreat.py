@@ -87,6 +87,7 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     summary_due_delay_min_sec=5 * 60,
     summary_due_delay_max_sec=15 * 60,
     summary_active_query_grace_sec=30 * 60,
+    summary_due_timeout_action="wait_passive",
     summary_retry_min_sec=5 * 60,
     summary_retry_max_sec=10 * 60,
     timeout_relaunch_min_sec=DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC,

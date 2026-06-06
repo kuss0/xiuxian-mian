@@ -93,7 +93,7 @@ def _parse_stargazer_panel(text):
         if "星光黯淡" in line or "元磁紊乱" in line:
             dim_slot_count += 1
             continue
-        if "精华已成" in line:
+        if "精华已成" in line or "可收集" in line:
             ready_slot_count += 1
             continue
         if "空闲" in line:

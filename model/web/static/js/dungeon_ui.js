@@ -42,7 +42,7 @@ function dungeonStatusClass(text) {
 function renderLightweightDungeonCommands() {
   const commands = [
     {label: '查询', command: '.查询副本'},
-    {label: '开房', command: '.开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]'},
+    {label: '开房', command: '.开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>'},
     {label: '加入', command: '.加入副本 @用户名 @用户名'},
     {label: '解散', command: '.解散副本'}
   ];
@@ -155,11 +155,23 @@ function renderReplicaOpeners(replica) {
   return '<div class="replica-opener-list">' + openers.map(function(identity) {
     const username = identity.username ? ('@' + String(identity.username).replace(/^@/, '')) : '';
     const selector = username || String(identity.identity_id || '');
+    let openCommands = Array.isArray(identity.open_commands) ? identity.open_commands : [];
+    if (!openCommands.length && identity.preferred_open_label && identity.preferred_open_kind) {
+      const shortMap = {virtual_hall: '虚', cangkun: '苍', zhuimo: '坠', huanglong: '黄'};
+      const short = shortMap[identity.preferred_open_kind] || identity.preferred_open_label;
+      openCommands = [{label: identity.preferred_open_label, command: '.开启副本 ' + selector + ' ' + short}];
+    }
+    const commandHtml = openCommands.length
+      ? '<span class="replica-opener-commands">' + openCommands.map(function(item) {
+        const label = item.label ? (String(item.label) + ' ') : '';
+        return '<code title="' + escapeHtml(label + '开房') + '">' + escapeHtml(item.command || '-') + '</code>';
+      }).join('') + '</span>'
+      : '<span>无可用开房命令</span>';
     return '<div class="replica-opener-row">'
       + '<div><strong>' + escapeHtml(identity.display_name || identity.identity_id || '-') + '</strong><span>' + escapeHtml(username || ('ID ' + selector)) + '</span></div>'
       + '<span class="replica-ticket-summary">' + escapeHtml(identity.ticket_summary || '-') + '</span>'
       + '<span>' + escapeHtml(identity.preferred_open_label || '-') + '</span>'
-      + '<code>' + escapeHtml('.开启副本 ' + selector) + '</code>'
+      + commandHtml
       + '</div>';
   }).join('') + '</div>';
 }

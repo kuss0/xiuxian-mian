@@ -243,5 +243,19 @@
     "family": "yinluo_possess",
     "event_type": "message",
     "text": "【凌霄宫 任务板】\n\n- 探查魔功冷却 (ID: 1193)\n  - 描述: 阴罗宗的夺舍神通令人闻风丧胆，你知道施展一次.夺舍需要冷却多久吗？使用.提交任务 <答案>，例如.提交任务 1小时。\n  - 要求: 特殊条件\n  - 报酬: 25 贡献点\n\n使用 .提交任务 ... 来完成任务。"
+  },
+  "formation.invite.external_star_palace": {
+    "source": "data/messages/2026-04-14.log:7897745",
+    "module": "formation",
+    "family": "formation_start",
+    "event_type": "message",
+    "text": "【周天星斗大阵-启】\n【星宫】弟子 @David 正在布设大阵，尚需 1 位同门相助！\n大阵启动后，所有参与者将获得持续 6 小时的【星力加持】BUFF！\n请其他星宫弟子在 60秒 内回复此消息使用 .助阵！"
+  },
+  "formation.success.edit": {
+    "source": "data/messages/2026-04-14.log:7897745",
+    "module": "formation",
+    "family": "formation_assist",
+    "event_type": "edit",
+    "text": "【周天星斗大阵-成】\n星光汇聚，大阵已成！\n参与者: @David, @rexy1205\n所有参与者已获得【星力加持】BUFF，持续 6 小时，并进入 12 小时的冷却期！"
   }
 }

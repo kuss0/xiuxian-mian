@@ -110,6 +110,14 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return log_path
 
+    def test_message_log_topic_guard_matches_real_log_shapes(self):
+        with patch.object(concubine, "get_game_topic_id", return_value=7310786):
+            self.assertTrue(concubine._payload_matches_game_topic({"reply_to_msg_id": 9796379}))
+            self.assertTrue(concubine._payload_matches_game_topic({"topic_id": 7310786, "reply_to_msg_id": 9796379}))
+            self.assertTrue(concubine._payload_matches_game_topic({"topic_id": 0, "reply_to_msg_id": 7310786}))
+            self.assertFalse(concubine._payload_matches_game_topic({"topic_id": 458347, "reply_to_msg_id": 9797504}))
+            self.assertFalse(concubine._payload_matches_game_topic({"topic_id": 0, "reply_to_msg_id": 458347}))
+
     async def test_selfless_realm_marks_affinity_zero_and_schedules_recovery(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
@@ -279,7 +287,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
 
         mock_send.assert_not_awaited()
 
-    async def test_scheduler_allows_dream_when_snapshot_is_stale_but_partner_known(self):
+    async def test_scheduler_calibrates_before_dream_when_snapshot_is_stale(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now + 3600)
         with state_module.use_identity(send_as_id) as identity_state:
@@ -291,11 +299,13 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
              patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_DREAM, track=False)
-        self.assertEqual("dream_pending", state_module.state["concubine_phase"])
-        self.assertEqual(987, state_module.state["concubine_dream_msg_id"])
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(987, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_dream_msg_id"])
+        self.assertIn("主动动作前状态校准", state_module.state["concubine_last_error"])
 
-    async def test_scheduler_allows_tianji_when_snapshot_is_stale_but_partner_known(self):
+    async def test_scheduler_calibrates_before_tianji_when_snapshot_is_stale(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now - 1)
         with state_module.use_identity(send_as_id) as identity_state:
@@ -308,9 +318,11 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
              patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_TIANJI, track=False)
-        self.assertEqual("tianji_pending", state_module.state["concubine_phase"])
-        self.assertEqual(989, state_module.state["concubine_tianji_msg_id"])
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(989, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_tianji_msg_id"])
+        self.assertIn("主动动作前状态校准", state_module.state["concubine_last_error"])
 
     async def test_scheduler_allows_tianji_when_snapshot_is_fresh(self):
         now = 1_700_000_000.0
@@ -1082,6 +1094,51 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(state_module.state["concubine_dream_due_at"], now)
         self.assertEqual("", state_module.state["concubine_last_error"])
 
+    async def test_dream_timeout_ignores_message_log_reply_from_other_topic(self):
+        now = 1_700_000_900.0
+        send_as_id = self._prepare_identity()
+        reply_text = (
+            "【入梦寻图】\n"
+            "本次梦兆锁定：【虚天残图】 线路。\n"
+            "你与侍妾【凌玉灵】共入迷梦，觅得【虚天残图】碎片。\n"
+            "本次掉落率：28%（当前 虚天残图 2/4）。"
+        )
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "dream_pending"
+            identity_state["concubine_dream_msg_id"] = 701
+            identity_state["next_concubine_time"] = now - 1
+            identity_state["concubine_last_error"] = "pending"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(
+                tmpdir,
+                [
+                    {
+                        "ts": self._log_ts(now - 10),
+                        "event_type": "message",
+                        "message_id": 702,
+                        "topic_id": 458347,
+                        "reply_to_msg_id": 701,
+                        "text": reply_text,
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+                 patch.object(concubine, "get_game_topic_id", return_value=7310786), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_audit_log", new=AsyncMock()), \
+                 patch.object(concubine.random, "uniform", return_value=0), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+                await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_called()
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_dream_msg_id"])
+        self.assertEqual("dream_pending 等待回复超时，已转状态校准", state_module.state["concubine_last_error"])
+
     async def test_heart_choice_timeout_recovers_edit_from_message_log(self):
         now = 1_700_000_900.0
         send_as_id = self._prepare_identity()
@@ -1667,6 +1724,47 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, state_module.state["concubine_heart_round"])
         self.assertEqual(now + 2, state_module.state["next_concubine_time"])
         mock_followup.assert_called_once_with(send_as_id, now + 2, prompt_msg_id, 2)
+
+    def test_heart_choice_round_replay_does_not_regress_same_prompt(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387665
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 3
+            identity_state["next_concubine_time"] = now + 2
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "_schedule_heart_choice_followup", return_value=True) as mock_followup:
+            concubine._activate_heart_choice_round(now + 1, prompt_msg_id, 2)
+
+        self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
+        self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_prompt_msg_id"])
+        self.assertEqual(3, state_module.state["concubine_heart_round"])
+        self.assertEqual(now + 2, state_module.state["next_concubine_time"])
+        mock_followup.assert_not_called()
+
+    def test_heart_choice_round_replay_does_not_reschedule_same_pending_round(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387665
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 2
+            identity_state["next_concubine_time"] = now + 2
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "_schedule_heart_choice_followup", return_value=True) as mock_followup:
+            concubine._activate_heart_choice_round(now + 1, prompt_msg_id, 2)
+
+        self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
+        self.assertEqual(2, state_module.state["concubine_heart_round"])
+        self.assertEqual(now + 2, state_module.state["next_concubine_time"])
+        mock_followup.assert_not_called()
 
     async def test_heart_choice_send_uses_urgent_reactive_queue(self):
         now = 1_700_000_000.0

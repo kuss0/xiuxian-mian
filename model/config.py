@@ -182,6 +182,11 @@ PET_CD = 7200
 PET_TRIAL_CD = 8 * 3600
 YUANYING_CD = 28800
 DEEP_RETREAT_CD = 28800
+EXPLORE_RIFT_CD = 12 * 3600
+EXPLORE_RIFT_JITTER_MIN_SEC = 5 * 60
+EXPLORE_RIFT_JITTER_MAX_SEC = 15 * 60
+EXPLORE_RIFT_REPLY_TIMEOUT_SEC = 5 * 60
+EXPLORE_RIFT_FATAL_GRACE_SEC = 60
 MODULE_PROTECT_SEC = 30            # 状态机模块执行后的保护间隔
 POST_SUMMARY_WAIT_SEC = 30         # 总结后等待秒数
 SUMMARY_TIMEOUT_SEC = 900          # 总结最长等待时间（15分钟，避免 bot 延迟时误判）
@@ -253,6 +258,8 @@ STARGAZER_STAR_DURATIONS = {
 }
 CMD_YUANYING = ".元婴出窍"
 CMD_YUANYING_STATUS = ".元婴状态"
+CMD_EXPLORE_RIFT = ".探寻裂缝"
+CMD_WENDAO = ".问道"
 CMD_DEEP_RETREAT = ".深度闭关"
 CMD_DEEP_RETREAT_QUERY = ".查看闭关"
 CMD_IDENTITY_INFO = ".我的灵根"
@@ -277,6 +284,8 @@ CMD_CONCUBINE_ROMANCE = ".红尘寻缘"
 CMD_CONCUBINE_TIANJI = ".天机代卜"
 CMD_CONCUBINE_HEART = ".共历心劫"
 CMD_CONCUBINE_HEART_STEADY = ".稳"
+CMD_FORMATION_START = ".启阵"
+CMD_FORMATION_ASSIST = ".助阵"
 CMD_HEHUAN_RETREAT = ".闭关双修"
 CMD_HEHUAN_CONTRACT = ".缔结同参"
 CMD_HEHUAN_DUAL = ".双修"
@@ -332,6 +341,17 @@ CONCUBINE_TIANJI_CD_SEC = 12 * 3600
 CONCUBINE_HEART_CD_SEC = 12 * 3600
 CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC = 1
 CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC = 3
+FORMATION_INVITE_TTL_SEC = 60
+FORMATION_ASSIST_DELAY_MIN_SEC = 3
+FORMATION_ASSIST_DELAY_MAX_SEC = 8
+FORMATION_ASSIST_REPLY_TIMEOUT_SEC = 30
+FORMATION_SUCCESS_COOLDOWN_SEC = 12 * 3600
+FORMATION_RECOVERY_DELAY_SEC = 5 * 60
+WENDAO_CD = 12 * 3600
+WENDAO_FAST_CD = int(WENDAO_CD * 0.7)
+WENDAO_JITTER_MIN_SEC = 5
+WENDAO_JITTER_MAX_SEC = 10
+WENDAO_REPLY_TIMEOUT_SEC = 180
 SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC = 60
 
 
@@ -403,6 +423,8 @@ SCRIPT_COMMANDS = [
     CMD_TIANTI_GANGFENG,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
+    CMD_EXPLORE_RIFT,
+    CMD_WENDAO,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_IDENTITY_INFO,
@@ -427,6 +449,8 @@ SCRIPT_COMMANDS = [
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_TIANJI,
     CMD_CONCUBINE_HEART,
+    CMD_FORMATION_START,
+    CMD_FORMATION_ASSIST,
     CMD_HEHUAN_RETREAT,
     CMD_HEHUAN_CONTRACT,
     CMD_HEHUAN_DUAL,
@@ -463,7 +487,7 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "深度闭关", "小世界", "点卯", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -474,6 +498,7 @@ MODULE_KEY_MAP = {
     "观星台": "stargazer_enabled",
     "观星": "guanxing_enabled",
     "观星监控": "guanxing_monitor_enabled",
+    "周天星斗": "formation_enabled",
     "登天阶": "tianti_enabled",
     "玄骨考校": "quiz_enabled",
     "极阴祖师": "jiyin_enabled",
@@ -485,9 +510,12 @@ MODULE_KEY_MAP = {
     "阴罗宗": "yinluo_enabled",
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
+    "探寻裂缝": "explore_rift_enabled",
+    "问道": "wendao_enabled",
     "深度闭关": "deep_retreat_enabled",
     "小世界": "small_world_enabled",
     "点卯": "checkin_enabled",
+    "宗门传功": "sect_teach_enabled",
     "闯塔": "tower_enabled",
     "第二元神": "second_soul_enabled",
     "太一": "taiyi_enabled",
@@ -681,6 +709,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.观星台状态$'), "观星台"),
     (re.compile(r'^\.观星状态$'), "观星"),
     (re.compile(r'^\.观星监控状态$'), "观星监控"),
+    (re.compile(r'^\.周天星斗状态$'), "周天星斗"),
     (re.compile(r'^\.天阶状态$'), "登天阶"),
     (re.compile(r'^\.玄骨考校状态$'), "玄骨考校"),
     (re.compile(r'^\.极阴祖师状态$'), "极阴祖师"),
@@ -692,11 +721,14 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.阴罗宗状态$'), "阴罗宗"),
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
+    (re.compile(r'^\.探寻裂缝状态$'), "探寻裂缝"),
+    (re.compile(r'^\.问道状态$'), "问道"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
     (re.compile(r'^\.第二元神状态$'), "第二元神"),
     (re.compile(r'^\.太一状态$'), "太一"),
     (re.compile(r'^\.小世界状态$'), "小世界"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
+    (re.compile(r'^\.宗门传功状态$'), "宗门传功"),
     (re.compile(r'^\.闯塔状态$'), "闯塔"),
     (re.compile(r'^\.(自动副本|副本)状态$'), "自动副本"),
 ]
@@ -719,6 +751,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)观星$'), "观星", False),
     (re.compile(r'^\.(开启|打开)观星监控$'), "观星监控", True),
     (re.compile(r'^\.(关闭|关掉)观星监控$'), "观星监控", False),
+    (re.compile(r'^\.(开启|打开)周天星斗$'), "周天星斗", True),
+    (re.compile(r'^\.(关闭|关掉)周天星斗$'), "周天星斗", False),
     (re.compile(r'^\.(开启|打开)登天阶$'), "登天阶", True),
     (re.compile(r'^\.(关闭|关掉)登天阶$'), "登天阶", False),
     (re.compile(r'^\.(开启|打开)玄骨考校$'), "玄骨考校", True),
@@ -741,12 +775,18 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)南陇侯$'), "南陇侯", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),
     (re.compile(r'^\.(关闭|关掉)元婴$'), "元婴", False),
+    (re.compile(r'^\.(开启|打开)探寻裂缝$'), "探寻裂缝", True),
+    (re.compile(r'^\.(关闭|关掉)探寻裂缝$'), "探寻裂缝", False),
+    (re.compile(r'^\.(开启|打开)问道$'), "问道", True),
+    (re.compile(r'^\.(关闭|关掉)问道$'), "问道", False),
     (re.compile(r'^\.(开启|打开)深度闭关$'), "深度闭关", True),
     (re.compile(r'^\.(关闭|关掉)深度闭关$'), "深度闭关", False),
     (re.compile(r'^\.(开启|打开)小世界$'), "小世界", True),
     (re.compile(r'^\.(关闭|关掉)小世界$'), "小世界", False),
     (re.compile(r'^\.(开启|打开)点卯$'), "点卯", True),
     (re.compile(r'^\.(关闭|关掉)点卯$'), "点卯", False),
+    (re.compile(r'^\.(开启|打开)宗门传功$'), "宗门传功", True),
+    (re.compile(r'^\.(关闭|关掉)宗门传功$'), "宗门传功", False),
     (re.compile(r'^\.(开启|打开)闯塔$'), "闯塔", True),
     (re.compile(r'^\.(关闭|关掉)闯塔$'), "闯塔", False),
     (re.compile(r'^\.(开启|打开)第二元神$'), "第二元神", True),

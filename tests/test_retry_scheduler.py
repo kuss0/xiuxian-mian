@@ -142,6 +142,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             send_as_id=send_as_id,
             priority=runtime.SEND_PRIORITY_RETRY,
             max_retry=1,
+            reply_timeout=10,
         )
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertNotIn(201, identity_state["pending_tasks"])
@@ -182,10 +183,45 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             send_as_id=send_as_id,
             priority=runtime.SEND_PRIORITY_RETRY,
             max_retry=1,
+            reply_timeout=10,
             source_module="太一",
             op_id="taiyi-yindao-251",
             chain_id="taiyi-cycle-1",
             delete_policy="auto_delete",
+        )
+
+    def test_pending_retry_preserves_reply_to_message(self):
+        send_as_id = 971008
+        now = 6550.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                271: {
+                    "cmd": ".灵树灌溉",
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 123456,
+                    "priority": "normal",
+                }
+            }
+
+        async def fake_send(command, **kwargs):
+            return SimpleNamespace(id=272, sent_at=now + 1)
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", side_effect=fake_send) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_awaited_once_with(
+            ".灵树灌溉",
+            send_as_id=send_as_id,
+            priority=runtime.SEND_PRIORITY_RETRY,
+            max_retry=1,
+            reply_timeout=10,
+            reply_to=123456,
         )
 
     def test_pending_timeout_without_bot_seen_marks_suspect_and_does_not_resend(self):
@@ -253,6 +289,7 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             send_as_id=send_as_id,
             priority=runtime.SEND_PRIORITY_RETRY,
             max_retry=1,
+            reply_timeout=10,
         )
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertNotIn(301, identity_state["pending_tasks"])

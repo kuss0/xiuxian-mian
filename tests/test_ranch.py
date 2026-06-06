@@ -237,6 +237,69 @@ class RanchTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("无休息中灵兽，继续等待归来", state_module.state["ranch_last_result"])
             self.assertEqual("", state_module.state["ranch_last_error"])
 
+    async def test_retry_due_during_dungeon_quiet_defers_without_consuming_retry(self):
+        send_as_id = 3711993781
+        now = 1_700_000_000.0
+        quiet_until = now + 120
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="xuruode3")
+        with state_module.use_identity(send_as_id):
+            state_module.state["ranch_enabled"] = True
+            state_module.state["next_ranch_time"] = now - 1
+            state_module.state["ranch_retry_count"] = 1
+            state_module.state["ranch_reply_to_msg_id"] = 0
+            state_module.state["ranch_reply_due_at"] = 0
+            state_module.state["ranch_return_pending"] = False
+            state_module.state["dungeon_quiet_until"] = quiet_until
+            state_module.state["dungeon_quiet_reason"] = "虚天殿静场令"
+
+            with (
+                patch.object(ranch.random, "uniform", return_value=20),
+                patch.object(ranch, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(ranch, "send_audit_log", new=AsyncMock()),
+                patch.object(ranch, "save_state"),
+            ):
+                await ranch.run_ranch_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(1, state_module.state["ranch_retry_count"])
+            self.assertEqual(quiet_until + 20, state_module.state["next_ranch_time"])
+            self.assertIn("补发撞到虚天殿静场令", state_module.state["ranch_last_error"])
+            self.assertNotIn("进入下一轮", state_module.state["ranch_last_error"])
+
+    async def test_send_blocked_by_dungeon_quiet_after_queue_defers_without_retry(self):
+        send_as_id = 3711993781
+        now = 1_700_000_000.0
+        quiet_until = now + 120
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="xuruode3")
+
+        async def fake_send(*_args, **_kwargs):
+            state_module.state["dungeon_quiet_until"] = quiet_until
+            state_module.state["dungeon_quiet_reason"] = "坠魔谷静场令"
+            return None
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["ranch_enabled"] = True
+            state_module.state["next_ranch_time"] = now - 1
+            state_module.state["ranch_retry_count"] = 0
+            state_module.state["ranch_reply_to_msg_id"] = 0
+            state_module.state["ranch_reply_due_at"] = 0
+            state_module.state["ranch_return_pending"] = False
+
+            with (
+                patch.object(ranch.random, "uniform", return_value=20),
+                patch.object(ranch, "send_game_command", new=fake_send),
+                patch.object(ranch, "send_audit_log", new=AsyncMock()),
+                patch.object(ranch, "save_state"),
+            ):
+                await ranch.run_ranch_scheduler(now)
+
+            self.assertEqual(0, state_module.state["ranch_retry_count"])
+            self.assertEqual(quiet_until + 20, state_module.state["next_ranch_time"])
+            self.assertIn("发送撞到坠魔谷静场令", state_module.state["ranch_last_error"])
+            self.assertNotIn("准备补发", state_module.state["ranch_last_error"])
+
     async def test_wrong_sect_variants_disable_ranch(self):
         send_as_id = 3800619925
         now = 1000.0

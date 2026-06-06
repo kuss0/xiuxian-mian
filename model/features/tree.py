@@ -47,6 +47,8 @@ TREE_MATURE_CONFIRM_DELAY_MAX_SEC = 30
 TREE_HARVEST_ABNORMAL_CHECK_MIN_SEC = 60
 TREE_HARVEST_ABNORMAL_CHECK_MAX_SEC = 180
 TREE_HARVEST_RETRY_LIMIT = 1
+TREE_IRRIGATION_RETRY_LIMIT = 1
+TREE_IRRIGATION_REPLY_TIMEOUT_SEC = 30
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 45 * 60
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 75 * 60
 TREE_IRRIGATION_RESOURCE_KEY = "tree_irrigation"
@@ -141,6 +143,10 @@ def _is_tree_irrigation_success(text):
 def _is_tree_guard_success(text):
     raw_text = str(text or "")
     return "【守山成功】" in raw_text or "【守护成功！】" in raw_text or "攻势已被成功击退" in raw_text
+
+
+def _next_irrigation_delay():
+    return random.uniform(IRR_INTERVAL_MIN, IRR_INTERVAL_MAX)
 
 
 def _normalize_tree_identity_text(text):
@@ -597,8 +603,13 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
     )
 
     if _is_tree_irrigation_success(text) and is_irrigation_reply:
+        delay = _next_irrigation_delay()
+        state["next_irr_time"] = float(now) + delay
         if reset_resource_shortage(TREE_IRRIGATION_RESOURCE_KEY):
             save_state()
+        else:
+            save_state()
+        await send_audit_log(f"🚀 灌溉已确认→{fmt_time_after(delay)}")
         return True
 
     if _is_tree_guard_success(text) and is_guard_reply:
@@ -917,8 +928,12 @@ async def run_tree_scheduler(now):
                 save_state()
                 await send_audit_log("⏳ 入侵中，灌溉已转补偿队列。")
         else:
-            delay = random.uniform(IRR_INTERVAL_MIN, IRR_INTERVAL_MAX)
-            msg = await send_game_command(CMD_TREE_WATER, max_retry=0)
+            delay = _next_irrigation_delay()
+            msg = await send_game_command(
+                CMD_TREE_WATER,
+                max_retry=TREE_IRRIGATION_RETRY_LIMIT,
+                reply_timeout=TREE_IRRIGATION_REPLY_TIMEOUT_SEC,
+            )
             sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
             if not msg:
                 state["next_irr_time"] = sent_at + RETRY_MAX_SEC
@@ -928,7 +943,7 @@ async def run_tree_scheduler(now):
                 state["next_irr_time"] = sent_at + delay
                 save_state()
                 next_t_str = fmt_time_after(delay)
-                await send_audit_log(f"🚀 灌溉→{next_t_str}")
+                await send_audit_log(f"🚀 灌溉已发送，等待回执；无回最多补发一次，兜底→{next_t_str}")
 
     if state["is_invading"] and now >= state["next_guard_time"]:
         if has_pending_tree_action:

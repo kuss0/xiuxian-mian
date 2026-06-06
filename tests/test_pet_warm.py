@@ -52,6 +52,128 @@ class _StateIsolationMixin:
 
 
 class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_pet_touch_scheduler_uses_short_reply_timeout_and_pending_guard(self):
+        send_as_id = 8659059188
+        now = 5000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, pet_name="青竹蜂云剑（金雷竹·庚金相）")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_enabled"] = True
+            state_module.state["next_pet_time"] = now - 1
+
+            with (
+                patch.object(pet.random, "uniform", return_value=12),
+                patch.object(pet, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7001, sent_at=now + 1))) as send_mock,
+                patch.object(pet, "save_state"),
+                patch.object(pet, "console_log"),
+            ):
+                await pet.run_pet_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）",
+                track=True,
+                max_retry=1,
+                reply_timeout=pet.PET_REPLY_TIMEOUT_SEC,
+            )
+            self.assertEqual(now + 1 + pet.PET_CD + 12, state_module.state["next_pet_time"])
+            self.assertIn("等待回执", state_module.state["pet_last_error"])
+
+            state_module.state["next_pet_time"] = now - 1
+            state_module.state["pending_tasks"] = {
+                7001: {
+                    "cmd": ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）",
+                    "sent_at": now,
+                    "retry": 0,
+                    "timeout": pet.PET_REPLY_TIMEOUT_SEC,
+                }
+            }
+            with patch.object(pet, "send_game_command", new=AsyncMock()) as send_mock:
+                await pet.run_pet_scheduler(now + 1)
+            send_mock.assert_not_awaited()
+
+    async def test_pet_touch_success_reply_confirms_and_clears_pending(self):
+        send_as_id = 8659059189
+        now = 6000.0
+        command = ".抚摸法宝 青竹蜂云剑（金雷竹·庚金相）"
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, pet_name="青竹蜂云剑（金雷竹·庚金相）")
+        reply_to = SimpleNamespace(id=7002, raw_text=command)
+        text = "器灵 雷竹 亲昵地回应了你的安抚。（默契 +5，经验 +12）"
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_enabled"] = True
+            state_module.state["pet_last_error"] = "法宝已发送，等待回执确认"
+            state_module.state["pending_tasks"] = {
+                7002: {
+                    "cmd": command,
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": pet.PET_REPLY_TIMEOUT_SEC,
+                }
+            }
+            with patch.object(pet, "save_state"):
+                handled = await pet.handle_pet_cd_fix(text, now, reply_to, matched_family="pet")
+
+            self.assertTrue(handled)
+            self.assertEqual({}, state_module.state["pending_tasks"])
+            self.assertEqual(now + pet.PET_CD + pet.CD_BUFFER_SEC, state_module.state["next_pet_time"])
+            self.assertEqual("", state_module.state["pet_last_error"])
+
+    async def test_pet_trial_scheduler_uses_short_reply_timeout(self):
+        send_as_id = 8659059190
+        now = 7000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, pet_trial_name="青竹蜂云剑（庚金版）")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_trial_enabled"] = True
+            state_module.state["next_pet_trial_time"] = now - 1
+
+            with (
+                patch.object(pet.random, "uniform", return_value=42),
+                patch.object(pet, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7003, sent_at=now + 1))) as send_mock,
+                patch.object(pet, "save_state"),
+                patch.object(pet, "console_log"),
+            ):
+                await pet.run_pet_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                ".器灵试炼 青竹蜂云剑（庚金版）",
+                track=True,
+                max_retry=1,
+                reply_timeout=pet.PET_REPLY_TIMEOUT_SEC,
+            )
+            self.assertEqual(now + 1 + pet.PET_TRIAL_CD + 42, state_module.state["next_pet_trial_time"])
+            self.assertIn("等待回执", state_module.state["pet_trial_last_error"])
+
+    async def test_pet_warm_scheduler_uses_short_reply_timeout(self):
+        send_as_id = 8659059190
+        now = 8000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, pet_warm_name="青竹蜂云剑（庚金版）")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_warm_enabled"] = True
+            state_module.state["next_pet_warm_time"] = now - 1
+
+            with (
+                patch.object(pet.random, "uniform", return_value=120),
+                patch.object(pet, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7004, sent_at=now + 1))) as send_mock,
+                patch.object(pet, "save_state"),
+                patch.object(pet, "console_log"),
+            ):
+                await pet.run_pet_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                ".温养器灵 青竹蜂云剑（庚金版）",
+                track=True,
+                max_retry=1,
+                reply_timeout=pet.PET_REPLY_TIMEOUT_SEC,
+            )
+            self.assertEqual(now + 1 + pet.PET_WARM_CD + 120, state_module.state["next_pet_warm_time"])
+            self.assertIn("等待回执", state_module.state["pet_warm_last_error"])
+
     async def test_warm_success_sets_six_hour_timer(self):
         send_as_id = 8659059191
         now = 1000.0

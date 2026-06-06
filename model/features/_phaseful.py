@@ -58,6 +58,7 @@ class PhasefulSpec:
     summary_due_delay_min_sec: int = 30 * 60
     summary_due_delay_max_sec: int = 90 * 60
     summary_active_query_grace_sec: int = 0
+    summary_due_timeout_action: str = "active_query"
     summary_observe_sec: int = 180
     summary_retry_min_sec: int = 10 * 60
     summary_retry_max_sec: int = 30 * 60
@@ -412,6 +413,7 @@ async def _replay_summary_consumed_command(send_as_id, payload):
     if command == CMD_TOWER:
         track = False
         max_retry = 0
+        priority = "retry"
         send_intent.setdefault("source_module", "闯塔")
 
     with use_identity(send_as_id):
@@ -736,6 +738,9 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
 
     if _phase(spec) == "summary_due":
         if now < state[spec.next_time_key]:
+            return
+        if spec.summary_due_timeout_action == "wait_passive":
+            await _extend_summary_due_wait(spec, now)
             return
         grace_sec = float(spec.summary_active_query_grace_sec or 0)
         if grace_sec > 0 and _summary_due_elapsed(spec, now) < grace_sec:

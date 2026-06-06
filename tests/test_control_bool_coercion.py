@@ -3,6 +3,7 @@ import copy
 import unittest
 from unittest.mock import AsyncMock, patch
 
+from model import config
 from model import control
 from model import state as state_module
 from model import ui
@@ -78,6 +79,64 @@ class ControlBoolCoercionTests(unittest.TestCase):
 
         self.assertTrue(ok, message)
         self.assertFalse(state_module.get_guanxing_monitor_enabled())
+
+    def test_disabling_checkin_does_not_clear_sect_teach_runtime(self):
+        send_as_id = 990341
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["checkin_enabled"] = True
+            state_module.state["sect_teach_enabled"] = True
+            state_module.state["next_checkin_time"] = now + 100
+            state_module.state["next_sect_teach_time"] = now + 200
+            state_module.state["sect_teach_reply_to_msg_id"] = 101
+            state_module.state["last_sect_teach_msg_id"] = 102
+            state_module.state["pending_tasks"] = {
+                201: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0},
+                202: {"cmd": config.CMD_SECT_TEACH, "sent_at": now, "retry": 0},
+            }
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("点卯", False, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["checkin_enabled"])
+            self.assertTrue(state_module.state["sect_teach_enabled"])
+            self.assertEqual(0, state_module.state["next_checkin_time"])
+            self.assertEqual(now + 200, state_module.state["next_sect_teach_time"])
+            self.assertEqual(101, state_module.state["sect_teach_reply_to_msg_id"])
+            self.assertEqual(102, state_module.state["last_sect_teach_msg_id"])
+            self.assertEqual({202: {"cmd": config.CMD_SECT_TEACH, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
+
+    def test_disabling_sect_teach_does_not_clear_checkin_runtime(self):
+        send_as_id = 990342
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["checkin_enabled"] = True
+            state_module.state["sect_teach_enabled"] = True
+            state_module.state["next_checkin_time"] = now + 100
+            state_module.state["next_sect_teach_time"] = now + 200
+            state_module.state["sect_teach_reply_to_msg_id"] = 101
+            state_module.state["last_sect_teach_msg_id"] = 102
+            state_module.state["pending_tasks"] = {
+                201: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0},
+                202: {"cmd": config.CMD_SECT_TEACH, "sent_at": now, "retry": 0},
+            }
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("宗门传功", False, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertTrue(state_module.state["checkin_enabled"])
+            self.assertFalse(state_module.state["sect_teach_enabled"])
+            self.assertEqual(now + 100, state_module.state["next_checkin_time"])
+            self.assertEqual(0, state_module.state["next_sect_teach_time"])
+            self.assertEqual(0, state_module.state["sect_teach_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["last_sect_teach_msg_id"])
+            self.assertEqual({201: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
 
 
 if __name__ == "__main__":

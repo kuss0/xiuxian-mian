@@ -1,7 +1,6 @@
 import json
 import random
 import re
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from ..state import (
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining
+from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
 
 
 RANCH_CYCLE_MIN_SEC = 4 * 3600 + 10 * 60
@@ -25,6 +25,8 @@ RANCH_CYCLE_MAX_SEC = 4 * 3600 + 30 * 60
 RANCH_REPLY_TIMEOUT_SEC = 10 * 60
 RANCH_RETRY_MIN_SEC = 2 * 60
 RANCH_RETRY_MAX_SEC = 3 * 60
+RANCH_DUNGEON_QUIET_RESUME_MIN_SEC = 10
+RANCH_DUNGEON_QUIET_RESUME_MAX_SEC = 40
 RANCH_SUCCESS_PREFIX = "【万兽奔腾】"
 RANCH_NO_IDLE_PET_TEXT = "你当前没有处于【休息中】的灵兽可供放养。"
 RANCH_WRONG_SECT_TEXT = "你并非万灵宗弟子，不知如何开启万兽谷的群体传送阵。"
@@ -50,6 +52,26 @@ def _schedule_next_ranch(now):
 
 def _schedule_retry(now):
     state["next_ranch_time"] = float(now + random.uniform(RANCH_RETRY_MIN_SEC, RANCH_RETRY_MAX_SEC))
+
+
+def _schedule_after_dungeon_quiet(now):
+    if not is_dungeon_quiet_active(now):
+        return 0.0
+    until = get_dungeon_quiet_until()
+    next_time = float(until + random.uniform(RANCH_DUNGEON_QUIET_RESUME_MIN_SEC, RANCH_DUNGEON_QUIET_RESUME_MAX_SEC))
+    state["next_ranch_time"] = next_time
+    return next_time
+
+
+async def _defer_ranch_for_dungeon_quiet(now, *, action):
+    next_time = _schedule_after_dungeon_quiet(now)
+    if next_time <= 0:
+        return False
+    reason = get_dungeon_quiet_reason() or "副本静场令"
+    state["ranch_last_error"] = f"放养{action}撞到{reason}，延后至 {fmt_abs_ts(next_time)}"
+    save_state()
+    await send_audit_log(f"🤫 {state['ranch_last_error']}。", scope="identity")
+    return True
 
 
 def _remember_possible_silent_ranch_sent_at(sent_at):
@@ -457,9 +479,22 @@ async def run_ranch_scheduler(now):
             await send_audit_log("⏳ 放养 CD 到期，等待灵兽归来广播。", scope="identity")
         return
 
+    retry_count = int(state.get("ranch_retry_count", 0) or 0)
+    if await _defer_ranch_for_dungeon_quiet(
+        now,
+        action="补发" if retry_count > 0 else "发送",
+    ):
+        return
+
     msg = await send_game_command(CMD_RANCH, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
+        retry_count = int(state.get("ranch_retry_count", 0) or 0)
+        if await _defer_ranch_for_dungeon_quiet(
+            sent_at,
+            action="补发" if retry_count > 0 else "发送",
+        ):
+            return
         if int(state.get("ranch_retry_count", 0) or 0) < 1:
             state["ranch_retry_count"] = int(state.get("ranch_retry_count", 0) or 0) + 1
             _schedule_retry(sent_at)

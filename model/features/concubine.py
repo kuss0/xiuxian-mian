@@ -39,7 +39,7 @@ from ..config import (
 )
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
+from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from . import workflow_log
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -301,6 +301,14 @@ def _schedule_heart_choice_followup(send_as_id, due_at, prompt_msg_id, round_no)
 
 
 def _activate_heart_choice_round(now, prompt_msg_id, round_no):
+    prompt_msg_id = int(prompt_msg_id or 0)
+    round_no = int(round_no or 0)
+    current_prompt_msg_id = int(state.get("concubine_heart_prompt_msg_id", 0) or 0)
+    current_round_no = int(state.get("concubine_heart_round", 0) or 0)
+    if current_prompt_msg_id == prompt_msg_id and current_round_no > round_no:
+        return
+    if current_prompt_msg_id == prompt_msg_id and current_round_no == round_no and _phase() == "heart_choice_pending":
+        return
     state["concubine_heart_prompt_msg_id"] = int(prompt_msg_id or 0)
     state["concubine_heart_round"] = int(round_no or 0)
     state["concubine_heart_last_error"] = ""
@@ -608,6 +616,28 @@ def _msg_id_int(value):
         return 0
 
 
+def _payload_matches_game_topic(payload):
+    try:
+        game_topic_id = int(get_game_topic_id() or 0)
+    except (TypeError, ValueError):
+        game_topic_id = 0
+    if game_topic_id <= 0:
+        return True
+    if not isinstance(payload, dict) or "topic_id" not in payload:
+        return True
+    topic_id = _msg_id_int(payload.get("topic_id"))
+    if topic_id == game_topic_id:
+        return True
+    if topic_id > 0:
+        return False
+    reply_to_msg_id = _msg_id_int(payload.get("reply_to_msg_id"))
+    if reply_to_msg_id == game_topic_id:
+        return True
+    if reply_to_msg_id > 0:
+        return False
+    return True
+
+
 def _sender_matches_current_identity(sender_id):
     current_id = int(get_current_identity_id() or 0)
     try:
@@ -717,6 +747,8 @@ def _find_recent_logged_tianji_cooldown(now):
     sent_msgs = {}
     best = None
     for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if not _payload_matches_game_topic(payload):
+            continue
         event_ts = _parse_message_log_ts(payload.get("ts"))
         if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
             continue
@@ -995,6 +1027,8 @@ def _read_recent_message_log_candidates(now, phase):
             payload = json.loads(line)
         except Exception:
             continue
+        if not _payload_matches_game_topic(payload):
+            continue
         if payload.get("event_type") not in {"message", "edit"}:
             continue
         event_ts = _parse_message_log_ts(payload.get("ts"))
@@ -1134,6 +1168,8 @@ def _find_logged_pending_reply(now, phase):
     start_ts = max(0.0, end_ts - CONCUBINE_LOG_REPLAY_LOOKBACK_SEC)
     found = None
     for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if not _payload_matches_game_topic(payload):
+            continue
         if payload.get("event_type") not in {"message", "edit"}:
             continue
         if spec.get("match_message_id"):
@@ -1691,11 +1727,23 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
+    snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+    if snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_STATUS_STALE_SEC:
+        return _has_active_cooldown_action_due(now)
     if _has_heart_due_action(now):
-        snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
         panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-        return panel_msg_id <= 0 or snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
+        return panel_msg_id <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
     return False
+
+
+def _active_status_calibration_context(now):
+    if state.get("concubine_enabled") and _has_main_due_action(now):
+        return "入梦寻图", "concubine_last_error"
+    if _has_tianji_due_action(now):
+        return "天机代卜", "concubine_tianji_last_error"
+    if _has_heart_due_action(now):
+        return "共历心劫", "concubine_heart_last_error"
+    return "侍妾状态校准", "concubine_last_error"
 
 
 def _has_active_nanlong_pending(now):
@@ -3456,7 +3504,20 @@ async def _run_concubine_scheduler(now):
         await _send_gift_status_command(now)
         return
 
+    if (
+        state.get("concubine_tianji_enabled")
+        and not _is_tianji_affinity_blocked()
+        and float(state.get("concubine_tianji_due_at", 0) or 0) <= now
+        and _guard_tianji_send_with_message_log(now)
+    ):
+        save_state()
+        return
+
     if _needs_active_status_calibration(now):
+        action, error_key = _active_status_calibration_context(now)
+        if _defer_active_for_phaseful_summary(now, action, error_key=error_key):
+            save_state()
+            return
         state["concubine_last_error"] = "主动动作前状态校准，避免旧冷却快照误发"
         await _send_status_command(now)
         return

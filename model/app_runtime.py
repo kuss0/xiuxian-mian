@@ -1,3 +1,4 @@
+import hashlib
 import time
 
 _runtime_event_claims = {}
@@ -49,6 +50,10 @@ def _claim_runtime_log_event(event, *, event_type, ttl=120.0):
     now = time.time()
     _gc_runtime_log_claims(now)
     claim_key = f"{event_type}:{chat_id}:{msg_id}"
+    if event_type.endswith("edit"):
+        raw_text = str(getattr(event, "raw_text", "") or "")
+        text_hash = hashlib.blake2s(raw_text.encode("utf-8", "surrogatepass"), digest_size=8).hexdigest()
+        claim_key = f"{claim_key}:{text_hash}"
     if float(_runtime_log_claims.get(claim_key, 0) or 0) > now:
         return False
     _runtime_log_claims[claim_key] = now + float(ttl or 0)

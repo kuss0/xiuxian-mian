@@ -11,9 +11,11 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import time
+from collections import Counter, defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,33 @@ HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔�
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(r"already fused:", re.I)
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到")
+COOLDOWN_REPLY_PATTERN = re.compile(
+    r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
+)
+ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
+GUARDED_BUSINESS_PREFIXES = (
+    ".入梦寻图",
+    ".天机代卜",
+    ".深度闭关",
+    ".元婴出窍",
+    ".闯塔",
+    ".引道",
+    ".搜寻节点",
+    ".小世界",
+    ".神迹 布道",
+    ".显灵",
+    ".收割香火",
+    ".神识淬炼",
+)
+PENDING_PHASE_SUFFIX = "_pending"
+PHASEFUL_ATTENTION_PHASES = {
+    "summary_due",
+    "observing_summary",
+    "waiting_summary",
+    "post_summary_wait",
+    "queued_launch",
+    "launching",
+}
 
 
 @dataclass
@@ -37,6 +66,7 @@ class ObserverConfig:
     max_journal_matches: int
     max_event_lines: int
     state_dir: Path
+    business_window_sec: int
 
     @property
     def latest_path(self) -> Path:
@@ -49,6 +79,14 @@ class ObserverConfig:
 
 def local_ts(epoch: float | None = None) -> str:
     return datetime.fromtimestamp(epoch or time.time()).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parse_local_ts(raw: str) -> float:
+    text = str(raw or "")[:19]
+    try:
+        return time.mktime(datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timetuple())
+    except Exception:
+        return 0.0
 
 
 def run_command(args: list[str], *, timeout: float = 8.0) -> tuple[int, str, str]:
@@ -141,7 +179,305 @@ def is_warn_journal_line(line: str) -> bool:
         return False
     if BENIGN_WARN_CONTEXT_PATTERN.search(text):
         return False
+    if "主线拉人未发送" in text and "send_failed" not in text:
+        return False
     return bool(WARN_PATTERN.search(text))
+
+
+def current_message_log(project_root: Path, now: float | None = None) -> Path:
+    if os.environ.get("XIUXIAN_MESSAGES_DIR"):
+        messages_dir = Path(os.environ["XIUXIAN_MESSAGES_DIR"])
+    elif os.environ.get("XIUXIAN_DATA_DIR"):
+        messages_dir = Path(os.environ["XIUXIAN_DATA_DIR"]) / "messages"
+    else:
+        messages_dir = project_root / "data" / "messages"
+    return messages_dir / f"{datetime.fromtimestamp(now or time.time()).strftime('%Y-%m-%d')}.log"
+
+
+def state_db_path(project_root: Path) -> Path:
+    if os.environ.get("XIUXIAN_DB_FILE"):
+        return Path(os.environ["XIUXIAN_DB_FILE"])
+    if os.environ.get("XIUXIAN_STATE_DIR"):
+        state_dir = Path(os.environ["XIUXIAN_STATE_DIR"])
+    elif os.environ.get("XIUXIAN_DATA_DIR"):
+        state_dir = Path(os.environ["XIUXIAN_DATA_DIR"]) / "state"
+    else:
+        state_dir = project_root / "data" / "state"
+    return state_dir / "chaogu_state.db"
+
+
+def command_key(text: str) -> str:
+    raw = str(text or "").strip()
+    for prefix in (".引道", ".神识淬炼", ".搜寻节点"):
+        if raw.startswith(prefix + " "):
+            return prefix
+    return raw
+
+
+def is_guarded_business_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in GUARDED_BUSINESS_PREFIXES)
+
+
+def read_recent_message_events(log_file: Path, max_lines: int = 10000) -> list[dict[str, object]]:
+    if not log_file.exists():
+        return []
+    rows: list[dict[str, object]] = []
+    try:
+        with log_file.open("r", encoding="utf-8") as handle:
+            for line in deque(handle, maxlen=max_lines):
+                try:
+                    payload = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                payload["_epoch"] = parse_local_ts(str(payload.get("ts") or ""))
+                rows.append(payload)
+    except OSError:
+        return []
+    return rows
+
+
+def business_alert(message: str, *, severity: str = "warn", **extra) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "severity": str(severity or "warn"),
+        "message": str(message or "").strip(),
+    }
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    return payload
+
+
+def analyze_message_events(events: list[dict[str, object]], now: float, window_sec: int) -> dict[str, object]:
+    window_start = float(now) - float(window_sec)
+    recent = [
+        item for item in events
+        if float(item.get("_epoch", 0) or 0) >= window_start
+    ]
+    sent = [
+        item for item in recent
+        if str(item.get("event_type") or "") == "sent"
+        and float(item.get("_epoch", 0) or 0) > 0
+    ]
+    alerts: list[dict[str, object]] = []
+    sent_ids = {int(item.get("message_id", 0) or 0) for item in sent}
+    sent_ids.discard(0)
+
+    active_counts = Counter(command_key(str(item.get("text") or "")) for item in sent)
+    active_counts = Counter({key: count for key, count in active_counts.items() if key in ACTIVE_STATUS_COMMANDS})
+    for command, count in sorted(active_counts.items()):
+        if count >= 2:
+            alerts.append(
+                business_alert(
+                    f"active status query repeated: {command} x{count}/{int(window_sec / 60)}m",
+                    command=command,
+                    count=count,
+                )
+            )
+
+    grouped: dict[tuple[int, str], list[dict[str, object]]] = defaultdict(list)
+    for item in sent:
+        text = command_key(str(item.get("text") or ""))
+        sender_id = int(item.get("sender_id", 0) or 0)
+        if sender_id and text and is_guarded_business_command(text):
+            grouped[(sender_id, text)].append(item)
+    for (sender_id, text), items in sorted(grouped.items()):
+        if len(items) >= 4:
+            alerts.append(
+                business_alert(
+                    f"guarded command repeated: {sender_id}:{text} x{len(items)}/{int(window_sec / 60)}m",
+                    sender_id=sender_id,
+                    command=text,
+                    count=len(items),
+                )
+            )
+
+    cooldown_replies = []
+    for item in recent:
+        if str(item.get("event_type") or "") not in {"message", "edit"}:
+            continue
+        if int(item.get("reply_to_msg_id", 0) or 0) not in sent_ids:
+            continue
+        text = str(item.get("text") or "")
+        if COOLDOWN_REPLY_PATTERN.search(text):
+            cooldown_replies.append(item)
+    if len(cooldown_replies) >= 3:
+        alerts.append(
+            business_alert(
+                f"cooldown replies to script sends: {len(cooldown_replies)}/{int(window_sec / 60)}m",
+                count=len(cooldown_replies),
+            )
+        )
+
+    last_sent_at = max((float(item.get("_epoch", 0) or 0) for item in sent), default=0.0)
+    return {
+        "window_sec": int(window_sec),
+        "sent_count": len(sent),
+        "last_sent_at": last_sent_at,
+        "last_sent_ts": local_ts(last_sent_at) if last_sent_at > 0 else "",
+        "active_status_counts": dict(active_counts),
+        "cooldown_reply_count": len(cooldown_replies),
+        "alerts": alerts,
+    }
+
+
+def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
+    if not db_path.exists():
+        return {
+            "db_path": str(db_path),
+            "available": False,
+            "alerts": [business_alert(f"state db missing: {db_path}", severity="error")],
+        }
+    alerts: list[dict[str, object]] = []
+    pending_total = 0
+    overdue_pending: list[dict[str, object]] = []
+    stuck_phases: list[dict[str, object]] = []
+    uri = f"file:{db_path}?mode=ro"
+    try:
+        with sqlite3.connect(uri, uri=True, timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            pending_rows = conn.execute(
+                """
+                SELECT send_as_id, cmd, sent_at, timeout, retry, max_retry, source_module
+                FROM pending_tasks
+                """
+            ).fetchall()
+            pending_total = len(pending_rows)
+            for row in pending_rows:
+                sent_at = float(row["sent_at"] or 0)
+                timeout = float(row["timeout"] or 0)
+                due_at = sent_at + timeout
+                if sent_at > 0 and timeout > 0 and now > due_at + 120:
+                    overdue_pending.append({
+                        "identity_id": int(row["send_as_id"] or 0),
+                        "cmd": row["cmd"],
+                        "age_sec": int(now - sent_at),
+                        "overdue_sec": int(now - due_at),
+                        "retry": int(row["retry"] or 0),
+                        "max_retry": int(row["max_retry"] or 0),
+                        "source_module": row["source_module"],
+                    })
+
+            runtime_rows = conn.execute(
+                """
+                SELECT
+                    r.send_as_id,
+                    COALESCE(i.username, '') AS username,
+                    r.concubine_phase,
+                    t.next_concubine_time,
+                    r.deep_retreat_phase,
+                    r.deep_retreat_summary_sent_at,
+                    t.next_deep_retreat_time,
+                    r.yuanying_phase,
+                    r.yuanying_summary_sent_at,
+                    t.next_yuanying_time,
+                    r.tower_reply_due_at,
+                    r.last_tower_msg_id
+                FROM identity_runtime_state r
+                LEFT JOIN identity_timers t ON t.send_as_id = r.send_as_id
+                LEFT JOIN identities i ON i.send_as_id = r.send_as_id
+                """
+            ).fetchall()
+            for row in runtime_rows:
+                identity_id = int(row["send_as_id"] or 0)
+                username = str(row["username"] or "")
+                concubine_phase = str(row["concubine_phase"] or "")
+                next_concubine_time = float(row["next_concubine_time"] or 0)
+                if concubine_phase.endswith(PENDING_PHASE_SUFFIX) and next_concubine_time > 0 and now > next_concubine_time + 300:
+                    stuck_phases.append({
+                        "identity_id": identity_id,
+                        "username": username,
+                        "module": "concubine",
+                        "phase": concubine_phase,
+                        "overdue_sec": int(now - next_concubine_time),
+                    })
+
+                for module, phase_key, next_key in (
+                    ("deep_retreat", "deep_retreat_phase", "next_deep_retreat_time"),
+                    ("yuanying", "yuanying_phase", "next_yuanying_time"),
+                ):
+                    phase = str(row[phase_key] or "")
+                    next_time = float(row[next_key] or 0)
+                    if phase in PHASEFUL_ATTENTION_PHASES and next_time > 0 and now > next_time + 300:
+                        stuck_phases.append({
+                            "identity_id": identity_id,
+                            "username": username,
+                            "module": module,
+                            "phase": phase,
+                            "overdue_sec": int(now - next_time),
+                        })
+
+                tower_due = float(row["tower_reply_due_at"] or 0)
+                if int(row["last_tower_msg_id"] or 0) and tower_due > 0 and now > tower_due + 120:
+                    stuck_phases.append({
+                        "identity_id": identity_id,
+                        "username": username,
+                        "module": "tower",
+                        "phase": "reply_wait",
+                        "overdue_sec": int(now - tower_due),
+                    })
+    except sqlite3.Error as exc:
+        return {
+            "db_path": str(db_path),
+            "available": False,
+            "alerts": [business_alert(f"state db read failed: {exc}", severity="error")],
+        }
+
+    if pending_total >= 5:
+        alerts.append(business_alert(f"pending task backlog: {pending_total}", count=pending_total))
+    if overdue_pending:
+        alerts.append(
+            business_alert(
+                f"overdue pending tasks: {len(overdue_pending)}",
+                count=len(overdue_pending),
+                sample=overdue_pending[:5],
+            )
+        )
+    if stuck_phases:
+        alerts.append(
+            business_alert(
+                f"stuck runtime phases: {len(stuck_phases)}",
+                count=len(stuck_phases),
+                sample=stuck_phases[:8],
+            )
+        )
+
+    return {
+        "db_path": str(db_path),
+        "available": True,
+        "pending_total": pending_total,
+        "overdue_pending": overdue_pending[:20],
+        "stuck_phases": stuck_phases[:20],
+        "alerts": alerts,
+    }
+
+
+def collect_business_snapshot(cfg: ObserverConfig, now: float) -> dict[str, object]:
+    events = read_recent_message_events(current_message_log(cfg.project_root, now=now))
+    message_state = analyze_message_events(events, now, cfg.business_window_sec)
+    db_state = read_db_business_state(state_db_path(cfg.project_root), now)
+    alerts = list(message_state.get("alerts") or []) + list(db_state.get("alerts") or [])
+    return {
+        "message_log": str(current_message_log(cfg.project_root, now=now)),
+        "message_state": message_state,
+        "db_state": db_state,
+        "alerts": alerts,
+    }
+
+
+def merge_status(base_status: str, business_alerts: list[dict[str, object]]) -> tuple[str, list[str]]:
+    error_count = sum(1 for item in business_alerts if item.get("severity") == "error")
+    warn_count = len(business_alerts) - error_count
+    reasons: list[str] = []
+    if error_count:
+        reasons.append(f"business errors: {error_count}")
+    if warn_count:
+        reasons.append(f"business warnings: {warn_count}")
+    if error_count:
+        return "error", reasons
+    if warn_count and base_status == "ok":
+        return "warn", reasons
+    return base_status, reasons
 
 
 def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[dict[str, object]]) -> tuple[str, list[str]]:
@@ -168,19 +504,24 @@ def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[
 
 
 def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
+    now = time.time()
     service_states = read_service_states(cfg.services)
     journals = [
         read_journal_matches(service, cfg.journal_window_sec, cfg.max_journal_matches)
         for service in cfg.services
     ]
     status, reasons = classify_snapshot(service_states, journals)
+    business = collect_business_snapshot(cfg, now)
+    status, business_reasons = merge_status(status, list(business.get("alerts") or []))
+    reasons.extend(business_reasons)
     return {
         "ts": local_ts(),
-        "epoch": time.time(),
+        "epoch": now,
         "status": status,
         "reasons": reasons,
         "services": service_states,
         "journals": journals,
+        "business": business,
         "policy": "read-only: no game commands, no Tianjige API calls",
     }
 
@@ -220,6 +561,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--journal-window-sec", type=int, default=10 * 60)
     parser.add_argument("--max-journal-matches", type=int, default=12)
     parser.add_argument("--max-event-lines", type=int, default=5000)
+    parser.add_argument("--business-window-sec", type=int, default=30 * 60)
     parser.add_argument("--once", action="store_true")
     return parser.parse_args(argv)
 
@@ -235,6 +577,7 @@ def build_config(args: argparse.Namespace) -> ObserverConfig:
         max_journal_matches=max(1, int(args.max_journal_matches or 12)),
         max_event_lines=max(100, int(args.max_event_lines or 5000)),
         state_dir=project_root / "data" / "state" / "health_observer",
+        business_window_sec=max(300, int(args.business_window_sec or 1800)),
     )
 
 

@@ -13,6 +13,7 @@ from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_guanxing_round_state,
+    get_guanxing_shift_delay_sec,
     get_identity_enabled,
     get_identity_ids,
     get_guanxing_shift_target,
@@ -38,6 +39,12 @@ ROUND_STAGE_WAITING_FINISH = "waiting_finish"
 ROUND_STAGE_FINISHED = "finished"
 
 
+def _get_shift_due_at(slot_end_at):
+    query_due_at = float(slot_end_at or 0) - GUANXING_EXECUTE_ADVANCE_SEC
+    configured_due_at = float(slot_end_at or 0) + get_guanxing_shift_delay_sec()
+    return max(query_due_at, configured_due_at)
+
+
 def _build_round_state(slot_info):
     slot_end_at = float(slot_info.get("slot_end_at", 0) or 0)
     return {
@@ -48,11 +55,13 @@ def _build_round_state(slot_info):
         "gate_keyword": "",
         "gate_value": "",
         "query_due_at": slot_end_at - GUANXING_EXECUTE_ADVANCE_SEC,
-        "shift_due_at": slot_end_at + GUANXING_SHIFT_START_DELAY_SEC,
+        "shift_due_at": _get_shift_due_at(slot_end_at),
         "participant_ids": [],
         "panel_ready_ids": [],
         "next_shift_index": 0,
         "consumed_external_msg_ids": [],
+        "shift_inflight_identity_id": 0,
+        "shift_inflight_at": 0,
         "finish_reason": "",
         "finished_at": 0,
     }
@@ -91,6 +100,8 @@ def _normalize_round_state(round_state, slot_info):
         for msg_id in normalized.get("consumed_external_msg_ids") or []
         if int(msg_id or 0) > 0
     ][-50:]
+    normalized["shift_inflight_identity_id"] = max(0, int(normalized.get("shift_inflight_identity_id", 0) or 0))
+    normalized["shift_inflight_at"] = float(normalized.get("shift_inflight_at", 0) or 0)
     normalized["finish_reason"] = str(normalized.get("finish_reason") or "")
     normalized["finished_at"] = float(normalized.get("finished_at", 0) or 0)
     return normalized
@@ -242,7 +253,7 @@ async def _send_guanxing_query(identity_id, slot_key, now):
         state["guanxing_last_shift_slot_key"] = ""
         state["guanxing_last_shift_target"] = ""
         state["guanxing_last_error"] = ""
-    msg = await send_game_command(CMD_GUANXING, track=False, send_as_id=identity_id)
+    msg = await send_game_command(CMD_GUANXING, track=False, send_as_id=identity_id, priority="reactive")
     with use_identity(identity_id):
         if msg:
             state["guanxing_last_query_msg_id"] = int(getattr(msg, "id", 0) or 0)
@@ -270,7 +281,13 @@ async def _send_guanxing_shift(identity_id, slot_key):
         return False, "观星改换目标未配置"
 
     shift_command = f"{CMD_GUANXING_SHIFT} {shift_target}"
-    msg = await send_game_command(shift_command, track=False, reply_to=panel_msg_id, send_as_id=identity_id)
+    msg = await send_game_command(
+        shift_command,
+        track=False,
+        reply_to=panel_msg_id,
+        send_as_id=identity_id,
+        priority="reactive",
+    )
     with use_identity(identity_id):
         if msg:
             state["guanxing_last_shift_msg_id"] = int(getattr(msg, "id", 0) or 0)
@@ -290,21 +307,46 @@ def _append_panel_ready(round_state, identity_id):
     return round_state
 
 
+def _normalize_sender_id(sender_id):
+    sender_id = int(sender_id or 0)
+    if sender_id < 0:
+        return -sender_id % 10000000000
+    return sender_id
+
+
 async def _send_next_shift(round_state, now, *, reason_text):
+    inflight_identity_id = int(round_state.get("shift_inflight_identity_id", 0) or 0)
+    inflight_at = float(round_state.get("shift_inflight_at", 0) or 0)
+    if inflight_identity_id > 0 and now - inflight_at < 30:
+        return False
+    if inflight_identity_id > 0:
+        round_state["shift_inflight_identity_id"] = 0
+        round_state["shift_inflight_at"] = 0
+        _set_round_state(round_state)
+        save_state()
+
     participant_ids = [int(identity_id) for identity_id in round_state.get("participant_ids") or [] if int(identity_id or 0) > 0]
     slot_key = str(round_state.get("slot_key") or "")
     next_shift_index = max(0, int(round_state.get("next_shift_index", 0) or 0))
 
     while next_shift_index < len(participant_ids):
         identity_id = participant_ids[next_shift_index]
+        next_stage = (
+            ROUND_STAGE_WAITING_EXTERNAL
+            if next_shift_index + 1 < len(participant_ids)
+            else ROUND_STAGE_WAITING_FINISH
+        )
+        round_state["next_shift_index"] = next_shift_index + 1
+        round_state["stage"] = next_stage
+        round_state["shift_inflight_identity_id"] = identity_id
+        round_state["shift_inflight_at"] = float(now)
+        _set_round_state(round_state)
+        save_state()
+
         sent, error_text = await _send_guanxing_shift(identity_id, slot_key)
+        round_state["shift_inflight_identity_id"] = 0
+        round_state["shift_inflight_at"] = 0
         if sent:
-            round_state["next_shift_index"] = next_shift_index + 1
-            round_state["stage"] = (
-                ROUND_STAGE_WAITING_EXTERNAL
-                if round_state["next_shift_index"] < len(participant_ids)
-                else ROUND_STAGE_WAITING_FINISH
-            )
             _set_round_state(round_state)
             save_state()
             console_log(
@@ -315,7 +357,6 @@ async def _send_next_shift(round_state, now, *, reason_text):
             )
             return True
 
-        round_state["next_shift_index"] = next_shift_index + 1
         _set_round_state(round_state)
         save_state()
         await send_audit_log(
@@ -327,6 +368,8 @@ async def _send_next_shift(round_state, now, *, reason_text):
         next_shift_index += 1
 
     round_state["stage"] = ROUND_STAGE_WAITING_FINISH
+    round_state["shift_inflight_identity_id"] = 0
+    round_state["shift_inflight_at"] = 0
     _set_round_state(round_state)
     save_state()
     return False
@@ -481,7 +524,7 @@ async def handle_guanxing_external_shift_command(text, now, event):
     if str(round_state.get("stage") or "") != ROUND_STAGE_WAITING_EXTERNAL:
         return False
 
-    sender_id = int(getattr(event, "sender_id", 0) or 0)
+    sender_id = _normalize_sender_id(getattr(event, "sender_id", 0))
     if sender_id in participant_ids:
         return False
 

@@ -23,6 +23,9 @@ from .config import (
     CMD_CONCUBINE_HEART,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    CMD_EXPLORE_RIFT,
+    CMD_FORMATION_ASSIST,
+    CMD_FORMATION_START,
     CMD_GUANXING,
     CMD_GUANXING_SHIFT,
     CMD_NANLONG_EXCHANGE_FABAO,
@@ -59,6 +62,7 @@ from .config import (
     CMD_TREE_STATUS,
     CMD_TREE_WATER,
     CMD_WILD_TRAINING,
+    CMD_WENDAO,
     CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
@@ -104,9 +108,10 @@ from .config import (
     is_identity_info_command_text,
     is_identity_refresh_command_text,
 )
-from .features.checkin import get_checkin_status_text
+from .features.checkin import get_checkin_status_text, get_sect_teach_status_text
 from .features.concubine import clear_concubine_state, clear_concubine_tianji_state, get_concubine_status_text, restore_concubine_runtime
 from .features.deep_retreat import get_deep_retreat_status_detail_text
+from .features.formation import clear_formation_state, get_formation_status_text
 from .features.guanxing import (
     clear_guanxing_identity_runtime,
     get_guanxing_status_text,
@@ -129,6 +134,7 @@ from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
+from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
 from .features.wild_training import (
@@ -184,9 +190,11 @@ from .state import (
     get_send_as_profile,
     get_send_as_tags,
     get_stargazer_total_slots,
+    get_storage_bag_records,
     get_tianti_rank_choice,
     REALM_SORT_ORDER,
     is_module_available,
+    is_explore_rift_realm_available,
     is_small_world_realm_available,
     is_yuanying_realm_available,
     set_identity_account,
@@ -205,6 +213,7 @@ RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
 RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
+RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s*$")
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
 RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
 RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|召唤魔影|召唤|收取幡魂|收取|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
@@ -260,6 +269,8 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_nanlong_time",
     "next_small_world_time",
     "next_yuanying_time",
+    "next_explore_rift_time",
+    "next_wendao_time",
     "next_deep_retreat_time",
     "next_second_soul_time",
     "next_taiyi_cycle_time",
@@ -392,6 +403,9 @@ def _schedule_module_immediate_retry(module_name, now):
     if module_name == "元婴":
         state["next_yuanying_time"] = retry_at
         return retry_at
+    if module_name == "问道":
+        state["next_wendao_time"] = retry_at
+        return retry_at
     if module_name == "深度闭关":
         state["next_deep_retreat_time"] = retry_at
         return retry_at
@@ -442,13 +456,19 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
         return f"当前宗门未提供{module_name}模块"
     if module_name == "观星":
         return f"当前宗门未提供{module_name}模块"
+    if module_name == "周天星斗":
+        return "当前宗门未提供周天星斗模块"
     if module_name == "登天阶":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "太一":
         return f"当前宗门未提供{module_name}模块"
+    if module_name == "问道":
+        return "当前宗门未提供问道模块"
     if module_name == "放养":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
+        return f"当前境界未达到{module_name}模块开启条件"
+    if module_name == "探寻裂缝" and not is_explore_rift_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
     if module_name == "小世界" and not is_small_world_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -592,6 +612,25 @@ def _manual_enable_guanxing_module_state(now):
     state["guanxing_enabled"] = True
     clear_guanxing_identity_runtime(get_current_identity_id())
     restore_guanxing_round_runtime(now)
+
+
+def _disable_formation_module_state():
+    state["formation_enabled"] = False
+    clear_formation_state()
+    _clear_pending_tasks_by_commands({CMD_FORMATION_START, CMD_FORMATION_ASSIST})
+
+
+def _manual_disable_formation_module_state():
+    state["formation_enabled"] = False
+    clear_formation_state()
+    _clear_pending_tasks_by_commands({CMD_FORMATION_START, CMD_FORMATION_ASSIST})
+
+
+def _manual_enable_formation_module_state(now):
+    state["formation_enabled"] = True
+    state["formation_last_error"] = ""
+    if float(state.get("next_formation_time", 0) or 0) <= 0:
+        state["next_formation_time"] = float(now or 0)
 
 
 def _disable_tianti_module_state():
@@ -745,17 +784,27 @@ def _disable_yuanying_module_state():
     _clear_pending_tasks_by_commands({CMD_YUANYING, CMD_YUANYING_STATUS})
 
 
+def _disable_wendao_module_state():
+    state["wendao_enabled"] = False
+    clear_wendao_state(persist=False, keep_last_error=True)
+    _clear_pending_tasks_by_commands({CMD_WENDAO})
+
+
 def _get_checkin_resume_time():
-    next_sect_teach_time = float(state.get("next_sect_teach_time", 0) or 0)
-    sect_teach_reply_to_msg_id = int(state.get("sect_teach_reply_to_msg_id", 0) or 0)
-    if next_sect_teach_time > 0 and sect_teach_reply_to_msg_id > 0 and int(state.get("checkin_teach_count", 0) or 0) < 3:
-        return next_sect_teach_time
     return float(state.get("next_checkin_time", 0) or 0)
+
+
+def _clear_sect_teach_runtime():
+    state["next_sect_teach_time"] = 0
+    state["sect_teach_reply_to_msg_id"] = 0
+    state["last_sect_teach_msg_id"] = 0
+    _clear_pending_tasks_by_commands({CMD_SECT_TEACH})
 
 
 def _manual_disable_checkin_module_state():
     state["checkin_enabled"] = False
-    _clear_pending_tasks_by_commands({CMD_CHECKIN, CMD_SECT_TEACH})
+    state["next_checkin_time"] = 0
+    _clear_pending_tasks_by_commands({CMD_CHECKIN})
 
 
 def _manual_enable_checkin_module_state(now):
@@ -765,12 +814,29 @@ def _manual_enable_checkin_module_state(now):
     state["checkin_enabled"] = True
     if _get_checkin_resume_time() > now:
         return
-    state["next_sect_teach_time"] = 0
-    state["sect_teach_reply_to_msg_id"] = 0
     state["last_checkin_msg_id"] = 0
-    state["last_sect_teach_msg_id"] = 0
-    state["checkin_cleanup_msg_ids"] = []
     _set_checkin_module_enabled(True, now)
+
+
+def _manual_disable_sect_teach_module_state():
+    state["sect_teach_enabled"] = False
+    _clear_sect_teach_runtime()
+
+
+def _manual_enable_sect_teach_module_state(now):
+    day_key = get_checkin_day_key(now)
+    if state["checkin_teach_day"] != day_key:
+        reset_checkin_daily_state(now)
+    state["sect_teach_enabled"] = True
+    if int(state.get("checkin_teach_count", 0) or 0) >= 3:
+        _clear_sect_teach_runtime()
+        return
+    if float(state.get("next_sect_teach_time", 0) or 0) > now:
+        return
+    last_checkin_msg_id = int(state.get("last_checkin_msg_id", 0) or 0)
+    if state.get("last_checkin_done_day") == day_key and last_checkin_msg_id > 0:
+        state["next_sect_teach_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+        state["sect_teach_reply_to_msg_id"] = last_checkin_msg_id
 
 
 def _manual_disable_tower_module_state():
@@ -945,6 +1011,55 @@ def _manual_enable_yuanying_module_state(now):
     _set_yuanying_module_enabled(True, now)
 
 
+def _manual_disable_wendao_module_state():
+    _disable_wendao_module_state()
+
+
+def _manual_enable_wendao_module_state(now):
+    state["wendao_enabled"] = True
+    state["wendao_last_error"] = ""
+    if float(state.get("next_wendao_time", 0) or 0) > now:
+        return
+    state["wendao_reply_to_msg_id"] = 0
+    state["wendao_reply_due_at"] = 0
+    state["wendao_pending_result_msg_id"] = 0
+    state["wendao_sent_at"] = 0
+    state["next_wendao_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+
+
+def _clear_explore_rift_runtime():
+    state["next_explore_rift_time"] = 0
+    state["explore_rift_reply_to_msg_id"] = 0
+    state["explore_rift_reply_due_at"] = 0
+    state["explore_rift_pending_result_msg_id"] = 0
+    _clear_pending_tasks_by_commands({CMD_EXPLORE_RIFT})
+
+
+def _manual_disable_explore_rift_module_state():
+    state["explore_rift_enabled"] = False
+    _clear_explore_rift_runtime()
+
+
+def _manual_enable_explore_rift_module_state(now):
+    state["explore_rift_enabled"] = True
+    state["explore_rift_last_error"] = "状态机待接入真实文案，当前不会主动发送。"
+    state["explore_rift_manual_required"] = True
+
+
+def get_explore_rift_status_text():
+    last_result = str(state.get("explore_rift_last_result") or "").strip() or "无"
+    last_error = str(state.get("explore_rift_last_error") or "").strip() or "无"
+    lines = [
+        "🕳 探寻裂缝",
+        "- 自动状态机：待接入真实文案（当前不会主动发送）",
+        f"- 下次执行：{fmt_abs_ts(state['next_explore_rift_time'])}（{fmt_remaining(state['next_explore_rift_time'])}）",
+        f"- 最近结果：{last_result}",
+        f"- 最近错误：{last_error}",
+        f"- 人工确认：{'需要' if state.get('explore_rift_manual_required') else '否'}",
+    ]
+    return "\n".join(lines)
+
+
 def _set_checkin_module_enabled(enabled, now):
     state["checkin_enabled"] = bool(enabled)
     if enabled:
@@ -959,12 +1074,8 @@ def _set_checkin_module_enabled(enabled, now):
             _schedule_module_next_window_after_enable("点卯", now)
         return
     state["next_checkin_time"] = 0
-    state["next_sect_teach_time"] = 0
-    state["sect_teach_reply_to_msg_id"] = 0
     state["last_checkin_msg_id"] = 0
-    state["last_sect_teach_msg_id"] = 0
-    state["checkin_cleanup_msg_ids"] = []
-    _clear_pending_tasks_by_commands({CMD_CHECKIN, CMD_SECT_TEACH})
+    _clear_pending_tasks_by_commands({CMD_CHECKIN})
 
 
 def _set_tower_module_enabled(enabled, now):
@@ -1059,6 +1170,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_STARGAZER_COLLECT: "观星台",
     CMD_GUANXING: "观星",
     CMD_GUANXING_SHIFT: "观星",
+    CMD_FORMATION_START: "周天星斗",
+    CMD_FORMATION_ASSIST: "周天星斗",
     CMD_TIANTI_STATUS: "登天阶",
     CMD_TIANTI_WENXIN: "登天阶",
     CMD_TIANTI_CLIMB: "登天阶",
@@ -1084,10 +1197,12 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_RANCH: "放养",
     CMD_WILD_TRAINING: "野外历练",
     CMD_CHECKIN: "点卯",
-    CMD_SECT_TEACH: "点卯",
+    CMD_SECT_TEACH: "宗门传功",
     CMD_TOWER: "闯塔",
     CMD_YUANYING: "元婴",
     CMD_YUANYING_STATUS: "元婴",
+    CMD_EXPLORE_RIFT: "探寻裂缝",
+    CMD_WENDAO: "问道",
     CMD_DEEP_RETREAT: "深度闭关",
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
     CMD_SECOND_SOUL_STATUS: "第二元神",
@@ -1107,6 +1222,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "观星台": (_manual_enable_stargazer_module_state, _manual_disable_stargazer_module_state),
     "观星": (_manual_enable_guanxing_module_state, _manual_disable_guanxing_module_state),
     "观星监控": (_manual_enable_guanxing_monitor_module_state, _manual_disable_guanxing_monitor_module_state),
+    "周天星斗": (_manual_enable_formation_module_state, _manual_disable_formation_module_state),
     "登天阶": (_manual_enable_tianti_module_state, _manual_disable_tianti_module_state),
     "玄骨考校": (_manual_enable_quiz_module_state, _manual_disable_quiz_module_state),
     "极阴祖师": (_manual_enable_jiyin_module_state, _manual_disable_jiyin_module_state),
@@ -1115,9 +1231,12 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "共历心劫": (_manual_enable_concubine_heart_module_state, _manual_disable_concubine_heart_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
+    "探寻裂缝": (_manual_enable_explore_rift_module_state, _manual_disable_explore_rift_module_state),
     "点卯": (_manual_enable_checkin_module_state, _manual_disable_checkin_module_state),
+    "宗门传功": (_manual_enable_sect_teach_module_state, _manual_disable_sect_teach_module_state),
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
+    "问道": (_manual_enable_wendao_module_state, _manual_disable_wendao_module_state),
     "深度闭关": (_manual_enable_deep_retreat_module_state, _manual_disable_deep_retreat_module_state),
     "第二元神": (_manual_enable_second_soul_module_state, _manual_disable_second_soul_module_state),
     "太一": (_manual_enable_taiyi_module_state, _manual_disable_taiyi_module_state),
@@ -1132,6 +1251,7 @@ MODULE_DISABLE_HANDLERS = {
     "观星台": _disable_stargazer_module_state,
     "观星": _disable_guanxing_module_state,
     "观星监控": _disable_guanxing_monitor_module_state,
+    "周天星斗": _disable_formation_module_state,
     "登天阶": _disable_tianti_module_state,
     "玄骨考校": _disable_quiz_module_state,
     "极阴祖师": _disable_jiyin_module_state,
@@ -1141,10 +1261,13 @@ MODULE_DISABLE_HANDLERS = {
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
     "元婴": _disable_yuanying_module_state,
+    "探寻裂缝": _manual_disable_explore_rift_module_state,
+    "问道": _disable_wendao_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "第二元神": _disable_second_soul_module_state,
     "太一": _disable_taiyi_module_state,
-    "点卯": lambda: _set_checkin_module_enabled(False, time.time()),
+    "点卯": _manual_disable_checkin_module_state,
+    "宗门传功": _manual_disable_sect_teach_module_state,
     "闯塔": lambda: _set_tower_module_enabled(False, time.time()),
 }
 MODULE_STATE_SETTERS = {
@@ -1353,7 +1476,7 @@ def get_dungeon_join_status_text(send_as_id=None):
             "",
             "副本群轻量指令:",
             "- .查询副本",
-            "- .开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]",
+            "- .开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>",
             "- .加入副本 @用户名 @用户名",
             "- .解散副本",
             "",
@@ -1378,6 +1501,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "观星台": get_stargazer_status_text,
         "观星": get_guanxing_status_text,
         "观星监控": get_guanxing_monitor_status_text,
+        "周天星斗": get_formation_status_text,
         "登天阶": get_tianti_status_text,
         "玄骨考校": get_quiz_status_text,
         "极阴祖师": get_jiyin_status_text,
@@ -1390,8 +1514,11 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,
+        "探寻裂缝": get_explore_rift_status_text,
+        "问道": get_wendao_status_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "点卯": get_checkin_status_text,
+        "宗门传功": get_sect_teach_status_text,
         "闯塔": get_tower_status_text,
         "第二元神": get_second_soul_status_text,
         "太一": get_taiyi_status_text,
@@ -1991,6 +2118,7 @@ def _format_log_group_help_html(send_as_id=None):
         ".储物袋汇总",
         ".储物袋盘点",
         ".材料汇总",
+        ".还有多少 <物品名>",
     ]
     analysis_commands = [
         ".上线预检",
@@ -2007,7 +2135,7 @@ def _format_log_group_help_html(send_as_id=None):
     ]
     replica_group_commands = [
         ".查询副本",
-        ".开启副本 @用户名 [虚天|苍坤|坠魔|黄龙]",
+        ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>",
         ".加入副本 @用户名 @用户名",
         ".解散副本",
     ]
@@ -2064,11 +2192,17 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
         if not is_module_available("观星", send_as_id) and state.get("guanxing_enabled"):
             _disable_guanxing_module_state()
             changed = True
+        if not is_module_available("周天星斗", send_as_id) and state.get("formation_enabled"):
+            _disable_formation_module_state()
+            changed = True
         if not is_module_available("登天阶", send_as_id) and state.get("tianti_enabled"):
             _disable_tianti_module_state()
             changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
+            changed = True
+        if not is_module_available("问道", send_as_id) and state.get("wendao_enabled"):
+            _disable_wendao_module_state()
             changed = True
         if not is_module_available("小世界", send_as_id) and state.get("small_world_enabled"):
             _disable_small_world_module_state()
@@ -2096,12 +2230,25 @@ def _restore_checkin_runtime(now):
     if resume_time > now and get_checkin_day_key(resume_time) == day_key:
         return
 
-    state["next_sect_teach_time"] = 0
-    state["sect_teach_reply_to_msg_id"] = 0
     state["last_checkin_msg_id"] = 0
-    state["last_sect_teach_msg_id"] = 0
-    state["checkin_cleanup_msg_ids"] = []
     _set_checkin_module_enabled(True, now)
+
+
+def _restore_sect_teach_runtime(now):
+    day_key = get_checkin_day_key(now)
+    if state["checkin_teach_day"] != day_key:
+        reset_checkin_daily_state(now)
+    if int(state.get("checkin_teach_count", 0) or 0) >= 3:
+        _clear_sect_teach_runtime()
+        return
+    next_sect_teach_time = float(state.get("next_sect_teach_time", 0) or 0)
+    reply_to_msg_id = int(state.get("sect_teach_reply_to_msg_id", 0) or 0)
+    if next_sect_teach_time > now and reply_to_msg_id > 0:
+        return
+    last_checkin_msg_id = int(state.get("last_checkin_msg_id", 0) or 0)
+    if state.get("last_checkin_done_day") == day_key and last_checkin_msg_id > 0:
+        state["next_sect_teach_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+        state["sect_teach_reply_to_msg_id"] = last_checkin_msg_id
 
 
 
@@ -2453,12 +2600,16 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_tianti_active_cooldown_runtime(now)
         if state["checkin_enabled"]:
             _restore_checkin_runtime(now)
+        if state.get("sect_teach_enabled"):
+            _restore_sect_teach_runtime(now)
         if state["tower_enabled"]:
             _restore_tower_runtime(now)
         if state["deep_retreat_enabled"]:
             _restore_phaseful_runtime("深度闭关", now)
         if state["yuanying_enabled"]:
             _restore_phaseful_runtime("元婴", now)
+        if state.get("wendao_enabled") and float(state.get("next_wendao_time", 0) or 0) <= 0:
+            schedule_wendao_initial_check(now, persist=False, keep_last_error=True)
         if state["second_soul_enabled"]:
             _restore_second_soul_runtime(now)
         if state["taiyi_enabled"]:
@@ -2845,8 +2996,8 @@ def scan_startup_timeout_tasks(now=None):
             if state.get("next_sect_teach_time", 0) > 0 and state.get("sect_teach_reply_to_msg_id", 0) > 0 and now >= state["next_sect_teach_time"]:
                 _record_startup_timeout(
                     identity_id,
-                    "点卯",
-                    "启动时检测到宗门传功续链已超时，已自动关闭点卯模块。",
+                    "宗门传功",
+                    "启动时检测到宗门传功续链已超时，已自动关闭宗门传功模块。",
                     "checkin_teach_overdue",
                     alerts,
                     affected_identity_ids,
@@ -3873,6 +4024,78 @@ async def _handle_storage_bag_report_command(event, raw_args):
     return True
 
 
+def _normalize_storage_bag_simple_find_query(raw_query):
+    query = RE_WHITESPACE.sub(" ", str(raw_query or "").strip())
+    if len(query) >= 2 and query[0] == query[-1] and query[0] in {"'", '"'}:
+        query = query[1:-1].strip()
+    return query
+
+
+def _is_storage_bag_simple_find_protected_identity(identity_id):
+    profile = get_send_as_profile(identity_id)
+    candidates = (
+        profile.get("username"),
+        profile.get("label"),
+        profile.get("daohao"),
+        get_identity_ui_display_name(identity_id),
+    )
+    return any("wa2000" in str(candidate or "").casefold() for candidate in candidates)
+
+
+def _format_storage_bag_simple_find_text(raw_query):
+    query = _normalize_storage_bag_simple_find_query(raw_query)
+    if not query:
+        return "用法：.还有多少 <物品名>"
+
+    query_key = query.casefold()
+    records = get_storage_bag_records()
+    totals = {}
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        if _is_storage_bag_simple_find_protected_identity(identity_id):
+            continue
+        record = records.get(str(identity_id)) if isinstance(records, dict) else {}
+        items = record.get("items") if isinstance(record, dict) else {}
+        if not isinstance(items, dict):
+            continue
+        for raw_name, raw_count in items.items():
+            item_name = str(raw_name or "").strip()
+            if not item_name or query_key not in item_name.casefold():
+                continue
+            try:
+                count = int(raw_count or 0)
+            except (TypeError, ValueError):
+                count = 0
+            if count <= 0:
+                continue
+            totals[item_name] = totals.get(item_name, 0) + count
+
+    lines = [
+        "【还有多少】",
+        f"查询：{query}",
+        "口径：本地储物袋快照，只读脱敏总量；保护账号已排除；不列身份明细。",
+    ]
+    if not totals:
+        lines.append("没有匹配物品。")
+        return "\n".join(lines)
+
+    total_all = sum(totals.values())
+    lines.append(f"匹配：{len(totals)} 项 ｜ 合计：{total_all:,}")
+    for item_name, count in sorted(totals.items(), key=lambda item: (item[0] != "灵石", item[0])):
+        lines.append(f"- {item_name}: {count:,}")
+    return "\n".join(lines)
+
+
+async def _handle_storage_bag_simple_find_command(event, raw_query):
+    await _reply_log_group_card(
+        event,
+        "储物袋轻查询",
+        _format_storage_bag_simple_find_text(raw_query),
+        error_prefix="❌ 储物袋轻查询回复失败",
+    )
+    return True
+
+
 THREE_SECT_MANUAL_USAGE = (
     "三宗门手动发送必须指定单个身份：\n"
     "- .合欢温养 @身份\n"
@@ -4004,6 +4227,9 @@ async def handle_log_group_command(event):
     storage_bag_match = RE_CMD_STORAGE_BAG_REPORT.match(raw_text)
     if storage_bag_match:
         return await _handle_storage_bag_report_command(event, storage_bag_match.group(2) or "")
+    storage_bag_simple_find_match = RE_CMD_STORAGE_BAG_SIMPLE_FIND.match(raw_text)
+    if storage_bag_simple_find_match:
+        return await _handle_storage_bag_simple_find_command(event, storage_bag_simple_find_match.group(1) or "")
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
 

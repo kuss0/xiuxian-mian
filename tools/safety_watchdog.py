@@ -88,6 +88,7 @@ SECT_TEACH_MAX_ATTEMPTS_10M = 3
 HEART_CHOICE_COMMANDS = {".稳", ".狠", ".骗"}
 CONCUBINE_STATUS_COMMAND = ".我的侍妾"
 CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍妾")
+TOWER_SOURCE_MODULE = "闯塔"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
@@ -194,10 +195,29 @@ def is_dungeon_fast_chain_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in DUNGEON_FAST_CHAIN_PREFIXES)
 
 
+def is_controlled_retry_event(item: dict) -> bool:
+    if str(item.get("priority") or "").strip().lower() != "retry":
+        return False
+    return bool(str(item.get("family") or "").strip() or str(item.get("source_module") or "").strip())
+
+
+def is_tower_retry_event(item: dict) -> bool:
+    if not is_controlled_retry_event(item):
+        return False
+    return (
+        command_key(str(item.get("text") or "")) == ".闯塔"
+        and (
+            str(item.get("family") or "").strip() == "tower"
+            or str(item.get("source_module") or "").strip() == TOWER_SOURCE_MODULE
+        )
+    )
+
+
 def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
     return (
         is_dungeon_fast_chain_command(str(prev.get("text") or ""))
         or is_dungeon_fast_chain_command(str(cur.get("text") or ""))
+        or is_controlled_retry_event(cur)
         or is_safe_heart_global_gap_pair(prev, cur)
     )
 
@@ -224,13 +244,15 @@ def is_concubine_heart_event(item: dict) -> bool:
 def is_safe_heart_global_gap_pair(prev: dict, cur: dict) -> bool:
     if not is_concubine_heart_event(cur):
         return False
+    cur_text = command_key(str(cur.get("text") or ""))
+    if cur_text in HEART_CHOICE_COMMANDS:
+        return True
     prev_sender = int(prev.get("sender_id", 0) or 0)
     cur_sender = int(cur.get("sender_id", 0) or 0)
     if prev_sender <= 0 or prev_sender != cur_sender:
         return False
 
     prev_text = command_key(str(prev.get("text") or ""))
-    cur_text = command_key(str(cur.get("text") or ""))
     if prev_text == ".共历心劫" and cur_text in HEART_CHOICE_COMMANDS and is_concubine_heart_event(prev):
         return True
     if prev_text in HEART_CHOICE_COMMANDS and cur_text in HEART_CHOICE_COMMANDS and is_concubine_heart_event(prev):
@@ -251,6 +273,24 @@ def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
     }
     reply_ids.discard(0)
     return len(reply_ids) == 1
+
+
+def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
+    if str(prev.get("priority") or "").strip().lower() == "retry":
+        return False
+    if not is_controlled_retry_event(cur):
+        return False
+    prev_markers = {
+        str(prev.get("family") or "").strip(),
+        str(prev.get("source_module") or "").strip(),
+    }
+    cur_markers = {
+        str(cur.get("family") or "").strip(),
+        str(cur.get("source_module") or "").strip(),
+    }
+    prev_markers.discard("")
+    cur_markers.discard("")
+    return bool(prev_markers and cur_markers and prev_markers.intersection(cur_markers))
 
 
 def is_small_world_tool_command(text: str) -> bool:
@@ -382,6 +422,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
                 continue
             if text == CONCUBINE_STATUS_COMMAND and has_intervening_concubine_recovery_tool(sent, sender_id, prev, cur):
                 continue
+            if is_safe_same_command_retry(prev, cur, text):
+                continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
 
@@ -464,10 +506,16 @@ def get_reset_after_epoch(project_root: Path) -> float:
     try:
         payload = json.loads(marker.read_text(encoding="utf-8"))
     except Exception:
-        return 0.0
+        payload = {}
     try:
-        return float(payload.get("reset_at_epoch", 0) or 0)
+        reset_at_epoch = float(payload.get("reset_at_epoch", 0) or 0) if isinstance(payload, dict) else 0.0
     except (TypeError, ValueError):
+        reset_at_epoch = 0.0
+    if reset_at_epoch > 0:
+        return reset_at_epoch
+    try:
+        return float(marker.stat().st_mtime)
+    except OSError:
         return 0.0
 
 
@@ -562,7 +610,9 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
             return
         marker_reason = read_fuse_marker_reason(cfg.project_root)
         if marker_reason == reason:
-            print(f"existing fuse marker but global enabled, re-fusing silently: {marker}")
+            if not cfg.dry_run:
+                disable_global_switch(cfg.project_root)
+            return
         else:
             print(f"stale fuse marker with global enabled, re-fusing silently: {marker}")
     actions: list[str] = []

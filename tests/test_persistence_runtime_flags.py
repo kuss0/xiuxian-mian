@@ -49,6 +49,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     state_module.state["yuanying_protect_logged"] = True
                     state_module.state["deep_retreat_waiting_logged"] = True
                     state_module.state["deep_retreat_protect_logged"] = True
+                    state_module.state["sect_teach_enabled"] = True
+                    state_module.state["next_sect_teach_time"] = 1_700_000_555.0
+                    state_module.state["sect_teach_reply_to_msg_id"] = 111
+                    state_module.state["last_sect_teach_msg_id"] = 112
                     state_module.state["tower_reply_due_at"] = 1_700_000_123.0
                     state_module.state["tower_retry_count"] = 1
                     state_module.state["concubine_greet_msg_id"] = 123
@@ -61,6 +65,35 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     state_module.state["concubine_gift_amount"] = 60
                     state_module.state["concubine_last_gift_day"] = "2026-05-24"
                     state_module.state["concubine_gift_last_error"] = "灵石不足"
+                    state_module.state["explore_rift_enabled"] = True
+                    state_module.state["next_explore_rift_time"] = 1_700_000_666.0
+                    state_module.state["explore_rift_reply_to_msg_id"] = 221
+                    state_module.state["explore_rift_reply_due_at"] = 1_700_000_222.0
+                    state_module.state["explore_rift_pending_result_msg_id"] = 223
+                    state_module.state["explore_rift_last_msg_id"] = 224
+                    state_module.state["explore_rift_last_result"] = "裂缝稳定"
+                    state_module.state["explore_rift_last_error"] = "境界不足"
+                    state_module.state["explore_rift_last_result_key"] = "rift:stable"
+                    state_module.state["explore_rift_manual_required"] = True
+                    state_module.state["wendao_enabled"] = True
+                    state_module.state["next_wendao_time"] = 1_700_000_777.0
+                    state_module.state["wendao_reply_to_msg_id"] = 321
+                    state_module.state["wendao_reply_due_at"] = 1_700_000_333.0
+                    state_module.state["wendao_pending_result_msg_id"] = 654
+                    state_module.state["wendao_sent_at"] = 1_700_000_300.0
+                    state_module.state["wendao_last_msg_id"] = 655
+                    state_module.state["wendao_last_result"] = "修为 +1000"
+                    state_module.state["wendao_last_error"] = "冷却中"
+                    state_module.state["formation_enabled"] = True
+                    state_module.state["next_formation_time"] = 1_700_001_111.0
+                    state_module.state["formation_cooldown_until"] = 1_700_043_200.0
+                    state_module.state["last_formation_msg_id"] = 7897749
+                    state_module.state["formation_pending_invite_msg_id"] = 7897745
+                    state_module.state["formation_pending_assist_msg_id"] = 7897749
+                    state_module.state["formation_last_action"] = "已助阵外部邀请"
+                    state_module.state["formation_last_result"] = "布阵成功"
+                    state_module.state["formation_last_error"] = "助阵回复超时"
+                    state_module.state["formation_last_success_at"] = 1_700_000_999.0
 
                 persistence.save_state()
                 conn = persistence.get_db_conn()
@@ -69,6 +102,8 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertIn("yuanying_protect_logged", columns)
                 self.assertIn("deep_retreat_waiting_logged", columns)
                 self.assertIn("deep_retreat_protect_logged", columns)
+                self.assertIn("sect_teach_reply_to_msg_id", columns)
+                self.assertIn("last_sect_teach_msg_id", columns)
                 self.assertIn("tower_reply_due_at", columns)
                 self.assertIn("tower_retry_count", columns)
                 self.assertIn("concubine_greet_msg_id", columns)
@@ -81,6 +116,39 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertIn("concubine_gift_amount", columns)
                 self.assertIn("concubine_last_gift_day", columns)
                 self.assertIn("concubine_gift_last_error", columns)
+                self.assertIn("explore_rift_reply_to_msg_id", columns)
+                self.assertIn("explore_rift_reply_due_at", columns)
+                self.assertIn("explore_rift_pending_result_msg_id", columns)
+                self.assertIn("explore_rift_last_msg_id", columns)
+                self.assertIn("explore_rift_last_result", columns)
+                self.assertIn("explore_rift_last_error", columns)
+                self.assertIn("explore_rift_last_result_key", columns)
+                self.assertIn("explore_rift_manual_required", columns)
+                self.assertIn("wendao_reply_to_msg_id", columns)
+                self.assertIn("wendao_reply_due_at", columns)
+                self.assertIn("wendao_pending_result_msg_id", columns)
+                self.assertIn("wendao_sent_at", columns)
+                self.assertIn("wendao_last_msg_id", columns)
+                self.assertIn("wendao_last_result", columns)
+                self.assertIn("wendao_last_error", columns)
+                self.assertIn("last_formation_msg_id", columns)
+                self.assertIn("formation_pending_invite_msg_id", columns)
+                self.assertIn("formation_pending_assist_msg_id", columns)
+                self.assertIn("formation_last_action", columns)
+                self.assertIn("formation_last_result", columns)
+                self.assertIn("formation_last_error", columns)
+                self.assertIn("formation_last_success_at", columns)
+                module_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_module_state)").fetchall()}
+                timer_columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_timers)").fetchall()}
+                self.assertIn("sect_teach_enabled", module_columns)
+                self.assertIn("next_sect_teach_time", timer_columns)
+                self.assertIn("explore_rift_enabled", module_columns)
+                self.assertIn("next_explore_rift_time", timer_columns)
+                self.assertIn("wendao_enabled", module_columns)
+                self.assertIn("next_wendao_time", timer_columns)
+                self.assertIn("formation_enabled", module_columns)
+                self.assertIn("next_formation_time", timer_columns)
+                self.assertIn("formation_cooldown_until", timer_columns)
 
                 state_module._meta_state.clear()
                 state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
@@ -92,6 +160,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertTrue(state_module.state["yuanying_protect_logged"])
                     self.assertTrue(state_module.state["deep_retreat_waiting_logged"])
                     self.assertTrue(state_module.state["deep_retreat_protect_logged"])
+                    self.assertTrue(state_module.state["sect_teach_enabled"])
+                    self.assertEqual(1_700_000_555.0, state_module.state["next_sect_teach_time"])
+                    self.assertEqual(111, state_module.state["sect_teach_reply_to_msg_id"])
+                    self.assertEqual(112, state_module.state["last_sect_teach_msg_id"])
                     self.assertEqual(1_700_000_123.0, state_module.state["tower_reply_due_at"])
                     self.assertEqual(1, state_module.state["tower_retry_count"])
                     self.assertEqual(123, state_module.state["concubine_greet_msg_id"])
@@ -104,6 +176,35 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertEqual(60, state_module.state["concubine_gift_amount"])
                     self.assertEqual("2026-05-24", state_module.state["concubine_last_gift_day"])
                     self.assertEqual("灵石不足", state_module.state["concubine_gift_last_error"])
+                    self.assertTrue(state_module.state["explore_rift_enabled"])
+                    self.assertEqual(1_700_000_666.0, state_module.state["next_explore_rift_time"])
+                    self.assertEqual(221, state_module.state["explore_rift_reply_to_msg_id"])
+                    self.assertEqual(1_700_000_222.0, state_module.state["explore_rift_reply_due_at"])
+                    self.assertEqual(223, state_module.state["explore_rift_pending_result_msg_id"])
+                    self.assertEqual(224, state_module.state["explore_rift_last_msg_id"])
+                    self.assertEqual("裂缝稳定", state_module.state["explore_rift_last_result"])
+                    self.assertEqual("境界不足", state_module.state["explore_rift_last_error"])
+                    self.assertEqual("rift:stable", state_module.state["explore_rift_last_result_key"])
+                    self.assertTrue(state_module.state["explore_rift_manual_required"])
+                    self.assertTrue(state_module.state["wendao_enabled"])
+                    self.assertEqual(1_700_000_777.0, state_module.state["next_wendao_time"])
+                    self.assertEqual(321, state_module.state["wendao_reply_to_msg_id"])
+                    self.assertEqual(1_700_000_333.0, state_module.state["wendao_reply_due_at"])
+                    self.assertEqual(654, state_module.state["wendao_pending_result_msg_id"])
+                    self.assertEqual(1_700_000_300.0, state_module.state["wendao_sent_at"])
+                    self.assertEqual(655, state_module.state["wendao_last_msg_id"])
+                    self.assertEqual("修为 +1000", state_module.state["wendao_last_result"])
+                    self.assertEqual("冷却中", state_module.state["wendao_last_error"])
+                    self.assertTrue(state_module.state["formation_enabled"])
+                    self.assertEqual(1_700_001_111.0, state_module.state["next_formation_time"])
+                    self.assertEqual(1_700_043_200.0, state_module.state["formation_cooldown_until"])
+                    self.assertEqual(7897749, state_module.state["last_formation_msg_id"])
+                    self.assertEqual(7897745, state_module.state["formation_pending_invite_msg_id"])
+                    self.assertEqual(7897749, state_module.state["formation_pending_assist_msg_id"])
+                    self.assertEqual("已助阵外部邀请", state_module.state["formation_last_action"])
+                    self.assertEqual("布阵成功", state_module.state["formation_last_result"])
+                    self.assertEqual("助阵回复超时", state_module.state["formation_last_error"])
+                    self.assertEqual(1_700_000_999.0, state_module.state["formation_last_success_at"])
 
     def test_global_runtime_meta_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -125,6 +226,11 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     "secret": "secret-a",
                 })
                 state_module.set_replica_run_state({"room": {"status": "active"}})
+                state_module.set_formation_run_state({
+                    "active_invites": {"7897745": {"msg_id": 7897745, "owner_username": "@david"}},
+                    "attempted_assists": {"990101": {"7897745": {"status": "sent"}}},
+                    "last_success": {"at": 1_700_000_000.0},
+                })
                 state_module.set_dungeon_join_run_state({"990101": {"room_id": "R1"}})
                 state_module.state["dungeon_quiet_until"] = 12345.0
                 state_module.state["dungeon_quiet_reason"] = "坠魔谷静场令"
@@ -153,6 +259,14 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     state_module.get_replica_query_aggregator_config(),
                 )
                 self.assertEqual({"room": {"status": "active"}}, state_module.get_replica_run_state())
+                self.assertEqual(
+                    {
+                        "active_invites": {"7897745": {"msg_id": 7897745, "owner_username": "@david"}},
+                        "attempted_assists": {"990101": {"7897745": {"status": "sent"}}},
+                        "last_success": {"at": 1_700_000_000.0},
+                    },
+                    state_module.get_formation_run_state(),
+                )
                 self.assertEqual({"990101": {"room_id": "R1"}}, state_module.get_dungeon_join_run_state())
                 self.assertEqual(12345.0, state_module.state["dungeon_quiet_until"])
                 self.assertEqual("坠魔谷静场令", state_module.state["dungeon_quiet_reason"])
