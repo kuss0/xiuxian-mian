@@ -1178,6 +1178,12 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None):
             continue
         if room.get("phase") not in {"opened", "dissolve_requested"}:
             continue
+        enter_requested_at = float(room.get("enter_requested_at") or 0)
+        enter_msg_id = int(room.get("enter_msg_id") or 0)
+        if enter_msg_id <= 0 or enter_requested_at <= 0:
+            continue
+        if now > enter_requested_at + _REPLICA_LIGHTWEIGHT_ENTER_PENDING_SEC:
+            continue
         candidates.append((str(chat_id), room))
     if not candidates:
         return {}

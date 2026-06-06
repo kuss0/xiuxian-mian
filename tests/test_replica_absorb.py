@@ -1800,6 +1800,64 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(second)
         self.assertEqual(1, notice_count)
 
+    def test_unrelated_entered_text_does_not_expire_open_lightweight_room(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "1333",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+            "updated_at": now,
+        })
+
+        handled = asyncio.run(app_replica._handle_virtual_hall_auto_game_event(
+            SimpleNamespace(id=901, chat_id=1),
+            "队伍已进入虚天殿...石门缓缓关闭，前路凶险未知！",
+            now + 30,
+            reply_context={},
+        ))
+
+        self.assertFalse(handled)
+        saved_room = app_replica._get_lightweight_last_room(event.chat_id, now=now + 120)
+        self.assertEqual("1333", saved_room["room_id"])
+        self.assertEqual("opened", saved_room["phase"])
+
+    def test_entered_text_marks_only_pending_lightweight_enter(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "1333",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "enter_requested_at": now,
+            "enter_msg_id": 901,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+            "updated_at": now,
+        })
+
+        handled = asyncio.run(app_replica._handle_virtual_hall_auto_game_event(
+            SimpleNamespace(id=902, chat_id=1),
+            "队伍已进入虚天殿...石门缓缓关闭，前路凶险未知！",
+            now + 5,
+            reply_context={},
+        ))
+
+        self.assertTrue(handled)
+        saved_room = app_replica._get_lightweight_last_room(event.chat_id, now=now + 5)
+        self.assertEqual("entered", saved_room["phase"])
+        self.assertEqual(now + 5 + 60, saved_room["expires_at"])
+
     def test_virtual_hall_opened_without_dps_schedules_auto_dissolve(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
         first_id = self._register_replica_identity(991202, "first", root_attrs="火", professions="咒师")
