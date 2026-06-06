@@ -332,6 +332,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0")
     if "last_tree_status_sent_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tree_status_sent_at REAL NOT NULL DEFAULT 0")
+    if "last_tower_command_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tower_command_sent_at REAL NOT NULL DEFAULT 0")
     if "tower_reply_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tower_reply_due_at REAL NOT NULL DEFAULT 0")
     if "tower_retry_count" not in runtime_columns:
@@ -967,6 +969,7 @@ def init_db():
             tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0,
             last_tree_status_sent_at REAL NOT NULL DEFAULT 0,
             last_tower_msg_id INTEGER NOT NULL,
+            last_tower_command_sent_at REAL NOT NULL DEFAULT 0,
             tower_reply_due_at REAL NOT NULL DEFAULT 0,
             tower_retry_count INTEGER NOT NULL DEFAULT 0,
             pet_last_error TEXT NOT NULL DEFAULT '',

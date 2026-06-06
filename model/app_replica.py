@@ -173,6 +173,8 @@ _REPLICA_BUTTON_ACTION_TTL_SEC = 30 * 60
 _REPLICA_BUTTON_ACTION_MAX = 500
 _REPLICA_BUTTON_EXCLUSIVE_MAX = 500
 _REPLICA_BUTTON_CALLBACK_PREFIX = "rp:"
+_REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_SEC = 30
+_REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_MAX = 200
 _XUTIAN_DECISION_NOTICE_TTL_SEC = 30 * 60
 _XUTIAN_DECISION_NOTICE_MAX = 200
 _REPLICA_LIGHTWEIGHT_ENTER_PENDING_SEC = 60
@@ -752,6 +754,54 @@ def _save_lightweight_dungeon_state(state_item):
     run_state = _get_replica_run_state_dict()
     run_state["lightweight_dungeon"] = state_item if isinstance(state_item, dict) else {}
     _save_replica_run_state_dict(run_state)
+
+
+def _cleanup_lightweight_notice_dedupe(now=None):
+    now = float(now or time.time())
+    state_item = _get_lightweight_dungeon_state()
+    records = state_item.get("notice_dedupe")
+    if not isinstance(records, dict):
+        records = {}
+    changed = False
+    for key, ts in list(records.items()):
+        try:
+            created_at = float(ts or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        if created_at <= 0 or now >= created_at + _REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_SEC:
+            records.pop(key, None)
+            changed = True
+    if len(records) > _REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_MAX:
+        keep = {
+            key
+            for key, _ts in sorted(records.items(), key=lambda item: float(item[1] or 0), reverse=True)[:_REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_MAX]
+        }
+        for key in list(records):
+            if key not in keep:
+                records.pop(key, None)
+                changed = True
+    state_item["notice_dedupe"] = records
+    if changed:
+        _save_lightweight_dungeon_state(state_item)
+    return records
+
+
+def _mark_lightweight_notice_once(key, now=None):
+    key = str(key or "").strip()
+    if not key:
+        return False
+    now = float(now or time.time())
+    records = _cleanup_lightweight_notice_dedupe(now)
+    if key in records:
+        return False
+    state_item = _get_lightweight_dungeon_state()
+    records = state_item.get("notice_dedupe")
+    if not isinstance(records, dict):
+        records = {}
+    records[key] = now
+    state_item["notice_dedupe"] = records
+    _save_lightweight_dungeon_state(state_item)
+    return True
 
 
 def _normalize_lightweight_open_flow(flow_id, flow):
@@ -5805,6 +5855,10 @@ async def _handle_lightweight_open_command(event):
         reason_text = ticket_text
         openable_kinds = _get_openable_replica_kinds(identity_id)
         if not requested_kind and len(openable_kinds) > 1:
+            sender_id = int(getattr(event, "sender_id", 0) or 0)
+            dedupe_key = f"ambiguous_open:{chat_id}:{sender_id}:{identity_id}"
+            if not _mark_lightweight_notice_once(dedupe_key, now):
+                return True
             open_commands = _format_lightweight_open_commands_for_identity(identity_id, html=True)
             text = (
                 f"{escape(selector)} 有多种可开副本（{escape(ticket_text)}），请指定类型，避免默认误开虚天殿。\n\n"

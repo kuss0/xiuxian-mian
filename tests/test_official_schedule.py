@@ -38,7 +38,7 @@ from model.config import DEEP_RETREAT_CD
 
 
 class OfficialSchedulePlanTests(unittest.TestCase):
-    def test_deep_retreat_plan_uses_plain_trigger_then_command(self):
+    def test_deep_retreat_plan_uses_command_without_status_probe(self):
         anchor_at = 1000.0
         plan = official_schedule.build_preset_plan(
             official_schedule.PRESET_DEEP_RETREAT,
@@ -47,11 +47,9 @@ class OfficialSchedulePlanTests(unittest.TestCase):
         )
 
         items = plan["items"]
-        self.assertEqual(6, len(items))
-        self.assertEqual("查看闭关", items[0]["command"])
-        self.assertEqual(".深度闭关", items[1]["command"])
-        self.assertEqual(anchor_at + DEEP_RETREAT_CD + 120, items[0]["schedule_at"])
-        self.assertEqual(anchor_at + DEEP_RETREAT_CD + 180, items[1]["schedule_at"])
+        self.assertEqual(3, len(items))
+        self.assertEqual(".深度闭关", items[0]["command"])
+        self.assertEqual(anchor_at + DEEP_RETREAT_CD + 180, items[0]["schedule_at"])
 
     def test_pet_warm_plan_uses_configured_name_and_six_hour_interval(self):
         anchor_at = 2000.0

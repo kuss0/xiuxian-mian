@@ -61,9 +61,62 @@ class TowerSchedulerTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase
             )
             self.assertEqual("", state_module.state["last_tower_day"])
             self.assertEqual(5001, state_module.state["last_tower_msg_id"])
+            self.assertEqual(now, state_module.state["last_tower_command_sent_at"])
             self.assertEqual(now + tower.TOWER_REPLY_TIMEOUT_SEC, state_module.state["tower_reply_due_at"])
             self.assertEqual(0, state_module.state["tower_retry_count"])
             self.assertEqual(state_module.state["tower_reply_due_at"], state_module.state["next_tower_time"])
+
+    async def test_recent_send_attempt_without_msg_id_waits_instead_of_duplicate_send(self):
+        send_as_id = 8659059304
+        now = 1_700_000_060.0
+        first_sent_at = now - 6
+        self._prepare_identity(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = ""
+            state_module.state["last_tower_msg_id"] = 0
+            state_module.state["last_tower_command_sent_at"] = first_sent_at
+            state_module.state["tower_reply_due_at"] = 0
+            state_module.state["tower_retry_count"] = 0
+            state_module.state["next_tower_time"] = now - 1
+
+            with (
+                patch.object(tower, "_is_tower_window_time", return_value=True),
+                patch.object(tower, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tower, "mark_dirty"),
+                patch.object(tower, "save_state"),
+            ):
+                await tower.run_tower_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(first_sent_at + tower.TOWER_DUPLICATE_SEND_GUARD_SEC, state_module.state["tower_reply_due_at"])
+            self.assertEqual(state_module.state["tower_reply_due_at"], state_module.state["next_tower_time"])
+
+    async def test_send_failure_clears_pre_send_guard_and_uses_long_retry(self):
+        send_as_id = 8659059305
+        now = 1_700_000_070.0
+        failed_at = now + 1
+        self._prepare_identity(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = ""
+            state_module.state["next_tower_time"] = now - 1
+
+            with (
+                patch.object(tower, "_is_tower_window_time", return_value=True),
+                patch.object(tower.time, "time", return_value=failed_at),
+                patch.object(tower, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(tower, "save_state"),
+                patch.object(tower, "send_audit_log", new=AsyncMock()),
+            ):
+                await tower.run_tower_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(0, state_module.state["last_tower_command_sent_at"])
+            self.assertEqual(0, state_module.state["tower_reply_due_at"])
+            self.assertEqual(failed_at + tower.RETRY_MAX_SEC, state_module.state["next_tower_time"])
 
     async def test_timeout_schedules_one_short_retry_then_next_day(self):
         send_as_id = 8659059302

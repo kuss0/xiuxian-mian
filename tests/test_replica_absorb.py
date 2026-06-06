@@ -1659,6 +1659,31 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("开苍 @leader", button_texts)
         self.assertEqual({}, state_module.get_replica_run_state().get("lightweight_dungeon", {}).get("pending_open", {}))
 
+    def test_lightweight_open_command_dedupes_repeated_ambiguous_notice(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader"
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))) as reply_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                first = await app_replica._handle_lightweight_open_command(event)
+                event.id = 101
+                second = await app_replica._handle_lightweight_open_command(event)
+                send_mock.assert_not_awaited()
+                return first, second, reply_mock.await_count
+
+        first, second, reply_count = asyncio.run(run_test())
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(1, reply_count)
+
     def test_lightweight_open_command_allows_unambiguous_single_ticket_without_type(self):
         leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
         event = self._prepare_replica_group([leader_id])

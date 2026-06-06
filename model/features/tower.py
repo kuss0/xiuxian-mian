@@ -14,6 +14,7 @@ TOWER_REPLY_TIMEOUT_SEC = 120
 TOWER_REPLAY_DELAY_MIN_SEC = 2
 TOWER_REPLAY_DELAY_MAX_SEC = 5
 TOWER_RETRY_LIMIT = 1
+TOWER_DUPLICATE_SEND_GUARD_SEC = TOWER_REPLY_TIMEOUT_SEC
 
 
 def _schedule_tower_next_day(now):
@@ -51,12 +52,20 @@ def _clear_tower_waiting():
     state["tower_reply_due_at"] = 0
 
 
+def _mark_tower_command_attempt(now):
+    attempted_at = float(now or time.time())
+    state["last_tower_command_sent_at"] = attempted_at
+    state["tower_reply_due_at"] = attempted_at + TOWER_REPLY_TIMEOUT_SEC
+    state["next_tower_time"] = state["tower_reply_due_at"]
+
+
 def _mark_tower_sent_waiting(msg_id, sent_at=None):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return
     sent_at = float(sent_at if sent_at is not None else time.time())
     due_at = sent_at + TOWER_REPLY_TIMEOUT_SEC
+    state["last_tower_command_sent_at"] = sent_at
     state["last_tower_msg_id"] = msg_id
     state["tower_reply_due_at"] = due_at
     state["next_tower_time"] = due_at
@@ -108,6 +117,20 @@ def _normalize_tower_schedule(now):
         mark_dirty()
         return float(state.get("next_tower_time", 0) or 0), True
 
+    last_sent_at = float(state.get("last_tower_command_sent_at", 0) or 0)
+    if last_sent_at > 0 and get_day_key(last_sent_at) == day_key and state.get("last_tower_day") != day_key:
+        duplicate_guard_until = last_sent_at + TOWER_DUPLICATE_SEND_GUARD_SEC
+        if now < duplicate_guard_until:
+            state["tower_reply_due_at"] = duplicate_guard_until
+            state["next_tower_time"] = duplicate_guard_until
+            mark_dirty()
+            return duplicate_guard_until, True
+        if retry_count < TOWER_RETRY_LIMIT and next_tower_time <= now:
+            state["tower_retry_count"] = retry_count + 1
+            state["next_tower_time"] = now + random.uniform(TOWER_REPLAY_DELAY_MIN_SEC, TOWER_REPLAY_DELAY_MAX_SEC)
+            mark_dirty()
+            return float(state.get("next_tower_time", 0) or 0), True
+
     if state["last_tower_day"] == day_key:
         if next_tower_time <= 0 or get_day_key(next_tower_time) == day_key:
             next_tower_time = _schedule_tower_next_day(now)
@@ -156,6 +179,7 @@ def get_tower_status_text():
         f"- 下次执行：{fmt_abs_ts(state['next_tower_time'])}（{fmt_remaining(state['next_tower_time'])}）",
         f"- 执行窗口：{format_window_text('闯塔')}",
         f"- 上次执行日：{state['last_tower_day'] or '未记录'}",
+        f"- 上次发送：{fmt_abs_ts(state.get('last_tower_command_sent_at', 0))}（{fmt_remaining(state.get('last_tower_command_sent_at', 0))}）",
         f"- 回复等待：{fmt_abs_ts(state.get('tower_reply_due_at', 0))}（{fmt_remaining(state.get('tower_reply_due_at', 0))}）",
         f"- 补发次数：{int(state.get('tower_retry_count', 0) or 0)}/{TOWER_RETRY_LIMIT}",
     ]
@@ -202,9 +226,13 @@ async def run_tower_scheduler(now):
 
     if now >= next_tower_time:
         send_priority = "retry" if int(state.get("tower_retry_count", 0) or 0) > 0 else None
+        _mark_tower_command_attempt(now)
+        save_state()
         msg = await send_game_command(CMD_TOWER, track=False, max_retry=0, priority=send_priority, source_module="闯塔")
         if not msg:
             failed_at = time.time()
+            state["last_tower_command_sent_at"] = 0
+            state["tower_reply_due_at"] = 0
             state["next_tower_time"] = failed_at + RETRY_MAX_SEC
             save_state()
             await send_audit_log("❌ 闯塔发送失败，稍后重试。")

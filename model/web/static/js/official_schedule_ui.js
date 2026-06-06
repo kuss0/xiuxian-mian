@@ -38,7 +38,7 @@ function ensureOfficialScheduleModal() {
     + '<form id="official-schedule-form" class="official-schedule-form">'
     + '<label class="field-label">身份<select class="text-input" name="send_as_id"></select></label>'
     + '<label class="field-label">预设<select class="text-input" name="template_key">'
-    + '<option value="deep_retreat">深度闭关：查看闭关 + .深度闭关</option>'
+    + '<option value="deep_retreat">深度闭关：仅 .深度闭关</option>'
     + '<option value="pet_touch">抚摸法宝</option>'
     + '<option value="pet_warm">温养器灵</option>'
     + '<option value="pet_trial">器灵试炼</option>'

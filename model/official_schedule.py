@@ -85,7 +85,6 @@ def build_deep_retreat_plan(anchor_at, *, horizon_days=DEFAULT_HORIZON_DAYS):
     items = []
     due_at = anchor_at + DEEP_RETREAT_CD
     while due_at <= end_at:
-        items.append({"command": "查看闭关", "schedule_at": due_at + 120, "offset_sec": int(due_at + 120 - anchor_at)})
         items.append({"command": CMD_DEEP_RETREAT, "schedule_at": due_at + 180, "offset_sec": int(due_at + 180 - anchor_at)})
         due_at += DEEP_RETREAT_CD
     return items

@@ -53,6 +53,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     state_module.state["next_sect_teach_time"] = 1_700_000_555.0
                     state_module.state["sect_teach_reply_to_msg_id"] = 111
                     state_module.state["last_sect_teach_msg_id"] = 112
+                    state_module.state["last_tower_command_sent_at"] = 1_700_000_120.0
                     state_module.state["tower_reply_due_at"] = 1_700_000_123.0
                     state_module.state["tower_retry_count"] = 1
                     state_module.state["concubine_greet_msg_id"] = 123
@@ -104,6 +105,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertIn("deep_retreat_protect_logged", columns)
                 self.assertIn("sect_teach_reply_to_msg_id", columns)
                 self.assertIn("last_sect_teach_msg_id", columns)
+                self.assertIn("last_tower_command_sent_at", columns)
                 self.assertIn("tower_reply_due_at", columns)
                 self.assertIn("tower_retry_count", columns)
                 self.assertIn("concubine_greet_msg_id", columns)
@@ -164,6 +166,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertEqual(1_700_000_555.0, state_module.state["next_sect_teach_time"])
                     self.assertEqual(111, state_module.state["sect_teach_reply_to_msg_id"])
                     self.assertEqual(112, state_module.state["last_sect_teach_msg_id"])
+                    self.assertEqual(1_700_000_120.0, state_module.state["last_tower_command_sent_at"])
                     self.assertEqual(1_700_000_123.0, state_module.state["tower_reply_due_at"])
                     self.assertEqual(1, state_module.state["tower_retry_count"])
                     self.assertEqual(123, state_module.state["concubine_greet_msg_id"])

@@ -17,6 +17,10 @@ class AnalyzeGameRecordsTests(unittest.TestCase):
         self.assertEqual(".加入苍坤洞府", analyze_game_records.command_key(".加入苍坤洞府 123"))
         self.assertEqual("replica", analyze_game_records.command_family(".加入苍坤洞府"))
         self.assertEqual("small_world", analyze_game_records.command_family(".神迹 布道"))
+        self.assertEqual("explore_rift", analyze_game_records.command_family(".探寻裂缝"))
+        self.assertEqual("hehuan", analyze_game_records.command_family(".双修"))
+        self.assertEqual("replica", analyze_game_records.command_family(".后殿抉择"))
+        self.assertEqual("tower", analyze_game_records.command_family(".重置古塔"))
 
     def test_analyze_jsonl_logs_tracks_sent_reply_and_short_repeat(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -628,7 +628,7 @@ async def _delay_relaunch_without_status_query(spec, now, audit_text):
     await delete_summary_trigger_msg(spec)
     state[spec.probe_pending_key] = False
     delay = random.uniform(spec.timeout_relaunch_min_sec, spec.timeout_relaunch_max_sec)
-    begin_post_summary_wait(spec, now, delay=delay, confirmed=False)
+    begin_post_summary_wait(spec, now, delay=delay, confirmed=True)
     await update_block_log_state(spec, waiting=False, protect=False)
     await send_audit_log(f"{audit_text}，不再状态查询，{int(delay / 60)}分钟后重新发起。")
 
