@@ -529,9 +529,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(changed)
         record = state_module.get_replica_run_state()["by_identity"][str(identity_id)]
         state_item = record["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
-        self.assertTrue(state_item["participating"])
+        self.assertFalse(state_item["participating"])
         self.assertEqual("123", state_item["room_id"])
         self.assertEqual(["@leader"], state_item["team_usernames"])
+        self.assertEqual("opened", state_item["lobby_status"])
+        self.assertEqual(1000.0 + app_replica._REPLICA_LOBBY_TTL_SEC, state_item["lobby_until"])
 
     def test_parse_cangkun_join_reply(self):
         parsed = app_replica._parse_replica_join_reply(
@@ -579,8 +581,237 @@ class ReplicaAbsorbTests(unittest.TestCase):
         records = state_module.get_replica_run_state()["by_identity"]
         for identity_id in (leader_id, wa_id, box_id):
             state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
-            self.assertTrue(state_item["participating"])
+            self.assertFalse(state_item["participating"])
             self.assertEqual(["@zhengyuan0213", "@walterwa2000", "@boxboxji"], state_item["team_usernames"])
+            self.assertEqual("joined", state_item["lobby_status"])
+
+    def test_opened_and_joined_lobby_do_not_show_as_running_until_entered(self):
+        leader_id = self._register_replica_identity(991201, "xuruode1")
+        member_id = self._register_replica_identity(991202, "member")
+        state_module.set_replica_participant_identity_ids([leader_id, member_id])
+        now = 1000.0
+
+        app_replica._mark_replica_team_joined_from_text(
+            "【虚天殿已开启】\n"
+            "@xuruode1 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1333\n"
+            "其他道友可使用 .加入副本 1333 加入队伍！(5人满)\n\n"
+            "【卦象词条】 巽风上坎水下 · 二爻守中\n"
+            "- 阵骨：土 必带\n"
+            "- 主锋：木 x2（只认真位，不吃借生）\n"
+            "- 引灵：水 位，可由 金 借生代行\n"
+            "- 旁合：水 位更佳，若用 金 强顶只算偏配",
+            now=now,
+            msg_id=9940015,
+        )
+        app_replica._mark_replica_team_joined_from_text(
+            "@member 已成功加入副本 1333\n当前队伍 (2/5):\n - @xuruode1\n - @member",
+            now=now + 1,
+            msg_id=9940020,
+        )
+
+        records = state_module.get_replica_run_state()["by_identity"]
+        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可", app_replica._format_replica_identity_statuses(leader_id, now + 2, records=records))
+        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可", app_replica._format_replica_identity_statuses(member_id, now + 2, records=records))
+        for identity_id in (leader_id, member_id):
+            state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+            self.assertFalse(state_item["participating"])
+            self.assertEqual("1333", state_item["room_id"])
+            self.assertGreater(state_item["lobby_until"], now)
+
+    def test_entered_text_promotes_recent_lobby_to_running(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000")
+        member_id = self._register_replica_identity(991202, "member")
+        state_module.set_replica_participant_identity_ids([leader_id, member_id])
+        now = 1000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【虚天殿已开启】\n"
+            "@WalterWA2000 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1336\n"
+            "其他道友可使用 .加入副本 1336 加入队伍！(5人满)\n\n"
+            "【卦象词条】 乾天上艮山下 · 四爻转阵\n"
+            "- 阵骨：土 必带\n"
+            "- 主锋：金 x2（只认真位，不吃借生）\n"
+            "- 引灵：土 位，可由 火 借生代行\n"
+            "- 旁合：土 位更佳，若用 火 强顶只算偏配",
+            now=now,
+            msg_id=9942743,
+        )
+        app_replica._mark_replica_team_joined_from_text(
+            "@member 已成功加入副本 1336\n当前队伍 (2/5):\n - @WalterWA2000\n - @member",
+            now=now + 1,
+            msg_id=9942750,
+        )
+
+        handled = asyncio.run(app_replica._handle_replica_progress_event(
+            SimpleNamespace(id=9942763, raw_text="队伍已进入虚天殿...石门缓缓关闭，前路凶险未知！"),
+            now + 2,
+        ))
+
+        self.assertTrue(handled)
+        records = state_module.get_replica_run_state()["by_identity"]
+        for identity_id in (leader_id, member_id):
+            state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+            self.assertTrue(state_item["participating"])
+            self.assertEqual("1336", state_item["room_id"])
+            self.assertNotIn("lobby_until", state_item)
+            self.assertEqual("虚:中 | 坠:可 | 黄:可 | 苍:可", app_replica._format_replica_identity_statuses(identity_id, now + 3, records=records))
+
+    def test_auto_dissolved_lobby_clears_without_success_cooldown(self):
+        leader_id = self._register_replica_identity(991201, "xuruode1")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 1000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【虚天殿已开启】\n"
+            "@xuruode1 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1333\n"
+            "其他道友可使用 .加入副本 1333 加入队伍！(5人满)\n\n"
+            "【卦象词条】 巽风上坎水下 · 二爻守中\n"
+            "- 阵骨：土 必带\n"
+            "- 主锋：木 x2（只认真位，不吃借生）\n"
+            "- 引灵：水 位，可由 金 借生代行\n"
+            "- 旁合：水 位更佳，若用 金 强顶只算偏配",
+            now=now,
+            msg_id=9940015,
+        )
+
+        handled = asyncio.run(app_replica._handle_replica_progress_event(
+            SimpleNamespace(id=9940358, raw_text="由 @xuruode1 开启的虚天殿（ID: 1333）因长时间未满员，已自动解散。"),
+            now + 11 * 60,
+        ))
+
+        self.assertTrue(handled)
+        record = state_module.get_replica_run_state()["by_identity"][str(leader_id)]
+        state_item = record["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertFalse(state_item["participating"])
+        self.assertEqual("dissolved", record["last_join_result"])
+        self.assertEqual("1333", state_item["last_dissolved_room_id"])
+        self.assertNotIn("lobby_until", state_item)
+        self.assertEqual("虚:可 | 坠:可 | 黄:可 | 苍:可", app_replica._format_replica_identity_statuses(leader_id, now + 11 * 60 + 1))
+
+    def test_success_cooldown_clears_lobby_fields(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 1000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【虚天殿已开启】\n"
+            "@leader 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1333\n"
+            "其他道友可使用 .加入副本 1333 加入队伍！(5人满)",
+            now=now,
+            msg_id=9940015,
+        )
+        state_item = state_module.get_replica_run_state()["by_identity"][str(leader_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertIn("lobby_until", state_item)
+
+        app_replica._mark_replica_success_cooldown(
+            [leader_id],
+            now + 10,
+            source_msg_id=9940100,
+            replica_kind=app_replica._REPLICA_KIND_VIRTUAL_HALL,
+        )
+
+        record = state_module.get_replica_run_state()["by_identity"][str(leader_id)]
+        state_item = record["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertEqual("success_cooldown", record["last_join_result"])
+        self.assertNotIn("lobby_until", state_item)
+        self.assertNotIn("lobby_status", state_item)
+
+    def test_failure_pending_clears_lobby_fields(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 1000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【虚天殿已开启】\n"
+            "@leader 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1333\n"
+            "其他道友可使用 .加入副本 1333 加入队伍！(5人满)",
+            now=now,
+            msg_id=9940015,
+        )
+        state_item = state_module.get_replica_run_state()["by_identity"][str(leader_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertIn("lobby_until", state_item)
+
+        app_replica._mark_replica_failure_pending(
+            [leader_id],
+            now + 10,
+            replica_kind=app_replica._REPLICA_KIND_VIRTUAL_HALL,
+        )
+
+        record = state_module.get_replica_run_state()["by_identity"][str(leader_id)]
+        state_item = record["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertEqual("failure_pending", record["last_join_result"])
+        self.assertGreater(state_item["failure_pending_until"], now)
+        self.assertNotIn("lobby_until", state_item)
+        self.assertNotIn("lobby_status", state_item)
+
+    def test_team_kicked_updates_lobby_before_entered(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        member_id = self._register_replica_identity(991202, "member")
+        state_module.set_replica_participant_identity_ids([leader_id, member_id])
+        now = 1000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【虚天殿已开启】\n"
+            "@leader 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1333\n"
+            "其他道友可使用 .加入副本 1333 加入队伍！(5人满)",
+            now=now,
+            msg_id=9940015,
+        )
+        app_replica._mark_replica_team_joined_from_text(
+            "@member 已成功加入副本 1333\n当前队伍 (2/5):\n - @leader\n - @member",
+            now=now + 1,
+            msg_id=9940020,
+        )
+
+        changed = app_replica._mark_replica_team_kicked(
+            "@leader",
+            "@member",
+            ["@leader"],
+            now + 2,
+            source_msg_id=9940025,
+            replica_kind=app_replica._REPLICA_KIND_VIRTUAL_HALL,
+        )
+
+        self.assertTrue(changed)
+        records = state_module.get_replica_run_state()["by_identity"]
+        leader_state = records[str(leader_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        member_state = records[str(member_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
+        self.assertEqual(["@leader"], leader_state["team_usernames"])
+        self.assertGreater(leader_state["lobby_until"], now)
+        self.assertEqual([], member_state["team_usernames"])
+        self.assertNotIn("lobby_until", member_state)
+        self.assertEqual("kicked", records[str(member_id)]["last_join_result"])
+
+    def test_ambiguous_entered_text_does_not_promote_multiple_lobbies(self):
+        first_id = self._register_replica_identity(991201, "first")
+        second_id = self._register_replica_identity(991202, "second")
+        state_module.set_replica_participant_identity_ids([first_id, second_id])
+        now = 1000.0
+        for username, room_id, msg_id in (("@first", "1336", 1001), ("@second", "1337", 1002)):
+            app_replica._mark_replica_team_joined_from_text(
+                "【虚天殿已开启】\n"
+                f"{username} 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+                f"副本ID: {room_id}\n"
+                f"其他道友可使用 .加入副本 {room_id} 加入队伍！(5人满)\n\n"
+                "【卦象词条】 乾天上艮山下 · 四爻转阵\n"
+                "- 阵骨：土 必带\n"
+                "- 主锋：金 x2（只认真位，不吃借生）\n"
+                "- 引灵：土 位，可由 火 借生代行\n"
+                "- 旁合：土 位更佳，若用 火 强顶只算偏配",
+                now=now,
+                msg_id=msg_id,
+            )
+
+        handled = asyncio.run(app_replica._handle_replica_progress_event(
+            SimpleNamespace(id=1010, raw_text="队伍已进入虚天殿...石门缓缓关闭，前路凶险未知！"),
+            now + 2,
+        ))
+
+        self.assertFalse(handled)
+        records = state_module.get_replica_run_state()["by_identity"]
+        self.assertFalse(records[str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]["participating"])
+        self.assertFalse(records[str(second_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]["participating"])
 
     def test_runtime_resolves_cangkun_join_reply_family(self):
         self.assertEqual("replica_join", runtime.resolve_reply_family(".加入苍坤洞府 123"))
@@ -928,6 +1159,80 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("<code>.阵策 稳</code>", html_text)
         self.assertNotIn("<code>.争鼎 夺鼎</code>", html_text)
         self.assertNotIn("<code>.后殿抉择 冲关</code>", html_text)
+
+    def test_passive_opened_virtual_hall_broadcast_posts_lightweight_notice(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        dps_id = self._register_replica_identity(991202, "dps", root_attrs="金", professions="破军")
+        support_id = self._register_replica_identity(991203, "support", root_attrs="火", professions="咒师")
+        state_module.set_replica_group_ids([-100777])
+        state_module.set_replica_listener_account_map({"-100777": 9001})
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, support_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        opened = (
+            "【虚天殿已开启】\n"
+            "@leader 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1336\n"
+            "其他道友可使用 .加入副本 1336 加入队伍！(5人满)\n\n"
+            "【卦象词条】 乾天上艮山下 · 四爻转阵\n"
+            "- 阵骨：土 必带\n"
+            "- 主锋：金 x1（只认真位，不吃借生）\n"
+            "- 引灵：火 位，可由 木 借生代行\n"
+            "- 旁合：土 位更佳，若用 火 强顶只算偏配\n"
+            "- 行运：后续道路与阵策同样受卦象牵引，但不会直示吉路与吉策。\n"
+            "- 爻意：四爻重转阵，若无人护阵则整局易散。"
+        )
+        event = SimpleNamespace(id=9942743, chat_id=-1001680975844)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))):
+                handled = await app_replica._handle_virtual_hall_auto_game_event(
+                    event,
+                    opened,
+                    2000.0,
+                    reply_context={"reply_to_msg_id": 9942741, "send_as_id": 0},
+                )
+                notice_args = app_replica._send_lightweight_replica_notice.await_args
+                buttons = notice_args.kwargs["buttons"]
+                return handled, notice_args.args[0], notice_args.args[1], self._button_texts(buttons)
+
+        handled, room, notice_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(-100777, room["replica_chat_id"])
+        self.assertEqual(leader_id, room["leader_identity_id"])
+        self.assertEqual("passive_game_broadcast", room["opened_source"])
+        self.assertIn("推荐配置：虚天殿 1336", notice_text)
+        self.assertIn("加入推荐", button_texts)
+        self.assertIn("进入虚天殿", button_texts)
+        self.assertIn("解散副本", button_texts)
+        saved_room = app_replica._get_lightweight_last_room(-100777, now=2000.0)
+        self.assertEqual("1336", saved_room["room_id"])
+        self.assertEqual("passive_game_broadcast", saved_room["opened_source"])
+
+    def test_passive_opened_virtual_hall_broadcast_ignores_external_leader(self):
+        self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        state_module.set_replica_group_ids([-100777])
+        state_module.set_replica_listener_account_map({"-100777": 9001})
+        state_module.set_replica_participant_identity_ids([991201])
+        opened = (
+            "【虚天殿已开启】\n"
+            "@external 消耗了【虚天残图】，开启了前往虚天殿的传送门！\n"
+            "副本ID: 1337\n"
+            "其他道友可使用 .加入副本 1337 加入队伍！"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))) as notice:
+                handled = await app_replica._handle_virtual_hall_auto_game_event(
+                    SimpleNamespace(id=9943000, chat_id=-1001680975844),
+                    opened,
+                    2000.0,
+                )
+                return handled, notice.await_count
+
+        handled, notice_count = asyncio.run(run_test())
+        self.assertFalse(handled)
+        self.assertEqual(0, notice_count)
+        self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=2000.0))
 
     def test_xutian_real_prompt_sends_decision_buttons_only_once(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
@@ -2208,7 +2513,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(1, state_item["dispatch_retry_count"])
         self.assertEqual(779, state_item["dispatch_pending_msg_id"])
 
-    def test_external_dispatch_full_reply_after_success_does_not_clear_joined_state(self):
+    def test_external_dispatch_full_reply_after_success_does_not_clear_joined_lobby_state(self):
         first_id = self._register_replica_identity(991205, "first")
         listener_client = SimpleNamespace(name="dispatch-listener")
         state_module.set_replica_participant_identity_ids([first_id])
@@ -2235,14 +2540,39 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(later_handled)
         self.assertEqual(1, len(send_calls))
         state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
-        self.assertTrue(state_item["participating"])
+        self.assertFalse(state_item["participating"])
         self.assertEqual("456", state_item["room_id"])
         self.assertNotIn("dispatch_pending_room_id", state_item)
         self.assertNotIn("dispatch_pending_msg_id", state_item)
         self.assertEqual(779, state_item["last_join_msg_id"])
+        self.assertEqual("joined", state_item["lobby_status"])
+        self.assertGreater(state_item["lobby_until"], now)
         record = state_module.get_replica_run_state()["by_identity"][str(first_id)]
         self.assertEqual("joined", record["last_join_result"])
         self.assertEqual(779, record["last_join_msg_id"])
+
+    def test_external_dispatch_joined_lobby_blocks_duplicate_dispatch(self):
+        first_id = self._register_replica_identity(991205, "first")
+        listener_client = SimpleNamespace(name="dispatch-listener")
+        state_module.set_replica_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_participant_identity_ids([first_id])
+        state_module.set_replica_dispatch_group_ids([-100888])
+        state_module.set_replica_dispatch_listener_account_map({"-100888": 9001})
+        now = time.time()
+        app_replica._mark_replica_join_success(first_id, "456", ["@leader", "@first"], now, msg_id=779)
+
+        async def run_test():
+            with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                event = SimpleNamespace(raw_text=".虚天殿 456 @first", chat_id=-100888, sender_id=4444, id=88007, client=listener_client)
+                handled = await app_replica._handle_replica_external_dispatch_command(event)
+                return handled, send_mock.await_count
+
+        handled, send_count = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(0, send_count)
 
     def test_lightweight_dissolve_refuses_room_without_leader_identity(self):
         event = self._prepare_replica_group([])

@@ -65,6 +65,7 @@ from .state import (
     get_replica_gold_dps_enabled,
     get_replica_dispatch_listener_account_map,
     get_replica_dispatch_participant_identity_ids,
+    get_replica_group_ids,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
@@ -133,6 +134,9 @@ _REPLICA_ROOM_DISSOLVED_RE = re.compile(r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已�
 _REPLICA_KIND_ROOM_DISSOLVED_RE = re.compile(
     r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已解散(?:坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府)房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]"
 )
+_REPLICA_ROOM_AUTO_DISSOLVED_RE = re.compile(
+    r"由\s*(@[A-Za-z0-9_]{3,32})\s*开启的(?:虚天殿|坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府)\s*[（(]\s*ID\s*[:：]?\s*(\d+)\s*[）)]\s*因长时间未满员[，,]?\s*已自动解散"
+)
 _REPLICA_TEAM_KICKED_RE = re.compile(r"【队员已请离】\s*队长\s*(@[A-Za-z0-9_]{3,32})\s*已将道友\s*(@[A-Za-z0-9_]{3,32})\s*请离队伍")
 _REPLICA_OPENED_RE = re.compile(
     r"(?:【(?P<opened_kind_name>虚天殿)已开启】|【(?P<opened_zhuimo>坠魔谷)·集结】|【(?P<opened_huanglong>黄龙山)大战·集结】|【(?P<opened_cangkun>苍坤(?:上人)?洞府)(?:·集结|已开启)?】)"
@@ -172,6 +176,7 @@ _REPLICA_BUTTON_CALLBACK_PREFIX = "rp:"
 _XUTIAN_DECISION_NOTICE_TTL_SEC = 30 * 60
 _XUTIAN_DECISION_NOTICE_MAX = 200
 _REPLICA_LIGHTWEIGHT_ENTER_PENDING_SEC = 60
+_REPLICA_LOBBY_TTL_SEC = 12 * 60
 _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC = 5 * 60
 _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC = 2
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_DELAY_SEC = 2.5
@@ -932,6 +937,31 @@ def _set_lightweight_last_room(room):
     state_item["last_room_by_chat"] = rooms
     _save_lightweight_dungeon_state(state_item)
     return True
+
+
+def _find_lightweight_replica_notice_target(preferred_chat_id=0, preferred_listener_account_id=0):
+    try:
+        preferred_chat_id = int(preferred_chat_id or 0)
+    except (TypeError, ValueError):
+        preferred_chat_id = 0
+    try:
+        preferred_listener_account_id = int(preferred_listener_account_id or 0)
+    except (TypeError, ValueError):
+        preferred_listener_account_id = 0
+    listener_map = get_replica_listener_account_map() or {}
+    if preferred_chat_id and preferred_listener_account_id > 0:
+        mapped_listener = int(listener_map.get(str(preferred_chat_id)) or 0)
+        if mapped_listener == preferred_listener_account_id:
+            return preferred_chat_id, preferred_listener_account_id
+    for group_id in get_replica_group_ids():
+        try:
+            chat_id = int(group_id or 0)
+        except (TypeError, ValueError):
+            continue
+        listener_account_id = int(listener_map.get(str(chat_id)) or 0)
+        if chat_id and listener_account_id > 0:
+            return chat_id, listener_account_id
+    return 0, 0
 
 
 def _get_lightweight_last_room(replica_chat_id=0, now=None):
@@ -3534,6 +3564,20 @@ def _get_replica_active_until(record, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
     return active_until
 
 
+def _get_replica_lobby_until(state_item):
+    try:
+        return float((state_item or {}).get("lobby_until") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _clear_replica_lobby_fields(state_item):
+    if not isinstance(state_item, dict):
+        return
+    for key in ("lobby_until", "lobby_started_at", "lobby_msg_id", "lobby_status"):
+        state_item.pop(key, None)
+
+
 def _get_replica_state_msg_id(record, state_item, key, replica_kind):
     try:
         msg_id = int((state_item or {}).get(key) or 0)
@@ -3659,6 +3703,13 @@ def _cleanup_replica_run_state(now=None):
                 state_item["team_usernames"] = []
                 state_item["team_identity_ids"] = []
                 changed = True
+            lobby_until = _get_replica_lobby_until(state_item)
+            if lobby_until > 0 and now >= lobby_until:
+                _clear_replica_lobby_fields(state_item)
+                if not state_item.get("participating"):
+                    state_item["team_usernames"] = []
+                    state_item["team_identity_ids"] = []
+                changed = True
         has_kind_failure_pending = any(float(_get_replica_kind_state(record, kind).get("failure_pending_until") or 0) > 0 for kind in _REPLICA_KINDS)
         for replica_kind in _REPLICA_KINDS:
             state_item = _get_replica_kind_state(record, replica_kind)
@@ -3696,7 +3747,7 @@ def _clear_replica_dispatch_pending_fields(state_item):
         state_item.pop(key, None)
 
 
-def _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
+def _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL, lobby_status="joined"):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else _REPLICA_KIND_VIRTUAL_HALL
     state_item = _get_replica_kind_state(record, replica_kind, create=True)
     if _is_replica_join_obsolete_after_dissolve(record, state_item, replica_kind, msg_id, room_id):
@@ -3705,21 +3756,36 @@ def _update_replica_join_record(record, identity_id, room_id, team_usernames, no
     normalized_usernames = _normalize_replica_username_list(team_usernames)
     if profile_username and profile_username not in normalized_usernames:
         normalized_usernames.append(profile_username)
+    room_id = str(room_id or state_item.get("room_id") or "")
+    already_entered = (
+        state_item.get("participating")
+        and str(state_item.get("room_id") or "") == room_id
+        and _get_replica_active_until(record, replica_kind) > float(now or 0)
+    )
     state_item.update({
-        "participating": True,
-        "room_id": str(room_id or state_item.get("room_id") or ""),
+        "participating": bool(already_entered),
+        "room_id": room_id,
         "team_usernames": normalized_usernames,
         "team_identity_ids": _map_replica_usernames_to_identity_ids(normalized_usernames),
-        "joined_at": float(now or 0),
-        "active_until": float(now or 0) + REPLICA_ACTIVE_TTL_SEC,
         "last_join_msg_id": int(msg_id or 0),
         "failure_pending_until": 0,
     })
+    if already_entered:
+        _clear_replica_lobby_fields(state_item)
+    else:
+        state_item.update({
+            "joined_at": 0,
+            "active_until": 0,
+            "lobby_started_at": float(now or 0),
+            "lobby_until": float(now or 0) + _REPLICA_LOBBY_TTL_SEC,
+            "lobby_msg_id": int(msg_id or 0),
+            "lobby_status": str(lobby_status or "joined"),
+        })
     _clear_replica_dispatch_pending_fields(state_item)
     record.update({
         "replica_kind": replica_kind,
         "last_join_msg_id": int(msg_id or 0),
-        "last_join_result": "joined",
+        "last_join_result": "entered" if already_entered else str(lobby_status or "joined"),
         "last_join_error": "",
         "last_failure_at": 0,
         "failure_pending_until": 0,
@@ -3734,20 +3800,26 @@ def _mark_replica_join_success(identity_id, room_id, team_usernames, now, msg_id
         return
     records = _get_replica_run_records()
     record = _get_replica_identity_record(records, identity_id)
-    if _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=msg_id, replica_kind=replica_kind):
+    if _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=msg_id, replica_kind=replica_kind, lobby_status="joined"):
         _save_replica_run_records(records)
 
 
 def _preserve_confirmed_replica_join(records, record, state_item, room_id, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
+    same_room = str(state_item.get("room_id") or "") == str(room_id or state_item.get("room_id") or "")
     if (
-        state_item.get("participating")
-        and str(state_item.get("room_id") or "") == str(room_id or state_item.get("room_id") or "")
-        and _get_replica_active_until(record, replica_kind) > float(now or 0)
+        same_room
+        and (
+            (
+                state_item.get("participating")
+                and _get_replica_active_until(record, replica_kind) > float(now or 0)
+            )
+            or _get_replica_lobby_until(state_item) > float(now or 0)
+        )
     ):
         _clear_replica_dispatch_pending_fields(state_item)
         record.update({
             "replica_kind": replica_kind,
-            "last_join_result": "joined",
+            "last_join_result": "entered" if state_item.get("participating") else str(state_item.get("lobby_status") or "joined"),
             "last_join_error": "",
             "updated_at": float(now or 0),
         })
@@ -3769,6 +3841,7 @@ def _mark_replica_join_not_joined(identity_id, room_id, reason, now, msg_id=0, r
         "team_identity_ids": [],
         "failure_pending_until": 0,
     })
+    _clear_replica_lobby_fields(state_item)
     _clear_replica_dispatch_pending_fields(state_item)
     record.update({
         "replica_kind": replica_kind,
@@ -3794,6 +3867,7 @@ def _mark_replica_join_cooldown(identity_id, room_id, wait_sec, now, msg_id=0, r
         "team_identity_ids": [],
         "failure_pending_until": 0,
     })
+    _clear_replica_lobby_fields(state_item)
     _clear_replica_dispatch_pending_fields(state_item)
     record.update({
         "replica_kind": replica_kind,
@@ -3862,7 +3936,10 @@ def _infer_replica_kind_from_active_team_usernames(usernames, now, records=None)
             continue
         for kind in _REPLICA_KINDS:
             state_item = _get_replica_kind_state(record, kind)
-            if not state_item.get("participating") or _get_replica_active_until(record, kind) <= float(now or 0):
+            if (
+                not state_item.get("participating")
+                or _get_replica_active_until(record, kind) <= float(now or 0)
+            ) and _get_replica_lobby_until(state_item) <= float(now or 0):
                 continue
             team_usernames = set(_normalize_replica_username_list(state_item.get("team_usernames") or []))
             if target_usernames.intersection(team_usernames):
@@ -3883,7 +3960,10 @@ def _infer_replica_kind_from_active_room(room_id, now, records=None):
             state_item = _get_replica_kind_state(record, kind)
             if str(state_item.get("room_id") or "") != room_id:
                 continue
-            if not state_item.get("participating") or _get_replica_active_until(record, kind) <= float(now or 0):
+            if (
+                not state_item.get("participating")
+                or _get_replica_active_until(record, kind) <= float(now or 0)
+            ) and _get_replica_lobby_until(state_item) <= float(now or 0):
                 continue
             matched_kinds.add(kind)
     return next(iter(matched_kinds)) if len(matched_kinds) == 1 else ""
@@ -3922,10 +4002,12 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
     joined_match = _REPLICA_JOINED_RE.search(raw_text)
     room_id = ""
     replica_kind = _infer_replica_kind_from_text(raw_text)
+    lobby_status = "joined"
     if opened_match:
         room_id = str(opened_match.group("room_id") or "").strip()
         leader_username = _normalize_replica_username(opened_match.group("leader"))
         team_usernames = [leader_username]
+        lobby_status = "opened"
         opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or raw_text
         replica_kind = _infer_replica_kind_from_text(opened_kind_name)
         if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
@@ -3946,7 +4028,103 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
     changed = False
     for identity_id in identity_ids:
         record = _get_replica_identity_record(records, identity_id)
-        changed = _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=msg_id, replica_kind=replica_kind) or changed
+        changed = _update_replica_join_record(
+            record,
+            identity_id,
+            room_id,
+            team_usernames,
+            now,
+            msg_id=msg_id,
+            replica_kind=replica_kind,
+            lobby_status=lobby_status,
+        ) or changed
+    if changed:
+        _save_replica_run_records(records)
+    return changed
+
+
+def _find_recent_replica_lobby_team(replica_kind, now, leader_username=""):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return []
+    leader_username = _normalize_replica_username(leader_username)
+    records = _cleanup_replica_run_state(now)
+    candidates = []
+    for raw_identity_id, record in records.items():
+        if not isinstance(record, dict):
+            continue
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        state_item = _get_replica_kind_state(record, replica_kind)
+        if state_item.get("participating") and _get_replica_active_until(record, replica_kind) > float(now or 0):
+            continue
+        if _get_replica_lobby_until(state_item) <= float(now or 0):
+            continue
+        team_usernames = _normalize_replica_username_list(state_item.get("team_usernames") or [])
+        if leader_username and leader_username not in team_usernames:
+            continue
+        candidates.append((
+            float(state_item.get("lobby_started_at") or record.get("updated_at") or 0),
+            identity_id,
+            record,
+            state_item,
+        ))
+    if not candidates:
+        return []
+    if not leader_username:
+        room_ids = {str((state_item or {}).get("room_id") or "") for _ts, _identity_id, _record, state_item in candidates}
+        if len(room_ids) != 1:
+            return []
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _started_at, _identity_id, _record, state_item = candidates[0]
+    team_identity_ids = _normalize_replica_identity_ids(state_item.get("team_identity_ids") or [])
+    if not team_identity_ids:
+        team_identity_ids = _map_replica_usernames_to_identity_ids(state_item.get("team_usernames") or [])
+    return team_identity_ids
+
+
+def _mark_replica_team_entered(replica_kind, now, source_msg_id=0, leader_username=""):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return False
+    identity_ids = _find_recent_replica_lobby_team(replica_kind, now, leader_username=leader_username)
+    if not identity_ids and leader_username:
+        identity_ids = _map_replica_usernames_to_identity_ids([leader_username])
+    if not identity_ids:
+        return False
+    records = _get_replica_run_records()
+    changed = False
+    for identity_id in identity_ids:
+        record = _get_replica_identity_record(records, identity_id)
+        state_item = _get_replica_kind_state(record, replica_kind, create=True)
+        team_usernames = _normalize_replica_username_list(state_item.get("team_usernames") or [])
+        profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        if profile_username and profile_username not in team_usernames:
+            team_usernames.append(profile_username)
+        state_item.update({
+            "participating": True,
+            "team_usernames": team_usernames,
+            "team_identity_ids": _normalize_replica_identity_ids(identity_ids),
+            "entered_at": float(now or 0),
+            "joined_at": float(now or 0),
+            "active_until": float(now or 0) + REPLICA_ACTIVE_TTL_SEC,
+            "last_enter_source_msg_id": int(source_msg_id or 0),
+            "failure_pending_until": 0,
+        })
+        _clear_replica_lobby_fields(state_item)
+        _clear_replica_dispatch_pending_fields(state_item)
+        record.update({
+            "replica_kind": replica_kind,
+            "leader_username": leader_username or _normalize_replica_username(record.get("leader_username") or ""),
+            "last_join_result": "entered",
+            "last_join_error": "",
+            "last_failure_at": 0,
+            "failure_pending_until": 0,
+            "updated_at": float(now or 0),
+        })
+        changed = True
     if changed:
         _save_replica_run_records(records)
     return changed
@@ -3969,6 +4147,7 @@ def _mark_replica_success_cooldown(identity_ids, now, source_msg_id=0, leader_us
             "team_usernames": [],
             "team_identity_ids": [],
         })
+        _clear_replica_lobby_fields(state_item)
         state_item["failure_pending_until"] = 0
         record.update({
             "replica_kind": replica_kind,
@@ -3996,6 +4175,7 @@ def _mark_replica_failure_pending(identity_ids, now, replica_kind=_REPLICA_KIND_
         record = _get_replica_identity_record(records, identity_id)
         state_item = _get_replica_kind_state(record, replica_kind, create=True)
         state_item["failure_pending_until"] = failure_pending_until
+        _clear_replica_lobby_fields(state_item)
         record["replica_kind"] = replica_kind
         record["last_failure_at"] = float(now or 0)
         record["failure_pending_until"] = failure_pending_until
@@ -4031,6 +4211,7 @@ def _mark_replica_room_dissolved(room_id, now, source_msg_id=0, leader_username=
                 "last_dissolve_source_msg_id": int(source_msg_id or 0),
                 "last_dissolved_room_id": room_id,
             })
+            _clear_replica_lobby_fields(state_item)
             matched = True
         if not matched:
             continue
@@ -4072,7 +4253,7 @@ def _mark_replica_team_kicked(leader_username, kicked_username, team_usernames, 
         matched = False
         for kind in target_kinds:
             state_item = _get_replica_kind_state(record, kind)
-            if not state_item.get("participating"):
+            if not state_item.get("participating") and _get_replica_lobby_until(state_item) <= float(now or 0):
                 continue
             record_team_usernames = set(_normalize_replica_username_list(state_item.get("team_usernames") or []))
             if leader_username not in record_team_usernames and kicked_username not in record_team_usernames:
@@ -4083,6 +4264,7 @@ def _mark_replica_team_kicked(leader_username, kicked_username, team_usernames, 
                     "team_usernames": [],
                     "team_identity_ids": [],
                 })
+                _clear_replica_lobby_fields(state_item)
             elif normalized_team_usernames:
                 state_item["team_usernames"] = normalized_team_usernames
                 state_item["team_identity_ids"] = _map_replica_usernames_to_identity_ids(normalized_team_usernames)
@@ -4247,6 +4429,8 @@ def _parse_replica_room_dissolved(text):
     if not match:
         match = _REPLICA_KIND_ROOM_DISSOLVED_RE.search(str(text or ""))
     if not match:
+        match = _REPLICA_ROOM_AUTO_DISSOLVED_RE.search(str(text or ""))
+    if not match:
         return "", ""
     return _normalize_replica_username(match.group(1)), str(match.group(2) or "").strip()
 
@@ -4271,9 +4455,11 @@ def _parse_replica_team_kicked(text):
 async def _handle_replica_progress_event(event, now, event_type="message"):
     text = str(getattr(event, "raw_text", "") or "")
     dissolved_leader, dissolved_room_id = _parse_replica_room_dissolved(text)
+    entered_kind = _parse_replica_entered_kind(text)
     xutian_decision_stage = _get_xutian_decision_stage(text)
     if (
         not xutian_decision_stage
+        and not entered_kind
         and "挑战失败！" not in text
         and not dissolved_room_id
         and "【队员已请离】" not in text
@@ -4286,7 +4472,18 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     _mark_runtime_message_consumed(event, consumed_family)
     xutian_notice_sent = False
     if xutian_decision_stage:
+        parsed_leader_username = _parse_replica_leader_username(text)
+        if parsed_leader_username:
+            _mark_replica_team_entered(
+                _REPLICA_KIND_VIRTUAL_HALL,
+                now,
+                source_msg_id=getattr(event, "id", 0),
+                leader_username=parsed_leader_username,
+            )
         xutian_notice_sent = bool(await _maybe_send_xutian_decision_notice(event, text, now))
+    if entered_kind:
+        if _mark_replica_team_entered(entered_kind, now, source_msg_id=getattr(event, "id", 0)):
+            return True
     enter_kind = _parse_replica_enter_command(text)
     if enter_kind and enter_kind != _REPLICA_KIND_VIRTUAL_HALL:
         leader_ids = await _find_replica_identity_ids_by_sender(event)
@@ -4986,41 +5183,9 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
                 "updated_at": now,
                 "expires_at": now + _REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
             }
-            _set_lightweight_last_room(room)
             _remove_lightweight_open_flow(flow.get("flow_id"))
-            if not _mark_lightweight_room_recommendation_sent(room, now):
-                return True
-            if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
-                await _send_lightweight_virtual_hall_recommendation(room, text, now)
-            else:
-                join_command = _get_lightweight_profession_recommendation_join_command(
-                    replica_kind,
-                    int(room.get("leader_identity_id") or 0),
-                )
-                recommendation_text = _format_lightweight_profession_recommendation_section(
-                    replica_kind,
-                    int(room.get("leader_identity_id") or 0),
-                    html=True,
-                )
-                await _send_lightweight_replica_notice(
-                    room,
-                    f"已记录{escape(_REPLICA_KIND_META[replica_kind]['name'])}房间 {escape(room_id)}。\n\n"
-                    + recommendation_text
-                    + "\n\n"
-                    + _format_lightweight_next_commands(
-                        join_command or ".加入副本 @用户名 @用户名",
-                        ".解散副本",
-                        html=True,
-                    ),
-                    html=True,
-                    buttons=_build_lightweight_room_action_buttons(
-                        room,
-                        join_command=join_command,
-                        include_enter=True,
-                        include_dissolve=True,
-                        include_query=True,
-                    ),
-                )
+            return await _publish_lightweight_opened_room(room, text, now)
+        if await _maybe_absorb_lightweight_opened_room(opened_match, text, now, event=event):
             return True
     open_failure = _parse_lightweight_replica_open_failure(text)
     if open_failure:
@@ -5369,7 +5534,111 @@ def _parse_lightweight_replica_open_failure(text):
     return ""
 
 
-async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now):
+async def _send_lightweight_opened_room_notice(room, opened_text, now, *, allow_auto_dissolve=True):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    room_id = str(room.get("room_id") or "").strip()
+    if not room_id or replica_kind not in _REPLICA_KINDS:
+        return False
+    if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
+        return await _send_lightweight_virtual_hall_recommendation(
+            room,
+            opened_text,
+            now,
+            allow_auto_dissolve=allow_auto_dissolve,
+        )
+    join_command = _get_lightweight_profession_recommendation_join_command(
+        replica_kind,
+        int(room.get("leader_identity_id") or 0),
+    )
+    recommendation_text = _format_lightweight_profession_recommendation_section(
+        replica_kind,
+        int(room.get("leader_identity_id") or 0),
+        html=True,
+    )
+    await _send_lightweight_replica_notice(
+        room,
+        f"已记录{escape(_REPLICA_KIND_META[replica_kind]['name'])}房间 {escape(room_id)}。\n\n"
+        + recommendation_text
+        + "\n\n"
+        + _format_lightweight_next_commands(
+            join_command or ".加入副本 @用户名 @用户名",
+            ".解散副本",
+            html=True,
+        ),
+        html=True,
+        buttons=_build_lightweight_room_action_buttons(
+            room,
+            join_command=join_command,
+            include_enter=True,
+            include_dissolve=True,
+            include_query=True,
+        ),
+    )
+    return True
+
+
+async def _publish_lightweight_opened_room(room, opened_text, now, *, allow_auto_dissolve=True):
+    room = room if isinstance(room, dict) else {}
+    if not _set_lightweight_last_room(room):
+        return False
+    if not _mark_lightweight_room_recommendation_sent(room, now):
+        return True
+    await _send_lightweight_opened_room_notice(
+        room,
+        opened_text,
+        now,
+        allow_auto_dissolve=allow_auto_dissolve,
+    )
+    return True
+
+
+async def _maybe_absorb_lightweight_opened_room(opened_match, opened_text, now, event=None):
+    if not opened_match:
+        return False
+    opened_kind_name = (
+        opened_match.group("opened_kind_name")
+        or opened_match.group("opened_zhuimo")
+        or opened_match.group("opened_huanglong")
+        or opened_match.group("opened_cangkun")
+        or opened_text
+    )
+    replica_kind = _infer_replica_kind_from_text(opened_kind_name)
+    if replica_kind not in _REPLICA_KINDS:
+        return False
+    leader_username = _normalize_replica_username(opened_match.group("leader"))
+    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    participant_ids = set(_normalize_replica_identity_ids(get_replica_participant_identity_ids()))
+    if leader_identity_id <= 0 or leader_identity_id not in participant_ids:
+        return False
+    replica_chat_id, listener_account_id = _find_lightweight_replica_notice_target()
+    if replica_chat_id == 0 or listener_account_id <= 0:
+        return False
+    room_id = str(opened_match.group("room_id") or "").strip()
+    room = {
+        "phase": "opened",
+        "room_id": room_id,
+        "replica_kind": replica_kind,
+        "replica_chat_id": int(replica_chat_id or 0),
+        "listener_account_id": int(listener_account_id or 0),
+        "leader_identity_id": int(leader_identity_id or 0),
+        "leader_username": leader_username,
+        "opened_msg_id": int(getattr(event, "id", 0) or 0),
+        "opened_source": "passive_game_broadcast",
+        "opened_source_chat_id": int(getattr(event, "chat_id", 0) or 0),
+        "opened_at": now,
+        "updated_at": now,
+        "expires_at": now + _REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+    }
+    return await _publish_lightweight_opened_room(
+        room,
+        opened_text,
+        now,
+        allow_auto_dissolve=False,
+    )
+
+
+async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, *, allow_auto_dissolve=True):
     room = room if isinstance(room, dict) else {}
     room_id = str(room.get("room_id") or "").strip()
     leader_username = _normalize_replica_username(room.get("leader_username") or "")
@@ -5392,7 +5661,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now):
             include_dissolve=True,
             include_query=True,
         )
-        if not has_available_gold_dps and not room.get("auto_dissolve_scheduled_at"):
+        if allow_auto_dissolve and not has_available_gold_dps and not room.get("auto_dissolve_scheduled_at"):
             room["auto_dissolve_reason"] = "no_dps"
             room["auto_dissolve_scheduled_at"] = float(now or time.time())
             _set_lightweight_last_room(room)
@@ -5400,7 +5669,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now):
         return await _send_lightweight_replica_notice(
             room,
             f"已记录虚天殿房间 {room_id}，但未解析到卦象词条。\n\n"
-            + ("无DPS可用，已安排 6 秒后自动解散。\n\n" if not has_available_gold_dps else "")
+            + ("无DPS可用，已安排 6 秒后自动解散。\n\n" if allow_auto_dissolve and not has_available_gold_dps else "")
             + (
                 _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=True)
                 if has_available_gold_dps
@@ -5421,7 +5690,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now):
         include_dissolve=True,
         include_query=True,
     )
-    if not has_available_gold_dps and not room.get("auto_dissolve_scheduled_at"):
+    if allow_auto_dissolve and not has_available_gold_dps and not room.get("auto_dissolve_scheduled_at"):
         room["auto_dissolve_reason"] = "no_dps"
         room["auto_dissolve_scheduled_at"] = float(now or time.time())
         _set_lightweight_last_room(room)
@@ -6162,6 +6431,11 @@ def _reserve_external_dispatch_join(identity_id, replica_kind, room_id, event, n
     active_until = _get_replica_active_until(record, replica_kind)
     if state_item.get("participating") and active_until > float(now or 0):
         return False, "participating"
+    if (
+        str(state_item.get("room_id") or "") == room_id
+        and _get_replica_lobby_until(state_item) > float(now or 0)
+    ):
+        return False, "joined_lobby"
     dispatch_pending_until = float(state_item.get("dispatch_pending_until") or 0)
     if dispatch_pending_until > float(now or 0):
         return False, "pending"
@@ -6232,6 +6506,11 @@ def _should_fast_retry_external_dispatch(identity_id, replica_kind, room_id, sou
     if float(state_item.get("dispatch_pending_until") or 0) <= float(now or 0):
         return False
     if state_item.get("participating") and _get_replica_active_until(record, replica_kind) > float(now or 0):
+        return False
+    if (
+        str(state_item.get("room_id") or "") == str(room_id or "")
+        and _get_replica_lobby_until(state_item) > float(now or 0)
+    ):
         return False
     if float(state_item.get("cooldown_until") or 0) > float(now or 0):
         return False
