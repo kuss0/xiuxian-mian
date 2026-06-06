@@ -355,7 +355,11 @@ async def run_wild_training_scheduler(now):
         state["wild_training_reply_due_at"] = 0
         if str(state.get("wild_training_last_result") or "").startswith("已出发"):
             _schedule_next(now)
-            state["wild_training_last_error"] = f"野外历练已出发但未收到最终结果编辑，进入下一轮，原消息ID={reply_to_msg_id}"
+            state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
+            state["wild_training_last_error"] = ""
+            save_state()
+            console_log(f"🏞️ 野外历练{state['wild_training_last_result']}", scope="identity")
+            return
         elif int(state.get("wild_training_retry_count", 0) or 0) < 1:
             state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
             _schedule_retry(now)

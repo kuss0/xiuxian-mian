@@ -146,14 +146,18 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id), \
              patch.object(wild_training, "save_state"), \
              patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
-             patch.object(wild_training, "send_audit_log", new=AsyncMock()):
+             patch.object(wild_training, "console_log") as console_mock, \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
             await wild_training.run_wild_training_scheduler(now)
 
+        audit_mock.assert_not_awaited()
+        console_mock.assert_called_once()
         self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(0, state_module.state["wild_training_retry_count"])
         self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
-        self.assertIn("最终结果编辑", state_module.state["wild_training_last_error"])
-        self.assertNotIn("准备补发", state_module.state["wild_training_last_error"])
+        self.assertIn("结果编辑未留存", state_module.state["wild_training_last_result"])
+        self.assertIn("已按正常周期恢复", state_module.state["wild_training_last_result"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
 
     async def test_unanswered_command_still_retries_once(self):
         send_as_id = self._prepare_identity()
