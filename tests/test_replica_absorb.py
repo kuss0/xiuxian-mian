@@ -1805,6 +1805,47 @@ class ReplicaAbsorbTests(unittest.TestCase):
         saved_room = app_replica._get_lightweight_last_room(-100777, now=now)
         self.assertEqual("entered", saved_room["phase"])
 
+    def test_kunwu_auto_choice_retry_skips_when_new_stage_is_current(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 2000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "entered_at": now - 5,
+            "updated_at": now - 5,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        scope = "room:88"
+        first_key = app_replica._make_kunwu_auto_choice_key(scope, "road:1", leader_id, ".选择 岔路1")
+        second_key = app_replica._make_kunwu_auto_choice_key(scope, "road:2", leader_id, ".选择 岔路2")
+        self.assertTrue(app_replica._mark_kunwu_auto_choice_once(first_key, scope, now))
+        self.assertTrue(app_replica._mark_kunwu_auto_choice_once(second_key, scope, now + 1))
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                retried = await app_replica._retry_kunwu_auto_choice_once(
+                    first_key,
+                    scope,
+                    leader_id,
+                    "88",
+                    ".选择 岔路1",
+                    8816,
+                    901,
+                    f"kunwu_auto_choice:{scope}:{leader_id}:road:1",
+                    delay_sec=0,
+                )
+                return retried, send_mock.await_count
+
+        retried, send_count = asyncio.run(run_test())
+        self.assertFalse(retried)
+        self.assertEqual(0, send_count)
+
     def test_kunwu_road_stage_falls_back_to_buttons_when_auto_send_fails(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])

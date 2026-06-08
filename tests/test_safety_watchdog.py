@@ -233,7 +233,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("duplicate replica choice op_id", breach)
 
-    def test_replica_auto_decision_repeat_with_distinct_stage_is_not_same_command_fuse(self):
+    def test_kunwu_auto_choice_repeat_with_distinct_stage_is_not_same_command_fuse(self):
         now = time.time()
         sender_id = 3943773722
         events = [
@@ -243,7 +243,7 @@ class SafetyWatchdogTests(unittest.TestCase):
                 ".选择 岔路1",
                 source_module="自动副本",
                 priority="urgent_reactive",
-                op_id="replica_auto_decision:10001087:3943773722:a1",
+                op_id="kunwu_auto_choice:10001087:3943773722:a1",
             ),
             _event(
                 now,
@@ -251,16 +251,16 @@ class SafetyWatchdogTests(unittest.TestCase):
                 ".选择 岔路1",
                 source_module="自动副本",
                 priority="urgent_reactive",
-                op_id="replica_auto_decision:10001149:3943773722:b2",
+                op_id="kunwu_auto_choice:10001149:3943773722:b2",
             ),
         ]
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
-    def test_replica_auto_decision_duplicate_op_id_still_fuses(self):
+    def test_kunwu_auto_choice_duplicate_op_id_still_fuses(self):
         now = time.time()
         sender_id = 3943773722
-        op_id = "replica_auto_decision:10001087:3943773722:a1"
+        op_id = "kunwu_auto_choice:10001087:3943773722:a1"
         events = [
             _event(
                 now - 180,

@@ -330,16 +330,16 @@ def is_replica_button_choice_event(item: dict, text: str) -> bool:
     return str(item.get("op_id") or "").strip().startswith("replica_button:")
 
 
-def is_replica_auto_decision_choice_event(item: dict, text: str) -> bool:
+def is_kunwu_auto_choice_event(item: dict, text: str) -> bool:
     if not is_dungeon_fast_chain_command(text):
         return False
     if str(item.get("source_module") or "").strip() != "自动副本":
         return False
-    return str(item.get("op_id") or "").strip().startswith("replica_auto_decision:")
+    return str(item.get("op_id") or "").strip().startswith("kunwu_auto_choice:")
 
 
 def is_replica_choice_event(item: dict, text: str) -> bool:
-    return is_replica_button_choice_event(item, text) or is_replica_auto_decision_choice_event(item, text)
+    return is_replica_button_choice_event(item, text) or is_kunwu_auto_choice_event(item, text)
 
 
 def is_safe_replica_choice_repeat(prev: dict, cur: dict, text: str) -> bool:
