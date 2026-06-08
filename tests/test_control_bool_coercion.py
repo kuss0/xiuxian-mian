@@ -138,6 +138,52 @@ class ControlBoolCoercionTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["last_sect_teach_msg_id"])
             self.assertEqual({201: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
 
+    def test_toggling_concubine_preserves_partner_snapshot(self):
+        send_as_id = 990343
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_availability"] = "available"
+            state_module.state["concubine_name"] = "银月"
+            state_module.state["concubine_kind"] = "道心侍妾"
+            state_module.state["concubine_affinity"] = 330
+            state_module.state["concubine_dream_due_at"] = now + 3600
+            state_module.state["concubine_fragment_xutian_count"] = 1
+            state_module.state["concubine_fragment_cangkun_count"] = 3
+            state_module.state["concubine_last_snapshot_at"] = now - 600
+            state_module.state["concubine_status_msg_id"] = 123
+            state_module.state["concubine_phase"] = "status_pending"
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("侍妾", False, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["concubine_enabled"])
+            self.assertEqual("available", state_module.state["concubine_availability"])
+            self.assertEqual("银月", state_module.state["concubine_name"])
+            self.assertEqual("道心侍妾", state_module.state["concubine_kind"])
+            self.assertEqual(330, state_module.state["concubine_affinity"])
+            self.assertEqual(now + 3600, state_module.state["concubine_dream_due_at"])
+            self.assertEqual(1, state_module.state["concubine_fragment_xutian_count"])
+            self.assertEqual(3, state_module.state["concubine_fragment_cangkun_count"])
+            self.assertEqual(now - 600, state_module.state["concubine_last_snapshot_at"])
+            self.assertEqual(0, state_module.state["concubine_status_msg_id"])
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("侍妾", True, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertTrue(state_module.state["concubine_enabled"])
+            self.assertEqual("available", state_module.state["concubine_availability"])
+            self.assertEqual("银月", state_module.state["concubine_name"])
+            self.assertEqual("道心侍妾", state_module.state["concubine_kind"])
+            self.assertEqual(330, state_module.state["concubine_affinity"])
+            self.assertEqual(now - 600, state_module.state["concubine_last_snapshot_at"])
+
 
 if __name__ == "__main__":
     unittest.main()

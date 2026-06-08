@@ -95,6 +95,7 @@ RE_CONCUBINE_GIFT_SUCCESS = re.compile(
     r"你将【灵石】[x×]\s*(?P<stone>[\d,]+)\s*赠予了侍妾【(?P<name>[^】]+)】[\s\S]*?情缘增加了\s*(?P<amount>[\d,]+)\s*点"
 )
 RE_SELFLESS_PARTNER = re.compile(r"侍妾\s*【?(?P<name>[^】\s，,。]+)】?\s*挺身而出")
+RE_HEART_AFFINITY_SETTLEMENT = re.compile(r"情缘结算[：:]\s*\+?\s*(?P<amount>[\d,]+)")
 RE_FRAGMENT_PROGRESS = re.compile(r"(?:虚天残图拼片|拼片进度|当前进度)\s*[：:]?\s*(\d+)\s*/\s*(\d+)")
 RE_FRAGMENT_TYPED_PROGRESS = re.compile(r"(?P<kind>虚天|苍坤)\s*(?:残图)?(?:拼片|进度)?\s*(?:已至)?\s*[：:]?\s*(?P<count>\d+)\s*/\s*(?P<total>\d+)")
 RE_FRAGMENT_CONTEXT_KIND = re.compile(r"[【\[][^\]】]*(?P<kind>虚天|苍坤)残图[^\]】]*[】\]]")
@@ -135,6 +136,25 @@ CONCUBINE_GREET_DEFER_MAX_SEC = 180
 CONCUBINE_ACTIVE_DEFER_MIN_SEC = 60
 CONCUBINE_ACTIVE_DEFER_MAX_SEC = 180
 PHASEFUL_SUMMARY_GUARD_PHASES = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}
+CONCUBINE_PARTNER_SNAPSHOT_KEYS = (
+    "concubine_availability",
+    "concubine_last_panel_msg_id",
+    "concubine_name",
+    "concubine_kind",
+    "concubine_location",
+    "concubine_affinity",
+    "concubine_oath",
+    "concubine_dream_due_at",
+    "concubine_last_snapshot_at",
+    "concubine_fragment_count",
+    "concubine_fragment_total",
+    "concubine_fragment_xutian_count",
+    "concubine_fragment_xutian_total",
+    "concubine_fragment_cangkun_count",
+    "concubine_fragment_cangkun_total",
+    "concubine_fragment_confirm_key",
+    "concubine_fragment_confirmed_at",
+)
 DREAM_KIND_XUTIAN = "xutian"
 DREAM_KIND_CANGKUN = "cangkun"
 FRAGMENT_KIND_ORDER = (DREAM_KIND_XUTIAN, DREAM_KIND_CANGKUN)
@@ -610,6 +630,18 @@ def _clear_voyage_snapshot():
     state["concubine_voyage_retry_count"] = 0
 
 
+def _partner_runtime_snapshot():
+    return {key: state.get(key) for key in CONCUBINE_PARTNER_SNAPSHOT_KEYS}
+
+
+def _restore_partner_runtime_snapshot(snapshot):
+    if not isinstance(snapshot, dict):
+        return
+    for key in CONCUBINE_PARTNER_SNAPSHOT_KEYS:
+        if key in snapshot:
+            state[key] = snapshot[key]
+
+
 def _voyage_runtime_snapshot():
     return {
         "phase": _phase() if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES else "",
@@ -696,9 +728,6 @@ def _is_voyage_affinity_eligible():
 def _is_voyage_eligible(now):
     if not state.get("concubine_voyage_enabled"):
         return False
-    if not _is_star_palace_identity():
-        state["concubine_voyage_last_error"] = "仅星宫身份自动远航"
-        return False
     if not _has_available_partner():
         state["concubine_voyage_last_error"] = "远航需先确认侍妾"
         return False
@@ -770,7 +799,7 @@ def _can_continue_gift_recovery(now):
     )
 
 
-def _has_phaseful_summary_window(now):
+def _phaseful_summary_guard_state(now):
     for phase_key, next_time_key, enabled_key in (
         ("deep_retreat_phase", "next_deep_retreat_time", "deep_retreat_enabled"),
         ("yuanying_phase", "next_yuanying_time", "yuanying_enabled"),
@@ -778,15 +807,26 @@ def _has_phaseful_summary_window(now):
         if not state.get(enabled_key):
             continue
         phase = str(state.get(phase_key) or "idle")
-        if phase in PHASEFUL_SUMMARY_GUARD_PHASES:
-            return True
+        if phase in {"observing_summary", "waiting_summary", "post_summary_wait"}:
+            return "blocking"
+        if phase == "summary_due":
+            return "summary_due"
         if phase == "running" and 0 < float(state.get(next_time_key, 0) or 0) <= float(now):
-            return True
-    return False
+            return "summary_due"
+    return ""
 
 
-def _defer_active_for_phaseful_summary(now, action, *, error_key="concubine_last_error"):
-    if not _has_phaseful_summary_window(now):
+def _has_phaseful_summary_window(now, *, allow_replayable_trigger=False):
+    guard_state = _phaseful_summary_guard_state(now)
+    if not guard_state:
+        return False
+    if allow_replayable_trigger and guard_state == "summary_due":
+        return False
+    return True
+
+
+def _defer_active_for_phaseful_summary(now, action, *, error_key="concubine_last_error", allow_replayable_trigger=False):
+    if not _has_phaseful_summary_window(now, allow_replayable_trigger=allow_replayable_trigger):
         return False
     _set_phase("idle")
     _clear_non_heart_pending_msg_ids()
@@ -1940,8 +1980,12 @@ def is_concubine_affinity_event_candidate(text):
 def _apply_affinity_gain(partner_name, amount, now):
     if not _current_partner_matches(partner_name):
         return False
+    return _apply_affinity_amount(amount, now)
+
+
+def _apply_affinity_amount(amount, now):
     try:
-        gain_amount = int(amount)
+        gain_amount = int(str(amount or "").replace(",", ""))
     except (TypeError, ValueError):
         return False
     if gain_amount <= 0:
@@ -2112,11 +2156,9 @@ def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
     snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if snapshot_at <= 0 or float(now) - snapshot_at > CONCUBINE_STATUS_STALE_SEC:
-        return _has_active_cooldown_action_due(now)
     if _has_heart_due_action(now):
         panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-        return panel_msg_id <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
+        return snapshot_at <= 0 or panel_msg_id <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
     return False
 
 
@@ -2441,6 +2483,7 @@ def get_concubine_status_text():
 
 
 def clear_concubine_state(*, persist=False, keep_last_error=False, include_tianji=False):
+    partner_snapshot = _partner_runtime_snapshot()
     tianji_snapshot = {
         "concubine_tianji_due_at": state.get("concubine_tianji_due_at", 0),
         "concubine_tianji_chain": state.get("concubine_tianji_chain", ""),
@@ -2479,6 +2522,7 @@ def clear_concubine_state(*, persist=False, keep_last_error=False, include_tianj
         for key, value in heart_snapshot.items():
             state[key] = value
         _restore_voyage_runtime_snapshot(voyage_snapshot)
+    _restore_partner_runtime_snapshot(partner_snapshot)
     if not keep_last_error:
         state["concubine_last_error"] = ""
     if persist:
@@ -2643,7 +2687,7 @@ async def _send_gift_command(now, amount):
 
 
 async def _send_dream_command(now):
-    if _defer_active_for_phaseful_summary(now, "入梦寻图"):
+    if _defer_active_for_phaseful_summary(now, "入梦寻图", allow_replayable_trigger=True):
         save_state()
         return False
     msg = await send_game_command(CMD_CONCUBINE_DREAM, track=False)
@@ -2866,7 +2910,7 @@ async def _send_heart_command(now):
 
 
 async def _send_voyage_return_command(now, *, is_retry=False):
-    if _defer_active_for_phaseful_summary(now, "远航归来", error_key="concubine_voyage_last_error"):
+    if _defer_active_for_phaseful_summary(now, "远航归来", error_key="concubine_voyage_last_error", allow_replayable_trigger=True):
         save_state()
         return False
     if not is_retry:
@@ -2890,7 +2934,7 @@ async def _send_voyage_return_command(now, *, is_retry=False):
 
 
 async def _send_voyage_command(now, *, is_retry=False):
-    if _defer_active_for_phaseful_summary(now, "侍妾远航", error_key="concubine_voyage_last_error"):
+    if _defer_active_for_phaseful_summary(now, "侍妾远航", error_key="concubine_voyage_last_error", allow_replayable_trigger=True):
         save_state()
         return False
     if not _is_voyage_eligible(now):
@@ -3623,6 +3667,9 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
 
     if "【坠魔心劫·结算】" in raw_text:
         _close_heart_action_guard(now, "heart_settlement")
+        affinity_match = RE_HEART_AFFINITY_SETTLEMENT.search(raw_text)
+        if affinity_match:
+            _apply_affinity_amount(affinity_match.group("amount"), now)
         state["concubine_heart_due_at"] = now + CONCUBINE_HEART_CD_SEC + random.uniform(10 * 60, 40 * 60)
         state["concubine_heart_last_error"] = ""
         state["concubine_heart_prompt_msg_id"] = 0
