@@ -316,6 +316,25 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
+    def test_divination_daily_query_chain_allows_observed_count_jump_after_retry(self):
+        now = time.time()
+        sender_id = 3930920736
+        day_key = "2026-06-09"
+        targets = [1, 2, 3, 4, 4, 6]
+        events = [
+            _event(
+                now - (len(targets) - index - 1) * 70,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:{day_key}:{target}:try{index + 1}",
+            )
+            for index, target in enumerate(targets)
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
     def test_unmarked_divination_fourth_attempt_still_fuses(self):
         now = time.time()
         sender_id = 301299112

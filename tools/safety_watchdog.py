@@ -394,7 +394,7 @@ def is_safe_divination_daily_query_chain(items: list[dict], text: str) -> bool:
             previous_target = target_count
             previous_try = try_no
             continue
-        if target_count < previous_target or target_count > previous_target + 1:
+        if target_count < previous_target:
             return False
         if try_no <= previous_try:
             return False
