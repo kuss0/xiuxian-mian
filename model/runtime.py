@@ -1444,6 +1444,11 @@ _low_priority_audit_bucket = {}
 _low_priority_audit_order = []
 _low_priority_audit_flush_task = None
 _low_priority_audit_seq = 0
+
+
+def _stateful_no_retry_timeout_is_module_managed(item, family=""):
+    source_module = str((item or {}).get("source_module") or "").strip()
+    return source_module == "卜筮问天" or str(family or "").strip() == "divination"
 _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
 _recent_dungeon_quiet_send_blocks = {}
 
@@ -2781,11 +2786,18 @@ async def run_retry_scheduler(now, send_as_id=None):
                         mark_dirty()
                         continue
                     if retry_limit <= 0:
-                        await send_audit_log(
-                            f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 超时无响应，已停补发。",
-                            scope="identity",
-                            send_as_id=identity_id,
-                        )
+                        if _stateful_no_retry_timeout_is_module_managed(current_item, family):
+                            console_log(
+                                f"🧯 指令 {_truncate_log_text(cmd, limit=40)} 超时无响应，交由模块状态机继续。",
+                                scope="identity",
+                                send_as_id=identity_id,
+                            )
+                        else:
+                            await send_audit_log(
+                                f"🧯 指令 {mono(_truncate_log_text(cmd, limit=40))} 超时无响应，已停补发。",
+                                scope="identity",
+                                send_as_id=identity_id,
+                            )
                         identity_state["pending_tasks"].pop(msg_id, None)
                         mark_dirty()
                         continue

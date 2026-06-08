@@ -341,10 +341,45 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
              patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
              patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
-             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+             patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock:
             asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
 
         send_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertIn("已停补发", audit_mock.await_args.args[0])
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
+
+    def test_divination_zero_retry_timeout_is_module_managed_without_audit(self):
+        send_as_id = 971009
+        now = 8200.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                403: {
+                    "cmd": config.CMD_DIVINATION,
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                    "max_retry": 0,
+                    "source_module": "卜筮问天",
+                    "op_id": "divination_query:971009:2026-06-09:3:try4",
+                    "chain_id": "divination:971009:2026-06-09",
+                }
+            }
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(runtime, "console_log") as console_mock:
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_not_awaited()
+        self.assertIn("交由模块状态机继续", console_mock.call_args.args[0])
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertEqual({}, identity_state["pending_tasks"])
 
