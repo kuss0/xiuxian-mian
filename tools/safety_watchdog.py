@@ -10,6 +10,7 @@ and can stop the main systemd service.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import sqlite3
@@ -684,6 +685,7 @@ def send_log_via_bot(env: dict[str, str], message: str) -> str:
             "chat_id": chat_id,
             "text": message,
             "disable_web_page_preview": "true",
+            "parse_mode": "HTML",
         }
     ).encode()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -693,6 +695,45 @@ def send_log_via_bot(env: dict[str, str], message: str) -> str:
     except Exception as exc:
         return f"log bot failed: {exc}"
     return f"log bot ok: {body[:120]}"
+
+
+def admin_ids_from_env(env: dict[str, str]) -> list[int]:
+    raw_values = [
+        str(env.get("ADMIN_ID") or ""),
+        str(env.get("ADMIN_IDS") or ""),
+    ]
+    ids: set[int] = set()
+    for raw_value in raw_values:
+        for part in raw_value.replace(";", ",").split(","):
+            try:
+                admin_id = int(part.strip() or 0)
+            except (TypeError, ValueError):
+                continue
+            if admin_id > 0:
+                ids.add(admin_id)
+    return sorted(ids)
+
+
+def format_admin_mentions_html(env: dict[str, str]) -> str:
+    mentions = [
+        f'<a href="tg://user?id={admin_id}">@管理员</a>'
+        for admin_id in admin_ids_from_env(env)
+    ]
+    return " ".join(mentions)
+
+
+def format_fuse_message(reason: str, action: str, actions: list[str], *, env: dict[str, str], dry_run: bool = False) -> str:
+    lines = [
+        "[SAFETY WATCHDOG WOULD FUSE]" if dry_run else "[SAFETY WATCHDOG FUSED]",
+        f"reason: {reason}",
+        f"action: {action}{' dry-run' if dry_run else ''}",
+        *[f"- {item}" for item in actions],
+    ]
+    message = "\n".join(html.escape(line) for line in lines)
+    mentions = format_admin_mentions_html(env)
+    if mentions and not dry_run:
+        message += f"\n关注：{mentions}"
+    return message
 
 
 def write_fuse_marker(project_root: Path, reason: str, actions: list[str]) -> None:
@@ -721,17 +762,12 @@ def read_fuse_marker_reason(project_root: Path) -> str:
 
 def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
     marker = fuse_marker_path(cfg.project_root)
-    marker_existed = marker.exists()
     if marker.exists():
         if cfg.dry_run or not is_global_switch_enabled(cfg.project_root):
             print(f"already fused: {marker}")
             return
         marker_reason = read_fuse_marker_reason(cfg.project_root)
-        if marker_reason == reason:
-            if not cfg.dry_run:
-                disable_global_switch(cfg.project_root)
-            return
-        else:
+        if marker_reason != reason:
             print(f"stale fuse marker with global enabled, re-fusing silently: {marker}")
     actions: list[str] = []
     if cfg.dry_run:
@@ -756,10 +792,7 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
         + "\n".join(f"- {item}" for item in actions)
     )
     print(message)
-    if marker_existed:
-        print("log bot skipped: existing fuse marker")
-        return
-    print(send_log_via_bot(env, message))
+    print(send_log_via_bot(env, format_fuse_message(reason, cfg.action, actions, env=env)))
 
 
 def current_log_file(project_root: Path) -> Path:

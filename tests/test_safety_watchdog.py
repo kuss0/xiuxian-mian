@@ -537,7 +537,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             cfg.dry_run = False
 
             with patch.object(safety_watchdog, "send_log_via_bot", return_value="sent") as send_mock:
-                safety_watchdog.perform_fuse(cfg, {}, "new breach")
+                safety_watchdog.perform_fuse(cfg, {"ADMIN_ID": "12345"}, "new breach")
 
             with sqlite3.connect(str(state_dir / "chaogu_state.db")) as conn:
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
@@ -545,7 +545,8 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("0", value)
         self.assertEqual("new breach", payload["reason"])
-        send_mock.assert_not_called()
+        send_mock.assert_called_once()
+        self.assertIn("tg://user?id=12345", send_mock.call_args.args[1])
 
     def test_existing_fuse_marker_keeps_disabled_global_unchanged(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -591,8 +592,9 @@ class SafetyWatchdogTests(unittest.TestCase):
             cfg.action = "soft"
             cfg.dry_run = False
 
-            with patch("builtins.print") as print_mock:
-                safety_watchdog.perform_fuse(cfg, {}, "same breach")
+            with patch.object(safety_watchdog, "send_log_via_bot", return_value="sent") as send_mock, \
+                    patch("builtins.print") as print_mock:
+                safety_watchdog.perform_fuse(cfg, {"ADMIN_ID": "12345"}, "same breach")
 
             with sqlite3.connect(str(state_dir / "chaogu_state.db")) as conn:
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
@@ -600,9 +602,54 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("0", value)
         self.assertEqual("same breach", payload["reason"])
-        self.assertEqual([], payload["actions"])
+        self.assertEqual(["global_enabled=0"], payload["actions"])
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
-        self.assertNotIn("[SAFETY WATCHDOG FUSED]", printed)
+        self.assertIn("[SAFETY WATCHDOG FUSED]", printed)
+        send_mock.assert_called_once()
+        self.assertIn("tg://user?id=12345", send_mock.call_args.args[1])
+
+    def test_fuse_message_mentions_all_configured_admins(self):
+        message = safety_watchdog.format_fuse_message(
+            "send burst: <bad>",
+            "soft",
+            ["global_enabled=0"],
+            env={"ADMIN_ID": "123", "ADMIN_IDS": "456, bad,123"},
+        )
+
+        self.assertIn("send burst: &lt;bad&gt;", message)
+        self.assertIn('tg://user?id=123', message)
+        self.assertIn('tg://user?id=456', message)
+        self.assertEqual(1, message.count('tg://user?id=123'))
+
+    def test_send_log_via_bot_uses_html_parse_mode_for_mentions(self):
+        captured = {}
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self, _limit):
+                return b'{"ok":true}'
+
+        def fake_urlopen(url, data=None, timeout=None):
+            captured["url"] = url
+            captured["payload"] = safety_watchdog.urllib.parse.parse_qs(data.decode())
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        with patch.object(safety_watchdog.urllib.request, "urlopen", side_effect=fake_urlopen):
+            result = safety_watchdog.send_log_via_bot(
+                {"LOG_BOT_TOKEN": "token", "LOG_GROUP_ID": "-1001"},
+                '<a href="tg://user?id=123">@管理员</a>',
+            )
+
+        self.assertIn("log bot ok", result)
+        self.assertIn("/bottoken/sendMessage", captured["url"])
+        self.assertEqual(["HTML"], captured["payload"]["parse_mode"])
+        self.assertEqual(["-1001"], captured["payload"]["chat_id"])
 
     def test_reset_marker_without_epoch_falls_back_to_file_mtime(self):
         with tempfile.TemporaryDirectory() as tmpdir:
