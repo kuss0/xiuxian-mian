@@ -120,6 +120,7 @@ COMMAND_FAMILY_PREFIXES = (
             ".加入坠魔谷",
             ".加入黄龙山",
             ".加入苍坤洞府",
+            ".加入落云秘圃",
             ".查询副本",
             ".开启副本",
             ".加入副本",
@@ -147,6 +148,10 @@ COMMAND_FAMILY_PREFIXES = (
             ".加入昆吾山",
             ".进入昆吾山",
             ".解散昆吾山",
+            ".开启落云秘圃",
+            ".加入落云秘圃",
+            ".进入落云秘圃",
+            ".落云抉择",
             ".开启坠魔谷",
             ".进入坠魔谷",
             ".开启黄龙山",
@@ -323,7 +328,7 @@ def command_key(text: str) -> str:
         candidate = f"{first} {parts[1]}"
         if candidate in SPECIAL_TWO_TOKEN_COMMANDS[first]:
             return candidate
-    if first.startswith(".加入") and first in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山"}:
+    if first.startswith(".加入") and first in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山", ".加入落云秘圃"}:
         return first
     if first in {
         ".器灵试炼",
@@ -599,7 +604,7 @@ def summarize_sent_health(analysis: Analysis) -> dict:
 
 def is_allowed_fast_repeat(text: str) -> bool:
     command = command_key(text)
-    if command in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山"}:
+    if command in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山", ".加入落云秘圃"}:
         return True
     if command in {".稳", ".狠", ".骗"}:
         return True

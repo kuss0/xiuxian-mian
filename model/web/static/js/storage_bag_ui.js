@@ -59,6 +59,7 @@
   }
 
   var storageBagSearchTimer = null;
+  var storageBagSearchComposing = false;
 
   function setFlash(message, isError) {
     if (typeof updateFlash === 'function') {
@@ -432,6 +433,11 @@
       </div>`;
   }
 
+  function updateStorageBagVisibleCount(visibleCount, totalCount) {
+    const count = document.querySelector('.storage-bag-visible-count');
+    if (count) count.textContent = `${visibleCount} / ${totalCount} 项`;
+  }
+
   function renderStorageBagToolbar(entries, visibleEntries, data) {
     const toolbar = document.getElementById('storage-bag-toolbar');
     if (!toolbar) return;
@@ -515,7 +521,8 @@
       </div>`;
   }
 
-  function renderStorageBagTable() {
+  function renderStorageBagTable(options) {
+    options = options || {};
     const wrap = document.getElementById('storage-bag-table-wrap');
     if (!wrap) return;
     const data = storageData();
@@ -554,9 +561,14 @@
       wrap.innerHTML = `<table class="storage-bag-table"><thead><tr><th>物品</th><th>总量</th>${header}</tr></thead><tbody>${body}</tbody></table>`;
     }
     renderStorageBagOverview(allEntries, visibleEntries, currentRows);
-    renderStorageBagToolbar(allEntries, visibleEntries, data);
+    if (options.preserveToolbar) updateStorageBagVisibleCount(visibleEntries.length, allEntries.length);
+    else renderStorageBagToolbar(allEntries, visibleEntries, data);
     renderStorageBagDetailPanel(allEntries, visibleEntries, currentRows);
     renderStorageBagApiPanel();
+  }
+
+  function renderStorageBagSearchResults() {
+    renderStorageBagTable({ preserveToolbar: true });
   }
 
   function renderStorageBagApiPanel() {
@@ -1092,10 +1104,14 @@
     if (search) {
       storageBagViewState().query = search.value || '';
       if (storageBagSearchTimer) window.clearTimeout(storageBagSearchTimer);
+      if (event.isComposing || storageBagSearchComposing) {
+        storageBagSearchTimer = null;
+        return;
+      }
       storageBagSearchTimer = window.setTimeout(function () {
         storageBagSearchTimer = null;
-        renderStorageBagTable();
-      }, event.isComposing ? 250 : 120);
+        renderStorageBagSearchResults();
+      }, 120);
       return;
     }
     const field = event.target.closest('[data-storage-transfer-field]');
@@ -1112,6 +1128,27 @@
       closeStorageBagModal();
       closeTransferModal();
     }
+  });
+
+  document.addEventListener('compositionstart', function (event) {
+    if (!event.target.closest('[data-storage-bag-search]')) return;
+    storageBagSearchComposing = true;
+    if (storageBagSearchTimer) {
+      window.clearTimeout(storageBagSearchTimer);
+      storageBagSearchTimer = null;
+    }
+  });
+
+  document.addEventListener('compositionend', function (event) {
+    const search = event.target.closest('[data-storage-bag-search]');
+    if (!search) return;
+    storageBagSearchComposing = false;
+    storageBagViewState().query = search.value || '';
+    if (storageBagSearchTimer) window.clearTimeout(storageBagSearchTimer);
+    storageBagSearchTimer = window.setTimeout(function () {
+      storageBagSearchTimer = null;
+      renderStorageBagSearchResults();
+    }, 0);
   });
 
   window.setInterval(function () {

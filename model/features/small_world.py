@@ -50,6 +50,8 @@ SMALL_WORLD_GOD_PRIORITY_DISASTER = 100
 SMALL_WORLD_DISASTER_WAVE_INTERVAL_SEC = 3 * 3600
 SMALL_WORLD_DISASTER_GUARD_BEFORE_SEC = 30 * 60
 SMALL_WORLD_DISASTER_GUARD_AFTER_SEC = 25 * 60
+SMALL_WORLD_RELIEF_POPULATION_RATIO_TRIGGER = 0.95
+SMALL_WORLD_RELIEF_STABILITY_RATIO_TRIGGER = 0.80
 
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
 RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇\s*【([^】]+)】")
@@ -130,6 +132,11 @@ def _clear_pending_god_action():
     state["small_world_pending_god_reason"] = ""
     state["small_world_pending_god_priority"] = 0
     state["small_world_pending_god_at"] = 0
+
+
+def _clear_maintenance_god_action():
+    if state.get("small_world_pending_god_action") and _pending_god_priority() < SMALL_WORLD_GOD_PRIORITY_DISASTER:
+        _clear_pending_god_action()
 
 
 def _clear_god_pending_tasks():
@@ -273,11 +280,7 @@ def _queue_maintenance_from_snapshot(now):
     snapshot = state.get("small_world_panel_snapshot")
     if not isinstance(snapshot, dict) or not snapshot:
         return False
-    if _should_relief(snapshot):
-        return _queue_god_action("relief", _relief_reason(snapshot), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
-    if _should_preach(snapshot):
-        return _queue_god_action("preach", _preach_reason(snapshot), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
-    return False
+    return _queue_maintenance_god_action(snapshot, now)
 
 
 async def _try_send_pending_god_action(now):
@@ -597,8 +600,15 @@ def _is_panel_value_below_max(panel, value_key, max_key, *, default_max=SMALL_WO
 
 
 def _should_relief(panel):
-    deficit, _population, _ratio = _small_world_population_deficit(panel)
-    return deficit > 0 or _is_panel_value_below_max(panel, "stability", "stability_max")
+    deficit, _population, ratio = _small_world_population_deficit(panel)
+    if deficit > 0 and ratio <= SMALL_WORLD_RELIEF_POPULATION_RATIO_TRIGGER:
+        return True
+
+    stability = _panel_int(panel, "stability")
+    stability_max = _panel_int(panel, "stability_max", SMALL_WORLD_DEFAULT_STATUS_MAX)
+    if stability <= 0 or stability_max <= 0:
+        return False
+    return stability / stability_max <= SMALL_WORLD_RELIEF_STABILITY_RATIO_TRIGGER
 
 
 def _relief_reason(panel):
@@ -622,6 +632,14 @@ def _preach_reason(panel):
     if faith > 0 and faith_max > 0:
         return f"信仰 {faith}/{faith_max}，布道维护"
     return "信仰未满，布道维护"
+
+
+def _queue_maintenance_god_action(panel, now):
+    if _should_preach(panel):
+        return _queue_god_action("preach", _preach_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+    if _should_relief(panel):
+        return _queue_god_action("relief", _relief_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+    return False
 
 
 def _is_resource_shortage_text(text):
@@ -831,6 +849,7 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
     if panel.get("has_prayer"):
         state["small_world_refresh_count"] = 0
         _clear_chain_pending()
+        _clear_maintenance_god_action()
         if state.get("small_world_manifest_enabled"):
             state["small_world_manifest_cost_text"] = str(panel.get("manifest_cost") or "").strip()
             save_state()
@@ -841,11 +860,8 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         return True
 
     if state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
-        if _should_relief(panel):
-            _queue_god_action("relief", _relief_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
-            return await _try_send_pending_god_action(now)
-        if _should_preach(panel):
-            _queue_god_action("preach", _preach_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+        if _queue_maintenance_god_action(panel, now):
+            _clear_chain_pending()
             return await _try_send_pending_god_action(now)
 
     if panel.get("has_wait"):

@@ -4,7 +4,7 @@ import re
 import time
 from collections import deque
 
-from ..config import CMD_DUNGEON_HUANGLONG_JOIN, CMD_DUNGEON_JOIN, CMD_DUNGEON_ZHUIMO_JOIN
+from ..config import CMD_DUNGEON_HUANGLONG_JOIN, CMD_DUNGEON_JOIN, CMD_DUNGEON_ZHUIMO_JOIN, CMD_REPLICA_LUOYUN_JOIN
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import (
@@ -26,10 +26,12 @@ from . import workflow_log
 DUNGEON_KIND_VIRTUAL_HALL = "virtual_hall"
 DUNGEON_KIND_ZHUIMO = "zhuimo"
 DUNGEON_KIND_HUANGLONG = "huanglong"
+DUNGEON_KIND_LUOYUN = "luoyun"
 DUNGEON_KIND_META = {
     DUNGEON_KIND_VIRTUAL_HALL: {"name": "虚天殿", "join_command": CMD_DUNGEON_JOIN},
     DUNGEON_KIND_ZHUIMO: {"name": "坠魔谷", "join_command": CMD_DUNGEON_ZHUIMO_JOIN},
     DUNGEON_KIND_HUANGLONG: {"name": "黄龙山", "join_command": CMD_DUNGEON_HUANGLONG_JOIN},
+    DUNGEON_KIND_LUOYUN: {"name": "落云秘圃", "join_command": CMD_REPLICA_LUOYUN_JOIN},
 }
 DUNGEON_INBOX_TTL_SEC = 5 * 60
 DUNGEON_MATCH_WINDOW_SEC = 60
@@ -50,7 +52,7 @@ _DUNGEON_ID_RE = re.compile(rf"(?:(?:副本|房间)ID\s*[:：]\s*|(?:{_JOIN_COMM
 _UNSUPPORTED_DUNGEON_MARKERS = ("血色试炼", "加入血色试炼", "进入血色试炼", "血色抉择")
 _USERNAME_PATTERN = r"@[^\s，。！？、；：:,.!?()（）【】\[\]]+"
 _USERNAME_RE = re.compile(_USERNAME_PATTERN)
-_JOINED_RE = re.compile(rf"({_USERNAME_PATTERN})\s*已成功加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?)")
+_JOINED_RE = re.compile(rf"({_USERNAME_PATTERN})\s*已(?:成功)?加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|落云秘圃(?:队伍)?(?:\s*(\d+))?)")
 _ROOM_DISSOLVED_RE = re.compile(r"已将副本房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]\s*解散")
 _inbox = deque()
 _by_msg_id = {}
@@ -1282,7 +1284,7 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
 
     if joined_match:
         dungeon_id = dungeon_id or next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
-    if "你已在队伍中" in raw or any(keyword in raw for keyword in ("已成功加入副本", "已成功加入坠魔谷", "已成功加入黄龙山")):
+    if "你已在队伍中" in raw or any(keyword in raw for keyword in ("已成功加入副本", "已成功加入坠魔谷", "已成功加入黄龙山", "已加入落云秘圃", "已成功加入落云秘圃")):
         _mark_join_success(
             identity_id,
             dungeon_id,

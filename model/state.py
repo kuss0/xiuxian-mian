@@ -52,7 +52,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "tianti_status_reply_to_msg_id", "tianti_last_status_msg_id", "tianti_last_status_seen_at", "tianti_last_wenxin_msg_id", "tianti_last_climb_msg_id", "tianti_last_gangfeng_msg_id", "tianti_progress_current", "tianti_progress_total", "tianti_cycle_count", "tianti_gangfeng_level", "tianti_gangfeng_total", "tianti_cooldown_text", "tianti_wenxin_status", "tianti_gangfeng_status", "tianti_remaining_climb_count", "tianti_last_wenxin_day", "tianti_wenxin_last_trigger_key", "tianti_gangfeng_last_trigger_key", "tianti_last_skip_reason", "tianti_theoretical_max_stage", "tianti_wenxin_trigger_stage", "tianti_last_cost_xiuwei", "tianti_last_gain_xiuwei", "tianti_last_gain_contrib", "tianti_last_error",
     "quiz_reply_to_msg_id", "quiz_chat_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_answer_method", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
-    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_greet_msg_id", "concubine_last_greet_day", "concubine_greet_retry_count", "concubine_greet_last_error", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id", "concubine_gift_msg_id", "concubine_gift_amount", "concubine_last_gift_day", "concubine_gift_attempt_day", "concubine_gift_last_error", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_voyage_msg_id", "concubine_voyage_retry_count", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_heart_choice_prompt_msg_id", "concubine_heart_choice_round", "concubine_heart_choice_sent_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_fragment_xutian_count", "concubine_fragment_xutian_total", "concubine_fragment_cangkun_count", "concubine_fragment_cangkun_total", "concubine_fragment_confirm_key", "concubine_fragment_confirmed_at", "concubine_voyage_status", "concubine_voyage_route", "concubine_voyage_return_at", "concubine_voyage_last_result", "concubine_voyage_last_error", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
+    "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_greet_msg_id", "concubine_last_greet_day", "concubine_greet_retry_count", "concubine_greet_last_error", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id", "concubine_gift_msg_id", "concubine_gift_amount", "concubine_last_gift_day", "concubine_gift_attempt_day", "concubine_gift_last_error", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_voyage_msg_id", "concubine_voyage_retry_count", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_heart_choice_prompt_msg_id", "concubine_heart_choice_round", "concubine_heart_choice_sent_at", "concubine_heart_choice_retry_count", "concubine_fragment_count", "concubine_fragment_total", "concubine_fragment_xutian_count", "concubine_fragment_xutian_total", "concubine_fragment_cangkun_count", "concubine_fragment_cangkun_total", "concubine_fragment_confirm_key", "concubine_fragment_confirmed_at", "concubine_voyage_status", "concubine_voyage_route", "concubine_voyage_return_at", "concubine_voyage_last_result", "concubine_voyage_last_error", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
     "hehuan_observation", "tianxing_observation", "yinluo_observation",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_last_error",
     "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_god_cooldown_until", "small_world_pending_god_action", "small_world_pending_god_reason", "small_world_pending_god_priority", "small_world_pending_god_at", "small_world_last_disaster_wave_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_panel_snapshot", "small_world_last_panel_at", "small_world_last_error",
@@ -93,6 +93,8 @@ SEND_AS_PROFILE_DEFAULTS = {
     "pet_trial_name": "",
     "sect_name": "",
     "sect_updated_at": 0,
+    "sect_contribution": 0,
+    "sect_contribution_updated_at": 0,
     "xiuwei_current": 0,
     "xiuwei_max": 0,
     "battle_power_text": "",
@@ -423,6 +425,7 @@ IDENTITY_STATE_TEMPLATE = {
     "concubine_heart_choice_prompt_msg_id": 0,
     "concubine_heart_choice_round": 0,
     "concubine_heart_choice_sent_at": 0,
+    "concubine_heart_choice_retry_count": 0,
     "concubine_fragment_count": 0,
     "concubine_fragment_total": 4,
     "concubine_fragment_xutian_count": 0,
@@ -747,9 +750,9 @@ def _coerce_send_as_profile_field(field_name, value):
         return (value or "").strip() or DEFAULT_PET_NAME
     if field_name == "pet_trial_name":
         return (value or "").strip()
-    if field_name == "sect_updated_at":
+    if field_name in {"sect_updated_at", "sect_contribution_updated_at"}:
         return float(value or 0)
-    if field_name in {"xiuwei_current", "xiuwei_max", "battle_power_value", "stargazer_total_slots"}:
+    if field_name in {"xiuwei_current", "xiuwei_max", "battle_power_value", "sect_contribution", "stargazer_total_slots"}:
         return int(value or 0)
     if field_name in {
         "checkin_window_start_hour_utc",

@@ -494,11 +494,13 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(join_dungeon.DUNGEON_KIND_VIRTUAL_HALL, join_dungeon._infer_dungeon_kind("【虚天殿已开启】\n副本ID: 411"))
         self.assertEqual(join_dungeon.DUNGEON_KIND_ZHUIMO, join_dungeon._infer_dungeon_kind("【坠魔谷·集结】\n房间ID: 411"))
         self.assertEqual(join_dungeon.DUNGEON_KIND_HUANGLONG, join_dungeon._infer_dungeon_kind("【黄龙山大战·集结】\n房间ID: 411"))
+        self.assertEqual(join_dungeon.DUNGEON_KIND_LUOYUN, join_dungeon._infer_dungeon_kind("【落云秘圃·集结】\n副本ID: 411\n其他道友可使用 .加入落云秘圃 411 加入队伍！"))
 
     def test_format_dungeon_join_command_uses_replica_kind(self):
         self.assertEqual(".加入副本 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_VIRTUAL_HALL))
         self.assertEqual(".加入坠魔谷 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_ZHUIMO))
         self.assertEqual(".加入黄龙山 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_HUANGLONG))
+        self.assertEqual(".加入落云秘圃 411", join_dungeon._format_dungeon_join_command("411", join_dungeon.DUNGEON_KIND_LUOYUN))
 
     def test_dungeon_inbox_snapshot_exposes_mainline_join_command(self):
         now = 16700.0
@@ -537,6 +539,7 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".加入副本", commands["虚天殿"])
         self.assertEqual(".加入坠魔谷", commands["坠魔谷"])
         self.assertEqual(".加入黄龙山", commands["黄龙山"])
+        self.assertEqual(".加入落云秘圃", commands["落云秘圃"])
         row = next(item for item in snapshot["rows"] if item["identity_id"] == identity_id)
         self.assertTrue(row["module_enabled"])
         self.assertEqual("等待回复", row["status_text"])

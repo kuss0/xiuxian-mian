@@ -68,6 +68,7 @@ from .config import (
     CMD_REPLICA_HUANGLONG_JOIN,
     CMD_REPLICA_JOIN,
     CMD_REPLICA_KUNWU_JOIN,
+    CMD_REPLICA_LUOYUN_JOIN,
     CMD_REPLICA_ZHUIMO_JOIN,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
@@ -261,6 +262,7 @@ DUNGEON_QUIET_ALLOWED_PREFIXES = (
     ".进入黄龙山",
     ".进入苍坤洞府",
     ".进入昆吾山",
+    ".进入落云秘圃",
     ".选择道路",
     ".阵策",
     ".争鼎",
@@ -269,6 +271,7 @@ DUNGEON_QUIET_ALLOWED_PREFIXES = (
     ".坠魔抉择",
     ".黄龙抉择",
     ".苍坤抉择",
+    ".落云抉择",
 )
 
 
@@ -630,7 +633,7 @@ REPLY_FAMILY_COMMANDS = {
     "storage_bag_listing": {".上架"},
     "storage_bag_buy": {".购买"},
     "storage_bag_gift": {".赠送"},
-    "replica_join": {CMD_REPLICA_JOIN, CMD_REPLICA_ZHUIMO_JOIN, CMD_REPLICA_HUANGLONG_JOIN, CMD_REPLICA_CANGKUN_JOIN, CMD_REPLICA_KUNWU_JOIN},
+    "replica_join": {CMD_REPLICA_JOIN, CMD_REPLICA_ZHUIMO_JOIN, CMD_REPLICA_HUANGLONG_JOIN, CMD_REPLICA_CANGKUN_JOIN, CMD_REPLICA_KUNWU_JOIN, CMD_REPLICA_LUOYUN_JOIN},
 }
 COMMAND_TO_REPLY_FAMILY = {
     command: family

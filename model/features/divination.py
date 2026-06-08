@@ -82,6 +82,7 @@ RE_DIVINATION_DAILY_COUNT = re.compile(r"今日第\s*(?P<count>\d+)\s*次")
 RE_DIVINATION_WAITING = re.compile(r"开始转动天机罗盘|卦象.*?(?:凝聚|推演|推算)|请稍候")
 RE_DIVINATION_XIUWEI_SHORTAGE = re.compile(r"修为不足")
 RE_DIVINATION_DAILY_LIMIT = re.compile(r"今日.*?(?:次数|问天|窥探).*?(?:已满|已达|达到|上限|用尽)|(?:已满|已达|达到).*?今日.*?(?:次数|上限)")
+RE_DIVINATION_HEXAGRAM = re.compile(r"【卦象[：:]\s*(?P<bracket>[^】]+)】|得卦【(?P<gua>[^】]+)】")
 
 
 def _normalize_costs(raw_costs):
@@ -784,6 +785,47 @@ def _format_identity(identity_id):
     return profile.get("label") or profile.get("username") or str(identity_id)
 
 
+def _compact_result_text(text, *, limit=160):
+    compact = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(compact) <= int(limit or 160):
+        return compact
+    return compact[: max(0, int(limit or 160) - 1)].rstrip() + "…"
+
+
+def _format_divination_result_summary(text):
+    raw_text = str(text or "")
+    treasure = parse_divination_treasure_text(raw_text)
+    if treasure:
+        summary = f"神物现世：{treasure.get('target_item') or '神物'}"
+        costs = treasure.get("costs") if isinstance(treasure.get("costs"), dict) else {}
+        if costs:
+            summary += f"｜需 {_format_costs(costs)}"
+        return summary
+    hexagram = RE_DIVINATION_HEXAGRAM.search(raw_text)
+    if hexagram:
+        name = str(hexagram.group("bracket") or hexagram.group("gua") or "").strip()
+        tail = _compact_result_text(raw_text.replace(hexagram.group(0), "", 1), limit=120)
+        return f"卦象：{name}" + (f"｜{tail}" if tail else "")
+    return _compact_result_text(raw_text, limit=180)
+
+
+async def _send_divination_result_audit(identity_id, now, text):
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0:
+        return False
+    record = (_run_records().get(_run_key(identity_id)) or {})
+    count = int((record if isinstance(record, dict) else {}).get("count") or 0)
+    limit = get_divination_daily_limit(identity_id)
+    await send_audit_log(
+        f"🔮 卜筮问天结果：{_format_identity(identity_id)}｜{_format_divination_result_summary(text)}｜已确认 {count}/{limit}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=520,
+        priority="medium",
+    )
+    return True
+
+
 def _format_pending_status(pending):
     pending = pending if isinstance(pending, dict) else {}
     target_item = str(pending.get("target_item") or "神物").strip()
@@ -996,10 +1038,12 @@ async def handle_divination_reply(text, now, event=None, reply_to=None, matched_
         if identity_id > 0 and _is_divination_enabled(identity_id):
             if _extract_daily_count(raw_text) > 0 or is_pending_query_reply:
                 _note_query_reply(identity_id, now, raw_text, event=event, final=True)
+                await _send_divination_result_audit(identity_id, now, raw_text)
                 return True
         return False
     if identity_id > 0 and _is_divination_enabled(identity_id):
         _note_query_reply(identity_id, now, raw_text, event=event, final=True)
+        await _send_divination_result_audit(identity_id, now, raw_text)
     if not _is_supported_auto_exchange_target(treasure.get("target_item")):
         return True
     if identity_id <= 0:

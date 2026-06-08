@@ -37,6 +37,7 @@ from .config import (
     CMD_DUNGEON_JOIN,
     CMD_DUNGEON_ZHUIMO_JOIN,
     CMD_REPLICA_CANGKUN_JOIN,
+    CMD_REPLICA_LUOYUN_JOIN,
     CMD_TIANTI_GANGFENG,
     MESSAGES_DIR,
     MODULE_KEY_MAP,
@@ -209,7 +210,8 @@ _STORAGE_BAG_DEFAULT_TAGS = [
     "特殊",
     "未知",
 ]
-_STORAGE_BAG_TITLE_ITEMS = {"乱星海炼体第一人", "稳控全场", "降伏年兽", "始皇的新衣"}
+_STORAGE_BAG_TITLE_ITEMS = {"乱星海炼体第一人", "降伏年兽", "始皇的新衣", "真仙试锋", "紫灵的轻吻"}
+_STORAGE_BAG_SPECIAL_ITEMS = {"稳控全场"}
 UI_PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 UI_FAVICON_PNG_PATH = os.path.join(UI_PROJECT_ROOT, "favicon.png")
 UI_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(UI_PROJECT_ROOT, "data", "storage_bag_item_rules.json")
@@ -290,9 +292,11 @@ def _infer_storage_bag_item_tags(item_name):
         return ["货币"]
     if any(keyword in name for keyword in ("丹方", "图纸", "图谱")):
         return ["丹方图纸图谱"]
-    if name in _STORAGE_BAG_TITLE_ITEMS or name.endswith(("第一人", "全场")) or "称号" in name:
+    if name in _STORAGE_BAG_SPECIAL_ITEMS or "残篇" in name:
+        return ["特殊"]
+    if name in _STORAGE_BAG_TITLE_ITEMS or name.endswith("第一人") or "称号" in name:
         return ["称号"]
-    if "法则碎片" in name or name.startswith("元磁山核"):
+    if "法则碎片" in name:
         return ["法则"]
     if any(keyword in name for keyword in ("残图", "通行令", "禁制令", "急援令", "坐标", "阵旗残片")):
         return ["副本"]
@@ -300,15 +304,19 @@ def _infer_storage_bag_item_tags(item_name):
         return ["符箓"]
     if "种子" in name:
         return ["种子"]
+    if "元磁山核" in name:
+        return ["材料"]
     if any(keyword in name for keyword in ("草", "芝", "果", "参", "花", "菌", "藤", "叶", "莲")):
         return ["灵草"]
+    if any(keyword in name for keyword in ("剑", "盾", "幡", "刃", "甲", "衣", "翅", "瓶", "匣", "傀", "牌", "扇", "轮", "环", "钟", "塔", "鼎", "冠", "靴", "履", "袍", "带")):
+        return ["装备武器防具"]
     if any(keyword in name for keyword in ("妖丹", "矿", "木髓", "丝", "羽", "翎", "晶", "尘埃", "壤", "庚金", "碎片", "核")):
         return ["材料"]
     if name in {"万年灵乳", "太虚仙露"} or name.endswith(("丹", "散", "液", "露", "乳")):
         return ["丹药"]
     if any(keyword in name for keyword in ("剑", "盾", "幡", "刃", "甲", "衣", "翅", "瓶", "山", "匣", "傀", "牌", "扇", "轮", "环", "钟", "塔", "鼎", "冠", "靴", "履", "袍", "带")):
         return ["装备武器防具"]
-    return ["特殊"]
+    return ["材料"]
 
 
 def _normalize_storage_bag_item_rule(item_name, raw_rule=None):
@@ -927,6 +935,15 @@ _TIANJIGE_TAIYI_SPIRITUAL_SENSE_KEYS = (
     "taiyi_spiritual_sense",
     "taiyi_spiritual_sense_points",
 )
+_TIANJIGE_SECT_CONTRIBUTION_KEYS = (
+    "sect_contribution",
+    "sect_contrib",
+    "contribution",
+    "contrib",
+    "contribution_points",
+    "sect_points",
+    "zongmen_contribution",
+)
 _TIANJIGE_STATUS_LABELS = {
     "normal": "正常",
     "idle": "空闲",
@@ -1142,6 +1159,9 @@ def _tianjige_profile_updates_from_row(row):
     sect_name = _tianjige_clean_sect_name(row.get("sect_name") or row.get("sect"))
     if sect_name:
         updates["sect_name"] = sect_name
+    if any(key in row for key in _TIANJIGE_SECT_CONTRIBUTION_KEYS):
+        updates["sect_contribution"] = _tianjige_first_number(row, _TIANJIGE_SECT_CONTRIBUTION_KEYS)
+        updates["sect_contribution_updated_at"] = time.time()
     root_text = _tianjige_string(row.get("spirit_root") or row.get("spiritual_root") or row.get("spiritual_root_type"))
     if root_text:
         root_type, root_attrs = _tianjige_spirit_root_parts(root_text)
@@ -1217,6 +1237,7 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         "cultivation_points": _tianjige_number(row.get("cultivation_points") or row.get("points")),
         "sect_id": _tianjige_number(row.get("sect_id"), default=0),
         "sect_name": sect_name,
+        "sect_contribution": _tianjige_first_number(row, _TIANJIGE_SECT_CONTRIBUTION_KEYS),
         "spirit_root": spirit_root,
         "status": status_text,
         "combat_status": combat_status,
@@ -1324,6 +1345,7 @@ def get_tianjige_dao_path_snapshot():
             "cultivation_level": record.get("cultivation_level") or profile.get("realm") or "",
             "cultivation_points": _tianjige_number(record.get("cultivation_points")),
             "sect_name": record.get("sect_name") or profile.get("sect_name") or "",
+            "sect_contribution": _tianjige_number(record.get("sect_contribution") or profile.get("sect_contribution")),
             "spirit_root": record.get("spirit_root") or profile.get("spiritual_root_type") or "",
             "status": record.get("status") or "",
             "combat_status": record.get("combat_status") or "",
@@ -2208,6 +2230,7 @@ def get_dungeon_join_snapshot():
             {"name": "坠魔谷", "join_command": CMD_DUNGEON_ZHUIMO_JOIN},
             {"name": "黄龙山", "join_command": CMD_DUNGEON_HUANGLONG_JOIN},
             {"name": "苍坤洞府", "join_command": CMD_REPLICA_CANGKUN_JOIN},
+            {"name": "落云秘圃", "join_command": CMD_REPLICA_LUOYUN_JOIN},
         ],
         "recent_announcements": get_dungeon_join_inbox_snapshot(limit=20),
         "rows": rows,
@@ -2371,6 +2394,9 @@ def get_replica_config_snapshot():
             "realm": profile.get("realm") or "",
             "spiritual_root_attrs": profile.get("spiritual_root_attrs") or "",
             "replica_professions": profile.get("replica_professions") or "",
+            "sect_name": profile.get("sect_name") or "",
+            "sect_contribution": int(profile.get("sect_contribution") or 0),
+            "sect_contribution_updated_at": fmt_abs_ts(profile.get("sect_contribution_updated_at") or 0),
             "account_id": int(get_identity_account(identity_id) or 0),
             "identity_enabled": get_identity_enabled(identity_id),
             "participant": identity_id in participant_set,
@@ -2748,6 +2774,8 @@ def get_identity_ui_snapshot(send_as_id):
             "pet_warm_name": profile.get("pet_warm_name") or profile.get("pet_name") or "",
             "pet_trial_name": profile.get("pet_trial_name") or profile.get("pet_name") or "",
             "sect_name": profile.get("sect_name") or "",
+            "sect_contribution": int(profile.get("sect_contribution") or 0),
+            "sect_contribution_updated_at": fmt_abs_ts(profile.get("sect_contribution_updated_at") or 0),
             "xiuwei_current": int(profile.get("xiuwei_current") or 0),
             "xiuwei_max": int(profile.get("xiuwei_max") or 0),
             "battle_power_text": profile.get("battle_power_text") or "",

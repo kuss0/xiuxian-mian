@@ -27,6 +27,7 @@ from .config import (
     CMD_REPLICA_HUANGLONG_JOIN,
     CMD_REPLICA_JOIN,
     CMD_REPLICA_KUNWU_JOIN,
+    CMD_REPLICA_LUOYUN_JOIN,
     CMD_REPLICA_ZHUIMO_JOIN,
     MESSAGES_DIR,
     REPLICA_ACTIVE_TTL_SEC,
@@ -85,7 +86,8 @@ _REPLICA_KIND_ZHUIMO = "zhuimo"
 _REPLICA_KIND_HUANGLONG = "huanglong"
 _REPLICA_KIND_CANGKUN = "cangkun"
 _REPLICA_KIND_KUNWU = "kunwu"
-_REPLICA_KINDS = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_ZHUIMO, _REPLICA_KIND_HUANGLONG, _REPLICA_KIND_CANGKUN, _REPLICA_KIND_KUNWU)
+_REPLICA_KIND_LUOYUN = "luoyun"
+_REPLICA_KINDS = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_ZHUIMO, _REPLICA_KIND_HUANGLONG, _REPLICA_KIND_CANGKUN, _REPLICA_KIND_KUNWU, _REPLICA_KIND_LUOYUN)
 
 
 def _get_replica_success_cooldown_sec(replica_kind):
@@ -100,6 +102,7 @@ _REPLICA_KIND_META = {
     _REPLICA_KIND_HUANGLONG: {"name": "黄龙山", "short": "黄", "dispatch_command": ".黄龙山", "join_command": CMD_REPLICA_HUANGLONG_JOIN, "enter_command": ".进入黄龙山"},
     _REPLICA_KIND_CANGKUN: {"name": "苍坤洞府", "short": "苍", "dispatch_command": ".苍坤洞府", "join_command": CMD_REPLICA_CANGKUN_JOIN, "enter_command": ".进入苍坤洞府"},
     _REPLICA_KIND_KUNWU: {"name": "昆吾山", "short": "昆", "dispatch_command": ".昆吾山", "join_command": CMD_REPLICA_KUNWU_JOIN, "enter_command": ".进入昆吾山"},
+    _REPLICA_KIND_LUOYUN: {"name": "落云秘圃", "short": "落", "dispatch_command": ".落云秘圃", "join_command": CMD_REPLICA_LUOYUN_JOIN, "enter_command": ".进入落云秘圃"},
 }
 _REPLICA_TICKET_META = {
     _REPLICA_KIND_VIRTUAL_HALL: {
@@ -132,14 +135,20 @@ _REPLICA_TICKET_META = {
         "dissolve_command": ".解散昆吾山",
         "aliases": ("昆吾", "昆吾山", "kunwu"),
     },
+    _REPLICA_KIND_LUOYUN: {
+        "ticket_items": (),
+        "open_command": ".开启落云秘圃",
+        "dissolve_command": ".解散副本",
+        "aliases": ("落云", "落云秘圃", "luoyun"),
+    },
 }
 _REPLICA_TICKET_ITEMS = tuple(
     item
     for meta in _REPLICA_TICKET_META.values()
     for item in meta.get("ticket_items", ())
 )
-_REPLICA_KIND_OPEN_PRIORITY = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_CANGKUN, _REPLICA_KIND_ZHUIMO, _REPLICA_KIND_HUANGLONG, _REPLICA_KIND_KUNWU)
-_REPLICA_LIGHTWEIGHT_OPEN_USAGE = ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>"
+_REPLICA_KIND_OPEN_PRIORITY = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_CANGKUN, _REPLICA_KIND_ZHUIMO, _REPLICA_KIND_HUANGLONG, _REPLICA_KIND_KUNWU, _REPLICA_KIND_LUOYUN)
+_REPLICA_LIGHTWEIGHT_OPEN_USAGE = ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾|落云>"
 _REPLICA_DISPATCH_COMMAND_RE = re.compile(
     rf"^(?P<command>{'|'.join(re.escape(meta['dispatch_command']) for meta in _REPLICA_KIND_META.values())})\s+(?P<room_id>\d+)(?:\s+(?P<rest>.+))?$"
 )
@@ -151,20 +160,20 @@ _REPLICA_ENTER_COMMAND_RE = re.compile(rf"^(?P<command>{'|'.join(re.escape(meta[
 _REPLICA_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{3,32}")
 _REPLICA_ROOM_DISSOLVED_RE = re.compile(r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已将副本房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]\s*解散")
 _REPLICA_KIND_ROOM_DISSOLVED_RE = re.compile(
-    r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已解散(?:坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山)房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]"
+    r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已解散(?:坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山|落云秘圃)房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]"
 )
 _REPLICA_ROOM_AUTO_DISSOLVED_RE = re.compile(
-    r"由\s*(@[A-Za-z0-9_]{3,32})\s*开启的(?:虚天殿|坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山)\s*[（(]\s*ID\s*[:：]?\s*(\d+)\s*[）)]\s*因长时间未满员[，,]?\s*已自动解散"
+    r"由\s*(@[A-Za-z0-9_]{3,32})\s*开启的(?:虚天殿|坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山|落云秘圃)\s*[（(]\s*ID\s*[:：]?\s*(\d+)\s*[）)]\s*因长时间未满员[，,]?\s*已自动解散"
 )
 _REPLICA_TEAM_KICKED_RE = re.compile(r"【队员已请离】\s*队长\s*(@[A-Za-z0-9_]{3,32})\s*已将道友\s*(@[A-Za-z0-9_]{3,32})\s*请离队伍")
 _REPLICA_OPENED_RE = re.compile(
-    r"(?:【(?P<opened_kind_name>虚天殿)已开启】|【(?P<opened_zhuimo>坠魔谷)·集结】|【(?P<opened_huanglong>黄龙山)大战·集结】|【(?P<opened_cangkun>苍坤(?:上人)?洞府)(?:·集结|已开启)?】|【(?P<opened_kunwu>昆吾山)·集结】)"
+    r"(?:【(?P<opened_kind_name>虚天殿)已开启】|【(?P<opened_zhuimo>坠魔谷)·集结】|【(?P<opened_huanglong>黄龙山)大战·集结】|【(?P<opened_cangkun>苍坤(?:上人)?洞府)(?:·集结|已开启)?】|【(?P<opened_kunwu>昆吾山)·集结】|【(?P<opened_luoyun>落云秘圃)·集结】)"
     r"\s*(?:队长\s*)?(?P<leader>@[^\s，。！？、；：:,.!?()（）【】\[\]]+).*?(?:副本ID|房间ID)\s*[:：]\s*(?P<room_id>\d+)",
     re.S,
 )
 _REPLICA_JOINED_RE = re.compile(
     r"(@[^\s，。！？、；：:,.!?()（）【】\[\]]+)\s*已(?:成功)?加入"
-    r"(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|苍坤(?:上人)?洞府(?:队伍)?(?:\s*(\d+))?|昆吾山(?:队伍)?(?:\s*(\d+))?)"
+    r"(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|苍坤(?:上人)?洞府(?:队伍)?(?:\s*(\d+))?|昆吾山(?:队伍)?(?:\s*(\d+))?|落云秘圃(?:队伍)?(?:\s*(\d+))?)"
 )
 _REPLICA_ROOM_GUA_TTL_SEC = 6 * 60 * 60
 _REPLICA_ROOM_GUA_MAX_PER_KIND = 100
@@ -217,7 +226,7 @@ _REPLICA_EXTERNAL_DISPATCH_PENDING_KEYS = (
 
 
 def _get_lightweight_entered_ttl_sec(replica_kind):
-    if replica_kind in {_REPLICA_KIND_CANGKUN, _REPLICA_KIND_KUNWU}:
+    if replica_kind in {_REPLICA_KIND_CANGKUN, _REPLICA_KIND_KUNWU, _REPLICA_KIND_LUOYUN}:
         return REPLICA_ACTIVE_TTL_SEC
     return 60
 _REPLICA_SEND_SOURCE_MODULE = "自动副本"
@@ -255,6 +264,10 @@ _CANGKUN_MIN_REALM = "结丹初期"
 _CANGKUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_CANGKUN_MIN_REALM)
 _CANGKUN_ROOT_GRADE_PRIORITY = ("天", "异", "真", "伪")
 _CANGKUN_PREFERRED_SECT = "太一门"
+_LUOYUN_REQUIRED_SECT = "落云宗"
+_LUOYUN_MIN_REALM = "结丹后期"
+_LUOYUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_LUOYUN_MIN_REALM)
+_LUOYUN_OPEN_CONTRIBUTION = 420
 _XUTIAN_ORACLE_EXPLICIT = {
     "乾天上坤地下 · 三爻争锋": ("火路", "压策", "#528 明示"),
     "震雷上艮山下 · 五爻乘时": ("火路", "势策", "#529 明示"),
@@ -1096,6 +1109,42 @@ def _get_kunwu_decision_stage(text):
     }
 
 
+def _get_luoyun_decision_stage(text):
+    raw_text = str(text or "")
+    if ".落云抉择" not in raw_text:
+        return {}
+    if "落云后续抉择：" in raw_text and "兜底命令" in raw_text:
+        return {}
+    if "请队长使用" not in raw_text and "队长使用" not in raw_text:
+        return {}
+    title_match = re.search(r"【落云秘圃·([^】]+)】", raw_text)
+    title = title_match.group(1).strip() if title_match else "后续抉择"
+    option_labels = {}
+    for option, label in re.findall(r"(?m)^\s*(\d+)\s*[·.、]\s*([^：:\n]+)", raw_text):
+        option = str(option or "").strip()
+        label = str(label or "").strip()
+        if option and label:
+            option_labels[option] = label
+    options = []
+    seen = set()
+    option_match = re.search(r"\.落云抉择\s*([0-9][0-9\s/／、]*)", raw_text)
+    if option_match:
+        for option in re.findall(r"\d+", option_match.group(1)):
+            if option in seen:
+                continue
+            seen.add(option)
+            options.append(option)
+    if not options:
+        options = sorted(option_labels.keys(), key=lambda item: int(item))
+    if not options:
+        return {}
+    return {
+        "stage": "luoyun:" + hashlib.sha1((title + ":" + "/".join(options)).encode("utf-8", errors="ignore")).hexdigest()[:8],
+        "title": title,
+        "commands": tuple((f"{option} {option_labels.get(option) or '路线'}".strip(), f".落云抉择 {option}") for option in options),
+    }
+
+
 def _get_latest_replica_leader_username(replica_kind, now=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     if not replica_kind:
@@ -1147,6 +1196,74 @@ def _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text):
         if button:
             buttons.append(button)
     return _chunk_replica_buttons(buttons, cols=2)
+
+
+def _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text):
+    stage_info = stage_info if isinstance(stage_info, dict) else {}
+    leader_identity_id = int(leader_identity_id or 0)
+    if leader_identity_id <= 0:
+        return []
+    source_key = _make_xutian_decision_notice_key(event, text, f"luoyun:{stage_info.get('stage')}")
+    source_msg_id = int(getattr(event, "id", 0) or 0)
+    buttons = []
+    for label, command in stage_info.get("commands") or ():
+        button = _game_command_action_button(
+            label,
+            command,
+            leader_identity_id,
+            source_msg_id=source_msg_id,
+            token_key=f"luoyun:{source_key}:{leader_identity_id}:{command}",
+            exclusive_key=f"luoyun:{source_key}",
+        )
+        if button:
+            buttons.append(button)
+    return _chunk_replica_buttons(buttons, cols=3)
+
+
+async def _maybe_send_luoyun_decision_notice(event, text, now):
+    stage_info = _get_luoyun_decision_stage(text)
+    if not stage_info:
+        return False
+    parsed_leader_username = _parse_replica_leader_username(text)
+    leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_LUOYUN, now=now)
+    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    if leader_identity_id <= 0:
+        return False
+    if parsed_leader_username:
+        active_team_ids = _get_active_replica_team_identity_ids_for_usernames(
+            [parsed_leader_username],
+            now,
+            replica_kind=_REPLICA_KIND_LUOYUN,
+        )
+        if active_team_ids and leader_identity_id not in active_team_ids:
+            return False
+    notice_key = _make_xutian_decision_notice_key(event, text, f"luoyun:{stage_info.get('stage')}")
+    if not _mark_xutian_decision_notice_once(notice_key, now):
+        return False
+    buttons = _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text)
+    if not buttons:
+        return False
+    commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
+    notice_text = (
+        f"落云后续抉择：{stage_info.get('title') or '未知阶段'}｜队长 {mono(leader_username)}\n"
+        f"请选择一个按钮；兜底命令：\n{commands_text}"
+    )
+    if await _send_replica_kind_notice(
+        _REPLICA_KIND_LUOYUN,
+        notice_text,
+        now,
+        html=True,
+        buttons=buttons,
+    ):
+        return True
+    return await send_audit_log(
+        notice_text,
+        scope="identity",
+        send_as_id=leader_identity_id,
+        priority="medium",
+        limit=700,
+        buttons=buttons,
+    )
 
 
 async def _maybe_send_kunwu_decision_notice(event, text, now):
@@ -1898,6 +2015,8 @@ def _parse_replica_entered_kind(text):
         return _REPLICA_KIND_CANGKUN
     if "【昆吾山·登山道】" in raw_text or "踏入了昆吾山麓" in raw_text:
         return _REPLICA_KIND_KUNWU
+    if "队伍已进入落云秘圃" in raw_text or "【落云秘圃·第一幕】" in raw_text:
+        return _REPLICA_KIND_LUOYUN
     return ""
 
 
@@ -2091,7 +2210,9 @@ def _get_replica_ticket_counts(identity_id):
 def _get_openable_replica_kinds(identity_id):
     openable_kinds = []
     for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
-        if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
+        if not _replica_kind_requires_ticket(replica_kind):
+            continue
+        if not _is_replica_open_requirement_available(identity_id, replica_kind):
             continue
         if _get_replica_ticket_kind_count(identity_id, replica_kind) > 0:
             openable_kinds.append(replica_kind)
@@ -2119,9 +2240,9 @@ def _resolve_replica_kind_alias(text):
 def _select_open_replica_kind(identity_id, requested_kind=""):
     requested_kind = requested_kind if requested_kind in _REPLICA_KINDS else ""
     if requested_kind:
-        if _get_replica_ticket_kind_count(identity_id, requested_kind) <= 0:
+        if not _is_replica_open_requirement_available(identity_id, requested_kind):
             return ""
-        if requested_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
+        if _replica_kind_requires_ticket(requested_kind) and _get_replica_ticket_kind_count(identity_id, requested_kind) <= 0:
             return ""
         return requested_kind
     openable_kinds = _get_openable_replica_kinds(identity_id)
@@ -2209,7 +2330,9 @@ def _format_replica_ticket_counts(identity_id):
     counts = _get_replica_ticket_counts(identity_id)
     parts = []
     for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
-        if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
+        if not _replica_kind_requires_ticket(replica_kind):
+            continue
+        if not _is_replica_open_requirement_available(identity_id, replica_kind):
             continue
         count = int(counts.get(replica_kind) or 0)
         if count > 0:
@@ -2453,7 +2576,9 @@ def _build_lightweight_open_button_rows(chat_id, listener_account_id, *, identit
         for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
             if count_by_kind.get(replica_kind, 0) >= int(limit_per_kind or 8):
                 continue
-            if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(candidate_id):
+            if not _replica_kind_requires_ticket(replica_kind):
+                continue
+            if not _is_replica_open_requirement_available(candidate_id, replica_kind):
                 continue
             if _get_replica_identity_kind_status(candidate_id, replica_kind, now, records=records) != "可":
                 continue
@@ -2490,7 +2615,9 @@ def _format_lightweight_open_command_sections(*, html=False, limit_per_kind=8, n
     grouped = {replica_kind: [] for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
     for identity_id in _get_replica_candidate_identity_ids(require_username=True, require_ticket=True):
         for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
-            if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
+            if not _replica_kind_requires_ticket(replica_kind):
+                continue
+            if not _is_replica_open_requirement_available(identity_id, replica_kind):
                 continue
             if _get_replica_identity_kind_status(identity_id, replica_kind, now, records=records) != "可":
                 continue
@@ -2516,7 +2643,9 @@ def _find_preferred_ticket_opener(replica_kind):
     if not replica_kind:
         return 0
     for identity_id in _get_replica_candidate_identity_ids(require_username=True, require_ticket=True):
-        if replica_kind == _REPLICA_KIND_CANGKUN and not _is_cangkun_realm_available(identity_id):
+        if not _replica_kind_requires_ticket(replica_kind):
+            continue
+        if not _is_replica_open_requirement_available(identity_id, replica_kind):
             continue
         if _get_replica_ticket_kind_count(identity_id, replica_kind) > 0:
             return int(identity_id or 0)
@@ -2543,6 +2672,65 @@ def _is_cangkun_realm_available(identity_id):
     if not realm or realm not in REALM_SORT_ORDER:
         return False
     return REALM_SORT_ORDER.index(realm) >= _CANGKUN_MIN_REALM_INDEX
+
+
+def _get_luoyun_profile(identity_id):
+    return get_send_as_profile(identity_id)
+
+
+def _get_luoyun_contribution(profile):
+    try:
+        return int((profile or {}).get("sect_contribution") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_luoyun_open_available(identity_id):
+    profile = _get_luoyun_profile(identity_id)
+    sect_name = _normalize_replica_sect_name(profile.get("sect_name") or "")
+    if sect_name != _LUOYUN_REQUIRED_SECT:
+        return False
+    realm = str(profile.get("realm") or "").strip()
+    if not realm or realm not in REALM_SORT_ORDER:
+        return False
+    if REALM_SORT_ORDER.index(realm) < _LUOYUN_MIN_REALM_INDEX:
+        return False
+    return _get_luoyun_contribution(profile) >= _LUOYUN_OPEN_CONTRIBUTION
+
+
+def _format_luoyun_open_requirement(identity_id):
+    profile = _get_luoyun_profile(identity_id)
+    sect_name = _normalize_replica_sect_name(profile.get("sect_name") or "") or "未知"
+    realm = str(profile.get("realm") or "").strip() or "未知"
+    contribution = _get_luoyun_contribution(profile)
+    try:
+        contribution_updated_at = float(profile.get("sect_contribution_updated_at") or 0)
+    except (TypeError, ValueError):
+        contribution_updated_at = 0.0
+    contribution_text = str(contribution) if contribution_updated_at > 0 or contribution > 0 else "未知"
+    return f"落云要求{_LUOYUN_REQUIRED_SECT}、{_LUOYUN_MIN_REALM}及以上、宗门贡献>={_LUOYUN_OPEN_CONTRIBUTION}，当前：{sect_name}/{realm}/贡献{contribution_text}"
+
+
+def _is_replica_open_requirement_available(identity_id, replica_kind):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        return _is_cangkun_realm_available(identity_id)
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        return _is_luoyun_open_available(identity_id)
+    return bool(replica_kind)
+
+
+def _format_replica_open_requirement(identity_id, replica_kind):
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        return _format_cangkun_realm_requirement(identity_id)
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        return _format_luoyun_open_requirement(identity_id)
+    return ""
+
+
+def _replica_kind_requires_ticket(replica_kind):
+    meta = _REPLICA_TICKET_META.get(replica_kind) or {}
+    return bool(meta.get("ticket_items"))
 
 
 def _get_cangkun_root_grade_rank(identity_id):
@@ -2766,7 +2954,8 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     usernames = [username for username in usernames if username]
     replica_name = _REPLICA_KIND_META[replica_kind]["name"]
     leader_text = f"（开房 {leader_username}）" if leader_username else ""
-    lines = [f"推荐配置：{replica_name}｜职业补位{leader_text}"]
+    recommend_label = "轻量补位" if replica_kind == _REPLICA_KIND_LUOYUN else "职业补位"
+    lines = [f"推荐配置：{replica_name}｜{recommend_label}{leader_text}"]
     if usernames:
         display_usernames = " ".join(mono(username) if html else username for username in usernames)
         lines.append(f"推荐加入：{display_usernames}")
@@ -2785,6 +2974,10 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
         if leader_identity_id > 0 and not _is_cangkun_realm_available(leader_identity_id):
             lines.append(f"开房身份未达要求，不计入职业覆盖：{_format_cangkun_realm_requirement(leader_identity_id)}。")
         lines.append("提示：苍坤要求结丹初期及以上且五职业齐全：破军/御山/灵医/影刃/咒师；入本默认 .苍坤抉择 1 / .苍坤抉择 1 / .苍坤抉择 2。")
+    elif replica_kind == _REPLICA_KIND_LUOYUN:
+        if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
+            lines.append(f"开房身份未达要求：{_format_luoyun_open_requirement(leader_identity_id)}。")
+        lines.append("提示：落云开房要求落云宗、结丹后期及以上、宗门贡献>=420；加入仅走轻量补位。")
     else:
         lines.append("提示：先按破军/御山/灵医补齐，若后续出现专属卦象再按卦象改配。")
     return "\n".join(lines)
@@ -2894,7 +3087,7 @@ def _extract_replica_ticket_deltas_from_text(text, reply_context=None):
 
     opened_match = _REPLICA_OPENED_RE.search(raw_text)
     if opened_match:
-        opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or opened_match.group("opened_kunwu") or raw_text
+        opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or opened_match.group("opened_kunwu") or opened_match.group("opened_luoyun") or raw_text
         replica_kind = _infer_replica_kind_from_text(opened_kind_name)
         leader_identity_id = _get_identity_id_by_replica_username(opened_match.group("leader")) or own_identity_id
         if replica_kind == _REPLICA_KIND_VIRTUAL_HALL and "虚天残图" in raw_text:
@@ -4826,7 +5019,7 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
         leader_username = _normalize_replica_username(opened_match.group("leader"))
         team_usernames = [leader_username]
         lobby_status = "opened"
-        opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or opened_match.group("opened_kunwu") or raw_text
+        opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or opened_match.group("opened_kunwu") or opened_match.group("opened_luoyun") or raw_text
         replica_kind = _infer_replica_kind_from_text(opened_kind_name)
         if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
             _mark_virtual_hall_gua_from_opened_text(raw_text, now, room_id, leader_username=leader_username, msg_id=msg_id)
@@ -5299,6 +5492,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     xutian_decision_stage = _get_xutian_decision_stage(text)
     cangkun_decision_stage = _get_cangkun_decision_stage(text)
     kunwu_decision_stage = _get_kunwu_decision_stage(text)
+    luoyun_decision_stage = _get_luoyun_decision_stage(text)
     replica_settlement_kind = _parse_replica_settlement_kind(text)
     if not replica_settlement_kind and _is_replica_settlement_text(text):
         replica_settlement_kind = _resolve_replica_kind_for_progress(text, now, usernames=_extract_replica_usernames(text))
@@ -5306,6 +5500,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         not xutian_decision_stage
         and not cangkun_decision_stage
         and not kunwu_decision_stage
+        and not luoyun_decision_stage
         and not replica_settlement_kind
         and not entered_kind
         and "挑战失败！" not in text
@@ -5357,6 +5552,23 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             usernames=_extract_replica_usernames(text),
         )
         kunwu_notice_sent = bool(await _maybe_send_kunwu_decision_notice(event, text, now))
+    luoyun_notice_sent = False
+    if luoyun_decision_stage:
+        parsed_leader_username = _parse_replica_leader_username(text)
+        leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_LUOYUN, now=now)
+        _mark_replica_team_entered(
+            _REPLICA_KIND_LUOYUN,
+            now,
+            source_msg_id=getattr(event, "id", 0),
+            leader_username=leader_username,
+        )
+        _mark_latest_lightweight_room_entered(
+            _REPLICA_KIND_LUOYUN,
+            now=now,
+            require_recent_enter_request=False,
+            usernames=_extract_replica_usernames(text),
+        )
+        luoyun_notice_sent = bool(await _maybe_send_luoyun_decision_notice(event, text, now))
     if entered_kind:
         if _mark_replica_team_entered(entered_kind, now, source_msg_id=getattr(event, "id", 0)):
             return True
@@ -5450,7 +5662,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         if identity_ids:
             _mark_replica_failure_pending(identity_ids, now, replica_kind=replica_kind)
             return True
-    return bool(xutian_notice_sent or cangkun_notice_sent or kunwu_notice_sent)
+    return bool(xutian_notice_sent or cangkun_notice_sent or kunwu_notice_sent or luoyun_notice_sent)
 
 
 def _parse_virtual_hall_open_failure(text):
@@ -6082,7 +6294,7 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
     apply_replica_ticket_text_deltas(event, text, now, reply_context=reply_context)
     opened_match = _REPLICA_OPENED_RE.search(text)
     if opened_match:
-        opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or opened_match.group("opened_kunwu") or text
+        opened_kind_name = opened_match.group("opened_kind_name") or opened_match.group("opened_zhuimo") or opened_match.group("opened_huanglong") or opened_match.group("opened_cangkun") or opened_match.group("opened_kunwu") or opened_match.group("opened_luoyun") or text
         replica_kind = _infer_replica_kind_from_text(opened_kind_name)
         leader_username = _normalize_replica_username(opened_match.group("leader"))
         flow = _find_lightweight_open_flow(
@@ -6147,7 +6359,10 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
             return True
     entered_kind = _parse_replica_entered_kind(text)
     if entered_kind:
-        require_recent_enter_request = not (entered_kind == _REPLICA_KIND_CANGKUN and _get_cangkun_decision_stage(text))
+        require_recent_enter_request = not (
+            (entered_kind == _REPLICA_KIND_CANGKUN and _get_cangkun_decision_stage(text))
+            or (entered_kind == _REPLICA_KIND_LUOYUN and _get_luoyun_decision_stage(text))
+        )
         return bool(_mark_latest_lightweight_room_entered(
             entered_kind,
             now=now,
@@ -6693,6 +6908,8 @@ def _parse_lightweight_replica_open_failure(text):
         return "缺少黄龙急援令"
     if "你没有【昆吾通行令】" in raw_text or ("无法开启昆吾山" in raw_text and "昆吾通行令" in raw_text):
         return "缺少昆吾通行令"
+    if "无法开启落云秘圃" in raw_text or ("落云秘圃" in raw_text and any(keyword in raw_text for keyword in ("贡献不足", "宗门贡献", "结丹后期", "落云宗"))):
+        return "落云开房资格不足"
     if "你已经开启了一个副本房间" in raw_text or "请勿重复操作" in raw_text:
         return "已有副本房间"
     if (
@@ -6776,6 +6993,8 @@ async def _maybe_absorb_lightweight_opened_room(opened_match, opened_text, now, 
         or opened_match.group("opened_zhuimo")
         or opened_match.group("opened_huanglong")
         or opened_match.group("opened_cangkun")
+        or opened_match.group("opened_kunwu")
+        or opened_match.group("opened_luoyun")
         or opened_text
     )
     replica_kind = _infer_replica_kind_from_text(opened_kind_name)
@@ -7001,12 +7220,14 @@ async def _handle_lightweight_open_command(event):
                 buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, identity_id=identity_id, now=now),
             )
             return True
-        if (
-            (requested_kind == _REPLICA_KIND_CANGKUN or not requested_kind)
+        if requested_kind and not _is_replica_open_requirement_available(identity_id, requested_kind):
+            reason_text = _format_replica_open_requirement(identity_id, requested_kind) or ticket_text
+        elif (
+            not requested_kind
             and _get_replica_ticket_kind_count(identity_id, _REPLICA_KIND_CANGKUN) > 0
-            and not _is_cangkun_realm_available(identity_id)
+            and not _is_replica_open_requirement_available(identity_id, _REPLICA_KIND_CANGKUN)
         ):
-            reason_text = f"{ticket_text}；{_format_cangkun_realm_requirement(identity_id)}"
+            reason_text = f"{ticket_text}；{_format_replica_open_requirement(identity_id, _REPLICA_KIND_CANGKUN)}"
         text = f"{escape(selector)} 不能开启{escape(requested_text)}：{escape(reason_text)}\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
         await _send_replica_group_message(
             event.client,

@@ -158,7 +158,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_small_world_time"],
             )
 
-    async def test_wait_panel_with_low_stability_sends_relief_before_wait(self):
+    async def test_wait_panel_with_low_faith_prefers_preach_before_relief(self):
         send_as_id = 8659059189
         now = 9100.0
         state_module.ensure_identity_registered(send_as_id)
@@ -182,25 +182,25 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_enabled"] = True
             state_module.state["small_world_preach_enabled"] = True
             with (
-                patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
-                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
                 patch.object(small_world, "save_state"),
             ):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            relief_mock.assert_awaited_once_with(now, "人口 99830 缺口 170，优先赈灾")
-            preach_mock.assert_not_awaited()
+            preach_mock.assert_awaited_once_with(now, "信仰 92/100，布道维护")
+            relief_mock.assert_not_awaited()
 
-    async def test_wait_panel_with_population_deficit_sends_relief(self):
+    async def test_wait_panel_with_large_population_deficit_sends_relief(self):
         send_as_id = 8659059190
         now = 9200.0
         state_module.ensure_identity_registered(send_as_id)
         panel = small_world._parse_small_world_panel(
             "【铁笔客的小世界】\n\n"
-            "👥 人口: 97000 人\n"
+            "👥 人口: 94000 人\n"
             "🏙️ 承载上限: 100000 人\n"
-            "🙏 信仰: 95 / 100\n"
+            "🙏 信仰: 100 / 100\n"
             "⚖️ 稳定: 90 / 100\n\n"
             "暂无祈愿，凡间风调雨顺。\n"
             "(下一次祈愿感应需等待: 5小时25分钟57秒)"
@@ -217,7 +217,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            relief_mock.assert_awaited_once_with(now, "人口 97000 缺口 3000，优先赈灾")
+            relief_mock.assert_awaited_once_with(now, "人口 94000 缺口 6000，优先赈灾")
             preach_mock.assert_not_awaited()
 
     async def test_wait_panel_with_low_faith_only_sends_preach(self):
@@ -276,7 +276,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             preach_mock.assert_awaited_once_with(now, "信仰 99/100，布道维护")
             relief_mock.assert_not_awaited()
 
-    async def test_wait_panel_with_stability_below_max_sends_relief(self):
+    async def test_wait_panel_with_minor_stability_deficit_waits_without_relief(self):
         send_as_id = 8659059201
         now = 9340.0
         state_module.ensure_identity_registered(send_as_id)
@@ -296,13 +296,19 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
                 patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
                 patch.object(small_world, "save_state"),
             ):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            relief_mock.assert_awaited_once_with(now, "稳定 99/100，赈灾维护")
+            relief_mock.assert_not_awaited()
             preach_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(
+                now + (5 * 3600 + 25 * 60 + 57) + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
 
     async def test_maintenance_waits_when_next_disaster_wave_is_near(self):
         send_as_id = 8659059202
@@ -340,6 +346,74 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(now + 45 * 60 + 60, state_module.state["next_small_world_time"])
             self.assertIn("让位下一波灾害", state_module.state["small_world_last_error"])
+
+    async def test_pending_maintenance_clears_answered_query_phase_before_waiting(self):
+        send_as_id = 8659059203
+        now = 21000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 96 / 100\n"
+            "⚖️ 稳定: 100 / 100\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 9901
+            state_module.state["small_world_god_cooldown_until"] = now + 3600
+            with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            preach_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertEqual(now + 3600 + 60, state_module.state["next_small_world_time"])
+
+    async def test_prayer_panel_drops_stale_maintenance_before_manifest(self):
+        send_as_id = 8659059204
+        now = 22000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 96 / 100\n"
+            "⚖️ 稳定: 100 / 100\n\n"
+            "🔥 凡人祈愿：丰收祭典\n"
+            "⚡ 显灵消耗: 灵石x200\n"
+            "请使用 .显灵 响应祈愿，或忽略之。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 9902
+            state_module.state["small_world_pending_god_action"] = "preach"
+            state_module.state["small_world_pending_god_reason"] = "信仰 96/100，布道维护"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_MAINTENANCE
+            with (
+                patch.object(small_world, "_send_manifest", new=AsyncMock(return_value=True)) as manifest_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            manifest_mock.assert_awaited_once_with(now)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual("", state_module.state["small_world_pending_god_action"])
 
     async def test_no_prayer_small_incense_does_not_harvest_again(self):
         send_as_id = 8659059191
@@ -656,6 +730,8 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             audit_mock.assert_not_awaited()
             self.assertEqual(96, state_module.state["small_world_faith_value"])
             self.assertEqual(90, state_module.state["small_world_panel_snapshot"]["stability"])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("信仰 96/100，布道维护", state_module.state["small_world_pending_god_reason"])
             self.assertEqual(
                 now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC + 60,
                 state_module.state["next_small_world_time"],
@@ -700,6 +776,8 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(75, snapshot["stability"])
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual("relief", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("稳定 75/100，赈灾维护", state_module.state["small_world_pending_god_reason"])
             self.assertEqual(
                 now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC + 60,
                 state_module.state["next_small_world_time"],
