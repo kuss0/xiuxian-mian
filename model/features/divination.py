@@ -814,14 +814,33 @@ async def _send_divination_result_audit(identity_id, now, text):
     if identity_id <= 0:
         return False
     record = (_run_records().get(_run_key(identity_id)) or {})
-    count = int((record if isinstance(record, dict) else {}).get("count") or 0)
+    record = record if isinstance(record, dict) else {}
+    count = int(record.get("count") or 0)
     limit = get_divination_daily_limit(identity_id)
+    treasure = parse_divination_treasure_text(text)
+    if not treasure:
+        if count < int(limit or 0):
+            return False
+        day_key = get_day_key(now)
+        if str(record.get("completion_audit_day") or "") == day_key:
+            return False
+        records = _run_records()
+        key, latest, _changed = _get_run_record(identity_id, now, records=records, schedule_missing=False)
+        count = max(count, int(latest.get("count") or 0))
+        latest["completion_audit_day"] = day_key
+        latest["completion_audit_count"] = count
+        records[key] = latest
+        _set_run_records(records)
     await send_audit_log(
-        f"🔮 卜筮问天结果：{_format_identity(identity_id)}｜{_format_divination_result_summary(text)}｜已确认 {count}/{limit}",
+        (
+            f"🔮 卜筮问天结果：{_format_identity(identity_id)}｜{_format_divination_result_summary(text)}｜已确认 {count}/{limit}"
+            if treasure
+            else f"🔮 卜筮问天完成：{_format_identity(identity_id)}｜今日 {count}/{limit} 次"
+        ),
         scope="identity",
         send_as_id=identity_id,
         limit=520,
-        priority="medium",
+        priority="medium" if treasure else "low",
     )
     return True
 
@@ -1244,12 +1263,6 @@ async def _send_divination_query(identity_id, record, now, limit):
     latest["block_reason"] = ""
     records[key] = latest
     _set_run_records(records)
-    await send_audit_log(
-        f"🔮 卜筮问天已发送：目标第 {target_count} 次｜已确认 {observed_count}/{limit}｜{_format_identity(identity_id)}",
-        scope="identity",
-        send_as_id=identity_id,
-        limit=240,
-    )
     return True
 
 

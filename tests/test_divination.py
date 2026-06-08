@@ -176,8 +176,9 @@ class DivinationTests(unittest.TestCase):
         async def run_test():
             with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
                     patch("model.features.divination.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9001))) as send_mock, \
-                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()) as audit_mock:
                 await divination.run_divination_scheduler(now)
+                audit_mock.assert_not_awaited()
                 return send_mock.await_args
 
         send_args = asyncio.run(run_test())
@@ -557,7 +558,7 @@ class DivinationTests(unittest.TestCase):
                 reply_context={"send_as_id": identity_id, "reply_to_msg_id": 7001},
             )
             with patch("model.features.divination.random.uniform", return_value=5), \
-                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()) as audit_mock:
                 final_handled = await divination.handle_divination_reply(
                     "【卦象：吉】\n卦象显示“道心通明”，你对天地法则的理解更深一层。",
                     now + 3,
@@ -566,20 +567,26 @@ class DivinationTests(unittest.TestCase):
                     matched_family=None,
                     reply_context={},
                 )
+                audit_args = audit_mock.await_args
             with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
                     patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock:
                 await divination.run_divination_scheduler(now + 61)
                 send_mock.assert_not_awaited()
-            return intermediate_handled, final_handled
+            return intermediate_handled, final_handled, audit_args
 
-        intermediate_handled, final_handled = asyncio.run(run_test())
+        intermediate_handled, final_handled, audit_args = asyncio.run(run_test())
         self.assertTrue(intermediate_handled)
         self.assertTrue(final_handled)
+        self.assertIn("卜筮问天完成", audit_args.args[0])
+        self.assertIn("今日 6/6 次", audit_args.args[0])
+        self.assertNotIn("道心通明", audit_args.args[0])
+        self.assertEqual("low", audit_args.kwargs["priority"])
         record = state_module.get_divination_run_state()[str(identity_id)]
         self.assertEqual(6, record["count"])
         self.assertEqual(0, record["pending_query_msg_id"])
         self.assertEqual("done_today", record["phase"])
         self.assertGreater(record["next_query_at"], now + 3600)
+        self.assertEqual(get_day_key(now + 3), record["completion_audit_day"])
 
     def test_plain_final_without_observed_count_does_not_increment_count(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
@@ -678,9 +685,10 @@ class DivinationTests(unittest.TestCase):
                     matched_family=None,
                     reply_context={},
                 )
-                return handled, audit_mock.await_args
+                audit_mock.assert_not_awaited()
+                return handled
 
-        handled, audit_args = asyncio.run(run_test())
+        handled = asyncio.run(run_test())
         self.assertTrue(handled)
         record = state_module.get_divination_run_state()[str(identity_id)]
         self.assertEqual(1, record["count"])
@@ -688,10 +696,6 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(0, record["pending_reply_msg_id"])
         self.assertEqual(now + 3 + 60, record["next_query_at"])
         self.assertEqual("", record["last_error"])
-        self.assertIn("卜筮问天结果", audit_args.args[0])
-        self.assertIn("金玉满堂", audit_args.args[0])
-        self.assertIn("已确认 1/6", audit_args.args[0])
-        self.assertEqual("medium", audit_args.kwargs["priority"])
 
     def test_plain_final_edit_resolves_identity_from_pending_reply_msg_id(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
@@ -825,7 +829,7 @@ class DivinationTests(unittest.TestCase):
 
         async def run_test():
             with patch("model.features.divination.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=8001))) as send_mock, \
-                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()) as audit_mock:
                 handled = await divination.handle_divination_reply(
                     TREASURE_TEXT,
                     1000.0,
@@ -833,13 +837,19 @@ class DivinationTests(unittest.TestCase):
                     matched_family="divination",
                     reply_context={"send_as_id": identity_id},
                 )
-                return handled, send_mock.await_args
+                result_audit = next(
+                    call
+                    for call in audit_mock.await_args_list
+                    if "卜筮问天结果" in call.args[0]
+                )
+                return handled, send_mock.await_args, result_audit
 
-        handled, send_args = asyncio.run(run_test())
+        handled, send_args, result_audit = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertEqual(".换取", send_args.args[0])
         self.assertEqual(identity_id, send_args.kwargs["send_as_id"])
         self.assertEqual(7001, send_args.kwargs["reply_to"])
+        self.assertEqual("medium", result_audit.kwargs["priority"])
         self.api_refresh_mock.assert_awaited()
         self.assertIn(identity_id, self.api_refresh_mock.await_args.kwargs["identity_ids"])
         pending = next(iter(state_module.get_divination_pending_exchanges().values()))
