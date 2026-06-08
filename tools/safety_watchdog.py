@@ -803,6 +803,9 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
             print(f"already fused: {marker}")
             return
         marker_reason = read_fuse_marker_reason(cfg.project_root)
+        if marker_reason == reason:
+            print(f"already fused for same reason: {marker}")
+            return
         if marker_reason != reason:
             print(f"stale fuse marker with global enabled, re-fusing silently: {marker}")
     actions: list[str] = []

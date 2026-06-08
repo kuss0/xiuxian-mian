@@ -103,6 +103,25 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertLess(auto_pos, command_pos)
         self.assertLess(progress_pos, command_pos)
 
+    def test_lightweight_open_usage_is_html_escaped(self):
+        html_usage = app_replica._format_lightweight_open_usage(html=True)
+        self.assertIn(
+            "<code>.开启副本 @用户名 &lt;虚天|苍坤|坠魔|黄龙|昆吾|落云&gt;</code>",
+            html_usage,
+        )
+        self.assertNotIn("<虚天|苍坤|坠魔|黄龙|昆吾|落云>", html_usage)
+
+        fallback = app_replica._format_lightweight_next_commands(
+            ".查询副本",
+            app_replica._REPLICA_LIGHTWEIGHT_OPEN_USAGE,
+            html=True,
+        )
+        self.assertIn(
+            "<code>.开启副本 @用户名 &lt;虚天|苍坤|坠魔|黄龙|昆吾|落云&gt;</code>",
+            fallback,
+        )
+        self.assertNotIn("<虚天|苍坤|坠魔|黄龙|昆吾|落云>", fallback)
+
     def _prepare_replica_identity(self, identity_id=991201, username="leader"):
         state_module.ensure_identity_registered(identity_id)
         state_module.update_send_as_profile(

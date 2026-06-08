@@ -2640,6 +2640,10 @@ def _format_lightweight_command_lines(*commands, html=False):
     return "\n".join(mono(command) if html else command for command in filtered)
 
 
+def _format_lightweight_open_usage(*, html=False):
+    return mono(_REPLICA_LIGHTWEIGHT_OPEN_USAGE) if html else _REPLICA_LIGHTWEIGHT_OPEN_USAGE
+
+
 def _format_lightweight_next_commands(*commands, html=False):
     command_lines = _format_lightweight_command_lines(*commands, html=html)
     if not command_lines:
@@ -7465,7 +7469,7 @@ async def _handle_lightweight_open_command(event):
     chat_id = int(getattr(event, "chat_id", 0) or 0)
     selector, requested_kind = _parse_lightweight_open_command(raw_text)
     if not selector:
-        text = f"用法：{_REPLICA_LIGHTWEIGHT_OPEN_USAGE}\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+        text = f"用法：{_format_lightweight_open_usage(html=True)}\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
         await _send_replica_group_message(
             event.client,
             event.chat_id,

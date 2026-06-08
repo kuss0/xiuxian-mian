@@ -270,6 +270,57 @@ def _has_exchange_success_today(record, now):
     return str(record.get("exchange_success_day") or "") == get_day_key(now)
 
 
+def _clamp_daily_count(value, limit):
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        count = 0
+    try:
+        daily_limit = int(limit or 0)
+    except (TypeError, ValueError):
+        daily_limit = 0
+    count = max(0, count)
+    if daily_limit > 0:
+        return min(count, daily_limit)
+    return count
+
+
+def _normalize_record_count_to_limit(record, limit):
+    record = record if isinstance(record, dict) else {}
+    try:
+        current = int(record.get("count") or 0)
+    except (TypeError, ValueError):
+        current = 0
+    clamped = _clamp_daily_count(current, limit)
+    if current == clamped:
+        return False
+    record["count"] = clamped
+    return True
+
+
+def _record_observed_daily_count(record, observed_count, limit, now):
+    record = record if isinstance(record, dict) else {}
+    try:
+        observed_count = int(observed_count or 0)
+    except (TypeError, ValueError):
+        observed_count = 0
+    if observed_count <= 0:
+        return False
+    changed = False
+    if observed_count > int(record.get("message_log_observed_count") or 0):
+        record["message_log_observed_count"] = observed_count
+        changed = True
+    current_count = _clamp_daily_count(record.get("count") or 0, limit)
+    next_count = max(current_count, _clamp_daily_count(observed_count, limit))
+    if int(record.get("count") or 0) != next_count:
+        record["count"] = next_count
+        changed = True
+    if changed:
+        record["last_observed_at"] = float(now or time.time())
+        record["last_error"] = ""
+    return changed
+
+
 def _mark_exchange_success_today(identity_id, now, target_item):
     identity_id = int(identity_id or 0)
     if identity_id <= 0:
@@ -287,6 +338,7 @@ def _mark_exchange_success_today(identity_id, now, target_item):
 
 
 def _schedule_after_round(record, now, limit):
+    _normalize_record_count_to_limit(record, limit)
     if int(record.get("count") or 0) >= int(limit or 0):
         return _schedule_next_day(record, now)
     record["next_query_at"] = float(now or time.time()) + DIVINATION_QUERY_GAP_SEC
@@ -413,19 +465,15 @@ def _sync_daily_count_from_message_log(identity_id, record, now, limit, *, force
         return False
     observed_count = _recover_identity_daily_count_from_message_log(identity_id, now)
     changed = False
+    if _normalize_record_count_to_limit(record, limit):
+        changed = True
     if record.get("message_log_checked_day") != day_key:
         record["message_log_checked_day"] = day_key
         changed = True
     if float(record.get("message_log_checked_at") or 0) != float(now or 0):
         record["message_log_checked_at"] = float(now or time.time())
         changed = True
-    if observed_count > int(record.get("message_log_observed_count") or 0):
-        record["message_log_observed_count"] = int(observed_count)
-        changed = True
-    if observed_count > int(record.get("count") or 0):
-        record["count"] = int(observed_count)
-        record["last_observed_at"] = float(now or time.time())
-        record["last_error"] = ""
+    if _record_observed_daily_count(record, observed_count, limit, now):
         changed = True
     if int(record.get("count") or 0) >= int(limit or 0) and str(record.get("phase") or "") != DIVINATION_PHASE_DONE_TODAY:
         record["phase"] = DIVINATION_PHASE_DONE_TODAY
@@ -506,7 +554,7 @@ def _note_query_reply(identity_id, now, text, *, event=None, final=False, stop_r
     if daily_count <= 0 and final and int(record.get("pending_query_msg_id") or 0) > 0 and not record.get("pending_count_recorded"):
         daily_count = _recover_daily_count_from_message_log(record, now)
     if daily_count > 0:
-        record["count"] = max(int(record.get("count") or 0), daily_count)
+        _record_observed_daily_count(record, daily_count, limit, now)
         record["pending_count_recorded"] = True
 
     result_msg_id = int(getattr(event, "id", 0) or 0)
@@ -815,8 +863,8 @@ async def _send_divination_result_audit(identity_id, now, text):
         return False
     record = (_run_records().get(_run_key(identity_id)) or {})
     record = record if isinstance(record, dict) else {}
-    count = int(record.get("count") or 0)
     limit = get_divination_daily_limit(identity_id)
+    count = _clamp_daily_count(record.get("count") or 0, limit)
     treasure = parse_divination_treasure_text(text)
     if not treasure:
         if count < int(limit or 0):
@@ -826,7 +874,8 @@ async def _send_divination_result_audit(identity_id, now, text):
             return False
         records = _run_records()
         key, latest, _changed = _get_run_record(identity_id, now, records=records, schedule_missing=False)
-        count = max(count, int(latest.get("count") or 0))
+        _normalize_record_count_to_limit(latest, limit)
+        count = max(count, _clamp_daily_count(latest.get("count") or 0, limit))
         latest["completion_audit_day"] = day_key
         latest["completion_audit_count"] = count
         records[key] = latest
@@ -1223,7 +1272,15 @@ async def _run_divination_exchange_scheduler(now):
 
 async def _send_divination_query(identity_id, record, now, limit):
     day_key = str(record.get("day_key") or get_day_key(now))
-    observed_count = int(record.get("count") or 0)
+    observed_count = _clamp_daily_count(record.get("count") or 0, limit)
+    if int(limit or 0) > 0 and observed_count >= int(limit or 0):
+        records = _run_records()
+        key, latest, _changed = _get_run_record(identity_id, now, records=records)
+        _normalize_record_count_to_limit(latest, limit)
+        _schedule_next_day(latest, now)
+        records[key] = latest
+        _set_run_records(records)
+        return False
     target_count = observed_count + 1
     attempt_no = int(record.get("sent_attempts") or 0) + 1
     msg = await send_game_command(
@@ -1295,6 +1352,9 @@ async def _run_divination_query_scheduler(now):
             continue
 
         limit = get_divination_daily_limit(identity_id)
+        if _normalize_record_count_to_limit(record, limit):
+            records[key] = record
+            changed = True
         day_key = get_day_key(now)
         if str(record.get("blocked_day") or "") == day_key:
             continue
@@ -1376,7 +1436,7 @@ def get_divination_status_text(send_as_id=None):
     day_key = get_day_key(now)
     raw_record = (_run_records().get(_run_key(identity_id)) or {})
     record = raw_record if isinstance(raw_record, dict) and str(raw_record.get("day_key") or "") == day_key else {}
-    count = int(record.get("count") or 0)
+    count = _clamp_daily_count(record.get("count") or 0, limit)
     sent_attempts = int(record.get("sent_attempts") or 0)
     phase = _coerce_phase(record.get("phase"), record)
     pending_query_msg_id = int(record.get("pending_query_msg_id") or 0)

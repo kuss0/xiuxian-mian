@@ -7,7 +7,7 @@ import secrets
 import time
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 from urllib.parse import quote
 
@@ -1030,6 +1030,68 @@ def _resolve_identity_message_family(msg_id, send_as_id):
     return None, msg_id
 
 
+def _recent_sent_message_log_paths(*, days=2):
+    local_now = datetime.now(TZ_LOCAL)
+    paths = []
+    for offset in range(max(1, int(days or 1))):
+        day = local_now - timedelta(days=offset)
+        paths.append(os.path.join(MESSAGES_DIR, f"{day.strftime('%Y-%m-%d')}.log"))
+    return paths
+
+
+def _read_recent_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - int(max_bytes or 0))
+            handle.seek(start)
+            if start > 0:
+                handle.readline()
+            data = handle.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    return data.splitlines()[-max(1, int(max_lines or 1)):]
+
+
+def _resolve_identity_from_sent_message_log(msg_id, send_as_id=None):
+    msg_id = int(msg_id or 0)
+    if msg_id <= 0:
+        return None, None, 0, None
+    target_ids = {int(send_as_id)} if send_as_id is not None else {int(identity_id) for identity_id in get_identity_ids()}
+    target_ids.discard(0)
+    if not target_ids:
+        return None, None, 0, None
+
+    for path in _recent_sent_message_log_paths():
+        if not os.path.exists(path):
+            continue
+        for line in reversed(_read_recent_message_log_tail(path)):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("event_type") or "") != "sent":
+                continue
+            try:
+                payload_msg_id = int(payload.get("message_id") or 0)
+            except (TypeError, ValueError):
+                payload_msg_id = 0
+            if payload_msg_id != msg_id:
+                continue
+            try:
+                identity_id = int(payload.get("sender_id") or 0)
+            except (TypeError, ValueError):
+                identity_id = 0
+            if identity_id not in target_ids or not has_identity(identity_id):
+                return None, None, 0, None
+            family = str(payload.get("family") or "").strip() or resolve_reply_family(payload.get("text") or "")
+            return identity_id, family or None, msg_id, "sent_message_log"
+    return None, None, 0, None
+
+
 def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
     resolved_reply_to_msg_id = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
     if resolved_reply_to_msg_id <= 0:
@@ -1046,8 +1108,15 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
         resolved_send_as_id, matched_via = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
     family = None
     root_msg_id = resolved_reply_to_msg_id
+    if resolved_send_as_id is None:
+        resolved_send_as_id, family, root_msg_id, matched_via = _resolve_identity_from_sent_message_log(
+            resolved_reply_to_msg_id,
+            send_as_id=send_as_id,
+        )
     if resolved_send_as_id is not None:
-        family, root_msg_id = _resolve_identity_message_family(resolved_reply_to_msg_id, resolved_send_as_id)
+        resolved_family, resolved_root_msg_id = _resolve_identity_message_family(resolved_reply_to_msg_id, resolved_send_as_id)
+        family = family or resolved_family
+        root_msg_id = int(root_msg_id or resolved_root_msg_id or resolved_reply_to_msg_id)
     if family is None and reply_to is not None:
         family = resolve_reply_family(getattr(reply_to, "raw_text", ""))
     if family is None and resolved_send_as_id is not None and reply_to is not None:

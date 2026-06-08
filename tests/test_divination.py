@@ -328,6 +328,34 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual("done_today", record["phase"])
         self.assertGreater(record["next_query_at"], now + 3600)
 
+    def test_scheduler_preread_clamps_observed_count_above_limit(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1_800_000_000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {"day_key": get_day_key(now), "count": 0, "next_query_at": now - 1}
+        })
+
+        async def run_test(tmpdir):
+            self._write_divination_message_log(tmpdir, now, [
+                {"event_type": "sent", "message_id": 7101, "sender_id": identity_id, "text": ".卜筮问天"},
+                {"event_type": "message", "message_id": 7102, "sender_id": 8888, "reply_to_msg_id": 7101, "text": "天机罗盘开始转动……今日第 7 次"},
+            ])
+            with patch("model.features.divination.MESSAGES_DIR", tmpdir), \
+                    patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
+                    patch("model.features.divination.random.uniform", return_value=5), \
+                    patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock:
+                await divination.run_divination_scheduler(now)
+                send_mock.assert_not_awaited()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            asyncio.run(run_test(tmpdir))
+
+        record = state_module.get_divination_run_state()[str(identity_id)]
+        self.assertEqual(6, record["count"])
+        self.assertEqual(7, record["message_log_observed_count"])
+        self.assertEqual("done_today", record["phase"])
+        self.assertGreater(record["next_query_at"], now + 3600)
+
     def test_scheduler_preread_ignores_other_identity_message_log_count(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         other_id = self._register_identity(991202, "other", divination_enabled=True)
@@ -587,6 +615,44 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual("done_today", record["phase"])
         self.assertGreater(record["next_query_at"], now + 3600)
         self.assertEqual(get_day_key(now + 3), record["completion_audit_day"])
+
+    def test_final_reply_clamps_observed_count_above_limit_for_audit(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {
+                "day_key": get_day_key(now),
+                "count": 5,
+                "next_query_at": 0,
+                "pending_query_msg_id": 7001,
+                "pending_reply_msg_id": 7002,
+                "pending_until": now + 120,
+                "pending_count_recorded": False,
+            }
+        })
+
+        async def run_test():
+            with patch("model.features.divination.random.uniform", return_value=5), \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()) as audit_mock:
+                handled = await divination.handle_divination_reply(
+                    "【卦象：平】\n卦象显示“古井无波”，今日第 7 次。",
+                    now + 3,
+                    event=SimpleNamespace(id=7002, chat_id=-100123),
+                    reply_to=SimpleNamespace(id=7001, raw_text=".卜筮问天"),
+                    matched_family=None,
+                    reply_context={"send_as_id": identity_id, "reply_to_msg_id": 7001},
+                )
+                return handled, audit_mock.await_args
+
+        handled, audit_args = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("卜筮问天完成", audit_args.args[0])
+        self.assertIn("今日 6/6 次", audit_args.args[0])
+        self.assertNotIn("7/6", audit_args.args[0])
+        record = state_module.get_divination_run_state()[str(identity_id)]
+        self.assertEqual(6, record["count"])
+        self.assertEqual(7, record["message_log_observed_count"])
+        self.assertEqual("done_today", record["phase"])
 
     def test_plain_final_without_observed_count_does_not_increment_count(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
@@ -1397,6 +1463,25 @@ class DivinationTests(unittest.TestCase):
         self.assertIn("昆吾通行令: 需手动处理", text)
         self.assertIn("需 灵石x10", text)
         self.assertIn("可用库存不足：灵石x4", text)
+
+    def test_status_clamps_confirmed_count_above_daily_limit(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1_800_000_000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {
+                "day_key": get_day_key(now),
+                "count": 7,
+                "message_log_observed_count": 7,
+                "sent_attempts": 7,
+                "phase": "done_today",
+            }
+        })
+
+        with patch("model.features.divination.time.time", return_value=now):
+            text = divination.get_divination_status_text(identity_id)
+
+        self.assertIn("今日已确认: 6/6", text)
+        self.assertNotIn("7/6", text)
 
     def test_divination_ui_script_loads_after_main_app_and_posts_config_endpoint(self):
         html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
