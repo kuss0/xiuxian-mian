@@ -338,6 +338,28 @@ def is_safe_replica_button_choice_repeat(prev: dict, cur: dict, text: str) -> bo
     return bool(prev_op_id and cur_op_id and prev_op_id != cur_op_id)
 
 
+def is_replica_lightweight_event(item: dict, text: str) -> bool:
+    if not is_dungeon_fast_chain_command(text):
+        return False
+    if str(item.get("source_module") or "").strip() != "自动副本":
+        return False
+    return str(item.get("op_id") or "").strip().startswith("replica_lightweight_")
+
+
+def is_safe_replica_lightweight_retry_repeat(prev: dict, cur: dict, text: str) -> bool:
+    if not is_replica_lightweight_event(prev, text) or not is_replica_lightweight_event(cur, text):
+        return False
+    prev_op_id = str(prev.get("op_id") or "").strip()
+    cur_op_id = str(cur.get("op_id") or "").strip()
+    if not prev_op_id or not cur_op_id or prev_op_id == cur_op_id:
+        return False
+    if "_retry:" in prev_op_id or "_retry:" not in cur_op_id:
+        return False
+    prev_chain_id = str(prev.get("chain_id") or "").strip()
+    cur_chain_id = str(cur.get("chain_id") or "").strip()
+    return bool(prev_chain_id and prev_chain_id == cur_chain_id)
+
+
 def has_duplicate_replica_button_choice_op_id(items: list[dict], text: str) -> bool:
     seen: set[str] = set()
     for item in items:
@@ -540,6 +562,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             if is_safe_same_command_retry(prev, cur, text):
                 continue
             if is_safe_replica_button_choice_repeat(prev, cur, text):
+                continue
+            if is_safe_replica_lightweight_retry_repeat(prev, cur, text):
                 continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"

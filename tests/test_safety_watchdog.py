@@ -7,7 +7,7 @@ from unittest.mock import patch
 from tools import safety_watchdog
 
 
-def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority="", op_id=""):
+def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority="", op_id="", chain_id=""):
     payload = {
         "event_type": "sent",
         "_epoch": float(epoch),
@@ -24,6 +24,8 @@ def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="
         payload["priority"] = priority
     if op_id:
         payload["op_id"] = op_id
+    if chain_id:
+        payload["chain_id"] = chain_id
     return payload
 
 
@@ -230,6 +232,61 @@ class SafetyWatchdogTests(unittest.TestCase):
         breach = safety_watchdog.find_send_breach(events, now, self._config())
 
         self.assertIn("duplicate replica button op_id", breach)
+
+    def test_replica_lightweight_open_retry_does_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3872695780
+        chain_id = "replica_lightweight_open:kunwu:-1003807888644:3872695780:1780938819036"
+        events = [
+            _event(
+                now - 4,
+                sender_id,
+                ".开启昆吾山",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_lightweight_open:-1003807888644:17660:3872695780",
+                chain_id=chain_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".开启昆吾山",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_lightweight_open_retry:-1003807888644:17660:3872695780",
+                chain_id=chain_id,
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_replica_lightweight_open_retry_different_chain_still_fuses(self):
+        now = time.time()
+        sender_id = 3872695780
+        events = [
+            _event(
+                now - 4,
+                sender_id,
+                ".开启昆吾山",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_lightweight_open:-1003807888644:17660:3872695780",
+                chain_id="replica_lightweight_open:kunwu:flow-a",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".开启昆吾山",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_lightweight_open_retry:-1003807888644:17660:3872695780",
+                chain_id="replica_lightweight_open:kunwu:flow-b",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
 
     def test_dungeon_open_repeat_still_fuses(self):
         now = time.time()
