@@ -214,6 +214,9 @@ _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_LIMIT = 1
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_DELAY_SEC = 3.0
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_TTL_SEC = 5 * 60
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_MAX = 300
+_REPLICA_AUTO_DECISION_RETRY_DELAY_SEC = 3.0
+_REPLICA_AUTO_DECISION_TTL_SEC = 30 * 60
+_REPLICA_AUTO_DECISION_MAX = 500
 _REPLICA_LIGHTWEIGHT_DISSOLVE_PENDING_SEC = 60
 _REPLICA_EXTERNAL_DISPATCH_PENDING_KEYS = (
     "dispatch_pending_room_id",
@@ -623,6 +626,111 @@ def _mark_lightweight_fast_retry_once(key, now=None):
     run_state["lightweight_fast_retries"] = records
     _save_replica_run_state_dict(run_state)
     return True
+
+
+def _cleanup_replica_auto_decision_records(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("replica_auto_decisions")
+    if not isinstance(records, dict):
+        records = {}
+    changed = False
+    for key, record in list(records.items()):
+        if not isinstance(record, dict):
+            records.pop(key, None)
+            changed = True
+            continue
+        created_at = float(record.get("created_at") or record.get("sent_at") or 0)
+        if created_at <= 0 or now >= created_at + _REPLICA_AUTO_DECISION_TTL_SEC:
+            records.pop(key, None)
+            changed = True
+    if len(records) > _REPLICA_AUTO_DECISION_MAX:
+        keep = {
+            key
+            for key, _record in sorted(
+                records.items(),
+                key=lambda item: float((item[1] or {}).get("created_at") or (item[1] or {}).get("sent_at") or 0),
+                reverse=True,
+            )[:_REPLICA_AUTO_DECISION_MAX]
+        }
+        for key in list(records):
+            if key not in keep:
+                records.pop(key, None)
+                changed = True
+    run_state["replica_auto_decisions"] = records
+    if changed:
+        _save_replica_run_state_dict(run_state)
+    return records
+
+
+def _claim_replica_auto_decision_once(key, record, now=None):
+    key = str(key or "").strip()
+    if not key or not isinstance(record, dict):
+        return False
+    now = float(now or time.time())
+    records = _cleanup_replica_auto_decision_records(now)
+    if key in records:
+        return False
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("replica_auto_decisions")
+    if not isinstance(records, dict):
+        records = {}
+    item = dict(record)
+    item.setdefault("created_at", now)
+    item.setdefault("sent_at", 0)
+    item.setdefault("retry_used", False)
+    item.setdefault("resolved_at", 0)
+    records[key] = item
+    run_state["replica_auto_decisions"] = records
+    _save_replica_run_state_dict(run_state)
+    return True
+
+
+def _update_replica_auto_decision_record(key, updates, now=None):
+    key = str(key or "").strip()
+    if not key or not isinstance(updates, dict):
+        return False
+    records = _cleanup_replica_auto_decision_records(now)
+    record = records.get(key)
+    if not isinstance(record, dict):
+        return False
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("replica_auto_decisions")
+    if not isinstance(records, dict) or key not in records or not isinstance(records.get(key), dict):
+        return False
+    records[key].update(updates)
+    run_state["replica_auto_decisions"] = records
+    _save_replica_run_state_dict(run_state)
+    return True
+
+
+def _mark_replica_auto_decisions_resolved(replica_kind, *, room_id="", current_stage="", now=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return False
+    now = float(now or time.time())
+    room_id = str(room_id or "").strip()
+    current_stage = str(current_stage or "").strip()
+    records = _cleanup_replica_auto_decision_records(now)
+    changed = False
+    for record in records.values():
+        if not isinstance(record, dict):
+            continue
+        if record.get("replica_kind") != replica_kind:
+            continue
+        if room_id and str(record.get("room_id") or "") not in {"", room_id}:
+            continue
+        if current_stage and str(record.get("stage") or "") == current_stage:
+            continue
+        if float(record.get("resolved_at") or 0) > 0:
+            continue
+        record["resolved_at"] = now
+        changed = True
+    if changed:
+        run_state = _get_replica_run_state_dict()
+        run_state["replica_auto_decisions"] = records
+        _save_replica_run_state_dict(run_state)
+    return changed
 
 
 def _get_xutian_decision_stage(text):
@@ -1174,6 +1282,279 @@ def _get_latest_replica_leader_username(replica_kind, now=None):
         return leader_username
     team_usernames = _normalize_replica_username_list((latest_state or {}).get("team_usernames") or [])
     return team_usernames[0] if team_usernames else ""
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+def _stage_command_options(stage_info):
+    options = []
+    for label, command in (stage_info if isinstance(stage_info, dict) else {}).get("commands") or ():
+        command = str(command or "").strip()
+        if command:
+            options.append((str(label or "").strip(), command))
+    return options
+
+
+def _pick_stage_command(stage_info, preferred_commands=()):
+    options = _stage_command_options(stage_info)
+    available = [command for _label, command in options]
+    for command in preferred_commands or ():
+        command = str(command or "").strip()
+        if command in available:
+            return command
+    return available[0] if available else ""
+
+
+def _get_kunwu_auto_decision_command(stage_info):
+    stage = str((stage_info or {}).get("stage") or "")
+    if stage == "encounter":
+        return _pick_stage_command(stage_info, (".选择 静待时机", ".选择 强行摘取"))
+    priority = ("奇遇", "战斗", "朱果", "采集", "捷径")
+    options = _stage_command_options(stage_info)
+    for keyword in priority:
+        for label, command in options:
+            if keyword in label:
+                return command
+    return _pick_stage_command(stage_info)
+
+
+def _replica_auto_decision_scope(replica_kind, event, text, stage_info, *, leader_username="", now=None):
+    leader_username = _normalize_replica_username(leader_username) or _parse_replica_leader_username(text)
+    room_id = _get_latest_replica_room_id(replica_kind, now=now, leader_username=leader_username)
+    if room_id:
+        return room_id, f"room:{room_id}"
+    if leader_username:
+        return "", f"leader:{leader_username}"
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    stage = str((stage_info or {}).get("stage") or "").strip()
+    digest = hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return "", f"chat:{chat_id}:{stage}:{digest}"
+
+
+def _make_replica_auto_decision_key(replica_kind, scope, stage, identity_id, command):
+    command_digest = hashlib.sha1(str(command or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return f"{replica_kind}:{scope}:{str(stage or '').strip()}:{int(identity_id or 0)}:{command_digest}"
+
+
+def _replica_auto_decision_chain_id(replica_kind, scope, stage, identity_id):
+    return f"replica_auto_decision:{replica_kind}:{scope}:{int(identity_id or 0)}:{str(stage or '').strip()}"
+
+
+def _replica_auto_decision_room_still_pending(record, now):
+    record = record if isinstance(record, dict) else {}
+    if float(record.get("resolved_at") or 0) > 0:
+        return False
+    replica_kind = record.get("replica_kind")
+    if replica_kind not in _REPLICA_KINDS:
+        return False
+    identity_id = int(record.get("identity_id") or 0)
+    if identity_id <= 0 or not get_identity_enabled(identity_id):
+        return False
+    if _get_replica_identity_block_reason(identity_id, now=now, allow_dungeon_quiet=True):
+        return False
+    room_id = str(record.get("room_id") or "").strip()
+    if room_id and replica_kind != _REPLICA_KIND_VIRTUAL_HALL:
+        room = _get_latest_lightweight_room_for_kind(replica_kind, now=now)
+        if not room or str(room.get("room_id") or "").strip() != room_id:
+            return False
+        if str(room.get("phase") or "") in {"dissolved", "dissolve_requested"}:
+            return False
+    return True
+
+
+async def _retry_replica_auto_decision_once(key, delay_sec=None):
+    delay_sec = _REPLICA_AUTO_DECISION_RETRY_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    now = time.time()
+    records = _cleanup_replica_auto_decision_records(now)
+    record = records.get(str(key or "").strip())
+    if not isinstance(record, dict):
+        return False
+    if record.get("retry_used") or int(record.get("sent_msg_id") or 0) <= 0:
+        return False
+    if not _replica_auto_decision_room_still_pending(record, now):
+        return False
+    command = str(record.get("command") or "").strip()
+    identity_id = int(record.get("identity_id") or 0)
+    if not command or identity_id <= 0:
+        return False
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=identity_id,
+        priority="retry",
+        **_replica_send_intent(
+            op_id=f"replica_auto_decision_retry:{int(record.get('source_msg_id') or 0)}:{identity_id}:{str(record.get('command_digest') or '')}",
+            chain_id=str(record.get("chain_id") or ""),
+        ),
+    )
+    msg_id = _safe_int(getattr(msg, "id", 0), 0) if msg else 0
+    if msg_id <= 0:
+        return False
+    _update_replica_auto_decision_record(
+        key,
+        {
+            "retry_used": True,
+            "retry_msg_id": msg_id,
+            "retry_at": now,
+        },
+        now=now,
+    )
+    return True
+
+
+def _schedule_replica_auto_decision_retry(key):
+    _fire_and_forget(_retry_replica_auto_decision_once(key))
+
+
+async def _send_replica_auto_decision_command(replica_kind, stage_info, event, text, identity_id, command, now, *, leader_username="", room_id="", scope=""):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    identity_id = int(identity_id or 0)
+    command = str(command or "").strip()
+    if not replica_kind or identity_id <= 0 or not command or not get_identity_enabled(identity_id):
+        return {"sent": False, "deduped": False, "key": ""}
+    stage = str((stage_info or {}).get("stage") or "").strip()
+    if not room_id or not scope:
+        room_id, scope = _replica_auto_decision_scope(
+            replica_kind,
+            event,
+            text,
+            stage_info,
+            leader_username=leader_username,
+            now=now,
+        )
+    key = _make_replica_auto_decision_key(replica_kind, scope, stage, identity_id, command)
+    command_digest = hashlib.sha1(command.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    chain_id = _replica_auto_decision_chain_id(replica_kind, scope, stage, identity_id)
+    source_msg_id = int(getattr(event, "id", 0) or 0)
+    record = {
+        "replica_kind": replica_kind,
+        "room_id": str(room_id or ""),
+        "scope": scope,
+        "stage": stage,
+        "title": str((stage_info or {}).get("title") or ""),
+        "identity_id": identity_id,
+        "leader_username": _normalize_replica_username(leader_username),
+        "command": command,
+        "command_digest": command_digest,
+        "source_msg_id": source_msg_id,
+        "chain_id": chain_id,
+        "created_at": float(now or time.time()),
+    }
+    if not _claim_replica_auto_decision_once(key, record, now):
+        return {"sent": False, "deduped": True, "key": key, "identity_id": identity_id, "command": command}
+    msg = await send_game_command(
+        command,
+        track=False,
+        send_as_id=identity_id,
+        priority="urgent_reactive",
+        **_replica_send_intent(
+            op_id=f"replica_auto_decision:{source_msg_id}:{identity_id}:{command_digest}",
+            chain_id=chain_id,
+        ),
+    )
+    msg_id = _safe_int(getattr(msg, "id", 0), 0) if msg else 0
+    sent_at = time.time()
+    if msg_id <= 0:
+        _update_replica_auto_decision_record(key, {"failed_at": sent_at, "last_error": "send_failed"}, now=sent_at)
+        return {"sent": False, "deduped": False, "failed": True, "key": key, "identity_id": identity_id, "command": command}
+    _update_replica_auto_decision_record(key, {"sent_at": sent_at, "sent_msg_id": msg_id}, now=sent_at)
+    _schedule_replica_auto_decision_retry(key)
+    return {"sent": True, "deduped": False, "key": key, "identity_id": identity_id, "command": command, "msg_id": msg_id}
+
+
+def _format_replica_auto_decision_lines(results):
+    lines = []
+    for result in results or []:
+        if not result.get("sent"):
+            continue
+        identity_id = int(result.get("identity_id") or 0)
+        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "") or str(identity_id)
+        lines.append(f"{mono(username)} -> {mono(result.get('command') or '')}")
+    if len(lines) > 5:
+        return "\n".join(lines[:5] + [f"... 共 {len(lines)} 条"])
+    return "\n".join(lines)
+
+
+async def _send_replica_auto_decision_notice(replica_kind, stage_info, now, results, *, leader_identity_id=0, leader_username=""):
+    sent_results = [item for item in results or [] if item.get("sent")]
+    if not sent_results:
+        return False
+    replica_name = _REPLICA_KIND_META.get(replica_kind, {}).get("name") or "副本"
+    title = str((stage_info or {}).get("title") or "后续抉择").strip()
+    lines = _format_replica_auto_decision_lines(sent_results)
+    leader_username = _normalize_replica_username(leader_username)
+    leader_text = f"｜队长 {mono(leader_username)}" if leader_username else ""
+    notice_text = (
+        f"{replica_name}自动抉择：{title}{leader_text}\n"
+        f"{lines}\n"
+        "3秒内无进展会补发一次；日志群按钮仍可兜底。"
+    )
+    if replica_kind != _REPLICA_KIND_VIRTUAL_HALL:
+        if await _send_replica_kind_notice(replica_kind, notice_text, now, html=True):
+            return True
+    return await send_audit_log(
+        notice_text,
+        scope="identity",
+        send_as_id=int(leader_identity_id or 0) or int(sent_results[0].get("identity_id") or 0),
+        priority="medium",
+        limit=700,
+    )
+
+
+async def _maybe_auto_send_kunwu_decision(event, text, stage_info, now):
+    parsed_leader_username = _parse_replica_leader_username(text)
+    leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_KUNWU, now=now)
+    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    if leader_identity_id <= 0:
+        return False
+    if parsed_leader_username:
+        active_team_ids = _get_active_replica_team_identity_ids_for_usernames(
+            [parsed_leader_username],
+            now,
+            replica_kind=_REPLICA_KIND_KUNWU,
+        )
+        if active_team_ids and leader_identity_id not in active_team_ids:
+            return False
+    room_id, scope = _replica_auto_decision_scope(
+        _REPLICA_KIND_KUNWU,
+        event,
+        text,
+        stage_info,
+        leader_username=leader_username,
+        now=now,
+    )
+    command = _get_kunwu_auto_decision_command(stage_info)
+    if not command:
+        return False
+    result = await _send_replica_auto_decision_command(
+        _REPLICA_KIND_KUNWU,
+        stage_info,
+        event,
+        text,
+        leader_identity_id,
+        command,
+        now,
+        leader_username=leader_username,
+        room_id=room_id,
+        scope=scope,
+    )
+    if result.get("sent"):
+        await _send_replica_auto_decision_notice(
+            _REPLICA_KIND_KUNWU,
+            stage_info,
+            now,
+            [result],
+            leader_identity_id=leader_identity_id,
+            leader_username=leader_username,
+        )
+        return True
+    return bool(result.get("deduped"))
 
 
 def _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text):
@@ -5551,7 +5932,25 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             require_recent_enter_request=False,
             usernames=_extract_replica_usernames(text),
         )
-        kunwu_notice_sent = bool(await _maybe_send_kunwu_decision_notice(event, text, now))
+        room_id, _scope = _replica_auto_decision_scope(
+            _REPLICA_KIND_KUNWU,
+            event,
+            text,
+            kunwu_decision_stage,
+            leader_username=leader_username,
+            now=now,
+        )
+        _mark_replica_auto_decisions_resolved(
+            _REPLICA_KIND_KUNWU,
+            room_id=room_id,
+            current_stage=kunwu_decision_stage.get("stage"),
+            now=now,
+        )
+        kunwu_auto_sent = bool(await _maybe_auto_send_kunwu_decision(event, text, kunwu_decision_stage, now))
+        if not kunwu_auto_sent:
+            kunwu_notice_sent = bool(await _maybe_send_kunwu_decision_notice(event, text, now))
+        else:
+            kunwu_notice_sent = True
     luoyun_notice_sent = False
     if luoyun_decision_stage:
         parsed_leader_username = _parse_replica_leader_username(text)
@@ -5585,6 +5984,11 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         if not event_usernames and settlement_room:
             event_usernames = _get_lightweight_room_usernames(settlement_room)
         settlement_notice_item = dict(settlement_room) if isinstance(settlement_room, dict) and settlement_room else _get_latest_lightweight_room_for_kind(replica_settlement_kind, now=now)
+        _mark_replica_auto_decisions_resolved(
+            replica_settlement_kind,
+            room_id=(settlement_room or {}).get("room_id") if isinstance(settlement_room, dict) else "",
+            now=now,
+        )
         identity_ids = _get_active_replica_team_identity_ids_for_usernames(event_usernames, now, replica_kind=replica_settlement_kind)
         if not identity_ids:
             identity_ids = _map_replica_usernames_to_identity_ids(event_usernames)
@@ -5644,6 +6048,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         return True
     if dissolved_room_id:
         replica_kind = _resolve_replica_kind_for_progress(text, now, usernames=[dissolved_leader], room_id=dissolved_room_id)
+        _mark_replica_auto_decisions_resolved(replica_kind, room_id=dissolved_room_id, now=now)
         if _mark_replica_room_dissolved(dissolved_room_id, now, source_msg_id=getattr(event, "id", 0), leader_username=dissolved_leader, replica_kind=replica_kind):
             return True
     if "【队员已请离】" in text:

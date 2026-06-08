@@ -144,6 +144,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
                     texts.append(item["text"])
         return texts
 
+    def _close_scheduled(self, coro):
+        coro.close()
+
     def _button_payload_by_text(self, buttons, text):
         for row in buttons or []:
             row_items = row if isinstance(row, (list, tuple)) else [row]
@@ -1754,7 +1757,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(second)
         self.assertEqual(1, notice_count)
 
-    def test_kunwu_road_stage_sends_lightweight_decision_buttons(self):
+    def test_kunwu_road_stage_auto_sends_preferred_choice(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])
         now = 2000.0
@@ -1783,16 +1786,62 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
                     patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
-                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=901))) as send_mock, \
+                    patch("model.app_replica._fire_and_forget", side_effect=self._close_scheduled):
                 handled = await app_replica._handle_replica_progress_event(event, now)
-                send_mock.assert_not_awaited()
                 audit_mock.assert_not_awaited()
-                buttons = notice_mock.await_args.kwargs["buttons"]
-                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1], self._button_texts(buttons), buttons
+                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1], send_mock.await_args_list
 
-        handled, notice_item, notice_text, button_texts, buttons = asyncio.run(run_test())
+        handled, notice_item, notice_text, send_calls = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertEqual(-100777, notice_item["replica_chat_id"])
+        self.assertIn("昆吾山自动抉择：昆吾山第1层", notice_text)
+        self.assertIn(".选择 岔路1", notice_text)
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".选择 岔路1", send_calls[0].args[0])
+        self.assertEqual(leader_id, send_calls[0].kwargs["send_as_id"])
+        self.assertEqual("urgent_reactive", send_calls[0].kwargs["priority"])
+        self.assertEqual("自动副本", send_calls[0].kwargs["source_module"])
+        saved_room = app_replica._get_lightweight_last_room(-100777, now=now)
+        self.assertEqual("entered", saved_room["phase"])
+
+    def test_kunwu_road_stage_falls_back_to_buttons_when_auto_send_fails(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 2000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_at": now - 60,
+            "updated_at": now - 60,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        text = (
+            "【昆吾山·登山道】\n"
+            "@leader 踏入了昆吾山麓，山道间灵雾翻涌。\n\n"
+            "【抵达第1层】\n"
+            "岔路 1：前方隐有朱果清香，似有果树藏在雾中。\n"
+            "岔路 2：石壁间传来空间波动，像是一处传送阵捷径。\n\n"
+            "请队长使用 .选择 岔路1/2 继续前进。"
+        )
+        event = SimpleNamespace(id=8817, chat_id=-100123, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock:
+                handled = await app_replica._handle_replica_progress_event(event, now)
+                buttons = notice_mock.await_args.kwargs["buttons"]
+                return handled, send_mock.await_args_list, notice_mock.await_args.args[1], self._button_texts(buttons), buttons
+
+        handled, send_calls, notice_text, button_texts, buttons = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".选择 岔路1", send_calls[0].args[0])
         self.assertIn("昆吾山抉择：昆吾山第1层", notice_text)
         self.assertIn("岔路1 朱果", button_texts)
         self.assertIn("岔路2 捷径", button_texts)
@@ -1803,8 +1852,6 @@ class ReplicaAbsorbTests(unittest.TestCase):
         ]
         self.assertEqual({".选择 岔路1", ".选择 岔路2"}, {payload["command"] for payload in payloads})
         self.assertEqual({leader_id}, {payload["identity_id"] for payload in payloads})
-        saved_room = app_replica._get_lightweight_last_room(-100777, now=now)
-        self.assertEqual("entered", saved_room["phase"])
 
     def test_cangkun_manual_decision_command_is_not_stage_prompt(self):
         self.assertEqual({}, app_replica._get_cangkun_decision_stage(".苍坤抉择 1"))

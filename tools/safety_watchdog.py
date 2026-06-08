@@ -330,8 +330,20 @@ def is_replica_button_choice_event(item: dict, text: str) -> bool:
     return str(item.get("op_id") or "").strip().startswith("replica_button:")
 
 
-def is_safe_replica_button_choice_repeat(prev: dict, cur: dict, text: str) -> bool:
-    if not is_replica_button_choice_event(prev, text) or not is_replica_button_choice_event(cur, text):
+def is_replica_auto_decision_choice_event(item: dict, text: str) -> bool:
+    if not is_dungeon_fast_chain_command(text):
+        return False
+    if str(item.get("source_module") or "").strip() != "自动副本":
+        return False
+    return str(item.get("op_id") or "").strip().startswith("replica_auto_decision:")
+
+
+def is_replica_choice_event(item: dict, text: str) -> bool:
+    return is_replica_button_choice_event(item, text) or is_replica_auto_decision_choice_event(item, text)
+
+
+def is_safe_replica_choice_repeat(prev: dict, cur: dict, text: str) -> bool:
+    if not is_replica_choice_event(prev, text) or not is_replica_choice_event(cur, text):
         return False
     prev_op_id = str(prev.get("op_id") or "").strip()
     cur_op_id = str(cur.get("op_id") or "").strip()
@@ -360,10 +372,10 @@ def is_safe_replica_lightweight_retry_repeat(prev: dict, cur: dict, text: str) -
     return bool(prev_chain_id and prev_chain_id == cur_chain_id)
 
 
-def has_duplicate_replica_button_choice_op_id(items: list[dict], text: str) -> bool:
+def has_duplicate_replica_choice_op_id(items: list[dict], text: str) -> bool:
     seen: set[str] = set()
     for item in items:
-        if not is_replica_button_choice_event(item, text):
+        if not is_replica_choice_event(item, text):
             return False
         op_id = str(item.get("op_id") or "").strip()
         if not op_id:
@@ -539,7 +551,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         if len(items) < 2:
             continue
         heart_choice = is_heart_choice_command(text) and is_safe_heart_choice_repeat(items)
-        replica_button_choice = all(is_replica_button_choice_event(item, text) for item in items)
+        replica_choice = all(is_replica_choice_event(item, text) for item in items)
         divination_daily_query_chain = is_safe_divination_daily_query_chain(items, text)
         if sect_teach or heart_choice:
             min_gap = 0
@@ -561,18 +573,18 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
                 continue
             if is_safe_same_command_retry(prev, cur, text):
                 continue
-            if is_safe_replica_button_choice_repeat(prev, cur, text):
+            if is_safe_replica_choice_repeat(prev, cur, text):
                 continue
             if is_safe_replica_lightweight_retry_repeat(prev, cur, text):
                 continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
 
-        if replica_button_choice and has_duplicate_replica_button_choice_op_id(items, text):
-            return f"same command repeat: {sender_id}:{text} duplicate replica button op_id"
-        if guarded and not replica_button_choice and not divination_daily_query_chain and len(items) > cfg.guarded_max_attempts_45m:
+        if replica_choice and has_duplicate_replica_choice_op_id(items, text):
+            return f"same command repeat: {sender_id}:{text} duplicate replica choice op_id"
+        if guarded and not replica_choice and not divination_daily_query_chain and len(items) > cfg.guarded_max_attempts_45m:
             return f"guarded command over attempts: {sender_id}:{text} {len(items)}/45m"
-        if guarded and not replica_button_choice and not divination_daily_query_chain and len(items) >= 4:
+        if guarded and not replica_choice and not divination_daily_query_chain and len(items) >= 4:
             span = float(items[3]["_epoch"]) - float(items[0]["_epoch"])
             if span < cfg.guarded_fourth_min_span_sec:
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"

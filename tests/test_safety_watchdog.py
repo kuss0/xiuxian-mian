@@ -231,7 +231,58 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         breach = safety_watchdog.find_send_breach(events, now, self._config())
 
-        self.assertIn("duplicate replica button op_id", breach)
+        self.assertIn("duplicate replica choice op_id", breach)
+
+    def test_replica_auto_decision_repeat_with_distinct_stage_is_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3943773722
+        events = [
+            _event(
+                now - 8,
+                sender_id,
+                ".选择 岔路1",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_auto_decision:10001087:3943773722:a1",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".选择 岔路1",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_auto_decision:10001149:3943773722:b2",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_replica_auto_decision_duplicate_op_id_still_fuses(self):
+        now = time.time()
+        sender_id = 3943773722
+        op_id = "replica_auto_decision:10001087:3943773722:a1"
+        events = [
+            _event(
+                now - 180,
+                sender_id,
+                ".选择 岔路1",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id=op_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".选择 岔路1",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id=op_id,
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("duplicate replica choice op_id", breach)
 
     def test_replica_lightweight_open_retry_does_not_same_command_fuse(self):
         now = time.time()
