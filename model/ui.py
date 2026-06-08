@@ -914,6 +914,19 @@ _DAO_PATH_STATUS_KEYS = (
     "status", "combat_status", "active_buffs", "completed_tasks", "sect_leave_cooldown_until",
     "weak_until", "cooldown_until", "busy_until", "last_action_at",
 )
+_TIANJIGE_SPIRITUAL_SENSE_KEYS = (
+    "shenshi_points",
+    "spiritual_sense",
+    "spiritual_sense_points",
+    "divine_sense",
+    "divine_sense_points",
+    "sense_points",
+)
+_TIANJIGE_TAIYI_SPIRITUAL_SENSE_KEYS = (
+    "taiyi_shenshi_points",
+    "taiyi_spiritual_sense",
+    "taiyi_spiritual_sense_points",
+)
 _TIANJIGE_STATUS_LABELS = {
     "normal": "正常",
     "idle": "空闲",
@@ -940,6 +953,18 @@ def _tianjige_state_label(*values):
             if label and label not in parts:
                 parts.append(label)
     return " / ".join(parts)
+
+
+def _tianjige_first_number(row, keys, *, default=0):
+    row = row if isinstance(row, dict) else {}
+    for key in keys:
+        if key not in row:
+            continue
+        value = row.get(key)
+        if value in (None, ""):
+            continue
+        return _tianjige_number(value, default=default)
+    return default
 
 
 def _tianjige_pick_cave_value(cave, keys):
@@ -1196,6 +1221,8 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         "status": status_text,
         "combat_status": combat_status,
         "state_label": state_label or "未记录",
+        "spiritual_sense": _tianjige_first_number(row, _TIANJIGE_SPIRITUAL_SENSE_KEYS),
+        "taiyi_spiritual_sense": _tianjige_first_number(row, _TIANJIGE_TAIYI_SPIRITUAL_SENSE_KEYS),
         "cave": _tianjige_extract_cave_summary(row),
         "status_fields": _tianjige_extract_known_fields(row, _DAO_PATH_STATUS_KEYS),
         "updated_at": float(now),
@@ -1301,6 +1328,8 @@ def get_tianjige_dao_path_snapshot():
             "status": record.get("status") or "",
             "combat_status": record.get("combat_status") or "",
             "state_label": _tianjige_state_label(record.get("status"), record.get("combat_status"), record.get("state_label")) or "未读取",
+            "spiritual_sense": _tianjige_number(record.get("spiritual_sense")),
+            "taiyi_spiritual_sense": _tianjige_number(record.get("taiyi_spiritual_sense")),
             "binding_kind": record.get("binding_kind") or "",
             "binding_kind_label": record.get("binding_kind_label") or "",
             "cave": record.get("cave") if isinstance(record.get("cave"), dict) else {},
@@ -2694,6 +2723,9 @@ def get_identity_ui_snapshot(send_as_id):
             identity_status_text = "已暂停"
         elif account_offline:
             identity_status_text = "账号离线"
+        dao_path_records = get_tianjige_dao_path_records()
+        dao_path_record = dao_path_records.get(str(send_as_id)) if isinstance(dao_path_records, dict) else {}
+        dao_path_record = dao_path_record if isinstance(dao_path_record, dict) else {}
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -2720,6 +2752,8 @@ def get_identity_ui_snapshot(send_as_id):
             "xiuwei_max": int(profile.get("xiuwei_max") or 0),
             "battle_power_text": profile.get("battle_power_text") or "",
             "battle_power_value": int(profile.get("battle_power_value") or 0),
+            "spiritual_sense": _tianjige_number(dao_path_record.get("spiritual_sense")),
+            "taiyi_spiritual_sense": _tianjige_number(dao_path_record.get("taiyi_spiritual_sense")),
             "sect_updated_at": fmt_abs_ts(profile.get("sect_updated_at") or 0),
             "sect_refresh_pending": sect_refresh_pending,
             "sect_refresh_error": sect_refresh_error,

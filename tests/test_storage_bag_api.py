@@ -547,6 +547,8 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
                         "sect_id": 9,
                         "sect_name": "星宫",
                         "spirit_root": "异灵根(雷)",
+                        "shenshi_points": 320,
+                        "taiyi_shenshi_points": 100,
                         "battle_power_text": "211.48亿",
                         "inventory": {"items": [{"name": "青竹蜂云剑", "quantity": 1}], "materials": {"mat_001": 5000}},
                         "status": "normal",
@@ -584,6 +586,8 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("元婴初期", record["cultivation_level"])
         self.assertEqual("星宫", record["sect_name"])
         self.assertEqual("正常", record["state_label"])
+        self.assertEqual(320, record["spiritual_sense"])
+        self.assertEqual(100, record["taiyi_spiritual_sense"])
         self.assertEqual(88.5, record["cave"]["lingqi_pool"])
         self.assertEqual(3, record["cave"]["danfang_level"])
         self.assertEqual(4, record["cave"]["dazhen_level"])
@@ -603,6 +607,8 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.identity_id, ui_snapshot["binding"]["active_character_id"])
         self.assertEqual("青源", ui_snapshot["rows"][0]["dao_name"])
         self.assertEqual("正常", ui_snapshot["rows"][0]["state_label"])
+        self.assertEqual(320, ui_snapshot["rows"][0]["spiritual_sense"])
+        self.assertEqual(100, ui_snapshot["rows"][0]["taiyi_spiritual_sense"])
         self.assertEqual(
             "灵脉 2级｜静室 3级｜丹房 3级｜大阵 4级（已开启）｜灵气池 88.5",
             ui_snapshot["rows"][0]["cave_summary"],
@@ -624,6 +630,8 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
                 "cultivation_points": 987654,
                 "sect_name": "【太一门】",
                 "spirit_root": "异灵根(雷)",
+                "shenshi_points": 88,
+                "taiyi_shenshi_points": 12,
                 "battle_power": "211.48亿",
                 "status": "normal",
                 "combat_status": "normal",
@@ -664,6 +672,8 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["dao_path_last_ok"])
         record = state_module.get_tianjige_dao_path_records()[str(self.identity_id)]
         self.assertEqual("tianjige_cultivator", record["source"])
+        self.assertEqual(88, record["spiritual_sense"])
+        self.assertEqual(12, record["taiyi_spiritual_sense"])
 
     async def test_dao_path_snapshot_tolerates_malformed_persisted_values(self):
         with patch("model.ui.get_identity_ids", return_value=[self.identity_id]):

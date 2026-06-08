@@ -42,6 +42,46 @@
     return number.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
   }
 
+  function formatSense(row) {
+    const main = Number(row && row.spiritual_sense || 0);
+    const taiyi = Number(row && row.taiyi_spiritual_sense || 0);
+    const parts = [];
+    if (Number.isFinite(main) && main > 0) parts.push(formatAmount(main));
+    if (Number.isFinite(taiyi) && taiyi > 0) parts.push('太一 ' + formatAmount(taiyi));
+    return parts.length ? parts.join('｜') : '未读取';
+  }
+
+  function getRootText(identity) {
+    if (typeof getSpiritualRootText === 'function') return getSpiritualRootText(identity);
+    const rootType = String(identity && identity.spiritual_root_type || '').trim();
+    const rootAttrs = String(identity && identity.spiritual_root_attrs || '').trim();
+    return rootType && rootAttrs ? rootType + '(' + rootAttrs + ')' : (rootType || rootAttrs || '未获取');
+  }
+
+  function getStatusText(identity) {
+    if (typeof getIdentityStatusText === 'function') return getIdentityStatusText(identity);
+    return identity && identity.identity_enabled ? '运行中' : '已暂停';
+  }
+
+  function isIdentityRunning(identity) {
+    return !!(identity && identity.identity_enabled && !identity.account_offline && getStatusText(identity) === '运行中');
+  }
+
+  function getPreviewMeta(identity) {
+    const realm = String(identity && identity.realm || '').trim() || '境界未获取';
+    const sect = String(identity && identity.sect_name || '').trim() || '宗门未获取';
+    return realm + ' ｜ ' + sect + ' ｜ ' + getRootText(identity);
+  }
+
+  function formatIdentitySense(identity) {
+    const main = Number(identity && identity.spiritual_sense || 0);
+    const taiyi = Number(identity && identity.taiyi_spiritual_sense || 0);
+    const parts = [];
+    if (Number.isFinite(main) && main > 0) parts.push(formatAmount(main));
+    if (Number.isFinite(taiyi) && taiyi > 0) parts.push('太一 ' + formatAmount(taiyi));
+    return parts.length ? parts.join('｜') : '未读取';
+  }
+
   function collectionCount(value) {
     if (Array.isArray(value)) return value.length;
     if (value && typeof value === 'object') return Object.keys(value).length;
@@ -166,41 +206,8 @@
   }
 
   function renderDaoPathSummary(section, currentIdentityId) {
-    const data = snapshot().tianjige_dao_path || {};
-    const rows = getDaoPathRows();
-    const remoteRows = rows.filter(function (row) { return row && row.has_remote; });
     const oldBox = section.querySelector('.tianjige-all-summary');
-    if (!remoteRows.length) {
-      if (oldBox) oldBox.remove();
-      return;
-    }
-    const latestRows = remoteRows.slice().sort(function (a, b) {
-      return Number(b.updated_at_raw || 0) - Number(a.updated_at_raw || 0);
-    }).slice(0, 6);
-    const updatedCount = Number(data.dao_path_updated_count || 0);
-    const skippedCount = Number(data.dao_path_skipped_count || 0);
-    const lastMessage = String(data.dao_path_last_message || '').trim();
-    const latestHtml = latestRows.map(function (row) {
-      const active = Number(row.identity_id || 0) === Number(currentIdentityId || 0) ? ' tianjige-all-row-active' : '';
-      const details = [
-        row.cultivation_level,
-        row.sect_name,
-        row.updated_at && row.updated_at !== '未设置' ? row.updated_at : '',
-      ].filter(Boolean).join('｜');
-      return '<div class="tianjige-all-row' + active + '"><strong>' + esc(formatDaoPathRowName(row)) + '</strong><span>' + esc(details || '已更新') + '</span></div>';
-    }).join('');
-    const box = oldBox || document.createElement('div');
-    box.className = 'tianjige-all-summary';
-    box.innerHTML = [
-      '<div class="tianjige-all-summary-head"><strong>天机阁全体</strong><span>' + esc(lastMessage || ('已记录 ' + remoteRows.length + ' 个身份')) + '</span></div>',
-      '<div class="tianjige-all-summary-meta">最近全体读取：更新 ' + esc(updatedCount) + '｜跳过 ' + esc(skippedCount) + '｜远端快照 ' + esc(remoteRows.length) + '</div>',
-      '<div class="tianjige-all-rows">' + latestHtml + '</div>',
-    ].join('');
-    if (!oldBox) {
-      const line = section.querySelector('.tianjige-summary-line');
-      if (line) line.insertAdjacentElement('afterend', box);
-      else section.appendChild(box);
-    }
+    if (oldBox) oldBox.remove();
   }
 
   function enhanceSummary(identity) {
@@ -211,6 +218,14 @@
 
     const actions = section.querySelector('.summary-head-actions');
     if (actions) {
+      actions.querySelectorAll('.identity-sense-chip').forEach(function (node) {
+        node.remove();
+      });
+      const firstSwitch = actions.querySelector('[data-toggle-identity]');
+      const senseHtml = '<span class="identity-sense-chip">神识 ' + esc(formatIdentitySense(identity)) + '</span>';
+      if (firstSwitch) firstSwitch.insertAdjacentHTML('afterend', senseHtml);
+      else actions.insertAdjacentHTML('afterbegin', senseHtml);
+
       const gameButton = actions.querySelector('[data-refresh-identity]');
       if (gameButton) {
         gameButton.textContent = identity.sect_refresh_pending ? '游戏读取中' : '游戏命令读取';
@@ -221,8 +236,8 @@
       const api = snapshot().storage_bag_api || {};
       const disabled = api.running || !api.configured;
       const disabledAttr = disabled ? ' disabled' : '';
-      const singleText = api.running ? 'API读取中' : 'API单角色';
-      const allText = api.running ? 'API读取中' : 'API全体';
+      const singleText = api.running ? '读取中' : '天机阁';
+      const allText = api.running ? '读取中' : '全体刷新';
       const deleteButton = actions.querySelector('[data-delete-identity]');
       const html = [
         '<button type="button" class="btn btn-secondary" data-refresh-identity-api="' + esc(identity.send_as_id) + '" data-scope="single"' + disabledAttr + '>' + esc(singleText) + '</button>',
@@ -244,7 +259,7 @@
     }
     const line = oldLine || document.createElement('div');
     line.className = 'meta tianjige-summary-line';
-    line.textContent = '角色状态：' + formatStateLabel(row) + ' ｜ 洞府：' + formatCave(row) + ' ｜ API更新：' + (row.updated_at || '未设置');
+    line.textContent = '角色状态：' + formatStateLabel(row) + ' ｜ 神识：' + formatSense(row) + ' ｜ 洞府：' + formatCave(row) + ' ｜ API更新：' + (row.updated_at || '未设置');
     if (!oldLine) {
       const firstMeta = section.querySelector('.meta');
       if (firstMeta) firstMeta.insertAdjacentElement('afterend', line);
@@ -274,8 +289,53 @@
       enhanceSummary(identity);
     };
     renderSummary = window.renderSummary;
-    if (typeof renderAll === 'function') renderAll();
   }
+
+  if (typeof window.renderIdentityList === 'function') {
+    window.renderIdentityList = function (identities, selectedId) {
+      const list = document.getElementById('identity-list');
+      if (!list) return;
+      if (typeof isMobileLayout === 'function' && isMobileLayout()) {
+        list.innerHTML = '';
+        return;
+      }
+      list.innerHTML = (Array.isArray(identities) ? identities : []).map(function (identity) {
+        const active = Number(identity.send_as_id) === Number(selectedId) ? ' identity-item-active' : '';
+        const offline = identity.account_offline ? ' identity-item-offline' : '';
+        const dotClass = isIdentityRunning(identity) ? ' identity-status-dot-on' : ' identity-status-dot-off';
+        return '<button type="button" class="identity-item' + active + offline + '" data-select-identity="' + esc(identity.send_as_id) + '">'
+          + '<div class="identity-item-head"><span class="identity-status-dot' + dotClass + '" title="' + esc(getStatusText(identity)) + '"></span><strong>' + esc(identity.display_name) + '</strong></div>'
+          + '<span>' + esc(getPreviewMeta(identity)) + '</span>'
+          + '</button>';
+      }).join('');
+    };
+    renderIdentityList = window.renderIdentityList;
+  }
+
+  if (typeof window.renderIdentitySelect === 'function') {
+    window.renderIdentitySelect = function (identities, selectedId) {
+      const select = document.getElementById('identity-select-mobile');
+      if (!select) return;
+      if (typeof isMobileLayout === 'function' && !isMobileLayout()) {
+        select.disabled = true;
+        return;
+      }
+      const rows = Array.isArray(identities) ? identities : [];
+      if (!rows.length) {
+        select.innerHTML = '<option value="">暂无身份</option>';
+        select.disabled = true;
+        return;
+      }
+      select.innerHTML = rows.map(function (identity) {
+        return '<option value="' + esc(identity.send_as_id) + '">' + esc(identity.display_name) + ' ｜ ' + esc(getStatusText(identity)) + ' ｜ ' + esc(getPreviewMeta(identity)) + '</option>';
+      }).join('');
+      select.disabled = rows.length <= 1;
+      select.value = selectedId == null ? '' : String(selectedId);
+    };
+    renderIdentitySelect = window.renderIdentitySelect;
+  }
+
+  if (typeof renderAll === 'function') renderAll();
 
   document.addEventListener('click', function (event) {
     const button = event.target.closest('[data-refresh-identity-api]');

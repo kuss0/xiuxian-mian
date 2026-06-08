@@ -1786,6 +1786,53 @@ body {
   padding-right: 2px;
 }
 
+#guanxing-summary {
+  display: none !important;
+}
+
+.identity-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.identity-item-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.identity-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 8px;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.95);
+}
+
+.identity-status-dot-on {
+  background: #22c55e;
+}
+
+.identity-status-dot-off {
+  background: #ef4444;
+}
+
+.identity-sense-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #334155;
+  border-radius: 999px;
+  background: #020617;
+  color: #dbe4f0;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .sidebar-footer {
   flex-shrink: 0;
   padding: 12px 14px;
