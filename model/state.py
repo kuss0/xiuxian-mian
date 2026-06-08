@@ -1841,8 +1841,6 @@ def get_available_module_names(send_as_id=None):
         available_module_names = [module_name for module_name in available_module_names if module_name not in {"观星台", "观星"}]
     if sect_name != "星宫":
         available_module_names = [module_name for module_name in available_module_names if module_name != "周天星斗"]
-    if sect_name and sect_name != "星宫":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "侍妾远航"]
     if sect_name and sect_name != "凌霄宫":
         available_module_names = [module_name for module_name in available_module_names if module_name != "登天阶"]
     if sect_name and sect_name != "太一门":

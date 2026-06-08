@@ -81,6 +81,16 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["checkin_enabled"])
 
+    def test_concubine_voyage_available_for_non_xinggong_identity(self):
+        send_as_id = 990322
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="落云宗", realm="结丹后期")
+
+        modules = state_module.get_available_module_names(send_as_id)
+
+        self.assertIn("侍妾远航", modules)
+        self.assertIn("共历心劫", modules)
+
     def test_ui_module_toggle_message_matches_coerced_false_string(self):
         send_as_id = 990331
         state_module.ensure_identity_registered(send_as_id)
