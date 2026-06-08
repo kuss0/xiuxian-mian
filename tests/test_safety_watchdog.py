@@ -275,6 +275,61 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("same command repeat", breach)
 
+    def test_divination_daily_query_chain_does_not_guarded_fourth_fuse(self):
+        now = time.time()
+        sender_id = 301299112
+        day_key = "2026-06-09"
+        events = [
+            _event(
+                now - 322,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:{day_key}:1:try1",
+            ),
+            _event(
+                now - 228,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:{day_key}:2:try2",
+            ),
+            _event(
+                now - 116,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:{day_key}:3:try3",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:{day_key}:4:try4",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_unmarked_divination_fourth_attempt_still_fuses(self):
+        now = time.time()
+        sender_id = 301299112
+        events = [
+            _event(now - 322, sender_id, ".卜筮问天"),
+            _event(now - 228, sender_id, ".卜筮问天"),
+            _event(now - 116, sender_id, ".卜筮问天"),
+            _event(now, sender_id, ".卜筮问天"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("guarded retry too dense", breach)
+
     def test_tower_retry_without_intent_metadata_still_fuses(self):
         now = time.time()
         sender_id = 3504367852

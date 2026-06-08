@@ -102,6 +102,10 @@ HEART_CHOICE_COMMANDS = {".稳", ".狠", ".骗"}
 CONCUBINE_STATUS_COMMAND = ".我的侍妾"
 CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍妾")
 TOWER_SOURCE_MODULE = "闯塔"
+DIVINATION_QUERY_COMMAND = ".卜筮问天"
+DIVINATION_SOURCE_MODULE = "卜筮问天"
+DIVINATION_DAILY_QUERY_MIN_GAP_SEC = 55
+DIVINATION_DAILY_QUERY_MAX_ATTEMPTS_45M = 20
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
@@ -347,6 +351,58 @@ def has_duplicate_replica_button_choice_op_id(items: list[dict], text: str) -> b
     return False
 
 
+def parse_divination_query_op(item: dict) -> tuple[int, str, int, int] | None:
+    if command_key(str(item.get("text") or "")) != DIVINATION_QUERY_COMMAND:
+        return None
+    if str(item.get("source_module") or "").strip() != DIVINATION_SOURCE_MODULE:
+        return None
+    op_id = str(item.get("op_id") or "").strip()
+    parts = op_id.split(":")
+    if len(parts) != 5 or parts[0] != "divination_query":
+        return None
+    try:
+        identity_id = int(parts[1])
+        target_count = int(parts[3])
+        try_no = int(str(parts[4]).removeprefix("try"))
+    except (TypeError, ValueError):
+        return None
+    day_key = parts[2].strip()
+    if identity_id <= 0 or not day_key or target_count <= 0 or try_no <= 0:
+        return None
+    return identity_id, day_key, target_count, try_no
+
+
+def is_safe_divination_daily_query_chain(items: list[dict], text: str) -> bool:
+    if text != DIVINATION_QUERY_COMMAND:
+        return False
+    if len(items) > DIVINATION_DAILY_QUERY_MAX_ATTEMPTS_45M:
+        return False
+    parsed = [parse_divination_query_op(item) for item in items]
+    if any(item is None for item in parsed):
+        return False
+    parsed_items = [item for item in parsed if item is not None]
+    identity_days = {(identity_id, day_key) for identity_id, day_key, _target_count, _try_no in parsed_items}
+    if len(identity_days) != 1:
+        return False
+    op_ids = [str(item.get("op_id") or "").strip() for item in items]
+    if len(op_ids) != len(set(op_ids)):
+        return False
+    previous_target = 0
+    previous_try = 0
+    for _identity_id, _day_key, target_count, try_no in parsed_items:
+        if previous_target <= 0:
+            previous_target = target_count
+            previous_try = try_no
+            continue
+        if target_count < previous_target or target_count > previous_target + 1:
+            return False
+        if try_no <= previous_try:
+            return False
+        previous_target = target_count
+        previous_try = try_no
+    return True
+
+
 def is_small_world_tool_command(text: str) -> bool:
     raw = str(text or "").strip()
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in SMALL_WORLD_TOOL_PREFIXES)
@@ -461,8 +517,11 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             continue
         heart_choice = is_heart_choice_command(text) and is_safe_heart_choice_repeat(items)
         replica_button_choice = all(is_replica_button_choice_event(item, text) for item in items)
+        divination_daily_query_chain = is_safe_divination_daily_query_chain(items, text)
         if sect_teach or heart_choice:
             min_gap = 0
+        elif divination_daily_query_chain:
+            min_gap = DIVINATION_DAILY_QUERY_MIN_GAP_SEC
         elif guarded:
             min_gap = cfg.guarded_repeat_gap_sec
         elif refresh:
@@ -486,9 +545,9 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
 
         if replica_button_choice and has_duplicate_replica_button_choice_op_id(items, text):
             return f"same command repeat: {sender_id}:{text} duplicate replica button op_id"
-        if guarded and not replica_button_choice and len(items) > cfg.guarded_max_attempts_45m:
+        if guarded and not replica_button_choice and not divination_daily_query_chain and len(items) > cfg.guarded_max_attempts_45m:
             return f"guarded command over attempts: {sender_id}:{text} {len(items)}/45m"
-        if guarded and not replica_button_choice and len(items) >= 4:
+        if guarded and not replica_button_choice and not divination_daily_query_chain and len(items) >= 4:
             span = float(items[3]["_epoch"]) - float(items[0]["_epoch"])
             if span < cfg.guarded_fourth_min_span_sec:
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"
