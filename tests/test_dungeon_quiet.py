@@ -82,10 +82,12 @@ class DungeonQuietRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        runtime._recent_dungeon_quiet_send_blocks.clear()
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        runtime._recent_dungeon_quiet_send_blocks.clear()
         super().tearDown()
 
     async def test_quiet_window_blocks_normal_command(self):
@@ -98,6 +100,31 @@ class DungeonQuietRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(blocked)
         audit_mock.assert_awaited_once()
+
+    async def test_quiet_window_suppresses_followup_send_failure_audit(self):
+        state_module.state["dungeon_quiet_until"] = 9999999999
+        state_module.state["dungeon_quiet_reason"] = "昆吾山静场令"
+        state_module.state["dungeon_quiet_last_log_at"] = 0
+
+        send_mock = unittest.mock.AsyncMock(return_value=True)
+        with patch.object(runtime, "_send_log_group_message", new=send_mock), \
+                patch.object(runtime, "console_log") as console_mock:
+            blocked = await runtime._dungeon_quiet_blocks_send(
+                ".观星台",
+                runtime.SEND_PRIORITY_NORMAL,
+                send_as_id=123,
+            )
+            ok = await runtime.send_audit_log(
+                "❌ 观星台发送失败，稍后重试。",
+                scope="identity",
+                send_as_id=123,
+            )
+
+        self.assertTrue(blocked)
+        self.assertTrue(ok)
+        send_mock.assert_awaited_once()
+        self.assertIn("昆吾山静场令", send_mock.await_args.args[0])
+        console_mock.assert_called_once()
 
     async def test_quiet_window_blocks_chain_command(self):
         state_module.state["dungeon_quiet_until"] = 9999999999

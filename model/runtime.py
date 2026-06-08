@@ -29,6 +29,9 @@ from .config import (
     CMD_CONCUBINE_TIANJI,
     CMD_CONCUBINE_HEART,
     CMD_CONCUBINE_HEART_STEADY,
+    CMD_CONCUBINE_VOYAGE,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
     CMD_FORMATION_ASSIST,
     CMD_FORMATION_START,
     CMD_HEHUAN_CONTRACT,
@@ -595,6 +598,7 @@ REPLY_FAMILY_COMMANDS = {
     "concubine_reacquire": {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE},
     "concubine_tianji": {CMD_CONCUBINE_TIANJI},
     "concubine_heart": {CMD_CONCUBINE_HEART, CMD_CONCUBINE_HEART_STEADY},
+    "concubine_voyage": {CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_CONCUBINE_VOYAGE_STATUS},
     "hehuan_retreat": {CMD_HEHUAN_RETREAT},
     "hehuan_contract": {CMD_HEHUAN_CONTRACT},
     "hehuan_dual": {CMD_HEHUAN_DUAL},
@@ -937,6 +941,7 @@ def _get_special_tracked_message_family(identity_state, msg_id):
         ("concubine_tianji_msg_id", "concubine_tianji"),
         ("concubine_heart_msg_id", "concubine_heart"),
         ("concubine_heart_prompt_msg_id", "concubine_heart"),
+        ("concubine_voyage_msg_id", "concubine_voyage"),
     )
     for state_key, family in tracked_id_families:
         tracked_msg_id = int(identity_state.get(state_key, 0) or 0)
@@ -1414,6 +1419,7 @@ _AUDIT_MEDIUM_MARKERS = (
     "补发",
     "吞回",
     "节流",
+    "静场令",
     "启动成功",
     "UI 已启动",
     "状态恢复",
@@ -1435,6 +1441,8 @@ _low_priority_audit_bucket = {}
 _low_priority_audit_order = []
 _low_priority_audit_flush_task = None
 _low_priority_audit_seq = 0
+_DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
+_recent_dungeon_quiet_send_blocks = {}
 
 
 def _resolve_audit_priority(content, priority=None):
@@ -1449,6 +1457,37 @@ def _resolve_audit_priority(content, priority=None):
     if any(marker in raw_text for marker in _AUDIT_MEDIUM_MARKERS):
         return AUDIT_PRIORITY_MEDIUM
     return AUDIT_PRIORITY_LOW
+
+
+def _note_dungeon_quiet_send_block(command, *, send_as_id=None):
+    try:
+        identity_id = int(send_as_id if send_as_id is not None else (get_current_identity_id() or 0))
+    except (TypeError, ValueError):
+        identity_id = 0
+    if identity_id <= 0:
+        return
+    _recent_dungeon_quiet_send_blocks[identity_id] = {
+        "at": time.time(),
+        "command": str(command or ""),
+    }
+
+
+def _should_suppress_dungeon_quiet_failure_audit(content, *, scope="auto", send_as_id=None):
+    raw_text = str(content or "")
+    if "发送失败" not in raw_text:
+        return False
+    identity_id = _resolve_log_identity(scope=scope, send_as_id=send_as_id)
+    if identity_id is None:
+        return False
+    recent = _recent_dungeon_quiet_send_blocks.get(int(identity_id))
+    if not recent:
+        return False
+    now = time.time()
+    blocked_at = float(recent.get("at") or 0)
+    if now - blocked_at > _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC:
+        _recent_dungeon_quiet_send_blocks.pop(int(identity_id), None)
+        return False
+    return True
 
 
 def _format_admin_mentions_html():
@@ -1614,6 +1653,8 @@ async def _flush_low_priority_audit_after_delay():
 
 
 async def send_audit_log(content, *, scope="auto", send_as_id=None, limit=220, priority="auto", buttons=None):
+    if _should_suppress_dungeon_quiet_failure_audit(content, scope=scope, send_as_id=send_as_id):
+        return True
     now = datetime.now(TZ_LOCAL).strftime("%H:%M:%S")
     audit_priority = _resolve_audit_priority(content, priority)
     message_body = _format_log_message(content, scope=scope, send_as_id=send_as_id, html=True, limit=limit)
@@ -2277,6 +2318,7 @@ async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
         return False
     if not is_dungeon_quiet_active():
         return False
+    _note_dungeon_quiet_send_block(command, send_as_id=send_as_id)
     if should_log_dungeon_quiet_block():
         await send_audit_log(
             (

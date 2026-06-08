@@ -3,7 +3,7 @@ import random
 import time
 from dataclasses import dataclass
 
-from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER
+from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..runtime import _fire_and_forget, console_log, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
@@ -77,7 +77,7 @@ SUMMARY_BLOCKING_PHASES = {"queued_launch"}
 _REGISTERED_SPECS = []
 _SUMMARY_CONSUMED_COMMANDS = {}
 
-SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TOWER, CMD_CONCUBINE_DREAM}
+SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TOWER, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN}
 SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
 SUMMARY_REPLAY_DELAY_MIN_SEC = 1
 SUMMARY_REPLAY_DELAY_MAX_SEC = 5
@@ -259,6 +259,18 @@ def mark_launch_command_sent(spec, sent_at):
     save_state()
 
 
+def _is_summary_replayable_command(command):
+    command = str(command or "").strip()
+    if command in SUMMARY_REPLAYABLE_COMMANDS:
+        return True
+    return command.startswith(f"{CMD_CONCUBINE_VOYAGE} ")
+
+
+def _is_voyage_replay_command(command):
+    command = str(command or "").strip()
+    return command == CMD_CONCUBINE_VOYAGE_RETURN or command == CMD_CONCUBINE_VOYAGE or command.startswith(f"{CMD_CONCUBINE_VOYAGE} ")
+
+
 def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
     command = str(command or "").strip()
     if not command:
@@ -268,7 +280,7 @@ def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
     summary_commands = {str(spec.summary_trigger_command or "").strip(), *tuple(spec.summary_passive_triggers or ())}
     if command in summary_commands:
         return False
-    return command in SUMMARY_REPLAYABLE_COMMANDS
+    return _is_summary_replayable_command(command)
 
 
 def _remember_summary_consumed_command(
@@ -350,6 +362,26 @@ def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
         set_concubine_phase("idle")
         return True
 
+    if _is_voyage_replay_command(command):
+        from .concubine import _phase as concubine_phase
+        from .concubine import _set_phase as set_concubine_phase
+
+        if not state.get("concubine_voyage_enabled"):
+            return False
+        expected_phase = "voyage_return_pending" if command == CMD_CONCUBINE_VOYAGE_RETURN else "voyage_pending"
+        if concubine_phase() != expected_phase:
+            return False
+        if int(state.get("concubine_voyage_msg_id", 0) or 0) != int(old_msg_id or 0):
+            return False
+        retry_count = int(state.get("concubine_voyage_retry_count", 0) or 0)
+        if retry_count >= 1:
+            return False
+        state["concubine_voyage_msg_id"] = 0
+        state["concubine_voyage_retry_count"] = 1
+        state["next_concubine_time"] = float(now) + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+        set_concubine_phase("idle")
+        return True
+
     if command != CMD_TOWER:
         return True
     from .tower import TOWER_RETRY_LIMIT
@@ -381,6 +413,23 @@ def _finalize_replayed_command_state(command, msg):
         state["concubine_dream_msg_id"] = int(getattr(msg, "id", 0) or 0)
         state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
         state["concubine_last_error"] = ""
+        return True
+
+    if _is_voyage_replay_command(command) and msg:
+        from ..config import CONCUBINE_VOYAGE_DEFAULT_ROUTE
+        from .concubine import _set_phase as set_concubine_phase
+
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        if command == CMD_CONCUBINE_VOYAGE_RETURN:
+            set_concubine_phase("voyage_return_pending")
+        else:
+            route = command.replace(CMD_CONCUBINE_VOYAGE, "", 1).strip() or CONCUBINE_VOYAGE_DEFAULT_ROUTE
+            state["concubine_voyage_route"] = route
+            set_concubine_phase("voyage_pending")
+        state["concubine_voyage_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 1)
+        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+        state["concubine_voyage_last_error"] = ""
         return True
 
     if command != CMD_TOWER or not msg:

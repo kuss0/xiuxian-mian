@@ -20,6 +20,9 @@ from ..config import (
     CMD_CONCUBINE_SECT_MARRY,
     CMD_CONCUBINE_STATUS,
     CMD_CONCUBINE_TIANJI,
+    CMD_CONCUBINE_VOYAGE,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
     CONCUBINE_CHAIN_DELAY_MAX_SEC,
     CONCUBINE_CHAIN_DELAY_MIN_SEC,
     CONCUBINE_DREAM_CD_SEC,
@@ -33,6 +36,8 @@ from ..config import (
     CONCUBINE_STATUS_RECHECK_MIN_SEC,
     CONCUBINE_STATUS_STALE_SEC,
     CONCUBINE_TIANJI_CD_SEC,
+    CONCUBINE_VOYAGE_DEFAULT_ROUTE,
+    CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC,
     MESSAGES_DIR,
     RE_WHITESPACE,
     TZ_LOCAL,
@@ -59,10 +64,18 @@ CONCUBINE_PENDING_COMMANDS = {
     CMD_CONCUBINE_TIANJI,
     CMD_CONCUBINE_HEART,
     CMD_CONCUBINE_HEART_STEADY,
+    CMD_CONCUBINE_VOYAGE,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
 }
 
 _CONCUBINE_SCHEDULER_LOCK = asyncio.Lock()
-CONCUBINE_MAIN_PENDING_COMMANDS = CONCUBINE_PENDING_COMMANDS - {CMD_CONCUBINE_TIANJI}
+CONCUBINE_MAIN_PENDING_COMMANDS = CONCUBINE_PENDING_COMMANDS - {
+    CMD_CONCUBINE_TIANJI,
+    CMD_CONCUBINE_VOYAGE,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
+}
 CONCUBINE_REACQUIRE_COMMANDS = {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE}
 IDENTITY_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 
@@ -92,6 +105,12 @@ RE_NEW_SECT_PARTNER = re.compile(r"新的道心侍妾\s*【(?P<name>[^】]+)】\
 RE_NEW_ROMANCE_PARTNER = re.compile(r"名为\s*【(?P<name>[^】]+)】\s*的女子[\s\S]*成为你的侍妾")
 RE_LOST_PARTNER_NAME = re.compile(r"侍妾【(?P<name>[^】]+)】(?:掳走|与南陇侯交换)")
 RE_IDENTITY_TAG = re.compile(rf"@({IDENTITY_TAG_PATTERN})")
+RE_VOYAGE_PANEL = re.compile(r"远航状态[：:]\s*(?P<route>[^航线\n。]+)航线(?P<state>进行中|已归航)(?:，(?P<tail>[^\n。]+))?")
+RE_VOYAGE_STATUS_SAILING = re.compile(r"侍妾【(?P<name>[^】]+)】正在执行【(?P<route>[^】]+)】远航[\s\S]*?预计归航还需\s*(?P<wait>[^。\n]+)")
+RE_VOYAGE_STATUS_RETURNED = re.compile(r"侍妾【(?P<name>[^】]+)】已自【(?P<route>[^】]+)】航线归来")
+RE_VOYAGE_START = re.compile(r"【乱星海远航·启】[\s\S]*?你命侍妾【(?P<name>[^】]+)】沿\s*(?P<route>\S+)\s*航线远行[\s\S]*?预计归航时间[：:]\s*(?P<wait>[^。\n]+)")
+RE_VOYAGE_RETURN = re.compile(r"【乱星海远航·归】[\s\S]*?侍妾【(?P<name>[^】]+)】已自\s*(?P<route>\S+)\s*航线归来")
+RE_VOYAGE_RETURN_WAIT = re.compile(r"(?:远航|归航)[\s\S]{0,80}?(?:还需|尚需|剩余(?:约)?)\s*(?P<wait>[^。\n]+)")
 
 CONCUBINE_DREAM_RESOURCE_KEY = "concubine_dream"
 CONCUBINE_TIANJI_RESOURCE_KEY = "concubine_tianji"
@@ -105,6 +124,8 @@ CONCUBINE_HEART_PANEL_MAX_AGE_SEC = 10 * 60
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
+CONCUBINE_VOYAGE_PENDING_PHASES = {"voyage_pending", "voyage_return_pending"}
+CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC = 60 * 60
 CONCUBINE_GIFT_PHASES = {"gift_status_pending", "gift_bag_pending", "gift_pending"}
 CONCUBINE_GREET_MAX_RETRY_COUNT = 1
 CONCUBINE_GREET_RETRY_MIN_SEC = 90
@@ -151,6 +172,8 @@ def _clear_non_heart_pending_msg_ids():
     state["concubine_puzzle_msg_id"] = 0
     state["concubine_reacquire_msg_id"] = 0
     state["concubine_tianji_msg_id"] = 0
+    state["concubine_voyage_msg_id"] = 0
+    state["concubine_voyage_retry_count"] = 0
 
 
 def _clear_pending_msg_ids():
@@ -366,6 +389,327 @@ def _next_local_day_at(now):
 def _is_star_palace_identity():
     profile = get_send_as_profile()
     return str(profile.get("sect_name") or "").strip() == "星宫"
+
+
+def _voyage_command():
+    return f"{CMD_CONCUBINE_VOYAGE} {CONCUBINE_VOYAGE_DEFAULT_ROUTE}"
+
+
+def _voyage_return_at_from_wait(wait_text, now):
+    wait_text = str(wait_text or "")
+    if not has_wait_time(wait_text):
+        return 0.0
+    return float(now + parse_wait_time(wait_text) + CD_BUFFER_SEC)
+
+
+def _voyage_unknown_return_at(now):
+    existing = float(state.get("concubine_voyage_return_at", 0) or 0)
+    if existing > now:
+        return existing
+    return 0.0
+
+
+def _voyage_wait_text_from_return(raw_text):
+    matched = RE_VOYAGE_RETURN_WAIT.search(str(raw_text or ""))
+    if not matched:
+        return ""
+    wait_text = str(matched.group("wait") or "").strip()
+    return wait_text if has_wait_time(wait_text) else ""
+
+
+def _parse_voyage_text(text, now):
+    raw_text = str(text or "")
+    if not raw_text:
+        return None
+
+    matched = RE_VOYAGE_START.search(raw_text)
+    if matched:
+        return {
+            "status": "sailing",
+            "route": matched.group("route").strip(),
+            "partner": matched.group("name").strip(),
+            "return_at": _voyage_return_at_from_wait(matched.group("wait"), now),
+            "result": "",
+            "error": "",
+        }
+
+    matched = RE_VOYAGE_RETURN.search(raw_text)
+    if matched:
+        return {
+            "status": "idle",
+            "route": matched.group("route").strip(),
+            "partner": matched.group("name").strip(),
+            "return_at": 0.0,
+            "result": raw_text.strip(),
+            "error": "",
+        }
+
+    matched = RE_VOYAGE_STATUS_SAILING.search(raw_text)
+    if matched:
+        return {
+            "status": "sailing",
+            "route": matched.group("route").strip(),
+            "partner": matched.group("name").strip(),
+            "return_at": _voyage_return_at_from_wait(matched.group("wait"), now),
+            "result": "",
+            "error": "",
+        }
+
+    matched = RE_VOYAGE_STATUS_RETURNED.search(raw_text)
+    if matched:
+        return {
+            "status": "returned",
+            "route": matched.group("route").strip(),
+            "partner": matched.group("name").strip(),
+            "return_at": float(now),
+            "result": "",
+            "error": "",
+        }
+
+    matched = RE_VOYAGE_PANEL.search(raw_text)
+    if matched:
+        route = matched.group("route").strip()
+        state_text = matched.group("state")
+        tail = matched.group("tail") or ""
+        if state_text == "进行中":
+            return {
+                "status": "sailing",
+                "route": route,
+                "partner": "",
+                "return_at": _voyage_return_at_from_wait(tail, now),
+                "result": "",
+                "error": "",
+            }
+        return {
+            "status": "returned",
+            "route": route,
+            "partner": "",
+            "return_at": float(now),
+            "result": "",
+            "error": "",
+        }
+
+    if "侍妾当前并无可结算的远航任务" in raw_text:
+        return {"status": "no_task", "route": "", "partner": "", "return_at": 0.0, "result": "", "error": raw_text.strip()}
+
+    wait_text = _voyage_wait_text_from_return(raw_text)
+    if wait_text:
+        return {
+            "status": "sailing",
+            "route": str(state.get("concubine_voyage_route") or "").strip(),
+            "partner": "",
+            "return_at": _voyage_return_at_from_wait(wait_text, now),
+            "result": "",
+            "error": "",
+        }
+
+    if "侍妾正在远航途中" in raw_text or "侍妾仍在远航途中" in raw_text:
+        return {
+            "status": "sailing",
+            "route": str(state.get("concubine_voyage_route") or "").strip(),
+            "partner": "",
+            "return_at": _voyage_unknown_return_at(now),
+            "result": "",
+            "error": raw_text.strip(),
+        }
+
+    if "开启远航需要" in raw_text or ("远航" in raw_text and ("灵石不足" in raw_text or "修为不足" in raw_text or "资源不足" in raw_text)):
+        return {"status": "idle", "route": "", "partner": "", "return_at": 0.0, "result": "", "error": raw_text.strip()}
+
+    return None
+
+
+def _is_voyage_lock_text(text):
+    raw_text = str(text or "")
+    return "侍妾正在远航途中" in raw_text or "侍妾仍在远航途中" in raw_text
+
+
+def _apply_voyage_blocked_action(parsed, now, *, error_key, label):
+    _apply_voyage_snapshot(parsed, now)
+    state[error_key] = f"{label}被远航锁拦截，等待归航"
+    _set_phase("idle")
+    _clear_pending_msg_ids()
+    _schedule_voyage_wait(now)
+
+
+def _apply_voyage_snapshot(parsed, now):
+    if not parsed:
+        return False
+    status = str(parsed.get("status") or "").strip()
+    route = str(parsed.get("route") or "").strip()
+    partner = str(parsed.get("partner") or "").strip()
+    previous_status = str(state.get("concubine_voyage_status") or "").strip()
+    if partner:
+        state["concubine_name"] = partner
+    if route:
+        state["concubine_voyage_route"] = route
+    if status:
+        state["concubine_voyage_status"] = status
+    if status == "sailing":
+        return_at = float(parsed.get("return_at", 0) or 0)
+        if return_at <= now:
+            return_at = _voyage_unknown_return_at(now)
+        state["concubine_voyage_return_at"] = return_at
+        state["concubine_voyage_last_result"] = ""
+        state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
+        state["concubine_voyage_retry_count"] = 0
+        if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
+            _set_phase("idle")
+            state["concubine_voyage_msg_id"] = 0
+        _schedule_voyage_wait(now)
+        return True
+    if status == "returned":
+        state["concubine_voyage_return_at"] = float(parsed.get("return_at", now) or now)
+        state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
+        state["concubine_voyage_retry_count"] = 0
+        if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
+            _set_phase("idle")
+            state["concubine_voyage_msg_id"] = 0
+        _schedule_chain_action(now)
+        return True
+    if status == "idle":
+        state["concubine_voyage_return_at"] = float(parsed.get("return_at", 0) or 0)
+        result = str(parsed.get("result") or "").strip()
+        if result:
+            state["concubine_voyage_last_result"] = result
+        state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
+        state["concubine_voyage_retry_count"] = 0
+        if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
+            _set_phase("idle")
+            state["concubine_voyage_msg_id"] = 0
+        _schedule_chain_action(now)
+        return True
+    if status == "no_task":
+        should_clear = bool(parsed.get("clear_idle")) or previous_status not in {"sailing", "returned"}
+        state["concubine_voyage_last_error"] = str(parsed.get("error") or "")
+        if should_clear:
+            state["concubine_voyage_status"] = "idle"
+            state["concubine_voyage_return_at"] = 0
+            state["concubine_voyage_retry_count"] = 0
+            if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
+                _set_phase("idle")
+                state["concubine_voyage_msg_id"] = 0
+            _schedule_chain_action(now)
+            return True
+        state["concubine_voyage_status"] = previous_status or "sailing"
+        if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES:
+            _set_phase("idle")
+            state["concubine_voyage_msg_id"] = 0
+        state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
+        _schedule_voyage_wait(now)
+        return True
+    return False
+
+
+def _clear_voyage_snapshot():
+    state["concubine_voyage_status"] = ""
+    state["concubine_voyage_route"] = ""
+    state["concubine_voyage_return_at"] = 0
+    state["concubine_voyage_last_result"] = ""
+    state["concubine_voyage_last_error"] = ""
+    state["concubine_voyage_retry_count"] = 0
+
+
+def _voyage_runtime_snapshot():
+    return {
+        "phase": _phase() if _phase() in CONCUBINE_VOYAGE_PENDING_PHASES else "",
+        "concubine_voyage_msg_id": state.get("concubine_voyage_msg_id", 0),
+        "concubine_voyage_status": state.get("concubine_voyage_status", ""),
+        "concubine_voyage_route": state.get("concubine_voyage_route", ""),
+        "concubine_voyage_return_at": state.get("concubine_voyage_return_at", 0),
+        "concubine_voyage_last_result": state.get("concubine_voyage_last_result", ""),
+        "concubine_voyage_last_error": state.get("concubine_voyage_last_error", ""),
+        "concubine_voyage_retry_count": state.get("concubine_voyage_retry_count", 0),
+    }
+
+
+def _restore_voyage_runtime_snapshot(snapshot):
+    if not isinstance(snapshot, dict):
+        return
+    for key in (
+        "concubine_voyage_msg_id",
+        "concubine_voyage_status",
+        "concubine_voyage_route",
+        "concubine_voyage_return_at",
+        "concubine_voyage_last_result",
+        "concubine_voyage_last_error",
+        "concubine_voyage_retry_count",
+    ):
+        state[key] = snapshot.get(key, state.get(key))
+    if state.get("concubine_voyage_enabled") and snapshot.get("phase") in CONCUBINE_VOYAGE_PENDING_PHASES:
+        _set_phase(snapshot.get("phase"))
+
+
+def _is_voyage_sailing(now):
+    if str(state.get("concubine_voyage_status") or "") != "sailing":
+        return False
+    return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
+    return return_at <= 0 or return_at > float(now)
+
+
+def _is_voyage_return_due(now):
+    status = str(state.get("concubine_voyage_status") or "")
+    if status == "returned":
+        return True
+    if status != "sailing":
+        return False
+    return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
+    return return_at > 0 and return_at <= float(now)
+
+
+def _is_voyage_probe_due(now):
+    if str(state.get("concubine_voyage_status") or "") != "sailing":
+        return False
+    if int(state.get("concubine_voyage_retry_count", 0) or 0) > 0:
+        return False
+    return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
+    if return_at > 0:
+        return False
+    return float(state.get("next_concubine_time", 0) or 0) <= float(now)
+
+
+def _is_voyage_return_retry_exhausted(now):
+    if int(state.get("concubine_voyage_retry_count", 0) or 0) < 2:
+        return False
+    status = str(state.get("concubine_voyage_status") or "")
+    if status == "returned":
+        return True
+    if status != "sailing":
+        return False
+    return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
+    return return_at > 0 and return_at <= float(now)
+
+
+def _schedule_voyage_wait(now):
+    return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
+    if return_at > now:
+        state["next_concubine_time"] = return_at + random.uniform(60, 600)
+    else:
+        state["next_concubine_time"] = now + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
+    return state["next_concubine_time"]
+
+
+def _is_voyage_affinity_eligible():
+    return int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY
+
+
+def _is_voyage_eligible(now):
+    if not state.get("concubine_voyage_enabled"):
+        return False
+    if not _is_star_palace_identity():
+        state["concubine_voyage_last_error"] = "仅星宫身份自动远航"
+        return False
+    if not _has_available_partner():
+        state["concubine_voyage_last_error"] = "远航需先确认侍妾"
+        return False
+    if not _is_voyage_affinity_eligible():
+        affinity = int(state.get("concubine_affinity", 0) or 0)
+        state["concubine_voyage_last_error"] = f"情缘不足（{affinity}/{CONCUBINE_TIANJI_MIN_AFFINITY}），暂不远航"
+        return False
+    if _is_voyage_sailing(now) or _is_voyage_return_due(now):
+        return False
+    state["concubine_voyage_last_error"] = ""
+    return True
 
 
 def _is_daily_greet_due(now):
@@ -929,6 +1273,7 @@ def _is_strong_dream_terminal_text(text):
         or "修为不足，共梦寻图" in raw_text
         or "【入梦寻图】" in raw_text
         or ("【全群异闻·" in raw_text and "残图】" in raw_text)
+        or _is_voyage_lock_text(raw_text)
         or ("尚无侍妾" in raw_text and "共梦寻图" in raw_text)
     )
 
@@ -942,6 +1287,7 @@ def _is_strong_tianji_terminal_text(text):
         or "情缘未至" in raw_text
         or "情缘未深" in raw_text
         or "无法为你卜算天机" in raw_text
+        or _is_voyage_lock_text(raw_text)
         or ("尚无侍妾" in raw_text and "代卜天机" in raw_text)
     )
 
@@ -987,6 +1333,26 @@ def _is_concubine_candidate_text_for_phase(text, phase):
             or "心劫余波" in raw_text
             or "心劫抉择正在进行" in raw_text
             or "开启共历心劫" in raw_text
+            or _is_voyage_lock_text(raw_text)
+        )
+    if phase == "voyage_pending":
+        return (
+            "乱星海远航" in raw_text
+            or "侍妾远航" in raw_text
+            or "远航" in raw_text
+            or "归航" in raw_text
+            or "开启远航需要" in raw_text
+            or "无可结算的远航任务" in raw_text
+        )
+    if phase == "voyage_return_pending":
+        return (
+            "乱星海远航·归" in raw_text
+            or "远航" in raw_text
+            or "归航" in raw_text
+            or "已自" in raw_text
+            or "还需" in raw_text
+            or "尚未归航" in raw_text
+            or "无可结算的远航任务" in raw_text
         )
     if phase == "fragment_pending":
         return "残图" in raw_text or "拼片" in raw_text
@@ -1152,6 +1518,20 @@ def _pending_log_replay_spec(phase):
             "handler": handle_concubine_heart_reply,
             "current_msg_id": True,
             "match_message_id": True,
+        }
+    if phase == "voyage_pending":
+        return {
+            "state_key": "concubine_voyage_msg_id",
+            "command": _voyage_command(),
+            "family": "concubine_voyage",
+            "handler": handle_concubine_voyage_reply,
+        }
+    if phase == "voyage_return_pending":
+        return {
+            "state_key": "concubine_voyage_msg_id",
+            "command": CMD_CONCUBINE_VOYAGE_RETURN,
+            "family": "concubine_voyage",
+            "handler": handle_concubine_voyage_reply,
         }
     return None
 
@@ -1639,6 +2019,7 @@ def _parse_status_panel(text, now):
     tianji_chain_match = RE_TIANJI_CHAIN.search(raw_text)
     tianji_chain, tianji_chain_due_at = _parse_tianji_chain(tianji_chain_match.group(1), now) if tianji_chain_match else ("", 0.0)
     progresses = _parse_fragment_progresses(raw_text)
+    voyage = _parse_voyage_text(raw_text, now)
 
     return {
         "has_partner": True,
@@ -1653,6 +2034,7 @@ def _parse_status_panel(text, now):
         "tianji_chain": tianji_chain,
         "tianji_chain_due_at": tianji_chain_due_at,
         "fragment_progresses": progresses,
+        "voyage": voyage,
     }
 
 
@@ -1707,6 +2089,8 @@ def _has_due_action(now):
         or _is_gift_recovery_due(now)
         or _has_tianji_due_action(now)
         or _has_heart_due_action(now)
+        or _is_voyage_return_due(now)
+        or _is_voyage_eligible(now)
     )
 
 
@@ -1755,7 +2139,7 @@ def _has_active_nanlong_pending(now):
     )
 
 
-def _clear_partner_snapshot():
+def _clear_partner_snapshot(*, clear_voyage=True):
     state["concubine_name"] = ""
     state["concubine_kind"] = ""
     state["concubine_location"] = ""
@@ -1766,6 +2150,8 @@ def _clear_partner_snapshot():
     state["concubine_heart_due_at"] = 0
     state["concubine_tianji_chain"] = ""
     state["concubine_tianji_chain_due_at"] = 0
+    if clear_voyage:
+        _clear_voyage_snapshot()
     _clear_fragment_progress()
 
 
@@ -1860,6 +2246,7 @@ def _apply_status_snapshot(parsed, now):
     state["concubine_tianji_chain"] = parsed.get("tianji_chain", "")
     state["concubine_tianji_chain_due_at"] = float(parsed.get("tianji_chain_due_at", 0) or 0)
     _apply_fragment_progresses(parsed.get("fragment_progresses") or {})
+    _apply_voyage_snapshot(parsed.get("voyage"), now)
     state["concubine_last_snapshot_at"] = float(now)
     state["concubine_reacquire_command_override"] = ""
     state["concubine_last_error"] = ""
@@ -1880,6 +2267,13 @@ def _apply_status_snapshot(parsed, now):
 
     _set_phase("idle")
     _clear_pending_msg_ids()
+
+    if _is_voyage_return_due(now):
+        _schedule_chain_action(now)
+        return True
+    if _is_voyage_sailing(now):
+        _schedule_voyage_wait(now)
+        return True
 
     if _is_puzzle_ready() and state.get("concubine_enabled"):
         _schedule_chain_action(now)
@@ -1915,7 +2309,12 @@ def _switch_reacquire_command(now, command, reason):
 
 
 def get_concubine_status_text():
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
+    if (
+        not state.get("concubine_enabled", False)
+        and not state.get("concubine_tianji_enabled", False)
+        and not state.get("concubine_heart_enabled", False)
+        and not state.get("concubine_voyage_enabled", False)
+    ):
         return "🌸 侍妾 - 未启用"
 
     phase_label = {
@@ -1934,6 +2333,8 @@ def get_concubine_status_text():
         "heart_pending": "共历心劫发起中...",
         "heart_choice_pending": "共历心劫待抉择...",
         "heart_choice_reply_pending": "共历心劫等待回合推进...",
+        "voyage_pending": "侍妾远航发起中...",
+        "voyage_return_pending": "远航归来结算中...",
         "no_partner": "暂无侍妾",
     }.get(_phase(), _phase())
     strategy_label = {
@@ -1947,6 +2348,7 @@ def get_concubine_status_text():
         f"- 入梦寻图: {'开启' if state.get('concubine_enabled') else '关闭'}",
         f"- 天机代卜: {'开启' if state.get('concubine_tianji_enabled') else '关闭'}",
         f"- 共历心劫: {'开启' if state.get('concubine_heart_enabled') else '关闭'}",
+        f"- 侍妾远航: {'开启' if state.get('concubine_voyage_enabled') else '关闭'}",
         f"- 自动补领: {'开启' if state.get('concubine_auto_reacquire') else '关闭'}",
         f"- 南陇侯策略: {strategy_label}",
     ]
@@ -1984,6 +2386,25 @@ def get_concubine_status_text():
         chain_due_at = float(state.get("concubine_tianji_chain_due_at", 0) or 0)
         suffix = f"（{fmt_remaining(chain_due_at)}）" if chain_due_at > 0 else ""
         lines.append(f"- 天机卦象: {state.get('concubine_tianji_chain')}{suffix}")
+    voyage_status = str(state.get("concubine_voyage_status") or "").strip()
+    voyage_route = str(state.get("concubine_voyage_route") or "").strip() or CONCUBINE_VOYAGE_DEFAULT_ROUTE
+    voyage_return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
+    if voyage_status == "sailing":
+        if voyage_return_at > 0:
+            lines.append(f"- 远航状态: {voyage_route}航线远航中，{fmt_abs_ts(voyage_return_at)}（{fmt_remaining(voyage_return_at)}）归航")
+        else:
+            lines.append(f"- 远航状态: {voyage_route}航线远航中，归航时间待确认")
+    elif voyage_status == "returned":
+        lines.append(f"- 远航状态: {voyage_route}航线已归航，待 .远航归来")
+    elif voyage_status == "idle":
+        lines.append(f"- 远航状态: 空闲（默认 {CONCUBINE_VOYAGE_DEFAULT_ROUTE}）")
+    elif state.get("concubine_voyage_enabled"):
+        lines.append(f"- 远航状态: 未记录（默认 {CONCUBINE_VOYAGE_DEFAULT_ROUTE}）")
+    if state.get("concubine_voyage_last_result"):
+        result = str(state.get("concubine_voyage_last_result") or "").replace("\n", " / ").strip()
+        lines.append(f"- 远航上次结算: {result[:120]}")
+    if state.get("concubine_voyage_last_error"):
+        lines.append(f"- 远航异常: {state.get('concubine_voyage_last_error')}")
     blocked_until = float(state.get("concubine_reacquire_blocked_until", 0) or 0)
     if blocked_until > 0:
         lines.append(f"- 补领冻结: {fmt_abs_ts(blocked_until)}（{fmt_remaining(blocked_until)}）")
@@ -2030,11 +2451,12 @@ def clear_concubine_state(*, persist=False, keep_last_error=False, include_tianj
         "concubine_heart_due_at": state.get("concubine_heart_due_at", 0),
         "concubine_heart_last_error": state.get("concubine_heart_last_error", ""),
     }
+    voyage_snapshot = _voyage_runtime_snapshot()
     state["next_concubine_time"] = 0
     state["concubine_phase"] = "idle"
     state["concubine_availability"] = "unknown"
     state["concubine_reacquire_command_override"] = ""
-    _clear_partner_snapshot()
+    _clear_partner_snapshot(clear_voyage=include_tianji)
     _clear_pending_msg_ids()
     if include_tianji:
         clear_pending_tasks_by_commands(CONCUBINE_PENDING_COMMANDS, send_as_id=get_current_identity_id())
@@ -2049,12 +2471,14 @@ def clear_concubine_state(*, persist=False, keep_last_error=False, include_tianj
         state["concubine_gift_last_error"] = ""
         state["concubine_heart_due_at"] = 0
         state["concubine_heart_last_error"] = ""
+        _clear_voyage_snapshot()
     else:
         clear_pending_tasks_by_commands(CONCUBINE_MAIN_PENDING_COMMANDS, send_as_id=get_current_identity_id())
         for key, value in tianji_snapshot.items():
             state[key] = value
         for key, value in heart_snapshot.items():
             state[key] = value
+        _restore_voyage_runtime_snapshot(voyage_snapshot)
     if not keep_last_error:
         state["concubine_last_error"] = ""
     if persist:
@@ -2096,7 +2520,7 @@ def restore_concubine_runtime(now):
     if _reconcile_stale_heart_action_guard(now, "heart_stale_guard_startup_restore"):
         mark_dirty()
         return float(state.get("next_concubine_time", 0) or 0)
-    if _phase() in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
+    if _phase() in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"} | CONCUBINE_VOYAGE_PENDING_PHASES:
         if _has_available_partner():
             _set_phase("idle")
         elif state.get("concubine_availability") == "no_partner":
@@ -2104,6 +2528,10 @@ def restore_concubine_runtime(now):
         else:
             _set_phase("idle")
         _clear_pending_msg_ids()
+    if _is_voyage_return_due(now):
+        _schedule_chain_action(now)
+    elif _is_voyage_sailing(now):
+        _schedule_voyage_wait(now)
     if float(state.get("next_concubine_time", 0) or 0) <= 0:
         state["next_concubine_time"] = float(now + random.uniform(60, 1200))
     mark_dirty()
@@ -2437,6 +2865,103 @@ async def _send_heart_command(now):
     return True
 
 
+async def _send_voyage_return_command(now, *, is_retry=False):
+    if _defer_active_for_phaseful_summary(now, "远航归来", error_key="concubine_voyage_last_error"):
+        save_state()
+        return False
+    if not is_retry:
+        state["concubine_voyage_retry_count"] = 0
+    msg = await send_game_command(CMD_CONCUBINE_VOYAGE_RETURN, track=False, priority="chain")
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        state["concubine_voyage_last_error"] = "发送 .远航归来 失败"
+        if is_retry:
+            state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
+        _set_phase("idle")
+        state["concubine_voyage_msg_id"] = 0
+        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
+        save_state()
+        return False
+    _set_phase("voyage_return_pending")
+    state["concubine_voyage_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+    save_state()
+    return True
+
+
+async def _send_voyage_command(now, *, is_retry=False):
+    if _defer_active_for_phaseful_summary(now, "侍妾远航", error_key="concubine_voyage_last_error"):
+        save_state()
+        return False
+    if not _is_voyage_eligible(now):
+        _schedule_after_tianji(now)
+        save_state()
+        return False
+    if not is_retry:
+        state["concubine_voyage_retry_count"] = 0
+    command = _voyage_command()
+    msg = await send_game_command(command, track=False, priority="chain")
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        state["concubine_voyage_last_error"] = f"发送 {command} 失败"
+        if is_retry:
+            state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
+        _set_phase("idle")
+        state["concubine_voyage_msg_id"] = 0
+        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
+        save_state()
+        return False
+    _set_phase("voyage_pending")
+    state["concubine_voyage_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    state["concubine_voyage_route"] = command.replace(CMD_CONCUBINE_VOYAGE, "", 1).strip() or CONCUBINE_VOYAGE_DEFAULT_ROUTE
+    state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+    save_state()
+    return True
+
+
+def _mark_voyage_pending_exhausted(now, phase):
+    route = str(state.get("concubine_voyage_route") or "").strip() or CONCUBINE_VOYAGE_DEFAULT_ROUTE
+    if not state.get("concubine_voyage_status"):
+        state["concubine_voyage_status"] = "sailing"
+    if not state.get("concubine_voyage_route"):
+        state["concubine_voyage_route"] = route
+    state["concubine_voyage_msg_id"] = 0
+    state["concubine_voyage_retry_count"] = max(int(state.get("concubine_voyage_retry_count", 0) or 0), 2)
+    state["concubine_voyage_last_error"] = f"{phase} 两次无回复，保持远航锁等待后续状态"
+    _set_phase("idle")
+    _schedule_voyage_wait(now)
+    return float(state.get("next_concubine_time", 0) or 0)
+
+
+async def _handle_voyage_pending_timeout(now, phase):
+    if await _recover_concubine_pending_from_message_log(now, phase):
+        return True
+    await _audit_pending_timeout_candidates(now, phase)
+    retry_count = int(state.get("concubine_voyage_retry_count", 0) or 0)
+    if retry_count < 1:
+        state["concubine_voyage_retry_count"] = retry_count + 1
+        if phase == "voyage_return_pending":
+            sent = await _send_voyage_return_command(now, is_retry=True)
+        else:
+            sent = await _send_voyage_command(now, is_retry=True)
+        if sent:
+            await send_audit_log(
+                f"↩️ 侍妾远航 {phase} 未见回复，3 秒保护窗后已补发一次。",
+                scope="identity",
+                limit=180,
+            )
+        return True
+
+    retry_at = _mark_voyage_pending_exhausted(now, phase)
+    save_state()
+    await send_audit_log(
+        f"⚠️ 侍妾远航 {phase} 补发后仍无回复，保持本地远航锁；{fmt_time_after(max(0, retry_at - now))} 后再观察。",
+        scope="identity",
+        limit=260,
+    )
+    return True
+
+
 async def _send_heart_choice(now):
     prompt_msg_id = int(state.get("concubine_heart_prompt_msg_id", 0) or 0)
     round_no = int(state.get("concubine_heart_round", 0) or 0)
@@ -2518,7 +3043,12 @@ async def _send_heart_choice(now):
 
 
 async def handle_concubine_status_reply(text, now, reply_to, matched_family=None, current_msg_id=0):
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
+    if (
+        not state.get("concubine_enabled", False)
+        and not state.get("concubine_tianji_enabled", False)
+        and not state.get("concubine_heart_enabled", False)
+        and not state.get("concubine_voyage_enabled", False)
+    ):
         return False
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     if matched_family != "concubine_status" and CMD_CONCUBINE_STATUS not in orig_cmd:
@@ -2530,7 +3060,7 @@ async def handle_concubine_status_reply(text, now, reply_to, matched_family=None
         or int(state.get("concubine_gift_status_msg_id", 0) or 0) > 0
     )
     if phase not in {"status_pending", "gift_status_pending"}:
-        if phase in {"greet_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
+        if phase in {"greet_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"} | CONCUBINE_VOYAGE_PENDING_PHASES:
             console_log(f"🌸 忽略非等待期侍妾状态回复（phase={phase}）。")
             _record_concubine_ignored_reply("侍妾状态", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to, current_msg_id=current_msg_id)
             return True
@@ -2602,6 +3132,12 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
         return True
 
     raw_text = text or ""
+    voyage = _parse_voyage_text(raw_text, now)
+    if voyage and voyage.get("status") == "sailing":
+        _apply_voyage_blocked_action(voyage, now, error_key="concubine_last_error", label="入梦寻图")
+        save_state()
+        return True
+
     if _is_dream_cooldown_text(raw_text):
         wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_DREAM_CD_SEC
         state["concubine_dream_due_at"] = now + max(wait_sec + CD_BUFFER_SEC, CONCUBINE_DREAM_MIN_RETRY_SEC)
@@ -2933,6 +3469,12 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
         return True
 
     raw_text = text or ""
+    voyage = _parse_voyage_text(raw_text, now)
+    if voyage and voyage.get("status") == "sailing":
+        _apply_voyage_blocked_action(voyage, now, error_key="concubine_tianji_last_error", label="天机代卜")
+        save_state()
+        return True
+
     if "【天机代卜链】" in raw_text:
         gua_match = RE_TIANJI_GUA.search(raw_text)
         state["concubine_tianji_chain"] = gua_match.group("name").strip() if gua_match else ""
@@ -3026,6 +3568,13 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
         return False
 
     raw_text = text or ""
+    voyage = _parse_voyage_text(raw_text, now)
+    if voyage and voyage.get("status") == "sailing":
+        _close_heart_action_guard(now, "heart_blocked_by_voyage")
+        _apply_voyage_blocked_action(voyage, now, error_key="concubine_heart_last_error", label="共历心劫")
+        save_state()
+        return True
+
     if _is_heart_cd_text(raw_text):
         _close_heart_action_guard(now, "heart_cd")
         wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_HEART_CD_SEC
@@ -3109,6 +3658,55 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
     _set_phase("idle")
     _clear_pending_msg_ids()
     _backoff_after_pending_timeout(now, "heart_pending")
+    save_state()
+    return False
+
+
+async def handle_concubine_voyage_reply(text, now, reply_to, matched_family=None):
+    if not (
+        state.get("concubine_enabled", False)
+        or state.get("concubine_tianji_enabled", False)
+        or state.get("concubine_heart_enabled", False)
+        or state.get("concubine_voyage_enabled", False)
+    ):
+        return False
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    voyage_commands = {CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_CONCUBINE_VOYAGE_STATUS}
+    if matched_family != "concubine_voyage" and not any(cmd in orig_cmd for cmd in voyage_commands):
+        return False
+
+    phase = _phase()
+    raw_text = text or ""
+    parsed = _parse_voyage_text(raw_text, now)
+    if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
+        if not _is_current_reply(reply_to, "concubine_voyage_msg_id"):
+            console_log("🌸 忽略迟到的侍妾远航回复。")
+            _record_concubine_ignored_reply(
+                "侍妾远航",
+                reason="concubine_msg_id_mismatch",
+                phase=phase,
+                state_key="concubine_voyage_msg_id",
+                reply_to=reply_to,
+            )
+            return True
+        if parsed and parsed.get("status") == "no_task" and phase == "voyage_return_pending":
+            parsed["clear_idle"] = True
+    elif phase in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
+        if not parsed:
+            console_log(f"🌸 忽略非等待期侍妾远航回复（phase={phase}）。")
+            _record_concubine_ignored_reply("侍妾远航", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to)
+            return True
+
+    if parsed:
+        _apply_voyage_snapshot(parsed, now)
+        save_state()
+        return True
+
+    state["concubine_voyage_last_error"] = f"未识别的侍妾远航回复: {raw_text[:60]}"
+    if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
+        _set_phase("idle")
+        state["concubine_voyage_msg_id"] = 0
+        _schedule_after(now, CONCUBINE_STATUS_RECHECK_MIN_SEC, CONCUBINE_STATUS_RECHECK_MAX_SEC)
     save_state()
     return False
 
@@ -3313,7 +3911,12 @@ async def handle_concubine_gift_reply(text, now, reply_to, matched_family=None):
 async def handle_concubine_affinity_event(text, now, event=None, matched_family=None, require_identity_hint=False):
     if matched_family in {"concubine_greet", "concubine_gift"}:
         return False
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
+    if (
+        not state.get("concubine_enabled", False)
+        and not state.get("concubine_tianji_enabled", False)
+        and not state.get("concubine_heart_enabled", False)
+        and not state.get("concubine_voyage_enabled", False)
+    ):
         return False
     raw_text = text or ""
     if _parse_gift_success(raw_text):
@@ -3354,7 +3957,12 @@ async def handle_concubine_affinity_event(text, now, event=None, matched_family=
 
 
 async def handle_concubine_loss_broadcast(text, now, event):
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
+    if (
+        not state.get("concubine_enabled", False)
+        and not state.get("concubine_tianji_enabled", False)
+        and not state.get("concubine_heart_enabled", False)
+        and not state.get("concubine_voyage_enabled", False)
+    ):
         return False
     raw_text = text or ""
     if "南陇侯" not in raw_text or "侍妾" not in raw_text:
@@ -3383,7 +3991,12 @@ async def run_concubine_scheduler(now):
 
 
 async def _run_concubine_scheduler(now):
-    if not state.get("concubine_enabled", False) and not state.get("concubine_tianji_enabled", False) and not state.get("concubine_heart_enabled", False):
+    if (
+        not state.get("concubine_enabled", False)
+        and not state.get("concubine_tianji_enabled", False)
+        and not state.get("concubine_heart_enabled", False)
+        and not state.get("concubine_voyage_enabled", False)
+    ):
         return
 
     if _has_active_nanlong_pending(now):
@@ -3422,6 +4035,13 @@ async def _run_concubine_scheduler(now):
         )
         return
 
+    if phase in CONCUBINE_VOYAGE_PENDING_PHASES:
+        pending_until = float(state.get("next_concubine_time", 0) or 0)
+        if pending_until > now:
+            return
+        await _handle_voyage_pending_timeout(now, phase)
+        return
+
     if phase in {"status_pending", "greet_pending", "gift_status_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending"}:
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
@@ -3454,8 +4074,26 @@ async def _run_concubine_scheduler(now):
             )
         return
 
+    if _is_voyage_return_due(now) or _is_voyage_probe_due(now):
+        next_time = float(state.get("next_concubine_time", 0) or 0)
+        if next_time > now:
+            return
+        if _is_voyage_return_retry_exhausted(now):
+            _schedule_voyage_wait(now)
+            save_state()
+            return
+        await _send_voyage_return_command(now)
+        return
+
+    if _is_voyage_sailing(now):
+        next_time = float(state.get("next_concubine_time", 0) or 0)
+        if next_time <= now:
+            _schedule_voyage_wait(now)
+            save_state()
+        return
+
     next_time = float(state.get("next_concubine_time", 0) or 0)
-    if next_time > 0 and now < next_time and not _has_affinity_recovery_due(now):
+    if next_time > 0 and now < next_time and not _has_affinity_recovery_due(now) and not _is_voyage_eligible(now):
         return
 
     if phase == "no_partner" or state.get("concubine_availability") == "no_partner":
@@ -3476,7 +4114,7 @@ async def _run_concubine_scheduler(now):
         return
 
     if not _has_available_partner():
-        if state.get("concubine_tianji_enabled") or state.get("concubine_heart_enabled"):
+        if state.get("concubine_tianji_enabled") or state.get("concubine_heart_enabled") or state.get("concubine_voyage_enabled"):
             await _send_status_command(now)
         else:
             await _send_dream_command(now)
@@ -3549,6 +4187,10 @@ async def _run_concubine_scheduler(now):
             await _send_heart_command(now)
             return
 
+    if _is_voyage_eligible(now):
+        await _send_voyage_command(now)
+        return
+
     due_times = []
     if state.get("concubine_enabled"):
         due_times.append(float(state.get("concubine_dream_due_at", 0) or 0))
@@ -3581,6 +4223,7 @@ __all__ = [
     "handle_concubine_storage_bag_reply",
     "handle_concubine_heart_reply",
     "handle_concubine_tianji_reply",
+    "handle_concubine_voyage_reply",
     "is_concubine_affinity_event_candidate",
     "restore_concubine_runtime",
     "run_concubine_scheduler",

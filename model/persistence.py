@@ -167,6 +167,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0")
     if "concubine_heart_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_heart_enabled INTEGER NOT NULL DEFAULT 0")
+    if "concubine_voyage_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_voyage_enabled INTEGER NOT NULL DEFAULT 0")
     if "concubine_auto_reacquire" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1")
     if "hehuan_enabled" not in module_columns:
@@ -391,6 +393,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0")
     if "concubine_heart_prompt_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_voyage_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "concubine_voyage_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_retry_count INTEGER NOT NULL DEFAULT 0")
     if "concubine_last_panel_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_panel_msg_id INTEGER NOT NULL DEFAULT 0")
     if "concubine_name" not in runtime_columns:
@@ -437,6 +443,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_confirm_key TEXT NOT NULL DEFAULT ''")
     if "concubine_fragment_confirmed_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_confirmed_at REAL NOT NULL DEFAULT 0")
+    if "concubine_voyage_status" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_status TEXT NOT NULL DEFAULT ''")
+    if "concubine_voyage_route" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_route TEXT NOT NULL DEFAULT ''")
+    if "concubine_voyage_return_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_return_at REAL NOT NULL DEFAULT 0")
+    if "concubine_voyage_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_last_result TEXT NOT NULL DEFAULT ''")
+    if "concubine_voyage_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_voyage_last_error TEXT NOT NULL DEFAULT ''")
     conn.execute("""
         UPDATE identity_runtime_state
            SET concubine_fragment_xutian_count = concubine_fragment_count,
@@ -934,6 +950,7 @@ def init_db():
             concubine_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_tianji_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_heart_enabled INTEGER NOT NULL DEFAULT 0,
+            concubine_voyage_enabled INTEGER NOT NULL DEFAULT 0,
             concubine_auto_reacquire INTEGER NOT NULL DEFAULT 1,
             hehuan_enabled INTEGER NOT NULL DEFAULT 0,
             tianxing_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1137,6 +1154,8 @@ def init_db():
             concubine_tianji_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_voyage_msg_id INTEGER NOT NULL DEFAULT 0,
+            concubine_voyage_retry_count INTEGER NOT NULL DEFAULT 0,
             concubine_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             concubine_name TEXT NOT NULL DEFAULT '',
             concubine_kind TEXT NOT NULL DEFAULT '',
@@ -1160,6 +1179,11 @@ def init_db():
             concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4,
             concubine_fragment_confirm_key TEXT NOT NULL DEFAULT '',
             concubine_fragment_confirmed_at REAL NOT NULL DEFAULT 0,
+            concubine_voyage_status TEXT NOT NULL DEFAULT '',
+            concubine_voyage_route TEXT NOT NULL DEFAULT '',
+            concubine_voyage_return_at REAL NOT NULL DEFAULT 0,
+            concubine_voyage_last_result TEXT NOT NULL DEFAULT '',
+            concubine_voyage_last_error TEXT NOT NULL DEFAULT '',
             concubine_last_snapshot_at REAL NOT NULL DEFAULT 0,
             concubine_reacquire_blocked_until REAL NOT NULL DEFAULT 0,
             concubine_reacquire_attempts INTEGER NOT NULL DEFAULT 0,

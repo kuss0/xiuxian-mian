@@ -284,6 +284,9 @@ CMD_CONCUBINE_ROMANCE = ".红尘寻缘"
 CMD_CONCUBINE_TIANJI = ".天机代卜"
 CMD_CONCUBINE_HEART = ".共历心劫"
 CMD_CONCUBINE_HEART_STEADY = ".稳"
+CMD_CONCUBINE_VOYAGE = ".侍妾远航"
+CMD_CONCUBINE_VOYAGE_RETURN = ".远航归来"
+CMD_CONCUBINE_VOYAGE_STATUS = ".远航状态"
 CMD_FORMATION_START = ".启阵"
 CMD_FORMATION_ASSIST = ".助阵"
 CMD_HEHUAN_RETREAT = ".闭关双修"
@@ -344,6 +347,8 @@ CONCUBINE_TIANJI_CD_SEC = 12 * 3600
 CONCUBINE_HEART_CD_SEC = 12 * 3600
 CONCUBINE_HEART_CHOICE_DELAY_MIN_SEC = 1
 CONCUBINE_HEART_CHOICE_DELAY_MAX_SEC = 3
+CONCUBINE_VOYAGE_DEFAULT_ROUTE = "冒险"
+CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC = 3
 FORMATION_INVITE_TTL_SEC = 60
 FORMATION_ASSIST_DELAY_MIN_SEC = 3
 FORMATION_ASSIST_DELAY_MAX_SEC = 8
@@ -452,6 +457,9 @@ SCRIPT_COMMANDS = [
     CMD_CONCUBINE_ROMANCE,
     CMD_CONCUBINE_TIANJI,
     CMD_CONCUBINE_HEART,
+    CMD_CONCUBINE_VOYAGE,
+    CMD_CONCUBINE_VOYAGE_RETURN,
+    CMD_CONCUBINE_VOYAGE_STATUS,
     CMD_FORMATION_START,
     CMD_FORMATION_ASSIST,
     CMD_HEHUAN_RETREAT,
@@ -494,7 +502,7 @@ SCRIPT_COMMANDS = [
     "1",
 ]
 DIVINATION_DEFAULT_DAILY_LIMIT = 6
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -512,6 +520,7 @@ MODULE_KEY_MAP = {
     "侍妾": "concubine_enabled",
     "天机代卜": "concubine_tianji_enabled",
     "共历心劫": "concubine_heart_enabled",
+    "侍妾远航": "concubine_voyage_enabled",
     "合欢宗": "hehuan_enabled",
     "天星宗": "tianxing_enabled",
     "阴罗宗": "yinluo_enabled",

@@ -578,6 +578,13 @@ def _concubine_pending_context_specs(family):
                 "handler": concubine_mod.handle_concubine_tianji_reply,
             },
         ),
+        "concubine_voyage": (
+            {
+                "state_key": "concubine_voyage_msg_id",
+                "phases": concubine_mod.CONCUBINE_VOYAGE_PENDING_PHASES,
+                "handler": concubine_mod.handle_concubine_voyage_reply,
+            },
+        ),
     }
     return specs.get(family, ())
 
@@ -827,6 +834,10 @@ def _apply_concubine_passive(text, now, family):
     parsed = concubine_mod._parse_status_panel(raw_text, now)
     if parsed:
         concubine_mod._apply_status_snapshot(parsed, now)
+        return True
+    voyage = concubine_mod._parse_voyage_text(raw_text, now)
+    if voyage:
+        concubine_mod._apply_voyage_snapshot(voyage, now)
         return True
     progress = concubine_mod._parse_fragment_progress(raw_text)
     changed = False

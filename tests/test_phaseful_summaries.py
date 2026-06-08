@@ -1070,6 +1070,59 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(new_msg_id, state_module.state["concubine_dream_msg_id"])
             self.assertEqual(now + 1 + concubine.CONCUBINE_PHASE_TIMEOUT_SEC, state_module.state["next_concubine_time"])
 
+    async def test_summary_replay_concubine_voyage_return_rebuilds_pending_state(self):
+        send_as_id = 8659059226
+        now = 1_700_001_100.0
+        old_msg_id = 9338514
+        new_msg_id = 9338515
+        self._prepare_identity(send_as_id, "VoyageReplay")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_voyage_enabled"] = True
+            state_module.state["concubine_phase"] = "voyage_return_pending"
+            state_module.state["concubine_voyage_status"] = "returned"
+            state_module.state["concubine_voyage_msg_id"] = old_msg_id
+            state_module.state["concubine_voyage_retry_count"] = 0
+            state_module.state["next_concubine_time"] = now - 1
+
+        payload = {
+            "cmd": concubine.CMD_CONCUBINE_VOYAGE_RETURN,
+            "msg_id": old_msg_id,
+            "sent_at": now - 30,
+            "track": False,
+            "reply_to": 0,
+            "priority": "chain",
+            "max_retry": 0,
+            "send_intent": {"source_module": "侍妾远航"},
+        }
+        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
+        with (
+            patch.object(_phaseful.time, "time", return_value=now),
+            patch.object(_phaseful.random, "uniform", return_value=0),
+            patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
+            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+            patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
+            patch.object(_phaseful, "save_state"),
+        ):
+            await _phaseful._replay_summary_consumed_command(send_as_id, payload)
+
+        send_mock.assert_awaited_once_with(
+            concubine.CMD_CONCUBINE_VOYAGE_RETURN,
+            track=False,
+            send_as_id=send_as_id,
+            priority="chain",
+            max_retry=0,
+            source_module="侍妾远航",
+        )
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("voyage_return_pending", state_module.state["concubine_phase"])
+            self.assertEqual(new_msg_id, state_module.state["concubine_voyage_msg_id"])
+            self.assertEqual(1, state_module.state["concubine_voyage_retry_count"])
+            self.assertEqual(now + 1 + concubine.CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+
+    def test_summary_replay_allows_voyage_command_with_route_suffix(self):
+        self.assertTrue(_phaseful._is_summary_replayable_command(f"{concubine.CMD_CONCUBINE_VOYAGE} 冒险"))
+
     async def test_summary_replay_tower_sets_explicit_wait_state(self):
         send_as_id = 8659059223
         now = 1_700_000_800.0
