@@ -1,6 +1,9 @@
 import asyncio
 import copy
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from model import config
@@ -43,6 +46,27 @@ class ControlBoolCoercionTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertFalse(state_module.get_global_enabled())
         self.assertIn("全局暂停", message)
+
+    def test_global_resume_resets_safety_watchdog_marker(self):
+        state_module.set_global_enabled(False)
+        state_module.ensure_identity_registered(990313)
+        state_module.update_send_as_profile(990313, enabled=True)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir)
+            fused_marker = state_dir / "safety_watchdog_fused.json"
+            reset_marker = state_dir / "safety_watchdog_reset.json"
+            fused_marker.write_text(json.dumps({"reason": "old"}), encoding="utf-8")
+
+            with patch.object(control, "STATE_DIR", str(state_dir)), \
+                 patch.object(control, "save_state"), \
+                 patch.object(control, "send_audit_log", new=AsyncMock()):
+                ok, message = asyncio.run(control.toggle_global_enabled(True, source="test"))
+
+            self.assertTrue(ok, message)
+            self.assertTrue(state_module.get_global_enabled())
+            self.assertFalse(fused_marker.exists())
+            payload = json.loads(reset_marker.read_text(encoding="utf-8"))
+            self.assertGreater(payload["reset_at_epoch"], 0)
 
     def test_direct_identity_module_toggle_treats_form_false_string_as_disabled(self):
         send_as_id = 990321

@@ -80,6 +80,7 @@ from .config import (
     MODULE_KEY_MAP,
     MODULE_NAMES,
     PROJECT_ROOT_DIR,
+    STATE_DIR,
     RE_CMD_DISABLE_ALL,
     RE_CMD_ENABLE_ALL,
     RE_CMD_ENABLE_PATTERNS,
@@ -3824,11 +3825,35 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
                 _clear_startup_module_alerts()
     if enabled:
         spread_overdue_runtime_timers(now, reason="全局恢复")
+        _reset_safety_watchdog_fuse_marker(now)
     save_state()
     action_text = "恢复运行" if enabled else "全局暂停"
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
     await send_audit_log(f"🌐 已{action_text}，来源：{source}{actor_suffix}。")
     return True, f"已{action_text}"
+
+
+def _reset_safety_watchdog_fuse_marker(now):
+    state_dir = Path(STATE_DIR)
+    fused_marker = state_dir / "safety_watchdog_fused.json"
+    reset_marker = state_dir / "safety_watchdog_reset.json"
+    try:
+        if fused_marker.exists():
+            fused_marker.unlink()
+        reset_marker.parent.mkdir(parents=True, exist_ok=True)
+        reset_marker.write_text(
+            json.dumps(
+                {
+                    "reset_at": datetime.fromtimestamp(float(now), TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8"),
+                    "reset_at_epoch": float(now),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        console_log(f"⚠️ 重置安全熔断标记失败: {exc}")
 
 
 async def set_module_enabled(module_name, enabled, send_as_id=None, *, skip_unavailable=False, allow_empty=False):
