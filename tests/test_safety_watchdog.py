@@ -7,7 +7,7 @@ from unittest.mock import patch
 from tools import safety_watchdog
 
 
-def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority=""):
+def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority="", op_id=""):
     payload = {
         "event_type": "sent",
         "_epoch": float(epoch),
@@ -22,6 +22,8 @@ def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="
         payload["source_module"] = source_module
     if priority:
         payload["priority"] = priority
+    if op_id:
+        payload["op_id"] = op_id
     return payload
 
 
@@ -135,6 +137,12 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_dungeon_fast_chain_only_allows_known_choice_commands(self):
+        self.assertTrue(safety_watchdog.is_dungeon_fast_chain_command(".选择 岔路1"))
+        self.assertTrue(safety_watchdog.is_dungeon_fast_chain_command(".选择 强行摘取"))
+        self.assertTrue(safety_watchdog.is_dungeon_fast_chain_command(".选择 静待时机"))
+        self.assertFalse(safety_watchdog.is_dungeon_fast_chain_command(".选择 随便"))
+
     def test_virtual_hall_late_stage_fast_chain_is_not_global_lock_breach(self):
         now = time.time()
         cfg = self._config()
@@ -145,6 +153,83 @@ class SafetyWatchdogTests(unittest.TestCase):
         ]
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_replica_button_choice_repeat_with_distinct_stage_is_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3943773722
+        events = [
+            _event(
+                now - 26,
+                sender_id,
+                ".苍坤抉择 2",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_button:10001087:3943773722:.苍坤抉择 2",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".苍坤抉择 2",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_button:10001149:3943773722:.苍坤抉择 2",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_replica_button_choice_repeat_with_same_stage_still_fuses(self):
+        now = time.time()
+        sender_id = 3943773722
+        events = [
+            _event(
+                now - 26,
+                sender_id,
+                ".苍坤抉择 2",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_button:10001087:3943773722:.苍坤抉择 2",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".苍坤抉择 2",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id="replica_button:10001087:3943773722:.苍坤抉择 2",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_replica_button_choice_duplicate_op_id_fuses_even_after_repeat_gap(self):
+        now = time.time()
+        sender_id = 3943773722
+        op_id = "replica_button:10001087:3943773722:.苍坤抉择 2"
+        events = [
+            _event(
+                now - 180,
+                sender_id,
+                ".苍坤抉择 2",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id=op_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".苍坤抉择 2",
+                source_module="自动副本",
+                priority="urgent_reactive",
+                op_id=op_id,
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("duplicate replica button op_id", breach)
 
     def test_dungeon_open_repeat_still_fuses(self):
         now = time.time()

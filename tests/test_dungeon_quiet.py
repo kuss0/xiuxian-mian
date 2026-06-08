@@ -120,6 +120,22 @@ class DungeonQuietRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(blocked)
         audit_mock.assert_not_awaited()
 
+    async def test_quiet_window_only_allows_known_replica_choice_commands(self):
+        state_module.state["dungeon_quiet_until"] = 9999999999
+        state_module.state["dungeon_quiet_reason"] = "昆吾山静场令"
+        state_module.state["dungeon_quiet_last_log_at"] = 0
+
+        with patch.object(runtime, "send_audit_log", new_callable=unittest.mock.AsyncMock) as audit_mock:
+            self.assertFalse(await runtime._dungeon_quiet_blocks_send(".选择 岔路1", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+            self.assertFalse(await runtime._dungeon_quiet_blocks_send(".选择 强行摘取", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+            self.assertFalse(await runtime._dungeon_quiet_blocks_send(".选择 静待时机", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+            self.assertFalse(await runtime._dungeon_quiet_blocks_send(".坠魔抉择 路径1", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+            self.assertFalse(await runtime._dungeon_quiet_blocks_send(".黄龙抉择 1", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+            self.assertFalse(await runtime._dungeon_quiet_blocks_send(".苍坤抉择 1", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+            self.assertTrue(await runtime._dungeon_quiet_blocks_send(".选择 随便", runtime.SEND_PRIORITY_NORMAL, send_as_id=123))
+
+        audit_mock.assert_awaited_once()
+
 
 if __name__ == "__main__":
     unittest.main()

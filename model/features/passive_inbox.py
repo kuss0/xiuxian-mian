@@ -774,19 +774,50 @@ def _apply_pet_passive(text, now, family):
     return changed
 
 
-def _apply_small_world_passive(text, now):
+def _is_script_small_world_query_reply(family, reply_context):
+    if str(family or "").strip() != "small_world_query":
+        return False
+    reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
+    if reply_to_msg_id <= 0:
+        return False
+    return reply_to_msg_id in (state.get("my_msg_ids") or {})
+
+
+def _has_active_small_world_phase():
+    phase = str(state.get("small_world_phase") or "idle")
+    return phase.endswith("_pending") or phase in {"harvest_sent", "refine_sent"}
+
+
+async def _apply_small_world_passive(text, now, family="", reply_context=None):
     panel = small_world_mod._parse_small_world_panel(text)
     if not panel or panel.get("realm_blocked"):
         return False
+
+    if _is_script_small_world_query_reply(family, reply_context):
+        return False
+
+    active_phase = _has_active_small_world_phase()
     small_world_mod._apply_small_world_panel_snapshot(now, panel)
     if state.get("small_world_phase") == "calibration_wait":
         state["small_world_phase"] = "idle"
+    if active_phase:
+        state["small_world_last_error"] = ""
+        return True
+
     if panel.get("has_wait"):
-        state["next_small_world_time"] = float(now + int(panel.get("wait_sec", 0) or 0) + small_world_mod.CD_BUFFER_SEC)
+        small_world_mod._schedule_panel_wait(now, int(panel.get("wait_sec", 0) or 0) + small_world_mod.CD_BUFFER_SEC)
         state["small_world_phase"] = "idle"
     elif panel.get("has_prayer"):
         state["small_world_phase"] = "idle"
+        if float(state.get("next_small_world_time", 0) or 0) <= float(now or 0):
+            small_world_mod._schedule_next_cycle(now)
+        state["small_world_last_error"] = "被动发现小世界祈愿，未自动显灵"
+        return True
+    elif float(state.get("next_small_world_time", 0) or 0) <= float(now or 0):
+        state["small_world_phase"] = "idle"
+        small_world_mod._schedule_next_cycle(now)
         state["small_world_last_error"] = ""
+        return True
     state["small_world_last_error"] = ""
     return True
 
@@ -1225,7 +1256,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append(family)
             changed = module_changed or changed
         if small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text):
-            module_changed = _apply_small_world_passive(raw_text, now)
+            module_changed = await _apply_small_world_passive(raw_text, now, family, reply_context)
             if module_changed:
                 changed_modules.append("small_world")
             changed = module_changed or changed

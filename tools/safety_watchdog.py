@@ -41,9 +41,12 @@ GUARDED_PREFIXES = (
     ".搜寻节点",
     ".定星",
     ".神迹 布道",
+    ".神迹 赈灾",
     ".显灵",
     ".收割香火",
     ".神识淬炼",
+    ".卜筮问天",
+    ".换取",
 )
 
 REFRESH_PREFIXES = (
@@ -56,26 +59,30 @@ SMALL_WORLD_TOOL_PREFIXES = (
     ".神识淬炼",
 )
 
-DUNGEON_JOIN_PREFIXES = (".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府")
+DUNGEON_JOIN_PREFIXES = (".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山")
 DUNGEON_FAST_CHAIN_PREFIXES = (
     ".开启副本",
     ".开启虚天殿",
     ".开启苍坤洞府",
     ".开启坠魔谷",
     ".开启黄龙山",
+    ".开启昆吾山",
     ".加入副本",
     ".加入坠魔谷",
     ".加入黄龙山",
     ".加入苍坤洞府",
+    ".加入昆吾山",
     ".解散副本",
     ".解散苍坤洞府",
     ".解散坠魔谷",
     ".解散黄龙山",
+    ".解散昆吾山",
     ".请离",
     ".进入虚天殿",
     ".进入坠魔谷",
     ".进入黄龙山",
     ".进入苍坤洞府",
+    ".进入昆吾山",
     ".选择道路",
     ".阵策",
     ".争鼎",
@@ -192,9 +199,20 @@ def is_dungeon_join_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in DUNGEON_JOIN_PREFIXES)
 
 
+def is_known_replica_choice_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    if raw in {".选择 强行摘取", ".选择 静待时机"}:
+        return True
+    suffix = raw.removeprefix(".选择 岔路")
+    return suffix != raw and suffix.isdigit()
+
+
 def is_dungeon_fast_chain_command(text: str) -> bool:
     raw = str(text or "").strip()
-    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in DUNGEON_FAST_CHAIN_PREFIXES)
+    return (
+        any(raw == prefix or raw.startswith(prefix + " ") for prefix in DUNGEON_FAST_CHAIN_PREFIXES)
+        or is_known_replica_choice_command(raw)
+    )
 
 
 def is_controlled_retry_event(item: dict) -> bool:
@@ -293,6 +311,36 @@ def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
     prev_markers.discard("")
     cur_markers.discard("")
     return bool(prev_markers and cur_markers and prev_markers.intersection(cur_markers))
+
+
+def is_replica_button_choice_event(item: dict, text: str) -> bool:
+    if not is_dungeon_fast_chain_command(text):
+        return False
+    if str(item.get("source_module") or "").strip() != "自动副本":
+        return False
+    return str(item.get("op_id") or "").strip().startswith("replica_button:")
+
+
+def is_safe_replica_button_choice_repeat(prev: dict, cur: dict, text: str) -> bool:
+    if not is_replica_button_choice_event(prev, text) or not is_replica_button_choice_event(cur, text):
+        return False
+    prev_op_id = str(prev.get("op_id") or "").strip()
+    cur_op_id = str(cur.get("op_id") or "").strip()
+    return bool(prev_op_id and cur_op_id and prev_op_id != cur_op_id)
+
+
+def has_duplicate_replica_button_choice_op_id(items: list[dict], text: str) -> bool:
+    seen: set[str] = set()
+    for item in items:
+        if not is_replica_button_choice_event(item, text):
+            return False
+        op_id = str(item.get("op_id") or "").strip()
+        if not op_id:
+            return False
+        if op_id in seen:
+            return True
+        seen.add(op_id)
+    return False
 
 
 def is_small_world_tool_command(text: str) -> bool:
@@ -408,6 +456,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         if len(items) < 2:
             continue
         heart_choice = is_heart_choice_command(text) and is_safe_heart_choice_repeat(items)
+        replica_button_choice = all(is_replica_button_choice_event(item, text) for item in items)
         if sect_teach or heart_choice:
             min_gap = 0
         elif guarded:
@@ -426,12 +475,16 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
                 continue
             if is_safe_same_command_retry(prev, cur, text):
                 continue
+            if is_safe_replica_button_choice_repeat(prev, cur, text):
+                continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
 
-        if guarded and len(items) > cfg.guarded_max_attempts_45m:
+        if replica_button_choice and has_duplicate_replica_button_choice_op_id(items, text):
+            return f"same command repeat: {sender_id}:{text} duplicate replica button op_id"
+        if guarded and not replica_button_choice and len(items) > cfg.guarded_max_attempts_45m:
             return f"guarded command over attempts: {sender_id}:{text} {len(items)}/45m"
-        if guarded and len(items) >= 4:
+        if guarded and not replica_button_choice and len(items) >= 4:
             span = float(items[3]["_epoch"]) - float(items[0]["_epoch"])
             if span < cfg.guarded_fourth_min_span_sec:
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"

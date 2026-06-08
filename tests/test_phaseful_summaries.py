@@ -18,11 +18,15 @@ class _StateIsolationMixin:
     def setUp(self):
         super().setUp()
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._summary_consumed_commands_snapshot = copy.deepcopy(_phaseful._SUMMARY_CONSUMED_COMMANDS)
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
+        _phaseful._SUMMARY_CONSUMED_COMMANDS.clear()
 
     def tearDown(self):
+        _phaseful._SUMMARY_CONSUMED_COMMANDS.clear()
+        _phaseful._SUMMARY_CONSUMED_COMMANDS.update(copy.deepcopy(self._summary_consumed_commands_snapshot))
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -589,6 +593,121 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
+    def test_deep_retreat_summary_due_ignores_unrelated_dot_command(self):
+        send_as_id = 8659059226
+        now = 1_700_000_455.0
+        next_time = now - 1
+        self._prepare_identity(send_as_id, "DivinationDoesNotTriggerRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["next_deep_retreat_time"] = next_time
+
+            with patch.object(_phaseful, "save_state") as save_mock:
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    ".卜筮问天",
+                    now=now,
+                    msg_id=9338520,
+                    track=True,
+                    reply_to=0,
+                    source_module="卜筮问天",
+                )
+
+            save_mock.assert_not_called()
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
+            self.assertNotIn(send_as_id, _phaseful._SUMMARY_CONSUMED_COMMANDS)
+
+    def test_deep_retreat_summary_due_accepts_explicit_status_trigger(self):
+        send_as_id = 8659059227
+        now = 1_700_000_456.0
+        self._prepare_identity(send_as_id, "ExplicitRetreatQuery")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with patch.object(_phaseful, "save_state") as save_mock:
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                    now=now,
+                    msg_id=9338521,
+                    track=False,
+                    reply_to=0,
+                    source_module="深度闭关",
+                )
+
+            save_mock.assert_called_once()
+            self.assertEqual("observing_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(now + deep_retreat.DEEP_RETREAT_SPEC.summary_observe_sec, state_module.state["next_deep_retreat_time"])
+            self.assertNotIn(send_as_id, _phaseful._SUMMARY_CONSUMED_COMMANDS)
+
+    def test_deep_retreat_summary_due_keeps_replayable_command_trigger(self):
+        send_as_id = 8659059228
+        now = 1_700_000_457.0
+        msg_id = 9338522
+        self._prepare_identity(send_as_id, "DreamRetreatReplay")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with patch.object(_phaseful, "save_state"):
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    concubine.CMD_CONCUBINE_DREAM,
+                    now=now,
+                    msg_id=msg_id,
+                    track=False,
+                    reply_to=0,
+                    priority="normal",
+                    source_module="侍妾",
+                )
+
+            self.assertEqual("observing_summary", state_module.state["deep_retreat_phase"])
+            payload = _phaseful._SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
+            self.assertIsNotNone(payload)
+            self.assertEqual(concubine.CMD_CONCUBINE_DREAM, payload["cmd"])
+            self.assertEqual(msg_id, payload["msg_id"])
+            self.assertEqual(["deep_retreat_phase"], payload["specs"])
+
+    def test_deep_retreat_summary_due_ignores_replayable_reply_echo(self):
+        send_as_id = 8659059230
+        now = 1_700_000_458.0
+        next_time = now - 1
+        self._prepare_identity(send_as_id, "ManualDreamEcho")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["next_deep_retreat_time"] = next_time
+
+            with patch.object(_phaseful, "save_state") as save_mock:
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    concubine.CMD_CONCUBINE_DREAM,
+                    now=now,
+                    msg_id=9338524,
+                    track=True,
+                    reply_to=7310786,
+                    source_module="侍妾",
+                )
+
+            save_mock.assert_not_called()
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
+            self.assertNotIn(send_as_id, _phaseful._SUMMARY_CONSUMED_COMMANDS)
+
     async def test_deep_retreat_passive_timeout_queries_status_before_relaunch(self):
         send_as_id = 8659059212
         now = 1_700_000_470.0
@@ -792,7 +911,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 45, state_module.state["next_yuanying_time"])
             self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
 
-    async def test_yuanying_summary_due_sends_explicit_status_query_after_grace(self):
+    async def test_yuanying_summary_due_keeps_waiting_passively_after_grace(self):
         send_as_id = 8659059203
         now = 1_700_000_460.0
         self._prepare_identity(send_as_id, "NoTaglessSoul")
@@ -803,22 +922,45 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["yuanying_summary_sent_at"] = now - yuanying.YUANYING_SPEC.summary_active_query_grace_sec - 1
             state_module.state["next_yuanying_time"] = now - 1
 
-            sent_msg = SimpleNamespace(id=902, sent_at=now)
             with (
-                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful.random, "uniform", return_value=45),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(_phaseful, "console_log"),
                 patch.object(_phaseful, "save_state"),
             ):
                 await yuanying.run_yuanying_scheduler(now)
 
-            send_mock.assert_awaited_once_with(
-                yuanying.CMD_YUANYING_STATUS,
-                track=False,
-                priority="chain",
-                source_module="元婴",
-            )
-            self.assertEqual("waiting_summary", state_module.state["yuanying_phase"])
-            self.assertEqual(902, state_module.state["last_yuanying_summary_msg_id"])
+            send_mock.assert_not_awaited()
+            self.assertEqual("summary_due", state_module.state["yuanying_phase"])
+            self.assertEqual(now + 45, state_module.state["next_yuanying_time"])
+            self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
+
+    def test_yuanying_summary_due_ignores_unrelated_dot_command(self):
+        send_as_id = 8659059229
+        now = 1_700_000_461.0
+        next_time = now - 1
+        self._prepare_identity(send_as_id, "DivinationDoesNotTriggerSoul")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "summary_due"
+            state_module.state["yuanying_summary_sent_at"] = now - 60
+            state_module.state["next_yuanying_time"] = next_time
+
+            with patch.object(_phaseful, "save_state") as save_mock:
+                _phaseful.observe_phaseful_identity_message(
+                    send_as_id,
+                    ".卜筮问天",
+                    now=now,
+                    msg_id=9338523,
+                    track=True,
+                    reply_to=0,
+                    source_module="卜筮问天",
+                )
+
+            save_mock.assert_not_called()
+            self.assertEqual("summary_due", state_module.state["yuanying_phase"])
+            self.assertEqual(next_time, state_module.state["next_yuanying_time"])
 
     def test_yuanying_post_summary_startup_recovery_is_staggered_like_deep_retreat(self):
         send_as_id = 8659059197

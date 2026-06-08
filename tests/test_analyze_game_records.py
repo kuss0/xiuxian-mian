@@ -13,10 +13,14 @@ from tools import analyze_game_records
 class AnalyzeGameRecordsTests(unittest.TestCase):
     def test_command_key_preserves_multi_token_commands(self):
         self.assertEqual(".神迹 布道", analyze_game_records.command_key(".神迹 布道"))
+        self.assertEqual(".神迹 赈灾", analyze_game_records.command_key(".神迹 赈灾"))
         self.assertEqual(".交换 法宝", analyze_game_records.command_key(".交换 法宝"))
         self.assertEqual(".加入苍坤洞府", analyze_game_records.command_key(".加入苍坤洞府 123"))
+        self.assertEqual(".加入昆吾山", analyze_game_records.command_key(".加入昆吾山 456"))
         self.assertEqual("replica", analyze_game_records.command_family(".加入苍坤洞府"))
+        self.assertEqual("replica", analyze_game_records.command_family(".加入昆吾山"))
         self.assertEqual("small_world", analyze_game_records.command_family(".神迹 布道"))
+        self.assertEqual("small_world", analyze_game_records.command_family(".神迹 赈灾"))
         self.assertEqual("explore_rift", analyze_game_records.command_family(".探寻裂缝"))
         self.assertEqual("hehuan", analyze_game_records.command_family(".双修"))
         self.assertEqual("replica", analyze_game_records.command_family(".后殿抉择"))

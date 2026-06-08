@@ -514,7 +514,7 @@ def observe_phaseful_identity_message(
         for spec in _REGISTERED_SPECS:
             if not state.get(spec.enabled_key):
                 continue
-            if not _is_summary_observation_text(spec, text):
+            if not _is_summary_observation_text(spec, text, reply_to=reply_to):
                 continue
             phase = _phase(spec)
             if phase == "summary_due":
@@ -581,10 +581,22 @@ async def _extend_summary_due_wait(spec, now):
     console_log(f"{spec.title} 到期后继续等待真实消息顺带触发，暂不主动查询。")
 
 
-def _is_summary_observation_text(spec, text):
-    if text.startswith(".") or text == "1":
+def _summary_observation_commands(spec):
+    commands = set()
+    for command in (spec.summary_trigger_command, *(spec.summary_passive_triggers or ())):
+        command = str(command or "").strip()
+        if command:
+            commands.add(command)
+    return commands
+
+
+def _is_summary_observation_text(spec, text, *, reply_to=0):
+    text = str(text or "").strip()
+    if not text:
+        return False
+    if text in _summary_observation_commands(spec):
         return True
-    return text in set(spec.summary_passive_triggers or ())
+    return _is_replayable_summary_consumed_command(spec, text, reply_to=reply_to)
 
 
 async def _send_summary_trigger(spec, console_message):

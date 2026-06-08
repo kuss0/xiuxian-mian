@@ -24,6 +24,7 @@ from .app_replica import (
     _handle_replica_join_reply,
     _handle_replica_progress_event,
     _handle_virtual_hall_auto_game_event,
+    _cleanup_replica_run_state,
     _mark_replica_team_joined_from_text,
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
@@ -37,6 +38,7 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
+from .features.divination import handle_divination_exchange_reply, handle_divination_reply, run_divination_scheduler
 from .features.dungeon_quiet import observe_dungeon_quiet_text
 from .features.guanxing import (
     handle_guanxing_external_shift_command,
@@ -226,6 +228,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "wendao": ("问道", "问道得宝", "宗门长老", "天机不可频繁窥探"),
     "deep_retreat": ("深度闭关", "闭关", "神魂", "功成圆满", "总结"),
     "small_world_preach": ("小世界", "香火", "信仰", "神识", "神迹"),
+    "small_world_relief": ("小世界", "赈灾", "甘霖", "神谕", "稳定", "人口"),
     "small_world_query": ("小世界", "香火", "祈愿", "显灵", "紫府"),
     "small_world_manifest": ("显灵", "祈愿", "清灵丹", "灵石", "小世界"),
     "small_world_harvest": ("收割香火", "香火", "库存", "小世界"),
@@ -401,7 +404,14 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
     if not _looks_like_game_bot_reply(text, matched_family):
         return False
 
-    handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
+    handled_reply = await _handle_routed_reply_event(
+        event,
+        text,
+        now,
+        reply_to,
+        reply_context,
+        event_kind="edit" if edited else "message",
+    )
     if handled_reply:
         await _note_game_bot_activity()
         await _record_suspected_game_bot(sender_id, matched_family, text)
@@ -750,6 +760,7 @@ async def _run_global_schedulers(now):
     await run_guanxing_scheduler(now)
     await run_storage_bag_api_keepalive_scheduler(now)
     await run_storage_bag_transfer_scheduler(now)
+    await run_divination_scheduler(now)
     await run_tiandao_judgement_scheduler(now)
     await run_tianji_quiz_scheduler(now)
 
@@ -815,7 +826,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
     # client than the one that sent the command. The reply_to message id is the
     # authoritative owner here; requiring the owner client would leave pending
     # tasks uncleared and trigger retry storms.
-    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {"concubine_heart", "wild_training"}
+    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {"concubine_heart", "divination", "wild_training"}
     already_consumed = bool(matched_family) and not allow_reprocessed_edit and _has_runtime_message_consumed(event, matched_family)
     with use_identity(routed_identity_id):
         is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id) or (
@@ -919,6 +930,21 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_small_world_manifest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_refine_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_divination_reply(
+                text,
+                now,
+                event=event,
+                reply_to=reply_to,
+                matched_family=matched_family,
+                reply_context=reply_context,
+            ) or handled_any
+            handled_any = await handle_divination_exchange_reply(
+                text,
+                now,
+                reply_to=reply_to,
+                matched_family=matched_family,
+                reply_context=reply_context,
+            ) or handled_any
             handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -980,7 +1006,13 @@ async def on_message(event):
     if not sender_is_game_bot:
         text = event.raw_text or ""
         if identity_sender_id:
-            observe_phaseful_identity_message(identity_sender_id, text, now=now, msg_id=event.id)
+            observe_phaseful_identity_message(
+                identity_sender_id,
+                text,
+                now=now,
+                msg_id=event.id,
+                reply_to=int(getattr(event, "reply_to_msg_id", 0) or 0),
+            )
             _track_manual_game_command(identity_sender_id, text, event.id)
         try:
             await handle_dungeon_join_mention(event, text, now)
@@ -1111,6 +1143,17 @@ async def on_message_edited(event):
                 await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
                 return
 
+        if await handle_divination_reply(
+            text,
+            now,
+            event=event,
+            reply_to=reply_to,
+            matched_family=None,
+            reply_context=reply_context,
+        ):
+            await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
+            return
+
         await _dispatch_message_edited_tree_panel(event, text, now)
         await _dispatch_message_edited_stargazer_panel(event, text, now)
         await _dispatch_message_edited_guanxing_monitor(event, text, now)
@@ -1239,6 +1282,9 @@ async def bootstrap():
         enforce_identity_module_availability(send_as_id, persist=False)
 
     now = time.time()
+    if loaded:
+        _cleanup_replica_run_state(now)
+        mark_dirty()
     paused_at_boot = not get_global_enabled()
     if paused_at_boot:
         console_log("🚀 自动化系统启动：全局暂停中，仅加载状态与 UI，跳过启动恢复和普通调度。")

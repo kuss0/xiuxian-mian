@@ -311,6 +311,9 @@ CMD_SMALL_WORLD_MANIFEST = ".显灵"
 CMD_SMALL_WORLD_HARVEST = ".收割香火"
 CMD_SMALL_WORLD_REFINE = ".神识淬炼"
 CMD_SMALL_WORLD_PREACH = ".神迹 布道"
+CMD_SMALL_WORLD_RELIEF = ".神迹 赈灾"
+CMD_DIVINATION = ".卜筮问天"
+CMD_DIVINATION_EXCHANGE = ".换取"
 CMD_RANCH = ".一键放养"
 CMD_WILD_TRAINING = ".野外历练"
 WILD_TRAINING_STRATEGIES = ("谨慎", "均衡", "深入")
@@ -476,6 +479,9 @@ SCRIPT_COMMANDS = [
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_REFINE,
     CMD_SMALL_WORLD_PREACH,
+    CMD_SMALL_WORLD_RELIEF,
+    CMD_DIVINATION,
+    CMD_DIVINATION_EXCHANGE,
     CMD_RANCH,
     CMD_WILD_TRAINING,
     CMD_SECOND_SOUL_STATUS,
@@ -487,7 +493,8 @@ SCRIPT_COMMANDS = [
     CMD_NODE_DEFINE,
     "1",
 ]
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+DIVINATION_DEFAULT_DAILY_LIMIT = 6
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -514,6 +521,7 @@ MODULE_KEY_MAP = {
     "问道": "wendao_enabled",
     "深度闭关": "deep_retreat_enabled",
     "小世界": "small_world_enabled",
+    "卜筮问天": "divination_enabled",
     "点卯": "checkin_enabled",
     "宗门传功": "sect_teach_enabled",
     "闯塔": "tower_enabled",
@@ -528,7 +536,9 @@ CMD_REPLICA_JOIN = CMD_DUNGEON_JOIN
 CMD_REPLICA_ZHUIMO_JOIN = CMD_DUNGEON_ZHUIMO_JOIN
 CMD_REPLICA_HUANGLONG_JOIN = CMD_DUNGEON_HUANGLONG_JOIN
 CMD_REPLICA_CANGKUN_JOIN = ".加入苍坤洞府"
+CMD_REPLICA_KUNWU_JOIN = ".加入昆吾山"
 REPLICA_SUCCESS_COOLDOWN_SEC = 125 * 60
+REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC = 6 * 60 * 60
 REPLICA_ACTIVE_TTL_SEC = 2 * 60 * 60
 REPLICA_FAILURE_GRACE_SEC = 3 * 60
 UI_HOST = os.environ.get("CHAOGU_UI_HOST", "0.0.0.0")
@@ -727,6 +737,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.第二元神状态$'), "第二元神"),
     (re.compile(r'^\.太一状态$'), "太一"),
     (re.compile(r'^\.小世界状态$'), "小世界"),
+    (re.compile(r'^\.卜筮问天状态$'), "卜筮问天"),
     (re.compile(r'^\.点卯状态$'), "点卯"),
     (re.compile(r'^\.宗门传功状态$'), "宗门传功"),
     (re.compile(r'^\.闯塔状态$'), "闯塔"),
@@ -783,6 +794,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)深度闭关$'), "深度闭关", False),
     (re.compile(r'^\.(开启|打开)小世界$'), "小世界", True),
     (re.compile(r'^\.(关闭|关掉)小世界$'), "小世界", False),
+    (re.compile(r'^\.(开启|打开)卜筮问天$'), "卜筮问天", True),
+    (re.compile(r'^\.(关闭|关掉)卜筮问天$'), "卜筮问天", False),
     (re.compile(r'^\.(开启|打开)点卯$'), "点卯", True),
     (re.compile(r'^\.(关闭|关掉)点卯$'), "点卯", False),
     (re.compile(r'^\.(开启|打开)宗门传功$'), "宗门传功", True),

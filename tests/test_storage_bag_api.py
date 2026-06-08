@@ -40,6 +40,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import storage_bag_api_client
+from model import storage_bag_api_runtime
 from model import ui
 
 
@@ -279,6 +280,44 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已更新 1 个身份", message)
         record = state_module.get_storage_bag_records()[str(self.identity_id)]
         self.assertEqual({"青竹蜂云剑": 1, "灵石": 50}, record["items"])
+        self.assertEqual("storage_bag_api_cultivator", record["source"])
+
+    async def test_runtime_api_refresh_can_write_explicit_empty_inventory(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-from-html",
+            "item_name_map": {"mat_001": "灵石"},
+        })
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"旧物": 1}, "sections": {"旧": {"旧物": 1}}}})
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "telegram_id": self.identity_id,
+                "username": "source",
+                "inventory": {"items": [], "materials": {}},
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/me",
+        )
+        call_paths = []
+
+        async def fake_fetch(config, path):
+            call_paths.append(path)
+            return api_result
+
+        result = await storage_bag_api_runtime.refresh_storage_bag_records_from_api(
+            identity_ids=[self.identity_id],
+            write_empty=True,
+            fetch_func=fake_fetch,
+        )
+
+        self.assertEqual([storage_bag_api_client.REFRESH_PATH], call_paths)
+        self.assertEqual([self.identity_id], result["updated_identity_ids"])
+        record = state_module.get_storage_bag_records()[str(self.identity_id)]
+        self.assertEqual({}, record["items"])
+        self.assertTrue(record["empty"])
         self.assertEqual("storage_bag_api_cultivator", record["source"])
 
     async def test_manual_api_refresh_queries_other_roles_with_same_cookie(self):

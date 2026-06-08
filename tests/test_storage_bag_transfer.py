@@ -322,6 +322,68 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
+    async def test_suspected_game_bot_edit_routes_as_edit_event(self):
+        event = SimpleNamespace(id=9452531, sender_id=888001, chat_id=-1001680975844)
+        reply_to = SimpleNamespace(id=7001, raw_text=".卜筮问天")
+        reply_context = {
+            "send_as_id": self.target_id,
+            "family": "divination",
+            "reply_to_msg_id": 7001,
+            "root_msg_id": 7001,
+        }
+
+        with patch.object(app, "_resolve_identity_sender_id", return_value=0), \
+                patch.object(app, "_resolve_event_reply", new=AsyncMock(return_value=(reply_to, reply_context))), \
+                patch.object(app, "_looks_like_game_bot_reply", return_value=True), \
+                patch.object(app, "_handle_routed_reply_event", new=AsyncMock(return_value=True)) as routed_mock, \
+                patch.object(app, "_note_game_bot_activity", new=AsyncMock()), \
+                patch.object(app, "_record_suspected_game_bot", new=AsyncMock()):
+            handled = await app._handle_suspected_game_bot_reply(event, "【神物现世】", 1000.0, edited=True)
+
+        self.assertTrue(handled)
+        self.assertEqual("edit", routed_mock.await_args.kwargs["event_kind"])
+
+    async def test_routed_divination_final_edit_replays_after_start_notice_consumed(self):
+        state_module.get_identity_state(self.target_id)["divination_enabled"] = True
+        state_module.set_storage_bag_records({
+            str(self.target_id): {"items": {"三级妖丹": 4, "养魂木": 1}, "sections": {}},
+        })
+        event = SimpleNamespace(id=9955440, sender_id=888001, chat_id=-1001680975844)
+        reply_to = SimpleNamespace(id=9955438, raw_text=".卜筮问天")
+        reply_context = {
+            "send_as_id": self.target_id,
+            "family": "divination",
+            "reply_to_msg_id": 9955438,
+            "root_msg_id": 9955438,
+        }
+        app._mark_runtime_message_consumed(event, "divination")
+        final_text = (
+            "【神物现世】！天机罗盘疯狂转动，最终指向一处被迷雾笼罩的上古神山！"
+            "卦象显示，【昆吾通行令】的机缘已降临于你！\n\n"
+            "天道示警：获取此等逆天之物，需献上祭品以获天道认可。\n"
+            "你是否愿意消耗 【三级妖丹】x4、【养魂木】x1 来换取它？\n\n"
+            "请在 5分钟 内回复本消息 .换取 来确认，超时则机缘消散。"
+        )
+
+        with patch("model.features.divination.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9966046))) as send_mock, \
+                patch("model.features.divination.send_audit_log", new=AsyncMock()), \
+                patch("model.features.divination.refresh_storage_bag_records_from_api", new=AsyncMock(return_value={"updated_identity_ids": [self.target_id], "updated_count": 1, "skipped_count": 0})), \
+                patch("model.features.divination.save_state", return_value=True), \
+                patch.object(app, "schedule_cleanup", new=AsyncMock()):
+            handled = await app._handle_routed_reply_event(
+                event,
+                final_text,
+                1000.0,
+                reply_to,
+                reply_context,
+                event_kind="edit",
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(".换取", send_mock.await_args.args[0])
+        self.assertEqual(self.target_id, send_mock.await_args.kwargs["send_as_id"])
+        self.assertEqual(9955440, send_mock.await_args.kwargs["reply_to"])
+
     async def test_storage_bag_sync_uses_background_task_wrapper(self):
         def close_coro(coro):
             coro.close()

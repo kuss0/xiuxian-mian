@@ -42,7 +42,7 @@ DEFAULT_GAME_BOT_IDS = {
 DEFAULT_FOCUS_SENDERS = (301299112,)
 
 SPECIAL_TWO_TOKEN_COMMANDS = {
-    ".神迹": {".神迹 布道"},
+    ".神迹": {".神迹 布道", ".神迹 赈灾"},
     ".交换": {".交换 法宝", ".交换 功法"},
     ".抉择": {".抉择 强行突破", ".抉择 稳固道心"},
     ".开启": {".开启副本", ".开启虚天殿", ".开启全部"},
@@ -76,7 +76,7 @@ COMMAND_FAMILY_PREFIXES = (
     ("tianti", (".天阶状态", ".问心台", ".登天阶", ".引九天罡风")),
     ("yuanying", (".元婴出窍", ".元婴状态", ".元婴闭关", ".元婴归窍", ".冲击元婴")),
     ("deep_retreat", (".深度闭关", ".查看闭关", ".闭关修炼", ".出关", ".强行出关")),
-    ("small_world", (".小世界", ".显灵", ".收割香火", ".神识淬炼", ".神迹", ".神迹 布道")),
+    ("small_world", (".小世界", ".显灵", ".收割香火", ".神识淬炼", ".神迹", ".神迹 布道", ".神迹 赈灾")),
     (
         "concubine",
         (
@@ -144,7 +144,9 @@ COMMAND_FAMILY_PREFIXES = (
             ".后殿抉择",
             ".后殿阵策",
             ".开启昆吾山",
+            ".加入昆吾山",
             ".进入昆吾山",
+            ".解散昆吾山",
             ".开启坠魔谷",
             ".进入坠魔谷",
             ".开启黄龙山",
@@ -321,7 +323,7 @@ def command_key(text: str) -> str:
         candidate = f"{first} {parts[1]}"
         if candidate in SPECIAL_TWO_TOKEN_COMMANDS[first]:
             return candidate
-    if first.startswith(".加入") and first in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府"}:
+    if first.startswith(".加入") and first in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山"}:
         return first
     if first in {
         ".器灵试炼",
@@ -597,7 +599,7 @@ def summarize_sent_health(analysis: Analysis) -> dict:
 
 def is_allowed_fast_repeat(text: str) -> bool:
     command = command_key(text)
-    if command in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府"}:
+    if command in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山"}:
         return True
     if command in {".稳", ".狠", ".骗"}:
         return True

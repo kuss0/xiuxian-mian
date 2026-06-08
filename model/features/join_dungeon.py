@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import re
 import time
 from collections import deque
@@ -37,6 +38,7 @@ DUNGEON_JOIN_THROTTLE_SEC = 5 * 60
 DUNGEON_JOIN_THROTTLE_MAX = 3
 DUNGEON_SENT_TTL_SEC = 30 * 60
 DUNGEON_ACTIVE_TTL_SEC = 2 * 60 * 60
+DUNGEON_SETTLEMENT_CONTEXT_TTL_SEC = 2 * 60 * 60
 DUNGEON_SUCCESS_COOLDOWN_SEC = 125 * 60
 DUNGEON_COOLDOWN_BUFFER_SEC = 30
 DUNGEON_FAILURE_GRACE_SEC = 3 * 60
@@ -54,6 +56,7 @@ _inbox = deque()
 _by_msg_id = {}
 _join_keys = {}
 _join_throttle = {}
+_settlement_notice_keys = {}
 
 
 def _event_chat_id(event):
@@ -179,6 +182,11 @@ def _cleanup(now=None):
             normalized["pending_room_id"] = ""
             normalized["pending_until"] = 0
             normalized["retry_count"] = 0
+            changed = True
+        if float(normalized.get("settlement_until", 0) or 0) > 0 and now >= float(normalized.get("settlement_until", 0) or 0):
+            normalized["settlement_room_id"] = ""
+            normalized["settlement_team_ids"] = []
+            normalized["settlement_until"] = 0
             changed = True
         if normalized != record:
             records[str(raw_identity_id)] = normalized
@@ -319,6 +327,14 @@ def _identity_id_by_username(username):
 
 def _normalize_run_record(record):
     record = record if isinstance(record, dict) else {}
+    settlement_team_ids = []
+    for raw_identity_id in record.get("settlement_team_ids") or []:
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            identity_id = 0
+        if identity_id > 0 and identity_id not in settlement_team_ids:
+            settlement_team_ids.append(identity_id)
     return {
         "participating": bool(record.get("participating")),
         "room_id": str(record.get("room_id") or ""),
@@ -332,6 +348,9 @@ def _normalize_run_record(record):
         "last_result": str(record.get("last_result") or ""),
         "last_error": str(record.get("last_error") or ""),
         "updated_at": float(record.get("updated_at", 0) or 0),
+        "settlement_room_id": str(record.get("settlement_room_id") or ""),
+        "settlement_team_ids": settlement_team_ids,
+        "settlement_until": float(record.get("settlement_until", 0) or 0),
     }
 
 
@@ -538,6 +557,54 @@ def _active_identity_ids_for_room(room_id, now):
     return identity_ids
 
 
+def _normalize_identity_ids(identity_ids):
+    normalized = []
+    for raw_identity_id in identity_ids or []:
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            identity_id = 0
+        if identity_id > 0 and identity_id not in normalized:
+            normalized.append(identity_id)
+    return normalized
+
+
+def _build_settlement_contexts(records, identity_ids, now):
+    contexts = {}
+    identity_ids = _normalize_identity_ids(identity_ids)
+    for identity_id in identity_ids:
+        record = _get_identity_run_record(records, identity_id)
+        room_id = str(record.get("room_id") or record.get("pending_room_id") or record.get("settlement_room_id") or "").strip()
+        if room_id:
+            team_ids = _active_identity_ids_for_room(room_id, now) or identity_ids
+        else:
+            team_ids = identity_ids
+        contexts[identity_id] = {
+            "settlement_room_id": room_id,
+            "settlement_team_ids": _normalize_identity_ids(team_ids),
+            "settlement_until": float(now or 0) + DUNGEON_SETTLEMENT_CONTEXT_TTL_SEC,
+        }
+    return contexts
+
+
+def _recent_settlement_identity_ids(now):
+    records = _get_run_records()
+    contexts = {}
+    for record in records.values():
+        normalized = _normalize_run_record(record)
+        if float(normalized.get("settlement_until", 0) or 0) <= float(now or 0):
+            continue
+        team_ids = _normalize_identity_ids(normalized.get("settlement_team_ids") or [])
+        if not team_ids:
+            continue
+        room_id = str(normalized.get("settlement_room_id") or "").strip()
+        key = room_id or ",".join(str(identity_id) for identity_id in team_ids)
+        contexts[key] = team_ids
+    if len(contexts) == 1:
+        return next(iter(contexts.values()))
+    return []
+
+
 def _expand_to_active_room_participants(identity_ids, now):
     records = _get_run_records()
     expanded = []
@@ -584,14 +651,23 @@ def _identity_ids_from_progress_usernames(text):
 
 
 def _resolve_progress_identity_ids(text, now):
+    terminal_settlement = _is_terminal_settlement_text(text)
     if _extract_team_section(text):
-        return _expand_to_active_room_participants(_identity_ids_from_team_usernames(text), now)
+        identity_ids = _expand_to_active_room_participants(_identity_ids_from_team_usernames(text), now)
+        if identity_ids or not terminal_settlement:
+            return identity_ids
+        return _recent_settlement_identity_ids(now)
     usernames = _extract_usernames(text)
     if usernames:
-        return _expand_to_active_room_participants(_identity_ids_from_text_usernames(text), now)
+        identity_ids = _expand_to_active_room_participants(_identity_ids_from_text_usernames(text), now)
+        if identity_ids or not terminal_settlement:
+            return identity_ids
+        return _recent_settlement_identity_ids(now)
     active_room_ids = _active_room_ids(now)
     if len(active_room_ids) == 1:
         return _active_identity_ids_for_room(active_room_ids[0], now)
+    if terminal_settlement:
+        return _recent_settlement_identity_ids(now)
     return []
 
 
@@ -606,10 +682,71 @@ def _is_success_progress_text(text):
     return False
 
 
+def _is_terminal_settlement_text(text):
+    raw = str(text or "")
+    if "【战利品结算" in raw:
+        return True
+    if "【后殿冲关止步】" in raw and "结算所得早已锁定" in raw:
+        return True
+    return False
+
+
+def _cleanup_settlement_notice_keys(now):
+    now = float(now or time.time())
+    for key, created_at in list(_settlement_notice_keys.items()):
+        try:
+            created_at = float(created_at or 0)
+        except (TypeError, ValueError):
+            created_at = 0
+        if created_at <= 0 or now >= created_at + DUNGEON_SENT_TTL_SEC:
+            _settlement_notice_keys.pop(key, None)
+    if len(_settlement_notice_keys) > DUNGEON_INBOX_MAX_ITEMS:
+        keep = {
+            key
+            for key, _ts in sorted(_settlement_notice_keys.items(), key=lambda item: float(item[1] or 0), reverse=True)[:DUNGEON_INBOX_MAX_ITEMS]
+        }
+        for key in list(_settlement_notice_keys):
+            if key not in keep:
+                _settlement_notice_keys.pop(key, None)
+
+
+def _mark_settlement_notice_once(text, now):
+    _cleanup_settlement_notice_keys(now)
+    digest = hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
+    if digest in _settlement_notice_keys:
+        return False
+    _settlement_notice_keys[digest] = float(now or time.time())
+    return True
+
+
+def _format_settlement_notice_text(text, identity_ids):
+    raw = str(text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    excerpt = "\n".join(lines[:10])
+    if len(excerpt) > 800:
+        excerpt = excerpt[:800].rstrip() + "..."
+    dungeon_kind = _infer_dungeon_kind(raw) or DUNGEON_KIND_VIRTUAL_HALL
+    dungeon_name = (DUNGEON_KIND_META.get(dungeon_kind) or DUNGEON_KIND_META[DUNGEON_KIND_VIRTUAL_HALL])["name"]
+    identity_count = len({int(identity_id or 0) for identity_id in identity_ids or [] if int(identity_id or 0) > 0})
+    cd_text = f"已记录 {identity_count} 个身份 CD" if identity_count else "未匹配到队伍身份，未写 CD"
+    return f"🧩 {dungeon_name}结算：{cd_text}\n\n结算成果：\n{excerpt}"
+
+
+async def _send_settlement_notice_once(text, identity_ids, now):
+    if not _is_terminal_settlement_text(text):
+        return False
+    if not _mark_settlement_notice_once(text, now):
+        return False
+    await send_audit_log(_format_settlement_notice_text(text, identity_ids), scope="global", limit=1200)
+    return True
+
+
 def _mark_success_cooldown(identity_ids, now):
     records = _get_run_records()
+    identity_ids = _normalize_identity_ids(identity_ids)
+    settlement_contexts = _build_settlement_contexts(records, identity_ids, now)
     changed = False
-    for identity_id in identity_ids or []:
+    for identity_id in identity_ids:
         record = _get_identity_run_record(records, identity_id)
         room_id = str(record.get("room_id") or record.get("pending_room_id") or "")
         record.update({
@@ -627,6 +764,7 @@ def _mark_success_cooldown(identity_ids, now):
             "last_error": "",
             "updated_at": float(now or 0),
         })
+        record.update(settlement_contexts.get(identity_id) or {})
         records[str(int(identity_id))] = record
         _record_dungeon_workflow_event(
             "progress_success_cooldown",
@@ -1122,7 +1260,10 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
 
     if _is_success_progress_text(raw):
         identity_ids = _resolve_progress_identity_ids(raw, now)
-        return _mark_success_cooldown(identity_ids, now)
+        handled = _mark_success_cooldown(identity_ids, now)
+        if handled:
+            await _send_settlement_notice_once(raw, identity_ids, now)
+        return handled
     if "挑战失败！" in raw:
         identity_ids = _resolve_progress_identity_ids(raw, now)
         return _mark_failure_pending(identity_ids, now)

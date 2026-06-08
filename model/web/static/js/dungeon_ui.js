@@ -42,7 +42,7 @@ function dungeonStatusClass(text) {
 function renderLightweightDungeonCommands() {
   const commands = [
     {label: '查询', command: '.查询副本'},
-    {label: '开房', command: '.开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>'},
+    {label: '开房', command: '.开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>'},
     {label: '加入', command: '.加入副本 @用户名 @用户名'},
     {label: '解散', command: '.解散副本'}
   ];

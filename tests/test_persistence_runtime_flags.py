@@ -38,6 +38,88 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
         persistence._db_conn = None
         persistence._db_initialized = False
 
+    def test_divination_daily_limit_roundtrips_as_integer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990000
+                state_module.ensure_identity_registered(identity_id)
+                state_module.set_divination_daily_limit(identity_id, 9)
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                row = conn.execute(
+                    "SELECT divination_daily_limit FROM identity_module_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(9, row["divination_daily_limit"])
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+                self.assertEqual(9, state_module.get_divination_daily_limit(identity_id))
+
+    def test_small_world_preach_legacy_default_normalization_is_one_time(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                persistence.init_db()
+                conn = persistence.get_db_conn()
+                for identity_id, enabled, preach, manifest in [
+                    (990010, False, True, False),
+                    (990011, True, True, False),
+                    (990012, False, True, True),
+                    (990013, False, False, False),
+                ]:
+                    state_module.ensure_identity_registered(identity_id)
+                    with state_module.use_identity(identity_id):
+                        state_module.state["small_world_enabled"] = enabled
+                        state_module.state["small_world_preach_enabled"] = preach
+                        state_module.state["small_world_manifest_enabled"] = manifest
+                self.assertTrue(persistence.save_state())
+                conn.execute(
+                    "DELETE FROM meta WHERE key = ?",
+                    (persistence.SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY,),
+                )
+
+                persistence._normalize_small_world_preach_defaults(conn)
+
+                rows = conn.execute(
+                    """
+                    SELECT send_as_id, small_world_preach_enabled
+                    FROM identity_module_state
+                    WHERE send_as_id BETWEEN 990010 AND 990013
+                    ORDER BY send_as_id
+                    """
+                ).fetchall()
+                self.assertEqual(
+                    {
+                        990010: 0,
+                        990011: 1,
+                        990012: 1,
+                        990013: 0,
+                    },
+                    {int(row["send_as_id"]): int(row["small_world_preach_enabled"]) for row in rows},
+                )
+                marker = conn.execute(
+                    "SELECT value FROM meta WHERE key = ?",
+                    (persistence.SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY,),
+                ).fetchone()
+                self.assertEqual("1", marker["value"])
+
+                conn.execute(
+                    "UPDATE identity_module_state SET small_world_preach_enabled = 1 WHERE send_as_id = ?",
+                    (990010,),
+                )
+                persistence._normalize_small_world_preach_defaults(conn)
+                row = conn.execute(
+                    "SELECT small_world_preach_enabled FROM identity_module_state WHERE send_as_id = ?",
+                    (990010,),
+                ).fetchone()
+                self.assertEqual(1, int(row["small_world_preach_enabled"]))
+
     def test_phaseful_log_dedupe_flags_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

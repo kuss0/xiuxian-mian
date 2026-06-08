@@ -45,6 +45,8 @@ from .config import (
     CMD_TIANXING_SET_STAR,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    CMD_DIVINATION,
+    CMD_DIVINATION_EXCHANGE,
     CMD_EXPLORE_RIFT,
     CMD_GUANXING,
     CMD_GUANXING_SHIFT,
@@ -62,6 +64,7 @@ from .config import (
     CMD_REPLICA_CANGKUN_JOIN,
     CMD_REPLICA_HUANGLONG_JOIN,
     CMD_REPLICA_JOIN,
+    CMD_REPLICA_KUNWU_JOIN,
     CMD_REPLICA_ZHUIMO_JOIN,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
@@ -72,6 +75,7 @@ from .config import (
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
     CMD_SMALL_WORLD_QUERY,
+    CMD_SMALL_WORLD_RELIEF,
     CMD_SMALL_WORLD_REFINE,
     CMD_TIANTI_CLIMB,
     CMD_TIANTI_GANGFENG,
@@ -253,11 +257,14 @@ DUNGEON_QUIET_ALLOWED_PREFIXES = (
     ".进入坠魔谷",
     ".进入黄龙山",
     ".进入苍坤洞府",
+    ".进入昆吾山",
     ".选择道路",
     ".阵策",
     ".争鼎",
     ".后殿抉择",
     ".后殿阵策",
+    ".坠魔抉择",
+    ".黄龙抉择",
     ".苍坤抉择",
 )
 
@@ -572,10 +579,13 @@ REPLY_FAMILY_COMMANDS = {
     "wendao": {CMD_WENDAO},
     "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
     "small_world_preach": {CMD_SMALL_WORLD_PREACH},
+    "small_world_relief": {CMD_SMALL_WORLD_RELIEF},
     "small_world_query": {CMD_SMALL_WORLD_QUERY},
     "small_world_manifest": {CMD_SMALL_WORLD_MANIFEST},
     "small_world_harvest": {CMD_SMALL_WORLD_HARVEST},
     "small_world_refine": {CMD_SMALL_WORLD_REFINE},
+    "divination": {CMD_DIVINATION},
+    "divination_exchange": {CMD_DIVINATION_EXCHANGE},
     "concubine_status": {CMD_CONCUBINE_STATUS},
     "concubine_greet": {CMD_CONCUBINE_DAILY_GREET},
     "concubine_gift": {CMD_CONCUBINE_GIFT_STONE},
@@ -616,7 +626,7 @@ REPLY_FAMILY_COMMANDS = {
     "storage_bag_listing": {".上架"},
     "storage_bag_buy": {".购买"},
     "storage_bag_gift": {".赠送"},
-    "replica_join": {CMD_REPLICA_JOIN, CMD_REPLICA_ZHUIMO_JOIN, CMD_REPLICA_HUANGLONG_JOIN, CMD_REPLICA_CANGKUN_JOIN},
+    "replica_join": {CMD_REPLICA_JOIN, CMD_REPLICA_ZHUIMO_JOIN, CMD_REPLICA_HUANGLONG_JOIN, CMD_REPLICA_CANGKUN_JOIN, CMD_REPLICA_KUNWU_JOIN},
 }
 COMMAND_TO_REPLY_FAMILY = {
     command: family
@@ -2224,6 +2234,14 @@ def _command_matches_prefixes(command, prefixes):
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in prefixes)
 
 
+def _is_known_replica_choice_command(command):
+    raw = str(command or "").strip()
+    if raw in {".选择 强行摘取", ".选择 静待时机"}:
+        return True
+    suffix = raw.removeprefix(".选择 岔路")
+    return suffix != raw and suffix.isdigit()
+
+
 def _weakness_allows_command(command, send_as_id=None):
     if send_as_id is not None:
         identity_state = get_identity_state(send_as_id)
@@ -2254,6 +2272,8 @@ async def _dungeon_quiet_blocks_send(command, priority, send_as_id=None):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         return False
     if _command_matches_prefixes(command, DUNGEON_QUIET_ALLOWED_PREFIXES):
+        return False
+    if _is_known_replica_choice_command(command):
         return False
     if not is_dungeon_quiet_active():
         return False

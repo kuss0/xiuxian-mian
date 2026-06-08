@@ -137,6 +137,7 @@ from .state import (
     get_identity_account_map,
     get_identity_ui_display_name,
     get_identity_state,
+    get_divination_daily_limit,
     get_module_window_hours_local,
     get_pending_command,
     get_realm_sort_key,
@@ -165,6 +166,7 @@ from .state import (
     set_identity_account,
     set_identity_account_map,
     set_identity_enabled as set_identity_enabled_profile,
+    set_divination_daily_limit,
     set_pet_name,
     set_pet_warm_name,
     set_pet_trial_name,
@@ -2732,6 +2734,7 @@ def get_identity_ui_snapshot(send_as_id):
             "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
             "wild_training_strategy": get_wild_training_strategy(send_as_id),
             "wild_training_strategy_choices": ["谨慎", "均衡", "深入"],
+            "divination_daily_limit": get_divination_daily_limit(send_as_id),
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
             "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
             "second_soul_choice_strategy_choices": [
@@ -2741,7 +2744,7 @@ def get_identity_ui_snapshot(send_as_id):
             "tianti_cycle_count": int(identity_state.get("tianti_cycle_count", 0) or 0),
             "tianti_wenxin_enabled": bool(identity_state.get("tianti_wenxin_enabled", True)),
             "tianti_gangfeng_enabled": bool(identity_state.get("tianti_gangfeng_enabled", True)),
-            "small_world_preach_enabled": bool(identity_state.get("small_world_preach_enabled", True)),
+            "small_world_preach_enabled": bool(identity_state.get("small_world_preach_enabled", False)),
             "small_world_manifest_enabled": bool(identity_state.get("small_world_manifest_enabled", False)),
             "small_world_harvest_enabled": bool(identity_state.get("small_world_harvest_enabled", False)),
             "small_world_refine_enabled": bool(identity_state.get("small_world_refine_enabled", False)),
@@ -3160,7 +3163,7 @@ async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
         return False, f"未知身份: {send_as_id}"
     feature_name = str(feature_name or "").strip()
     feature_map = {
-        "preach": ("small_world_preach_enabled", "浩劫布道"),
+        "preach": ("small_world_preach_enabled", "神迹维护"),
         "manifest": ("small_world_manifest_enabled", "自动显灵"),
         "harvest": ("small_world_harvest_enabled", "收割香火"),
         "refine": ("small_world_refine_enabled", "神识淬炼"),
@@ -3180,6 +3183,22 @@ async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
         send_as_id=send_as_id,
     )
     return True, f"已{action_text}小世界{display_name}[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_divination_config(send_as_id, daily_limit=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    if daily_limit is not None:
+        set_divination_daily_limit(send_as_id, daily_limit)
+    save_state()
+    limit = get_divination_daily_limit(send_as_id)
+    await send_audit_log(
+        f"🔮 已更新卜筮问天次数：{limit}/日",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已更新卜筮问天次数[{get_identity_display_name(send_as_id)}]：{limit}/日"
 
 
 async def ui_set_stargazer_star_choice(send_as_id, choice):
@@ -4835,6 +4854,18 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/divination-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_divination_config(send_as_id, daily_limit=payload.get("daily_limit"))
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-star-choice":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -5127,6 +5158,7 @@ __all__ = [
     "ui_set_module_window",
     "ui_set_pet_name",
     "ui_set_small_world_feature_enabled",
+    "ui_set_divination_config",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",
     "ui_sync_tianti_status",

@@ -44,9 +44,12 @@ GUARDED_BUSINESS_PREFIXES = (
     ".搜寻节点",
     ".小世界",
     ".神迹 布道",
+    ".神迹 赈灾",
     ".显灵",
     ".收割香火",
     ".神识淬炼",
+    ".卜筮问天",
+    ".换取",
 )
 PENDING_PHASE_SUFFIX = "_pending"
 PHASEFUL_ATTENTION_PHASES = {

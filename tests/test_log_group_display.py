@@ -119,6 +119,7 @@ class LogGroupDisplayTests(unittest.TestCase):
             ".第二元神状态",
             ".太一状态",
             ".小世界状态",
+            ".卜筮问天状态",
             ".点卯状态",
             ".宗门传功状态",
             ".闯塔状态",
@@ -141,6 +142,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(("第二元神", True), toggles)
         self.assertIn(("天星宗", True), toggles)
         self.assertIn(("阴罗宗", True), toggles)
+        self.assertIn(("卜筮问天", True), toggles)
         self.assertIn(("太一", False), toggles)
         self.assertIn(("自动副本", True), toggles)
 

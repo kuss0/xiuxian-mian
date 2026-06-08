@@ -103,7 +103,9 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         send_as_id = 8659059188
         now = 9000.0
         state_module.ensure_identity_registered(send_as_id)
-        panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)
+        panel = small_world._parse_small_world_panel(
+            LATEST_SMALL_WORLD_PANEL.replace("⚖️ 稳定: 50 / 100", "⚖️ 稳定: 90 / 100")
+        )
 
         with state_module.use_identity(send_as_id):
             state_module.state["small_world_enabled"] = True
@@ -125,10 +127,219 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             snapshot = state_module.state["small_world_panel_snapshot"]
             self.assertEqual("获赦之人_cu", snapshot["owner"])
             self.assertEqual("草创神龛", snapshot["temple_name"])
-            self.assertEqual(50, snapshot["stability"])
+            self.assertEqual(90, snapshot["stability"])
             self.assertEqual(116.40, snapshot["hourly_output"])
             self.assertEqual("未开启", snapshot["barrier_status"])
             self.assertEqual("8分钟59秒", snapshot["wait_text"])
+
+    async def test_low_stability_wait_panel_without_preach_enabled_only_schedules_wait(self):
+        send_as_id = 8659059198
+        now = 9050.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(LATEST_SMALL_WORLD_PANEL)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            self.assertFalse(state_module.state["small_world_preach_enabled"])
+            with (
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "save_state"),
+                patch.object(small_world.random, "uniform", return_value=60),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            relief_mock.assert_not_awaited()
+            preach_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(
+                now + (8 * 60 + 59) + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+
+    async def test_wait_panel_with_low_stability_sends_relief_before_wait(self):
+        send_as_id = 8659059189
+        now = 9100.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【获赦之人_ta的小世界】\n\n"
+            "⛩️ 神庙: Lv.1【草创神龛】\n"
+            "👥 人口: 99830 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 92 / 100\n"
+            "⚖️ 稳定: 49 / 100\n"
+            "☁️ 待收香火: 598.75\n"
+            "🏺 香火库存: 230\n"
+            "🔥 预计产出: 109.66 香火/小时\n"
+            "🛡️ 护界禁制: 未开启\n"
+            "🧠 神识强度: 81\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时59分钟21秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            relief_mock.assert_awaited_once_with(now, "人口 99830 缺口 170，优先赈灾")
+            preach_mock.assert_not_awaited()
+
+    async def test_wait_panel_with_population_deficit_sends_relief(self):
+        send_as_id = 8659059190
+        now = 9200.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 97000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 95 / 100\n"
+            "⚖️ 稳定: 90 / 100\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时25分钟57秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            relief_mock.assert_awaited_once_with(now, "人口 97000 缺口 3000，优先赈灾")
+            preach_mock.assert_not_awaited()
+
+    async def test_wait_panel_with_low_faith_only_sends_preach(self):
+        send_as_id = 8659059199
+        now = 9300.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 5 / 100\n"
+            "⚖️ 稳定: 100 / 100\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时25分钟57秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            preach_mock.assert_awaited_once_with(now, "信仰 5/100，布道维护")
+            relief_mock.assert_not_awaited()
+
+    async def test_wait_panel_with_faith_below_max_sends_preach(self):
+        send_as_id = 8659059200
+        now = 9320.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 99 / 100\n"
+            "⚖️ 稳定: 100 / 100\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时25分钟57秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            preach_mock.assert_awaited_once_with(now, "信仰 99/100，布道维护")
+            relief_mock.assert_not_awaited()
+
+    async def test_wait_panel_with_stability_below_max_sends_relief(self):
+        send_as_id = 8659059201
+        now = 9340.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 100 / 100\n"
+            "⚖️ 稳定: 99 / 100\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时25分钟57秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            relief_mock.assert_awaited_once_with(now, "稳定 99/100，赈灾维护")
+            preach_mock.assert_not_awaited()
+
+    async def test_maintenance_waits_when_next_disaster_wave_is_near(self):
+        send_as_id = 8659059202
+        now = 20000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 99 / 100\n"
+            "⚖️ 稳定: 100 / 100\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时25分钟57秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_last_disaster_wave_at"] = now - (2 * 3600 + 40 * 60)
+            with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            preach_mock.assert_not_awaited()
+            relief_mock.assert_not_awaited()
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertEqual(
+                small_world.SMALL_WORLD_GOD_PRIORITY_MAINTENANCE,
+                state_module.state["small_world_pending_god_priority"],
+            )
+            self.assertEqual(now + 45 * 60 + 60, state_module.state["next_small_world_time"])
+            self.assertIn("让位下一波灾害", state_module.state["small_world_last_error"])
 
     async def test_no_prayer_small_incense_does_not_harvest_again(self):
         send_as_id = 8659059191
@@ -149,6 +360,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_enabled"] = True
             state_module.state["small_world_harvest_enabled"] = True
             state_module.state["small_world_refine_enabled"] = True
+            state_module.state["next_small_world_time"] = now + 12345
             state_module.state["small_world_refresh_enabled"] = True
             with (
                 patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
@@ -300,6 +512,64 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 1 + 120, state_module.state["next_small_world_time"])
             self.assertIn("等待回执", state_module.state["small_world_last_error"])
 
+    async def test_send_manifest_does_not_enter_generic_retry_queue(self):
+        send_as_id = 8659059299
+        now = 3250.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7605, sent_at=now + 1))) as send_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_manifest(now)
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once_with(
+                small_world.CMD_SMALL_WORLD_MANIFEST,
+                track=False,
+                max_retry=0,
+                priority="chain",
+            )
+            self.assertEqual("manifest_pending", state_module.state["small_world_phase"])
+            self.assertEqual(7605, state_module.state["small_world_manifest_msg_id"])
+            self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
+
+    async def test_manifest_timeout_closes_chain_without_resending(self):
+        send_as_id = 8659059300
+        now = 3350.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 7606
+            state_module.state["small_world_manifest_cost_text"] = "修为x500"
+            state_module.state["next_small_world_time"] = now - 1
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+                patch.object(small_world, "save_state"),
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_awaited_once()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_CYCLE_CD_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC,
+                state_module.state["next_small_world_time"],
+            )
+            self.assertIn("manifest_pending 等待回复超时", state_module.state["small_world_last_error"])
+
     async def test_harvest_timeout_rechecks_panel_instead_of_refining_from_local_stock(self):
         send_as_id = 8659059296
         now = 3300.0
@@ -369,10 +639,13 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
                 patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
                 patch.object(small_world, "save_state"),
             ):
                 handled = await small_world.handle_small_world_preach_reply(
-                    "【神音浩荡】\n信仰值大幅提升至 96！",
+                    "【神音浩荡】\n"
+                    "你消耗 2000 点修为，在天穹之上显化法相，传颂大道！\n"
+                    "凡人狂热膜拜，信仰提升至 96，稳定提升至 90！",
                     now,
                     reply_to=None,
                     matched_family="small_world_preach",
@@ -380,11 +653,358 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             preach_mock.assert_not_awaited()
-            audit_mock.assert_awaited_once()
+            audit_mock.assert_not_awaited()
+            self.assertEqual(96, state_module.state["small_world_faith_value"])
+            self.assertEqual(90, state_module.state["small_world_panel_snapshot"]["stability"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
 
-    async def test_incense_theft_broadcast_schedules_short_calibration(self):
+    async def test_relief_reply_updates_population_faith_stability_and_followup(self):
+        send_as_id = 8659059301
+        now = 4100.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7701
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_panel_snapshot"] = {
+                "population": 99830,
+                "capacity": 100000,
+                "faith": 92,
+                "faith_max": 100,
+                "stability": 49,
+                "stability_max": 100,
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "【天降甘霖】\n"
+                    "你消耗了 2000 灵石，化作无边甘霖滋润凡间！\n"
+                    "凡人感念神恩，人口恢复了 1435 人，信仰提升至 100，稳定提升至 75！",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertEqual(100000, snapshot["population"])
+            self.assertEqual(100, snapshot["faith"])
+            self.assertEqual(75, snapshot["stability"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+
+    async def test_god_reply_clears_only_god_retry_pending_tasks(self):
+        send_as_id = 8659059305
+        now = 4150.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 8801
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["pending_tasks"] = {
+                8801: {"cmd": small_world.CMD_SMALL_WORLD_RELIEF, "sent_at": now - 5, "retry": 0},
+                8802: {"cmd": small_world.CMD_SMALL_WORLD_PREACH, "sent_at": now - 4, "retry": 0},
+                8803: {"cmd": small_world.CMD_SMALL_WORLD_QUERY, "sent_at": now - 3, "retry": 0},
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "【天降甘霖】\n"
+                    "凡人感念神恩，人口恢复了 1435 人，信仰提升至 100，稳定提升至 75！",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual({8803}, set(state_module.state["pending_tasks"].keys()))
+            self.assertEqual(small_world.CMD_SMALL_WORLD_QUERY, state_module.state["pending_tasks"][8803]["cmd"])
+
+    async def test_god_cooldown_reply_clears_pending_and_uses_real_wait(self):
+        send_as_id = 8659059302
+        now = 4200.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7702
+            state_module.state["small_world_preach_due_at"] = now + 30
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "凡间方才承受神谕，需再等待 2小时14分钟9秒。",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertIn("神迹冷却中", state_module.state["small_world_last_error"])
+            self.assertEqual(
+                now + (2 * 3600 + 14 * 60 + 9) + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+
+    async def test_god_cooldown_reply_preserves_pending_action(self):
+        send_as_id = 8659059306
+        now = 4250.0
+        wait_sec = 2 * 3600 + 14 * 60 + 9
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7706
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_pending_god_action"] = "relief"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 地脉翻身，赈灾安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["small_world_pending_god_at"] = now - 10
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "凡间方才承受神谕，需再等待 2小时14分钟9秒。",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual("relief", state_module.state["small_world_pending_god_action"])
+            self.assertEqual(
+                small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                state_module.state["small_world_pending_god_priority"],
+            )
+            self.assertEqual(now + wait_sec + small_world.CD_BUFFER_SEC, state_module.state["small_world_god_cooldown_until"])
+            self.assertEqual(
+                now + wait_sec + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+
+    async def test_god_success_clears_pending_when_snapshot_is_full(self):
+        send_as_id = 8659059307
+        now = 4260.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7707
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_pending_god_action"] = "preach"
+            state_module.state["small_world_pending_god_reason"] = "信仰 95/100，布道维护"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_MAINTENANCE
+            state_module.state["small_world_panel_snapshot"] = {
+                "faith": 95,
+                "faith_max": 100,
+                "stability": 100,
+                "stability_max": 100,
+                "population": 100000,
+                "capacity": 100000,
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "【神音浩荡】\n信仰提升至 100，稳定提升至 100！",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_preach",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("", state_module.state["small_world_pending_god_action"])
+            self.assertEqual(0, state_module.state["small_world_pending_god_priority"])
+            self.assertEqual(now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC, state_module.state["small_world_god_cooldown_until"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_GOD_FOLLOWUP_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+
+    async def test_scheduler_sends_due_pending_god_action_before_query_chain(self):
+        send_as_id = 8659059308
+        now = 4270.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_pending_god_action"] = "relief"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 地脉翻身，赈灾安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["next_small_world_time"] = now - 1
+
+            with (
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock,
+                patch.object(small_world, "_send_query", new=AsyncMock()) as query_mock,
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            relief_mock.assert_awaited_once_with(now, "灾害: 地脉翻身，赈灾安抚")
+            query_mock.assert_not_awaited()
+
+    async def test_due_disaster_god_action_preempts_chain_pending_phase(self):
+        send_as_id = 8659059311
+        now = 4280.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 8808
+            state_module.state["small_world_pending_god_action"] = "relief"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 地脉翻身，赈灾安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["next_small_world_time"] = now + 600
+
+            with patch.object(small_world, "_send_small_world_relief", new=AsyncMock(return_value=True)) as relief_mock:
+                await small_world.run_small_world_scheduler(now)
+
+            relief_mock.assert_awaited_once_with(now, "灾害: 地脉翻身，赈灾安抚")
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+
+    async def test_god_pending_blocks_scheduler_until_reply_or_timeout(self):
+        send_as_id = 8659059303
+        now = 4300.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7703
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["next_small_world_time"] = now - 1
+
+            with (
+                patch.object(small_world, "_send_query", new=AsyncMock()) as query_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            query_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+            self.assertEqual("preach_pending", state_module.state["small_world_phase"])
+            self.assertEqual(7703, state_module.state["small_world_preach_reply_to_msg_id"])
+
+    async def test_disaster_pending_overrides_maintenance_pending(self):
+        send_as_id = 8659059309
+        now = 4320.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="wxjerry", label="wxjerry")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_pending_god_action"] = "preach"
+            state_module.state["small_world_pending_god_reason"] = "信仰 99/100，布道维护"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_MAINTENANCE
+            state_module.state["small_world_pending_god_at"] = now - 20
+            state_module.state["small_world_god_cooldown_until"] = now + 600
+
+            with (
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_disaster_broadcast(
+                    "⚡ 【小世界·天降浩劫】 ⚡\n"
+                    "道友 @wxjerry 的小世界遭遇 【地脉翻身】！\n"
+                    "小世界地壳变动，大地震导致神庙倒塌，稳定动摇。\n"
+                    "❌ 惨重代价: 稳定 -16 点\n"
+                    "请速速查看 .小世界 并安抚信徒！",
+                    now,
+                    event=None,
+                )
+
+            self.assertTrue(handled)
+            relief_mock.assert_not_awaited()
+            self.assertEqual("relief", state_module.state["small_world_pending_god_action"])
+            self.assertEqual(
+                small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                state_module.state["small_world_pending_god_priority"],
+            )
+            self.assertIn("地脉翻身", state_module.state["small_world_pending_god_reason"])
+            self.assertEqual(now + 600 + 60, state_module.state["next_small_world_time"])
+
+    async def test_evil_god_incense_loss_queues_disaster_preach(self):
         send_as_id = 8659059195
         now = 5000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="wxjerry", label="wxjerry")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_phase"] = "refine_sent"
+            state_module.state["small_world_refine_msg_id"] = 123
+            state_module.state["small_world_incense_stock"] = 8
+            state_module.state["next_small_world_time"] = now + 60
+
+            with (
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
+                patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_disaster_broadcast(
+                    "⚡ 【小世界·天降浩劫】 ⚡\n"
+                    "道友 @wxjerry 的小世界遭遇 【邪神蛊惑】！\n"
+                    "有域外邪神潜入小世界传播伪教，窃取了你的香火！\n"
+                    "❌ 惨重代价: 库存香火损失 3 点\n"
+                    "请速速查看 .小世界 并安抚信徒！",
+                    now,
+                    event=None,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_refine_msg_id"])
+            self.assertEqual(5, state_module.state["small_world_incense_stock"])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertEqual(
+                small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                state_module.state["small_world_pending_god_priority"],
+            )
+            self.assertIn("邪神蛊惑", state_module.state["small_world_pending_god_reason"])
+            preach_mock.assert_awaited_once_with(now, "灾害: 邪神蛊惑，布道安抚")
+            relief_mock.assert_not_awaited()
+
+    async def test_unmapped_incense_loss_broadcast_schedules_short_calibration(self):
+        send_as_id = 8659059310
+        now = 5050.0
         state_module.ensure_identity_registered(send_as_id)
         state_module.update_send_as_profile(send_as_id, username="wxjerry", label="wxjerry")
 
@@ -404,8 +1024,8 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             ):
                 handled = await small_world.handle_small_world_disaster_broadcast(
                     "⚡ 【小世界·天降浩劫】 ⚡\n"
-                    "道友 @wxjerry 的小世界遭遇 【邪神蛊惑】！\n"
-                    "有域外邪神潜入小世界传播伪教，窃取了你的香火！\n"
+                    "道友 @wxjerry 的小世界遭遇 【香火失窃】！\n"
+                    "一阵怪风卷过供台，窃取了你的香火！\n"
                     "❌ 惨重代价: 库存香火损失 3 点\n"
                     "请速速查看 .小世界 并安抚信徒！",
                     now,
@@ -501,6 +1121,294 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(8, state_module.state["small_world_incense_stock"])
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["skip_reasons"]["external_owner_no_match"])
+
+    async def test_passive_small_world_prayer_panel_updates_snapshot_without_manifest(self):
+        send_as_id = 8659059397
+        now = 7050.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="walterwa2000", label="wa2000", daohao="清源子")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955049)
+        text = (
+            "【清源子的小世界】\n\n"
+            "⛩️ 神庙: Lv.1【草创神龛】\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 96 / 100\n"
+            "⚖️ 稳定: 65 / 100\n"
+            "☁️ 待收香火: 4754.97\n"
+            "🏺 香火库存: 0\n"
+            "🔥 凡人祈愿：瘟疫\n"
+            "📝 一场恶疾在凡人城池中蔓延，凡人焚香祷告，求神仙救命。\n"
+            "⚡ 显灵消耗: 清灵丹x2\n"
+            "请使用 .显灵 响应祈愿，或忽略之。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+            patch.object(small_world, "_send_manifest", new=AsyncMock()) as manifest_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context=None,
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        manifest_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
+            self.assertEqual("清灵丹x2", state_module.state["small_world_panel_snapshot"]["manifest_cost"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_CYCLE_CD_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC,
+                state_module.state["next_small_world_time"],
+            )
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["modules"]["small_world"])
+
+    async def test_passive_small_world_script_query_reply_does_not_duplicate_manifest(self):
+        send_as_id = 8659059398
+        now = 7060.0
+        state_module.ensure_identity_registered(send_as_id)
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955050)
+        text = (
+            "【清源子的小世界】\n\n"
+            "🙏 信仰: 96 / 100\n"
+            "⚖️ 稳定: 65 / 100\n"
+            "🔥 凡人祈愿：瘟疫\n"
+            "⚡ 显灵消耗: 清灵丹x2\n"
+            "请使用 .显灵 响应祈愿，或忽略之。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_query_msg_id"] = 8804
+            state_module.state["my_msg_ids"] = {8804: now - 1}
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "_send_manifest", new=AsyncMock()) as manifest_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "small_world_query",
+                    "reply_to_msg_id": 8804,
+                    "root_msg_id": 8804,
+                },
+                event=event,
+                event_type="message",
+            )
+
+        self.assertFalse(handled)
+        manifest_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["skip_reasons"]["no_change"])
+
+    async def test_passive_small_world_low_stability_updates_wait_without_relief(self):
+        send_as_id = 8659059399
+        now = 7070.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="walterwa2000", label="wa2000", daohao="清源子")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955051)
+        text = (
+            "【清源子的小世界】\n\n"
+            "👥 人口: 99830 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 96 / 100\n"
+            "⚖️ 稳定: 49 / 100\n"
+            "☁️ 待收香火: 598.75\n"
+            "🏺 香火库存: 230\n\n"
+            "暂无祈愿，凡间风调雨顺。\n"
+            "(下一次祈愿感应需等待: 5小时59分钟21秒)"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+            patch.object(small_world, "_send_small_world_relief", new=AsyncMock()) as relief_mock,
+            patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context=None,
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        relief_mock.assert_not_awaited()
+        preach_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(99830, state_module.state["small_world_panel_snapshot"]["population"])
+            self.assertEqual(
+                now
+                + (5 * 3600 + 59 * 60 + 21)
+                + small_world.CD_BUFFER_SEC
+                + small_world.SMALL_WORLD_JITTER_MIN_SEC,
+                state_module.state["next_small_world_time"],
+            )
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["modules"]["small_world"])
+
+    async def test_passive_small_world_panel_does_not_start_tool_chain(self):
+        send_as_id = 8659059400
+        now = 7080.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="walterwa2000", label="wa2000", daohao="清源子")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955052)
+        text = (
+            "【清源子的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 99 / 100\n"
+            "⚖️ 稳定: 100 / 100\n"
+            "☁️ 待收香火: 1608.92\n"
+            "🏺 香火库存: 1038\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["next_small_world_time"] = now + 12345
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+            patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+            patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context=None,
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        harvest_mock.assert_not_awaited()
+        refine_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(now + 12345, state_module.state["next_small_world_time"])
+
+    async def test_passive_small_world_no_wait_due_panel_schedules_next_cycle(self):
+        send_as_id = 8659059401
+        now = 7090.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="walterwa2000", label="wa2000", daohao="清源子")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955053)
+        text = (
+            "【清源子的小世界】\n\n"
+            "👥 人口: 100000 人\n"
+            "🏙️ 承载上限: 100000 人\n"
+            "🙏 信仰: 99 / 100\n"
+            "⚖️ 稳定: 100 / 100\n"
+            "☁️ 待收香火: 1.0\n"
+            "🏺 香火库存: 3\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["next_small_world_time"] = now - 1
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+            patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+            patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context=None,
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        harvest_mock.assert_not_awaited()
+        refine_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_CYCLE_CD_SEC + small_world.SMALL_WORLD_JITTER_MIN_SEC,
+                state_module.state["next_small_world_time"],
+            )
+
+    async def test_manifest_expired_prayer_uses_real_wait_and_applies_delta(self):
+        send_as_id = 8659059304
+        now = 7100.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 7804
+            state_module.state["small_world_panel_snapshot"] = {
+                "faith": 92,
+                "faith_max": 100,
+                "stability": 49,
+                "stability_max": 100,
+                "population": 99830,
+                "capacity": 100000,
+            }
+
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_manifest_reply(
+                    "这道凡人祈愿已经拖延超过 24 小时，天机已散，无法再显灵。\n"
+                    "(信仰 -5, 稳定 -8, 人口 -200)\n"
+                    "下一次凡人祈愿感应需等待 360 分钟。",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            self.assertIn("天机已散", state_module.state["small_world_last_error"])
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertEqual(87, snapshot["faith"])
+            self.assertEqual(41, snapshot["stability"])
+            self.assertEqual(99630, snapshot["population"])
+            self.assertEqual(
+                now + 360 * 60 + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
 
     async def test_manifest_success_deducts_cached_storage_cost_from_panel(self):
         send_as_id = 8659059197

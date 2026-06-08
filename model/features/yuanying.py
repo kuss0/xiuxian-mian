@@ -86,6 +86,7 @@ YUANYING_SPEC = PhasefulSpec(
     summary_due_delay_min_sec=30,
     summary_due_delay_max_sec=90,
     summary_active_query_grace_sec=5 * 60,
+    summary_due_timeout_action="wait_passive",
     queued_launch_timeout_action="relaunch",
     summary_observe_sec=45,
     summary_retry_min_sec=45,

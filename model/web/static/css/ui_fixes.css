@@ -4,6 +4,12 @@
   overscroll-behavior: contain;
 }
 
+.divination-limit-input {
+  width: 72px;
+  min-width: 72px;
+  padding: 6px 8px;
+}
+
 .modal-card {
   max-height: calc(100vh - 48px);
   overflow-y: auto;

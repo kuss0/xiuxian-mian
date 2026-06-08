@@ -5,7 +5,7 @@ import sqlite3
 import time
 import traceback
 
-from .config import DB_FILE, DB_SCHEMA_VERSION, FLUSH_INTERVAL_SEC, RETRY_LIMIT
+from .config import DB_FILE, DB_SCHEMA_VERSION, DIVINATION_DEFAULT_DAILY_LIMIT, FLUSH_INTERVAL_SEC, RETRY_LIMIT
 from .state import (
     IDENTITY_BOOL_FIELDS,
     IDENTITY_JSON_COLUMNS,
@@ -32,6 +32,8 @@ from .state import (
     get_identity_ids,
     get_identity_state,
     get_pending_command,
+    get_divination_pending_exchanges,
+    get_divination_run_state,
     get_replica_group_id,
     get_replica_group_ids,
     get_replica_dispatch_group_ids,
@@ -59,6 +61,8 @@ from .state import (
     get_quiz_learning_watchers,
     set_game_group_id,
     set_game_topic_id,
+    set_divination_pending_exchanges,
+    set_divination_run_state,
     set_guanxing_monitor_enabled,
     set_guanxing_monitor_targets,
     set_guanxing_round_state,
@@ -95,6 +99,7 @@ _state_dirty = False
 _last_flush_time = 0
 _last_save_failed_at = 0.0
 _last_save_error = ""
+SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY = "small_world_preach_default_normalized"
 
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
@@ -189,7 +194,7 @@ def _ensure_schema_columns(conn):
     if "small_world_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_preach_enabled" not in module_columns:
-        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_preach_enabled INTEGER NOT NULL DEFAULT 1")
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_preach_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_manifest_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_manifest_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_harvest_enabled" not in module_columns:
@@ -198,6 +203,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refine_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_refresh_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
+    if "divination_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN divination_enabled INTEGER NOT NULL DEFAULT 0")
+    if "divination_daily_limit" not in module_columns:
+        conn.execute(f"ALTER TABLE identity_module_state ADD COLUMN divination_daily_limit INTEGER NOT NULL DEFAULT {int(DIVINATION_DEFAULT_DAILY_LIMIT)}")
     if "dungeon_join_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN dungeon_join_enabled INTEGER NOT NULL DEFAULT 0")
     if "wendao_enabled" not in module_columns:
@@ -659,6 +668,18 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "small_world_preach_due_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_preach_due_at REAL NOT NULL DEFAULT 0")
+    if "small_world_god_cooldown_until" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_god_cooldown_until REAL NOT NULL DEFAULT 0")
+    if "small_world_pending_god_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_action TEXT NOT NULL DEFAULT ''")
+    if "small_world_pending_god_reason" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_reason TEXT NOT NULL DEFAULT ''")
+    if "small_world_pending_god_priority" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_priority INTEGER NOT NULL DEFAULT 0")
+    if "small_world_pending_god_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_at REAL NOT NULL DEFAULT 0")
+    if "small_world_last_disaster_wave_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0")
     if "small_world_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_phase TEXT NOT NULL DEFAULT 'idle'")
     if "small_world_query_msg_id" not in runtime_columns:
@@ -812,8 +833,35 @@ def _ensure_schema_columns(conn):
 
 
 
+def _normalize_small_world_preach_defaults(conn):
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key = ?",
+        (SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY,),
+    ).fetchone()
+    if row and str(row["value"] or "") == "1":
+        return
+
+    conn.execute(
+        """
+        UPDATE identity_module_state
+        SET small_world_preach_enabled = 0
+        WHERE small_world_preach_enabled = 1
+          AND small_world_enabled = 0
+          AND small_world_manifest_enabled = 0
+          AND small_world_harvest_enabled = 0
+          AND small_world_refine_enabled = 0
+          AND small_world_refresh_enabled = 0
+        """
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+        (SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY, "1"),
+    )
+
+
 def _migrate_schema_to_current(conn):
     _ensure_schema_columns(conn)
+    _normalize_small_world_preach_defaults(conn)
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
         ("schema_version", str(DB_SCHEMA_VERSION)),
@@ -893,11 +941,13 @@ def init_db():
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             explore_rift_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
-            small_world_preach_enabled INTEGER NOT NULL DEFAULT 1,
+            small_world_preach_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_manifest_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refine_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0,
+            divination_enabled INTEGER NOT NULL DEFAULT 0,
+            divination_daily_limit INTEGER NOT NULL DEFAULT 6,
             dungeon_join_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1,
@@ -1128,6 +1178,12 @@ def init_db():
             nanlong_last_error TEXT NOT NULL DEFAULT '',
             small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_preach_due_at REAL NOT NULL DEFAULT 0,
+            small_world_god_cooldown_until REAL NOT NULL DEFAULT 0,
+            small_world_pending_god_action TEXT NOT NULL DEFAULT '',
+            small_world_pending_god_reason TEXT NOT NULL DEFAULT '',
+            small_world_pending_god_priority INTEGER NOT NULL DEFAULT 0,
+            small_world_pending_god_at REAL NOT NULL DEFAULT 0,
+            small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0,
             small_world_phase TEXT NOT NULL DEFAULT 'idle',
             small_world_query_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -1255,6 +1311,7 @@ def init_db():
         _migrate_schema_to_current(conn)
     else:
         _ensure_schema_columns(conn)
+        _normalize_small_world_preach_defaults(conn)
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("game_group_id", "-1001680975844"),
@@ -1294,6 +1351,10 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("tianji_quiz_pending", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("divination_run_state", "{}"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -1724,6 +1785,16 @@ _META_STATE_CODEC = {
         lambda: _meta_state.get("tianji_quiz_pending") if isinstance(_meta_state.get("tianji_quiz_pending"), dict) else {},
         _encode_meta_json,
         lambda value: _set_meta_value("tianji_quiz_pending", _decode_meta_json(value, {})),
+    ),
+    "divination_pending_exchanges": (
+        get_divination_pending_exchanges,
+        _encode_meta_json,
+        lambda value: set_divination_pending_exchanges(_decode_meta_json(value, {})),
+    ),
+    "divination_run_state": (
+        get_divination_run_state,
+        _encode_meta_json,
+        lambda value: set_divination_run_state(_decode_meta_json(value, {})),
     ),
     "guanxing_monitor_enabled": (
         get_guanxing_monitor_enabled,

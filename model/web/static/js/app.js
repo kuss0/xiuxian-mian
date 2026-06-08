@@ -38,7 +38,7 @@ ${renderSwitch(identitySwitchClass,`data-toggle-identity="${identity.send_as_id}
 <span class="module-subswitch"><span class="module-subswitch-label">问心台</span>${renderSwitch(wenxinSwitchClass,`data-toggle-tianti-feature="1" data-feature="wenxin" data-enabled="${wenxinNextEnabled}"`)}</span>
 ${gangfengSwitchHtml}`;}else if(module.name==='观星'){moduleNote='<div class="module-note">命中全局观星监控后按轮次执行</div>';}else if(module.name==='玄骨考校'){moduleNote='<div class="module-note">监听题目后会按题库自动回复 .作答 &lt;选项&gt;</div>';}else if(module.name==='极阴祖师'){settingsButton=`<button type="button" class="btn btn-secondary" data-jiyin-choice="offer_soul">献上魂魄</button>
 <button type="button" class="btn btn-secondary" data-jiyin-choice="hide_aura">收敛气息</button>
-<button type="button" class="btn btn-secondary" data-jiyin-choice="auto">恢复自动</button>`;}else if(module.name==='小世界'){moduleNote='<div class="module-note">主开关控制小世界模块；子功能独立控制具体动作</div>';settingsButton=`${renderSmallWorldFeature(identity,'preach','浩劫布道')}
+<button type="button" class="btn btn-secondary" data-jiyin-choice="auto">恢复自动</button>`;}else if(module.name==='小世界'){moduleNote='<div class="module-note">主开关控制小世界模块；子功能独立控制具体动作</div>';settingsButton=`${renderSmallWorldFeature(identity,'preach','神迹维护')}
 ${renderSmallWorldFeature(identity,'manifest','显灵')}
 ${renderSmallWorldFeature(identity,'harvest','收割')}
 ${renderSmallWorldFeature(identity,'refine','淬炼')}

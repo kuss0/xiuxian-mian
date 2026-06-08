@@ -23,6 +23,8 @@ from .config import (
     CMD_CONCUBINE_HEART,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
+    CMD_DIVINATION,
+    CMD_DIVINATION_EXCHANGE,
     CMD_EXPLORE_RIFT,
     CMD_FORMATION_ASSIST,
     CMD_FORMATION_START,
@@ -51,6 +53,7 @@ from .config import (
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
     CMD_SMALL_WORLD_QUERY,
+    CMD_SMALL_WORLD_RELIEF,
     CMD_SMALL_WORLD_REFINE,
     CMD_STARGAZER_COLLECT,
     CMD_STARGAZER_GUIDE,
@@ -111,6 +114,7 @@ from .config import (
 from .features.checkin import get_checkin_status_text, get_sect_teach_status_text
 from .features.concubine import clear_concubine_state, clear_concubine_tianji_state, get_concubine_status_text, restore_concubine_runtime
 from .features.deep_retreat import get_deep_retreat_status_detail_text
+from .features.divination import get_divination_status_text
 from .features.formation import clear_formation_state, get_formation_status_text
 from .features.guanxing import (
     clear_guanxing_identity_runtime,
@@ -974,13 +978,13 @@ def _manual_enable_taiyi_module_state(now):
 def _disable_small_world_module_state():
     state["small_world_enabled"] = False
     clear_small_world_state(persist=False, keep_last_error=True)
-    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
 
 
 def _manual_disable_small_world_module_state():
     state["small_world_enabled"] = False
     clear_small_world_state(persist=False, keep_last_error=True)
-    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
 
 
 def _manual_enable_small_world_module_state(now):
@@ -1195,6 +1199,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_SMALL_WORLD_HARVEST: "小世界",
     CMD_SMALL_WORLD_REFINE: "小世界",
     CMD_SMALL_WORLD_PREACH: "小世界",
+    CMD_SMALL_WORLD_RELIEF: "小世界",
     CMD_RANCH: "放养",
     CMD_WILD_TRAINING: "野外历练",
     CMD_CHECKIN: "点卯",
@@ -1206,6 +1211,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_WENDAO: "问道",
     CMD_DEEP_RETREAT: "深度闭关",
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
+    CMD_DIVINATION: "卜筮问天",
+    CMD_DIVINATION_EXCHANGE: "卜筮问天",
     CMD_SECOND_SOUL_STATUS: "第二元神",
     CMD_SECOND_SOUL_TRAIN: "第二元神",
     CMD_SECOND_SOUL_CHOICE_BREAK: "第二元神",
@@ -1477,7 +1484,7 @@ def get_dungeon_join_status_text(send_as_id=None):
             "",
             "副本群轻量指令:",
             "- .查询副本",
-            "- .开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>",
+            "- .开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
             "- .加入副本 @用户名 @用户名",
             "- .解散副本",
             "",
@@ -1518,6 +1525,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "探寻裂缝": get_explore_rift_status_text,
         "问道": get_wendao_status_text,
         "深度闭关": get_deep_retreat_status_detail_text,
+        "卜筮问天": get_divination_status_text,
         "点卯": get_checkin_status_text,
         "宗门传功": get_sect_teach_status_text,
         "闯塔": get_tower_status_text,
@@ -2136,7 +2144,7 @@ def _format_log_group_help_html(send_as_id=None):
     ]
     replica_group_commands = [
         ".查询副本",
-        ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙>",
+        ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
         ".加入副本 @用户名 @用户名",
         ".解散副本",
     ]

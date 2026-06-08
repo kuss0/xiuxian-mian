@@ -9,6 +9,7 @@ from ..config import (
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
     CMD_SMALL_WORLD_QUERY,
+    CMD_SMALL_WORLD_RELIEF,
     CMD_SMALL_WORLD_REFINE,
     SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC,
 )
@@ -25,6 +26,7 @@ SMALL_WORLD_CHAIN_COMMANDS = {
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_REFINE,
 }
+SMALL_WORLD_GOD_COMMANDS = {CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF}
 SMALL_WORLD_CHAIN_PENDING = {"query_pending", "manifest_pending", "harvest_pending", "refine_pending"}
 SMALL_WORLD_PENDING_TIMEOUT_SEC = 20 * 60
 SMALL_WORLD_REFRESH_MIN_SEC = 5 * 60
@@ -41,14 +43,25 @@ SMALL_WORLD_TOOL_STEP_MAX_SEC = 240
 SMALL_WORLD_THEFT_CALIBRATION_MIN_SEC = 30
 SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC = 90
 SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
-SMALL_WORLD_PREACH_FAITH_THRESHOLD = 92
+SMALL_WORLD_DEFAULT_STATUS_MAX = 100
+SMALL_WORLD_GOD_FOLLOWUP_SEC = 3 * 3600
+SMALL_WORLD_GOD_PRIORITY_MAINTENANCE = 10
+SMALL_WORLD_GOD_PRIORITY_DISASTER = 100
+SMALL_WORLD_DISASTER_WAVE_INTERVAL_SEC = 3 * 3600
+SMALL_WORLD_DISASTER_GUARD_BEFORE_SEC = 30 * 60
+SMALL_WORLD_DISASTER_GUARD_AFTER_SEC = 25 * 60
 
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
-RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇")
+RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇\s*【([^】]+)】")
 RE_SMALL_WORLD_FAITH_DAMAGE = re.compile(r"惨重代价\s*[:：]\s*信仰(?:崩塌|动摇)\s*-\s*\d+\s*点")
+RE_SMALL_WORLD_RELIEF_DAMAGE = re.compile(r"惨重代价\s*[:：].*(?:人口|稳定|瘟疫|王朝更迭)")
 RE_SMALL_WORLD_INCENSE_LOSS = re.compile(r"惨重代价\s*[:：]\s*库存香火损失\s*(\d+)\s*点")
 RE_SMALL_WORLD_PREACH_PANEL = re.compile(r"【神音浩荡】")
-RE_SMALL_WORLD_FAITH_VALUE = re.compile(r"信仰值大幅提升至\s*(\d+)\s*[！!]")
+RE_SMALL_WORLD_RELIEF_PANEL = re.compile(r"【天降甘霖】")
+RE_SMALL_WORLD_FAITH_VALUE = re.compile(r"信仰(?:值大幅)?提升至\s*(\d+)")
+RE_SMALL_WORLD_STABILITY_VALUE = re.compile(r"稳定提升至\s*(\d+)")
+RE_SMALL_WORLD_RELIEF_POPULATION = re.compile(r"人口恢复了\s*(\d+)\s*人")
+RE_SMALL_WORLD_GOD_COOLDOWN = re.compile(r"凡间方才承受神谕，需再等待\s*([^\n。)）]+)")
 
 RE_SMALL_WORLD_PANEL = re.compile(r"【(?P<owner>[^】]+)的小世界】")
 RE_TEMPLE = re.compile(r"神庙\s*[:：]\s*Lv\.(\d+)(?:【([^】]+)】)?")
@@ -62,9 +75,10 @@ RE_INCENSE_OUTPUT = re.compile(r"预计产出\s*[:：]\s*([0-9]+(?:\.[0-9]+)?)\s
 RE_BARRIER_STATUS = re.compile(r"护界禁制\s*[:：]\s*([^\n]+)")
 RE_SPIRITUAL_STRENGTH = re.compile(r"神识强度\s*[:：]\s*(\d+)")
 RE_PRAYER = re.compile(r"凡人祈愿\s*[：:]\s*([^\n]+)")
-RE_PRAYER_WAIT = re.compile(r"下一次祈愿感应需等待\s*[：:]\s*([^\n)）]+)")
+RE_PRAYER_WAIT = re.compile(r"下一次(?:凡人)?祈愿感应需等待\s*[：:]?\s*([^\n。)）]+)")
 RE_NEXT_TEMPLE_COST = re.compile(r"下一阶【([^】]+)】消耗\s*[:：]\s*([^\n]+)")
 RE_MANIFEST_COST = re.compile(r"显灵消耗\s*[:：]\s*([^\n]+)")
+RE_MANIFEST_DELTA = re.compile(r"信仰\s*([+-]\d+).*?稳定\s*([+-]\d+).*?人口\s*([+-]\d+)", re.S)
 RE_HARVEST_STOCK = re.compile(r"当前香火库存\s*[:：]\s*(\d+)")
 RE_REFINE_BURNED = re.compile(r"燃烧了\s*(\d+)\s*点香火")
 RE_STOCK_SHORTAGE = re.compile(r"香火库存不足\s*[(（]\s*拥有\s*[:：]\s*(\d+)\s*[)）]")
@@ -111,6 +125,17 @@ def _clear_preach_pending():
         _set_phase("idle")
 
 
+def _clear_pending_god_action():
+    state["small_world_pending_god_action"] = ""
+    state["small_world_pending_god_reason"] = ""
+    state["small_world_pending_god_priority"] = 0
+    state["small_world_pending_god_at"] = 0
+
+
+def _clear_god_pending_tasks():
+    clear_pending_tasks_by_commands(SMALL_WORLD_GOD_COMMANDS, send_as_id=get_current_identity_id())
+
+
 def _clear_chain_pending():
     state["small_world_query_msg_id"] = 0
     state["small_world_manifest_msg_id"] = 0
@@ -123,6 +148,7 @@ def _clear_chain_pending():
 
 def _clear_all_runtime_pending():
     _clear_preach_pending()
+    _clear_pending_god_action()
     _clear_chain_pending()
     state["small_world_refresh_count"] = 0
 
@@ -164,6 +190,122 @@ def _schedule_panel_wait(now, wait_sec):
     state["next_small_world_time"] = float(now + wait_sec + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC))
     state["small_world_refresh_count"] = 0
     return state["next_small_world_time"]
+
+
+def _schedule_god_followup(now):
+    state["small_world_god_cooldown_until"] = float(now + SMALL_WORLD_GOD_FOLLOWUP_SEC)
+    if state.get("small_world_pending_god_action"):
+        return _schedule_pending_god_action(now)
+    state["next_small_world_time"] = float(
+        now + SMALL_WORLD_GOD_FOLLOWUP_SEC + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+    )
+    state["small_world_refresh_count"] = 0
+    return state["next_small_world_time"]
+
+
+def _mark_disaster_wave(now):
+    state["small_world_last_disaster_wave_at"] = float(now or time.time())
+
+
+def _next_disaster_wave_at(now):
+    last_wave = float(state.get("small_world_last_disaster_wave_at", 0) or 0)
+    if last_wave <= 0:
+        return 0
+    next_wave = last_wave + SMALL_WORLD_DISASTER_WAVE_INTERVAL_SEC
+    now = float(now or time.time())
+    while next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC < now:
+        next_wave += SMALL_WORLD_DISASTER_WAVE_INTERVAL_SEC
+    return next_wave
+
+
+def _disaster_guard_end_at(now):
+    next_wave = _next_disaster_wave_at(now)
+    if next_wave <= 0:
+        return 0
+    now = float(now or time.time())
+    if next_wave - SMALL_WORLD_DISASTER_GUARD_BEFORE_SEC <= now <= next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC:
+        return float(next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC)
+    return 0
+
+
+def _god_cooldown_until():
+    return float(state.get("small_world_god_cooldown_until", 0) or 0)
+
+
+def _pending_god_priority():
+    try:
+        return int(state.get("small_world_pending_god_priority", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _queue_god_action(action, reason, priority, now):
+    action = "relief" if action == "relief" else "preach"
+    priority = int(priority or 0)
+    current_action = str(state.get("small_world_pending_god_action") or "")
+    if current_action and _pending_god_priority() > priority:
+        return False
+    state["small_world_pending_god_action"] = action
+    state["small_world_pending_god_reason"] = str(reason or "").strip()
+    state["small_world_pending_god_priority"] = priority
+    state["small_world_pending_god_at"] = float(now or time.time())
+    return True
+
+
+def _schedule_pending_god_action(now):
+    action = str(state.get("small_world_pending_god_action") or "")
+    if not action:
+        return 0
+    priority = _pending_god_priority()
+    due_at = max(float(now or time.time()), _god_cooldown_until())
+    if priority < SMALL_WORLD_GOD_PRIORITY_DISASTER:
+        guard_end = _disaster_guard_end_at(due_at) or _disaster_guard_end_at(now)
+        if guard_end > 0:
+            due_at = max(due_at, guard_end)
+            state["small_world_last_error"] = "日常神迹维护已让位下一波灾害"
+    if due_at > float(now or time.time()):
+        due_at += random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+    state["next_small_world_time"] = float(due_at)
+    return state["next_small_world_time"]
+
+
+def _queue_maintenance_from_snapshot(now):
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot:
+        return False
+    if _should_relief(snapshot):
+        return _queue_god_action("relief", _relief_reason(snapshot), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+    if _should_preach(snapshot):
+        return _queue_god_action("preach", _preach_reason(snapshot), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+    return False
+
+
+async def _try_send_pending_god_action(now):
+    action = str(state.get("small_world_pending_god_action") or "")
+    if action not in {"preach", "relief"}:
+        return False
+
+    preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
+    preach_deadline = _get_preach_deadline()
+    if preach_msg_id > 0 and preach_deadline > float(now or time.time()):
+        return True
+
+    priority = _pending_god_priority()
+    if _god_cooldown_until() > float(now or time.time()):
+        _schedule_pending_god_action(now)
+        save_state()
+        return True
+
+    if priority < SMALL_WORLD_GOD_PRIORITY_DISASTER and _disaster_guard_end_at(now) > 0:
+        _schedule_pending_god_action(now)
+        save_state()
+        return True
+
+    reason = str(state.get("small_world_pending_god_reason") or "").strip()
+    if priority >= SMALL_WORLD_GOD_PRIORITY_DISASTER:
+        _clear_chain_pending()
+    sent = await (_send_small_world_relief(now, reason) if action == "relief" else _send_small_world_preach(now, reason))
+    return sent
 
 
 def _schedule_resource_pause(now, label, raw_text):
@@ -228,6 +370,26 @@ def _has_active_small_world_pending(now):
     return reply_to_msg_id > 0 and deadline > now
 
 
+def _parse_wait_from_text(raw_text):
+    raw_text = str(raw_text or "")
+    matched = RE_PRAYER_WAIT.search(raw_text)
+    if not matched:
+        matched = RE_SMALL_WORLD_GOD_COOLDOWN.search(raw_text)
+    if not matched:
+        return 0, ""
+    wait_text = matched.group(1).strip()
+    if not has_wait_time(wait_text):
+        return 0, wait_text
+    return parse_wait_time(wait_text), wait_text
+
+
+def _parse_signed_int(raw_value, default=0):
+    try:
+        return int(str(raw_value or "").replace("+", ""))
+    except (TypeError, ValueError):
+        return default
+
+
 def _int_match(pattern, raw_text, default=0):
     matched = pattern.search(raw_text)
     if not matched:
@@ -257,6 +419,83 @@ def _apply_small_world_panel_snapshot(now, panel):
     snapshot.pop("realm_blocked", None)
     snapshot["updated_at"] = float(now)
     state["small_world_panel_snapshot"] = snapshot
+
+
+def _update_snapshot_field(key, value):
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    snapshot[key] = value
+    state["small_world_panel_snapshot"] = snapshot
+
+
+def _apply_god_result(raw_text, now):
+    changed = False
+    faith_matched = RE_SMALL_WORLD_FAITH_VALUE.search(raw_text)
+    if faith_matched:
+        faith_value = int(faith_matched.group(1))
+        state["small_world_faith_value"] = faith_value
+        _update_snapshot_field("faith", faith_value)
+        changed = True
+
+    stability_matched = RE_SMALL_WORLD_STABILITY_VALUE.search(raw_text)
+    if stability_matched:
+        _update_snapshot_field("stability", int(stability_matched.group(1)))
+        changed = True
+
+    population_matched = RE_SMALL_WORLD_RELIEF_POPULATION.search(raw_text)
+    if population_matched:
+        snapshot = state.get("small_world_panel_snapshot")
+        current_population = int((snapshot or {}).get("population", 0) or 0) if isinstance(snapshot, dict) else 0
+        recovered = int(population_matched.group(1))
+        if current_population > 0:
+            capacity = int((snapshot or {}).get("capacity", 0) or 0) if isinstance(snapshot, dict) else 0
+            population = current_population + recovered
+            if capacity > 0:
+                population = min(capacity, population)
+            _update_snapshot_field("population", population)
+        changed = True
+
+    if changed:
+        _update_snapshot_field("updated_at", float(now))
+    return changed
+
+
+def _apply_manifest_delta(raw_text, now):
+    matched = RE_MANIFEST_DELTA.search(raw_text)
+    if not matched:
+        return False
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+
+    faith_delta = _parse_signed_int(matched.group(1))
+    stability_delta = _parse_signed_int(matched.group(2))
+    population_delta = _parse_signed_int(matched.group(3))
+
+    faith = int(snapshot.get("faith", 0) or 0)
+    if faith > 0:
+        faith_max = int(snapshot.get("faith_max", 100) or 100)
+        faith_value = max(0, min(faith_max, faith + faith_delta))
+        state["small_world_faith_value"] = faith_value
+        snapshot["faith"] = faith_value
+
+    stability = int(snapshot.get("stability", 0) or 0)
+    if stability > 0:
+        stability_max = int(snapshot.get("stability_max", 100) or 100)
+        snapshot["stability"] = max(0, min(stability_max, stability + stability_delta))
+
+    population = int(snapshot.get("population", 0) or 0)
+    if population > 0:
+        capacity = int(snapshot.get("capacity", 0) or 0)
+        population = max(0, population + population_delta)
+        if capacity > 0:
+            population = min(capacity, population)
+        snapshot["population"] = population
+
+    snapshot["updated_at"] = float(now)
+    state["small_world_panel_snapshot"] = snapshot
+    return True
 
 
 def _parse_small_world_panel(text):
@@ -290,11 +529,7 @@ def _parse_small_world_panel(text):
 
     wait_sec = 0
     wait_text = ""
-    matched = RE_PRAYER_WAIT.search(raw_text)
-    if matched:
-        wait_text = matched.group(1)
-        if has_wait_time(wait_text):
-            wait_sec = parse_wait_time(wait_text)
+    wait_sec, wait_text = _parse_wait_from_text(raw_text)
 
     prayer_matched = RE_PRAYER.search(raw_text)
     cost_matched = RE_MANIFEST_COST.search(raw_text)
@@ -335,6 +570,60 @@ def _calc_refine_amount(stock):
     return max(0, (stock // 10) * 10)
 
 
+def _small_world_population_deficit(panel):
+    try:
+        population = int(panel.get("population", 0) or 0)
+        capacity = int(panel.get("capacity", 0) or 0)
+    except (TypeError, ValueError):
+        return 0, 0, 1.0
+    if population <= 0 or capacity <= 0:
+        return 0, population, 1.0
+    deficit = max(0, capacity - population)
+    ratio = max(0.0, min(1.0, population / capacity))
+    return deficit, population, ratio
+
+
+def _panel_int(panel, key, default=0):
+    try:
+        return int(panel.get(key, default) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_panel_value_below_max(panel, value_key, max_key, *, default_max=SMALL_WORLD_DEFAULT_STATUS_MAX):
+    value = _panel_int(panel, value_key)
+    max_value = _panel_int(panel, max_key, default_max)
+    return value > 0 and max_value > 0 and value < max_value
+
+
+def _should_relief(panel):
+    deficit, _population, _ratio = _small_world_population_deficit(panel)
+    return deficit > 0 or _is_panel_value_below_max(panel, "stability", "stability_max")
+
+
+def _relief_reason(panel):
+    deficit, population, _ratio = _small_world_population_deficit(panel)
+    if deficit > 0:
+        return f"人口 {population} 缺口 {deficit}，优先赈灾"
+    stability = _panel_int(panel, "stability")
+    stability_max = _panel_int(panel, "stability_max", SMALL_WORLD_DEFAULT_STATUS_MAX)
+    if stability > 0 and stability_max > 0:
+        return f"稳定 {stability}/{stability_max}，赈灾维护"
+    return "小世界状态未满，赈灾维护"
+
+
+def _should_preach(panel):
+    return _is_panel_value_below_max(panel, "faith", "faith_max")
+
+
+def _preach_reason(panel):
+    faith = _panel_int(panel, "faith")
+    faith_max = _panel_int(panel, "faith_max", SMALL_WORLD_DEFAULT_STATUS_MAX)
+    if faith > 0 and faith_max > 0:
+        return f"信仰 {faith}/{faith_max}，布道维护"
+    return "信仰未满，布道维护"
+
+
 def _is_resource_shortage_text(text):
     raw_text = str(text or "")
     return (
@@ -368,29 +657,40 @@ async def _disable_for_realm(raw_text):
     state["small_world_enabled"] = False
     state["next_small_world_time"] = 0
     state["small_world_last_error"] = "境界不足，已关闭小世界模块"
-    clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | {CMD_SMALL_WORLD_PREACH}, send_as_id=get_current_identity_id())
+    clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | SMALL_WORLD_GOD_COMMANDS, send_as_id=get_current_identity_id())
     save_state()
     await send_audit_log("⚠️ 小世界境界不足，已关闭该身份的小世界模块。", scope="identity")
     return True
 
 
-async def _send_small_world_preach(now, reason):
-    sent_msg = await send_game_command(CMD_SMALL_WORLD_PREACH, track=True, max_retry=1)
+async def _send_small_world_god_action(now, command, reason):
+    command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
+    action_name = "赈灾" if command == CMD_SMALL_WORLD_RELIEF else "布道"
+    sent_msg = await send_game_command(command, track=True, max_retry=1, source_module="小世界")
     sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
     if not sent_msg:
-        state["small_world_last_error"] = "神迹布道指令发送失败"
+        state["small_world_last_error"] = f"神迹{action_name}指令发送失败"
         _schedule_short_retry(sent_at)
         save_state()
-        await send_audit_log("❌ 小世界布道发送失败，稍后重试。", scope="identity")
+        await send_audit_log(f"❌ 小世界{action_name}发送失败，稍后重试。", scope="identity")
         return False
 
     _set_phase("preach_pending")
     state["small_world_preach_reply_to_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
     state["small_world_preach_due_at"] = float(sent_at + SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC)
+    state["next_small_world_time"] = state["small_world_preach_due_at"]
     state["small_world_last_error"] = ""
     save_state()
-    console_log(f"🌍 小世界{reason}，已发送神迹布道。")
+    console_log(f"🌍 小世界{reason}，已发送神迹{action_name}。")
     return True
+
+
+async def _send_small_world_preach(now, reason):
+    return await _send_small_world_god_action(now, CMD_SMALL_WORLD_PREACH, reason)
+
+
+async def _send_small_world_relief(now, reason):
+    return await _send_small_world_god_action(now, CMD_SMALL_WORLD_RELIEF, reason)
 
 
 async def _send_query(now, reason, *, refresh_attempt=None):
@@ -416,7 +716,7 @@ async def _send_query(now, reason, *, refresh_attempt=None):
 
 
 async def _send_manifest(now):
-    msg = await send_game_command(CMD_SMALL_WORLD_MANIFEST, track=True, max_retry=1, priority="chain")
+    msg = await send_game_command(CMD_SMALL_WORLD_MANIFEST, track=False, max_retry=0, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["small_world_last_error"] = "发送 .显灵 失败"
@@ -494,7 +794,7 @@ def _schedule_refresh(now):
     return True
 
 
-async def _finish_no_prayer_panel(now, panel):
+async def _finish_no_prayer_panel(now, panel, *, allow_refresh=True):
     _clear_chain_pending()
     if panel.get("has_wait"):
         _schedule_panel_wait(now, int(panel.get("wait_sec", 0) or 0) + CD_BUFFER_SEC)
@@ -502,7 +802,7 @@ async def _finish_no_prayer_panel(now, panel):
         save_state()
         return True
 
-    if state.get("small_world_refresh_enabled"):
+    if allow_refresh and state.get("small_world_refresh_enabled"):
         if not _schedule_refresh(now):
             await send_audit_log(
                 f"🌍 小世界祈愿刷新 {SMALL_WORLD_MAX_REFRESH_ATTEMPTS} 次仍未出现，停止本轮，约 8 小时后再查。",
@@ -511,13 +811,18 @@ async def _finish_no_prayer_panel(now, panel):
             )
         return True
 
+    if not allow_refresh:
+        state["small_world_last_error"] = ""
+        save_state()
+        return True
+
     _schedule_next_cycle(now)
     state["small_world_last_error"] = ""
     save_state()
     return True
 
 
-async def _handle_panel_decision(now, panel):
+async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
     if panel.get("realm_blocked"):
         return await _disable_for_realm("境界不足")
 
@@ -535,21 +840,23 @@ async def _handle_panel_decision(now, panel):
         save_state()
         return True
 
+    if state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
+        if _should_relief(panel):
+            _queue_god_action("relief", _relief_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+            return await _try_send_pending_god_action(now)
+        if _should_preach(panel):
+            _queue_god_action("preach", _preach_reason(panel), SMALL_WORLD_GOD_PRIORITY_MAINTENANCE, now)
+            return await _try_send_pending_god_action(now)
+
     if panel.get("has_wait"):
         return await _finish_no_prayer_panel(now, panel)
-
-    if (
-        state.get("small_world_preach_enabled", True)
-        and int(panel.get("faith", 0) or 0) < SMALL_WORLD_PREACH_FAITH_THRESHOLD
-        and not _has_active_small_world_pending(now)
-    ):
-        save_state()
-        return await _send_small_world_preach(now, f"面板信仰 {int(panel.get('faith', 0) or 0)}<{SMALL_WORLD_PREACH_FAITH_THRESHOLD}")
 
     # 香火只作为本轮刷新祈愿前的工具。进入刷新轮后继续收割会导致
     # ".小世界 -> 收割 -> 淬炼 -> 复查" 在每次刷新间重复出现。
     allow_tool_actions = int(state.get("small_world_refresh_count", 0) or 0) <= 0
     if (
+        allow_tool_chain
+        and
         allow_tool_actions
         and
         state.get("small_world_harvest_enabled")
@@ -560,24 +867,54 @@ async def _handle_panel_decision(now, panel):
         return await _send_harvest(now)
 
     refine_amount = _calc_refine_amount(panel.get("stock", 0))
-    if allow_tool_actions and state.get("small_world_refine_enabled") and refine_amount >= 10:
+    if allow_tool_chain and allow_tool_actions and state.get("small_world_refine_enabled") and refine_amount >= 10:
         save_state()
         return await _send_refine(now, refine_amount)
 
-    return await _finish_no_prayer_panel(now, panel)
+    return await _finish_no_prayer_panel(now, panel, allow_refresh=allow_tool_chain)
+
+
+def _god_action_label(action, priority, reason, queued_at):
+    if action not in {"preach", "relief"}:
+        return "无"
+    action_name = "赈灾" if action == "relief" else "布道"
+    level = "灾害" if int(priority or 0) >= SMALL_WORLD_GOD_PRIORITY_DISASTER else "维护"
+    parts = [f"{action_name}（{level}）"]
+    if reason:
+        parts.append(reason)
+    if queued_at:
+        parts.append(f"排队于 {fmt_abs_ts(float(queued_at))}")
+    return " / ".join(parts)
+
+
+def _disaster_wave_label(next_wave_at, guard_end_at):
+    if next_wave_at <= 0:
+        return "未记录"
+    if guard_end_at > 0:
+        return f"{fmt_abs_ts(next_wave_at)}，保护至 {fmt_abs_ts(guard_end_at)}"
+    return fmt_abs_ts(next_wave_at)
 
 
 def get_small_world_status_text():
+    now = time.time()
     faith_value = int(state.get("small_world_faith_value", 0) or 0)
     preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
     next_time = float(state.get("next_small_world_time", 0) or 0)
+    cooldown_until = _god_cooldown_until()
+    pending_action = str(state.get("small_world_pending_god_action") or "")
+    pending_reason = str(state.get("small_world_pending_god_reason") or "").strip()
+    pending_priority = _pending_god_priority()
+    pending_at = float(state.get("small_world_pending_god_at", 0) or 0)
+    last_wave_at = float(state.get("small_world_last_disaster_wave_at", 0) or 0)
+    next_wave_at = _next_disaster_wave_at(now)
+    guard_end_at = _disaster_guard_end_at(now)
     snapshot = state.get("small_world_panel_snapshot")
     if not isinstance(snapshot, dict):
         snapshot = {}
     lines = [
         "🌍 小世界",
         f"- 已启用：{'是' if state.get('small_world_enabled') else '否'}",
-        f"- 浩劫布道：{'开启' if state.get('small_world_preach_enabled', True) else '关闭'}",
+        f"- 神迹维护：{'开启' if state.get('small_world_preach_enabled', False) else '关闭'}",
         f"- 自动显灵：{'开启' if state.get('small_world_manifest_enabled') else '关闭'}",
         f"- 收割香火：{'开启' if state.get('small_world_harvest_enabled') else '关闭'}",
         f"- 神识淬炼：{'开启' if state.get('small_world_refine_enabled') else '关闭'}",
@@ -617,7 +954,11 @@ def get_small_world_status_text():
             lines.append(f"- 下一阶：{snapshot.get('next_temple_name') or '未记录'} / {snapshot.get('next_temple_cost') or '未记录'}")
     lines.extend([
         f"- 本轮刷新：{int(state.get('small_world_refresh_count', 0) or 0)}/{SMALL_WORLD_MAX_REFRESH_ATTEMPTS}",
-        f"- 待布道消息ID：{preach_msg_id or '无'}",
+        f"- 待神迹消息ID：{preach_msg_id or '无'}",
+        f"- 神迹冷却：{fmt_abs_ts(cooldown_until) if cooldown_until > now else '可用'}",
+        f"- 待执行神迹：{_god_action_label(pending_action, pending_priority, pending_reason, pending_at)}",
+        f"- 最近灾害波：{fmt_abs_ts(last_wave_at) if last_wave_at > 0 else '未记录'}",
+        f"- 下一灾害波：{_disaster_wave_label(next_wave_at, guard_end_at)}",
         f"- 下次动作：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）",
         f"- 最近错误：{state.get('small_world_last_error') or '无'}",
     ])
@@ -632,7 +973,7 @@ def clear_small_world_state(*, persist=False, keep_last_error=False):
     state["small_world_incense_stock"] = 0
     state["small_world_panel_snapshot"] = {}
     state["small_world_last_panel_at"] = 0
-    clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | {CMD_SMALL_WORLD_PREACH}, send_as_id=get_current_identity_id())
+    clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | SMALL_WORLD_GOD_COMMANDS, send_as_id=get_current_identity_id())
     if not keep_last_error:
         state["small_world_last_error"] = ""
     if persist:
@@ -653,67 +994,105 @@ def schedule_small_world_initial_check(now, *, persist=False, keep_last_error=Tr
     return state["next_small_world_time"]
 
 
-async def handle_small_world_disaster_broadcast(text, now, event):
-    if not state.get("small_world_enabled") or not state.get("small_world_preach_enabled", True):
-        return False
+def _disaster_kind(raw_text):
+    matched = RE_SMALL_WORLD_TARGET_TAG.search(raw_text or "")
+    return matched.group(2).strip() if matched else ""
 
+
+def _disaster_god_action(raw_text):
+    raw_text = str(raw_text or "")
+    kind = _disaster_kind(raw_text)
+    if RE_SMALL_WORLD_RELIEF_DAMAGE.search(raw_text) or kind in {"灭世瘟疫", "王朝更迭"}:
+        return "relief", f"灾害: {kind or '小世界'}，赈灾安抚"
+    if "邪神" in raw_text or RE_SMALL_WORLD_FAITH_DAMAGE.search(raw_text):
+        return "preach", f"灾害: {kind or '信仰异常'}，布道安抚"
+    return "", ""
+
+
+def _apply_disaster_incense_loss(loss_amount):
+    stock = max(0, int(state.get("small_world_incense_stock", 0) or 0) - max(0, int(loss_amount or 0)))
+    state["small_world_incense_stock"] = stock
+    state["small_world_last_error"] = f"库存香火失窃 {int(loss_amount or 0)} 点"
+
+
+async def handle_small_world_disaster_broadcast(text, now, event):
     raw_text = text or ""
     if not RE_SMALL_WORLD_DISASTER.search(raw_text):
         return False
+    if not state.get("small_world_enabled") or not state.get("small_world_preach_enabled", False):
+        return False
+
+    _mark_disaster_wave(now)
 
     identity_id = _find_small_world_identity_id(raw_text)
     if identity_id is None or identity_id != get_current_identity_id():
         return False
 
     incense_loss = RE_SMALL_WORLD_INCENSE_LOSS.search(raw_text)
+    action, reason = _disaster_god_action(raw_text)
     if incense_loss:
         loss_amount = int(incense_loss.group(1))
-        due_at = _schedule_theft_calibration(now, loss_amount)
-        save_state()
-        await send_audit_log(
-            f"⚠️ 小世界库存香火失窃 {loss_amount} 点，已记录，{fmt_time_after(max(0, due_at - now))} 后校准面板。",
-            scope="identity",
-            limit=240,
-        )
-        return True
+        if not action:
+            due_at = _schedule_theft_calibration(now, loss_amount)
+            save_state()
+            await send_audit_log(
+                f"⚠️ 小世界库存香火失窃 {loss_amount} 点，已记录，{fmt_time_after(max(0, due_at - now))} 后校准面板。",
+                scope="identity",
+                limit=240,
+            )
+            return True
+        _apply_disaster_incense_loss(loss_amount)
 
-    if not RE_SMALL_WORLD_FAITH_DAMAGE.search(raw_text):
+    if not action:
+        save_state()
         return False
 
-    if _has_active_small_world_pending(now):
-        return True
-
-    return await _send_small_world_preach(now, "监听到信仰异常")
+    _queue_god_action(action, reason, SMALL_WORLD_GOD_PRIORITY_DISASTER, now)
+    return await _try_send_pending_god_action(now)
 
 
 async def handle_small_world_preach_reply(text, now, reply_to, matched_family=None):
-    if matched_family and matched_family != "small_world_preach":
+    if matched_family and matched_family not in {"small_world_preach", "small_world_relief"}:
         return False
-    if not state.get("small_world_enabled") or not state.get("small_world_preach_enabled", True):
+    if not state.get("small_world_enabled") or not state.get("small_world_preach_enabled", False):
         return False
 
     raw_text = text or ""
-    if not RE_SMALL_WORLD_PREACH_PANEL.search(raw_text):
-        return False
-
-    matched = RE_SMALL_WORLD_FAITH_VALUE.search(raw_text)
-    if not matched:
-        state["small_world_last_error"] = "神迹布道回复未解析到信仰值"
+    wait_sec, wait_text = _parse_wait_from_text(raw_text)
+    if wait_sec > 0 and RE_SMALL_WORLD_GOD_COOLDOWN.search(raw_text):
         _clear_preach_pending()
+        _clear_god_pending_tasks()
+        state["small_world_last_error"] = f"神迹冷却中: {wait_text}"
+        state["small_world_god_cooldown_until"] = float(now + wait_sec + CD_BUFFER_SEC)
+        if state.get("small_world_pending_god_action"):
+            _schedule_pending_god_action(now)
+        else:
+            _schedule_panel_wait(now, wait_sec + CD_BUFFER_SEC)
         save_state()
         return True
 
-    faith_value = int(matched.group(1))
-    state["small_world_faith_value"] = faith_value
-    _clear_preach_pending()
-    state["small_world_last_error"] = ""
-    save_state()
+    is_preach = RE_SMALL_WORLD_PREACH_PANEL.search(raw_text)
+    is_relief = RE_SMALL_WORLD_RELIEF_PANEL.search(raw_text)
+    if not is_preach and not is_relief:
+        return False
 
-    if faith_value >= SMALL_WORLD_PREACH_FAITH_THRESHOLD:
-        await send_audit_log(f"🌍 小世界信仰已恢复至 {faith_value}", scope="identity")
+    if not _apply_god_result(raw_text, now):
+        state["small_world_last_error"] = "小世界神迹回复未解析到状态"
+        _clear_preach_pending()
+        _clear_god_pending_tasks()
+        _clear_pending_god_action()
+        _schedule_god_followup(now)
+        save_state()
         return True
 
-    await _send_small_world_preach(now, f"信仰值 {faith_value}<{SMALL_WORLD_PREACH_FAITH_THRESHOLD}")
+    _clear_preach_pending()
+    _clear_god_pending_tasks()
+    _clear_pending_god_action()
+    state["small_world_last_error"] = ""
+    if state.get("small_world_preach_enabled", False):
+        _queue_maintenance_from_snapshot(now)
+    _schedule_god_followup(now)
+    save_state()
     return True
 
 
@@ -768,7 +1147,7 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
         save_state()
         return True
 
-    if "显灵成功" in raw_text or "显灵失败" in raw_text:
+    if "显灵成功" in raw_text or "显灵失败" in raw_text or "天机已散" in raw_text:
         if "显灵成功" in raw_text:
             apply_storage_bag_item_text_delta(
                 get_current_identity_id(),
@@ -776,10 +1155,20 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
                 sign=-1,
                 allow_plain=True,
             )
+        _apply_manifest_delta(raw_text, now)
+        wait_sec, _wait_text = _parse_wait_from_text(raw_text)
         _clear_chain_pending()
         state["small_world_refresh_count"] = 0
-        state["small_world_last_error"] = "" if "显灵成功" in raw_text else "显灵失败，停止本轮"
-        _schedule_next_cycle(now)
+        if "显灵成功" in raw_text:
+            state["small_world_last_error"] = ""
+        elif "天机已散" in raw_text:
+            state["small_world_last_error"] = "祈愿已超过 24 小时，天机已散"
+        else:
+            state["small_world_last_error"] = "显灵失败，停止本轮"
+        if wait_sec > 0:
+            _schedule_panel_wait(now, wait_sec + CD_BUFFER_SEC)
+        else:
+            _schedule_next_cycle(now)
         save_state()
         return True
 
@@ -898,12 +1287,24 @@ async def _run_small_world_scheduler(now):
 
     preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
     preach_deadline = _get_preach_deadline()
-    if preach_msg_id > 0 and preach_deadline > 0 and now >= preach_deadline:
-        state["small_world_last_error"] = "神迹布道回复超时"
-        _clear_preach_pending()
-        save_state()
-        await send_audit_log(f"⚠️ 小世界神迹布道回复超时，消息ID={preach_msg_id}", scope="identity")
+    if preach_msg_id > 0 and preach_deadline > 0:
+        if now >= preach_deadline:
+            state["small_world_last_error"] = "小世界神迹回复超时"
+            _clear_preach_pending()
+            _clear_god_pending_tasks()
+            if state.get("small_world_pending_god_action"):
+                _schedule_after(now, SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+            save_state()
+            await send_audit_log(f"⚠️ 小世界神迹回复超时，消息ID={preach_msg_id}", scope="identity")
         return
+
+    if (
+        state.get("small_world_pending_god_action")
+        and _pending_god_priority() >= SMALL_WORLD_GOD_PRIORITY_DISASTER
+        and _god_cooldown_until() <= float(now or time.time())
+    ):
+        if await _try_send_pending_god_action(now):
+            return
 
     phase = _phase()
     if phase in SMALL_WORLD_CHAIN_PENDING:
@@ -912,7 +1313,10 @@ async def _run_small_world_scheduler(now):
             return
         state["small_world_last_error"] = f"{phase} 等待回复超时，停止本轮"
         _clear_chain_pending()
-        _schedule_short_retry(now)
+        if phase == "manifest_pending":
+            _schedule_next_cycle(now)
+        else:
+            _schedule_short_retry(now)
         save_state()
         await send_audit_log(
             f"⚠️ 小世界模块 {phase} 超时，已停止当前链路，{fmt_time_after(max(0, state['next_small_world_time'] - now))} 后再校准。",
@@ -942,6 +1346,10 @@ async def _run_small_world_scheduler(now):
     next_time = float(state.get("next_small_world_time", 0) or 0)
     if next_time > 0 and now < next_time:
         return
+
+    if state.get("small_world_pending_god_action"):
+        if await _try_send_pending_god_action(now):
+            return
 
     if phase == "calibration_wait":
         await _send_query(now, "失窃后校准")

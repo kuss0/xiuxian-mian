@@ -84,12 +84,14 @@ class _StateIsolationMixin:
         join_dungeon._by_msg_id.clear()
         join_dungeon._join_keys.clear()
         join_dungeon._join_throttle.clear()
+        join_dungeon._settlement_notice_keys.clear()
 
     def tearDown(self):
         join_dungeon._inbox.clear()
         join_dungeon._by_msg_id.clear()
         join_dungeon._join_keys.clear()
         join_dungeon._join_throttle.clear()
+        join_dungeon._settlement_notice_keys.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -945,12 +947,58 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             "【后殿冲关止步】\n鼎压攀至极限，后殿炉心彻底失控，将众人尽数震退。\n好在第三关结算所得早已锁定，这次失去的只有后殿追加机缘。",
         )
 
-        handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
+        with patch("model.features.join_dungeon.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+            handled = await join_dungeon.handle_dungeon_join_bot_message(progress, progress.raw_text, now)
 
         self.assertTrue(handled)
+        self.assertIn("结算成果", audit_mock.await_args.args[0])
+        self.assertIn("后殿冲关止步", audit_mock.await_args.args[0])
         records = state_module.get_dungeon_join_run_state()
         self.assertFalse(records[str(first_id)]["participating"])
         self.assertFalse(records[str(second_id)]["participating"])
+
+    async def test_terminal_settlement_uses_recent_team_after_mid_progress_cleared_room(self):
+        leader_id = self._prepare_identity(identity_id=90001, username="leader")
+        member_id = self._prepare_identity(identity_id=90002, username="member")
+        now = 20450.0
+        state_module.set_dungeon_join_run_state({
+            str(leader_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 600,
+                "active_until": now + 3000,
+            },
+            str(member_id): {
+                "participating": True,
+                "room_id": "1325",
+                "joined_at": now - 590,
+                "active_until": now + 3000,
+            },
+        })
+        mid_progress = _event(
+            214,
+            7900199668,
+            "【鼎前抉择】\n当前队伍:\n- @leader\n- @member\n队长 @leader，请在 120秒 内抉择。",
+        )
+        settlement = _event(
+            215,
+            7900199668,
+            "【战利品结算·虚天殿】\n众人闯过秘境。\n获得 5000修为\n获得 玄晶x2",
+        )
+
+        with patch("model.features.join_dungeon.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+            self.assertTrue(await join_dungeon.handle_dungeon_join_bot_message(mid_progress, mid_progress.raw_text, now))
+            handled = await join_dungeon.handle_dungeon_join_bot_message(settlement, settlement.raw_text, now + 300)
+
+        self.assertTrue(handled)
+        audit_mock.assert_awaited_once()
+        notice_text = audit_mock.await_args.args[0]
+        self.assertIn("虚天殿结算", notice_text)
+        self.assertIn("已记录 2 个身份 CD", notice_text)
+        self.assertIn("5000修为", notice_text)
+        records = state_module.get_dungeon_join_run_state()
+        self.assertFalse(records[str(leader_id)]["participating"])
+        self.assertFalse(records[str(member_id)]["participating"])
 
     async def test_progress_mentions_after_team_section_do_not_clear_identity(self):
         identity_id = self._prepare_identity(username="bbtest")
