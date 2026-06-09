@@ -103,6 +103,18 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertLess(fast_check_pos, reply_resolve_pos)
         self.assertLess(fast_command_pos, reply_resolve_pos)
 
+    def test_replica_group_command_predicate_is_kunwu_scoped(self):
+        self.assertTrue(app_replica.is_replica_group_command_text(".查询副本"))
+        self.assertTrue(app_replica.is_replica_group_command_text(".开启副本 @leader 昆"))
+        self.assertTrue(app_replica.is_replica_group_command_text(".进入昆吾山"))
+        self.assertTrue(app_replica.is_replica_group_command_text(".解散副本"))
+        self.assertFalse(app_replica.is_replica_group_command_text(".查询"))
+        self.assertFalse(app_replica.is_replica_group_command_text(".查询 leader"))
+        self.assertFalse(app_replica.is_replica_group_command_text(".匹配虚天殿 914"))
+        self.assertFalse(app_replica.is_replica_group_command_text(".开启副本 @leader"))
+        self.assertFalse(app_replica.is_replica_group_command_text(".开启副本 @leader 虚"))
+        self.assertFalse(app_replica.is_replica_group_command_text(".进入虚天殿"))
+
     def test_replica_group_branch_processes_game_text_before_fallback_commands(self):
         source_text = (PROJECT_ROOT / "model" / "app.py").read_text(encoding="utf-8")
         branch_pos = source_text.index('if _append_replica_group_message_log(event, event_type="message"):')
@@ -1053,42 +1065,42 @@ class ReplicaAbsorbTests(unittest.TestCase):
         other_id = self._register_replica_identity(991202, "empty", root_attrs="木", professions="灵医")
         state_module.set_replica_participant_identity_ids([leader_id, other_id])
         state_module.set_storage_bag_records({
-            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 2}, "sections": {}},
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 2, "昆吾通行令": 1}, "sections": {}},
             str(other_id): {"items": {}, "sections": {}},
         })
 
         reply = app_replica._format_replica_ticket_query_reply()
 
+        self.assertIn("昆吾山自动副本：1 个身份", reply)
         self.assertIn("@leader", reply)
-        self.assertIn("虚x1", reply)
-        self.assertIn("苍x2", reply)
-        self.assertIn("虚:可", reply)
-        self.assertIn("苍:可", reply)
-        self.assertIn("兜底命令", reply)
+        self.assertIn("昆x1/可", reply)
+        self.assertNotIn("虚x1", reply)
+        self.assertNotIn("苍x2", reply)
         self.assertIn("开房兜底命令（按副本）", reply)
-        self.assertIn("虚天殿：", reply)
-        self.assertIn("苍坤洞府：", reply)
-        self.assertIn(".开启副本 @leader 虚", reply)
-        self.assertIn(".开启副本 @leader 苍", reply)
-        self.assertIn(".加入副本 @用户名 @用户名", reply)
-        self.assertIn(".解散副本", reply)
+        self.assertIn("昆吾山：", reply)
+        self.assertIn(".开启副本 @leader 昆", reply)
+        self.assertNotIn(".开启副本 @leader 虚", reply)
+        self.assertNotIn(".开启副本 @leader 苍", reply)
+        self.assertNotIn(".加入副本 @用户名 @用户名", reply)
+        self.assertNotIn(".解散副本", reply)
         self.assertNotIn("推荐配置：苍坤洞府", reply)
-        opener_section = reply.split("兜底命令：", 1)[0]
+        opener_section = reply.split("开房兜底命令", 1)[0]
         self.assertNotIn("@empty", opener_section)
 
         html_reply = app_replica._format_replica_ticket_query_reply(html=True)
-        self.assertFalse(html_reply.startswith("<code>可开副本"))
-        self.assertIn("<code>.开启副本 @leader 虚</code>", html_reply)
-        self.assertIn("<code>.开启副本 @leader 苍</code>", html_reply)
-        self.assertIn("<code>.加入副本 @用户名 @用户名</code>", html_reply)
-        self.assertIn("<code>.解散副本</code>", html_reply)
+        self.assertFalse(html_reply.startswith("<code>昆吾山自动副本"))
+        self.assertIn("<code>.开启副本 @leader 昆</code>", html_reply)
+        self.assertNotIn("<code>.开启副本 @leader 虚</code>", html_reply)
+        self.assertNotIn("<code>.开启副本 @leader 苍</code>", html_reply)
+        self.assertNotIn("<code>.加入副本 @用户名 @用户名</code>", html_reply)
+        self.assertNotIn("<code>.解散副本</code>", html_reply)
 
     def test_ticket_query_sends_open_choice_buttons(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         event = self._prepare_replica_group([leader_id])
         event.raw_text = ".查询副本"
         state_module.set_storage_bag_records({
-            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1}, "sections": {}},
+            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1, "昆吾通行令": 1}, "sections": {}},
         })
 
         async def run_test():
@@ -1101,27 +1113,26 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         handled, button_texts = asyncio.run(run_test())
         self.assertTrue(handled)
-        self.assertIn("开虚 @leader", button_texts)
-        self.assertIn("开苍 @leader", button_texts)
+        self.assertIn("开昆 @leader", button_texts)
+        self.assertNotIn("开虚 @leader", button_texts)
+        self.assertNotIn("开苍 @leader", button_texts)
 
     def test_ticket_query_shows_cd_and_hides_cd_open_command(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         state_module.set_replica_participant_identity_ids([leader_id])
         state_module.set_storage_bag_records({
-            str(leader_id): {"items": {"虚天残图": 1, "苍坤残图": 1}, "sections": {}},
+            str(leader_id): {"items": {"昆吾通行令": 1}, "sections": {}},
         })
         app_replica._mark_replica_success_cooldown(
             [leader_id],
             time.time(),
-            replica_kind=app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            replica_kind=app_replica._REPLICA_KIND_KUNWU,
         )
 
         reply = app_replica._format_replica_ticket_query_reply()
 
-        self.assertRegex(reply, r"虚:\d+:\d{2}")
-        self.assertIn("苍:可", reply)
-        self.assertNotIn(".开启副本 @leader 虚", reply)
-        self.assertIn(".开启副本 @leader 苍", reply)
+        self.assertRegex(reply, r"昆x1/\d+:\d{2}")
+        self.assertNotIn(".开启副本 @leader 昆", reply)
 
     def test_cangkun_recommendation_requires_five_professions_and_jiedan(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
@@ -2443,18 +2454,20 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("<code>.加入副本", text)
         self.assertIn("DPS：<code>@wa2000</code>", text)
 
-    def test_ticket_query_displays_marked_thunder_dps(self):
+    def test_ticket_query_keeps_non_kunwu_details_out_of_reply(self):
         thunder_id = self._register_replica_identity(991202, "wa2000", root_attrs="雷", professions="破军")
         state_module.set_replica_participant_identity_ids([thunder_id])
         state_module.set_replica_gold_dps_enabled(thunder_id, True)
         state_module.set_storage_bag_records({
-            str(thunder_id): {"items": {"虚天残图": 1}, "sections": {"材料": {"虚天残图": 1}}},
+            str(thunder_id): {"items": {"虚天残图": 1, "昆吾通行令": 1}, "sections": {"材料": {"虚天残图": 1, "昆吾通行令": 1}}},
         })
 
         text = app_replica._format_replica_ticket_query_reply(html=True)
 
         self.assertIn("<code>@wa2000</code>", text)
-        self.assertIn("雷DPS", text)
+        self.assertIn("昆x1/可", text)
+        self.assertNotIn("虚x1", text)
+        self.assertNotIn("雷DPS", text)
 
     def test_virtual_hall_route_advice_uses_same_trigram_explicit_case(self):
         advice = app_replica._get_xutian_oracle_route_advice("震雷上巽风下 · 上爻游变")
@@ -2471,35 +2484,37 @@ class ReplicaAbsorbTests(unittest.TestCase):
         state_module.set_replica_group_ids([-100777])
         state_module.set_replica_listener_account_map({"-100777": listener_id})
         state_module.set_storage_bag_records({
-            str(listener_id): {"items": {"虚天残图": 9}, "sections": {}},
-            str(leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+            str(listener_id): {"items": {"昆吾通行令": 9}, "sections": {}},
+            str(leader_id): {"items": {"昆吾通行令": 1, "苍坤残图": 1}, "sections": {}},
             str(empty_id): {"items": {}, "sections": {}},
         })
 
         reply = app_replica._format_replica_ticket_query_reply()
 
         self.assertIn("@leader", reply)
-        self.assertIn("苍x1", reply)
-        opener_section = reply.split("兜底命令：", 1)[0]
+        self.assertIn("昆x1/可", reply)
+        self.assertNotIn("苍x1", reply)
+        opener_section = reply.split("开房兜底命令", 1)[0]
         self.assertNotIn("@listener", opener_section)
         self.assertNotIn("@empty", opener_section)
         self.assertEqual({"@leader": leader_id, "@empty": empty_id}, app_replica._get_replica_identity_ids_by_username())
 
-    def test_ticket_query_excludes_low_realm_cangkun_only_opener(self):
+    def test_ticket_query_excludes_non_kunwu_ticket_only_opener(self):
         low_id = self._register_replica_identity(991201, "low", professions="破军", realm="筑基后期")
         ready_id = self._register_replica_identity(991202, "ready", professions="御山", realm="结丹初期")
         state_module.set_replica_participant_identity_ids([low_id, ready_id])
         state_module.set_storage_bag_records({
             str(low_id): {"items": {"苍坤残图": 1}, "sections": {}},
-            str(ready_id): {"items": {"苍坤残图": 1}, "sections": {}},
+            str(ready_id): {"items": {"昆吾通行令": 1, "苍坤残图": 1}, "sections": {}},
         })
 
         reply = app_replica._format_replica_ticket_query_reply()
 
-        opener_section = reply.split("兜底命令：", 1)[0]
+        opener_section = reply.split("开房兜底命令", 1)[0]
         self.assertNotIn("@low", opener_section)
         self.assertIn("@ready", opener_section)
-        self.assertIn(".开启副本 @ready 苍", reply)
+        self.assertIn(".开启副本 @ready 昆", reply)
+        self.assertNotIn(".开启副本 @ready 苍", reply)
 
     def test_lightweight_open_command_sends_open_with_selected_ticket(self):
         leader_id = self._register_replica_identity(991201, "leader")

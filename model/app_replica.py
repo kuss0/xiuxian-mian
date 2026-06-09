@@ -148,6 +148,8 @@ _REPLICA_TICKET_ITEMS = tuple(
     for item in meta.get("ticket_items", ())
 )
 _REPLICA_KIND_OPEN_PRIORITY = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_CANGKUN, _REPLICA_KIND_ZHUIMO, _REPLICA_KIND_HUANGLONG, _REPLICA_KIND_KUNWU, _REPLICA_KIND_LUOYUN)
+_REPLICA_AUTOMATED_QUERY_KINDS = (_REPLICA_KIND_KUNWU,)
+_REPLICA_TICKET_QUERY_MAX_ROWS = 6
 _REPLICA_LIGHTWEIGHT_OPEN_USAGE = ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾|落云>"
 _REPLICA_DISPATCH_COMMAND_RE = re.compile(
     rf"^(?P<command>{'|'.join(re.escape(meta['dispatch_command']) for meta in _REPLICA_KIND_META.values())})\s+(?P<room_id>\d+)(?:\s+(?P<rest>.+))?$"
@@ -2859,18 +2861,26 @@ def _lightweight_open_button_label(identity_id, replica_kind):
     return f"开{short} {username}"
 
 
-def _build_lightweight_open_button_rows(chat_id, listener_account_id, *, identity_id=0, limit_per_kind=8, now=None, records=None):
+def _normalize_replica_kind_filter(replica_kinds=None):
+    if replica_kinds is None:
+        return tuple(_REPLICA_KIND_OPEN_PRIORITY)
+    allowed = {replica_kind for replica_kind in replica_kinds or () if replica_kind in _REPLICA_KINDS}
+    return tuple(replica_kind for replica_kind in _REPLICA_KIND_OPEN_PRIORITY if replica_kind in allowed)
+
+
+def _build_lightweight_open_button_rows(chat_id, listener_account_id, *, identity_id=0, limit_per_kind=8, now=None, records=None, replica_kinds=None):
     now = float(now or time.time())
     records = records if isinstance(records, dict) else _cleanup_replica_run_state(now)
     context = {"replica_chat_id": int(chat_id or 0), "listener_account_id": int(listener_account_id or 0)}
     buttons = []
+    open_priority = _normalize_replica_kind_filter(replica_kinds)
     if int(identity_id or 0) > 0:
         candidate_ids = [int(identity_id or 0)]
     else:
         candidate_ids = _get_replica_candidate_identity_ids(require_username=True, require_ticket=True)
-    count_by_kind = {replica_kind: 0 for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
+    count_by_kind = {replica_kind: 0 for replica_kind in open_priority}
     for candidate_id in candidate_ids:
-        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
+        for replica_kind in open_priority:
             if count_by_kind.get(replica_kind, 0) >= int(limit_per_kind or 8):
                 continue
             if not _replica_kind_requires_ticket(replica_kind):
@@ -2906,12 +2916,13 @@ def _format_lightweight_open_commands_for_identity(identity_id, *, html=False):
     )
 
 
-def _format_lightweight_open_command_sections(*, html=False, limit_per_kind=8, now=None, records=None):
+def _format_lightweight_open_command_sections(*, html=False, limit_per_kind=8, now=None, records=None, replica_kinds=None):
     now = float(now or time.time())
     records = records if isinstance(records, dict) else _cleanup_replica_run_state(now)
-    grouped = {replica_kind: [] for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
+    open_priority = _normalize_replica_kind_filter(replica_kinds)
+    grouped = {replica_kind: [] for replica_kind in open_priority}
     for identity_id in _get_replica_candidate_identity_ids(require_username=True, require_ticket=True):
-        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
+        for replica_kind in open_priority:
             if not _replica_kind_requires_ticket(replica_kind):
                 continue
             if not _is_replica_open_requirement_available(identity_id, replica_kind):
@@ -2924,7 +2935,7 @@ def _format_lightweight_open_command_sections(*, html=False, limit_per_kind=8, n
             if command:
                 grouped.setdefault(replica_kind, []).append(command)
     lines = []
-    for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
+    for replica_kind in open_priority:
         commands = grouped.get(replica_kind) or []
         if not commands:
             continue
@@ -3280,28 +3291,55 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     return "\n".join(lines)
 
 
-def _format_replica_ticket_query_reply(*, html=False):
-    lines = []
+def _format_replica_ticket_query_reply(*, html=False, replica_kinds=None, max_rows=None):
+    query_kinds = _normalize_replica_kind_filter(replica_kinds or _REPLICA_AUTOMATED_QUERY_KINDS)
+    max_rows = int(max_rows or _REPLICA_TICKET_QUERY_MAX_ROWS)
     now = time.time()
     records = _cleanup_replica_run_state(now)
-    for identity_id in _get_replica_candidate_identity_ids(require_username=True, require_ticket=True):
+    rows = []
+    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
         profile = get_send_as_profile(identity_id)
         username = _normalize_replica_username(profile.get("username") or "")
-        ticket_text = _format_replica_ticket_counts(identity_id)
-        if not ticket_text:
+        ticket_parts = []
+        for replica_kind in query_kinds:
+            if not _replica_kind_requires_ticket(replica_kind):
+                continue
+            count = _get_replica_ticket_kind_count(identity_id, replica_kind)
+            if count <= 0:
+                continue
+            if not _is_replica_open_requirement_available(identity_id, replica_kind):
+                continue
+            status_text = _get_replica_identity_kind_status(identity_id, replica_kind, now, records=records)
+            ticket_parts.append(f"{_REPLICA_KIND_META[replica_kind]['short']}x{count}/{status_text}")
+        if not ticket_parts:
             continue
-        root_attrs = str(profile.get("spiritual_root_attrs") or "").strip() or "未获取"
-        display_root_attrs = _format_replica_query_root_attrs(root_attrs, get_replica_gold_dps_enabled(identity_id))
-        professions = str(profile.get("replica_professions") or "").strip() or "未匹配"
-        status_text = _format_replica_identity_statuses(identity_id, now, records=records)
-        lines.append(f"{mono(username)} | {ticket_text} | {status_text} | {display_root_attrs} | {professions}")
-    if lines:
-        reply = "可开副本：\n" + "\n".join(lines)
-        open_sections = _format_lightweight_open_command_sections(html=html, now=now, records=records)
+        rows.append((username, " ".join(ticket_parts)))
+    if rows:
+        if query_kinds == _REPLICA_AUTOMATED_QUERY_KINDS:
+            title = "昆吾山自动副本"
+        else:
+            title = "可开副本"
+        lines = [f"{title}：{len(rows)} 个身份"]
+        for username, ticket_text in rows[:max_rows]:
+            display_username = mono(username) if html else username
+            lines.append(f"- {display_username} {escape(ticket_text) if html else ticket_text}")
+        if len(rows) > max_rows:
+            lines.append(f"- 另 {len(rows) - max_rows} 个略")
+        reply = "\n".join(lines)
+        open_sections = _format_lightweight_open_command_sections(
+            html=html,
+            limit_per_kind=3,
+            now=now,
+            records=records,
+            replica_kinds=query_kinds,
+        )
         if open_sections:
             reply += "\n\n" + open_sections
-        reply += "\n\n" + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=html)
+        else:
+            reply += "\n\n" + _format_lightweight_next_commands(".查询副本", html=html)
         return reply
+    if query_kinds == _REPLICA_AUTOMATED_QUERY_KINDS:
+        return "昆吾山自动副本：暂无可用昆吾通行令。\n\n" + _format_lightweight_next_commands(".查询副本", html=html)
     return "当前没有可开副本的参与身份；请先同步储物袋或等待门票入账。\n\n" + _format_lightweight_next_commands(".查询副本", html=html)
 
 
@@ -7422,6 +7460,8 @@ async def _handle_replica_ticket_query_command(event):
         listener_account_id,
         now=now,
         records=records,
+        replica_kinds=_REPLICA_AUTOMATED_QUERY_KINDS,
+        limit_per_kind=3,
     )
     await _send_replica_group_message(
         event.client,
@@ -8535,22 +8575,16 @@ def is_replica_group_command_text(text):
     raw_text = str(text or "").strip()
     if not raw_text.startswith("."):
         return False
-    if raw_text == ".查询" or raw_text.startswith(".查询 "):
-        return True
     if raw_text == ".查询副本":
         return True
-    if _VIRTUAL_HALL_MATCH_COMMAND_RE.match(raw_text):
-        return True
     if _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE.match(raw_text):
-        return True
-    if _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE.match(raw_text):
-        return True
+        _selector, requested_kind = _parse_lightweight_open_command(raw_text)
+        return requested_kind == _REPLICA_KIND_KUNWU
     if _REPLICA_ENTER_COMMAND_RE.match(raw_text):
-        return True
+        return raw_text == _REPLICA_KIND_META[_REPLICA_KIND_KUNWU]["enter_command"]
     if raw_text == _VIRTUAL_HALL_DISSOLVE_COMMAND:
         return True
-    replica_kind, replica_id, _usernames = _parse_replica_dispatch_command(raw_text)
-    return bool(replica_kind and replica_id)
+    return False
 
 
 async def _handle_replica_group_command(event):

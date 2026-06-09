@@ -985,7 +985,8 @@ async def on_message(event):
             await _handle_replica_progress_event(event, now, event_type="message")
         except Exception:
             print(traceback.format_exc())
-        await _handle_replica_group_command(event)
+        if is_replica_group_command_text(text):
+            await _handle_replica_group_command(event)
         return
     if _append_replica_dispatch_group_message_log(event, event_type="message"):
         await _handle_replica_dispatch_group_command(event)
