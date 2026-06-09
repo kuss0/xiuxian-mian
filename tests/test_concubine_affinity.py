@@ -2521,7 +2521,14 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
              patch.object(concubine, "send_game_command", new=AsyncMock(return_value=first_retry)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_VOYAGE_RETURN, track=False, priority="chain")
+        mock_send.assert_awaited_once_with(
+            config.CMD_CONCUBINE_VOYAGE_RETURN,
+            track=False,
+            priority="retry",
+            source_module="侍妾远航",
+            op_id=f"concubine_voyage_retry:{send_as_id}:918:{config.CMD_CONCUBINE_VOYAGE_RETURN}",
+            chain_id=f"concubine_voyage_retry:{send_as_id}:918",
+        )
         self.assertEqual("voyage_return_pending", state_module.state["concubine_phase"])
         self.assertEqual(919, state_module.state["concubine_voyage_msg_id"])
         self.assertEqual(1, state_module.state["concubine_voyage_retry_count"])

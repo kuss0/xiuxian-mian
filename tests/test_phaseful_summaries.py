@@ -1061,9 +1061,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             concubine.CMD_CONCUBINE_DREAM,
             track=False,
             send_as_id=send_as_id,
-            priority="normal",
+            priority="retry",
             max_retry=0,
             source_module="侍妾",
+            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{concubine.CMD_CONCUBINE_DREAM}",
+            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("dream_pending", state_module.state["concubine_phase"])
@@ -1110,9 +1112,11 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             concubine.CMD_CONCUBINE_VOYAGE_RETURN,
             track=False,
             send_as_id=send_as_id,
-            priority="chain",
+            priority="retry",
             max_retry=0,
             source_module="侍妾远航",
+            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{concubine.CMD_CONCUBINE_VOYAGE_RETURN}",
+            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual("voyage_return_pending", state_module.state["concubine_phase"])
@@ -1175,6 +1179,8 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             priority="retry",
             max_retry=0,
             source_module="闯塔",
+            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:.闯塔",
+            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
         )
         with state_module.use_identity(send_as_id):
             self.assertEqual(new_msg_id, state_module.state["last_tower_msg_id"])

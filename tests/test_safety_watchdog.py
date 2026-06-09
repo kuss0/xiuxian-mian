@@ -7,13 +7,15 @@ from unittest.mock import patch
 from tools import safety_watchdog
 
 
-def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority="", op_id="", chain_id=""):
+def _event(epoch, sender_id, text, reply_to_msg_id=0, family="", source_module="", priority="", op_id="", chain_id="", message_id=0):
     payload = {
         "event_type": "sent",
         "_epoch": float(epoch),
         "sender_id": int(sender_id),
         "text": text,
     }
+    if message_id:
+        payload["message_id"] = int(message_id)
     if reply_to_msg_id:
         payload["reply_to_msg_id"] = int(reply_to_msg_id)
     if family:
@@ -377,6 +379,145 @@ class SafetyWatchdogTests(unittest.TestCase):
         events = [
             _event(now - 55, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
             _event(now, sender_id, ".闯塔", family="tower", source_module="闯塔", priority="normal"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_phaseful_dream_replay_does_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3907536807
+        old_msg_id = 10067530
+        events = [
+            _event(
+                now - 36,
+                sender_id,
+                ".入梦寻图",
+                family="concubine_dream",
+                source_module="侍妾",
+                priority="normal",
+                message_id=old_msg_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".入梦寻图",
+                family="concubine_dream",
+                source_module="侍妾",
+                priority="retry",
+                op_id=f"phaseful_replay:{sender_id}:{old_msg_id}:.入梦寻图",
+                chain_id=f"phaseful_replay:{sender_id}:{old_msg_id}",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_unmarked_dream_retry_still_fuses(self):
+        now = time.time()
+        sender_id = 3907536807
+        events = [
+            _event(
+                now - 36,
+                sender_id,
+                ".入梦寻图",
+                family="concubine_dream",
+                source_module="侍妾",
+                priority="normal",
+                message_id=10067530,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".入梦寻图",
+                family="concubine_dream",
+                source_module="侍妾",
+                priority="retry",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_dream_replay_wrong_message_id_still_fuses(self):
+        now = time.time()
+        sender_id = 3907536807
+        events = [
+            _event(
+                now - 36,
+                sender_id,
+                ".入梦寻图",
+                family="concubine_dream",
+                source_module="侍妾",
+                priority="normal",
+                message_id=10067530,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".入梦寻图",
+                family="concubine_dream",
+                source_module="侍妾",
+                priority="retry",
+                op_id=f"phaseful_replay:{sender_id}:10067529:.入梦寻图",
+                chain_id=f"phaseful_replay:{sender_id}:10067529",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_concubine_voyage_retry_does_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3870643893
+        old_msg_id = 918
+        events = [
+            _event(
+                now - 36,
+                sender_id,
+                ".远航归来",
+                family="concubine_voyage",
+                source_module="侍妾远航",
+                priority="chain",
+                message_id=old_msg_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".远航归来",
+                family="concubine_voyage",
+                source_module="侍妾远航",
+                priority="retry",
+                op_id=f"concubine_voyage_retry:{sender_id}:{old_msg_id}:.远航归来",
+                chain_id=f"concubine_voyage_retry:{sender_id}:{old_msg_id}",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_unmarked_concubine_voyage_retry_still_fuses(self):
+        now = time.time()
+        sender_id = 3870643893
+        events = [
+            _event(
+                now - 36,
+                sender_id,
+                ".远航归来",
+                family="concubine_voyage",
+                source_module="侍妾远航",
+                priority="chain",
+                message_id=918,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".远航归来",
+                family="concubine_voyage",
+                source_module="侍妾远航",
+                priority="retry",
+            ),
         ]
 
         breach = safety_watchdog.find_send_breach(events, now, self._config())

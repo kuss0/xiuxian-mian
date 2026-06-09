@@ -102,6 +102,8 @@ SECT_TEACH_MAX_ATTEMPTS_10M = 3
 HEART_CHOICE_COMMANDS = {".稳", ".狠", ".骗"}
 CONCUBINE_STATUS_COMMAND = ".我的侍妾"
 CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍妾")
+PHASEFUL_REPLAY_OP_PREFIX = "phaseful_replay:"
+CONCUBINE_VOYAGE_RETRY_OP_PREFIX = "concubine_voyage_retry:"
 TOWER_SOURCE_MODULE = "闯塔"
 DIVINATION_QUERY_COMMAND = ".卜筮问天"
 DIVINATION_SOURCE_MODULE = "卜筮问天"
@@ -304,11 +306,7 @@ def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
     return len(reply_ids) == 1
 
 
-def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
-    if str(prev.get("priority") or "").strip().lower() == "retry":
-        return False
-    if not is_controlled_retry_event(cur):
-        return False
+def has_matching_send_markers(prev: dict, cur: dict) -> bool:
     prev_markers = {
         str(prev.get("family") or "").strip(),
         str(prev.get("source_module") or "").strip(),
@@ -320,6 +318,68 @@ def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
     prev_markers.discard("")
     cur_markers.discard("")
     return bool(prev_markers and cur_markers and prev_markers.intersection(cur_markers))
+
+
+def is_phaseful_replay_command(text: str) -> bool:
+    raw = command_key(str(text or ""))
+    return raw in {".入梦寻图", ".远航归来", ".侍妾远航"} or raw.startswith(".侍妾远航 ")
+
+
+def is_concubine_voyage_command(text: str) -> bool:
+    raw = command_key(str(text or ""))
+    return raw in {".远航归来", ".侍妾远航"} or raw.startswith(".侍妾远航 ")
+
+
+def is_safe_phaseful_replay_repeat(prev: dict, cur: dict, text: str) -> bool:
+    if not is_phaseful_replay_command(text):
+        return False
+    if str(prev.get("priority") or "").strip().lower() == "retry":
+        return False
+    if not is_controlled_retry_event(cur):
+        return False
+    prev_sender = int(prev.get("sender_id", 0) or 0)
+    prev_msg_id = int(prev.get("message_id", 0) or 0)
+    if prev_sender <= 0 or prev_msg_id <= 0:
+        return False
+    expected_chain_id = f"{PHASEFUL_REPLAY_OP_PREFIX}{prev_sender}:{prev_msg_id}"
+    op_id = str(cur.get("op_id") or "").strip()
+    chain_id = str(cur.get("chain_id") or "").strip()
+    return (
+        chain_id == expected_chain_id
+        and op_id == f"{expected_chain_id}:{text}"
+        and has_matching_send_markers(prev, cur)
+    )
+
+
+def is_safe_concubine_voyage_retry_repeat(prev: dict, cur: dict, text: str) -> bool:
+    if not is_concubine_voyage_command(text):
+        return False
+    if str(prev.get("priority") or "").strip().lower() == "retry":
+        return False
+    if not is_controlled_retry_event(cur):
+        return False
+    prev_sender = int(prev.get("sender_id", 0) or 0)
+    prev_msg_id = int(prev.get("message_id", 0) or 0)
+    if prev_sender <= 0 or prev_msg_id <= 0:
+        return False
+    expected_chain_id = f"{CONCUBINE_VOYAGE_RETRY_OP_PREFIX}{prev_sender}:{prev_msg_id}"
+    op_id = str(cur.get("op_id") or "").strip()
+    chain_id = str(cur.get("chain_id") or "").strip()
+    return (
+        chain_id == expected_chain_id
+        and op_id == f"{expected_chain_id}:{text}"
+        and has_matching_send_markers(prev, cur)
+    )
+
+
+def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
+    if is_phaseful_replay_command(text):
+        return False
+    if str(prev.get("priority") or "").strip().lower() == "retry":
+        return False
+    if not is_controlled_retry_event(cur):
+        return False
+    return has_matching_send_markers(prev, cur)
 
 
 def is_replica_button_choice_event(item: dict, text: str) -> bool:
@@ -570,6 +630,10 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             if refresh and has_intervening_small_world_tool(sent, sender_id, prev, cur):
                 continue
             if text == CONCUBINE_STATUS_COMMAND and has_intervening_concubine_recovery_tool(sent, sender_id, prev, cur):
+                continue
+            if is_safe_phaseful_replay_repeat(prev, cur, text):
+                continue
+            if is_safe_concubine_voyage_retry_repeat(prev, cur, text):
                 continue
             if is_safe_same_command_retry(prev, cur, text):
                 continue

@@ -84,6 +84,14 @@ SUMMARY_REPLAY_DELAY_MAX_SEC = 5
 SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC = 60
 
 
+def _summary_replay_intent(send_as_id, msg_id, command):
+    chain_id = f"phaseful_replay:{int(send_as_id or 0)}:{int(msg_id or 0)}"
+    return {
+        "op_id": f"{chain_id}:{str(command or '').strip()}",
+        "chain_id": chain_id,
+    }
+
+
 def register_phaseful_spec(spec):
     if spec not in _REGISTERED_SPECS:
         _REGISTERED_SPECS.append(spec)
@@ -457,12 +465,13 @@ async def _replay_summary_consumed_command(send_as_id, payload):
 
     track = bool((payload or {}).get("track", True))
     max_retry = (payload or {}).get("max_retry")
-    priority = (payload or {}).get("priority") or "chain"
+    priority = "retry"
     send_intent = {key: value for key, value in (payload or {}).get("send_intent", {}).items() if str(value or "").strip()}
+    for key, value in _summary_replay_intent(send_as_id, msg_id, command).items():
+        send_intent.setdefault(key, value)
     if command == CMD_TOWER:
         track = False
         max_retry = 0
-        priority = "retry"
         send_intent.setdefault("source_module", "闯塔")
 
     with use_identity(send_as_id):
