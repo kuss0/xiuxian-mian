@@ -40,12 +40,13 @@ class ControlBoolCoercionTests(unittest.TestCase):
             state_module.ensure_identity_registered(identity_id)
             state_module.update_send_as_profile(identity_id, enabled=True)
 
-        with patch.object(control, "save_state"), patch.object(control, "send_audit_log", new=AsyncMock()):
+        with patch.object(control, "save_state"), patch.object(control, "send_audit_log", new=AsyncMock()) as audit_mock:
             ok, message = asyncio.run(control.toggle_global_enabled("off", source="test"))
 
         self.assertTrue(ok, message)
         self.assertFalse(state_module.get_global_enabled())
         self.assertIn("全局暂停", message)
+        self.assertEqual("high", audit_mock.await_args.kwargs["priority"])
 
     def test_global_resume_resets_safety_watchdog_marker(self):
         state_module.set_global_enabled(False)

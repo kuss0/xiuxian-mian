@@ -1118,6 +1118,7 @@ async def _retry_join_once(identity_id, dungeon_id, dungeon_kind, join_command, 
             scope="identity",
             send_as_id=identity_id,
             limit=180,
+            priority="low",
         )
         return True
     _record_dungeon_workflow_event(
@@ -1248,6 +1249,7 @@ async def handle_dungeon_join_mention(event, text, now=None):
             scope="identity",
             send_as_id=identity_id,
             limit=220,
+            priority="low",
         )
         handled = True
     return handled

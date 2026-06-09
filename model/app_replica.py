@@ -7123,6 +7123,7 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
         scope="identity",
         send_as_id=identity_id,
         limit=180,
+        priority="low",
     )
     return True
 
@@ -8353,6 +8354,7 @@ async def _retry_external_dispatch_join_once(identity_id, replica_kind, room_id,
             scope="identity",
             send_as_id=identity_id,
             limit=180,
+            priority="low",
         )
         return True
     return False
@@ -8441,6 +8443,7 @@ async def _handle_replica_external_dispatch_command(event, participant_identity_
                 scope="identity",
                 send_as_id=identity_id,
                 limit=240,
+                priority="low",
             )
         else:
             _clear_external_dispatch_join_pending(

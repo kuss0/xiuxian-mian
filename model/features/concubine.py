@@ -523,6 +523,17 @@ def _parse_voyage_text(text, now):
             "error": "",
         }
 
+    if "当前并未执行远航任务" in raw_text:
+        return {
+            "status": "no_task",
+            "route": "",
+            "partner": "",
+            "return_at": 0.0,
+            "result": "",
+            "error": raw_text.strip(),
+            "clear_idle": True,
+        }
+
     if "侍妾当前并无可结算的远航任务" in raw_text:
         return {"status": "no_task", "route": "", "partner": "", "return_at": 0.0, "result": "", "error": raw_text.strip()}
 
@@ -3127,6 +3138,28 @@ async def _send_voyage_return_command(now, *, is_retry=False):
     return True
 
 
+async def _send_voyage_status_command(now):
+    if _defer_active_for_phaseful_summary(now, "远航状态校准", error_key="concubine_voyage_last_error"):
+        save_state()
+        return False
+    msg = await send_game_command(
+        CMD_CONCUBINE_VOYAGE_STATUS,
+        track=False,
+        priority="chain",
+        source_module="侍妾远航",
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        state["concubine_voyage_last_error"] = "发送 .远航状态 失败"
+        state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
+        save_state()
+        return False
+    state["concubine_voyage_last_error"] = "远航结算补发已耗尽，已改为状态校准"
+    state["next_concubine_time"] = sent_at + CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC
+    save_state()
+    return True
+
+
 async def _send_voyage_command(now, *, is_retry=False):
     if _defer_active_for_phaseful_summary(now, "侍妾远航", error_key="concubine_voyage_last_error", allow_replayable_trigger=True):
         save_state()
@@ -3189,6 +3222,7 @@ async def _handle_voyage_pending_timeout(now, phase):
                 f"↩️ 侍妾远航 {phase} 未见回复，3 秒保护窗后已补发一次。",
                 scope="identity",
                 limit=180,
+                priority="low",
             )
         return True
 
@@ -4373,8 +4407,7 @@ async def _run_concubine_scheduler(now):
         if next_time > now:
             return
         if _is_voyage_return_retry_exhausted(now):
-            _schedule_voyage_wait(now)
-            save_state()
+            await _send_voyage_status_command(now)
             return
         await _send_voyage_return_command(now)
         return

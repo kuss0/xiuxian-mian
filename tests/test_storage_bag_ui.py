@@ -19,3 +19,14 @@ def test_storage_bag_search_preserves_input_during_filtering_and_ime_composition
     search_branch = input_handler.split("const field = event.target.closest('[data-storage-transfer-field]');", 1)[0]
     assert "renderStorageBagSearchResults()" in search_branch
     assert "renderStorageBagTable()" not in search_branch
+
+
+def test_storage_bag_frontend_has_explicit_category_overrides():
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+
+    assert "STORAGE_BAG_EXPLICIT_TAGS" in script
+    assert "青竹蜂云剑" in script
+    assert "元磁山核" in script
+    assert "真仙试锋" in script
+    assert "紫灵的轻吻" in script
+    assert "稳控全场" in script

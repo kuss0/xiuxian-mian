@@ -2588,6 +2588,45 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("returned", state_module.state["concubine_voyage_status"])
         self.assertEqual(later + concubine.CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC, state_module.state["next_concubine_time"])
 
+        recheck_at = state_module.state["next_concubine_time"] + 1
+        status_msg = SimpleNamespace(id=920, sent_at=recheck_at)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(recheck_at)
+
+        mock_send.assert_awaited_once_with(
+            config.CMD_CONCUBINE_VOYAGE_STATUS,
+            track=False,
+            priority="chain",
+            source_module="侍妾远航",
+        )
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(2, state_module.state["concubine_voyage_retry_count"])
+        self.assertEqual(
+            recheck_at + concubine.CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC,
+            state_module.state["next_concubine_time"],
+        )
+
+    def test_voyage_status_no_task_clears_stale_sailing_lock(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        text = "侍妾【柳玉】当前并未执行远航任务。"
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_voyage_status"] = "sailing"
+            identity_state["concubine_voyage_route"] = "冒险"
+            identity_state["concubine_voyage_return_at"] = now - 3600
+            identity_state["concubine_voyage_retry_count"] = 2
+
+        with state_module.use_identity(send_as_id):
+            parsed = concubine._parse_voyage_text(text, now)
+            self.assertTrue(concubine._apply_voyage_snapshot(parsed, now))
+
+        self.assertEqual("idle", state_module.state["concubine_voyage_status"])
+        self.assertEqual(0, state_module.state["concubine_voyage_return_at"])
+        self.assertEqual(0, state_module.state["concubine_voyage_retry_count"])
+
     async def test_status_reply_ignored_during_voyage_pending(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)

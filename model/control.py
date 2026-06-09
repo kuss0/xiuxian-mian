@@ -3829,7 +3829,10 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
     save_state()
     action_text = "恢复运行" if enabled else "全局暂停"
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
-    await send_audit_log(f"🌐 已{action_text}，来源：{source}{actor_suffix}。")
+    await send_audit_log(
+        f"🌐 已{action_text}，来源：{source}{actor_suffix}。",
+        priority="high" if not enabled else "medium",
+    )
     return True, f"已{action_text}"
 
 

@@ -60,6 +60,12 @@
 
   var storageBagSearchTimer = null;
   var storageBagSearchComposing = false;
+  var STORAGE_BAG_EXPLICIT_TAGS = [
+    { tag: '称号', test: function (name) { return name === '真仙试锋' || name === '紫灵的轻吻' || name.endsWith('第一人') || name.indexOf('称号') >= 0; } },
+    { tag: '特殊', test: function (name) { return name === '稳控全场' || name.indexOf('残篇') >= 0; } },
+    { tag: '材料', test: function (name) { return name.indexOf('元磁山核') >= 0; } },
+    { tag: '装备武器防具', test: function (name) { return name.indexOf('青竹蜂云剑') >= 0 && name.indexOf('图纸') < 0; } },
+  ];
 
   function setFlash(message, isError) {
     if (typeof updateFlash === 'function') {
@@ -296,6 +302,10 @@
   }
 
   function itemTags(itemName) {
+    const name = String(itemName || '').trim();
+    for (const rule of STORAGE_BAG_EXPLICIT_TAGS) {
+      if (rule.test(name)) return [rule.tag];
+    }
     const rule = itemRule(itemName);
     const tags = Array.isArray(rule.tags) ? rule.tags.map(function (tag) { return String(tag || '').trim(); }).filter(Boolean) : [];
     return tags.length ? tags : ['未知'];
