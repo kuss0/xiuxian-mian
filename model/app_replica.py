@@ -8531,6 +8531,28 @@ async def _handle_legacy_replica_dispatch_notice(event):
     return True
 
 
+def is_replica_group_command_text(text):
+    raw_text = str(text or "").strip()
+    if not raw_text.startswith("."):
+        return False
+    if raw_text == ".查询" or raw_text.startswith(".查询 "):
+        return True
+    if raw_text == ".查询副本":
+        return True
+    if _VIRTUAL_HALL_MATCH_COMMAND_RE.match(raw_text):
+        return True
+    if _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE.match(raw_text):
+        return True
+    if _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE.match(raw_text):
+        return True
+    if _REPLICA_ENTER_COMMAND_RE.match(raw_text):
+        return True
+    if raw_text == _VIRTUAL_HALL_DISSOLVE_COMMAND:
+        return True
+    replica_kind, replica_id, _usernames = _parse_replica_dispatch_command(raw_text)
+    return bool(replica_kind and replica_id)
+
+
 async def _handle_replica_group_command(event):
     handled = await _handle_replica_query_command(event)
     handled = await _handle_replica_ticket_query_command(event) or handled
@@ -8551,4 +8573,5 @@ __all__ = [
     "_handle_replica_progress_event",
     "_handle_virtual_hall_auto_game_event",
     "_mark_replica_team_joined_from_text",
+    "is_replica_group_command_text",
 ]

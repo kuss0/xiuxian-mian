@@ -93,12 +93,23 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertEqual([], missing_lines)
 
-    def test_replica_group_branch_processes_game_text_before_commands(self):
+    def test_replica_group_branch_fast_tracks_explicit_commands(self):
         source_text = (PROJECT_ROOT / "model" / "app.py").read_text(encoding="utf-8")
         branch_pos = source_text.index('if _append_replica_group_message_log(event, event_type="message"):')
-        auto_pos = source_text.index("_handle_virtual_hall_auto_game_event", branch_pos)
-        progress_pos = source_text.index("_handle_replica_progress_event", branch_pos)
-        command_pos = source_text.index("_handle_replica_group_command", branch_pos)
+        fast_check_pos = source_text.index("is_replica_group_command_text(text)", branch_pos)
+        fast_command_pos = source_text.index("_handle_replica_group_command(event)", fast_check_pos)
+        reply_resolve_pos = source_text.index("_resolve_event_reply(event)", branch_pos)
+
+        self.assertLess(fast_check_pos, reply_resolve_pos)
+        self.assertLess(fast_command_pos, reply_resolve_pos)
+
+    def test_replica_group_branch_processes_game_text_before_fallback_commands(self):
+        source_text = (PROJECT_ROOT / "model" / "app.py").read_text(encoding="utf-8")
+        branch_pos = source_text.index('if _append_replica_group_message_log(event, event_type="message"):')
+        reply_resolve_pos = source_text.index("_resolve_event_reply(event)", branch_pos)
+        auto_pos = source_text.index("_handle_virtual_hall_auto_game_event", reply_resolve_pos)
+        progress_pos = source_text.index("_handle_replica_progress_event", reply_resolve_pos)
+        command_pos = source_text.index("_handle_replica_group_command", progress_pos)
 
         self.assertLess(auto_pos, command_pos)
         self.assertLess(progress_pos, command_pos)

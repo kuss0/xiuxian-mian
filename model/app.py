@@ -26,6 +26,7 @@ from .app_replica import (
     _handle_virtual_hall_auto_game_event,
     _cleanup_replica_run_state,
     _mark_replica_team_joined_from_text,
+    is_replica_group_command_text,
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
@@ -965,6 +966,12 @@ async def on_message(event):
     if _append_replica_group_message_log(event, event_type="message"):
         now = time.time()
         text = event.raw_text or ""
+        if is_replica_group_command_text(text):
+            try:
+                if await _handle_replica_group_command(event):
+                    return
+            except Exception:
+                print(traceback.format_exc())
         try:
             reply_to, reply_context = await _resolve_event_reply(event)
             await _handle_virtual_hall_auto_game_event(
