@@ -752,6 +752,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.宗门传功状态$'), "宗门传功"),
     (re.compile(r'^\.闯塔状态$'), "闯塔"),
     (re.compile(r'^\.(自动副本|副本)状态$'), "自动副本"),
+    (re.compile(r'^\.查询副本$'), "自动副本"),
 ]
 RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(开启|打开)灵树$'), "灵树", True),

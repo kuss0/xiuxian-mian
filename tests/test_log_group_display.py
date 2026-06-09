@@ -252,6 +252,21 @@ class LogGroupDisplayTests(unittest.TestCase):
         reply_mock.assert_awaited_once()
         send_mock.assert_not_awaited()
 
+    def test_log_group_dungeon_query_alias_replies_status(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".查询副本")
+
+        with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+            handled = asyncio.run(control.handle_log_group_command(event))
+
+        self.assertTrue(handled)
+        reply_mock.assert_awaited_once()
+        args = reply_mock.await_args.args
+        self.assertIn("自动副本状态", args[1])
+        self.assertIn("自动副本状态", args[2])
+        send_mock.assert_not_awaited()
+
     def test_three_sect_manual_command_without_identity_only_replies_usage(self):
         event = SimpleNamespace()
 
