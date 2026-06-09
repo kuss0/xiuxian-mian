@@ -3277,6 +3277,64 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual("88", room["room_id"])
         self.assertEqual(app_replica._REPLICA_KIND_KUNWU, room["replica_kind"])
 
+    def test_kunwu_plain_opened_text_clears_open_retry_flow(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        first_id = self._register_replica_identity(991202, "first", professions="御山")
+        event = self._prepare_replica_group([leader_id, first_id])
+        now = 1000.0
+        flow = {
+            "flow_id": "flow-kunwu-plain",
+            "phase": "opening",
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "open_command_msg_id": 501,
+            "open_requested_at": now,
+            "expires_at": now + 60,
+            "updated_at": now,
+        }
+        app_replica._upsert_lightweight_open_flow(flow)
+        opened = (
+            "道友 @leader 准备开启昆吾山试炼。\n"
+            "房间ID: 321\n"
+            "其他道友可使用 .加入昆吾山 321 加入队伍！"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))):
+                handled = await app_replica._handle_virtual_hall_auto_game_event(
+                    SimpleNamespace(id=601, chat_id=1),
+                    opened,
+                    now,
+                    reply_context={"reply_to_msg_id": 501, "send_as_id": leader_id},
+                )
+            with patch("model.app_replica.time.time", return_value=now), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                retried = await app_replica._retry_lightweight_game_command_once(
+                    "open",
+                    leader_id,
+                    app_replica._REPLICA_KIND_KUNWU,
+                    "flow-kunwu-plain",
+                    ".开启昆吾山",
+                    event.chat_id,
+                    event.id,
+                    501,
+                    delay_sec=0,
+                )
+                return handled, retried, send_mock.await_count
+
+        handled, retried, send_count = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertFalse(retried)
+        self.assertEqual(0, send_count)
+        self.assertEqual({}, state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"])
+        room = app_replica._get_lightweight_last_room(event.chat_id, now=now)
+        self.assertEqual("321", room["room_id"])
+        self.assertEqual(app_replica._REPLICA_KIND_KUNWU, room["replica_kind"])
+
     def test_luoyun_opened_text_records_latest_room_for_lightweight_flow(self):
         leader_id = self._register_replica_identity(991201, "leader", realm="结丹后期", sect_name="落云宗")
         first_id = self._register_replica_identity(991202, "first")
@@ -3712,6 +3770,56 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("开启昆吾山失败：缺少昆吾通行令", notice_text)
         self.assertIn("<code>.查询副本</code>", notice_text)
         self.assertIn("<code>.开启副本 @leader 昆</code>", notice_text)
+        self.assertEqual({}, state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"])
+
+    def test_kunwu_open_failure_without_reply_context_clears_unique_flow(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        now = 1000.0
+        flow = {
+            "flow_id": "flow-kunwu-failed",
+            "phase": "opening",
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "open_command_msg_id": 501,
+            "open_requested_at": now,
+            "expires_at": now + 60,
+            "updated_at": now,
+        }
+        app_replica._upsert_lightweight_open_flow(flow)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))):
+                handled = await app_replica._handle_virtual_hall_auto_game_event(
+                    SimpleNamespace(id=602, chat_id=1),
+                    "你没有【昆吾通行令】，无法开启登山道。",
+                    now,
+                    reply_context={},
+                )
+                notice_text = app_replica._send_lightweight_replica_notice.await_args.args[1]
+            with patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                retried = await app_replica._retry_lightweight_game_command_once(
+                    "open",
+                    leader_id,
+                    app_replica._REPLICA_KIND_KUNWU,
+                    "flow-kunwu-failed",
+                    ".开启昆吾山",
+                    event.chat_id,
+                    event.id,
+                    501,
+                    delay_sec=0,
+                )
+                return handled, notice_text, retried, send_mock.await_count
+
+        handled, notice_text, retried, send_count = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("开启昆吾山失败：缺少昆吾通行令", notice_text)
+        self.assertFalse(retried)
+        self.assertEqual(0, send_count)
         self.assertEqual({}, state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"])
 
     def test_cangkun_open_cooldown_failure_updates_identity_cooldown(self):

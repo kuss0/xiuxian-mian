@@ -741,6 +741,33 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertFalse(record["participating"])
         self.assertGreater(record["cooldown_until"], now + 3600)
 
+    async def test_new_dungeon_cooldown_reply_blocks_later_join(self):
+        identity_id = self._prepare_identity()
+        now = 18000.0
+        opener = _event(190, 111, ".开启落云秘圃")
+        announce = _event(191, 7900199668, "落云秘圃\n副本ID: 415", reply_to=190)
+        at_text = "@bbtest 来"
+        at = _event(192, 111, at_text, entities=[MessageEntityMention(0, 7)])
+        cd_reply = _event(
+            194,
+            7900199668,
+            "你尚在落云秘圃冷却中，当前无法加入队伍。剩余时间 1小时2分钟3秒，冷却结束后再试。",
+            reply_to=193,
+        )
+
+        with patch.object(join_dungeon, "get_game_bot_ids", return_value=[7900199668]), \
+                patch.object(join_dungeon, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=193, sent_at=now + 2))), \
+                patch.object(join_dungeon, "send_audit_log", new=AsyncMock()):
+            join_dungeon.record_game_group_message(opener, now=now)
+            join_dungeon.record_game_group_message(announce, now=now + 1)
+            join_dungeon.record_game_group_message(at, now=now + 2)
+            self.assertTrue(await join_dungeon.handle_dungeon_join_mention(at, at_text, now + 2))
+            self.assertTrue(await join_dungeon.handle_dungeon_join_bot_message(cd_reply, cd_reply.raw_text, now + 3))
+
+        record = state_module.get_dungeon_join_run_state()[str(identity_id)]
+        self.assertFalse(record["participating"])
+        self.assertGreater(record["cooldown_until"], now + 3600)
+
     async def test_dungeon_join_workflow_log_tracks_cooldown_guard_skip(self):
         identity_id = self._prepare_identity()
         now = 18000.0

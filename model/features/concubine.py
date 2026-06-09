@@ -587,6 +587,14 @@ def _apply_voyage_blocked_action(parsed, now, *, error_key, label):
     _schedule_voyage_wait(now)
 
 
+def _handle_action_blocked_by_voyage(raw_text, now, *, error_key, label):
+    voyage = _parse_voyage_text(raw_text, now)
+    if not voyage or voyage.get("status") != "sailing":
+        return False
+    _apply_voyage_blocked_action(voyage, now, error_key=error_key, label=label)
+    return True
+
+
 def _apply_voyage_snapshot(parsed, now):
     if not parsed:
         return False
@@ -1521,13 +1529,13 @@ def _is_concubine_candidate_text_for_phase(text, phase):
     if phase == "tianji_pending":
         return _is_strong_tianji_terminal_text(raw_text) or "天机代卜" in raw_text or "代卜天机" in raw_text
     if phase == "greet_pending":
-        return "问安" in raw_text or "情缘增加" in raw_text or _is_no_partner_text(raw_text) or _is_phaseful_summary_text(raw_text)
+        return "问安" in raw_text or "情缘增加" in raw_text or _is_no_partner_text(raw_text) or _is_phaseful_summary_text(raw_text) or _is_voyage_lock_text(raw_text)
     if phase == "gift_status_pending":
         return "侍妾" in raw_text or "情缘值" in raw_text or _is_no_partner_text(raw_text)
     if phase == "gift_bag_pending":
         return "储物袋" in raw_text or "灵石" in raw_text or "空空如也" in raw_text
     if phase == "gift_pending":
-        return "赠予了侍妾" in raw_text or "赠予侍妾" in raw_text or "灵石不足" in raw_text or "情缘增加" in raw_text
+        return "赠予了侍妾" in raw_text or "赠予侍妾" in raw_text or "灵石不足" in raw_text or "情缘增加" in raw_text or _is_voyage_lock_text(raw_text)
     if phase == "heart_choice_reply_pending":
         return (
             "【坠魔心劫·第1轮已定】" in raw_text
@@ -1566,9 +1574,9 @@ def _is_concubine_candidate_text_for_phase(text, phase):
             or "无可结算的远航任务" in raw_text
         )
     if phase == "fragment_pending":
-        return "残图" in raw_text or "拼片" in raw_text
+        return "残图" in raw_text or "拼片" in raw_text or _is_voyage_lock_text(raw_text)
     if phase == "puzzle_pending":
-        return "拼图" in raw_text or "虚天" in raw_text or "苍坤" in raw_text or "残图" in raw_text
+        return "拼图" in raw_text or "虚天" in raw_text or "苍坤" in raw_text or "残图" in raw_text or _is_voyage_lock_text(raw_text)
     if phase == "reacquire_pending":
         return (
             "新的道心侍妾" in raw_text
@@ -1576,6 +1584,10 @@ def _is_concubine_candidate_text_for_phase(text, phase):
             or _is_no_partner_text(raw_text)
             or "赐婚" in raw_text
             or "红尘寻缘" in raw_text
+            or "神念消耗过剧" in raw_text
+            or ("请在" in raw_text and "后再试" in raw_text)
+            or "冷却" in raw_text
+            or _is_voyage_lock_text(raw_text)
         )
     return False
 
@@ -3566,6 +3578,10 @@ async def handle_concubine_fragment_reply(text, now, reply_to, matched_family=No
         return True
 
     raw_text = text or ""
+    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_last_error", label="残图确认"):
+        save_state()
+        return True
+
     if _is_no_partner_text(raw_text):
         if _is_partner_manual_repair_text(raw_text):
             _freeze_no_partner_until(now + CONCUBINE_REACQUIRE_RETRY_SEC, "残图确认失败：侍妾数据异常，等待人工修复")
@@ -3627,6 +3643,10 @@ async def handle_concubine_puzzle_reply(text, now, reply_to, matched_family=None
         return True
 
     raw_text = text or ""
+    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_last_error", label="拼图"):
+        save_state()
+        return True
+
     success_kind = _parse_puzzle_success_kind(raw_text)
     if success_kind:
         _clear_fragment_progress(success_kind)
@@ -3697,6 +3717,10 @@ async def handle_concubine_reacquire_reply(text, now, reply_to, matched_family=N
         return True
 
     raw_text = text or ""
+    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_last_error", label="补领侍妾"):
+        save_state()
+        return True
+
     if "开启了一段寻缘之旅" in raw_text:
         _set_phase("reacquire_pending")
         state["next_concubine_time"] = now + CONCUBINE_PHASE_TIMEOUT_SEC
@@ -3944,7 +3968,10 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
         state["concubine_heart_last_error"] = "已有心劫抉择进行中，暂停自动补发"
         _set_phase("idle")
         _clear_pending_msg_ids()
-        state["concubine_heart_due_at"] = now + random.uniform(30 * 60, 60 * 60)
+        if has_wait_time(raw_text):
+            state["concubine_heart_due_at"] = now + parse_wait_time(raw_text) + CD_BUFFER_SEC
+        else:
+            state["concubine_heart_due_at"] = now + random.uniform(30 * 60, 60 * 60)
         _schedule_at_due_or_chain(now, state["concubine_heart_due_at"])
         save_state()
         await send_audit_log("🌸 共历心劫已有抉择进行中，已暂停补发并稍后校准。", scope="identity")
@@ -4065,6 +4092,10 @@ async def handle_concubine_greet_reply(text, now, reply_to, matched_family=None)
         return True
 
     raw_text = text or ""
+    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_greet_last_error", label="每日问安"):
+        save_state()
+        return True
+
     today = _local_day_key(now)
     if _is_phaseful_summary_text(raw_text):
         _retry_or_stop_daily_greet(now, "每日问安触发闭关/元婴结算")
@@ -4197,6 +4228,10 @@ async def handle_concubine_gift_reply(text, now, reply_to, matched_family=None):
         return True
 
     raw_text = text or ""
+    if _handle_action_blocked_by_voyage(raw_text, now, error_key="concubine_gift_last_error", label="赠予侍妾"):
+        save_state()
+        return True
+
     gift_success = _parse_gift_success(raw_text)
     if gift_success:
         today = _local_day_key(now)

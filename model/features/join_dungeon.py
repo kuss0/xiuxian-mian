@@ -1298,7 +1298,17 @@ async def handle_dungeon_join_bot_message(event, text, now=None):
         )
         return True
 
-    if "无法立即加入新副本" in raw and "请在" in raw and "后再试" in raw:
+    if (
+        ("无法立即加入新副本" in raw and "请在" in raw and "后再试" in raw)
+        or (
+            "无法加入队伍" in raw
+            and (
+                "独立冷却" in raw
+                or "剩余时间" in raw
+                or "冷却结束" in raw
+            )
+        )
+    ):
         wait_sec = parse_wait_time(raw) if has_wait_time(raw) else 0
         if wait_sec > 0:
             _mark_join_cooldown(

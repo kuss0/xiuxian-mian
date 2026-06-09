@@ -169,8 +169,8 @@ _REPLICA_ROOM_AUTO_DISSOLVED_RE = re.compile(
 )
 _REPLICA_TEAM_KICKED_RE = re.compile(r"【队员已请离】\s*队长\s*(@[A-Za-z0-9_]{3,32})\s*已将道友\s*(@[A-Za-z0-9_]{3,32})\s*请离队伍")
 _REPLICA_OPENED_RE = re.compile(
-    r"(?:【(?P<opened_kind_name>虚天殿)已开启】|【(?P<opened_zhuimo>坠魔谷)·集结】|【(?P<opened_huanglong>黄龙山)大战·集结】|【(?P<opened_cangkun>苍坤(?:上人)?洞府)(?:·集结|已开启)?】|【(?P<opened_kunwu>昆吾山)·集结】|【(?P<opened_luoyun>落云秘圃)·集结】)"
-    r"\s*(?:队长\s*)?(?P<leader>@[^\s，。！？、；：:,.!?()（）【】\[\]]+).*?(?:副本ID|房间ID)\s*[:：]\s*(?P<room_id>\d+)",
+    r"(?:(?:【(?P<opened_kind_name>虚天殿)已开启】|【(?P<opened_zhuimo>坠魔谷)·集结】|【(?P<opened_huanglong>黄龙山)大战·集结】|【(?P<opened_cangkun>苍坤(?:上人)?洞府)(?:·集结|已开启)?】|【(?P<opened_kunwu>昆吾山)·集结】|【(?P<opened_luoyun>落云秘圃)·集结】)\s*(?:队长\s*)?|道友\s*)"
+    r"(?P<leader>@[^\s，。！？、；：:,.!?()（）【】\[\]]+).*?(?:副本ID|房间ID)\s*[:：]\s*(?P<room_id>\d+)",
     re.S,
 )
 _REPLICA_JOINED_RE = re.compile(
@@ -1942,6 +1942,24 @@ def _find_lightweight_open_flow(reply_to_msg_id=0, send_as_id=0, leader_username
     if not matches:
         return None
     matches.sort(key=lambda item: float(item.get("updated_at") or item.get("open_requested_at") or 0), reverse=True)
+    return matches[0]
+
+
+def _find_unique_lightweight_open_flow(replica_kind="", now=None):
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    pending = state_item.get("pending_open") if isinstance(state_item.get("pending_open"), dict) else {}
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    matches = []
+    for flow in pending.values():
+        if not isinstance(flow, dict):
+            continue
+        if flow.get("phase") != "opening":
+            continue
+        if replica_kind and flow.get("replica_kind") != replica_kind:
+            continue
+        matches.append(flow)
+    if len(matches) != 1:
+        return None
     return matches[0]
 
 
@@ -4992,9 +5010,9 @@ def _parse_replica_join_reply(text, reply_to=None):
     team_usernames = _extract_replica_team_usernames(raw_text) or _extract_replica_usernames(raw_text)
     if joined_match or "你已在队伍中" in raw_text:
         return {"kind": "joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "wait_sec": 0, "reason": ""}
-    if "此队伍已满员" in raw_text:
+    if "此队伍已满员" in raw_text or "队伍已满" in raw_text:
         return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "wait_sec": 0, "reason": "full"}
-    if "找不到此副本房间" in raw_text:
+    if "找不到此副本房间" in raw_text or "副本房间不存在" in raw_text:
         return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "wait_sec": 0, "reason": "not_found"}
     if (
         ("无法立即加入新副本" in raw_text and "请在" in raw_text and "后再试" in raw_text)
@@ -5264,6 +5282,9 @@ def _infer_replica_kind_from_text(text, default=""):
     raw_text = str(text or "")
     if "苍坤上人洞府" in raw_text:
         return _REPLICA_KIND_CANGKUN
+    for kind, meta in _REPLICA_TICKET_META.items():
+        if any(str(item or "") and str(item or "") in raw_text for item in meta.get("ticket_items", ())):
+            return kind
     for kind, meta in _REPLICA_KIND_META.items():
         if meta["name"] in raw_text or meta["join_command"] in raw_text or meta["enter_command"] in raw_text:
             return kind
@@ -6664,7 +6685,15 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
             return True
     open_failure = _parse_lightweight_replica_open_failure(text)
     if open_failure:
-        flow = _find_lightweight_open_flow(reply_to_msg_id=reply_to_msg_id, send_as_id=send_as_id, now=now)
+        failure_kind = _infer_replica_kind_from_text(text)
+        flow = _find_lightweight_open_flow(
+            reply_to_msg_id=reply_to_msg_id,
+            send_as_id=send_as_id,
+            replica_kind=failure_kind,
+            now=now,
+        )
+        if not flow and failure_kind:
+            flow = _find_unique_lightweight_open_flow(replica_kind=failure_kind, now=now)
         if flow:
             wait_sec = parse_wait_time(text) if "开房冷却中" in open_failure else 0
             if wait_sec > 0:
@@ -7246,7 +7275,11 @@ def _parse_lightweight_replica_open_failure(text):
         return "缺少坠魔谷禁制令"
     if "你没有【黄龙急援令】" in raw_text or ("无法调动前线阵纹" in raw_text and "黄龙急援令" in raw_text):
         return "缺少黄龙急援令"
-    if "你没有【昆吾通行令】" in raw_text or ("无法开启昆吾山" in raw_text and "昆吾通行令" in raw_text):
+    if (
+        "你没有【昆吾通行令】" in raw_text
+        or ("无法开启昆吾山" in raw_text and "昆吾通行令" in raw_text)
+        or ("无法开启登山道" in raw_text and "昆吾通行令" in raw_text)
+    ):
         return "缺少昆吾通行令"
     if "无法开启落云秘圃" in raw_text or ("落云秘圃" in raw_text and any(keyword in raw_text for keyword in ("贡献不足", "宗门贡献", "结丹后期", "落云宗"))):
         return "落云开房资格不足"
