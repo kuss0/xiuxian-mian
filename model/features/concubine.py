@@ -126,6 +126,9 @@ CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
 CONCUBINE_HEART_PANEL_MAX_AGE_SEC = 10 * 60
 CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 3
 CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT = 1
+CONCUBINE_HEART_GLOBAL_START_GAP_SEC = 5 * 60
+CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC = 60
+CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_VOYAGE_MIN_AFFINITY = 120
@@ -1279,6 +1282,61 @@ def _guard_tianji_send_with_message_log(now):
         msg_id=_msg_id_int(logged.get("msg_id")),
         detail=f"due_at={fmt_abs_ts(due_at)}｜source={logged.get('source')}",
         decision="tianji_send_blocked_by_message_log",
+    )
+    return True
+
+
+def _find_recent_logged_heart_start(now):
+    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, float(now or 0) - CONCUBINE_HEART_GLOBAL_START_GAP_SEC)
+    best = None
+    for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if not _payload_matches_game_topic(payload):
+            continue
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
+            continue
+        if str(payload.get("event_type") or "").strip() != "sent":
+            continue
+        if str(payload.get("text") or "").strip() != CMD_CONCUBINE_HEART:
+            continue
+        source_module = str(payload.get("source_module") or "").strip()
+        family = str(payload.get("family") or "").strip()
+        if source_module and source_module != "共历心劫":
+            continue
+        if family and family != "concubine_heart":
+            continue
+        if best is None or event_ts > float(best.get("event_ts", 0) or 0):
+            best = {
+                "event_ts": event_ts,
+                "sender_id": int(payload.get("sender_id", 0) or 0),
+                "msg_id": _msg_id_int(payload.get("message_id")),
+            }
+    return best
+
+
+def _guard_heart_start_with_message_log(now):
+    logged = _find_recent_logged_heart_start(now)
+    if not logged:
+        return False
+    event_ts = float(logged.get("event_ts", 0) or 0)
+    if event_ts <= 0:
+        return False
+    remaining = event_ts + CONCUBINE_HEART_GLOBAL_START_GAP_SEC - float(now or 0)
+    if remaining <= 0:
+        return False
+    delay = remaining + random.uniform(CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC, CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC)
+    state["next_concubine_time"] = max(float(state.get("next_concubine_time", 0) or 0), float(now or 0) + delay)
+    state["concubine_heart_last_error"] = "共历心劫全局串行等待，避免多号三轮抉择叠发"
+    _record_concubine_event(
+        "共历心劫全局串行等待",
+        kind="skipped",
+        reason="concubine_heart_global_start_guard",
+        phase=_phase(),
+        command=CMD_CONCUBINE_HEART,
+        msg_id=_msg_id_int(logged.get("msg_id")),
+        detail=f"last_sender={int(logged.get('sender_id', 0) or 0)}｜wait={int(delay)}s",
+        decision="heart_start_global_guard",
     )
     return True
 
@@ -2987,6 +3045,10 @@ async def _send_heart_command(now):
         save_state()
         return False
 
+    if _guard_heart_start_with_message_log(now):
+        save_state()
+        return False
+
     panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
     panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
     if panel_msg_id <= 0 or panel_seen_at <= 0 or now - panel_seen_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
@@ -4416,10 +4478,6 @@ async def _run_concubine_scheduler(now):
     if state.get("concubine_heart_enabled"):
         heart_due_at = float(state.get("concubine_heart_due_at", 0) or 0)
         if heart_due_at <= now:
-            panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-            if int(state.get("concubine_last_panel_msg_id", 0) or 0) <= 0 or panel_seen_at <= 0 or now - panel_seen_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
-                await _send_status_command(now)
-                return
             await _send_heart_command(now)
             return
 

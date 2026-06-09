@@ -639,6 +639,24 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("send burst", breach)
 
+    def test_marked_heart_choices_do_not_count_as_send_burst(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+        events = [
+            _event(now - 90, 1001, ".我的侍妾"),
+            _event(now - 80, 1002, ".小世界"),
+            _event(now - 70, 1003, ".灵树状态"),
+            _event(now - 20, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+        ]
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
     def test_non_virtual_dungeon_join_repeat_is_not_same_command_fuse(self):
         now = time.time()
         sender_id = 8659059191

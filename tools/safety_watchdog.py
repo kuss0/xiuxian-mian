@@ -518,6 +518,14 @@ def command_key(text: str) -> str:
     return raw
 
 
+def is_send_burst_exempt_event(item: dict) -> bool:
+    text = str(item.get("text") or "")
+    return (
+        is_dungeon_fast_chain_command(text)
+        or (is_heart_choice_command(text) and is_concubine_heart_event(item))
+    )
+
+
 def has_intervening_small_world_tool(sent: list[dict], sender_id: int, prev: dict, cur: dict) -> bool:
     prev_epoch = float(prev.get("_epoch", 0) or 0)
     cur_epoch = float(cur.get("_epoch", 0) or 0)
@@ -556,13 +564,13 @@ def count_since(events: list[dict], now: float, seconds: float) -> int:
     return sum(1 for item in events if float(item.get("_epoch", 0) or 0) >= start)
 
 
-def count_non_dungeon_fast_chain_since(events: list[dict], now: float, seconds: float) -> int:
+def count_non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> int:
     start = now - float(seconds)
     return sum(
         1
         for item in events
         if float(item.get("_epoch", 0) or 0) >= start
-        and not is_dungeon_fast_chain_command(str(item.get("text") or ""))
+        and not is_send_burst_exempt_event(item)
     )
 
 
@@ -576,11 +584,11 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
     if not sent:
         return ""
 
-    if count_non_dungeon_fast_chain_since(sent, now, 120) >= cfg.total_2m_limit:
+    if count_non_burst_exempt_since(sent, now, 120) >= cfg.total_2m_limit:
         return f"send burst: {cfg.total_2m_limit}+ sends in 120s"
-    if count_non_dungeon_fast_chain_since(sent, now, 300) >= cfg.total_5m_limit:
+    if count_non_burst_exempt_since(sent, now, 300) >= cfg.total_5m_limit:
         return f"send burst: {cfg.total_5m_limit}+ sends in 300s"
-    if count_non_dungeon_fast_chain_since(sent, now, 900) >= cfg.total_15m_limit:
+    if count_non_burst_exempt_since(sent, now, 900) >= cfg.total_15m_limit:
         return f"send burst: {cfg.total_15m_limit}+ sends in 900s"
 
     recent_gap_sent = [item for item in sent if float(item["_epoch"]) >= now - 30 * 60]

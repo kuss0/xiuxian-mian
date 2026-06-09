@@ -1727,6 +1727,45 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(2, concubine._heart_next_choice_delay())
         mock_uniform.assert_called_once_with(1, 3)
 
+    async def test_scheduler_defers_heart_start_after_recent_global_heart_log(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_enabled"] = False
+            identity_state["concubine_tianji_enabled"] = False
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_snapshot_at"] = now
+            identity_state["next_concubine_time"] = 0
+
+        with tempfile.TemporaryDirectory() as log_dir:
+            self._write_message_log(
+                log_dir,
+                [
+                    {
+                        "ts": self._log_ts(now - 60),
+                        "event_type": "sent",
+                        "message_id": 9387200,
+                        "sender_id": 123456,
+                        "text": config.CMD_CONCUBINE_HEART,
+                        "family": "concubine_heart",
+                        "source_module": "共历心劫",
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", log_dir), \
+                 patch.object(concubine.random, "uniform", return_value=90), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+                await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_awaited()
+        self.assertEqual(now + 330, state_module.state["next_concubine_time"])
+        self.assertIn("全局串行等待", state_module.state["concubine_heart_last_error"])
+
     def test_no_partner_hint_does_not_count_as_realm_block(self):
         text = "你尚无红颜知己。唯有筑基之后，方可于.红尘寻缘中觅得佳人。"
         self.assertTrue(concubine._is_no_partner_text(text))
