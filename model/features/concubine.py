@@ -112,6 +112,7 @@ RE_VOYAGE_STATUS_RETURNED = re.compile(r"侍妾【(?P<name>[^】]+)】已自【(
 RE_VOYAGE_START = re.compile(r"【乱星海远航·启】[\s\S]*?你命侍妾【(?P<name>[^】]+)】沿\s*(?P<route>\S+)\s*航线远行[\s\S]*?预计归航时间[：:]\s*(?P<wait>[^。\n]+)")
 RE_VOYAGE_RETURN = re.compile(r"【乱星海远航·归】[\s\S]*?侍妾【(?P<name>[^】]+)】已自\s*(?P<route>\S+)\s*航线归来")
 RE_VOYAGE_RETURN_WAIT = re.compile(r"(?:远航|归航)[\s\S]{0,80}?(?:还需|尚需|剩余(?:约)?)\s*(?P<wait>[^。\n]+)")
+RE_VOYAGE_LOCK_WAIT = re.compile(r"远航(?:中|途中)[\s\S]{0,80}?请在\s*(?P<wait>[^。\n]+?)\s*后再试")
 RE_VOYAGE_AFFINITY_LOSS = re.compile(r"情缘减少\s*(?P<amount>[\d,]+)\s*点")
 RE_VOYAGE_SPIRIT_RESERVE = re.compile(r"蓄灵\s*(?P<amount>[\d,]+)\s*点")
 
@@ -442,7 +443,8 @@ def _voyage_unknown_return_at(now):
 
 
 def _voyage_wait_text_from_return(raw_text):
-    matched = RE_VOYAGE_RETURN_WAIT.search(str(raw_text or ""))
+    text = str(raw_text or "")
+    matched = RE_VOYAGE_RETURN_WAIT.search(text) or RE_VOYAGE_LOCK_WAIT.search(text)
     if not matched:
         return ""
     wait_text = str(matched.group("wait") or "").strip()
@@ -548,7 +550,7 @@ def _parse_voyage_text(text, now):
             "error": "",
         }
 
-    if "侍妾正在远航途中" in raw_text or "侍妾仍在远航途中" in raw_text:
+    if _is_voyage_lock_text(raw_text):
         return {
             "status": "sailing",
             "route": str(state.get("concubine_voyage_route") or "").strip(),
@@ -566,7 +568,15 @@ def _parse_voyage_text(text, now):
 
 def _is_voyage_lock_text(text):
     raw_text = str(text or "")
-    return "侍妾正在远航途中" in raw_text or "侍妾仍在远航途中" in raw_text
+    return any(
+        marker in raw_text
+        for marker in (
+            "侍妾正在远航途中",
+            "侍妾仍在远航途中",
+            "侍妾正在远航中",
+            "侍妾仍在远航中",
+        )
+    )
 
 
 def _apply_voyage_blocked_action(parsed, now, *, error_key, label):

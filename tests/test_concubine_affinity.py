@@ -2501,6 +2501,39 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(expected_return_at, state_module.state["concubine_voyage_return_at"])
         self.assertEqual(expected_return_at, state_module.state["next_concubine_time"])
 
+    async def test_voyage_pending_lock_wait_sets_long_return_at(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_CONCUBINE_VOYAGE} 冒险", id=919)
+        text = "侍妾仍在远航中，请在 11小时48分钟5秒 后再试。"
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_phase"] = "voyage_pending"
+            identity_state["concubine_voyage_status"] = ""
+            identity_state["concubine_voyage_route"] = "冒险"
+            identity_state["concubine_voyage_msg_id"] = 919
+            identity_state["concubine_voyage_retry_count"] = 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=0):
+            handled = await concubine.handle_concubine_voyage_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="concubine_voyage",
+            )
+
+        expected_return_at = now + 11 * 3600 + 48 * 60 + 5 + config.CD_BUFFER_SEC
+        self.assertTrue(handled)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_voyage_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_voyage_retry_count"])
+        self.assertEqual("sailing", state_module.state["concubine_voyage_status"])
+        self.assertEqual("冒险", state_module.state["concubine_voyage_route"])
+        self.assertEqual(expected_return_at, state_module.state["concubine_voyage_return_at"])
+        self.assertEqual(expected_return_at, state_module.state["next_concubine_time"])
+
     async def test_voyage_return_no_task_clears_only_current_return_reply(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
