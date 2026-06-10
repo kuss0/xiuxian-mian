@@ -2553,6 +2553,61 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("玄晶", notice_text)
         self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=now + 181))
 
+    def test_kunwu_summit_settlement_clears_room_and_reports_result(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "332",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "entered_at": now,
+            "updated_at": now,
+            "expires_at": now + 3600,
+        })
+        app_replica._mark_replica_team_entered(
+            app_replica._REPLICA_KIND_KUNWU,
+            now,
+            source_msg_id=9984300,
+            leader_username="@leader",
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(
+                        id=9984309,
+                        raw_text=(
+                            "【登顶昆吾山】\n"
+                            "恭喜你们历经 10 回合，成功登顶！\n\n"
+                            "最终收获:\n"
+                            "- 每位队员获得 5000 点修为\n"
+                            "- 队长 @leader 获得登顶至宝 【大挪移令】x1"
+                        ),
+                    ),
+                    now + 180,
+                )
+                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1]
+
+        handled, notice_item, notice_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(-100777, notice_item["replica_chat_id"])
+        self.assertIn("昆吾山结算：登顶昆吾山", notice_text)
+        self.assertIn("已清理轻量房间记录", notice_text)
+        self.assertIn("已记录 1 个身份 CD", notice_text)
+        self.assertIn("大挪移令", notice_text)
+        self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=now + 181))
+        records = state_module.get_replica_run_state()["by_identity"]
+        state_item = records[str(leader_id)]["replica_states"][app_replica._REPLICA_KIND_KUNWU]
+        self.assertFalse(state_item["participating"])
+        self.assertEqual("", state_item["room_id"])
+        self.assertEqual("332", state_item["last_completed_room_id"])
+
     def test_cangkun_final_failure_keeps_entered_lightweight_room_until_settlement(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
         first_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")

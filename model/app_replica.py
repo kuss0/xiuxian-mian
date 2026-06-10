@@ -1083,6 +1083,7 @@ def _is_replica_settlement_text(text):
     raw_text = str(text or "")
     return (
         "【战利品结算" in raw_text
+        or "【登顶昆吾山】" in raw_text
         or ("【后殿冲关止步】" in raw_text and "结算所得早已锁定" in raw_text)
         or any(keyword in raw_text for keyword in ("挑战成功", "通关成功", "试炼成功", "探索完成"))
         or bool(_parse_cangkun_success_kind(raw_text))
@@ -1091,6 +1092,8 @@ def _is_replica_settlement_text(text):
 
 def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
+    if "【登顶昆吾山】" in raw_text:
+        return _REPLICA_KIND_KUNWU
     cangkun_kind = _parse_cangkun_success_kind(raw_text)
     if cangkun_kind:
         return cangkun_kind
@@ -1116,7 +1119,7 @@ def _get_replica_settlement_title(replica_kind, text):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return _get_cangkun_settlement_title(text)
     raw_text = str(text or "")
-    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成)[^】]*)】", raw_text)
+    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|登顶昆吾山)[^】]*)】", raw_text)
     if match:
         title = match.group(1).strip()
         title = re.sub(r"^(?:虚天殿|坠魔谷|黄龙山大战?|昆吾山)[·\s]*", "", title).strip()
