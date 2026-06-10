@@ -195,6 +195,7 @@ _VIRTUAL_HALL_AUTO_OPEN_DONE_TTL_SEC = 0
 _VIRTUAL_HALL_AUTO_MISSING_RETRY_COOLDOWN_SEC = 30
 _VIRTUAL_HALL_AUTO_MISSING_AUTO_RETRY_MAX = 1
 _VIRTUAL_HALL_AUTO_OPEN_ACTIVE_PHASES = {"opening", "waiting_dispatch", "monitoring", "dissolving"}
+_VIRTUAL_HALL_EXTERNAL_DPS_KEY = "__external_dps__"
 _LIGHTWEIGHT_NO_DPS_AUTO_DISSOLVE_DELAY_SEC = 6
 _REPLICA_LIGHTWEIGHT_OPEN_TIMEOUT_SEC = 90
 _REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC = 3 * 60 * 60
@@ -2886,9 +2887,9 @@ def _lightweight_join_button(room, command, *, label="加入推荐"):
     )
 
 
-def _build_lightweight_room_action_buttons(room, *, join_command="", include_enter=True, include_dissolve=True, include_query=False):
+def _build_lightweight_room_action_buttons(room, *, join_command="", join_label="加入推荐", include_enter=True, include_dissolve=True, include_query=False):
     first_row = []
-    join_button = _lightweight_join_button(room, join_command)
+    join_button = _lightweight_join_button(room, join_command, label=join_label)
     if join_button:
         first_row.append(join_button)
     if include_enter:
@@ -2938,11 +2939,12 @@ def _get_lightweight_recommended_join_command_for_room(room):
         candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
         recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
         if not recommendations:
-            return ""
-        if not _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendations[0]):
+            recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
+        recommendation = recommendations[0] if recommendations else None
+        if not _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation):
             return ""
         return _virtual_hall_join_command_from_recommendation(
-            recommendations[0],
+            recommendation,
             leader_username=room.get("leader_username") or gua_record.get("leader_username") or "",
         )
     if replica_kind in _REPLICA_KINDS:
@@ -2967,8 +2969,9 @@ def _is_lightweight_room_enter_actionable(room):
     candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
     recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
     if not recommendations:
-        return False
-    return _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendations[0])
+        recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
+    recommendation = recommendations[0] if recommendations else None
+    return _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation)
 
 
 def _format_virtual_hall_room_not_actionable_notice(room, *, html=False):
@@ -4525,6 +4528,24 @@ def _get_root_elements(root_attrs):
     return elements
 
 
+def _make_virtual_hall_external_dps_candidate():
+    return {
+        "username": "",
+        "username_key": _VIRTUAL_HALL_EXTERNAL_DPS_KEY,
+        "root_attrs": "金/雷",
+        "root_elements": {"金"},
+        "gold_dps": True,
+        "external_dps": True,
+        "available": True,
+        "professions": [],
+    }
+
+
+def _candidate_is_virtual_hall_external_dps(candidate):
+    candidate = candidate if isinstance(candidate, dict) else {}
+    return bool(candidate.get("external_dps")) or candidate.get("username_key") == _VIRTUAL_HALL_EXTERNAL_DPS_KEY
+
+
 def _clean_replica_query_field(text):
     return str(text or "").replace("【", "").replace("】", "").strip()
 
@@ -4870,6 +4891,10 @@ def _assignments_have_virtual_hall_gold_dps(assignments):
     return any(_candidate_has_virtual_hall_gold_dps(assignment.get("candidate") or {}) for assignment in assignments or [])
 
 
+def _assignments_have_virtual_hall_external_dps(assignments):
+    return any(_candidate_is_virtual_hall_external_dps(assignment.get("candidate") or {}) for assignment in assignments or [])
+
+
 def _has_available_virtual_hall_gold_dps(candidates):
     return any(candidate.get("available") and _candidate_has_virtual_hall_gold_dps(candidate) for candidate in candidates or [])
 
@@ -4961,6 +4986,8 @@ def _virtual_hall_recommendation_command_usernames(assignments, leader_username=
     seen = set()
     for assignment in assignments or []:
         candidate = assignment.get("candidate") or {}
+        if _candidate_is_virtual_hall_external_dps(candidate):
+            continue
         username = _normalize_replica_username(candidate.get("username") or "")
         if not username or username == leader_username or username in seen:
             continue
@@ -4995,6 +5022,8 @@ def _virtual_hall_recommendation_dps_usernames(recommendation):
     seen = set()
     for assignment in (recommendation or {}).get("assignments") or []:
         candidate = assignment.get("candidate") or {}
+        if _candidate_is_virtual_hall_external_dps(candidate):
+            continue
         if not _candidate_has_virtual_hall_gold_dps(candidate):
             continue
         username = _normalize_replica_username(candidate.get("username") or "")
@@ -5002,6 +5031,10 @@ def _virtual_hall_recommendation_dps_usernames(recommendation):
             seen.add(username)
             usernames.append(username)
     return usernames
+
+
+def _virtual_hall_recommendation_needs_external_dps(recommendation):
+    return _assignments_have_virtual_hall_external_dps((recommendation or {}).get("assignments") or [])
 
 
 def _format_virtual_hall_ideal_composition(gua_record):
@@ -5271,7 +5304,7 @@ def _get_latest_virtual_hall_leader_username(now=None):
     return _normalize_replica_username(latest.get("leader_username") or "") if latest else ""
 
 
-def _build_virtual_hall_recommendations(gua_record, candidates, limit=3):
+def _build_virtual_hall_recommendations(gua_record, candidates, limit=3, *, allow_external_dps=False, require_external_dps=False):
     slots = _ensure_virtual_hall_gold_fallback(_expand_virtual_hall_gua_slots(gua_record.get("requirements") or []))
     has_exact_gold_slot = any(slot.get("element") == "金" for slot in slots)
     require_gold_fallback = not has_exact_gold_slot and _has_virtual_hall_gold_fallback_slots(slots)
@@ -5281,6 +5314,8 @@ def _build_virtual_hall_recommendations(gua_record, candidates, limit=3):
         for candidate in candidates or []
         if candidate.get("root_elements") and (candidate.get("available") or candidate.get("username_key") == leader_username)
     ]
+    if allow_external_dps:
+        candidates = candidates + [_make_virtual_hall_external_dps_candidate()]
     has_available_gold_dps = _has_available_virtual_hall_gold_dps(candidates)
     if not has_available_gold_dps:
         return []
@@ -5303,6 +5338,8 @@ def _build_virtual_hall_recommendations(gua_record, candidates, limit=3):
                 limit=None,
             )
             if len(command_usernames) > _virtual_hall_recommendation_command_limit(leader_username):
+                return
+            if require_external_dps and not _assignments_have_virtual_hall_external_dps(ordered_assignments):
                 return
             if has_available_gold_dps and not _assignments_have_virtual_hall_gold_dps(ordered_assignments):
                 return
@@ -5363,6 +5400,16 @@ def _build_virtual_hall_recommendations(gua_record, candidates, limit=3):
     return deduped_results
 
 
+def _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1):
+    return _build_virtual_hall_recommendations(
+        gua_record,
+        candidates,
+        limit=limit,
+        allow_external_dps=True,
+        require_external_dps=True,
+    )
+
+
 def _format_virtual_hall_recommendation_line(room_id, recommendation, leader_username=""):
     assignments = recommendation.get("assignments") or []
     usernames = _virtual_hall_recommendation_command_usernames(
@@ -5381,8 +5428,11 @@ def _format_virtual_hall_recommendation_line(room_id, recommendation, leader_use
         prefix = "未全匹配（缺" + "、".join(missing) + "）"
     else:
         prefix = "偏配（" + "、".join(notes) + "）"
-    dps_usernames = _virtual_hall_recommendation_dps_usernames(recommendation)
-    dps_text = "｜DPS：" + " ".join(mono(username) for username in dps_usernames) if dps_usernames else ""
+    if _virtual_hall_recommendation_needs_external_dps(recommendation):
+        dps_text = "｜DPS：自找大佬"
+    else:
+        dps_usernames = _virtual_hall_recommendation_dps_usernames(recommendation)
+        dps_text = "｜DPS：" + " ".join(mono(username) for username in dps_usernames) if dps_usernames else ""
     return f"{prefix} ： {mono(command)}{dps_text}"
 
 
@@ -5402,8 +5452,11 @@ def _format_virtual_hall_lightweight_recommendation_line(recommendation, leader_
         prefix = "未全匹配（缺" + "、".join(missing) + "）"
     else:
         prefix = "偏配（" + "、".join(notes) + "）"
-    dps_usernames = _virtual_hall_recommendation_dps_usernames(recommendation)
-    dps_text = "｜DPS：" + " ".join(mono(username) if html else username for username in dps_usernames) if dps_usernames else ""
+    if _virtual_hall_recommendation_needs_external_dps(recommendation):
+        dps_text = "｜DPS：自找大佬"
+    else:
+        dps_usernames = _virtual_hall_recommendation_dps_usernames(recommendation)
+        dps_text = "｜DPS：" + " ".join(mono(username) if html else username for username in dps_usernames) if dps_usernames else ""
     team_text = " ".join(mono(username) if html else username for username in usernames) if usernames else "无可加入身份"
     return f"{prefix}：{team_text}{dps_text}"
 
@@ -5415,9 +5468,12 @@ def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, c
     known_root_count = sum(1 for candidate in candidates if candidate.get("available") and candidate.get("root_elements"))
     has_available_gold_dps = _has_available_virtual_hall_gold_dps(candidates)
     has_available_gold_candidate = _has_available_virtual_hall_gold_candidate(candidates)
+    self_dps_recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
+    self_dps_recommendation = self_dps_recommendations[0] if self_dps_recommendations else None
+    self_dps_actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, self_dps_recommendation)
     availability_line = f"可参加：{available_count}，可匹配灵根：{known_root_count}"
     if not has_available_gold_dps:
-        availability_line += "，无DPS可用"
+        availability_line += "，无本地DPS"
     title_prefix = "推荐配置：虚天殿" if lightweight else "虚天殿"
     lines = [f"{title_prefix} {room_id}｜{title}", availability_line]
     ideal_text = _format_virtual_hall_ideal_composition(gua_record)
@@ -5426,14 +5482,16 @@ def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, c
     if available_count <= 0:
         lines.append("未找到虚天殿状态为可的人员。")
         return "\n".join(lines)
-    if not has_available_gold_dps:
+    if not has_available_gold_dps and not self_dps_actionable:
         lines.append("无DPS可用，当前不推荐入本。")
         if has_available_gold_candidate:
             lines.append("提示：存在金/雷候选，但未勾选金/雷 DPS。")
         if lightweight:
             lines.append(f"已安排 {_LIGHTWEIGHT_NO_DPS_AUTO_DISSOLVE_DELAY_SEC} 秒后自动解散。")
         return "\n".join(lines)
-    if not recommendations:
+    if not has_available_gold_dps and has_available_gold_candidate:
+        lines.append("提示：存在金/雷候选，但未勾选金/雷 DPS。")
+    if not recommendations and not self_dps_actionable:
         lines.append("未找到可推荐配置")
         return "\n".join(lines)
     leader_block_line = _format_virtual_hall_leader_block_line(gua_record, candidates, html=html)
@@ -5447,6 +5505,12 @@ def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, c
             lines.append(label + line)
         else:
             lines.append(_format_virtual_hall_recommendation_line(room_id, recommendation, leader_username=leader_username))
+    if self_dps_actionable:
+        if lightweight:
+            line = _format_virtual_hall_lightweight_recommendation_line(self_dps_recommendation, leader_username=leader_username, html=html)
+        else:
+            line = _format_virtual_hall_recommendation_line(room_id, self_dps_recommendation, leader_username=leader_username)
+        lines.append("自找DPS：" + line)
     route_advice = _format_xutian_oracle_route_advice_section(gua_record, html=html, show_commands=not lightweight)
     if route_advice:
         lines.append(route_advice)
@@ -8073,18 +8137,24 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
     recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
     recommendation = recommendations[0] if recommendations else None
     actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation)
+    self_dps_recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
+    self_dps_recommendation = self_dps_recommendations[0] if self_dps_recommendations else None
+    self_dps_actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, self_dps_recommendation)
+    selected_recommendation = recommendation if actionable else (self_dps_recommendation if self_dps_actionable else None)
+    selected_actionable = actionable or self_dps_actionable
     join_command = _virtual_hall_join_command_from_recommendation(
-        recommendation,
+        selected_recommendation,
         leader_username=leader_username,
-    ) if actionable else ""
+    ) if selected_actionable else ""
     buttons = _build_lightweight_room_action_buttons(
         room,
         join_command=join_command,
-        include_enter=has_available_gold_dps and actionable,
+        join_label="加入推荐" if actionable else "加入自找DPS",
+        include_enter=selected_actionable,
         include_dissolve=True,
         include_query=True,
     )
-    if allow_auto_dissolve and not has_available_gold_dps and not room.get("auto_dissolve_scheduled_at"):
+    if allow_auto_dissolve and not has_available_gold_dps and not self_dps_actionable and not room.get("auto_dissolve_scheduled_at"):
         room["auto_dissolve_reason"] = "no_dps"
         room["auto_dissolve_scheduled_at"] = float(now or time.time())
         _set_lightweight_last_room(room)
@@ -8097,7 +8167,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
         lightweight=True,
         html=True,
     )
-    if has_available_gold_dps and actionable:
+    if selected_actionable:
         join_fallback = ".加入副本 @用户名 @用户名" if _is_specific_join_command(join_command) else (join_command or ".加入副本 @用户名 @用户名")
         result_text += "\n\n" + _format_lightweight_next_commands(join_fallback, ".解散副本", html=True)
     else:

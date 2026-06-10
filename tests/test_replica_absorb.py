@@ -2712,7 +2712,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             self.assertNotEqual("success_cooldown", records[str(identity_id)].get("last_join_result"))
             self.assertEqual("joined", state_item["lobby_status"])
 
-    def test_virtual_hall_no_dps_suppresses_join_recommendations(self):
+    def test_virtual_hall_no_local_dps_offers_self_dps_recommendation(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
         first_id = self._register_replica_identity(991202, "first", root_attrs="火", professions="咒师")
         second_id = self._register_replica_identity(991203, "second", root_attrs="木", professions="灵医")
@@ -2732,9 +2732,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         text = app_replica._format_virtual_hall_recommendations("914", gua_record, recommendations, candidates, lightweight=True, html=True)
 
-        self.assertIn("无DPS可用", text)
-        self.assertIn("6 秒后自动解散", text)
-        self.assertNotIn("全匹配", text)
+        self.assertIn("无本地DPS", text)
+        self.assertIn("自找DPS：全匹配：<code>@second</code>｜DPS：自找大佬", text)
+        self.assertNotIn("6 秒后自动解散", text)
         self.assertNotIn(".加入副本 @", text)
 
     def test_virtual_hall_thunder_candidate_without_dps_mark_counts_as_no_dps(self):
@@ -2757,9 +2757,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         text = app_replica._format_virtual_hall_recommendations("919", gua_record, recommendations, candidates, lightweight=True, html=True)
 
-        self.assertIn("无DPS可用", text)
+        self.assertIn("无本地DPS", text)
         self.assertIn("存在金/雷候选，但未勾选金/雷 DPS", text)
-        self.assertIn("6 秒后自动解散", text)
+        self.assertIn("自找DPS：全匹配：<code>@healer</code>｜DPS：自找大佬", text)
+        self.assertNotIn("6 秒后自动解散", text)
         self.assertNotIn("<code>.加入副本", text)
         self.assertNotIn("@wa2000", text)
 
@@ -2837,6 +2838,53 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("<code>.加入副本 @用户名 @用户名</code>", notice_text)
         self.assertNotIn("<code>.加入副本 @wa2000 @healer @water</code>", notice_text)
         self.assertEqual(".加入副本 @wa2000 @healer @water", join_payload.get("command"))
+
+    def test_lightweight_virtual_hall_notice_offers_self_dps_join_button(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        healer_id = self._register_replica_identity(991202, "healer", root_attrs="木", professions="灵医")
+        water_id = self._register_replica_identity(991203, "water", root_attrs="水", professions="灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, healer_id, water_id])
+        event = self._prepare_replica_group([leader_id, healer_id, water_id])
+        now = 1000.0
+        room = {
+            "phase": "opened",
+            "room_id": "914",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_msg_id": 601,
+            "expires_at": 9999999999,
+            "updated_at": now,
+        }
+        opened = "\n".join([
+            "【虚天殿已开启】",
+            "队长 @leader 开启虚天殿，房间ID: 914",
+            "【卦象词条】坎水上乾天下 · 四爻转阵",
+            "阵骨：土必带",
+            "主锋：金x1",
+            "引灵：木位",
+            "旁合：水位更佳",
+        ])
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica._schedule_lightweight_room_auto_dissolve", return_value=True) as schedule:
+                handled = await app_replica._send_lightweight_virtual_hall_recommendation(room, opened, now)
+                notice_text = app_replica._send_lightweight_replica_notice.await_args.args[1]
+                buttons = app_replica._send_lightweight_replica_notice.await_args.kwargs["buttons"]
+                return handled, notice_text, buttons, schedule.call_count
+
+        handled, notice_text, buttons, schedule_count = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(0, schedule_count)
+        self.assertIn("自找DPS：全匹配：<code>@healer</code> <code>@water</code>｜DPS：自找大佬", notice_text)
+        self.assertNotIn("自动解散", notice_text)
+        self.assertIn("加入自找DPS", self._button_texts(buttons))
+        self.assertIn("进入虚天殿", self._button_texts(buttons))
+        join_payload = self._button_payload_by_text(buttons, "加入自找DPS")
+        self.assertEqual(".加入副本 @healer @water", join_payload.get("command"))
 
     def test_virtual_hall_core_match_allows_optional_missing_side_slot(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="火", professions="咒师")
