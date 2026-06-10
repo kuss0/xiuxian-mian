@@ -157,7 +157,7 @@ def _append_recent_passive_event(kind, *, module="", identity_id=0, reason="", s
         "summary": _truncate_event_text(summary),
     }
     for key, value in metadata.items():
-        if key in {"msg_id", "reply_to_msg_id", "root_msg_id", "source_message_id"}:
+        if key in {"msg_id", "reply_to_msg_id", "reply_to_sender_id", "root_msg_id", "source_message_id"}:
             int_value = _event_int(value)
             if int_value:
                 item[key] = int_value
@@ -181,6 +181,7 @@ def _record_passive_event(
     chat_id=0,
     msg_id=0,
     reply_to_msg_id=0,
+    reply_to_sender_id=0,
     root_msg_id=0,
     event_type="",
     route_source="",
@@ -210,6 +211,7 @@ def _record_passive_event(
         family=family,
         msg_id=msg_id,
         reply_to_msg_id=reply_to_msg_id,
+        reply_to_sender_id=reply_to_sender_id,
         root_msg_id=root_msg_id,
         route_source=route_source,
         matched_text=matched_text,
@@ -229,6 +231,7 @@ def _record_passive_event(
         chat_id=chat_id,
         msg_id=msg_id,
         reply_to_msg_id=reply_to_msg_id,
+        reply_to_sender_id=reply_to_sender_id,
         root_msg_id=root_msg_id,
         event_type=event_type,
         route_source=route_source,
@@ -254,6 +257,7 @@ def record_passive_inbox_event(
     chat_id=0,
     msg_id=0,
     reply_to_msg_id=0,
+    reply_to_sender_id=0,
     root_msg_id=0,
     event_type="",
     route_source="",
@@ -276,6 +280,7 @@ def record_passive_inbox_event(
             chat_id=chat_id,
             msg_id=msg_id,
             reply_to_msg_id=reply_to_msg_id,
+            reply_to_sender_id=reply_to_sender_id,
             root_msg_id=root_msg_id,
             event_type=event_type,
             route_source=route_source,
@@ -1155,6 +1160,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     passive_route_source = _route_source(event_type, "passive_match")
     target_route_source = context_route_source if target_id is not None else ""
     source_message_id = observed_msg_id
+    reply_to_sender_id = _event_int((reply_context or {}).get("reply_to_sender_id", 0))
 
     storage_changed, storage_identity_id = _apply_storage_bag_passive(raw_text, now)
     if storage_changed:
@@ -1227,6 +1233,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                     chat_id=observed_chat_id,
                     msg_id=observed_msg_id,
                     reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+                    reply_to_sender_id=reply_to_sender_id,
                     root_msg_id=(reply_context or {}).get("root_msg_id", 0),
                     event_type=event_type,
                     route_source=context_route_source,
@@ -1364,6 +1371,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             chat_id=observed_chat_id,
             msg_id=observed_msg_id,
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+            reply_to_sender_id=reply_to_sender_id,
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
             event_type=event_type,
             route_source=target_route_source or (context_route_source if family else passive_route_source),
@@ -1381,6 +1389,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             chat_id=observed_chat_id,
             msg_id=observed_msg_id,
             reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+            reply_to_sender_id=reply_to_sender_id,
             root_msg_id=(reply_context or {}).get("root_msg_id", 0),
             event_type=event_type,
             route_source=target_route_source or (context_route_source if family else passive_route_source),

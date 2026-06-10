@@ -39,7 +39,7 @@ _MANIFESTS = (
     ModuleManifest("侍妾", MODULE_KEY_MAP["侍妾"], reply_families=("concubine_status", "concubine_greet", "concubine_gift", "concubine_dream", "concubine_fragment", "concubine_puzzle", "concubine_reacquire"), replay_required=False, duplicate_guard="phase", workflow_names=("concubine",)),
     ModuleManifest("天机代卜", MODULE_KEY_MAP["天机代卜"], reply_families=("concubine_tianji",), replay_required=False, duplicate_guard="chain_state"),
     ModuleManifest("共历心劫", MODULE_KEY_MAP["共历心劫"], reply_families=("concubine_heart",), replay_required=False, duplicate_guard="round_state"),
-    ModuleManifest("侍妾远航", MODULE_KEY_MAP["侍妾远航"], reply_families=("concubine_voyage",), replay_required=False, duplicate_guard="voyage_state"),
+    ModuleManifest("侍妾远航", MODULE_KEY_MAP["侍妾远航"], replay_modules=("concubine_voyage",), reply_families=("concubine_voyage",), replay_required=False, duplicate_guard="voyage_state"),
     ModuleManifest("合欢宗", MODULE_KEY_MAP["合欢宗"], replay_modules=("hehuan",), reply_families=("hehuan_retreat", "hehuan_contract", "hehuan_dual", "hehuan_seal", "hehuan_escape"), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="passive_observation"),
     ModuleManifest("天星宗", MODULE_KEY_MAP["天星宗"], replay_modules=("tianxing",), reply_families=("tianxing_help", "tianxing_panel", "tianxing_observe", "tianxing_set_star", "tianxing_predict", "tianxing_change_fate", "tianxing_clear_calamity", "tianxing_modifier", "tianxing_retreat"), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="passive_observation"),
     ModuleManifest("阴罗宗", MODULE_KEY_MAP["阴罗宗"], replay_modules=("yinluo",), reply_families=("yinluo_guide", "yinluo_banner", "yinluo_blood_forest", "yinluo_demon_summon", "yinluo_convert", "yinluo_collect", "yinluo_retreat", "yinluo_curse", "yinluo_possess"), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="passive_observation"),
@@ -47,7 +47,7 @@ _MANIFESTS = (
     ModuleManifest("元婴", MODULE_KEY_MAP["元婴"], replay_modules=("yuanying",), reply_families=("yuanying",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful"),
     ModuleManifest("问道", MODULE_KEY_MAP["问道"], replay_modules=("wendao",), reply_families=("wendao",), replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("深度闭关", MODULE_KEY_MAP["深度闭关"], replay_modules=("deep_retreat",), reply_families=("deep_retreat",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful", workflow_names=("deep_retreat",)),
-    ModuleManifest("小世界", MODULE_KEY_MAP["小世界"], reply_families=("small_world_preach", "small_world_relief", "small_world_query", "small_world_manifest", "small_world_harvest", "small_world_refine"), replay_required=False, duplicate_guard="phase"),
+    ModuleManifest("小世界", MODULE_KEY_MAP["小世界"], replay_modules=("small_world",), reply_families=("small_world_preach", "small_world_relief", "small_world_query", "small_world_manifest", "small_world_harvest", "small_world_refine"), replay_required=False, duplicate_guard="phase"),
     ModuleManifest("卜筮问天", MODULE_KEY_MAP["卜筮问天"], replay_modules=("divination",), reply_families=("divination", "divination_exchange"), replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("探寻裂缝", MODULE_KEY_MAP["探寻裂缝"], replay_modules=("explore_rift",), reply_families=("explore_rift",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("点卯", MODULE_KEY_MAP["点卯"], reply_families=("checkin",), replay_required=False, duplicate_guard="daily_state"),
@@ -196,4 +196,50 @@ def validate_replay_sample_coverage(samples):
         "unknown_sample_modules": unknown_sample_modules,
         "unknown_sample_families": unknown_sample_families,
         "missing_required_modules": missing_required_modules,
+    }
+
+
+def summarize_replay_family_coverage(samples):
+    sample_items = samples.values() if isinstance(samples, dict) else samples
+    sample_families = set()
+    for payload in sample_items:
+        if isinstance(payload, dict):
+            sample_family = str(payload.get("family") or "").strip()
+        else:
+            sample_family = str(getattr(payload, "family", "") or "").strip()
+        if sample_family:
+            sample_families.add(sample_family)
+
+    modules = []
+    all_missing = []
+    covered_total = 0
+    family_total = 0
+    for manifest in _MANIFESTS:
+        families = tuple(manifest.reply_families or ())
+        if not families:
+            continue
+        covered = [family for family in families if family in sample_families]
+        missing = [family for family in families if family not in sample_families]
+        family_total += len(families)
+        covered_total += len(covered)
+        if missing:
+            all_missing.extend({"module": manifest.name, "family": family} for family in missing)
+        modules.append(
+            {
+                "module": manifest.name,
+                "reply_families": list(families),
+                "covered_families": covered,
+                "missing_families": missing,
+                "covered_count": len(covered),
+                "total_count": len(families),
+            }
+        )
+
+    return {
+        "ok": not all_missing,
+        "total_modules": len(modules),
+        "total_families": family_total,
+        "covered_families": covered_total,
+        "missing_families": all_missing,
+        "modules": modules,
     }

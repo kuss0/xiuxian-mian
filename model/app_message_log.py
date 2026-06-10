@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 import requests
 
 from .app_runtime import _claim_runtime_log_event
-from .config import LOG_BOT_TOKEN, LOG_SEND_MODE, MESSAGES_DIR, TG_REQUESTS_PROXIES, TZ_LOCAL, client, get_all_clients
+from .config import LOG_BOT_TOKEN, LOG_GROUP_ID, LOG_SEND_MODE, MESSAGES_DIR, TG_REQUESTS_PROXIES, TZ_LOCAL, client, get_all_clients
 from .log_retention import cleanup_message_logs
 from .runtime import send_audit_log
 from .state import (
@@ -158,6 +158,14 @@ def _get_group_event_listener_account_id(event, group_ids, listener_map):
 
 
 def _get_replica_event_listener_account_id(event):
+    try:
+        button_listener_account_id = int(getattr(event, "_replica_button_listener_account_id", 0) or 0)
+    except (TypeError, ValueError):
+        button_listener_account_id = 0
+    if button_listener_account_id > 0:
+        return button_listener_account_id
+    if int(getattr(event, "chat_id", 0) or 0) == int(LOG_GROUP_ID or 0):
+        return 0
     return _get_group_event_listener_account_id(event, get_replica_group_ids(), get_replica_listener_account_map())
 
 
@@ -167,6 +175,8 @@ def _get_replica_dispatch_event_listener_account_id(event):
     except (TypeError, ValueError):
         return 0
     if chat_id and chat_id == get_game_group_id():
+        return 0
+    if chat_id and chat_id == int(LOG_GROUP_ID or 0):
         return 0
     return _get_group_event_listener_account_id(
         event,

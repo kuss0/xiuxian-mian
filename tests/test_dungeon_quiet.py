@@ -22,6 +22,13 @@ ACTIVE_NOTICE = """【坠魔谷·第一幕：裂隙外谷】
 ACTIVE_NOTICE_REAL_20260531 = """【稳控全场】已展开
 本次【虚天殿】进行期间，天机阁将暂不响应本话题中的其他修仙指令。"""
 
+DUANWU_SETTLEMENT = """【端午镇蛟·龙舟破浪】
+队伍沿芦苇浅湾缓缓推进，以粽叶灵符钉住水脉，五毒瘴虽盛，却始终未能掀翻龙舟。
+
+通关保底：每位队员获得 1464灵石、800修为、20贡献。
+幸运掉落：@guoke08 额外获得 【五色丝】x3。
+最终判定：98分 | 毒潮风险：22"""
+
 
 class DungeonQuietTests(unittest.TestCase):
     def setUp(self):
@@ -48,6 +55,37 @@ class DungeonQuietTests(unittest.TestCase):
         self.assertEqual("坠魔谷静场令", result["reason"])
         self.assertTrue(dungeon_quiet.is_dungeon_quiet_active(now=1419))
         self.assertFalse(dungeon_quiet.is_dungeon_quiet_active(now=1420))
+        self.assertEqual(0, state_module.state["dungeon_quiet_until"])
+        self.assertEqual("", state_module.state["dungeon_quiet_reason"])
+
+    def test_clear_expired_quiet_window_removes_stale_reason(self):
+        state_module.state["dungeon_quiet_until"] = 1500
+        state_module.state["dungeon_quiet_reason"] = "昆吾山静场令"
+        state_module.state["dungeon_quiet_last_log_at"] = 1490
+
+        self.assertTrue(dungeon_quiet.clear_expired_dungeon_quiet(now=1500))
+
+        self.assertEqual(0, state_module.state["dungeon_quiet_until"])
+        self.assertEqual("", state_module.state["dungeon_quiet_reason"])
+        self.assertEqual(0, state_module.state["dungeon_quiet_last_log_at"])
+
+    def test_settlement_notice_clears_active_quiet_window(self):
+        state_module.state["dungeon_quiet_until"] = 2000
+        state_module.state["dungeon_quiet_reason"] = "端午镇蛟静场令"
+        state_module.state["dungeon_quiet_last_log_at"] = 1200
+
+        result = dungeon_quiet.observe_dungeon_quiet_text(DUANWU_SETTLEMENT, now=1300)
+
+        self.assertTrue(result["changed"])
+        self.assertTrue(result["cleared"])
+        self.assertEqual("端午镇蛟静场令", result["reason"])
+        self.assertEqual(0, state_module.state["dungeon_quiet_until"])
+        self.assertEqual("", state_module.state["dungeon_quiet_reason"])
+        self.assertEqual(0, state_module.state["dungeon_quiet_last_log_at"])
+
+    def test_settlement_notice_does_not_create_quiet_window(self):
+        self.assertIsNone(dungeon_quiet.observe_dungeon_quiet_text(DUANWU_SETTLEMENT, now=1300))
+        self.assertFalse(dungeon_quiet.is_dungeon_quiet_active(now=1300))
 
     def test_real_active_notice_with_dungeon_after_marker_sets_reason(self):
         self.assertTrue(dungeon_quiet.is_dungeon_quiet_active_notice(ACTIVE_NOTICE_REAL_20260531))

@@ -88,7 +88,7 @@ def _compact_payload(payload):
     for key, value in payload.items():
         if value is None:
             continue
-        if key in {"chat_id", "msg_id", "message_id", "reply_to_msg_id", "root_msg_id", "source_message_id", "identity_id"}:
+        if key in {"chat_id", "msg_id", "message_id", "reply_to_msg_id", "reply_to_sender_id", "root_msg_id", "source_message_id", "identity_id"}:
             int_value = _safe_int(value)
             if int_value:
                 result[key] = int_value
@@ -116,6 +116,7 @@ def append_passive_event(
     chat_id=0,
     msg_id=0,
     reply_to_msg_id=0,
+    reply_to_sender_id=0,
     root_msg_id=0,
     event_type="",
     route_source="",
@@ -142,6 +143,7 @@ def append_passive_event(
             "msg_id": msg_id,
             "message_id": msg_id,
             "reply_to_msg_id": reply_to_msg_id,
+            "reply_to_sender_id": reply_to_sender_id,
             "root_msg_id": root_msg_id,
             "event_type": event_type,
             "route_source": route_source,

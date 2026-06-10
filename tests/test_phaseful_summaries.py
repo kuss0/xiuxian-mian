@@ -593,6 +593,30 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
+    async def test_deep_retreat_summary_due_wait_log_is_once_per_wait(self):
+        send_as_id = 8659059231
+        now = 1_700_000_450.0
+        self._prepare_identity(send_as_id, "QuietRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec - 1
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=300),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()),
+                patch.object(_phaseful, "console_log") as console_mock,
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+                state_module.state["next_deep_retreat_time"] = now - 1
+                await deep_retreat.run_deep_retreat_scheduler(now + 1)
+
+            console_mock.assert_called_once()
+            self.assertTrue(state_module.state["deep_retreat_waiting_logged"])
+
     def test_deep_retreat_summary_due_ignores_unrelated_dot_command(self):
         send_as_id = 8659059226
         now = 1_700_000_455.0

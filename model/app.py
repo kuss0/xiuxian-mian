@@ -40,7 +40,7 @@ from .features.deep_retreat import (
     run_deep_retreat_scheduler,
 )
 from .features.divination import handle_divination_exchange_reply, handle_divination_reply, run_divination_scheduler
-from .features.dungeon_quiet import observe_dungeon_quiet_text
+from .features.dungeon_quiet import clear_expired_dungeon_quiet, observe_dungeon_quiet_text
 from .features.guanxing import (
     handle_guanxing_external_shift_command,
     handle_guanxing_finish_broadcast,
@@ -143,6 +143,7 @@ from .persistence import (
     save_state,
 )
 from .action_guard import close_by_family as close_action_guard_by_family
+from .message_contract import record_unhandled_routed_reply
 from .runtime import (
     _fire_and_forget,
     check_bot_health_timeout,
@@ -477,6 +478,11 @@ async def _resolve_event_reply(event):
             raise
     reply_header_msg_id = _get_event_reply_header_msg_id(event)
     reply_context = get_reply_context(reply_to, reply_to_msg_id=reply_header_msg_id)
+    if reply_to is not None:
+        try:
+            reply_context["reply_to_sender_id"] = int(getattr(reply_to, "sender_id", 0) or 0)
+        except (TypeError, ValueError):
+            reply_context["reply_to_sender_id"] = 0
     if reply_to is None and reply_header_msg_id > 0:
         reply_to = SimpleNamespace(id=reply_header_msg_id, raw_text="")
     return reply_to, reply_context
@@ -956,6 +962,16 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 
         if matched_family and handled_any and not already_consumed:
             _mark_runtime_message_consumed(event, matched_family)
+        elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:
+            record_unhandled_routed_reply(
+                event,
+                text,
+                routed_identity_id,
+                matched_family,
+                root_msg_id,
+                event_kind=kind_scope,
+                reply_to_sender_id=(reply_context or {}).get("reply_to_sender_id", 0),
+            )
 
     await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
     return handled_any
@@ -1290,6 +1306,7 @@ async def bootstrap():
         enforce_identity_module_availability(send_as_id, persist=False)
 
     now = time.time()
+    clear_expired_dungeon_quiet(now)
     if loaded:
         _cleanup_replica_run_state(now)
         mark_dirty()

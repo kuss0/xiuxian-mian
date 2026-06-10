@@ -181,6 +181,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".状态", html_text)
         self.assertIn("@昵称", html_text)
         self.assertIn("全局锁", html_text)
+        self.assertIn(".消息契约", html_text)
         self.assertIn(".放养状态", html_text)
         self.assertIn(".野外历练状态", html_text)
         self.assertIn(".自动副本状态", html_text)
@@ -203,6 +204,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".后殿阵策 卦 @身份", html_text)
         self.assertIn("副本群轻量指令", html_text)
         self.assertIn(".查询副本", html_text)
+        self.assertIn(".查询昆 / .查询虚 / .查询苍", html_text)
+        self.assertIn(".副本帮助", html_text)
         self.assertIn(".开启副本 @用户名", html_text)
         self.assertIn(".加入副本 @用户名 @用户名", html_text)
         self.assertIn(".解散副本", html_text)
@@ -253,7 +256,29 @@ class LogGroupDisplayTests(unittest.TestCase):
         send_mock.assert_not_awaited()
 
     def test_log_group_dungeon_query_alias_replies_status(self):
-        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".查询副本")
+        for raw_text in (".查询副本", ".查询 虚天殿", ".查询虚", ".查询昆", ".查询苍"):
+            with self.subTest(raw_text=raw_text):
+                event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=raw_text)
+                panel = {"text": "房间：无\n昆吾可开：1\n操作：点按钮", "buttons": [[{"text": "开昆 @leader", "callback_data": "rp:1"}]]}
+
+                with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                        patch.object(control, "build_log_group_replica_panel", return_value=panel) as panel_mock, \
+                        patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                        patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+                    handled = asyncio.run(control.handle_log_group_command(event))
+
+                self.assertTrue(handled)
+                panel_mock.assert_called_once_with(raw_text, fallback_chat_id=control.LOG_GROUP_ID)
+                reply_mock.assert_awaited_once()
+                args = reply_mock.await_args.args
+                self.assertEqual("副本面板", args[1])
+                self.assertIn("操作：点按钮", args[2])
+                self.assertNotIn("自动副本状态\n- ", args[2])
+                self.assertEqual(panel["buttons"], reply_mock.await_args.kwargs["buttons"])
+                send_mock.assert_not_awaited()
+
+    def test_log_group_dungeon_help_is_short_and_read_only(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".副本帮助")
 
         with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
                 patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
@@ -262,10 +287,35 @@ class LogGroupDisplayTests(unittest.TestCase):
 
         self.assertTrue(handled)
         reply_mock.assert_awaited_once()
-        args = reply_mock.await_args.args
-        self.assertIn("自动副本状态", args[1])
-        self.assertIn("自动副本状态", args[2])
+        self.assertEqual("副本帮助", reply_mock.await_args.args[1])
+        self.assertIn(".查询昆 / .查询虚 / .查询苍", reply_mock.await_args.args[2])
         send_mock.assert_not_awaited()
+
+    def test_log_group_message_contract_status_is_read_only(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".消息契约 concubine_voyage")
+
+        with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                patch.object(control, "get_message_contract_status_text", return_value="契约缺口：1") as status_mock, \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+            handled = asyncio.run(control.handle_log_group_command(event))
+
+        self.assertTrue(handled)
+        status_mock.assert_called_once_with(module="", family="concubine_voyage", reason="")
+        reply_mock.assert_awaited_once()
+        self.assertEqual("消息契约", reply_mock.await_args.args[1])
+        send_mock.assert_not_awaited()
+
+    def test_log_group_message_contract_status_can_filter_reason(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".消息契约 reply_context_no_identity")
+
+        with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                patch.object(control, "get_message_contract_status_text", return_value="契约缺口：1") as status_mock, \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()):
+            handled = asyncio.run(control.handle_log_group_command(event))
+
+        self.assertTrue(handled)
+        status_mock.assert_called_once_with(module="", family="", reason="reply_context_no_identity")
 
     def test_three_sect_manual_command_without_identity_only_replies_usage(self):
         event = SimpleNamespace()

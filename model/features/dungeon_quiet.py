@@ -13,6 +13,13 @@ DUNGEON_QUIET_LOG_INTERVAL_SEC = 60
 
 _DUNGEON_NAME_RE = re.compile(r"【([^】]+?)】")
 _DUNGEON_CONTEXT_RE = re.compile(r"(?:为)?本次【([^】]+?)】(?:立下静场令|进行期间)")
+_DUNGEON_QUIET_RELEASE_MARKERS = (
+    "最终判定",
+    "通关保底",
+    "本场失败",
+    "镇蛟未竟",
+    "LDC 红包池",
+)
 
 
 def _now(now=None):
@@ -46,6 +53,15 @@ def is_dungeon_quiet_active_notice(text):
     return "副本结束前" in raw or "进行期间" in raw
 
 
+def is_dungeon_quiet_release_notice(text):
+    raw = str(text or "")
+    if not raw:
+        return False
+    if not any(marker in raw for marker in _DUNGEON_QUIET_RELEASE_MARKERS):
+        return False
+    return bool(_DUNGEON_NAME_RE.search(raw))
+
+
 def get_dungeon_quiet_until():
     try:
         return float(state.get("dungeon_quiet_until", 0) or 0)
@@ -57,12 +73,39 @@ def get_dungeon_quiet_reason():
     return str(state.get("dungeon_quiet_reason", "") or "")
 
 
+def clear_dungeon_quiet(now=None):
+    had_quiet = get_dungeon_quiet_until() > 0 or bool(get_dungeon_quiet_reason()) or bool(state.get("dungeon_quiet_last_log_at", 0))
+    if not had_quiet:
+        return False
+    state["dungeon_quiet_until"] = 0
+    state["dungeon_quiet_reason"] = ""
+    state["dungeon_quiet_last_log_at"] = 0
+    mark_dirty()
+    return True
+
+
+def clear_expired_dungeon_quiet(now=None):
+    now = _now(now)
+    until = get_dungeon_quiet_until()
+    if until <= 0 or until > now:
+        return False
+    return clear_dungeon_quiet(now)
+
+
 def is_dungeon_quiet_active(now=None):
-    return get_dungeon_quiet_until() > _now(now)
+    now = _now(now)
+    if get_dungeon_quiet_until() > now:
+        return True
+    clear_expired_dungeon_quiet(now)
+    return False
 
 
 def observe_dungeon_quiet_text(text, now=None):
     now = _now(now)
+    if is_dungeon_quiet_active(now) and is_dungeon_quiet_release_notice(text):
+        reason = get_dungeon_quiet_reason()
+        clear_dungeon_quiet(now)
+        return {"changed": True, "cleared": True, "until": 0, "reason": reason}
     if not is_dungeon_quiet_active_notice(text):
         return None
     if is_dungeon_quiet_active(now):
@@ -95,6 +138,7 @@ def should_log_dungeon_quiet_block(now=None):
 
 
 def format_dungeon_quiet_until():
+    clear_expired_dungeon_quiet()
     until = get_dungeon_quiet_until()
     return fmt_abs_ts(until) if until > 0 else "未生效"
 
@@ -102,12 +146,15 @@ def format_dungeon_quiet_until():
 __all__ = [
     "DUNGEON_QUIET_MAX_SEC",
     "DUNGEON_QUIET_MIN_SEC",
+    "clear_dungeon_quiet",
+    "clear_expired_dungeon_quiet",
     "format_dungeon_quiet_until",
     "get_dungeon_quiet_reason",
     "get_dungeon_quiet_until",
     "is_dungeon_quiet_active",
     "is_dungeon_quiet_active_notice",
     "is_dungeon_quiet_prepare_notice",
+    "is_dungeon_quiet_release_notice",
     "observe_dungeon_quiet_text",
     "should_log_dungeon_quiet_block",
 ]

@@ -232,6 +232,7 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
                     chat_id=-1001680975844,
                     msg_id=9446794,
                     reply_to_msg_id=9446793,
+                    reply_to_sender_id=8659059191,
                     event_type="edit",
                     route_source="edit:reply_context",
                     decision="calibrate_manual_late_no_search",
@@ -252,6 +253,7 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual(-1001680975844, payload["chat_id"])
         self.assertEqual(9446794, payload["msg_id"])
         self.assertEqual(9446793, payload["reply_to_msg_id"])
+        self.assertEqual(8659059191, payload["reply_to_sender_id"])
         self.assertEqual("edit", payload["event_type"])
         self.assertEqual("edit:reply_context", payload["route_source"])
         self.assertEqual("waiting_yindao", payload["state_before"])

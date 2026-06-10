@@ -131,6 +131,7 @@ from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
 from .features.passive_inbox import get_passive_inbox_snapshot, get_passive_inbox_status_text
+from .message_contract import MESSAGE_CONTRACT_GAP_REASONS, get_message_contract_status_text
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
@@ -145,6 +146,7 @@ from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, 
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
+from .app_replica import build_log_group_replica_panel, format_log_group_replica_help, format_log_group_replica_panel
 from .features.wild_training import (
     WILD_TRAINING_CYCLE_MAX_SEC,
     WILD_TRAINING_CYCLE_MIN_SEC,
@@ -220,6 +222,9 @@ from .timing import calc_next_daily_window_after_completion, calc_next_daily_win
 RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
 RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
+RE_CMD_MESSAGE_CONTRACT_STATUS = re.compile(r"^\.(?:消息契约|契约缺口)(?:状态)?(?:\s+([\w_\-\u4e00-\u9fff]+))?$")
+RE_CMD_DUNGEON_QUERY_ALIAS = re.compile(r"^\.(?:查询副本|查询\s*(?:副本|虚天殿|虚天|坠魔谷|坠魔|黄龙山|黄龙|苍坤洞府|苍坤|昆吾山|昆吾|落云秘圃|落云)|查询(?:虚|昆|苍|坠|黄|落))$")
+RE_CMD_DUNGEON_HELP = re.compile(r"^\.副本帮助$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
 RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s*$")
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
@@ -1511,6 +1516,8 @@ def get_dungeon_join_status_text(send_as_id=None):
             "",
             "副本群轻量指令:",
             "- .查询副本",
+            "- .查询昆 / .查询虚 / .查询苍",
+            "- .副本帮助",
             "- .开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
             "- .加入副本 @用户名 @用户名",
             "- .解散副本",
@@ -1603,11 +1610,12 @@ def _format_log_group_card_html(title, body, *, note=None):
     return "\n".join(lines)
 
 
-async def _reply_log_group_card(event, title, body, *, error_prefix):
+async def _reply_log_group_card(event, title, body, *, error_prefix, buttons=None):
     chunks = split_long_text(str(body or ""), limit=2800)
     total = len(chunks)
     for index, chunk in enumerate(chunks, start=1):
         chunk_title = f"{title} ({index}/{total})" if total > 1 else title
+        chunk_buttons = buttons if index == 1 else None
         ok = await reply_log_group_message(
             event,
             _format_log_group_card_html(chunk_title, chunk),
@@ -1617,6 +1625,7 @@ async def _reply_log_group_card(event, title, body, *, error_prefix):
             parse_mode="HTML",
             preformatted=True,
             limit=3200,
+            buttons=chunk_buttons,
         )
         if not ok:
             return False
@@ -2140,7 +2149,7 @@ def _format_log_group_help_html(send_as_id=None):
     if send_as_id is not None:
         suffix = f" @{get_identity_display_name(send_as_id)}"
     status_aliases = {"登天阶": ".天阶状态", "自动副本": ".自动副本状态"}
-    module_commands = [".状态", ".消息盒子状态"] + [
+    module_commands = [".状态", ".消息盒子状态", ".消息契约"] + [
         status_aliases.get(module_name, f".{module_name}状态")
         for module_name in MODULE_NAMES
     ]
@@ -2172,6 +2181,8 @@ def _format_log_group_help_html(send_as_id=None):
     ]
     replica_group_commands = [
         ".查询副本",
+        ".查询昆 / .查询虚 / .查询苍",
+        ".副本帮助",
         ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
         ".加入副本 @用户名 @用户名",
         ".解散副本",
@@ -4594,6 +4605,40 @@ async def handle_log_group_command(event):
             "消息盒子状态",
             get_passive_inbox_status_text(),
             error_prefix="❌ 消息盒子状态发送失败",
+        )
+        return True
+
+    contract_match = RE_CMD_MESSAGE_CONTRACT_STATUS.match(text)
+    if contract_match:
+        selector = str(contract_match.group(1) or "").strip()
+        reason = selector if selector in MESSAGE_CONTRACT_GAP_REASONS else ""
+        module = selector if selector and "_" not in selector else ""
+        family = selector if selector and "_" in selector and not reason else ""
+        await _reply_log_group_card(
+            event,
+            "消息契约",
+            get_message_contract_status_text(module=module, family=family, reason=reason),
+            error_prefix="❌ 消息契约状态发送失败",
+        )
+        return True
+
+    if RE_CMD_DUNGEON_QUERY_ALIAS.match(text):
+        panel = build_log_group_replica_panel(text, fallback_chat_id=getattr(event, "chat_id", 0))
+        await _reply_log_group_card(
+            event,
+            "副本面板",
+            panel.get("text") or format_log_group_replica_panel(text),
+            error_prefix="❌ 副本面板发送失败",
+            buttons=panel.get("buttons"),
+        )
+        return True
+
+    if RE_CMD_DUNGEON_HELP.match(text):
+        await _reply_log_group_card(
+            event,
+            "副本帮助",
+            format_log_group_replica_help(),
+            error_prefix="❌ 副本帮助发送失败",
         )
         return True
 

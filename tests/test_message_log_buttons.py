@@ -170,6 +170,43 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual(1, len(rows))
         self.assertEqual(93001, rows[0]["listener_account_id"])
 
+    def test_replica_group_message_log_rejects_log_group_overlap(self):
+        listener_client = SimpleNamespace(name="listener")
+        event = SimpleNamespace(
+            id=92004,
+            chat_id=-100920,
+            sender_id=7900199668,
+            client=listener_client,
+            raw_text=".查询副本",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with patch.object(app_message_log, "LOG_GROUP_ID", -100920), \
+                patch.object(app_message_log, "get_replica_group_ids", return_value=[-100920]), \
+                patch.object(app_message_log, "get_replica_listener_account_map", return_value={"-100920": 93001}), \
+                patch.object(app_message_log, "get_all_clients", return_value={93001: listener_client}):
+            self.assertFalse(app_message_log._append_replica_group_message_log(event, event_type="message"))
+
+    def test_replica_button_event_can_use_log_group_overlap_listener(self):
+        listener_client = SimpleNamespace(name="listener")
+        event = SimpleNamespace(
+            id=92005,
+            chat_id=-100920,
+            sender_id=123456,
+            client=listener_client,
+            raw_text=".查询副本",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+            _replica_button_listener_account_id=93001,
+        )
+
+        with patch.object(app_message_log, "LOG_GROUP_ID", -100920), \
+                patch.object(app_message_log, "get_replica_group_ids", return_value=[-100920]), \
+                patch.object(app_message_log, "get_replica_listener_account_map", return_value={"-100920": 93001}), \
+                patch.object(app_message_log, "get_all_clients", return_value={93001: listener_client}):
+            self.assertEqual(93001, app_message_log._get_replica_event_listener_account_id(event))
+
     def test_replica_dispatch_group_message_log_uses_separate_claim_scope(self):
         listener_client = SimpleNamespace(name="dispatch-listener")
         event = SimpleNamespace(

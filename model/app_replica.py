@@ -54,6 +54,7 @@ from .runtime import (
     console_log,
     get_reply_context,
     mono,
+    reply_log_group_message,
     send_audit_log,
     send_game_command,
     should_pause_for_bot_health,
@@ -449,6 +450,13 @@ def _register_replica_button_action(action_type, payload, *, ttl_sec=_REPLICA_BU
         token = secrets.token_urlsafe(9)
     run_state = _get_replica_run_state_dict()
     actions = _cleanup_replica_button_actions(now)
+    previous_action = actions.get(token) if token_key else None
+    if isinstance(previous_action, dict) and float(previous_action.get("executed_at") or 0) > 0:
+        previous_action["expires_at"] = now + max(60, float(ttl_sec or _REPLICA_BUTTON_ACTION_TTL_SEC))
+        actions[token] = previous_action
+        run_state["button_actions"] = actions
+        _save_replica_run_state_dict(run_state)
+        return _REPLICA_BUTTON_CALLBACK_PREFIX + token
     actions[token] = {
         "type": action_type,
         "payload": dict(payload),
@@ -488,6 +496,11 @@ def _mark_replica_button_action_executed(token, actor_id):
     return True
 
 
+def _should_mark_replica_button_action_executed(action):
+    action = action if isinstance(action, dict) else {}
+    return str(action.get("type") or "").strip() != "log_group_panel"
+
+
 def _replica_action_button(text, action_type, payload, *, ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC, token_key=""):
     callback_data = _register_replica_button_action(action_type, payload, ttl_sec=ttl_sec, token_key=token_key)
     if not callback_data:
@@ -510,6 +523,22 @@ def _replica_command_action_button(text, command, chat_id, listener_account_id=0
         "replica_command",
         {
             "command": str(command or "").strip(),
+            "chat_id": int(chat_id or 0),
+            "listener_account_id": int(listener_account_id or 0),
+            "event_id": _make_replica_button_event_id(token_key),
+        },
+        ttl_sec=ttl_sec,
+        token_key=token_key,
+    )
+
+
+def _log_group_panel_action_button(text, query_text, chat_id, listener_account_id=0, *, token_key="", ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC):
+    token_key = token_key or f"log_group_panel:{chat_id}:{listener_account_id}:{query_text}"
+    return _replica_action_button(
+        text,
+        "log_group_panel",
+        {
+            "query_text": str(query_text or "").strip(),
             "chat_id": int(chat_id or 0),
             "listener_account_id": int(listener_account_id or 0),
             "event_id": _make_replica_button_event_id(token_key),
@@ -741,14 +770,28 @@ def _get_xutian_decision_stage(text):
     return {}
 
 
-def _make_xutian_decision_notice_key(event, text, stage):
+def _make_xutian_decision_notice_key(event, text, stage, now=None):
     stage = str(stage or "").strip()
-    chat_id = int(getattr(event, "chat_id", 0) or 0)
-    msg_id = int(getattr(event, "id", 0) or 0)
-    if msg_id > 0:
-        return f"{chat_id}:{msg_id}:{stage}"
-    digest = hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return f"text:{digest}:{stage}"
+    raw_stage = stage
+    replica_kind = _REPLICA_KIND_VIRTUAL_HALL
+    if raw_stage.startswith("kunwu:"):
+        replica_kind = _REPLICA_KIND_KUNWU
+        stage = raw_stage.split(":", 1)[1]
+    elif raw_stage.startswith("luoyun:"):
+        replica_kind = _REPLICA_KIND_LUOYUN
+        stage = raw_stage.split(":", 1)[1]
+    now = float(now or time.time())
+    leader_username = _parse_replica_leader_username(text) or _get_latest_replica_leader_username(replica_kind, now=now)
+    room_id = _get_latest_replica_room_id(replica_kind, now=now, leader_username=leader_username)
+    if room_id:
+        scope = f"room:{room_id}"
+    elif leader_username:
+        scope = f"leader:{leader_username}"
+    else:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+        digest = hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
+        scope = f"chat:{chat_id}:text:{digest}"
+    return f"decision:{replica_kind}:{scope}:{stage}"
 
 
 def _get_latest_replica_room_id(replica_kind, now=None, leader_username=""):
@@ -804,12 +847,12 @@ def _make_cangkun_decision_notice_key(event, text, stage_info, leader_username="
     return f"cangkun:{scope}:{audience}:{stage}:{commands_digest}"
 
 
-def _build_xutian_decision_buttons(stage_info, leader_identity_id, event, text):
+def _build_xutian_decision_buttons(stage_info, leader_identity_id, event, text, now=None):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     leader_identity_id = int(leader_identity_id or 0)
     if leader_identity_id <= 0:
         return []
-    source_key = _make_xutian_decision_notice_key(event, text, stage_info.get("stage"))
+    source_key = _make_xutian_decision_notice_key(event, text, stage_info.get("stage"), now=now)
     source_msg_id = int(getattr(event, "id", 0) or 0)
     buttons = []
     for label, command in stage_info.get("commands") or ():
@@ -1471,12 +1514,12 @@ async def _maybe_auto_send_kunwu_decision(event, text, stage_info, now):
     return bool(result.get("deduped"))
 
 
-def _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text):
+def _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text, now=None):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     leader_identity_id = int(leader_identity_id or 0)
     if leader_identity_id <= 0:
         return []
-    source_key = _make_xutian_decision_notice_key(event, text, stage_info.get("stage"))
+    source_key = _make_xutian_decision_notice_key(event, text, f"kunwu:{stage_info.get('stage')}", now=now)
     source_msg_id = int(getattr(event, "id", 0) or 0)
     buttons = []
     for label, command in stage_info.get("commands") or ():
@@ -1493,12 +1536,12 @@ def _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text):
     return _chunk_replica_buttons(buttons, cols=2)
 
 
-def _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text):
+def _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text, now=None):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     leader_identity_id = int(leader_identity_id or 0)
     if leader_identity_id <= 0:
         return []
-    source_key = _make_xutian_decision_notice_key(event, text, f"luoyun:{stage_info.get('stage')}")
+    source_key = _make_xutian_decision_notice_key(event, text, f"luoyun:{stage_info.get('stage')}", now=now)
     source_msg_id = int(getattr(event, "id", 0) or 0)
     buttons = []
     for label, command in stage_info.get("commands") or ():
@@ -1532,10 +1575,10 @@ async def _maybe_send_luoyun_decision_notice(event, text, now):
         )
         if active_team_ids and leader_identity_id not in active_team_ids:
             return False
-    notice_key = _make_xutian_decision_notice_key(event, text, f"luoyun:{stage_info.get('stage')}")
+    notice_key = _make_xutian_decision_notice_key(event, text, f"luoyun:{stage_info.get('stage')}", now=now)
     if not _mark_xutian_decision_notice_once(notice_key, now):
         return False
-    buttons = _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text)
+    buttons = _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text, now=now)
     if not buttons:
         return False
     commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
@@ -1578,10 +1621,10 @@ async def _maybe_send_kunwu_decision_notice(event, text, now):
         )
         if active_team_ids and leader_identity_id not in active_team_ids:
             return False
-    notice_key = _make_xutian_decision_notice_key(event, text, f"kunwu:{stage_info.get('stage')}")
+    notice_key = _make_xutian_decision_notice_key(event, text, f"kunwu:{stage_info.get('stage')}", now=now)
     if not _mark_xutian_decision_notice_once(notice_key, now):
         return False
-    buttons = _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text)
+    buttons = _build_kunwu_decision_buttons(stage_info, leader_identity_id, event, text, now=now)
     if not buttons:
         return False
     commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
@@ -1624,10 +1667,10 @@ async def _maybe_send_xutian_decision_notice(event, text, now):
         )
         if active_team_ids and leader_identity_id not in active_team_ids:
             return False
-    notice_key = _make_xutian_decision_notice_key(event, text, stage_info.get("stage"))
+    notice_key = _make_xutian_decision_notice_key(event, text, stage_info.get("stage"), now=now)
     if not _mark_xutian_decision_notice_once(notice_key, now):
         return False
-    buttons = _build_xutian_decision_buttons(stage_info, leader_identity_id, event, text)
+    buttons = _build_xutian_decision_buttons(stage_info, leader_identity_id, event, text, now=now)
     if not buttons:
         return False
     commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
@@ -1657,16 +1700,57 @@ def _make_replica_command_event(command, chat_id, actor_id=0, *, listener_accoun
     client_obj = get_all_clients().get(int(listener_account_id or 0)) if int(listener_account_id or 0) > 0 else None
     if client_obj is None:
         client_obj = next(iter(get_all_clients().values()), None)
-    return SimpleNamespace(
+    event = SimpleNamespace(
         raw_text=str(command or "").strip(),
         chat_id=int(chat_id or 0),
         sender_id=int(actor_id or 0),
         id=int(event_id or 0),
         client=client_obj,
     )
+    if int(listener_account_id or 0) > 0:
+        event._replica_button_listener_account_id = int(listener_account_id or 0)
+    return event
 
 
 async def _execute_replica_button_action(action, actor_id=0):
+    return await _execute_replica_button_action_with_callback(action, actor_id=actor_id)
+
+
+def _callback_message_chat_id(callback_query):
+    callback_query = callback_query if isinstance(callback_query, dict) else {}
+    message = callback_query.get("message") if isinstance(callback_query.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    try:
+        return int(chat.get("id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _callback_message_id(callback_query):
+    callback_query = callback_query if isinstance(callback_query, dict) else {}
+    message = callback_query.get("message") if isinstance(callback_query.get("message"), dict) else {}
+    try:
+        return int(message.get("message_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _send_log_group_replica_panel(event, panel):
+    panel = panel if isinstance(panel, dict) else {}
+    return await reply_log_group_message(
+        event,
+        f"<b>副本面板</b>\n<pre>{escape(panel.get('text') or '-')}</pre>",
+        error_prefix="❌ 副本面板刷新失败",
+        link_preview=False,
+        scope="global",
+        parse_mode="HTML",
+        preformatted=True,
+        limit=3200,
+        buttons=panel.get("buttons"),
+    )
+
+
+async def _execute_replica_button_action_with_callback(action, actor_id=0, callback_query=None):
     action = action if isinstance(action, dict) else {}
     payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
     action_type = str(action.get("type") or "").strip()
@@ -1685,6 +1769,21 @@ async def _execute_replica_button_action(action, actor_id=0):
         )
         handled = await _handle_replica_group_command(event)
         return bool(handled), f"已触发：{command}" if handled else f"未识别副本命令：{command}"
+    if action_type == "log_group_panel":
+        query_text = str(payload.get("query_text") or "").strip()
+        chat_id = _callback_message_chat_id(callback_query) or int(payload.get("chat_id") or 0)
+        if not query_text or chat_id == 0:
+            return False, "按钮动作缺少面板查询。"
+        event = _make_replica_command_event(
+            query_text,
+            chat_id,
+            actor_id=actor_id,
+            listener_account_id=0,
+            event_id=_callback_message_id(callback_query) or int(payload.get("event_id") or 0),
+        )
+        panel = build_log_group_replica_panel(query_text, fallback_chat_id=chat_id)
+        ok = await _send_log_group_replica_panel(event, panel)
+        return bool(ok), f"已刷新：{query_text}" if ok else f"刷新失败：{query_text}"
     if action_type == "game_command":
         command = str(payload.get("command") or "").strip()
         identity_id = int(payload.get("identity_id") or 0)
@@ -1732,8 +1831,8 @@ async def handle_replica_button_callback(callback_query):
     if float(action.get("executed_at") or 0) > 0:
         await answer_log_bot_callback(callback_id, "已处理过", show_alert=False)
         return True
-    ok, message = await _execute_replica_button_action(action, actor_id=actor_id)
-    if ok:
+    ok, message = await _execute_replica_button_action_with_callback(action, actor_id=actor_id, callback_query=callback_query)
+    if ok and _should_mark_replica_button_action_executed(action):
         _mark_replica_button_action_executed(token, actor_id)
     await answer_log_bot_callback(callback_id, message, show_alert=not ok)
     return True
@@ -2049,6 +2148,23 @@ def _get_lightweight_last_room(replica_chat_id=0, now=None):
         return None
     candidates.sort(key=lambda item: float(item.get("updated_at") or item.get("opened_at") or 0), reverse=True)
     return candidates[0]
+
+
+def _get_latest_lightweight_room(replica_kind="", now=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    candidates = []
+    for room in rooms.values():
+        if not isinstance(room, dict):
+            continue
+        if replica_kind and room.get("replica_kind") != replica_kind:
+            continue
+        candidates.append(room)
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: float(item.get("updated_at") or item.get("opened_at") or 0), reverse=True)
+    return dict(candidates[0])
 
 
 def _get_active_lightweight_room(replica_chat_id=0, replica_kind="", now=None):
@@ -2550,6 +2666,25 @@ def _resolve_replica_kind_alias(text):
     return ""
 
 
+def _resolve_log_group_replica_query_kind(query_text):
+    raw_text = str(query_text or "").strip()
+    if not raw_text or raw_text == ".查询副本":
+        return ""
+    if raw_text.startswith(".查询"):
+        raw_text = raw_text[len(".查询"):].strip()
+    short_aliases = {
+        "虚": _REPLICA_KIND_VIRTUAL_HALL,
+        "昆": _REPLICA_KIND_KUNWU,
+        "苍": _REPLICA_KIND_CANGKUN,
+        "坠": _REPLICA_KIND_ZHUIMO,
+        "黄": _REPLICA_KIND_HUANGLONG,
+        "落": _REPLICA_KIND_LUOYUN,
+    }
+    if raw_text in short_aliases:
+        return short_aliases[raw_text]
+    return _resolve_replica_kind_alias(raw_text)
+
+
 def _select_open_replica_kind(identity_id, requested_kind=""):
     requested_kind = requested_kind if requested_kind in _REPLICA_KINDS else ""
     if requested_kind:
@@ -2669,6 +2804,11 @@ def _format_lightweight_next_commands(*commands, html=False):
     if not command_lines:
         return ""
     return "兜底命令：\n" + command_lines
+
+
+def _is_specific_join_command(command):
+    raw_text = str(command or "").strip()
+    return raw_text.startswith(".加入副本 ") and "@用户名" not in raw_text
 
 
 def _chunk_replica_buttons(buttons, *, cols=2):
@@ -2894,6 +3034,8 @@ def _build_lightweight_open_button_rows(chat_id, listener_account_id, *, identit
     open_priority = _normalize_replica_kind_filter(replica_kinds)
     if int(identity_id or 0) > 0:
         candidate_ids = [int(identity_id or 0)]
+    elif open_priority and any(not _replica_kind_requires_ticket(replica_kind) for replica_kind in open_priority):
+        candidate_ids = _get_replica_candidate_identity_ids(require_username=True)
     else:
         candidate_ids = _get_replica_candidate_identity_ids(require_username=True, require_ticket=True)
     count_by_kind = {replica_kind: 0 for replica_kind in open_priority}
@@ -2901,13 +3043,12 @@ def _build_lightweight_open_button_rows(chat_id, listener_account_id, *, identit
         for replica_kind in open_priority:
             if count_by_kind.get(replica_kind, 0) >= int(limit_per_kind or 8):
                 continue
-            if not _replica_kind_requires_ticket(replica_kind):
-                continue
+            requires_ticket = _replica_kind_requires_ticket(replica_kind)
             if not _is_replica_open_requirement_available(candidate_id, replica_kind):
                 continue
-            if _get_replica_identity_kind_status(candidate_id, replica_kind, now, records=records) != "可":
+            if requires_ticket and _get_replica_identity_kind_status(candidate_id, replica_kind, now, records=records) != "可":
                 continue
-            if _get_replica_ticket_kind_count(candidate_id, replica_kind) <= 0:
+            if requires_ticket and _get_replica_ticket_kind_count(candidate_id, replica_kind) <= 0:
                 continue
             command = _format_lightweight_open_command_for_identity(candidate_id, replica_kind)
             if not command:
@@ -3359,6 +3500,244 @@ def _format_replica_ticket_query_reply(*, html=False, replica_kinds=None, max_ro
     if query_kinds == _REPLICA_AUTOMATED_QUERY_KINDS:
         return "昆吾山自动副本：暂无可用昆吾通行令。\n\n" + _format_lightweight_next_commands(".查询副本", html=html)
     return "当前没有可开副本的参与身份；请先同步储物袋或等待门票入账。\n\n" + _format_lightweight_next_commands(".查询副本", html=html)
+
+
+def _format_log_group_replica_room_line(room, *, html=False):
+    if not isinstance(room, dict) or not room:
+        return "房间：无"
+    replica_kind = room.get("replica_kind")
+    replica_name = (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本"
+    room_id = str(room.get("room_id") or "-")
+    phase = str(room.get("phase") or "unknown")
+    phase_text = {
+        "opening": "开房中",
+        "opened": "待加入/进入",
+        "entered": "副本中",
+        "dissolve_requested": "解散中",
+        "dissolved": "已解散",
+        "legacy_dispatch_seen": "已记录外部房间",
+    }.get(phase, phase)
+    leader = _normalize_replica_username(room.get("leader_username") or "")
+    line = f"房间：{replica_name} {room_id}｜{phase_text}"
+    if leader:
+        line += f"｜队长 {leader}"
+    return escape(line) if html else line
+
+
+def _format_log_group_replica_openers_section(replica_kind="", *, html=False, max_rows=5):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    now = time.time()
+    records = _cleanup_replica_run_state(now)
+    query_kind = replica_kind or _REPLICA_KIND_KUNWU
+    summary = _get_log_group_replica_kind_summary(query_kind, now=now, records=records)
+    ready_count = int(summary.get("ready") or 0)
+    blocked_count = int(summary.get("blocked") or 0)
+    name = (_REPLICA_KIND_META.get(query_kind) or {}).get("name") or "副本"
+    text = f"{name}可开：{ready_count}"
+    if blocked_count:
+        text += f"｜冷却/占用 {blocked_count}"
+    return escape(text) if html else text
+
+
+def _get_log_group_replica_kind_summary(replica_kind, now=None, records=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return {"ready": 0, "blocked": 0, "missing": 0, "total": 0, "openers": []}
+    now = float(now or time.time())
+    records = records if isinstance(records, dict) else _cleanup_replica_run_state(now)
+    ready = 0
+    blocked = 0
+    missing = 0
+    openers = []
+    candidate_ids = _get_replica_candidate_identity_ids(require_username=True)
+    for identity_id in candidate_ids:
+        has_ticket = True
+        if _replica_kind_requires_ticket(replica_kind):
+            has_ticket = _get_replica_ticket_kind_count(identity_id, replica_kind) > 0
+        if not has_ticket:
+            missing += 1
+            continue
+        if not _is_replica_open_requirement_available(identity_id, replica_kind):
+            blocked += 1
+            continue
+        if _replica_kind_requires_ticket(replica_kind):
+            status_text = _get_replica_identity_kind_status(identity_id, replica_kind, now, records=records)
+            if status_text != "可":
+                blocked += 1
+                continue
+        ready += 1
+        if len(openers) < 3:
+            openers.append(identity_id)
+    return {
+        "ready": ready,
+        "blocked": blocked,
+        "missing": missing,
+        "total": len(candidate_ids),
+        "openers": openers,
+    }
+
+
+def _format_log_group_replica_summary_panel(*, html=False):
+    now = time.time()
+    records = _cleanup_replica_run_state(now)
+    lines = []
+    for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
+        summary = _get_log_group_replica_kind_summary(replica_kind, now=now, records=records)
+        name = _REPLICA_KIND_META[replica_kind]["name"]
+        ready = int(summary.get("ready") or 0)
+        blocked = int(summary.get("blocked") or 0)
+        if ready > 0:
+            status = f"可开 {ready}"
+        elif blocked > 0:
+            status = f"不可开 {blocked}"
+        else:
+            status = "无票/无资格" if _replica_kind_requires_ticket(replica_kind) else "无资格"
+        lines.append(f"{name}：{status}")
+    lines.append("操作：先点查询按钮看单本；可开则可点开本按钮")
+    text = "\n".join(lines)
+    return escape(text) if html else text
+
+
+def _log_group_replica_query_button(context, replica_kind):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return {}
+    short = (_REPLICA_KIND_META.get(replica_kind) or {}).get("short") or "本"
+    chat_id, listener_account_id = _lightweight_action_context(context)
+    return _log_group_panel_action_button(
+        f"查{short}",
+        f".查询{short}",
+        chat_id,
+        listener_account_id=listener_account_id,
+        token_key=f"log-group-query:{chat_id}:{listener_account_id}:{replica_kind}",
+    )
+
+
+def _log_group_replica_query_button_for_room(room):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    if replica_kind not in _REPLICA_KINDS:
+        return {}
+    short = (_REPLICA_KIND_META.get(replica_kind) or {}).get("short") or "本"
+    return _log_group_panel_action_button(
+        "刷新面板",
+        f".查询{short}",
+        int(room.get("replica_chat_id") or 0),
+        listener_account_id=0,
+        token_key=f"log-group-room-query:{room.get('room_id') or ''}:{replica_kind}",
+    )
+
+
+def _build_log_group_replica_room_action_buttons(room):
+    rows = _build_lightweight_room_action_buttons(
+        room,
+        join_command=_get_lightweight_recommended_join_command_for_room(room),
+        include_enter=True,
+        include_dissolve=True,
+        include_query=False,
+    )
+    refresh_button = _log_group_replica_query_button_for_room(room)
+    if refresh_button:
+        rows.append([refresh_button])
+    return rows
+
+
+def _build_log_group_replica_summary_buttons(now=None, *, fallback_chat_id=0, fallback_listener_account_id=0):
+    now = float(now or time.time())
+    chat_id, listener_account_id = _find_lightweight_replica_notice_target()
+    query_chat_id = int(chat_id or fallback_chat_id or 0)
+    query_listener_account_id = int(listener_account_id or fallback_listener_account_id or 0)
+    query_context = {"replica_chat_id": query_chat_id, "listener_account_id": query_listener_account_id}
+    query_buttons = [
+        _log_group_replica_query_button(query_context, replica_kind)
+        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
+    ]
+    records = _cleanup_replica_run_state(now)
+    open_buttons = []
+    if chat_id and listener_account_id > 0:
+        open_context = {"replica_chat_id": int(chat_id or 0), "listener_account_id": int(listener_account_id or 0)}
+        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
+            summary = _get_log_group_replica_kind_summary(replica_kind, now=now, records=records)
+            for identity_id in summary.get("openers") or []:
+                button = _lightweight_replica_command_button(
+                    open_context,
+                    _lightweight_open_button_label(identity_id, replica_kind),
+                    _format_lightweight_open_command_for_identity(identity_id, replica_kind),
+                    token_suffix=f"summary-open:{identity_id}:{replica_kind}",
+                )
+                if button:
+                    open_buttons.append(button)
+                    break
+    return _chunk_replica_buttons(query_buttons, cols=3) + _chunk_replica_buttons(open_buttons, cols=2)
+
+
+def format_log_group_replica_help(*, html=False):
+    lines = [
+        "查询：.查询昆 / .查询虚 / .查询苍 / .查询坠 / .查询黄 / .查询落",
+        "总览：.查询副本",
+        "昆吾：点开昆 -> 加入/进入 -> 自动选路",
+        "房间：面板按钮可加入推荐、进入、解散、刷新",
+    ]
+    text = "\n".join(lines)
+    return escape(text) if html else text
+
+
+def format_log_group_replica_panel(query_text="", *, html=False):
+    raw_text = str(query_text or "").strip()
+    requested_kind = _resolve_log_group_replica_query_kind(raw_text)
+    if not requested_kind and raw_text == ".查询副本":
+        return _format_log_group_replica_summary_panel(html=html)
+    now = time.time()
+    room = _get_latest_lightweight_room(requested_kind, now=now) if requested_kind else _get_latest_lightweight_room(now=now)
+    lines = [
+        _format_log_group_replica_room_line(room, html=html),
+        _format_log_group_replica_openers_section(requested_kind, html=html, max_rows=5),
+        "操作：点按钮",
+    ]
+    return "\n".join(lines)
+
+
+def _build_log_group_replica_panel_buttons(requested_kind="", now=None, *, fallback_chat_id=0, fallback_listener_account_id=0):
+    requested_kind = requested_kind if requested_kind in _REPLICA_KINDS else ""
+    now = float(now or time.time())
+    if not requested_kind:
+        return _build_log_group_replica_summary_buttons(
+            now=now,
+            fallback_chat_id=fallback_chat_id,
+            fallback_listener_account_id=fallback_listener_account_id,
+        )
+    room = _get_latest_lightweight_room(requested_kind, now=now) if requested_kind else _get_latest_lightweight_room(now=now)
+    if room:
+        return _build_log_group_replica_room_action_buttons(room)
+    active_flow = _find_active_lightweight_open_flow(replica_kind=requested_kind, now=now) if requested_kind else _find_active_lightweight_open_flow(now=now)
+    if active_flow:
+        return _build_lightweight_open_flow_action_buttons(active_flow)
+    open_kinds = (requested_kind,) if requested_kind else _REPLICA_AUTOMATED_QUERY_KINDS
+    chat_id, listener_account_id = _find_lightweight_replica_notice_target()
+    if not chat_id or listener_account_id <= 0:
+        return []
+    return _build_lightweight_open_button_rows(
+        chat_id,
+        listener_account_id,
+        now=now,
+        replica_kinds=open_kinds,
+        limit_per_kind=3,
+    )
+
+
+def build_log_group_replica_panel(query_text="", *, fallback_chat_id=0, fallback_listener_account_id=0):
+    raw_text = str(query_text or "").strip()
+    requested_kind = _resolve_log_group_replica_query_kind(raw_text)
+    now = time.time()
+    return {
+        "text": format_log_group_replica_panel(raw_text, html=False),
+        "buttons": _build_log_group_replica_panel_buttons(
+            requested_kind,
+            now=now,
+            fallback_chat_id=fallback_chat_id,
+            fallback_listener_account_id=fallback_listener_account_id,
+        ),
+    }
 
 
 def _cleanup_replica_ticket_event_records(now=None):
@@ -7471,7 +7850,8 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
         html=True,
     )
     if has_available_gold_dps:
-        result_text += "\n\n" + _format_lightweight_next_commands(join_command or ".加入副本 @用户名 @用户名", ".解散副本", html=True)
+        join_fallback = ".加入副本 @用户名 @用户名" if _is_specific_join_command(join_command) else (join_command or ".加入副本 @用户名 @用户名")
+        result_text += "\n\n" + _format_lightweight_next_commands(join_fallback, ".解散副本", html=True)
     else:
         result_text += "\n\n" + _format_lightweight_next_commands(".解散副本", html=True)
     return await _send_lightweight_replica_notice(room, result_text, html=True, buttons=buttons)
@@ -8624,15 +9004,19 @@ def is_replica_group_command_text(text):
 
 
 async def _handle_replica_group_command(event):
-    handled = await _handle_replica_query_command(event)
-    handled = await _handle_replica_ticket_query_command(event) or handled
-    handled = await _handle_virtual_hall_match_command(event) or handled
-    handled = await _handle_lightweight_open_command(event) or handled
-    handled = await _handle_lightweight_join_command(event) or handled
-    handled = await _handle_lightweight_enter_command(event) or handled
-    handled = await _handle_lightweight_dissolve_command(event) or handled
-    handled = await _handle_legacy_replica_dispatch_notice(event) or handled
-    return handled
+    for handler in (
+        _handle_replica_query_command,
+        _handle_replica_ticket_query_command,
+        _handle_virtual_hall_match_command,
+        _handle_lightweight_open_command,
+        _handle_lightweight_join_command,
+        _handle_lightweight_enter_command,
+        _handle_lightweight_dissolve_command,
+        _handle_legacy_replica_dispatch_notice,
+    ):
+        if await handler(event):
+            return True
+    return False
 
 
 __all__ = [
@@ -8643,5 +9027,7 @@ __all__ = [
     "_handle_replica_progress_event",
     "_handle_virtual_hall_auto_game_event",
     "_mark_replica_team_joined_from_text",
+    "build_log_group_replica_panel",
+    "format_log_group_replica_panel",
     "is_replica_group_command_text",
 ]

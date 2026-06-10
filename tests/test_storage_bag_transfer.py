@@ -396,6 +396,58 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.target_id, send_mock.await_args.kwargs["send_as_id"])
         self.assertEqual(9955440, send_mock.await_args.kwargs["reply_to"])
 
+    async def test_unhandled_routed_reply_records_passive_evidence(self):
+        event = SimpleNamespace(id=9966101, sender_id=888001, chat_id=-1001680975844)
+        reply_to = SimpleNamespace(id=9966099, raw_text=".卜筮问天")
+        reply_context = {
+            "send_as_id": self.target_id,
+            "family": "divination",
+            "reply_to_msg_id": 9966099,
+            "root_msg_id": 9966099,
+        }
+        text = "【问天异象】\n天机云纹变幻，结果稍后自显。"
+
+        with patch.object(app, "record_unhandled_routed_reply", return_value=True) as contract_mock, \
+                patch.object(app, "schedule_cleanup", new=AsyncMock()):
+            handled = await app._handle_routed_reply_event(
+                event,
+                text,
+                1000.0,
+                reply_to,
+                reply_context,
+                event_kind="edit",
+            )
+
+        self.assertFalse(handled)
+        contract_mock.assert_called_once_with(
+            event,
+            text,
+            self.target_id,
+            "divination",
+            9966099,
+            event_kind="edit",
+            reply_to_sender_id=0,
+        )
+
+    async def test_resolve_event_reply_keeps_reply_sender_as_evidence_only(self):
+        reply_to = SimpleNamespace(id=9966201, sender_id=8325841058, raw_text=".侍妾远航 冒险")
+        event = SimpleNamespace(get_reply_message=AsyncMock(return_value=reply_to))
+        base_context = {
+            "send_as_id": None,
+            "family": "concubine_voyage",
+            "reply_to_msg_id": 9966201,
+            "root_msg_id": 9966201,
+            "matched_via": "reply_object",
+        }
+
+        with patch.object(app, "_get_event_reply_header_msg_id", return_value=9966201), \
+                patch.object(app, "get_reply_context", return_value=dict(base_context)):
+            resolved_reply, reply_context = await app._resolve_event_reply(event)
+
+        self.assertIs(resolved_reply, reply_to)
+        self.assertIsNone(reply_context["send_as_id"])
+        self.assertEqual(8325841058, reply_context["reply_to_sender_id"])
+
     async def test_storage_bag_sync_uses_background_task_wrapper(self):
         def close_coro(coro):
             coro.close()

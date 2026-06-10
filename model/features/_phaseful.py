@@ -636,7 +636,10 @@ def _summary_due_elapsed(spec, now):
 
 async def _extend_summary_due_wait(spec, now):
     _schedule_summary_trigger_retry(spec, now, preserve_started_at=True)
-    console_log(f"{spec.title} 到期后继续等待真实消息顺带触发，暂不主动查询。")
+    if not state.get(spec.waiting_logged_key, False):
+        state[spec.waiting_logged_key] = True
+        save_state()
+        console_log(f"{spec.title} 到期后继续等待真实消息顺带触发，暂不主动查询。")
 
 
 def _summary_observation_commands(spec):

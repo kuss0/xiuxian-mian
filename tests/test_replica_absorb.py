@@ -1117,6 +1117,255 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("开虚 @leader", button_texts)
         self.assertNotIn("开苍 @leader", button_texts)
 
+    def test_log_group_replica_panel_offers_kunwu_open_button(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        self._prepare_replica_group([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "昆吾通行令": 1}, "sections": {}},
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询昆")
+
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("房间：无", panel.get("text") or "")
+        self.assertIn("昆吾山可开：1", panel.get("text") or "")
+        self.assertLessEqual(len((panel.get("text") or "").splitlines()), 3)
+        self.assertIn("开昆 @leader", button_texts)
+        self.assertNotIn("开虚 @leader", button_texts)
+        payload = self._button_payload_by_text(panel.get("buttons"), "开昆 @leader")
+        self.assertEqual(".开启副本 @leader 昆", payload.get("command"))
+        self.assertEqual(-100777, payload.get("chat_id"))
+        self.assertEqual(9001, payload.get("listener_account_id"))
+
+    def test_log_group_replica_summary_shows_all_kinds_and_buttons(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        cangkun_id = self._register_replica_identity(991202, "cang", root_attrs="土", professions="御山")
+        luoyun_id = self._register_replica_identity(991203, "luoyun", realm="结丹后期", sect_name="落云宗")
+        state_module.update_send_as_profile(luoyun_id, sect_contribution=420, sect_contribution_updated_at=1)
+        self._prepare_replica_group([leader_id, cangkun_id, luoyun_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "昆吾通行令": 1}, "sections": {}},
+            str(cangkun_id): {"items": {"苍坤残图": 1}, "sections": {}},
+            str(luoyun_id): {"items": {}, "sections": {}},
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询副本")
+
+        text = panel.get("text") or ""
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("虚天殿：可开 1", text)
+        self.assertIn("苍坤洞府：可开 1", text)
+        self.assertIn("昆吾山：可开 1", text)
+        self.assertIn("落云秘圃：可开 1", text)
+        self.assertIn("查虚", button_texts)
+        self.assertIn("查昆", button_texts)
+        self.assertIn("查苍", button_texts)
+        self.assertIn("开虚 @leader", button_texts)
+        self.assertIn("开昆 @leader", button_texts)
+        self.assertIn("开苍 @cang", button_texts)
+        self.assertIn("开落 @luoyun", button_texts)
+
+    def test_log_group_replica_summary_keeps_query_buttons_without_listener(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1}, "sections": {}},
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询副本", fallback_chat_id=-100999)
+
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("查虚", button_texts)
+        self.assertIn("查昆", button_texts)
+        self.assertNotIn("开虚 @leader", button_texts)
+
+    def test_log_group_replica_specific_query_can_open_that_kind(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        self._prepare_replica_group([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "昆吾通行令": 1}, "sections": {}},
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询虚")
+
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("虚天殿可开：1", panel.get("text") or "")
+        self.assertIn("开虚 @leader", button_texts)
+        self.assertNotIn("开昆 @leader", button_texts)
+        payload = self._button_payload_by_text(panel.get("buttons"), "开虚 @leader")
+        self.assertEqual(".开启副本 @leader 虚", payload.get("command"))
+
+    def test_log_group_summary_query_button_refreshes_specific_panel(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        self._prepare_replica_group([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1}, "sections": {}},
+        })
+        panel = app_replica.build_log_group_replica_panel(".查询副本")
+        query_button = next(
+            button
+            for row in panel.get("buttons") or []
+            for button in row
+            if button.get("text") == "查虚"
+        )
+        _token, action = app_replica._get_replica_button_action(query_button["callback_data"])
+
+        async def run_test():
+            with patch("model.app_replica.reply_log_group_message", new=AsyncMock(return_value=True)) as reply_mock, \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock()) as replica_send_mock:
+                callback_query = {"message": {"message_id": 9988, "chat": {"id": -100999}}}
+                ok, message = await app_replica._execute_replica_button_action_with_callback(action, actor_id=123456, callback_query=callback_query)
+                return ok, message, reply_mock.await_args, replica_send_mock.await_count
+
+        ok, message, reply_args, replica_send_count = asyncio.run(run_test())
+        self.assertTrue(ok)
+        self.assertIn(".查询虚", message)
+        self.assertEqual(-100999, reply_args.args[0].chat_id)
+        self.assertEqual(9988, reply_args.args[0].id)
+        self.assertIn("房间：无", reply_args.args[1])
+        self.assertIn("开虚 @leader", self._button_texts(reply_args.kwargs["buttons"]))
+        self.assertEqual(0, replica_send_count)
+
+    def test_log_group_panel_refresh_button_is_reusable(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        self._prepare_replica_group([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1}, "sections": {}},
+        })
+        panel = app_replica.build_log_group_replica_panel(".查询副本")
+        query_button = next(
+            button
+            for row in panel.get("buttons") or []
+            for button in row
+            if button.get("text") == "查虚"
+        )
+
+        async def run_test():
+            with patch("model.app_replica.ADMIN_IDS", frozenset({123456})), \
+                    patch("model.app_replica.reply_log_group_message", new=AsyncMock(return_value=True)) as reply_mock, \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock()) as replica_send_mock, \
+                    patch("model.app_replica.answer_log_bot_callback", new=AsyncMock()) as answer_mock:
+                callback_query = {
+                    "id": "cb-log-panel",
+                    "data": query_button["callback_data"],
+                    "from": {"id": 123456},
+                    "message": {"chat": {"id": -100999}},
+                }
+                first = await app_replica.handle_replica_button_callback(callback_query)
+                second = await app_replica.handle_replica_button_callback(callback_query)
+                return first, second, reply_mock.await_count, replica_send_mock.await_count, answer_mock.await_args_list
+
+        first, second, reply_count, replica_send_count, answer_calls = asyncio.run(run_test())
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(2, reply_count)
+        self.assertEqual(0, replica_send_count)
+        self.assertIn("已刷新：.查询虚", answer_calls[0].args[1])
+        self.assertIn("已刷新：.查询虚", answer_calls[1].args[1])
+
+    def test_log_group_room_panel_uses_log_refresh_button(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        self._prepare_replica_group([leader_id])
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "47",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_at": time.time(),
+            "updated_at": time.time(),
+            "expires_at": time.time() + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询昆")
+
+        self.assertIn("房间：昆吾山 47", panel.get("text") or "")
+        self.assertIn("刷新面板", self._button_texts(panel.get("buttons")))
+        refresh_payload = self._button_payload_by_text(panel.get("buttons"), "刷新面板")
+        self.assertEqual(".查询昆", refresh_payload.get("query_text"))
+        self.assertNotEqual(".查询副本", refresh_payload.get("command"))
+
+    def test_executed_deterministic_button_is_not_reset_by_rerender(self):
+        first = app_replica._replica_command_action_button(
+            "开虚 @leader",
+            ".开启副本 @leader 虚",
+            -100777,
+            listener_account_id=9001,
+            token_key="summary-open:leader:virtual",
+        )
+        token, _action = app_replica._get_replica_button_action(first["callback_data"])
+        self.assertTrue(app_replica._mark_replica_button_action_executed(token, 123456))
+
+        second = app_replica._replica_command_action_button(
+            "开虚 @leader",
+            ".开启副本 @leader 虚",
+            -100777,
+            listener_account_id=9001,
+            token_key="summary-open:leader:virtual",
+        )
+        _token, action = app_replica._get_replica_button_action(second["callback_data"])
+
+        self.assertEqual(first["callback_data"], second["callback_data"])
+        self.assertGreater(float(action.get("executed_at") or 0), 0)
+
+    def test_log_group_open_button_can_open_explicit_non_kunwu_kind(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        event = self._prepare_replica_group([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1}, "sections": {}},
+        })
+        panel = app_replica.build_log_group_replica_panel(".查询副本")
+        open_button = next(
+            button
+            for row in panel.get("buttons") or []
+            for button in row
+            if button.get("text") == "开虚 @leader"
+        )
+        _token, action = app_replica._get_replica_button_action(open_button["callback_data"])
+
+        async def run_test():
+            with patch("model.app_replica.get_all_clients", return_value={9001: event.client}), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=701))) as send_mock, \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=702))):
+                ok, message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                return ok, message, send_mock.await_args
+
+        ok, message, send_args = asyncio.run(run_test())
+        self.assertTrue(ok)
+        self.assertIn(".开启副本 @leader 虚", message)
+        self.assertEqual(".开启虚天殿", send_args.args[0])
+        self.assertEqual(leader_id, send_args.kwargs["send_as_id"])
+
+    def test_log_group_replica_short_queries_resolve_kinds(self):
+        self.assertEqual(app_replica._REPLICA_KIND_KUNWU, app_replica._resolve_log_group_replica_query_kind(".查询昆"))
+        self.assertEqual(app_replica._REPLICA_KIND_VIRTUAL_HALL, app_replica._resolve_log_group_replica_query_kind(".查询虚"))
+        self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, app_replica._resolve_log_group_replica_query_kind(".查询苍"))
+        self.assertEqual("", app_replica._resolve_log_group_replica_query_kind(".查询副本"))
+
+    def test_replica_group_query_does_not_double_reply_ticket_query(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".查询副本"
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"昆吾通行令": 1}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))) as send_mock:
+                handled = await app_replica._handle_replica_group_command(event)
+                reply_text = send_mock.await_args.args[2]
+                return handled, send_mock.await_count, reply_text
+
+        handled, send_count, reply_text = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(1, send_count)
+        self.assertIn("昆吾山自动副本", reply_text)
+
     def test_ticket_query_shows_cd_and_hides_cd_open_command(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         state_module.set_replica_participant_identity_ids([leader_id])
@@ -1390,6 +1639,38 @@ class ReplicaAbsorbTests(unittest.TestCase):
         ]
         self.assertEqual({".选择道路 冰", ".选择道路 火"}, {payload["command"] for payload in action_payloads})
         self.assertEqual({leader_id}, {payload["identity_id"] for payload in action_payloads})
+
+    def test_xutian_same_room_prompt_dedupes_across_message_ids(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "8801",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "entered_at": 900.0,
+            "updated_at": 900.0,
+            "expires_at": 5000.0,
+        })
+        text = "\n".join([
+            "【第二关·冰火之路】",
+            "队长 @leader 需选择前路。",
+            ".选择道路 冰",
+            ".选择道路 火",
+        ])
+
+        async def run_test():
+            with patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+                first = await app_replica._handle_replica_progress_event(SimpleNamespace(id=8801, chat_id=-100777, raw_text=text), 1000.0)
+                second = await app_replica._handle_replica_progress_event(SimpleNamespace(id=8802, chat_id=-100777, raw_text=text), 1001.0)
+                return first, second, audit_mock.await_count
+
+        first, second, audit_count = asyncio.run(run_test())
+        self.assertTrue(first)
+        self.assertFalse(second)
+        self.assertEqual(1, audit_count)
 
     def test_xutian_external_leader_prompt_does_not_send_local_buttons(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
@@ -2356,6 +2637,52 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("@wa2000", text)
         self.assertIn("推荐加入：全匹配：<code>@wa2000</code> <code>@healer</code>", text)
         self.assertNotIn("<code>.加入副本", text)
+
+    def test_lightweight_virtual_hall_notice_hides_specific_join_fallback(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        dps_id = self._register_replica_identity(991202, "wa2000", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", root_attrs="木", professions="灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        event = self._prepare_replica_group([leader_id, dps_id, healer_id])
+        now = 1000.0
+        room = {
+            "phase": "opened",
+            "room_id": "919",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_msg_id": 601,
+            "expires_at": now + 60,
+            "updated_at": now,
+        }
+        opened = "\n".join([
+            "【虚天殿已开启】",
+            "队长 @leader 开启虚天殿，房间ID: 919",
+            "【卦象词条】震雷上艮山下 · 二爻守中",
+            "阵骨：土必带",
+            "主锋：金x1",
+            "引灵：木位",
+            "旁合：水位更佳",
+        ])
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))):
+                handled = await app_replica._send_lightweight_virtual_hall_recommendation(room, opened, now)
+                notice_text = app_replica._send_lightweight_replica_notice.await_args.args[1]
+                buttons = app_replica._send_lightweight_replica_notice.await_args.kwargs["buttons"]
+                return handled, notice_text, self._button_payload_by_text(buttons, "加入推荐")
+
+        handled, notice_text, join_payload = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("推荐加入：", notice_text)
+        self.assertIn("@wa2000", notice_text)
+        self.assertIn("@healer", notice_text)
+        self.assertIn("<code>.加入副本 @用户名 @用户名</code>", notice_text)
+        self.assertNotIn("<code>.加入副本 @wa2000 @healer</code>", notice_text)
+        self.assertEqual(".加入副本 @wa2000 @healer", join_payload.get("command"))
 
     def test_lightweight_virtual_hall_command_keeps_dps_when_leader_occupies_slot(self):
         leader_id = self._register_replica_identity(991201, "myios7", root_attrs="水木金土", professions="御山|灵医|破军")

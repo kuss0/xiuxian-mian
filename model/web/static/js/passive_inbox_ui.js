@@ -110,6 +110,7 @@ function renderPassiveInboxRecent(inbox) {
     const changed = item.kind === 'changed';
     const title = changed ? '已更新' : '已跳过';
     const subject = passiveInboxLabel(item.module || item.reason || 'unknown');
+    const identity = item.identity_id ? ' ｜ ' + item.identity_id : '';
     const detail = [];
     if (item.identity_id) detail.push(item.identity_id);
     if (item.family) detail.push('family=' + passiveInboxLabel(item.family));
