@@ -136,6 +136,7 @@ CONCUBINE_VOYAGE_MIN_AFFINITY = 120
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
 CONCUBINE_VOYAGE_PENDING_PHASES = {"voyage_pending", "voyage_return_pending"}
 CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC = 60 * 60
+CONCUBINE_VOYAGE_LOG_SETTLE_SEC = 12
 CONCUBINE_GIFT_PHASES = {"gift_status_pending", "gift_bag_pending", "gift_pending"}
 CONCUBINE_GREET_MAX_RETRY_COUNT = 1
 CONCUBINE_GREET_RETRY_MIN_SEC = 90
@@ -3228,8 +3229,23 @@ def _mark_voyage_pending_exhausted(now, phase):
     return float(state.get("next_concubine_time", 0) or 0)
 
 
+def _defer_voyage_timeout_for_log_settle(now, phase):
+    pending_until = float(state.get("next_concubine_time", 0) or 0)
+    if pending_until <= 0:
+        return False
+    settle_until = pending_until + CONCUBINE_VOYAGE_LOG_SETTLE_SEC
+    if float(now or 0) >= settle_until:
+        return False
+    state["next_concubine_time"] = settle_until
+    state["concubine_voyage_last_error"] = f"{phase} 等待日志沉淀，暂缓补发"
+    return True
+
+
 async def _handle_voyage_pending_timeout(now, phase):
     if await _recover_concubine_pending_from_message_log(now, phase):
+        return True
+    if _defer_voyage_timeout_for_log_settle(now, phase):
+        save_state()
         return True
     await _audit_pending_timeout_candidates(now, phase)
     retry_count = int(state.get("concubine_voyage_retry_count", 0) or 0)
@@ -3241,7 +3257,7 @@ async def _handle_voyage_pending_timeout(now, phase):
             sent = await _send_voyage_command(now, is_retry=True)
         if sent:
             await send_audit_log(
-                f"↩️ 侍妾远航 {phase} 未见回复，3 秒保护窗后已补发一次。",
+                f"↩️ 侍妾远航 {phase} 未见回复，短保护窗后已补发一次。",
                 scope="identity",
                 limit=180,
                 priority="low",
