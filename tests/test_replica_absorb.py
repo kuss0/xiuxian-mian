@@ -2838,15 +2838,16 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("<code>.加入副本 @wa2000 @healer @water</code>", notice_text)
         self.assertEqual(".加入副本 @wa2000 @healer @water", join_payload.get("command"))
 
-    def test_virtual_hall_non_matching_leader_blocks_lightweight_actions(self):
+    def test_virtual_hall_core_match_allows_optional_missing_side_slot(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="火", professions="咒师")
         earth_id = self._register_replica_identity(991202, "earth", root_attrs="土木", professions="御山|灵医")
         dps_id = self._register_replica_identity(991203, "wa2000", root_attrs="雷", professions="破军")
         goldwood_id = self._register_replica_identity(991204, "goldwood", root_attrs="金木水", professions="灵医|破军")
-        wood_id = self._register_replica_identity(991205, "wood", root_attrs="木", professions="影刃")
-        state_module.set_replica_participant_identity_ids([leader_id, earth_id, dps_id, goldwood_id, wood_id])
+        gold_id = self._register_replica_identity(991205, "gold", root_attrs="金水", professions="破军")
+        wood_id = self._register_replica_identity(991206, "wood", root_attrs="木", professions="影刃")
+        state_module.set_replica_participant_identity_ids([leader_id, earth_id, dps_id, goldwood_id, gold_id, wood_id])
         state_module.set_replica_gold_dps_enabled(dps_id, True)
-        event = self._prepare_replica_group([leader_id, earth_id, dps_id, goldwood_id, wood_id])
+        event = self._prepare_replica_group([leader_id, earth_id, dps_id, goldwood_id, gold_id, wood_id])
         now = time.time()
         room = {
             "phase": "opened",
@@ -2882,14 +2883,13 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertIn("理想配置：土x1 金x3 木x1", notice_text)
         self.assertIn("队长 <code>@leader</code>(火) 不入本卦", notice_text)
-        self.assertIn("当前最优：", notice_text)
-        self.assertNotIn("推荐加入：", notice_text)
-        self.assertNotIn("加入推荐", button_texts)
-        self.assertNotIn("进入虚天殿", button_texts)
+        self.assertIn("推荐加入：未全匹配（缺旁合木）", notice_text)
+        self.assertIn("加入推荐", button_texts)
+        self.assertIn("进入虚天殿", button_texts)
         self.assertIn("解散副本", button_texts)
 
         app_replica._set_lightweight_last_room(room)
-        event.raw_text = ".加入副本 @earth @wa2000 @goldwood @wood"
+        event.raw_text = ".加入副本 @earth @wa2000 @goldwood @gold"
         async def run_join():
             with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
                     patch("model.app_replica._claim_runtime_event", return_value=True), \
@@ -2900,8 +2900,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         join_handled, join_notice, send_count = asyncio.run(run_join())
         self.assertTrue(join_handled)
-        self.assertEqual(0, send_count)
-        self.assertIn("当前配置不建议自动加入/进入", join_notice)
+        self.assertEqual(4, send_count)
+        self.assertIn("已发送加入虚天殿 1415", join_notice)
 
     def test_lightweight_virtual_hall_command_keeps_dps_when_leader_occupies_slot(self):
         leader_id = self._register_replica_identity(991201, "myios7", root_attrs="水木金土", professions="御山|灵医|破军")

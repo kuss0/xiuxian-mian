@@ -5050,7 +5050,7 @@ def _format_virtual_hall_leader_block_line(gua_record, candidates, *, html=False
     leader_text = mono(leader_username) if html else leader_username
     root_text = escape(root_attrs) if html else root_attrs
     root_suffix = f"({root_text})" if root_text else ""
-    return f"队长 {leader_text}{root_suffix} 不入本卦，5槽满配不可达；当前不建议自动加入/进入。"
+    return f"队长 {leader_text}{root_suffix} 不入本卦，旁合可能无法满配；核心槽齐时可继续。"
 
 
 def _virtual_hall_recommendation_missing_required_slots(gua_record, recommendation):
@@ -5067,10 +5067,6 @@ def _virtual_hall_recommendation_missing_required_slots(gua_record, recommendati
 
 def _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation):
     if not recommendation:
-        return False
-    if _virtual_hall_leader_blocks_full_match(gua_record, candidates):
-        return False
-    if (recommendation or {}).get("missing") or (recommendation or {}).get("notes"):
         return False
     if _virtual_hall_recommendation_missing_required_slots(gua_record, recommendation):
         return False
