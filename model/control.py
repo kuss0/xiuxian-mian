@@ -146,7 +146,12 @@ from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, 
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
-from .app_replica import build_log_group_replica_panel, format_log_group_replica_help, format_log_group_replica_panel
+from .app_replica import (
+    build_log_group_replica_panel,
+    format_log_group_replica_cd_overview,
+    format_log_group_replica_help,
+    format_log_group_replica_panel,
+)
 from .features.wild_training import (
     WILD_TRAINING_CYCLE_MAX_SEC,
     WILD_TRAINING_CYCLE_MIN_SEC,
@@ -171,6 +176,7 @@ from .runtime import (
     send_audit_log,
     send_game_command,
 )
+from .storage_bag_api_runtime import refresh_storage_bag_records_from_api
 from .state import (
     ensure_identity_registered,
     get_accounts,
@@ -224,9 +230,11 @@ RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
 RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
 RE_CMD_MESSAGE_CONTRACT_STATUS = re.compile(r"^\.(?:消息契约|契约缺口)(?:状态)?(?:\s+([\w_\-\u4e00-\u9fff]+))?$")
 RE_CMD_DUNGEON_QUERY_ALIAS = re.compile(r"^\.(?:查询副本|查询\s*(?:副本|虚天殿|虚天|坠魔谷|坠魔|黄龙山|黄龙|苍坤洞府|苍坤|昆吾山|昆吾|落云秘圃|落云)|查询(?:虚|昆|苍|坠|黄|落))$")
+RE_CMD_DUNGEON_CD_OVERVIEW = re.compile(r"^\.(?:副本(?:cd|冷却)(?:概览)?|查询副本(?:cd|冷却)(?:概览)?)$", re.I)
 RE_CMD_DUNGEON_HELP = re.compile(r"^\.副本帮助$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
 RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s*$")
+RE_CMD_STORAGE_BAG_API_REFRESH = re.compile(r"^\.(?:更新储物袋|刷新储物袋|储物袋更新|储物袋刷新)$")
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
 RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
 RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|召唤魔影|召唤|收取幡魂|收取|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
@@ -1517,6 +1525,7 @@ def get_dungeon_join_status_text(send_as_id=None):
             "副本群轻量指令:",
             "- .查询副本",
             "- .查询昆 / .查询虚 / .查询苍",
+            "- .副本cd",
             "- .副本帮助",
             "- .开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
             "- .加入副本 @用户名 @用户名",
@@ -2165,6 +2174,7 @@ def _format_log_group_help_html(send_as_id=None):
         ".储物袋盘点",
         ".材料汇总",
         ".还有多少 <物品名>",
+        ".更新储物袋",
     ]
     analysis_commands = [
         ".上线预检",
@@ -2182,6 +2192,7 @@ def _format_log_group_help_html(send_as_id=None):
     replica_group_commands = [
         ".查询副本",
         ".查询昆 / .查询虚 / .查询苍",
+        ".副本cd",
         ".副本帮助",
         ".开启副本 @用户名 <虚天|苍坤|坠魔|黄龙|昆吾>",
         ".加入副本 @用户名 @用户名",
@@ -4125,6 +4136,16 @@ def _is_storage_bag_simple_find_protected_identity(identity_id):
     return any("wa2000" in str(candidate or "").casefold() for candidate in candidates)
 
 
+def _get_storage_bag_log_identity_name(identity_id):
+    profile = get_send_as_profile(identity_id)
+    return str(
+        profile.get("daohao")
+        or profile.get("label")
+        or profile.get("username")
+        or "未知身份"
+    ).strip()
+
+
 def _format_storage_bag_simple_find_text(raw_query):
     query = _normalize_storage_bag_simple_find_query(raw_query)
     if not query:
@@ -4133,14 +4154,21 @@ def _format_storage_bag_simple_find_text(raw_query):
     query_key = query.casefold()
     records = get_storage_bag_records()
     totals = {}
+    holders = []
+    configured_count = len(get_identity_ids())
+    scanned_count = 0
+    protected_count = 0
     for identity_id in get_identity_ids():
         identity_id = int(identity_id)
         if _is_storage_bag_simple_find_protected_identity(identity_id):
+            protected_count += 1
             continue
+        scanned_count += 1
         record = records.get(str(identity_id)) if isinstance(records, dict) else {}
         items = record.get("items") if isinstance(record, dict) else {}
         if not isinstance(items, dict):
             continue
+        holder_items = {}
         for raw_name, raw_count in items.items():
             item_name = str(raw_name or "").strip()
             if not item_name or query_key not in item_name.casefold():
@@ -4152,29 +4180,108 @@ def _format_storage_bag_simple_find_text(raw_query):
             if count <= 0:
                 continue
             totals[item_name] = totals.get(item_name, 0) + count
+            holder_items[item_name] = holder_items.get(item_name, 0) + count
+        if holder_items:
+            holders.append({
+                "identity_id": identity_id,
+                "name": _get_storage_bag_log_identity_name(identity_id),
+                "items": holder_items,
+                "total": sum(holder_items.values()),
+            })
 
     lines = [
-        "【还有多少】",
-        f"查询：{query}",
-        "口径：本地储物袋快照，只读脱敏总量；保护账号已排除；不列身份明细。",
+        f"📦 物资统计: {query}",
     ]
     if not totals:
-        lines.append("没有匹配物品。")
+        lines.extend([
+            "📊 总计: 0",
+            f"👥 角色: 配置 {configured_count} 个，扫描 {scanned_count}/{configured_count} 个，命中 0 个",
+            "🎯 匹配: 无",
+        ])
+        if protected_count:
+            lines.append(f"🛡️ 已排除保护账号 {protected_count} 个")
         return "\n".join(lines)
 
     total_all = sum(totals.values())
-    lines.append(f"匹配：{len(totals)} 项 ｜ 合计：{total_all:,}")
-    for item_name, count in sorted(totals.items(), key=lambda item: (item[0] != "灵石", item[0])):
-        lines.append(f"- {item_name}: {count:,}")
+    exact_names = {item_name for item_name in totals if item_name.casefold() == query_key}
+    if exact_names and len(exact_names) == len(totals):
+        match_text = "精确匹配"
+    elif exact_names:
+        match_text = "精确+模糊"
+    else:
+        match_text = "模糊匹配"
+    lines.extend([
+        f"📊 总计: {total_all:,}",
+        f"👥 角色: 配置 {configured_count} 个，扫描 {scanned_count}/{configured_count} 个，命中 {len(holders)} 个",
+        f"🎯 匹配: {match_text}",
+    ])
+    if protected_count:
+        lines.append(f"🛡️ 已排除保护账号 {protected_count} 个")
+
+    if len(totals) > 1:
+        lines.extend(["", f"📌 匹配物品 ({len(totals)})"])
+        for item_name, count in sorted(totals.items(), key=lambda item: (item[0] != query, item[0])):
+            lines.append(f"- {item_name}: {count:,}")
+
+    lines.extend(["", f"📋 持有明细 ({len(holders)})"])
+    for holder in sorted(holders, key=lambda item: (-int(item.get("total") or 0), str(item.get("name") or "")))[:30]:
+        item_text = "，".join(
+            f"{item_name} x{count:,}"
+            for item_name, count in sorted((holder.get("items") or {}).items(), key=lambda item: (item[0] != query, item[0]))
+        )
+        lines.append(f"- {holder.get('name') or holder.get('identity_id')}: {item_text}")
     return "\n".join(lines)
 
 
 async def _handle_storage_bag_simple_find_command(event, raw_query):
     await _reply_log_group_card(
         event,
-        "储物袋轻查询",
+        "物资统计",
         _format_storage_bag_simple_find_text(raw_query),
         error_prefix="❌ 储物袋轻查询回复失败",
+    )
+    return True
+
+
+def _format_storage_bag_api_refresh_result(result, *, target_identity_id=None):
+    result = result if isinstance(result, dict) else {}
+    updated_ids = [int(identity_id or 0) for identity_id in result.get("updated_identity_ids") or [] if int(identity_id or 0)]
+    target_text = _get_storage_bag_log_identity_name(target_identity_id) if target_identity_id else "全部身份"
+    lines = [
+        "📦 储物袋 API 更新",
+        f"范围: {target_text}",
+        f"结果: {'成功' if result.get('ok') else '未更新'}",
+        f"更新: {int(result.get('updated_count') or 0)} 个身份",
+        f"跳过: {int(result.get('skipped_count') or 0)} 个候选",
+    ]
+    if updated_ids:
+        names = "、".join(_get_storage_bag_log_identity_name(identity_id) for identity_id in updated_ids[:8])
+        if len(updated_ids) > 8:
+            names += f" 等 {len(updated_ids)} 个"
+        lines.append(f"明细: {names}")
+    message = str(result.get("message") or "").strip()
+    if message:
+        lines.append(f"说明: {message}")
+    return "\n".join(lines)
+
+
+async def _handle_storage_bag_api_refresh_command(event, explicit_identity_id=None):
+    target_ids = [int(explicit_identity_id)] if explicit_identity_id is not None else None
+    try:
+        result = await refresh_storage_bag_records_from_api(identity_ids=target_ids)
+        body = _format_storage_bag_api_refresh_result(result, target_identity_id=explicit_identity_id)
+    except Exception as exc:
+        body = (
+            "📦 储物袋 API 更新\n"
+            f"范围: {_get_storage_bag_log_identity_name(explicit_identity_id) if explicit_identity_id else '全部身份'}\n"
+            f"结果: 失败\n"
+            f"原因: {exc}"
+        )
+    await _reply_log_group_card(
+        event,
+        "储物袋 API 更新",
+        body,
+        error_prefix="❌ 储物袋 API 更新回复失败",
     )
     return True
 
@@ -4369,6 +4476,9 @@ async def handle_log_group_command(event):
         return await _handle_storage_bag_simple_find_command(event, storage_bag_simple_find_match.group(1) or "")
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
+
+    if RE_CMD_STORAGE_BAG_API_REFRESH.match(text):
+        return await _handle_storage_bag_api_refresh_command(event, explicit_identity_id)
 
     if await _handle_xutian_followup_manual_command(event, text, explicit_identity_id):
         return True
@@ -4630,6 +4740,15 @@ async def handle_log_group_command(event):
             panel.get("text") or format_log_group_replica_panel(text),
             error_prefix="❌ 副本面板发送失败",
             buttons=panel.get("buttons"),
+        )
+        return True
+
+    if RE_CMD_DUNGEON_CD_OVERVIEW.match(text):
+        await _reply_log_group_card(
+            event,
+            "副本 CD 概览",
+            format_log_group_replica_cd_overview(),
+            error_prefix="❌ 副本 CD 概览发送失败",
         )
         return True
 

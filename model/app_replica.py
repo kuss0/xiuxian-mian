@@ -1322,7 +1322,7 @@ def _pick_stage_command(stage_info, preferred_commands=()):
 def _get_kunwu_auto_decision_command(stage_info):
     stage = str((stage_info or {}).get("stage") or "")
     if stage == "encounter":
-        return _pick_stage_command(stage_info, (".选择 静待时机", ".选择 强行摘取"))
+        return _pick_stage_command(stage_info, (".选择 强行摘取", ".选择 静待时机"))
     priority = ("奇遇", "战斗", "朱果", "采集", "捷径")
     options = _stage_command_options(stage_info)
     for keyword in priority:
@@ -1354,8 +1354,10 @@ def _kunwu_auto_choice_chain_id(scope, stage, identity_id):
     return f"kunwu_auto_choice:{scope}:{int(identity_id or 0)}:{str(stage or '').strip()}"
 
 
-def _should_retry_kunwu_auto_choice(key, scope, identity_id, room_id, now):
+def _should_retry_kunwu_auto_choice(key, scope, identity_id, room_id, now, first_msg_id=0):
     if not _is_current_kunwu_auto_choice(key, scope, now=now):
+        return False
+    if _has_recent_game_reply_to_message(first_msg_id, now=now):
         return False
     identity_id = int(identity_id or 0)
     if identity_id <= 0 or not get_identity_enabled(identity_id):
@@ -1383,7 +1385,7 @@ async def _retry_kunwu_auto_choice_once(key, scope, identity_id, room_id, comman
     first_msg_id = int(first_msg_id or 0)
     if not key or not command or identity_id <= 0 or first_msg_id <= 0:
         return False
-    if not _should_retry_kunwu_auto_choice(key, scope, identity_id, room_id, now):
+    if not _should_retry_kunwu_auto_choice(key, scope, identity_id, room_id, now, first_msg_id=first_msg_id):
         return False
     retry_key = f"kunwu_auto_choice_retry:{key}:{first_msg_id}"
     if not _mark_lightweight_fast_retry_once(retry_key, now):
@@ -1463,7 +1465,7 @@ async def _send_kunwu_auto_choice_notice(stage_info, now, result, *, leader_iden
     notice_text = (
         f"昆吾山自动抉择：{title}{leader_text}\n"
         f"已发送：{mono(result.get('command') or '')}\n"
-        "3秒内无进展会补发一次。"
+        "3秒内无回复会补发一次。"
     )
     if await _send_replica_kind_notice(_REPLICA_KIND_KUNWU, notice_text, now, html=True):
         return True
@@ -3598,6 +3600,73 @@ def _format_log_group_replica_summary_panel(*, html=False):
     return escape(text) if html else text
 
 
+def format_log_group_replica_cd_overview(*, html=False, max_rows=10):
+    now = time.time()
+    records = _cleanup_replica_run_state(now)
+    candidate_ids = _get_replica_candidate_identity_ids(require_username=True)
+    ready_counts = {replica_kind: 0 for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
+    busy_counts = {replica_kind: 0 for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
+    limited_counts = {replica_kind: 0 for replica_kind in _REPLICA_KIND_OPEN_PRIORITY}
+    detail_rows = []
+
+    for identity_id in candidate_ids:
+        profile = get_send_as_profile(identity_id)
+        username = _normalize_replica_username(profile.get("username") or "")
+        detail_parts = []
+        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY:
+            requires_ticket = _replica_kind_requires_ticket(replica_kind)
+            ticket_count = _get_replica_ticket_kind_count(identity_id, replica_kind)
+            if requires_ticket and ticket_count <= 0:
+                continue
+            if not _is_replica_open_requirement_available(identity_id, replica_kind):
+                if requires_ticket and ticket_count > 0:
+                    limited_counts[replica_kind] += 1
+                continue
+            status_text = _get_replica_identity_kind_status(identity_id, replica_kind, now, records=records)
+            if status_text == "可":
+                ready_counts[replica_kind] += 1
+                continue
+            busy_counts[replica_kind] += 1
+            short = _REPLICA_KIND_META[replica_kind]["short"]
+            detail_parts.append(f"{short}{status_text}")
+        if detail_parts:
+            detail_rows.append((username or f"身份{identity_id}", "｜".join(detail_parts)))
+
+    ready_text = "｜".join(
+        f"{_REPLICA_KIND_META[replica_kind]['short']}{ready_counts[replica_kind]}"
+        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
+    )
+    busy_text = "｜".join(
+        f"{_REPLICA_KIND_META[replica_kind]['short']}{busy_counts[replica_kind]}"
+        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
+        if busy_counts[replica_kind] > 0
+    )
+    limited_text = "｜".join(
+        f"{_REPLICA_KIND_META[replica_kind]['short']}{limited_counts[replica_kind]}"
+        for replica_kind in _REPLICA_KIND_OPEN_PRIORITY
+        if limited_counts[replica_kind] > 0
+    )
+
+    lines = [
+        "副本 CD 概览",
+        f"可开：{ready_text}",
+        f"冷却/占用：{busy_text or '无'}",
+    ]
+    if limited_text:
+        lines.append(f"条件受限：{limited_text}")
+    if detail_rows:
+        lines.append("明细：")
+        visible_rows = detail_rows[:max(1, int(max_rows or 10))]
+        for username, detail_text in visible_rows:
+            lines.append(f"- {username}｜{detail_text}")
+        if len(detail_rows) > len(visible_rows):
+            lines.append(f"- 另 {len(detail_rows) - len(visible_rows)} 个略")
+    else:
+        lines.append("明细：无")
+    text = "\n".join(lines)
+    return escape(text) if html else text
+
+
 def _log_group_replica_query_button(context, replica_kind):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     if not replica_kind:
@@ -3675,6 +3744,7 @@ def format_log_group_replica_help(*, html=False):
     lines = [
         "查询：.查询昆 / .查询虚 / .查询苍 / .查询坠 / .查询黄 / .查询落",
         "总览：.查询副本",
+        "冷却：.副本cd",
         "昆吾：点开昆 -> 加入/进入 -> 自动选路",
         "房间：面板按钮可加入推荐、进入、解散、刷新",
     ]
@@ -4590,6 +4660,57 @@ def _iter_replica_message_log_entries_between(start_ts, end_ts, chat_id=0):
             continue
         except Exception:
             print(traceback.format_exc())
+
+
+def _iter_game_message_log_entries_between(start_ts, end_ts, chat_id=0):
+    start_dt = datetime.fromtimestamp(float(start_ts or 0), TZ_LOCAL) - timedelta(days=1)
+    end_dt = datetime.fromtimestamp(float(end_ts or time.time()), TZ_LOCAL) + timedelta(days=1)
+    target_chat_id = int(chat_id or 0)
+    seen_paths = set()
+    current = start_dt.date()
+    while current <= end_dt.date():
+        log_file = f"{MESSAGES_DIR}/{current.strftime('%Y-%m-%d')}.log"
+        current += timedelta(days=1)
+        if log_file in seen_paths:
+            continue
+        seen_paths.add(log_file)
+        try:
+            with open(log_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        entry = json.loads(line)
+                    except Exception:
+                        continue
+                    if target_chat_id and int(entry.get("chat_id") or 0) != target_chat_id:
+                        continue
+                    entry_ts = _parse_log_ts(entry.get("ts"))
+                    if entry_ts and (entry_ts < start_ts or entry_ts > end_ts):
+                        continue
+                    yield entry
+        except FileNotFoundError:
+            continue
+        except Exception:
+            print(traceback.format_exc())
+
+
+def _has_recent_game_reply_to_message(reply_to_msg_id, now=None, *, lookback_sec=5 * 60, chat_id=0):
+    try:
+        reply_to_msg_id = int(reply_to_msg_id or 0)
+    except (TypeError, ValueError):
+        reply_to_msg_id = 0
+    if reply_to_msg_id <= 0:
+        return False
+    now = float(now or time.time())
+    start_ts = now - max(10, float(lookback_sec or 0))
+    for entry in _iter_game_message_log_entries_between(start_ts, now + 5, chat_id=chat_id):
+        if str(entry.get("event_type") or "") not in {"message", "edit"}:
+            continue
+        try:
+            if int(entry.get("reply_to_msg_id") or 0) == reply_to_msg_id:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _dedupe_replica_query_candidates(candidates):
@@ -9028,6 +9149,7 @@ __all__ = [
     "_handle_virtual_hall_auto_game_event",
     "_mark_replica_team_joined_from_text",
     "build_log_group_replica_panel",
+    "format_log_group_replica_cd_overview",
     "format_log_group_replica_panel",
     "is_replica_group_command_text",
 ]

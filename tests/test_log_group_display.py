@@ -187,6 +187,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".自动副本状态", html_text)
         self.assertIn(".储物袋汇总", html_text)
         self.assertIn(".还有多少 &lt;物品名&gt;", html_text)
+        self.assertIn(".更新储物袋", html_text)
+        self.assertIn(".副本cd", html_text)
         self.assertIn(".玩法总览", html_text)
         self.assertIn(".上线预检", html_text)
         self.assertIn(".运行健康", html_text)
@@ -229,15 +231,18 @@ class LogGroupDisplayTests(unittest.TestCase):
 
             text = control._format_storage_bag_simple_find_text("木髓")
 
-            self.assertIn("查询：木髓", text)
-            self.assertIn("保护账号已排除", text)
-            self.assertIn("匹配：2 项", text)
-            self.assertIn("合计：7", text)
+            self.assertIn("📦 物资统计: 木髓", text)
+            self.assertIn("📊 总计: 7", text)
+            self.assertIn("👥 角色: 配置 2 个，扫描 1/2 个，命中 1 个", text)
+            self.assertIn("🎯 匹配: 精确+模糊", text)
+            self.assertIn("🛡️ 已排除保护账号 1 个", text)
+            self.assertIn("📌 匹配物品 (2)", text)
+            self.assertIn("📋 持有明细 (1)", text)
             self.assertIn("- 木髓: 5", text)
             self.assertIn("- 木髓精华: 2", text)
+            self.assertIn("boxboxji", text)
             self.assertNotIn("999", text)
             self.assertNotIn("3101", text)
-            self.assertNotIn("boxboxji", text)
             self.assertNotIn("wa2000", text.casefold())
         finally:
             state_module._meta_state.clear()
@@ -254,6 +259,60 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertTrue(handled)
         reply_mock.assert_awaited_once()
         send_mock.assert_not_awaited()
+
+    def test_log_group_storage_bag_api_refresh_is_manual_api_only(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".更新储物袋")
+        result = {
+            "ok": True,
+            "message": "已更新 2 个身份的储物袋",
+            "updated_count": 2,
+            "skipped_count": 1,
+            "updated_identity_ids": [3101, 3102],
+        }
+
+        with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                patch.object(control, "refresh_storage_bag_records_from_api", new=AsyncMock(return_value=result)) as refresh_mock, \
+                patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+            handled = asyncio.run(control.handle_log_group_command(event))
+
+        self.assertTrue(handled)
+        refresh_mock.assert_awaited_once_with(identity_ids=None)
+        reply_mock.assert_awaited_once()
+        self.assertEqual("储物袋 API 更新", reply_mock.await_args.args[1])
+        self.assertIn("结果: 成功", reply_mock.await_args.args[2])
+        self.assertIn("更新: 2 个身份", reply_mock.await_args.args[2])
+        send_mock.assert_not_awaited()
+
+    def test_log_group_storage_bag_api_refresh_can_target_one_identity(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            state_module.ensure_identity_registered(3101)
+            state_module.update_send_as_profile(3101, username="boxboxji", label="boxboxji")
+            event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".更新储物袋 @boxboxji")
+            result = {
+                "ok": True,
+                "message": "已更新 1 个身份的储物袋",
+                "updated_count": 1,
+                "skipped_count": 0,
+                "updated_identity_ids": [3101],
+            }
+
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(control, "refresh_storage_bag_records_from_api", new=AsyncMock(return_value=result)) as refresh_mock, \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                    patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+
+            self.assertTrue(handled)
+            refresh_mock.assert_awaited_once_with(identity_ids=[3101])
+            self.assertIn("范围: boxboxji", reply_mock.await_args.args[2])
+            send_mock.assert_not_awaited()
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
 
     def test_log_group_dungeon_query_alias_replies_status(self):
         for raw_text in (".查询副本", ".查询 虚天殿", ".查询虚", ".查询昆", ".查询苍"):
@@ -289,7 +348,26 @@ class LogGroupDisplayTests(unittest.TestCase):
         reply_mock.assert_awaited_once()
         self.assertEqual("副本帮助", reply_mock.await_args.args[1])
         self.assertIn(".查询昆 / .查询虚 / .查询苍", reply_mock.await_args.args[2])
+        self.assertIn(".副本cd", reply_mock.await_args.args[2])
         send_mock.assert_not_awaited()
+
+    def test_log_group_dungeon_cd_overview_is_read_only(self):
+        for raw_text in (".副本cd", ".副本CD", ".副本冷却", ".查询副本cd"):
+            with self.subTest(raw_text=raw_text):
+                event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=raw_text)
+
+                with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                        patch.object(control, "format_log_group_replica_cd_overview", return_value="副本 CD 概览\n可开：虚1") as cd_mock, \
+                        patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                        patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+                    handled = asyncio.run(control.handle_log_group_command(event))
+
+                self.assertTrue(handled)
+                cd_mock.assert_called_once_with()
+                reply_mock.assert_awaited_once()
+                self.assertEqual("副本 CD 概览", reply_mock.await_args.args[1])
+                self.assertIn("可开：虚1", reply_mock.await_args.args[2])
+                send_mock.assert_not_awaited()
 
     def test_log_group_message_contract_status_is_read_only(self):
         event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".消息契约 concubine_voyage")

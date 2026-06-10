@@ -1165,6 +1165,49 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("开苍 @cang", button_texts)
         self.assertIn("开落 @luoyun", button_texts)
 
+    def test_log_group_replica_cd_overview_summarizes_ready_and_busy(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        cooldown_id = self._register_replica_identity(991202, "cool", root_attrs="木", professions="御山")
+        active_id = self._register_replica_identity(991203, "active", root_attrs="水", professions="灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, cooldown_id, active_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"虚天残图": 1, "昆吾通行令": 1}, "sections": {}},
+            str(cooldown_id): {"items": {"虚天残图": 1}, "sections": {}},
+            str(active_id): {"items": {"昆吾通行令": 1}, "sections": {}},
+        })
+        now = 1000.0
+        state_module.set_replica_run_state({
+            "by_identity": {
+                str(cooldown_id): {
+                    "replica_states": {
+                        app_replica._REPLICA_KIND_VIRTUAL_HALL: {
+                            "cooldown_until": now + 600,
+                        },
+                    },
+                },
+                str(active_id): {
+                    "replica_states": {
+                        app_replica._REPLICA_KIND_KUNWU: {
+                            "participating": True,
+                            "joined_at": now - 10,
+                            "active_until": now + 1200,
+                        },
+                    },
+                },
+            }
+        })
+
+        with patch("model.app_replica.time.time", return_value=now):
+            text = app_replica.format_log_group_replica_cd_overview()
+
+        self.assertIn("副本 CD 概览", text)
+        self.assertIn("可开：虚1", text)
+        self.assertIn("昆1", text)
+        self.assertIn("冷却/占用：虚1｜昆1", text)
+        self.assertIn("- @cool｜虚0:10", text)
+        self.assertIn("- @active｜昆中", text)
+        self.assertNotIn("@leader｜", text)
+
     def test_log_group_replica_summary_keeps_query_buttons_without_listener(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         state_module.set_replica_participant_identity_ids([leader_id])
@@ -2127,6 +2170,17 @@ class ReplicaAbsorbTests(unittest.TestCase):
         saved_room = app_replica._get_lightweight_last_room(-100777, now=now)
         self.assertEqual("entered", saved_room["phase"])
 
+    def test_kunwu_encounter_auto_prefers_force_pick(self):
+        stage = app_replica._get_kunwu_decision_stage(
+            "【奇遇：你们发现了一株即将成熟的【朱果】，但旁边有妖兽守护的痕迹。】\n"
+            "你们遭遇了特殊事件，请队长做出抉择！\n"
+            ".选择 强行摘取\n"
+            ".选择 静待时机"
+        )
+
+        self.assertEqual("encounter", stage["stage"])
+        self.assertEqual(".选择 强行摘取", app_replica._get_kunwu_auto_decision_command(stage))
+
     def test_kunwu_auto_choice_retry_skips_when_new_stage_is_current(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])
@@ -2166,6 +2220,48 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         retried, send_count = asyncio.run(run_test())
         self.assertFalse(retried)
+        self.assertEqual(0, send_count)
+
+    def test_kunwu_auto_choice_retry_skips_after_first_reply(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 2000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "entered_at": now - 5,
+            "updated_at": now - 5,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        scope = "room:88"
+        key = app_replica._make_kunwu_auto_choice_key(scope, "road:1", leader_id, ".选择 岔路1")
+        self.assertTrue(app_replica._mark_kunwu_auto_choice_once(key, scope, now))
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=now + 3), \
+                    patch("model.app_replica._has_recent_game_reply_to_message", return_value=True) as reply_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                retried = await app_replica._retry_kunwu_auto_choice_once(
+                    key,
+                    scope,
+                    leader_id,
+                    "88",
+                    ".选择 岔路1",
+                    8816,
+                    901,
+                    f"kunwu_auto_choice:{scope}:{leader_id}:road:1",
+                    delay_sec=0,
+                )
+                return retried, reply_mock.call_args, send_mock.await_count
+
+        retried, reply_call, send_count = asyncio.run(run_test())
+        self.assertFalse(retried)
+        self.assertEqual(901, reply_call.args[0])
         self.assertEqual(0, send_count)
 
     def test_kunwu_road_stage_falls_back_to_buttons_when_auto_send_fails(self):
