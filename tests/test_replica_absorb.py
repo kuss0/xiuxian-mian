@@ -489,7 +489,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "missing_dispatch": ["@first"],
             "shortage": 0,
         }
-        now = time.time()
+        now = 1000.0
         send_calls = []
         requests_seen_during_send = {}
         second_result = []
@@ -536,7 +536,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "missing_dispatch": ["@first"],
             "shortage": 0,
         }
-        now = 1000.0
+        now = time.time()
 
         async def run_test():
             with patch("model.app_replica._send_virtual_hall_auto_replica_notice", new=AsyncMock(return_value=None)):
@@ -2885,6 +2885,47 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("进入虚天殿", self._button_texts(buttons))
         join_payload = self._button_payload_by_text(buttons, "加入自找DPS")
         self.assertEqual(".加入副本 @healer @water", join_payload.get("command"))
+
+    def test_existing_virtual_hall_room_buttons_fallback_to_self_dps_when_normal_is_not_actionable(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
+        dpswood_id = self._register_replica_identity(991202, "dpswood", root_attrs="金木", professions="破军|灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, dpswood_id])
+        state_module.set_replica_gold_dps_enabled(dpswood_id, True)
+        now = time.time()
+        app_replica._mark_virtual_hall_gua_from_opened_text(
+            "\n".join([
+                "【虚天殿已开启】",
+                "队长 @leader 开启虚天殿，房间ID: 1201",
+                "【卦象词条】坎水上乾天下 · 四爻转阵",
+                "阵骨：土必带",
+                "主锋：金x1",
+                "引灵：木位",
+                "旁合：水位更佳",
+            ]),
+            now,
+            "1201",
+            leader_username="@leader",
+            msg_id=601,
+        )
+        room = {
+            "phase": "opened",
+            "room_id": "1201",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "expires_at": 9999999999,
+            "updated_at": now,
+        }
+
+        self.assertTrue(app_replica._is_lightweight_room_enter_actionable(room))
+        self.assertEqual(".加入副本 @dpswood", app_replica._get_lightweight_recommended_join_command_for_room(room))
+        buttons = app_replica._lightweight_existing_room_notice_buttons(room)
+        self.assertIn("加入自找DPS", self._button_texts(buttons))
+        self.assertIn("进入虚天殿", self._button_texts(buttons))
+        join_payload = self._button_payload_by_text(buttons, "加入自找DPS")
+        self.assertEqual(".加入副本 @dpswood", join_payload.get("command"))
 
     def test_virtual_hall_core_match_allows_optional_missing_side_slot(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="火", professions="咒师")

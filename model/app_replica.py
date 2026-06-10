@@ -2305,10 +2305,12 @@ def _format_lightweight_existing_room_notice(room, *, html=False):
 
 
 def _lightweight_existing_room_notice_buttons(room):
+    action = _get_lightweight_room_recommendation_action(room)
     return _build_lightweight_room_action_buttons(
         room,
-        join_command=_get_lightweight_recommended_join_command_for_room(room),
-        include_enter=_is_lightweight_room_enter_actionable(room),
+        join_command=action.get("join_command") or "",
+        join_label=action.get("join_label") or "加入推荐",
+        include_enter=bool(action.get("include_enter")),
         include_dissolve=True,
         include_query=True,
     )
@@ -2926,52 +2928,55 @@ def _virtual_hall_join_command_from_recommendation(recommendation, leader_userna
     return ".加入副本 " + " ".join(usernames) if usernames else ""
 
 
-def _get_lightweight_recommended_join_command_for_room(room):
+def _get_lightweight_virtual_hall_recommendation_action(room):
+    room = room if isinstance(room, dict) else {}
+    room_id = str(room.get("room_id") or "").strip()
+    if not room_id:
+        return {"join_command": "", "join_label": "加入推荐", "include_enter": False}
+    gua_record = _get_replica_room_gua_record(_REPLICA_KIND_VIRTUAL_HALL, room_id)
+    if not gua_record:
+        return {"join_command": "", "join_label": "加入推荐", "include_enter": True}
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    selection = _select_virtual_hall_recommendation(gua_record, candidates)
+    if not selection.get("selected_actionable"):
+        return {"join_command": "", "join_label": "加入推荐", "include_enter": False}
+    join_command = _virtual_hall_join_command_from_recommendation(
+        selection.get("selected_recommendation"),
+        leader_username=room.get("leader_username") or gua_record.get("leader_username") or "",
+    )
+    return {
+        "join_command": join_command,
+        "join_label": selection.get("join_label") or "加入推荐",
+        "include_enter": True,
+    }
+
+
+def _get_lightweight_room_recommendation_action(room):
     room = room if isinstance(room, dict) else {}
     replica_kind = room.get("replica_kind")
     if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
-        room_id = str(room.get("room_id") or "").strip()
-        if not room_id:
-            return ""
-        gua_record = _get_replica_room_gua_record(_REPLICA_KIND_VIRTUAL_HALL, room_id)
-        if not gua_record:
-            return ""
-        candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
-        recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
-        if not recommendations:
-            recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
-        recommendation = recommendations[0] if recommendations else None
-        if not _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation):
-            return ""
-        return _virtual_hall_join_command_from_recommendation(
-            recommendation,
-            leader_username=room.get("leader_username") or gua_record.get("leader_username") or "",
-        )
+        return _get_lightweight_virtual_hall_recommendation_action(room)
     if replica_kind in _REPLICA_KINDS:
-        return _get_lightweight_profession_recommendation_join_command(
-            replica_kind,
-            int(room.get("leader_identity_id") or 0),
-        )
-    return ""
+        return {
+            "join_command": _get_lightweight_profession_recommendation_join_command(
+                replica_kind,
+                int(room.get("leader_identity_id") or 0),
+            ),
+            "join_label": "加入推荐",
+            "include_enter": True,
+        }
+    return {"join_command": "", "join_label": "加入推荐", "include_enter": False}
+
+
+def _get_lightweight_recommended_join_command_for_room(room):
+    return str(_get_lightweight_room_recommendation_action(room).get("join_command") or "")
 
 
 def _is_lightweight_room_enter_actionable(room):
     room = room if isinstance(room, dict) else {}
-    replica_kind = room.get("replica_kind")
-    if replica_kind != _REPLICA_KIND_VIRTUAL_HALL:
+    if room.get("replica_kind") != _REPLICA_KIND_VIRTUAL_HALL:
         return True
-    room_id = str(room.get("room_id") or "").strip()
-    if not room_id:
-        return False
-    gua_record = _get_replica_room_gua_record(_REPLICA_KIND_VIRTUAL_HALL, room_id)
-    if not gua_record:
-        return True
-    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
-    recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
-    if not recommendations:
-        recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
-    recommendation = recommendations[0] if recommendations else None
-    return _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation)
+    return bool(_get_lightweight_room_recommendation_action(room).get("include_enter"))
 
 
 def _format_virtual_hall_room_not_actionable_notice(room, *, html=False):
@@ -3750,10 +3755,12 @@ def _log_group_replica_query_button_for_room(room):
 
 
 def _build_log_group_replica_room_action_buttons(room):
+    action = _get_lightweight_room_recommendation_action(room)
     rows = _build_lightweight_room_action_buttons(
         room,
-        join_command=_get_lightweight_recommended_join_command_for_room(room),
-        include_enter=_is_lightweight_room_enter_actionable(room),
+        join_command=action.get("join_command") or "",
+        join_label=action.get("join_label") or "加入推荐",
+        include_enter=bool(action.get("include_enter")),
         include_dissolve=True,
         include_query=False,
     )
@@ -5410,6 +5417,39 @@ def _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1
     )
 
 
+def _select_virtual_hall_recommendation(gua_record, candidates, recommendations=None, self_dps_recommendations=None):
+    recommendations = recommendations if recommendations is not None else _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
+    recommendation = recommendations[0] if recommendations else None
+    actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation)
+    self_dps_recommendations = (
+        self_dps_recommendations
+        if self_dps_recommendations is not None
+        else _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
+    )
+    self_dps_recommendation = self_dps_recommendations[0] if self_dps_recommendations else None
+    self_dps_actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, self_dps_recommendation)
+    if actionable:
+        selected_recommendation = recommendation
+        join_label = "加入推荐"
+    elif self_dps_actionable:
+        selected_recommendation = self_dps_recommendation
+        join_label = "加入自找DPS"
+    else:
+        selected_recommendation = None
+        join_label = "加入推荐"
+    return {
+        "recommendations": recommendations,
+        "recommendation": recommendation,
+        "actionable": actionable,
+        "self_dps_recommendations": self_dps_recommendations,
+        "self_dps_recommendation": self_dps_recommendation,
+        "self_dps_actionable": self_dps_actionable,
+        "selected_recommendation": selected_recommendation,
+        "selected_actionable": bool(actionable or self_dps_actionable),
+        "join_label": join_label,
+    }
+
+
 def _format_virtual_hall_recommendation_line(room_id, recommendation, leader_username=""):
     assignments = recommendation.get("assignments") or []
     usernames = _virtual_hall_recommendation_command_usernames(
@@ -5461,16 +5501,17 @@ def _format_virtual_hall_lightweight_recommendation_line(recommendation, leader_
     return f"{prefix}：{team_text}{dps_text}"
 
 
-def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, candidates, *, lightweight=False, html=False):
+def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, candidates, *, lightweight=False, html=False, selection=None):
     title = gua_record.get("gua_title") or "未知卦象"
     leader_username = _normalize_replica_username(gua_record.get("leader_username") or "")
     available_count = sum(1 for candidate in candidates if candidate.get("available"))
     known_root_count = sum(1 for candidate in candidates if candidate.get("available") and candidate.get("root_elements"))
     has_available_gold_dps = _has_available_virtual_hall_gold_dps(candidates)
     has_available_gold_candidate = _has_available_virtual_hall_gold_candidate(candidates)
-    self_dps_recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
-    self_dps_recommendation = self_dps_recommendations[0] if self_dps_recommendations else None
-    self_dps_actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, self_dps_recommendation)
+    selection = selection if isinstance(selection, dict) else _select_virtual_hall_recommendation(gua_record, candidates, recommendations=recommendations)
+    recommendations = selection.get("recommendations") if selection.get("recommendations") is not None else (recommendations or [])
+    self_dps_recommendation = selection.get("self_dps_recommendation")
+    self_dps_actionable = bool(selection.get("self_dps_actionable"))
     availability_line = f"可参加：{available_count}，可匹配灵根：{known_root_count}"
     if not has_available_gold_dps:
         availability_line += "，无本地DPS"
@@ -8135,21 +8176,17 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
             buttons=buttons,
         )
     recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
-    recommendation = recommendations[0] if recommendations else None
-    actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation)
-    self_dps_recommendations = _build_virtual_hall_self_dps_recommendations(gua_record, candidates, limit=1)
-    self_dps_recommendation = self_dps_recommendations[0] if self_dps_recommendations else None
-    self_dps_actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, self_dps_recommendation)
-    selected_recommendation = recommendation if actionable else (self_dps_recommendation if self_dps_actionable else None)
-    selected_actionable = actionable or self_dps_actionable
+    selection = _select_virtual_hall_recommendation(gua_record, candidates, recommendations=recommendations)
+    self_dps_actionable = bool(selection.get("self_dps_actionable"))
+    selected_actionable = bool(selection.get("selected_actionable"))
     join_command = _virtual_hall_join_command_from_recommendation(
-        selected_recommendation,
+        selection.get("selected_recommendation"),
         leader_username=leader_username,
     ) if selected_actionable else ""
     buttons = _build_lightweight_room_action_buttons(
         room,
         join_command=join_command,
-        join_label="加入推荐" if actionable else "加入自找DPS",
+        join_label=selection.get("join_label") or "加入推荐",
         include_enter=selected_actionable,
         include_dissolve=True,
         include_query=True,
@@ -8166,6 +8203,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
         candidates,
         lightweight=True,
         html=True,
+        selection=selection,
     )
     if selected_actionable:
         join_fallback = ".加入副本 @用户名 @用户名" if _is_specific_join_command(join_command) else (join_command or ".加入副本 @用户名 @用户名")
