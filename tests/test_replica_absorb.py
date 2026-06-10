@@ -489,7 +489,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "missing_dispatch": ["@first"],
             "shortage": 0,
         }
-        now = 1000.0
+        now = time.time()
         send_calls = []
         requests_seen_during_send = {}
         second_result = []
@@ -1579,9 +1579,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
         dps_id = self._register_replica_identity(991202, "dps", root_attrs="金", professions="破军")
         support_id = self._register_replica_identity(991203, "support", root_attrs="火", professions="咒师")
+        earth_id = self._register_replica_identity(991204, "earth", root_attrs="土", professions="御山")
         state_module.set_replica_group_ids([-100777])
         state_module.set_replica_listener_account_map({"-100777": 9001})
-        state_module.set_replica_participant_identity_ids([leader_id, dps_id, support_id])
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, support_id, earth_id])
         state_module.set_replica_gold_dps_enabled(dps_id, True)
         opened = (
             "【虚天殿已开启】\n"
@@ -2793,9 +2794,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
         dps_id = self._register_replica_identity(991202, "wa2000", root_attrs="雷", professions="破军")
         healer_id = self._register_replica_identity(991203, "healer", root_attrs="木", professions="灵医")
-        state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id])
+        water_id = self._register_replica_identity(991204, "water", root_attrs="水", professions="灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, water_id])
         state_module.set_replica_gold_dps_enabled(dps_id, True)
-        event = self._prepare_replica_group([leader_id, dps_id, healer_id])
+        event = self._prepare_replica_group([leader_id, dps_id, healer_id, water_id])
         now = 1000.0
         room = {
             "phase": "opened",
@@ -2806,7 +2808,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "leader_identity_id": leader_id,
             "leader_username": "@leader",
             "opened_msg_id": 601,
-            "expires_at": now + 60,
+            "expires_at": 9999999999,
             "updated_at": now,
         }
         opened = "\n".join([
@@ -2831,9 +2833,75 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("推荐加入：", notice_text)
         self.assertIn("@wa2000", notice_text)
         self.assertIn("@healer", notice_text)
+        self.assertIn("@water", notice_text)
         self.assertIn("<code>.加入副本 @用户名 @用户名</code>", notice_text)
-        self.assertNotIn("<code>.加入副本 @wa2000 @healer</code>", notice_text)
-        self.assertEqual(".加入副本 @wa2000 @healer", join_payload.get("command"))
+        self.assertNotIn("<code>.加入副本 @wa2000 @healer @water</code>", notice_text)
+        self.assertEqual(".加入副本 @wa2000 @healer @water", join_payload.get("command"))
+
+    def test_virtual_hall_non_matching_leader_blocks_lightweight_actions(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="火", professions="咒师")
+        earth_id = self._register_replica_identity(991202, "earth", root_attrs="土木", professions="御山|灵医")
+        dps_id = self._register_replica_identity(991203, "wa2000", root_attrs="雷", professions="破军")
+        goldwood_id = self._register_replica_identity(991204, "goldwood", root_attrs="金木水", professions="灵医|破军")
+        wood_id = self._register_replica_identity(991205, "wood", root_attrs="木", professions="影刃")
+        state_module.set_replica_participant_identity_ids([leader_id, earth_id, dps_id, goldwood_id, wood_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        event = self._prepare_replica_group([leader_id, earth_id, dps_id, goldwood_id, wood_id])
+        now = time.time()
+        room = {
+            "phase": "opened",
+            "room_id": "1415",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_msg_id": 601,
+            "expires_at": 9999999999,
+            "updated_at": now,
+        }
+        opened = "\n".join([
+            "【虚天殿已开启】",
+            "@leader 消耗了【虚天残图】，开启了前往虚天殿的传送门！",
+            "副本ID: 1415",
+            "【卦象词条】 震雷上乾天下 · 三爻争锋",
+            "- 阵骨：土 必带",
+            "- 主锋：金 x2（只认真位，不吃借生）",
+            "- 引灵：金 位，可由 土 借生代行",
+            "- 旁合：木 位更佳，若用 水 强顶只算偏配",
+        ])
+
+        async def run_notice():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=SimpleNamespace(id=700))):
+                handled = await app_replica._send_lightweight_virtual_hall_recommendation(room, opened, now)
+                notice_text = app_replica._send_lightweight_replica_notice.await_args.args[1]
+                buttons = app_replica._send_lightweight_replica_notice.await_args.kwargs["buttons"]
+                return handled, notice_text, self._button_texts(buttons)
+
+        handled, notice_text, button_texts = asyncio.run(run_notice())
+        self.assertTrue(handled)
+        self.assertIn("理想配置：土x1 金x3 木x1", notice_text)
+        self.assertIn("队长 <code>@leader</code>(火) 不入本卦", notice_text)
+        self.assertIn("当前最优：", notice_text)
+        self.assertNotIn("推荐加入：", notice_text)
+        self.assertNotIn("加入推荐", button_texts)
+        self.assertNotIn("进入虚天殿", button_texts)
+        self.assertIn("解散副本", button_texts)
+
+        app_replica._set_lightweight_last_room(room)
+        event.raw_text = ".加入副本 @earth @wa2000 @goldwood @wood"
+        async def run_join():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=800))) as notice, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_join_command(event)
+                return handled, notice.await_args.args[2], send_mock.await_count
+
+        join_handled, join_notice, send_count = asyncio.run(run_join())
+        self.assertTrue(join_handled)
+        self.assertEqual(0, send_count)
+        self.assertIn("当前配置不建议自动加入/进入", join_notice)
 
     def test_lightweight_virtual_hall_command_keeps_dps_when_leader_occupies_slot(self):
         leader_id = self._register_replica_identity(991201, "myios7", root_attrs="水木金土", professions="御山|灵医|破军")

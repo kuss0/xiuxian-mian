@@ -2307,7 +2307,7 @@ def _lightweight_existing_room_notice_buttons(room):
     return _build_lightweight_room_action_buttons(
         room,
         join_command=_get_lightweight_recommended_join_command_for_room(room),
-        include_enter=True,
+        include_enter=_is_lightweight_room_enter_actionable(room),
         include_dissolve=True,
         include_query=True,
     )
@@ -2939,6 +2939,8 @@ def _get_lightweight_recommended_join_command_for_room(room):
         recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
         if not recommendations:
             return ""
+        if not _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendations[0]):
+            return ""
         return _virtual_hall_join_command_from_recommendation(
             recommendations[0],
             leader_username=room.get("leader_username") or gua_record.get("leader_username") or "",
@@ -2949,6 +2951,50 @@ def _get_lightweight_recommended_join_command_for_room(room):
             int(room.get("leader_identity_id") or 0),
         )
     return ""
+
+
+def _is_lightweight_room_enter_actionable(room):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    if replica_kind != _REPLICA_KIND_VIRTUAL_HALL:
+        return True
+    room_id = str(room.get("room_id") or "").strip()
+    if not room_id:
+        return False
+    gua_record = _get_replica_room_gua_record(_REPLICA_KIND_VIRTUAL_HALL, room_id)
+    if not gua_record:
+        return True
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
+    if not recommendations:
+        return False
+    return _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendations[0])
+
+
+def _format_virtual_hall_room_not_actionable_notice(room, *, html=False):
+    room = room if isinstance(room, dict) else {}
+    room_id = str(room.get("room_id") or "").strip()
+    gua_record = _get_replica_room_gua_record(_REPLICA_KIND_VIRTUAL_HALL, room_id)
+    if not gua_record:
+        text = f"虚天殿房间 {room_id or '-'} 暂未解析到卦象，未发送自动加入/进入。"
+        return escape(text) if html else text
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
+    lines = [f"虚天殿房间 {room_id or '-'} 当前配置不建议自动加入/进入。"]
+    ideal_text = _format_virtual_hall_ideal_composition(gua_record)
+    if ideal_text:
+        lines.append(f"理想配置：{ideal_text}")
+    leader_block_line = _format_virtual_hall_leader_block_line(gua_record, candidates, html=html)
+    if leader_block_line:
+        lines.append(leader_block_line)
+    if recommendations:
+        lines.append("当前最优：" + _format_virtual_hall_lightweight_recommendation_line(
+            recommendations[0],
+            leader_username=gua_record.get("leader_username") or "",
+            html=html,
+        ))
+    lines.append("建议：解散后换能入卦的队长重开；若要强行继续，请在游戏群手动处理。")
+    return "\n".join(lines)
 
 
 def _format_lightweight_reply_text(text, *, html=False):
@@ -3704,7 +3750,7 @@ def _build_log_group_replica_room_action_buttons(room):
     rows = _build_lightweight_room_action_buttons(
         room,
         join_command=_get_lightweight_recommended_join_command_for_room(room),
-        include_enter=True,
+        include_enter=_is_lightweight_room_enter_actionable(room),
         include_dissolve=True,
         include_query=False,
     )
@@ -4958,6 +5004,79 @@ def _virtual_hall_recommendation_dps_usernames(recommendation):
     return usernames
 
 
+def _format_virtual_hall_ideal_composition(gua_record):
+    slots = _expand_virtual_hall_gua_slots((gua_record or {}).get("requirements") or [])
+    counts = {}
+    order = []
+    for slot in slots:
+        element = str(slot.get("element") or "").strip()
+        if not element:
+            continue
+        if element not in counts:
+            order.append(element)
+        counts[element] = int(counts.get(element) or 0) + 1
+    return " ".join(f"{element}x{counts[element]}" for element in order)
+
+
+def _get_virtual_hall_candidate_by_username(candidates, username):
+    username_key = _normalize_replica_username(username)
+    if not username_key:
+        return {}
+    for candidate in candidates or []:
+        if _normalize_replica_username((candidate or {}).get("username") or "") == username_key:
+            return candidate if isinstance(candidate, dict) else {}
+    return {}
+
+
+def _virtual_hall_leader_blocks_full_match(gua_record, candidates):
+    leader_username = _normalize_replica_username((gua_record or {}).get("leader_username") or "")
+    if not leader_username:
+        return False
+    slots = _expand_virtual_hall_gua_slots((gua_record or {}).get("requirements") or [])
+    if len(slots) <= _virtual_hall_recommendation_command_limit(leader_username):
+        return False
+    leader_candidate = _get_virtual_hall_candidate_by_username(candidates, leader_username)
+    if not leader_candidate or not leader_candidate.get("root_elements"):
+        return False
+    return not any(_candidate_slot_match(leader_candidate, slot) for slot in slots)
+
+
+def _format_virtual_hall_leader_block_line(gua_record, candidates, *, html=False):
+    if not _virtual_hall_leader_blocks_full_match(gua_record, candidates):
+        return ""
+    leader_username = _normalize_replica_username((gua_record or {}).get("leader_username") or "")
+    leader_candidate = _get_virtual_hall_candidate_by_username(candidates, leader_username)
+    root_attrs = str(leader_candidate.get("root_attrs") or "").strip()
+    leader_text = mono(leader_username) if html else leader_username
+    root_text = escape(root_attrs) if html else root_attrs
+    root_suffix = f"({root_text})" if root_text else ""
+    return f"队长 {leader_text}{root_suffix} 不入本卦，5槽满配不可达；当前不建议自动加入/进入。"
+
+
+def _virtual_hall_recommendation_missing_required_slots(gua_record, recommendation):
+    missing = set((recommendation or {}).get("missing") or [])
+    if not missing:
+        return False
+    for slot in _ensure_virtual_hall_gold_fallback(_expand_virtual_hall_gua_slots((gua_record or {}).get("requirements") or [])):
+        if not slot.get("required"):
+            continue
+        if _format_virtual_hall_slot_name(slot) in missing:
+            return True
+    return False
+
+
+def _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation):
+    if not recommendation:
+        return False
+    if _virtual_hall_leader_blocks_full_match(gua_record, candidates):
+        return False
+    if (recommendation or {}).get("missing") or (recommendation or {}).get("notes"):
+        return False
+    if _virtual_hall_recommendation_missing_required_slots(gua_record, recommendation):
+        return False
+    return True
+
+
 def _normalize_xutian_oracle_title(gua_title):
     return re.sub(r"\s+", " ", str(gua_title or "").strip())
 
@@ -5305,6 +5424,9 @@ def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, c
         availability_line += "，无DPS可用"
     title_prefix = "推荐配置：虚天殿" if lightweight else "虚天殿"
     lines = [f"{title_prefix} {room_id}｜{title}", availability_line]
+    ideal_text = _format_virtual_hall_ideal_composition(gua_record)
+    if ideal_text:
+        lines.append(f"理想配置：{ideal_text}")
     if available_count <= 0:
         lines.append("未找到虚天殿状态为可的人员。")
         return "\n".join(lines)
@@ -5318,11 +5440,15 @@ def _format_virtual_hall_recommendations(room_id, gua_record, recommendations, c
     if not recommendations:
         lines.append("未找到可推荐配置")
         return "\n".join(lines)
+    leader_block_line = _format_virtual_hall_leader_block_line(gua_record, candidates, html=html)
+    if leader_block_line:
+        lines.append(leader_block_line)
     visible_recommendations = recommendations[:1] if lightweight else recommendations
     for index, recommendation in enumerate(visible_recommendations):
         if lightweight:
             line = _format_virtual_hall_lightweight_recommendation_line(recommendation, leader_username=leader_username, html=html)
-            lines.append("推荐加入：" + line)
+            label = "推荐加入：" if _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation) else "当前最优："
+            lines.append(label + line)
         else:
             lines.append(_format_virtual_hall_recommendation_line(room_id, recommendation, leader_username=leader_username))
     route_advice = _format_xutian_oracle_route_advice_section(gua_record, html=html, show_commands=not lightweight)
@@ -7949,14 +8075,16 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
             buttons=buttons,
         )
     recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
+    recommendation = recommendations[0] if recommendations else None
+    actionable = _is_virtual_hall_recommendation_actionable(gua_record, candidates, recommendation)
     join_command = _virtual_hall_join_command_from_recommendation(
-        recommendations[0],
+        recommendation,
         leader_username=leader_username,
-    ) if recommendations else ""
+    ) if actionable else ""
     buttons = _build_lightweight_room_action_buttons(
         room,
         join_command=join_command,
-        include_enter=has_available_gold_dps,
+        include_enter=has_available_gold_dps and actionable,
         include_dissolve=True,
         include_query=True,
     )
@@ -7973,7 +8101,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
         lightweight=True,
         html=True,
     )
-    if has_available_gold_dps:
+    if has_available_gold_dps and actionable:
         join_fallback = ".加入副本 @用户名 @用户名" if _is_specific_join_command(join_command) else (join_command or ".加入副本 @用户名 @用户名")
         result_text += "\n\n" + _format_lightweight_next_commands(join_fallback, ".解散副本", html=True)
     else:
@@ -8297,6 +8425,19 @@ async def _handle_lightweight_join_command(event):
     replica_kind = room.get("replica_kind")
     room_id = str(room.get("room_id") or "").strip()
     command = f"{_REPLICA_KIND_META[replica_kind]['join_command']} {room_id}"
+    if replica_kind == _REPLICA_KIND_VIRTUAL_HALL and not _is_lightweight_room_enter_actionable(room):
+        text = _format_virtual_hall_room_not_actionable_notice(room, html=True)
+        text += "\n\n" + _format_lightweight_next_commands(".解散副本", ".查询副本", html=True)
+        await _send_replica_group_message(
+            event.client,
+            event.chat_id,
+            text,
+            parse_mode="html",
+            listener_account_id=listener_account_id,
+            log_text=_strip_html_code_tags(text),
+            buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+        )
+        return True
     leader_identity_id = int(room.get("leader_identity_id") or 0)
     sent_usernames = []
     skipped = []
@@ -8418,6 +8559,19 @@ async def _handle_lightweight_enter_command(event):
             listener_account_id=listener_account_id,
             log_text=_strip_html_code_tags(text),
             buttons=_lightweight_existing_room_notice_buttons(room),
+        )
+        return True
+    if replica_kind == _REPLICA_KIND_VIRTUAL_HALL and not _is_lightweight_room_enter_actionable(room):
+        text = _format_virtual_hall_room_not_actionable_notice(room, html=True)
+        text += "\n\n" + _format_lightweight_next_commands(".解散副本", ".查询副本", html=True)
+        await _send_replica_group_message(
+            event.client,
+            event.chat_id,
+            text,
+            parse_mode="html",
+            listener_account_id=listener_account_id,
+            log_text=_strip_html_code_tags(text),
+            buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
         )
         return True
     phase = str(room.get("phase") or "")
