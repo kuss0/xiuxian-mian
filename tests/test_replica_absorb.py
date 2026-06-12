@@ -1354,6 +1354,41 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(first["callback_data"], second["callback_data"])
         self.assertGreater(float(action.get("executed_at") or 0), 0)
 
+    def test_executed_open_button_can_be_reused_after_room_closed(self):
+        leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
+        event = self._prepare_replica_group([leader_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+        })
+        context = {"replica_chat_id": event.chat_id, "listener_account_id": 9001}
+        button = app_replica._lightweight_replica_command_button(
+            context,
+            "开苍 @leader",
+            ".开启副本 @leader 苍",
+            token_suffix=f"open:{leader_id}:{app_replica._REPLICA_KIND_CANGKUN}",
+        )
+        token, _action = app_replica._get_replica_button_action(button["callback_data"])
+        self.assertTrue(app_replica._mark_replica_button_action_executed(token, 123456))
+
+        async def run_test():
+            with patch("model.app_replica.ADMIN_IDS", frozenset({123456})), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=501))) as send_mock, \
+                    patch("model.app_replica.answer_log_bot_callback", new=AsyncMock()) as answer_mock:
+                handled = await app_replica.handle_replica_button_callback({
+                    "id": "cb-open-again",
+                    "data": button["callback_data"],
+                    "from": {"id": 123456},
+                })
+                return handled, send_mock.await_args, answer_mock.await_args_list
+
+        handled, send_args, answer_calls = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(".开启苍坤洞府", send_args.args[0])
+        self.assertEqual(leader_id, send_args.kwargs["send_as_id"])
+        self.assertIn("已触发：.开启副本 @leader 苍", answer_calls[-1].args[1])
+
     def test_log_group_open_button_can_open_explicit_non_kunwu_kind(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         event = self._prepare_replica_group([leader_id])

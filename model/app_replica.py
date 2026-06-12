@@ -511,7 +511,26 @@ def _mark_replica_button_action_executed(token, actor_id):
 
 def _should_mark_replica_button_action_executed(action):
     action = action if isinstance(action, dict) else {}
+    if _is_reusable_replica_command_action(action):
+        return False
     return str(action.get("type") or "").strip() != "log_group_panel"
+
+
+def _is_reusable_replica_command_text(command):
+    command = str(command or "").strip()
+    if not command:
+        return False
+    if command.startswith(".开启副本 "):
+        return True
+    return command in {".查询副本", ".解散副本"}
+
+
+def _is_reusable_replica_command_action(action):
+    action = action if isinstance(action, dict) else {}
+    if str(action.get("type") or "").strip() != "replica_command":
+        return False
+    payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+    return _is_reusable_replica_command_text(payload.get("command") or "")
 
 
 def _replica_action_button(text, action_type, payload, *, ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC, token_key=""):
@@ -1862,12 +1881,15 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         listener_account_id = int(payload.get("listener_account_id") or 0)
         if not command or chat_id == 0:
             return False, "按钮动作缺少副本命令。"
+        event_id = int(payload.get("event_id") or 0)
+        if _is_reusable_replica_command_text(command):
+            event_id = 0
         event = _make_replica_command_event(
             command,
             chat_id,
             actor_id=actor_id,
             listener_account_id=listener_account_id,
-            event_id=int(payload.get("event_id") or 0),
+            event_id=event_id,
         )
         handled = await _handle_replica_group_command(event)
         return bool(handled), f"已触发：{command}" if handled else f"未识别副本命令：{command}"
@@ -1930,7 +1952,7 @@ async def handle_replica_button_callback(callback_query):
     if not action:
         await answer_log_bot_callback(callback_id, "按钮已过期", show_alert=True)
         return True
-    if float(action.get("executed_at") or 0) > 0:
+    if float(action.get("executed_at") or 0) > 0 and not _is_reusable_replica_command_action(action):
         await answer_log_bot_callback(callback_id, "已处理过", show_alert=False)
         return True
     ok, message = await _execute_replica_button_action_with_callback(action, actor_id=actor_id, callback_query=callback_query)
