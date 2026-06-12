@@ -252,12 +252,13 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
     item_name_map = get_storage_bag_api_config().get("item_name_map") or {}
     records = dict(get_storage_bag_records())
     updated = 0
+    changed = 0
     skipped = 0
     updated_identity_ids = set()
     now = time.time()
 
     def update_record(identity_id, owner_text, items, *, source="storage_bag_api", seen_inventory=True):
-        nonlocal updated, skipped
+        nonlocal updated, changed, skipped
         identity_id = storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
         if identity_id == 0 and int(fallback_identity_id or 0):
             identity_id = int(fallback_identity_id or 0)
@@ -271,6 +272,10 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
             skipped += 1
             return
         profile = get_send_as_profile(identity_id)
+        previous = records.get(str(identity_id))
+        previous_items = previous.get("items") if isinstance(previous, dict) else {}
+        if dict(previous_items or {}) != dict(items):
+            changed += 1
         records[str(identity_id)] = {
             "owner": owner_text or profile.get("username") or profile.get("label") or profile.get("daohao") or str(identity_id),
             "owner_username": profile.get("username") or "",
@@ -349,7 +354,13 @@ def storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_o
     if updated > 0:
         set_storage_bag_records(records)
         save_state()
-    return {"updated_count": updated, "skipped_count": skipped, "updated_identity_ids": sorted(updated_identity_ids), "records": records}
+    return {
+        "updated_count": updated,
+        "changed_count": changed,
+        "skipped_count": skipped,
+        "updated_identity_ids": sorted(updated_identity_ids),
+        "records": records,
+    }
 
 
 def storage_bag_api_store_session(cookie="", api_token=""):
@@ -381,6 +392,16 @@ def storage_bag_api_store_failure(exc, now):
     save_state()
 
 
+def _format_storage_bag_api_refresh_message(total_updated, total_changed):
+    total_updated = int(total_updated or 0)
+    total_changed = int(total_changed or 0)
+    if total_updated <= 0:
+        return "API 已返回，但未匹配到可刷新身份"
+    if total_changed > 0:
+        return f"已刷新 {total_updated} 个身份的储物袋（内容变化 {total_changed} 个）"
+    return f"已刷新 {total_updated} 个身份的储物袋（内容未变化）"
+
+
 async def refresh_storage_bag_records_from_api(*, identity_ids=None, write_empty=False, fetch_func=None):
     config = get_storage_bag_api_config()
     if not config.get("cookie"):
@@ -396,6 +417,7 @@ async def refresh_storage_bag_records_from_api(*, identity_ids=None, write_empty
     active_config = dict(config)
     updated_identity_ids = set()
     total_updated = 0
+    total_changed = 0
     total_skipped = 0
 
     me_result = await fetch(active_config, REFRESH_PATH)
@@ -406,6 +428,7 @@ async def refresh_storage_bag_records_from_api(*, identity_ids=None, write_empty
     me_result_data = storage_bag_api_apply_payload(me_payload if isinstance(me_payload, dict) else {}, write_empty=write_empty)
     updated_identity_ids.update(me_result_data.get("updated_identity_ids") or [])
     total_updated += int(me_result_data.get("updated_count") or 0)
+    total_changed += int(me_result_data.get("changed_count") or 0)
     total_skipped += int(me_result_data.get("skipped_count") or 0)
 
     for identity_id in target_ids:
@@ -430,6 +453,7 @@ async def refresh_storage_bag_records_from_api(*, identity_ids=None, write_empty
                     write_empty=write_empty,
                 )
                 total_updated += int(result.get("updated_count") or 0)
+                total_changed += int(result.get("changed_count") or 0)
                 total_skipped += int(result.get("skipped_count") or 0)
                 updated_identity_ids.update(result.get("updated_identity_ids") or [])
                 if int(result.get("updated_count") or 0) > 0:
@@ -448,8 +472,9 @@ async def refresh_storage_bag_records_from_api(*, identity_ids=None, write_empty
 
     return {
         "ok": total_updated > 0,
-        "message": f"已更新 {total_updated} 个身份的储物袋" if total_updated > 0 else "API 已返回，但未匹配到可更新身份",
+        "message": _format_storage_bag_api_refresh_message(total_updated, total_changed),
         "updated_count": int(total_updated),
+        "changed_count": int(total_changed),
         "skipped_count": int(total_skipped),
         "updated_identity_ids": sorted(updated_identity_ids),
     }

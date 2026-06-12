@@ -4003,7 +4003,7 @@ def _parse_storage_bag_report_options(raw_args):
             ".储物袋汇总\n"
             ".储物袋汇总 竹星紫 4\n"
             ".储物袋汇总 详细\n\n"
-            "默认读取每个身份的历史最新快照，并显示时效；不发送游戏指令；WA2000 默认保护排除。"
+            "默认读取 API/本地缓存，缓存为空再读历史快照；不发送游戏指令。"
         )
 
     report_args = ["--chunk-limit", "20000"]
@@ -4043,8 +4043,6 @@ def _parse_storage_bag_report_options(raw_args):
             return None, f"❌ 找不到身份：{selector}"
         profile = get_send_as_profile(identity_id)
         username = (profile.get("username") or "").strip()
-        if "wa2000" in username.casefold() or "wa2000" in selector.casefold():
-            return None, f"🛡️ {get_identity_ui_display_name(identity_id)} 是保护账号，不读取储物袋。"
         report_args.extend(["--only-name", username or selector])
 
     return report_args, ""
@@ -4125,17 +4123,6 @@ def _normalize_storage_bag_simple_find_query(raw_query):
     return query
 
 
-def _is_storage_bag_simple_find_protected_identity(identity_id):
-    profile = get_send_as_profile(identity_id)
-    candidates = (
-        profile.get("username"),
-        profile.get("label"),
-        profile.get("daohao"),
-        get_identity_ui_display_name(identity_id),
-    )
-    return any("wa2000" in str(candidate or "").casefold() for candidate in candidates)
-
-
 def _get_storage_bag_log_identity_name(identity_id):
     profile = get_send_as_profile(identity_id)
     return str(
@@ -4157,12 +4144,8 @@ def _format_storage_bag_simple_find_text(raw_query):
     holders = []
     configured_count = len(get_identity_ids())
     scanned_count = 0
-    protected_count = 0
     for identity_id in get_identity_ids():
         identity_id = int(identity_id)
-        if _is_storage_bag_simple_find_protected_identity(identity_id):
-            protected_count += 1
-            continue
         scanned_count += 1
         record = records.get(str(identity_id)) if isinstance(records, dict) else {}
         items = record.get("items") if isinstance(record, dict) else {}
@@ -4198,8 +4181,6 @@ def _format_storage_bag_simple_find_text(raw_query):
             f"👥 角色: 配置 {configured_count} 个，扫描 {scanned_count}/{configured_count} 个，命中 0 个",
             "🎯 匹配: 无",
         ])
-        if protected_count:
-            lines.append(f"🛡️ 已排除保护账号 {protected_count} 个")
         return "\n".join(lines)
 
     total_all = sum(totals.values())
@@ -4215,8 +4196,6 @@ def _format_storage_bag_simple_find_text(raw_query):
         f"👥 角色: 配置 {configured_count} 个，扫描 {scanned_count}/{configured_count} 个，命中 {len(holders)} 个",
         f"🎯 匹配: {match_text}",
     ])
-    if protected_count:
-        lines.append(f"🛡️ 已排除保护账号 {protected_count} 个")
 
     if len(totals) > 1:
         lines.extend(["", f"📌 匹配物品 ({len(totals)})"])
@@ -4251,7 +4230,8 @@ def _format_storage_bag_api_refresh_result(result, *, target_identity_id=None):
         "📦 储物袋 API 更新",
         f"范围: {target_text}",
         f"结果: {'成功' if result.get('ok') else '未更新'}",
-        f"更新: {int(result.get('updated_count') or 0)} 个身份",
+        f"刷新: {int(result.get('updated_count') or 0)} 个身份",
+        f"内容变化: {int(result.get('changed_count') or 0)} 个身份",
         f"跳过: {int(result.get('skipped_count') or 0)} 个候选",
     ]
     if updated_ids:

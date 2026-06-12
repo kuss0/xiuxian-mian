@@ -232,18 +232,17 @@ class LogGroupDisplayTests(unittest.TestCase):
             text = control._format_storage_bag_simple_find_text("木髓")
 
             self.assertIn("📦 物资统计: 木髓", text)
-            self.assertIn("📊 总计: 7", text)
-            self.assertIn("👥 角色: 配置 2 个，扫描 1/2 个，命中 1 个", text)
+            self.assertIn("📊 总计: 1,006", text)
+            self.assertIn("👥 角色: 配置 2 个，扫描 2/2 个，命中 2 个", text)
             self.assertIn("🎯 匹配: 精确+模糊", text)
-            self.assertIn("🛡️ 已排除保护账号 1 个", text)
             self.assertIn("📌 匹配物品 (2)", text)
-            self.assertIn("📋 持有明细 (1)", text)
-            self.assertIn("- 木髓: 5", text)
+            self.assertIn("📋 持有明细 (2)", text)
+            self.assertIn("- 木髓: 1,004", text)
             self.assertIn("- 木髓精华: 2", text)
             self.assertIn("boxboxji", text)
-            self.assertNotIn("999", text)
+            self.assertIn("999", text)
             self.assertNotIn("3101", text)
-            self.assertNotIn("wa2000", text.casefold())
+            self.assertIn("wa2000", text.casefold())
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
@@ -264,8 +263,9 @@ class LogGroupDisplayTests(unittest.TestCase):
         event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".更新储物袋")
         result = {
             "ok": True,
-            "message": "已更新 2 个身份的储物袋",
+            "message": "已刷新 2 个身份的储物袋（内容变化 2 个）",
             "updated_count": 2,
+            "changed_count": 2,
             "skipped_count": 1,
             "updated_identity_ids": [3101, 3102],
         }
@@ -281,7 +281,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         reply_mock.assert_awaited_once()
         self.assertEqual("储物袋 API 更新", reply_mock.await_args.args[1])
         self.assertIn("结果: 成功", reply_mock.await_args.args[2])
-        self.assertIn("更新: 2 个身份", reply_mock.await_args.args[2])
+        self.assertIn("刷新: 2 个身份", reply_mock.await_args.args[2])
+        self.assertIn("内容变化: 2 个身份", reply_mock.await_args.args[2])
         send_mock.assert_not_awaited()
 
     def test_log_group_storage_bag_api_refresh_can_target_one_identity(self):
@@ -294,8 +295,9 @@ class LogGroupDisplayTests(unittest.TestCase):
             event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".更新储物袋 @boxboxji")
             result = {
                 "ok": True,
-                "message": "已更新 1 个身份的储物袋",
+                "message": "已刷新 1 个身份的储物袋（内容变化 1 个）",
                 "updated_count": 1,
+                "changed_count": 1,
                 "skipped_count": 0,
                 "updated_identity_ids": [3101],
             }

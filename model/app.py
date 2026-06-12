@@ -70,6 +70,7 @@ from .features.concubine import (
 from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, run_pet_scheduler
 from .features.passive_inbox import handle_passive_module_card
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
+from .features.rare_daily_report import run_rare_daily_report_scheduler
 from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
 from .features.join_dungeon import handle_dungeon_join_bot_message, handle_dungeon_join_mention, record_game_group_message
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
@@ -1408,6 +1409,7 @@ async def main_loop(stop_event=None):
             _cancel_identity_schedulers()
             clear_all_pending_tasks("天尊健康暂停")
             await toggle_global_enabled(False, source="bot_health_monitor")
+        await run_rare_daily_report_scheduler(now)
         if not get_global_enabled():
             _cancel_identity_schedulers()
             await _sleep_or_stop(stop_event, 5)

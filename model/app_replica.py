@@ -76,6 +76,7 @@ from .state import (
     get_replica_run_state,
     get_send_as_profile,
     get_storage_bag_records,
+    get_tianjige_dao_path_records,
     is_replica_virtual_hall_match_enabled,
     resolve_identity_selector,
     set_replica_run_state,
@@ -161,9 +162,11 @@ _REPLICA_LIGHTWEIGHT_OPEN_COMMAND_RE = re.compile(r"^\.开启副本(?:\s+(?P<res
 _REPLICA_LIGHTWEIGHT_JOIN_COMMAND_RE = re.compile(r"^\.加入副本(?:\s+(?P<rest>.+))?$")
 _REPLICA_ENTER_COMMAND_RE = re.compile(rf"^(?P<command>{'|'.join(re.escape(meta['enter_command']) for meta in _REPLICA_KIND_META.values())})\s*$")
 _REPLICA_USERNAME_RE = re.compile(r"@[A-Za-z0-9_]{3,32}")
-_REPLICA_ROOM_DISSOLVED_RE = re.compile(r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已将副本房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]\s*解散")
+_REPLICA_ROOM_DISSOLVED_RE = re.compile(
+    r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已将副本房间\s*(?:[（(]\s*)?(?:ID|房间ID)?\s*[:：]?\s*(\d+)\s*[）)]?\s*解散"
+)
 _REPLICA_KIND_ROOM_DISSOLVED_RE = re.compile(
-    r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已解散(?:坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山|落云秘圃)房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]"
+    r"队长\s*(@[A-Za-z0-9_]{3,32})\s*已解散(?:坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山|落云秘圃)(?:房间|队伍)?\s*(?:[（(]\s*)?(?:ID|房间ID)?\s*[:：]?\s*(\d+)\s*[）)]?"
 )
 _REPLICA_ROOM_AUTO_DISSOLVED_RE = re.compile(
     r"由\s*(@[A-Za-z0-9_]{3,32})\s*开启的(?:虚天殿|坠魔谷|黄龙山大战?|苍坤(?:上人)?洞府|昆吾山|落云秘圃)\s*[（(]\s*ID\s*[:：]?\s*(\d+)\s*[）)]\s*因长时间未满员[，,]?\s*已自动解散"
@@ -215,7 +218,15 @@ _REPLICA_EXTERNAL_DISPATCH_PENDING_SEC = 5 * 60
 _REPLICA_EXTERNAL_DISPATCH_COMMAND_INTERVAL_SEC = 2
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_DELAY_SEC = 2.5
 _REPLICA_EXTERNAL_DISPATCH_FAST_RETRY_LIMIT = 1
-_REPLICA_LIGHTWEIGHT_FAST_RETRY_DELAY_SEC = 3.0
+_REPLICA_LIGHTWEIGHT_FAST_RETRY_DELAY_SEC = 10.0
+_REPLICA_LIGHTWEIGHT_FAST_RETRY_COLLISION_DELAY_SEC = 2.0
+_REPLICA_LIGHTWEIGHT_FAST_RETRY_SETTLEMENT_WINDOW_SEC = 8.0
+_REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC = {
+    "open": 12.0,
+    "join": 8.0,
+    "enter": 12.0,
+    "dissolve": 8.0,
+}
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_TTL_SEC = 5 * 60
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_MAX = 300
 _KUNWU_AUTO_CHOICE_RETRY_DELAY_SEC = 3.0
@@ -271,6 +282,7 @@ _CANGKUN_MIN_REALM = "结丹初期"
 _CANGKUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_CANGKUN_MIN_REALM)
 _CANGKUN_ROOT_GRADE_PRIORITY = ("天", "异", "真", "伪")
 _CANGKUN_PREFERRED_SECT = "太一门"
+_CANGKUN_BACKUP_EXCLUDED_USERNAMES = ("@walterwa2000",)
 _LUOYUN_REQUIRED_SECT = "落云宗"
 _LUOYUN_MIN_REALM = "结丹后期"
 _LUOYUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_LUOYUN_MIN_REALM)
@@ -660,6 +672,43 @@ def _mark_lightweight_fast_retry_once(key, now=None):
     return True
 
 
+def _note_replica_settlement_observed(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    run_state["last_replica_settlement_observed_at"] = now
+    _save_replica_run_state_dict(run_state)
+    return now
+
+
+def _is_recent_replica_settlement_window(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    try:
+        observed_at = float(run_state.get("last_replica_settlement_observed_at") or 0)
+    except (TypeError, ValueError):
+        observed_at = 0
+    return observed_at > 0 and 0 <= now - observed_at <= _REPLICA_LIGHTWEIGHT_FAST_RETRY_SETTLEMENT_WINDOW_SEC
+
+
+def _get_lightweight_retry_delay_sec(action, now=None):
+    if _is_recent_replica_settlement_window(now):
+        return _REPLICA_LIGHTWEIGHT_FAST_RETRY_COLLISION_DELAY_SEC
+    action = str(action or "").strip()
+    return float(_REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC.get(action, _REPLICA_LIGHTWEIGHT_FAST_RETRY_DELAY_SEC))
+
+
+def _format_lightweight_retry_delay_text(delay_sec):
+    try:
+        delay = float(delay_sec or 0)
+    except (TypeError, ValueError):
+        delay = 0
+    if delay <= 0:
+        return "立即"
+    if delay.is_integer():
+        return f"{int(delay)}秒"
+    return f"{delay:.1f}秒"
+
+
 def _cleanup_kunwu_auto_choice_records(now=None):
     now = float(now or time.time())
     run_state = _get_replica_run_state_dict()
@@ -925,6 +974,47 @@ def _get_cangkun_decision_stage(text):
     }
 
 
+def _parse_cangkun_status_value(text, label):
+    raw_text = str(text or "")
+    label = str(label or "").strip()
+    if not label:
+        return None
+    match = re.search(rf"{re.escape(label)}\s*[：:\s]\s*(\d+)", raw_text)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _format_cangkun_decision_advice(stage_info, text, *, html=False):
+    stage_info = stage_info if isinstance(stage_info, dict) else {}
+    title = str(stage_info.get("title") or "")
+    warning = _parse_cangkun_status_value(text, "慕兰警戒")
+    sense = _parse_cangkun_status_value(text, "可调神识")
+    advice = ""
+    if "第一幕" in title:
+        sense_note = "；队内需一名可调神识>=1000"
+        if sense is not None:
+            sense_note = f"；可调神识 {sense}" + (" 已够" if sense >= 1000 else " 偏低，先确认持识者")
+        advice = f"建议：选1 匿踪潜行；默认路线 1/3/2{sense_note}。"
+    elif "第三幕" in title or "玉矶阁取宝" in title:
+        advice = "建议：选3 先探偏殿；默认路线 1/3/2。"
+    elif "第四幕" in title or stage_info.get("audience") == "team":
+        advice = "建议：全员各点一次即可；不要重复表态。"
+    elif "第五幕" in title or "分宝脱身" in title:
+        if warning is not None and warning >= 60:
+            advice = f"建议：选2 夺图先遁；慕兰警戒 {warning}>=60，不走3。"
+        elif warning is not None:
+            advice = f"建议：选2 夺图先遁；慕兰警戒 {warning}，3只当高风险贪线。"
+        else:
+            advice = "建议：选2 夺图先遁；3只当高风险贪线。"
+    if not advice:
+        return ""
+    return escape(advice) if html else advice
+
+
 def _build_cangkun_decision_buttons(stage_info, leader_identity_id, event, text, source_key=""):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     leader_identity_id = int(leader_identity_id or 0)
@@ -1048,9 +1138,11 @@ async def _maybe_send_cangkun_decision_notice(event, text, now):
         return False
     commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
     notice_prefix = "苍坤全员表态" if stage_info.get("audience") == "team" else "苍坤后续抉择"
+    advice_text = _format_cangkun_decision_advice(stage_info, text, html=True)
     notice_text = (
         f"{notice_prefix}：{stage_info.get('title') or '未知阶段'}｜队长 {mono(leader_username)}\n"
-        f"请选择一个按钮；兜底命令：\n"
+        + (f"{advice_text}\n" if advice_text else "")
+        + f"请选择一个按钮；兜底命令：\n"
         + commands_text
     )
     if await _send_replica_kind_notice(
@@ -1095,6 +1187,11 @@ def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
     if "【登顶昆吾山】" in raw_text:
         return _REPLICA_KIND_KUNWU
+    if any(marker in raw_text for marker in (
+        "【战利品结算·夺鼎】",
+        "【后殿冲关止步】",
+    )):
+        return _REPLICA_KIND_VIRTUAL_HALL
     cangkun_kind = _parse_cangkun_success_kind(raw_text)
     if cangkun_kind:
         return cangkun_kind
@@ -1148,9 +1245,8 @@ def _format_replica_settlement_excerpt(text, *, html=False, max_lines=12, max_ch
 
 def _make_replica_settlement_notice_key(event, text, replica_kind, room_id=""):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
-    room_id = str(room_id or "").strip()
     digest = hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:16]
-    return f"settlement:{replica_kind}:{room_id or '-'}:{digest}"
+    return f"settlement:{replica_kind}:{digest}"
 
 
 async def _send_replica_settlement_notice(replica_kind, text, now, *, identity_ids=None, room_cleared=False, notice_item=None, source_event=None):
@@ -2166,6 +2262,8 @@ def _get_latest_lightweight_room(replica_kind="", now=None):
             continue
         if replica_kind and room.get("replica_kind") != replica_kind:
             continue
+        if not _is_current_lightweight_room_for_display(room, now=now):
+            continue
         candidates.append(room)
     if not candidates:
         return {}
@@ -2198,6 +2296,21 @@ def _get_active_lightweight_room(replica_chat_id=0, replica_kind="", now=None):
     return room
 
 
+def _is_current_lightweight_room_for_display(room, now=None):
+    room = room if isinstance(room, dict) else {}
+    phase = str(room.get("phase") or "")
+    now = float(now or time.time())
+    if phase == "entered":
+        return True
+    if phase == "opened":
+        opened_at = float(room.get("opened_at") or room.get("updated_at") or 0)
+        return opened_at <= 0 or now < opened_at + _REPLICA_LOBBY_TTL_SEC
+    if phase == "dissolve_requested":
+        requested_at = float(room.get("dissolve_requested_at") or room.get("updated_at") or 0)
+        return requested_at > 0 and now < requested_at + _REPLICA_LIGHTWEIGHT_DISSOLVE_PENDING_SEC
+    return False
+
+
 def _get_latest_lightweight_room_leader_username(replica_kind="", now=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     if not replica_kind:
@@ -2210,7 +2323,7 @@ def _get_latest_lightweight_room_leader_username(replica_kind="", now=None):
             continue
         if room.get("replica_kind") != replica_kind:
             continue
-        if str(room.get("phase") or "") not in {"opened", "entered", "dissolve_requested"}:
+        if not _is_current_lightweight_room_for_display(room, now=now):
             continue
         leader_username = _normalize_replica_username(room.get("leader_username") or "")
         if not leader_username:
@@ -2234,7 +2347,7 @@ def _get_latest_lightweight_room_for_kind(replica_kind="", now=None):
             continue
         if room.get("replica_kind") != replica_kind:
             continue
-        if str(room.get("phase") or "") not in {"opened", "entered", "dissolve_requested"}:
+        if not _is_current_lightweight_room_for_display(room, now=now):
             continue
         candidates.append((float(room.get("updated_at") or room.get("entered_at") or room.get("opened_at") or 0), room))
     if not candidates:
@@ -2385,9 +2498,11 @@ def _finish_lightweight_room_dissolve_send(room, msg_id=0, now=None, *, error=""
         return False
     msg_id = int(msg_id or 0)
     if msg_id > 0:
+        first_msg_id = int(current.get("dissolve_first_msg_id") or current.get("dissolve_msg_id") or 0)
         current.update({
             "phase": "dissolve_requested",
             "dissolve_msg_id": msg_id,
+            "dissolve_first_msg_id": first_msg_id if first_msg_id > 0 else msg_id,
             "updated_at": now,
             "last_error": "",
         })
@@ -2471,7 +2586,7 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None, *, require_
             continue
         if room.get("replica_kind") != replica_kind:
             continue
-        if room.get("phase") not in {"opened", "dissolve_requested"}:
+        if room.get("phase") not in {"opened", "entered", "dissolve_requested"}:
             continue
         enter_requested_at = float(room.get("enter_requested_at") or 0)
         enter_msg_id = int(room.get("enter_msg_id") or 0)
@@ -2495,6 +2610,7 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None, *, require_
     room.update({
         "phase": "entered",
         "entered_at": now,
+        "enter_confirmed_at": now,
         "updated_at": now,
         "expires_at": now + _get_lightweight_entered_ttl_sec(replica_kind),
     })
@@ -2591,6 +2707,60 @@ def _find_lightweight_room_for_dissolve_notice(room_id, leader_username="", repl
             continue
         return dict(room)
     return {}
+
+
+def _lightweight_room_dissolve_msg_ids(room):
+    room = room if isinstance(room, dict) else {}
+    msg_ids = []
+    for key in ("dissolve_msg_id", "dissolve_retry_msg_id", "dissolve_previous_msg_id", "dissolve_first_msg_id"):
+        try:
+            msg_id = int(room.get(key) or 0)
+        except (TypeError, ValueError):
+            msg_id = 0
+        if msg_id > 0 and msg_id not in msg_ids:
+            msg_ids.append(msg_id)
+    return msg_ids
+
+
+def _find_lightweight_room_for_dissolve_reply(reply_to_msg_id=0, send_as_id=0, replica_kind="", now=None):
+    try:
+        reply_to_msg_id = int(reply_to_msg_id or 0)
+    except (TypeError, ValueError):
+        reply_to_msg_id = 0
+    try:
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        send_as_id = 0
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if reply_to_msg_id <= 0:
+        return {}
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    candidates = []
+    for room in rooms.values():
+        if not isinstance(room, dict):
+            continue
+        if str(room.get("phase") or "") != "dissolve_requested":
+            continue
+        if replica_kind and room.get("replica_kind") != replica_kind:
+            continue
+        if reply_to_msg_id not in _lightweight_room_dissolve_msg_ids(room):
+            continue
+        leader_identity_id = int(room.get("leader_identity_id") or 0)
+        if send_as_id > 0 and leader_identity_id > 0 and send_as_id != leader_identity_id:
+            continue
+        candidates.append((float(room.get("updated_at") or room.get("dissolve_requested_at") or 0), room))
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return dict(candidates[0][1])
+
+
+def _is_lightweight_dissolve_already_closed_reply(text):
+    raw_text = str(text or "")
+    if "已解散" not in raw_text:
+        return False
+    return any(keyword in raw_text for keyword in ("并非队长", "不是队长", "你开启的", "房间"))
 
 
 def _format_lightweight_dissolve_confirm_notice(room_id, replica_kind="", leader_username="", raw_text="", *, html=False):
@@ -3268,6 +3438,56 @@ def _get_cangkun_root_grade_rank(identity_id):
     return len(_CANGKUN_ROOT_GRADE_PRIORITY)
 
 
+def _parse_int_like(value, default=0):
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    match = re.search(r"-?\d+", str(value or "").replace(",", ""))
+    if not match:
+        return int(default or 0)
+    try:
+        return int(match.group(0))
+    except (TypeError, ValueError):
+        return int(default or 0)
+
+
+def _get_identity_cangkun_spiritual_sense(identity_id):
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError):
+        return 0
+    if identity_id <= 0:
+        return 0
+    try:
+        records = get_tianjige_dao_path_records()
+    except Exception:
+        records = {}
+    record = records.get(str(identity_id)) if isinstance(records, dict) else {}
+    if not isinstance(record, dict):
+        return 0
+    main_sense = _parse_int_like(record.get("spiritual_sense") or record.get("shenshi_points"))
+    taiyi_sense = _parse_int_like(record.get("taiyi_spiritual_sense") or record.get("taiyi_shenshi_points"))
+    return max(0, main_sense) + max(0, taiyi_sense)
+
+
+def _has_cangkun_required_spiritual_sense(identity_id):
+    return _get_identity_cangkun_spiritual_sense(identity_id) >= 1000
+
+
+def _get_cangkun_team_spiritual_sense_identity(identity_ids):
+    candidates = []
+    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
+        sense = _get_identity_cangkun_spiritual_sense(identity_id)
+        if sense > 0:
+            username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+            candidates.append((sense, username, identity_id))
+    if not candidates:
+        return 0, 0
+    sense, _username, identity_id = sorted(candidates, key=lambda item: (-item[0], item[1], item[2]))[0]
+    return identity_id, sense
+
+
 def _normalize_replica_sect_name(text):
     return str(text or "").strip().strip("【】[]")
 
@@ -3308,6 +3528,7 @@ def _best_cangkun_profession_assignment(identity_ids, *, leader_identity_id=0):
         professions = _get_replica_profile_professions(identity_id)
         username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         return (
+            0 if _has_cangkun_required_spiritual_sense(identity_id) else 1,
             0 if _is_cangkun_preferred_sect_identity(identity_id) else 1,
             _get_cangkun_root_grade_rank(identity_id),
             -sum(1 for role in _CANGKUN_REQUIRED_PROFESSIONS if role in professions),
@@ -3324,13 +3545,14 @@ def _best_cangkun_profession_assignment(identity_ids, *, leader_identity_id=0):
             return
         assigned_ids = [identity_id for _role, identity_id in assignments]
         coverage_count = len(assignments)
+        high_sense_count = 1 if any(_has_cangkun_required_spiritual_sense(identity_id) for identity_id in assigned_ids) else 0
         preferred_count = sum(1 for identity_id in assigned_ids if _is_cangkun_preferred_sect_identity(identity_id))
         root_score = sum(_get_cangkun_root_grade_rank(identity_id) for identity_id in assigned_ids)
         role_count_score = sum(
             sum(1 for role in _CANGKUN_REQUIRED_PROFESSIONS if role in _get_replica_profile_professions(identity_id))
             for identity_id in assigned_ids
         )
-        score = (coverage_count, preferred_count, -root_score, role_count_score)
+        score = (coverage_count, high_sense_count, preferred_count, -root_score, role_count_score)
         key = "|".join(
             f"{role}:{_normalize_replica_username(get_send_as_profile(identity_id).get('username') or identity_id)}"
             for role, identity_id in assignments
@@ -3388,15 +3610,23 @@ def _get_lightweight_available_identity_ids(replica_kind, now=None):
     return identity_ids
 
 
-def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, limit=4, now=None):
+def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, limit=4, now=None, excluded_usernames=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else _REPLICA_KIND_CANGKUN
     leader_identity_id = int(leader_identity_id or 0)
     limit = max(1, int(limit or 4))
     now = float(now or time.time())
+    excluded_username_set = set(_normalize_replica_username_list(excluded_usernames or []))
+    leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
+    if leader_username and leader_username in excluded_username_set:
+        return []
     candidates = [
         identity_id
         for identity_id in _get_lightweight_available_identity_ids(replica_kind, now=now)
-        if identity_id and identity_id != leader_identity_id
+        if (
+            identity_id
+            and identity_id != leader_identity_id
+            and _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "") not in excluded_username_set
+        )
     ]
     if not candidates:
         return []
@@ -3468,6 +3698,56 @@ def _get_lightweight_profession_recommendation_join_command(replica_kind, leader
     return ".加入副本 " + " ".join(usernames) if usernames else ""
 
 
+def _format_cangkun_backup_recommendation_lines(leader_identity_id, primary_team_ids, *, html=False):
+    primary_team_ids = _normalize_replica_identity_ids(primary_team_ids or [])
+    leader_identity_id = int(leader_identity_id or 0)
+    primary_usernames = set(_normalize_replica_username_list(
+        [
+            get_send_as_profile(identity_id).get("username") or ""
+            for identity_id in (([leader_identity_id] if leader_identity_id else []) + primary_team_ids)
+        ]
+    ))
+    excluded_usernames = tuple(_normalize_replica_username_list(_CANGKUN_BACKUP_EXCLUDED_USERNAMES))
+    if not primary_usernames.intersection(excluded_usernames):
+        return []
+    excluded_display = "、".join(mono(username) if html else username for username in excluded_usernames)
+    backup_team_ids = _pick_lightweight_profession_team(
+        _REPLICA_KIND_CANGKUN,
+        leader_identity_id=leader_identity_id,
+        limit=4 if leader_identity_id else 5,
+        excluded_usernames=excluded_usernames,
+    )
+    backup_usernames = [
+        _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        for identity_id in backup_team_ids
+    ]
+    backup_usernames = [username for username in backup_usernames if username]
+    if not backup_usernames:
+        return [f"备选加入（不带 {excluded_display}）：暂无可用备选。"]
+
+    backup_display = " ".join(mono(username) if html else username for username in backup_usernames)
+    covered_text, missing_text = _format_cangkun_profession_coverage(
+        ([leader_identity_id] if leader_identity_id else []) + backup_team_ids,
+        leader_identity_id=leader_identity_id,
+    )
+    coverage_note = "五职业已齐" if missing_text == "无" else f"缺职业 {missing_text}"
+    sense_identity_id, sense_value = _get_cangkun_team_spiritual_sense_identity(
+        ([leader_identity_id] if leader_identity_id else []) + backup_team_ids
+    )
+    if sense_value >= 1000:
+        sense_username = _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or str(sense_identity_id))
+        sense_display = mono(sense_username) if html else sense_username
+        sense_note = f"{sense_display} 可调神识 {sense_value} 已过千"
+    elif sense_value > 0:
+        sense_note = f"当前快照最高 {sense_value}，未确认过千"
+    else:
+        sense_note = "天机阁快照未确认神识"
+    return [
+        f"备选加入（不带 {excluded_display}，可复制）：{backup_display}",
+        f"备选校验：{coverage_note}；{sense_note}。",
+    ]
+
+
 def _format_lightweight_profession_recommendation_section(replica_kind, leader_identity_id=0, *, html=False):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else _REPLICA_KIND_CANGKUN
     leader_identity_id = int(leader_identity_id or 0)
@@ -3485,6 +3765,8 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     if usernames:
         display_usernames = " ".join(mono(username) if html else username for username in usernames)
         lines.append(f"推荐加入：{display_usernames}")
+        if replica_kind == _REPLICA_KIND_CANGKUN:
+            lines.extend(_format_cangkun_backup_recommendation_lines(leader_identity_id, team_ids, html=html))
     else:
         lines.append("暂未找到可参加且带 username 的补位身份。")
     if replica_kind == _REPLICA_KIND_CANGKUN:
@@ -3499,7 +3781,16 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
             lines.append(f"缺职业：{missing_text}")
         if leader_identity_id > 0 and not _is_cangkun_realm_available(leader_identity_id):
             lines.append(f"开房身份未达要求，不计入职业覆盖：{_format_cangkun_realm_requirement(leader_identity_id)}。")
-        lines.append("提示：苍坤要求结丹初期及以上且五职业齐全：破军/御山/灵医/影刃/咒师；入本默认 .苍坤抉择 1 / .苍坤抉择 1 / .苍坤抉择 2。")
+        sense_identity_id, sense_value = _get_cangkun_team_spiritual_sense_identity(([leader_identity_id] if leader_identity_id else []) + team_ids)
+        if sense_value >= 1000:
+            sense_username = _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or str(sense_identity_id))
+            sense_display = mono(sense_username) if html else sense_username
+            lines.append(f"神识校验：{sense_display} 可调神识 {sense_value}，已覆盖过千需求。")
+        elif sense_value > 0:
+            lines.append(f"神识校验：当前快照最高 {sense_value}，未确认过千；入本前看第一幕可调神识。")
+        else:
+            lines.append("神识校验：天机阁快照未确认；入本前确保队内一名可调神识>=1000。")
+        lines.append("提示：苍坤要求结丹初期及以上、五职业齐全、队内一名可调神识>=1000；无需DPS标识。默认路线 .苍坤抉择 1 / 3 / 2。")
     elif replica_kind == _REPLICA_KIND_LUOYUN:
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
             lines.append(f"开房身份未达要求：{_format_luoyun_open_requirement(leader_identity_id)}。")
@@ -6012,6 +6303,16 @@ def _infer_replica_kind_from_text(text, default=""):
     raw_text = str(text or "")
     if "苍坤上人洞府" in raw_text:
         return _REPLICA_KIND_CANGKUN
+    if any(marker in raw_text for marker in (
+        "【鼎前抉择】",
+        "【后殿余波】",
+        "【战利品结算·夺鼎】",
+        "【后殿冲关止步】",
+        "【第四关·后殿试阵】",
+        "【第五关·虚天鼎灵",
+        "【后殿第 ",
+    )):
+        return _REPLICA_KIND_VIRTUAL_HALL
     for kind, meta in _REPLICA_TICKET_META.items():
         if any(str(item or "") and str(item or "") in raw_text for item in meta.get("ticket_items", ())):
             return kind
@@ -6620,6 +6921,12 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             source_msg_id=getattr(event, "id", 0),
             leader_username=leader_username,
         )
+        _mark_latest_lightweight_room_entered(
+            _REPLICA_KIND_CANGKUN,
+            now=now,
+            require_recent_enter_request=False,
+            usernames=event_usernames,
+        )
         cangkun_notice_sent = bool(await _maybe_send_cangkun_decision_notice(event, text, now))
     kunwu_notice_sent = False
     if kunwu_decision_stage:
@@ -6663,6 +6970,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         if _mark_replica_team_entered(entered_kind, now, source_msg_id=getattr(event, "id", 0)):
             return True
     if replica_settlement_kind:
+        _note_replica_settlement_observed(now)
         event_usernames = _extract_replica_usernames(text)
         settlement_room = _mark_latest_lightweight_room_entered(
             replica_settlement_kind,
@@ -7481,6 +7789,28 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
                 html=True,
             )
         return changed
+    if _is_lightweight_dissolve_already_closed_reply(text):
+        replica_kind = _infer_replica_kind_from_text(text)
+        room = _find_lightweight_room_for_dissolve_reply(
+            reply_to_msg_id=reply_to_msg_id,
+            send_as_id=send_as_id,
+            replica_kind=replica_kind,
+            now=now,
+        )
+        if room:
+            room_id = str(room.get("room_id") or "").strip()
+            leader_username = _normalize_replica_username(room.get("leader_username") or "")
+            replica_kind = room.get("replica_kind") or replica_kind
+            changed = _mark_lightweight_room_dissolved(room_id, leader_username=leader_username, replica_kind=replica_kind, now=now)
+            if changed and not room.get("dissolve_confirm_notice_sent_at"):
+                room.update({"dissolve_confirm_notice_sent_at": now, "phase": "dissolved", "dissolved_at": now})
+                _set_lightweight_last_room(room)
+                await _send_lightweight_replica_notice(
+                    room,
+                    _format_lightweight_dissolve_confirm_notice(room_id, replica_kind=replica_kind, leader_username=leader_username, raw_text=text, html=True),
+                    html=True,
+                )
+            return changed
     return False
 
 
@@ -7767,6 +8097,9 @@ def _should_fast_retry_lightweight_enter(identity_id, replica_kind, room_id, cha
     if enter_requested_at <= 0 or float(now or 0) > enter_requested_at + _REPLICA_LIGHTWEIGHT_ENTER_PENDING_SEC:
         return False
     if phase == "entered":
+        enter_confirmed_at = float(current.get("enter_confirmed_at") or 0)
+        if enter_confirmed_at > enter_requested_at + 0.01:
+            return False
         unconfirmed_cangkun = (
             replica_kind == _REPLICA_KIND_CANGKUN
             and first_msg_id > 0
@@ -7819,7 +8152,7 @@ def _lightweight_fast_retry_chain_id(action, replica_kind, room_id):
 
 
 async def _retry_lightweight_game_command_once(action, identity_id, replica_kind, room_id, command, chat_id, source_msg_id, first_msg_id, delay_sec=None):
-    delay_sec = _REPLICA_LIGHTWEIGHT_FAST_RETRY_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    delay_sec = _get_lightweight_retry_delay_sec(action) if delay_sec is None else max(0, float(delay_sec or 0))
     await asyncio.sleep(delay_sec)
     now = time.time()
     action = str(action or "").strip()
@@ -7832,7 +8165,7 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
         command,
         track=False,
         send_as_id=identity_id,
-        priority="urgent_reactive",
+        priority="retry",
         **_replica_send_intent(
             op_id=f"replica_lightweight_{action}_retry:{int(chat_id or 0)}:{int(source_msg_id or 0)}:{int(identity_id or 0)}",
             chain_id=_lightweight_fast_retry_chain_id(action, replica_kind, room_id),
@@ -7864,9 +8197,13 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
     elif action == "dissolve":
         current = _get_current_lightweight_retry_room(replica_kind, room_id, chat_id=chat_id, now=now)
         if current:
+            previous_msg_id = int(current.get("dissolve_msg_id") or 0)
+            first_msg_id = int(current.get("dissolve_first_msg_id") or previous_msg_id or 0)
             current.update({
                 "dissolve_msg_id": msg_id,
                 "dissolve_retry_msg_id": msg_id,
+                "dissolve_previous_msg_id": previous_msg_id,
+                "dissolve_first_msg_id": first_msg_id if first_msg_id > 0 else msg_id,
                 "dissolve_retry_at": now,
                 "updated_at": now,
             })
@@ -7878,7 +8215,7 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
         "dissolve": "解散",
     }.get(action, action or "命令")
     await send_audit_log(
-        f"🧩 轻量副本{action_label}快补发：{command}｜retry=1",
+        f"🧩 轻量副本{action_label}补发：{command}｜retry=1｜delay={_format_lightweight_retry_delay_text(delay_sec)}",
         scope="identity",
         send_as_id=identity_id,
         limit=180,
@@ -7887,7 +8224,9 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
     return True
 
 
-def _schedule_lightweight_game_command_fast_retry(action, identity_id, replica_kind, room_id, command, chat_id, source_msg_id, first_msg_id):
+def _schedule_lightweight_game_command_fast_retry(action, identity_id, replica_kind, room_id, command, chat_id, source_msg_id, first_msg_id, delay_sec=None):
+    if delay_sec is None:
+        delay_sec = _get_lightweight_retry_delay_sec(action)
     _fire_and_forget(
         _retry_lightweight_game_command_once(
             action,
@@ -7898,6 +8237,7 @@ def _schedule_lightweight_game_command_fast_retry(action, identity_id, replica_k
             chat_id,
             source_msg_id,
             first_msg_id,
+            delay_sec=delay_sec,
         )
     )
 

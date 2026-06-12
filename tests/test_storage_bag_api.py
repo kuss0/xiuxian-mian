@@ -87,6 +87,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             "last_message": "",
             "last_updated_at": 0,
             "updated_count": 0,
+            "changed_count": 0,
             "skipped_count": 0,
             "keepalive_running": False,
             "dao_path_last_ok": False,
@@ -107,6 +108,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             "last_message": "",
             "last_updated_at": 0,
             "updated_count": 0,
+            "changed_count": 0,
             "skipped_count": 0,
             "keepalive_running": False,
             "dao_path_last_ok": False,
@@ -240,8 +242,9 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
 
         self.assertTrue(ok)
-        self.assertIn("已更新 1 个身份", message)
+        self.assertIn("已刷新 1 个身份", message)
         self.assertEqual(1, snapshot["updated_count"])
+        self.assertEqual(1, snapshot["changed_count"])
         send_mock.assert_not_called()
         config = state_module.get_storage_bag_api_config()
         self.assertEqual("session=rotated", config["cookie"])
@@ -249,6 +252,79 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         record = state_module.get_storage_bag_records()[str(self.identity_id)]
         self.assertEqual({"青竹蜂云剑": 1, "灵石": 5000, "木髓": 3}, record["items"])
         self.assertEqual("storage_bag_api_character", record["source"])
+
+    async def test_manual_api_refresh_reports_content_unchanged(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+        })
+        state_module.set_storage_bag_records({
+            str(self.identity_id): {
+                "owner": "source",
+                "items": {"青竹蜂云剑": 1},
+            }
+        })
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "characters": [
+                    {
+                        "telegram_id": self.identity_id,
+                        "username": "source",
+                        "inventory": {"items": [{"name": "青竹蜂云剑", "quantity": 1}]},
+                    }
+                ]
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/me",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)):
+            ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("内容未变化", message)
+        self.assertEqual(1, snapshot["updated_count"])
+        self.assertEqual(0, snapshot["changed_count"])
+
+    async def test_manual_api_refresh_notifies_log_group_when_requested(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+        })
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "characters": [
+                    {
+                        "telegram_id": self.identity_id,
+                        "username": "source",
+                        "inventory": {"items": [{"name": "青竹蜂云剑", "quantity": 1}]},
+                    }
+                ]
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/me",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)), \
+                patch("model.ui.send_audit_log", new=AsyncMock()) as audit_mock, \
+                patch("model.ui._fire_and_forget") as fire_mock:
+            ok, _message, _snapshot = await ui.ui_refresh_storage_bag_from_api(notify_log_group=True)
+
+        self.assertTrue(ok)
+        audit_mock.assert_called_once()
+        audit_text = audit_mock.call_args.args[0]
+        self.assertIn("储物袋 API 读取成功", audit_text)
+        self.assertIn("刷新 1 个身份", audit_text)
+        self.assertEqual("global", audit_mock.call_args.kwargs["scope"])
+        self.assertEqual("medium", audit_mock.call_args.kwargs["priority"])
+        fire_mock.assert_called_once()
+        fire_mock.call_args.args[0].close()
 
     async def test_manual_api_refresh_accepts_direct_cultivator_shape(self):
         state_module.set_storage_bag_api_config({
@@ -277,7 +353,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             ok, message, _snapshot = await ui.ui_refresh_storage_bag_from_api()
 
         self.assertTrue(ok)
-        self.assertIn("已更新 1 个身份", message)
+        self.assertIn("已刷新 1 个身份", message)
         record = state_module.get_storage_bag_records()[str(self.identity_id)]
         self.assertEqual({"青竹蜂云剑": 1, "灵石": 50}, record["items"])
         self.assertEqual("storage_bag_api_cultivator", record["source"])
@@ -379,7 +455,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
                 ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
 
         self.assertTrue(ok)
-        self.assertIn("已更新 2 个身份", message)
+        self.assertIn("已刷新 2 个身份", message)
         self.assertEqual([storage_bag_api_client.REFRESH_PATH, "/api/cultivator/other"], call_paths)
         send_mock.assert_not_called()
         records = state_module.get_storage_bag_records()
@@ -387,6 +463,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"青竹蜂云剑": 2, "灵石": 77}, records[str(other_identity_id)]["items"])
         self.assertEqual("session=rotated-other", state_module.get_storage_bag_api_config()["cookie"])
         self.assertEqual(2, snapshot["updated_count"])
+        self.assertEqual(2, snapshot["changed_count"])
 
     async def test_manual_api_refresh_skips_cultivator_404_without_disabling_cookie(self):
         other_identity_id = 2002
@@ -435,7 +512,7 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
                 ok, message, snapshot = await ui.ui_refresh_storage_bag_from_api()
 
         self.assertTrue(ok)
-        self.assertIn("已更新 1 个身份", message)
+        self.assertIn("已刷新 1 个身份", message)
         self.assertEqual(storage_bag_api_client.REFRESH_PATH, call_paths[0])
         self.assertIn("/api/cultivator/other", call_paths)
         self.assertTrue(all(path == storage_bag_api_client.REFRESH_PATH or str(path).startswith(storage_bag_api_client.CULTIVATOR_PATH_PREFIX) for path in call_paths))

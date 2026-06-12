@@ -231,6 +231,7 @@ _storage_bag_api_state = {
     "last_message": "",
     "last_updated_at": 0,
     "updated_count": 0,
+    "changed_count": 0,
     "skipped_count": 0,
     "dao_path_last_ok": False,
     "dao_path_last_message": "",
@@ -463,6 +464,7 @@ def get_storage_bag_api_snapshot():
         "last_message": str(_storage_bag_api_state.get("last_message") or ""),
         "last_updated_at": fmt_abs_ts(_storage_bag_api_state.get("last_updated_at") or 0),
         "updated_count": int(_storage_bag_api_state.get("updated_count") or 0),
+        "changed_count": int(_storage_bag_api_state.get("changed_count") or 0),
         "skipped_count": int(_storage_bag_api_state.get("skipped_count") or 0),
         "dao_path_running": _is_tianjige_manual_api_busy(),
         "dao_path_last_ok": bool(_storage_bag_api_state.get("dao_path_last_ok")),
@@ -672,12 +674,13 @@ def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_
     item_name_map = get_storage_bag_api_config().get("item_name_map") or {}
     records = dict(get_storage_bag_records())
     updated = 0
+    changed = 0
     skipped = 0
     updated_identity_ids = set()
     now = time.time()
 
     def update_record(identity_id, owner_text, items, *, source="storage_bag_api"):
-        nonlocal updated
+        nonlocal updated, changed
         identity_id = _storage_bag_api_resolve_identity_id(identity_id, owner_text, lookup)
         if identity_id == 0 and int(fallback_identity_id or 0):
             identity_id = int(fallback_identity_id or 0)
@@ -688,6 +691,10 @@ def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_
         if not items:
             return
         profile = get_send_as_profile(identity_id)
+        previous = records.get(str(identity_id))
+        previous_items = previous.get("items") if isinstance(previous, dict) else {}
+        if dict(previous_items or {}) != dict(items):
+            changed += 1
         records[str(identity_id)] = {
             "owner": owner_text or profile.get("username") or profile.get("label") or profile.get("daohao") or str(identity_id),
             "owner_username": profile.get("username") or "",
@@ -772,7 +779,13 @@ def _storage_bag_api_apply_payload(payload, *, fallback_identity_id=0, fallback_
     if updated > 0:
         set_storage_bag_records(records)
         save_state()
-    return {"updated_count": updated, "skipped_count": skipped, "updated_identity_ids": sorted(updated_identity_ids), "records": records}
+    return {
+        "updated_count": updated,
+        "changed_count": changed,
+        "skipped_count": skipped,
+        "updated_identity_ids": sorted(updated_identity_ids),
+        "records": records,
+    }
 
 
 def _tianjige_string(value):
@@ -1477,6 +1490,7 @@ async def ui_verify_storage_bag_api(payload=None):
             "last_message": message,
             "last_updated_at": now,
             "updated_count": 0,
+            "changed_count": 0,
             "skipped_count": 0,
         })
     except Exception as exc:
@@ -1487,6 +1501,7 @@ async def ui_verify_storage_bag_api(payload=None):
             "last_message": message,
             "last_updated_at": now,
             "updated_count": 0,
+            "changed_count": 0,
             "skipped_count": 0,
         })
     finally:
@@ -1495,7 +1510,37 @@ async def ui_verify_storage_bag_api(payload=None):
     return ok, message, get_storage_bag_api_snapshot()
 
 
-async def ui_refresh_storage_bag_from_api(payload=None):
+def _format_storage_bag_api_refresh_message(total_updated, total_changed):
+    total_updated = int(total_updated or 0)
+    total_changed = int(total_changed or 0)
+    if total_updated <= 0:
+        return "API 已返回，但未匹配到可刷新身份"
+    if total_changed > 0:
+        return f"已刷新 {total_updated} 个身份的储物袋（内容变化 {total_changed} 个）"
+    return f"已刷新 {total_updated} 个身份的储物袋（内容未变化）"
+
+
+def _format_storage_bag_api_refresh_audit(ok, message, *, updated_count=0, changed_count=0, skipped_count=0):
+    if ok:
+        return (
+            "📦 储物袋 API 读取成功："
+            f"刷新 {int(updated_count or 0)} 个身份｜内容变化 {int(changed_count or 0)}｜跳过 {int(skipped_count or 0)}｜{message}"
+        )
+    return f"📦 储物袋 API 读取失败：{message}"
+
+
+def _notify_storage_bag_api_refresh(ok, message, *, updated_count=0, changed_count=0, skipped_count=0):
+    text = _format_storage_bag_api_refresh_audit(
+        ok,
+        message,
+        updated_count=updated_count,
+        changed_count=changed_count,
+        skipped_count=skipped_count,
+    )
+    _fire_and_forget(send_audit_log(text, scope="global", limit=280, priority="medium"))
+
+
+async def ui_refresh_storage_bag_from_api(payload=None, *, notify_log_group=False):
     if _is_storage_bag_api_busy():
         return False, "储物袋 API 读取正在进行中", get_storage_bag_api_snapshot()
     payload = payload if isinstance(payload, dict) else {}
@@ -1503,7 +1548,10 @@ async def ui_refresh_storage_bag_from_api(payload=None):
         ui_set_storage_bag_api_config(payload)
     config = get_storage_bag_api_config()
     if not config.get("cookie"):
-        return False, "请先配置储物袋 API", get_storage_bag_api_snapshot()
+        message = "请先配置储物袋 API"
+        if notify_log_group:
+            _notify_storage_bag_api_refresh(False, message)
+        return False, message, get_storage_bag_api_snapshot()
     _storage_bag_api_state["running"] = True
     _storage_bag_api_set_running_kind("storage_bag")
     ok = False
@@ -1512,6 +1560,7 @@ async def ui_refresh_storage_bag_from_api(payload=None):
         active_config = dict(config)
         updated_identity_ids = set()
         total_updated = 0
+        total_changed = 0
         total_skipped = 0
         me_result = await fetch_storage_bag_result(active_config, STORAGE_BAG_API_REFRESH_PATH)
         active_config = _storage_bag_api_store_session(me_result.cookie, me_result.api_token)
@@ -1521,6 +1570,7 @@ async def ui_refresh_storage_bag_from_api(payload=None):
         me_result_data = _storage_bag_api_apply_payload(me_payload if isinstance(me_payload, dict) else {})
         updated_identity_ids.update(me_result_data.get("updated_identity_ids") or [])
         total_updated += int(me_result_data.get("updated_count") or 0)
+        total_changed += int(me_result_data.get("changed_count") or 0)
         total_skipped += int(me_result_data.get("skipped_count") or 0)
 
         local_identity_ids = [int(identity_id or 0) for identity_id in get_identity_ids()]
@@ -1545,6 +1595,7 @@ async def ui_refresh_storage_bag_from_api(payload=None):
                         fallback_identity_id=identity_id,
                     )
                     total_updated += int(result.get("updated_count") or 0)
+                    total_changed += int(result.get("changed_count") or 0)
                     total_skipped += int(result.get("skipped_count") or 0)
                     updated_identity_ids.update(result.get("updated_identity_ids") or [])
                     if int(result.get("updated_count") or 0) > 0:
@@ -1562,17 +1613,23 @@ async def ui_refresh_storage_bag_from_api(payload=None):
             if not candidate_success:
                 total_skipped += 1
         ok = total_updated > 0
-        if ok:
-            message = f"已更新 {total_updated} 个身份的储物袋"
-        else:
-            message = "API 已返回，但未匹配到可更新身份"
+        message = _format_storage_bag_api_refresh_message(total_updated, total_changed)
         _storage_bag_api_state.update({
             "last_ok": ok,
             "last_message": message,
             "last_updated_at": time.time(),
             "updated_count": int(total_updated),
+            "changed_count": int(total_changed),
             "skipped_count": int(total_skipped),
         })
+        if notify_log_group:
+            _notify_storage_bag_api_refresh(
+                ok,
+                message,
+                updated_count=total_updated,
+                changed_count=total_changed,
+                skipped_count=total_skipped,
+            )
     except Exception as exc:
         _storage_bag_api_store_failure(exc, time.time())
         message = f"储物袋 API 读取失败: {exc}"
@@ -1581,8 +1638,11 @@ async def ui_refresh_storage_bag_from_api(payload=None):
             "last_message": message,
             "last_updated_at": time.time(),
             "updated_count": 0,
+            "changed_count": 0,
             "skipped_count": 0,
         })
+        if notify_log_group:
+            _notify_storage_bag_api_refresh(False, message)
     finally:
         _storage_bag_api_state["running"] = False
         _storage_bag_api_set_running_kind("")
@@ -4589,7 +4649,7 @@ async def handle_ui_http(reader, writer):
                 elif method != "POST":
                     _write_method_not_allowed(writer)
                 else:
-                    ok, message, api_snapshot = await ui_refresh_storage_bag_from_api(payload)
+                    ok, message, api_snapshot = await ui_refresh_storage_bag_from_api(payload, notify_log_group=True)
                     status_line = "HTTP/1.1 200 OK" if ok else "HTTP/1.1 400 Bad Request"
                     body = _make_json_payload(
                         ok,

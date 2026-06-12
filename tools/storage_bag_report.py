@@ -23,7 +23,7 @@ from urllib import parse, request
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RUNTIME_ROOT = PROJECT_ROOT
-DEFAULT_PROTECTED_NAMES = ("WalterWA2000", "WA2000", "wa2000")
+DEFAULT_PROTECTED_NAMES = ()
 DEFAULT_TOP_HOLDERS = 4
 DEFAULT_CHUNK_LIMIT = 3500
 DEFAULT_FRESH_HOURS = 24
@@ -49,6 +49,7 @@ class BagSnapshot:
     line_no: int
     message_id: int
     materials: dict[str, int]
+    source: str = ""
 
 
 @dataclass
@@ -71,7 +72,7 @@ def is_protected_name(name: str, protected_names: Iterable[str]) -> bool:
     if not normalized:
         return False
     protected = {normalize_name(item) for item in protected_names if normalize_name(item)}
-    return normalized in protected or "wa2000" in normalized
+    return normalized in protected
 
 
 def resolve_default_messages_dir() -> Path:
@@ -149,6 +150,23 @@ def load_identities(db_file: Path) -> dict[str, Identity]:
     return identities
 
 
+def load_storage_bag_records(db_file: Path) -> dict:
+    if not db_file.exists():
+        return {}
+    conn = sqlite3.connect(str(db_file))
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'storage_bag_records'").fetchone()
+    finally:
+        conn.close()
+    if not row or not row[0]:
+        return {}
+    try:
+        records = json.loads(row[0])
+    except (TypeError, ValueError):
+        return {}
+    return records if isinstance(records, dict) else {}
+
+
 def build_identity_alias_map(identities: dict[str, Identity]) -> dict[str, str]:
     aliases = {}
     for identity in identities.values():
@@ -186,6 +204,131 @@ def parse_materials_from_bag(text: str) -> tuple[str, dict[str, int]] | None:
         if item_name:
             materials[item_name] = materials.get(item_name, 0) + item_count
     return owner, materials
+
+
+def parse_record_time(record: dict) -> datetime | None:
+    ts_text = str((record or {}).get("updated_at_text") or "").strip()
+    parsed = parse_snapshot_time(ts_text)
+    if parsed is not None:
+        return parsed
+    try:
+        updated_at = float((record or {}).get("updated_at") or 0)
+    except (TypeError, ValueError):
+        updated_at = 0
+    if updated_at > 0:
+        return datetime.fromtimestamp(updated_at)
+    return None
+
+
+def format_record_time(record: dict) -> str:
+    ts_text = str((record or {}).get("updated_at_text") or "").strip()
+    if ts_text:
+        return ts_text
+    parsed = parse_record_time(record)
+    if parsed is None:
+        return ""
+    return parsed.strftime("%Y-%m-%d %H:%M:%S UTC+8")
+
+
+def _date_in_range(ts: datetime | None, since: str = "", until: str = "") -> bool:
+    if ts is None:
+        return not since and not until
+    day_text = ts.date().isoformat()
+    if since and day_text < since:
+        return False
+    if until and day_text > until:
+        return False
+    return True
+
+
+def _coerce_positive_items(items: dict) -> dict[str, int]:
+    normalized = {}
+    if not isinstance(items, dict):
+        return normalized
+    for raw_name, raw_count in items.items():
+        name = str(raw_name or "").strip()
+        if not name:
+            continue
+        try:
+            count = int(str(raw_count or 0).replace(",", ""))
+        except (TypeError, ValueError):
+            count = 0
+        if count > 0:
+            normalized[name] = normalized.get(name, 0) + count
+    return normalized
+
+
+def read_cached_snapshots(
+    db_file: Path,
+    identities: dict[str, Identity],
+    protected_names: Iterable[str],
+    *,
+    since: str = "",
+    until: str = "",
+    require_identity: bool = True,
+) -> tuple[dict[str, BagSnapshot], ParseStats]:
+    stats = ParseStats()
+    records = load_storage_bag_records(db_file)
+    if not records:
+        return {}, stats
+
+    identities_by_id = {int(identity.send_as_id): identity for identity in identities.values()}
+    identity_names = {
+        normalize_name(identity.username)
+        for identity in identities.values()
+        if identity.username and not is_protected_name(identity.username, protected_names)
+    }
+    snapshots: dict[str, BagSnapshot] = {}
+    for raw_identity_id, record in records.items():
+        if not isinstance(record, dict):
+            continue
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            identity_id = 0
+        identity = identities_by_id.get(identity_id)
+        owner = (
+            (identity.username if identity else "")
+            or record.get("owner_username")
+            or record.get("owner")
+            or record.get("label")
+            or str(raw_identity_id or "")
+        )
+        owner_key = normalize_name(owner)
+        protected_candidates = (
+            owner,
+            record.get("owner_username"),
+            record.get("owner"),
+            record.get("label"),
+            identity.username if identity else "",
+            identity.label if identity else "",
+            identity.daohao if identity else "",
+        )
+        if any(is_protected_name(str(candidate or ""), protected_names) for candidate in protected_candidates):
+            stats.skipped_protected += 1
+            continue
+        if require_identity and identity_names and owner_key not in identity_names:
+            stats.skipped_not_identity += 1
+            continue
+
+        parsed_time = parse_record_time(record)
+        if not _date_in_range(parsed_time, since=since, until=until):
+            continue
+
+        items = _coerce_positive_items(record.get("items") or {})
+        if not items:
+            stats.empty_materials += 1
+        snapshots[owner_key] = BagSnapshot(
+            owner=owner,
+            ts=format_record_time(record),
+            source_file="sqlite:storage_bag_records",
+            line_no=0,
+            message_id=0,
+            materials=items,
+            source=str(record.get("source") or "storage_bag_cache"),
+        )
+        stats.parsed_snapshots += 1
+    return snapshots, stats
 
 
 def read_latest_snapshots(
@@ -230,6 +373,7 @@ def read_latest_snapshots(
                     line_no=line_no,
                     message_id=int(payload.get("message_id") or 0),
                     materials=materials,
+                    source="message_log",
                 )
                 stats.parsed_snapshots += 1
     return snapshots, stats
@@ -382,6 +526,8 @@ def build_report(
     only_names: Iterable[str] = (),
     verbose: bool = False,
     fresh_hours: int = DEFAULT_FRESH_HOURS,
+    item_label: str = "材料",
+    source_label: str = "历史消息日志",
 ) -> str:
     material_index = build_material_index(snapshots)
     latest_ts = max((snapshot.ts for snapshot in snapshots.values()), default="-")
@@ -390,7 +536,8 @@ def build_report(
     now = datetime.now()
 
     is_single = len(snapshots) == 1 and bool(only_names)
-    title = "【储物袋材料盘点】"
+    item_label = item_label or "材料"
+    title = f"【储物袋{item_label}盘点】"
     if is_single:
         snapshot = next(iter(snapshots.values()))
         age = get_snapshot_age_seconds(snapshot, now)
@@ -403,9 +550,10 @@ def build_report(
         lines = [
             title,
             f"身份：{get_identity_display_name(snapshot.owner, identities)}",
+            f"数据源：{source_label}",
             f"快照：{snapshot.ts or '-'}",
             f"时效：{freshness_text}",
-            f"材料：{len(material_index)} 种",
+            f"{item_label}：{len(material_index)} 种",
         ]
     else:
         freshness_summary, freshness_details = get_freshness_summary(
@@ -418,7 +566,8 @@ def build_report(
         lines = [
             title,
             f"身份：{len(snapshots)} 个",
-            f"材料：{len(material_index)} 种",
+            f"数据源：{source_label}",
+            f"{item_label}：{len(material_index)} 种",
             f"快照：{earliest_ts} -> {latest_ts}",
             f"时效：{freshness_summary}",
         ]
@@ -428,7 +577,7 @@ def build_report(
             lines.extend(["", "【时效提醒】"])
             lines.extend(freshness_details)
 
-    lines.extend(["", "【材料明细】"])
+    lines.extend(["", f"【{item_label}明细】"])
     if material_index:
         for name, holders in sorted(material_index.items(), key=material_sort_key):
             total = format_number(sum(holders.values()))
@@ -437,7 +586,7 @@ def build_report(
             else:
                 lines.append(f"{name}：{total}｜{format_holder_list(holders, identities, top_holders)}")
     else:
-        lines.append("无可用材料快照")
+        lines.append(f"无可用{item_label}快照")
 
     if verbose:
         protected_identity_count = 0
@@ -453,7 +602,7 @@ def build_report(
                 "【解析统计】",
                 f"数据源：{messages_dir}",
                 f"范围：{since or '全部'} -> {until or '全部'}",
-                f"保护账号：{', '.join(protected_names)}",
+                f"保护账号：{', '.join(protected_names) if protected_names else '无'}",
                 f"身份白名单：{len({item.username for item in identities.values() if item.username})} 个"
                 f"（保护账号 {protected_identity_count} 个已排除）",
                 f"扫描行数：{format_number(stats.scanned_lines)}",
@@ -527,7 +676,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--protected-name",
         action="append",
         default=list(DEFAULT_PROTECTED_NAMES),
-        help="保护账号名，可重复传入；默认包含 WA2000",
+        help="保护账号名，可重复传入；默认不排除任何账号",
     )
     parser.add_argument("--top-holders", type=int, default=DEFAULT_TOP_HOLDERS, help="每个物品展示的主要持有人数量")
     parser.add_argument("--chunk-limit", type=int, default=DEFAULT_CHUNK_LIMIT, help="日志群分段字符上限")
@@ -536,6 +685,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--only-name", action="append", default=[], help="只统计指定 username，可重复传入")
     parser.add_argument("--verbose", action="store_true", help="输出数据源、过滤统计等调试信息")
     parser.add_argument("--no-identity-filter", action="store_true", help="不使用登记身份白名单，默认不建议开启")
+    parser.add_argument(
+        "--source",
+        choices=("auto", "cache", "logs"),
+        default="auto",
+        help="数据源：auto/cache/logs；默认优先读取 API/本地缓存，缓存为空再扫历史日志",
+    )
     parser.add_argument("--send-log-group", action="store_true", help="发送到日志群；默认只打印")
     return parser.parse_args(argv)
 
@@ -552,14 +707,31 @@ def main(argv: list[str] | None = None) -> int:
         for identity in identities.values()
         if identity.username and not is_protected_name(identity.username, protected_names)
     }
-    snapshots, stats = read_latest_snapshots(
-        messages_dir,
-        identity_names,
-        protected_names,
-        since=args.since,
-        until=args.until,
-        require_identity=not args.no_identity_filter,
-    )
+    source_label = "历史消息日志"
+    item_label = "材料"
+    snapshots: dict[str, BagSnapshot] = {}
+    stats = ParseStats()
+    if args.source in {"auto", "cache"}:
+        snapshots, stats = read_cached_snapshots(
+            db_file,
+            identities,
+            protected_names,
+            since=args.since,
+            until=args.until,
+            require_identity=not args.no_identity_filter,
+        )
+        if snapshots or args.source == "cache":
+            source_label = "API/本地缓存"
+            item_label = "物资"
+    if not snapshots and args.source in {"auto", "logs"}:
+        snapshots, stats = read_latest_snapshots(
+            messages_dir,
+            identity_names,
+            protected_names,
+            since=args.since,
+            until=args.until,
+            require_identity=not args.no_identity_filter,
+        )
     only_names = tuple(dict.fromkeys(args.only_name or ()))
     only_name_keys = {
         identity_aliases.get(normalize_name(name), normalize_name(name))
@@ -584,6 +756,8 @@ def main(argv: list[str] | None = None) -> int:
         only_names=only_names,
         verbose=bool(args.verbose),
         fresh_hours=max(1, int(args.fresh_hours or DEFAULT_FRESH_HOURS)),
+        item_label=item_label,
+        source_label=source_label,
     )
     chunks = split_report(report, args.chunk_limit)
     if args.send_log_group:
