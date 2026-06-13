@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.features import passive_inbox, yinluo
+from model.features import deep_retreat, passive_inbox, yinluo
 from model.real_message_replay import get_real_message_text, iter_real_message_samples
 
 
@@ -85,7 +85,33 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(now + yinluo.YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, failed["next_demon_summon_time"])
         self.assertEqual(2030, convert["last_sha_gain"])
         self.assertEqual(1530, convert["last_extra_sha_gain"])
+        self.assertGreater(convert["next_convert_time"], now)
         self.assertEqual(68, retreat["last_bonus_gain"])
+
+    def test_recent_convert_and_refine_text_parse(self):
+        now = 1_781_341_000.0
+        pending = yinluo.parse_yinluo_text("你开始运转魔功，试图将 1000 点修为凝练为纯粹的煞气...", now=now)
+        success = yinluo.parse_yinluo_text("【转化成功】\n你成功将 1000 点修为炼化，煞气池增加了 200 点！", now=now)
+        cooldown = yinluo.parse_yinluo_text("你刚施展过此术，经脉尚在恢复，请在 59分钟50秒 后再试。", now=now)
+        invalid = yinluo.parse_yinluo_text("每次转化的修为需在 1000 至 50000 点之间。", now=now)
+        refine_success = yinluo.parse_yinluo_text("一缕【凶兽戾魄】被强行打入7号炼化槽，在煞气的包裹下发出阵阵哀嚎，炼化已开始。", now=now)
+        refine_shortage = yinluo.parse_yinluo_text("你的煞气不足！炼化需要消耗 1000 点煞气。", now=now)
+        refine_missing = yinluo.parse_yinluo_text("你的魂魄袋中没有【凶兽精魄】。", now=now)
+
+        self.assertEqual("pending", pending["result"])
+        self.assertEqual("化功为煞", success["action"])
+        self.assertEqual(1000, success["last_convert_amount"])
+        self.assertEqual(200, success["last_sha_gain"])
+        self.assertEqual(now + yinluo.YINLUO_CONVERT_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, success["next_convert_time"])
+        self.assertEqual("cooldown", cooldown["result"])
+        self.assertEqual(now + 59 * 60 + 50 + yinluo.YINLUO_TIME_BUFFER_SEC, cooldown["next_convert_time"])
+        self.assertEqual("invalid_amount", invalid["result"])
+        self.assertEqual("囚禁魂魄", refine_success["action"])
+        self.assertEqual(7, refine_success["last_refine_slot"])
+        self.assertEqual("凶兽戾魄", refine_success["last_resource"])
+        self.assertEqual("sha_shortage", refine_shortage["result"])
+        self.assertEqual(1000, refine_shortage["last_refine_cost"])
+        self.assertEqual("missing_soul", refine_missing["result"])
 
     def test_blood_forest_pending_success_and_cooldown_parse_real_text(self):
         now = 1_779_450_000.0
@@ -167,6 +193,10 @@ class YinluoManualPlanTests(unittest.TestCase):
                 "next_blood_forest_time": now + 3600,
                 "ready_slots": 1,
                 "ready_slot_numbers": [1],
+                "sha_current": 600,
+                "sha_max": 15000,
+                "empty_slots": 8,
+                "soul_stocks": {"妖兽精魄": 2},
             }
             summon = yinluo.build_yinluo_manual_plan("demon_summon", now=now)
             collect = yinluo.build_yinluo_manual_plan("collect", now=now)
@@ -182,7 +212,12 @@ class YinluoManualPlanTests(unittest.TestCase):
             collect_empty = yinluo.build_yinluo_manual_plan("collect", now=now)
 
             convert_missing_amount = yinluo.build_yinluo_manual_plan("convert", "", now=now)
-            convert_too_large = yinluo.build_yinluo_manual_plan("convert", "10001", now=now)
+            convert_too_small = yinluo.build_yinluo_manual_plan("convert", "400", now=now)
+            convert_too_large = yinluo.build_yinluo_manual_plan("convert", "50001", now=now)
+            state_module.state["yinluo_observation"]["next_convert_time"] = now + 600
+            convert_cooldown = yinluo.build_yinluo_manual_plan("convert", "1000", now=now)
+            state_module.state["yinluo_observation"]["next_convert_time"] = 0
+            refine_low_sha = yinluo.build_yinluo_manual_plan("refine", "2 凶兽戾魄", now=now)
             refine_missing_target = yinluo.build_yinluo_manual_plan("refine", "2", now=now)
 
         self.assertTrue(summon["allowed"])
@@ -200,10 +235,50 @@ class YinluoManualPlanTests(unittest.TestCase):
         self.assertIn("未记录可收取", collect_empty["reason"])
         self.assertFalse(convert_missing_amount["allowed"])
         self.assertIn("必须指定正整数", convert_missing_amount["reason"])
+        self.assertFalse(convert_too_small["allowed"])
+        self.assertIn("1000 至 50000", convert_too_small["reason"])
         self.assertFalse(convert_too_large["allowed"])
         self.assertIn("上限", convert_too_large["reason"])
+        self.assertFalse(convert_cooldown["allowed"])
+        self.assertIn("冷却", convert_cooldown["reason"])
+        self.assertFalse(refine_low_sha["allowed"])
+        self.assertIn("煞气不足", refine_low_sha["reason"])
         self.assertFalse(refine_missing_target["allowed"])
         self.assertIn("目标", refine_missing_target["reason"])
+
+    def test_active_yinluo_actions_block_during_phaseful_summary_risk(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["next_deep_retreat_time"] = now + 30
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "last_action": "阴罗幡",
+                "last_result": "panel",
+                "banner_owner": "缘初子",
+                "banner_name": "血煞幡胚",
+                "sha_current": 2000,
+                "sha_max": 15000,
+                "empty_slots": 8,
+                "ready_slots": 1,
+                "ready_slot_numbers": [1],
+                "next_demon_summon_time": 0,
+                "next_blood_forest_time": 0,
+                "soul_stocks": {"凶兽戾魄": 1},
+            }
+
+            banner = yinluo.build_yinluo_manual_plan("banner", now=now)
+            refine = yinluo.build_yinluo_manual_plan("refine", "2 凶兽戾魄", now=now)
+            collect = yinluo.build_yinluo_manual_plan("collect", now=now)
+
+        self.assertTrue(banner["allowed"])
+        self.assertFalse(refine["allowed"])
+        self.assertIn("深度闭关", refine["reason"])
+        self.assertEqual(now + yinluo.YINLUO_PHASEFUL_RISK_RETRY_SEC, refine["retry_after"])
+        self.assertFalse(collect["allowed"])
+        self.assertIn("暂不发送阴罗主动命令", collect["reason"])
 
     def test_summon_blocks_below_jiedan_even_with_recent_observation(self):
         now = 1_780_000_000.0

@@ -14,6 +14,7 @@ from ..persistence import save_state
 from ..runtime import send_game_command
 from ..state import REALM_SORT_INDEX, get_send_as_profile, infer_realm_from_xiuwei_max, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
+from ._phaseful import get_phaseful_summary_risk_reason
 
 
 YINLUO_TIME_BUFFER_SEC = 60
@@ -25,6 +26,10 @@ YINLUO_AUTO_CHAIN_STEP_SEC = 2 * 60
 YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC = 8 * 3600
 YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC = 4 * 3600
 YINLUO_DEMON_SUMMON_MIN_REALM = "结丹初期"
+YINLUO_CONVERT_OBSERVED_CD_SEC = 60 * 60
+YINLUO_CONVERT_MIN_AMOUNT = 1000
+YINLUO_CONVERT_MAX_AMOUNT = 50000
+YINLUO_PHASEFUL_RISK_RETRY_SEC = 2 * 60
 
 RE_BANNER_TITLE = re.compile(r"【(?P<owner>[^】]+)的阴罗幡】")
 RE_SHA_POOL = re.compile(r"煞气池[:：]\s*(?P<current>\d+)\s*/\s*(?P<max>\d+)\s*\((?P<pct>\d+)%\)")
@@ -41,6 +46,11 @@ RE_BLOOD_EXTRA_ITEM = re.compile(r"额外发现了\s*【(?P<name>[^】]+)】x(?P
 RE_BLOOD_EXTRA_SOUL = re.compile(r"额外拘来\s*(?P<count>\d+)\s*缕【(?P<name>[^】]+)】")
 RE_DEMON_BACKLASH = re.compile(r"修为暴跌了\s*(?P<loss>\d+)\s*点")
 RE_BONUS_GAIN = re.compile(r"因【阴罗宗】灵脉加持，你额外获得了\s*(?P<gain>\d+)\s*点修为")
+RE_CONVERT_AMOUNT = re.compile(r"成功将\s*(?P<amount>\d+)\s*点修为炼化")
+RE_CONVERT_LIMIT = re.compile(r"每次转化的修为需在\s*(?P<min>\d+)\s*至\s*(?P<max>\d+)\s*点之间")
+RE_REFINE_SUCCESS = re.compile(r"一缕【(?P<name>[^】]+)】被强行打入(?P<slot>\d+)号炼化槽")
+RE_REFINE_SHA_SHORTAGE = re.compile(r"炼化需要消耗\s*(?P<cost>\d+)\s*点煞气")
+RE_REFINE_MISSING_SOUL = re.compile(r"魂魄袋中没有【(?P<name>[^】]+)】")
 
 
 def _default_yinluo_observation():
@@ -52,6 +62,7 @@ def _default_yinluo_observation():
         "last_error": "",
         "next_demon_summon_time": 0,
         "next_blood_forest_time": 0,
+        "next_convert_time": 0,
         "banner_owner": "",
         "banner_name": "",
         "banner_rank": "",
@@ -68,6 +79,9 @@ def _default_yinluo_observation():
         "refining_slots": 0,
         "empty_slots": 0,
         "last_resource": "",
+        "last_refine_slot": 0,
+        "last_refine_cost": 0,
+        "last_convert_amount": 0,
         "last_collect_count": 0,
         "last_soul_gain": 0,
         "last_extra_soul_gain": 0,
@@ -103,12 +117,12 @@ def normalize_yinluo_observation(value=None):
     if not isinstance(observed.get("recent"), list):
         observed["recent"] = []
     observed["recent"] = [item for item in observed.get("recent", []) if isinstance(item, dict)][-8:]
-    for key in ("last_observed_at", "next_demon_summon_time", "next_blood_forest_time", "auto_next_time"):
+    for key in ("last_observed_at", "next_demon_summon_time", "next_blood_forest_time", "next_convert_time", "auto_next_time"):
         try:
             observed[key] = float(observed.get(key, 0) or 0)
         except (TypeError, ValueError):
             observed[key] = 0
-    for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain"):
+    for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
         except (TypeError, ValueError):
@@ -180,7 +194,19 @@ def looks_like_yinluo_text(text):
         return True
     if "因【阴罗宗】灵脉加持" in raw_text:
         return True
-    if "你引动九幽煞气灌入幡中" in raw_text:
+    if "你引动九幽煞气灌入幡中" in raw_text or ("【转化成功】" in raw_text and "煞气池增加" in raw_text):
+        return True
+    if "你开始运转魔功" in raw_text and "煞气" in raw_text:
+        return True
+    if "刚施展过此术" in raw_text and "经脉尚在恢复" in raw_text:
+        return True
+    if "每次转化的修为需在" in raw_text and "点之间" in raw_text:
+        return True
+    if "炼化需要消耗" in raw_text and "点煞气" in raw_text:
+        return True
+    if "魂魄袋中没有" in raw_text:
+        return True
+    if "被强行打入" in raw_text and "号炼化槽" in raw_text and "炼化已开始" in raw_text:
         return True
     if "收取成功！" in raw_text and "阴罗幡吞纳残魄" in raw_text:
         return True
@@ -351,16 +377,79 @@ def parse_yinluo_text(text, now=None, family=""):
             "next_blood_forest_time": _wait_until(raw_text, now),
         }
 
-    if "你引动九幽煞气灌入幡中" in raw_text:
+    if "你开始运转魔功" in raw_text and "煞气" in raw_text:
+        return {
+            "action": "化功为煞",
+            "result": "pending",
+            "summary": "化功为煞运转中，等待转化结算",
+            "last_error": "",
+        }
+
+    if "你引动九幽煞气灌入幡中" in raw_text or ("【转化成功】" in raw_text and "煞气池增加" in raw_text):
         sha_match = RE_SHA_GAIN.search(raw_text)
         extra_match = RE_EXTRA_SHA_GAIN.search(raw_text)
+        amount_match = RE_CONVERT_AMOUNT.search(raw_text)
         return {
             "action": "化功为煞",
             "result": "success",
             "summary": "化功为煞成功",
             "last_error": "",
+            "last_convert_amount": int(amount_match.group("amount") or 0) if amount_match else 0,
             "last_sha_gain": int(sha_match.group("gain") or 0) if sha_match else 0,
             "last_extra_sha_gain": int(extra_match.group("gain") or 0) if extra_match else 0,
+            "next_convert_time": float(now + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC),
+        }
+
+    if "刚施展过此术" in raw_text and "经脉尚在恢复" in raw_text:
+        next_time = _wait_until(raw_text, now) or float(now + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC)
+        return {
+            "action": "化功为煞",
+            "result": "cooldown",
+            "summary": "化功为煞冷却中",
+            "last_error": "经脉尚在恢复",
+            "next_convert_time": next_time,
+        }
+
+    limit_match = RE_CONVERT_LIMIT.search(raw_text)
+    if limit_match:
+        return {
+            "action": "化功为煞",
+            "result": "invalid_amount",
+            "summary": f"化功为煞数量需在 {limit_match.group('min')} 至 {limit_match.group('max')} 点之间",
+            "last_error": "化功为煞数量不合法",
+        }
+
+    refine_match = RE_REFINE_SUCCESS.search(raw_text)
+    if refine_match:
+        return {
+            "action": "囚禁魂魄",
+            "result": "success",
+            "summary": "囚禁魂魄成功，炼化已开始",
+            "last_error": "",
+            "last_resource": refine_match.group("name").strip(),
+            "last_refine_slot": int(refine_match.group("slot") or 0),
+        }
+
+    shortage_match = RE_REFINE_SHA_SHORTAGE.search(raw_text)
+    if shortage_match:
+        cost = int(shortage_match.group("cost") or 0)
+        return {
+            "action": "囚禁魂魄",
+            "result": "sha_shortage",
+            "summary": f"囚禁魂魄失败：煞气不足，需要 {cost} 点",
+            "last_error": f"煞气不足，需要 {cost} 点",
+            "last_refine_cost": cost,
+        }
+
+    missing_soul_match = RE_REFINE_MISSING_SOUL.search(raw_text)
+    if missing_soul_match:
+        resource = missing_soul_match.group("name").strip()
+        return {
+            "action": "囚禁魂魄",
+            "result": "missing_soul",
+            "summary": f"囚禁魂魄失败：缺少 {resource}",
+            "last_error": f"魂魄袋中没有【{resource}】",
+            "last_resource": resource,
         }
 
     if "收取成功！" in raw_text and "阴罗幡吞纳残魄" in raw_text:
@@ -441,6 +530,7 @@ def apply_yinluo_passive(text, now=None, family=""):
         "last_error",
         "next_demon_summon_time",
         "next_blood_forest_time",
+        "next_convert_time",
         "banner_owner",
         "banner_name",
         "banner_rank",
@@ -457,6 +547,9 @@ def apply_yinluo_passive(text, now=None, family=""):
         "refining_slots",
         "empty_slots",
         "last_resource",
+        "last_refine_slot",
+        "last_refine_cost",
+        "last_convert_amount",
         "last_collect_count",
         "last_soul_gain",
         "last_extra_soul_gain",
@@ -471,6 +564,23 @@ def apply_yinluo_passive(text, now=None, family=""):
     observed["last_action"] = parsed.get("action") or ""
     observed["last_result"] = parsed.get("result") or ""
     observed["last_summary"] = parsed.get("summary") or _short_summary(text)
+    if parsed.get("action") == "化功为煞" and parsed.get("result") == "success":
+        gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
+        if gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
+            observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
+            if int(observed.get("sha_max", 0) or 0) > 0:
+                observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
+    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":
+        observed["empty_slots"] = max(0, int(observed.get("empty_slots", 0) or 0) - 1)
+        observed["refining_slots"] = max(0, int(observed.get("refining_slots", 0) or 0) + 1)
+        resource = str(parsed.get("last_resource") or "").strip()
+        stocks = observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}
+        if resource and resource in stocks:
+            try:
+                stocks[resource] = max(0, int(stocks.get(resource, 0) or 0) - 1)
+            except (TypeError, ValueError):
+                pass
+            observed["soul_stocks"] = stocks
     if parsed.get("action") == "收取精华" and parsed.get("result") == "success":
         collect_count = max(1, int(parsed.get("last_collect_count", 0) or 0))
         ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
@@ -540,13 +650,14 @@ def _normalize_manual_action(action):
     return mapping.get(raw, raw)
 
 
-def _manual_block(action, reason, command="", family=""):
+def _manual_block(action, reason, command="", family="", *, retry_after=0):
     return {
         "allowed": False,
         "action": action,
         "command": command,
         "family": family,
         "reason": reason,
+        "retry_after": float(retry_after or 0),
     }
 
 
@@ -605,6 +716,39 @@ def _build_refine_command(arg=""):
     if target.startswith(".") or "\n" in target or "\r" in target:
         return "", "囚禁魂魄目标格式不安全。"
     return f"{CMD_YINLUO_REFINE} {slot_no} {target}", ""
+
+
+def _extract_refine_target(command):
+    raw = str(command or "").replace(CMD_YINLUO_REFINE, "", 1).strip()
+    parts = raw.split(None, 1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _estimate_refine_sha_cost(target):
+    target = str(target or "").strip()
+    if "凶兽戾魄" in target or "凶兽" in target or "戾魄" in target:
+        return 1000
+    if "妖兽精魄" in target or "妖兽" in target or "精魄" in target:
+        return 400
+    return 1000
+
+
+def _has_known_sha_pool(observed):
+    return int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0
+
+
+def _phaseful_risk_block(action, command="", family="", now=None):
+    reason = get_phaseful_summary_risk_reason(now, lead_sec=60)
+    if not reason:
+        return None
+    retry_after = float(now if now is not None else time.time()) + YINLUO_PHASEFUL_RISK_RETRY_SEC
+    return _manual_block(
+        action,
+        f"{reason}，暂不发送阴罗主动命令；先等结算落地或查幡校准。",
+        command,
+        family,
+        retry_after=retry_after,
+    )
 
 
 def _mark_collect_slot_sent(observed, command):
@@ -672,7 +816,7 @@ def _has_yinluo_due_followup(observed, now):
 def _has_pending_yinluo_resolution(observed):
     return (
         str(observed.get("last_result") or "") == "pending"
-        and str(observed.get("last_action") or "") in {"血洗山林", "召唤魔影"}
+        and str(observed.get("last_action") or "") in {"血洗山林", "召唤魔影", "化功为煞"}
     )
 
 
@@ -706,6 +850,9 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
         return _manual_block(action, f"最近真实文案显示并非阴罗宗弟子：{reason}。")
 
     if action == "demon_summon":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_DEMON_SUMMON, "yinluo_demon_summon", now)
+        if phaseful_block:
+            return phaseful_block
         realm_ok, realm = _realm_at_least(YINLUO_DEMON_SUMMON_MIN_REALM)
         if not realm_ok:
             return _manual_block(action, f"召唤魔影需结丹期，当前境界：{realm or '未记录'}。", CMD_YINLUO_DEMON_SUMMON, "yinluo_demon_summon")
@@ -717,6 +864,9 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
         return _manual_allow(action, CMD_YINLUO_DEMON_SUMMON, "yinluo_demon_summon", now)
 
     if action == "blood_forest":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_BLOOD_FOREST, "yinluo_blood_forest", now)
+        if phaseful_block:
+            return phaseful_block
         next_time = float(observed.get("next_blood_forest_time", 0) or 0)
         if next_time > now:
             return _manual_block(action, f"血洗山林仍在冷却中，{fmt_remaining(next_time)} 后再试。", CMD_YINLUO_BLOOD_FOREST, "yinluo_blood_forest")
@@ -725,26 +875,55 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
         return _manual_allow(action, CMD_YINLUO_BLOOD_FOREST, "yinluo_blood_forest", now)
 
     if action == "collect":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_COLLECT, "yinluo_collect", now)
+        if phaseful_block:
+            return phaseful_block
         command, reason = _build_collect_command(observed, arg)
         if not command:
             return _manual_block(action, reason, CMD_YINLUO_COLLECT, "yinluo_collect")
         return _manual_allow(action, command, "yinluo_collect", now)
 
     if action == "convert":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_CONVERT, "yinluo_convert", now)
+        if phaseful_block:
+            return phaseful_block
         try:
             amount = int(arg or 0)
         except (TypeError, ValueError):
             amount = 0
         if amount <= 0:
             return _manual_block(action, "化功为煞必须指定正整数修为数量。", "", "yinluo_convert")
-        if amount > 10000:
-            return _manual_block(action, "单次化功为煞上限暂定 10000，避免误消耗过大。", "", "yinluo_convert")
+        if amount < YINLUO_CONVERT_MIN_AMOUNT:
+            return _manual_block(action, f"化功为煞每次需在 {YINLUO_CONVERT_MIN_AMOUNT} 至 {YINLUO_CONVERT_MAX_AMOUNT} 点之间。", "", "yinluo_convert")
+        if amount > YINLUO_CONVERT_MAX_AMOUNT:
+            return _manual_block(action, f"单次化功为煞上限 {YINLUO_CONVERT_MAX_AMOUNT}，避免误消耗过大。", "", "yinluo_convert")
+        next_time = float(observed.get("next_convert_time", 0) or 0)
+        if next_time > now:
+            return _manual_block(action, f"化功为煞仍在冷却中，{fmt_remaining(next_time)} 后再试。", CMD_YINLUO_CONVERT, "yinluo_convert")
+        if str(observed.get("last_result") or "") == "pending" and str(observed.get("last_action") or "") == "化功为煞":
+            return _manual_block(action, "化功为煞上一轮仍处于结算中，不重复发送。", CMD_YINLUO_CONVERT, "yinluo_convert")
         return _manual_allow(action, f"{CMD_YINLUO_CONVERT} {amount}", "yinluo_convert", now)
 
     if action == "refine":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_REFINE, "yinluo_refine", now)
+        if phaseful_block:
+            return phaseful_block
         command, reason = _build_refine_command(arg)
         if not command:
             return _manual_block(action, reason, CMD_YINLUO_REFINE, "yinluo_refine")
+        target = _extract_refine_target(command)
+        cost = _estimate_refine_sha_cost(target)
+        if _has_known_sha_pool(observed) and int(observed.get("sha_current", 0) or 0) < cost:
+            return _manual_block(action, f"煞气不足，囚禁【{target}】预计至少需要 {cost} 点，当前 {int(observed.get('sha_current', 0) or 0)}。", command, "yinluo_refine")
+        if int(observed.get("empty_slots", 0) or 0) <= 0 and _has_banner_hint(observed):
+            return _manual_block(action, "未记录空闲炼化槽，不发送囚禁魂魄。", command, "yinluo_refine")
+        stocks = observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}
+        if target in stocks:
+            try:
+                if int(stocks.get(target, 0) or 0) <= 0:
+                    return _manual_block(action, f"魂魄储备中没有【{target}】，不发送囚禁魂魄。", command, "yinluo_refine")
+            except (TypeError, ValueError):
+                pass
         return _manual_allow(action, command, "yinluo_refine", now)
 
     return _manual_block(action, "未知阴罗宗手动动作。")
@@ -799,7 +978,7 @@ async def run_yinluo_scheduler(now):
             observed,
             now,
             action,
-            now + YINLUO_AUTO_BLOCK_BACKOFF_SEC,
+            float(plan.get("retry_after", 0) or 0) or now + YINLUO_AUTO_BLOCK_BACKOFF_SEC,
             plan.get("reason") or "阴罗宗自动调度未满足条件",
         )
         return
@@ -899,6 +1078,7 @@ def get_yinluo_status_text():
         f"- 炼化槽：精华 {_format_ready_slots(observed)}｜炼化 {observed.get('refining_slots', 0)}｜空闲 {observed.get('empty_slots', 0)}",
         f"- 血洗山林：{fmt_abs_ts(observed.get('next_blood_forest_time', 0))}（{fmt_remaining(observed.get('next_blood_forest_time', 0))}）",
         f"- 召唤魔影：{fmt_abs_ts(observed.get('next_demon_summon_time', 0))}（{fmt_remaining(observed.get('next_demon_summon_time', 0))}）",
+        f"- 化功为煞：{fmt_abs_ts(observed.get('next_convert_time', 0))}（{fmt_remaining(observed.get('next_convert_time', 0))}）",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
     ]
     if observed.get("last_sha_gain") or observed.get("last_extra_sha_gain"):

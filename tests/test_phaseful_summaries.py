@@ -645,6 +645,26 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
             self.assertNotIn(send_as_id, _phaseful._SUMMARY_CONSUMED_COMMANDS)
 
+    def test_summary_risk_reason_flags_due_window_without_global_block(self):
+        send_as_id = 8659059225
+        now = 1_700_000_454.0
+        self._prepare_identity(send_as_id, "RetreatRiskWindow")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["next_deep_retreat_time"] = now + 30
+
+            reason = _phaseful.get_phaseful_summary_risk_reason(now, lead_sec=60)
+            self.assertIn("深度闭关", reason)
+            self.assertFalse(_phaseful.has_phaseful_summary_block(now))
+
+            state_module.state["next_deep_retreat_time"] = now + 3600
+            self.assertEqual("", _phaseful.get_phaseful_summary_risk_reason(now, lead_sec=60))
+
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            self.assertIn("待结算", _phaseful.get_phaseful_summary_risk_reason(now, lead_sec=60))
+
     def test_deep_retreat_summary_due_accepts_explicit_status_trigger(self):
         send_as_id = 8659059227
         now = 1_700_000_456.0

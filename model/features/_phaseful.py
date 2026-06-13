@@ -620,6 +620,26 @@ def has_phaseful_summary_block(now=None):
     return False
 
 
+def get_phaseful_summary_risk_reason(now=None, *, lead_sec=60):
+    now = float(now if now is not None else time.time())
+    lead_sec = max(0.0, float(lead_sec or 0))
+    for spec in _REGISTERED_SPECS:
+        if not state.get(spec.enabled_key):
+            continue
+        phase = _phase(spec)
+        if phase in SUMMARY_DUE_PHASES:
+            return f"{spec.title}待结算/观察中"
+        if phase == "queued_launch":
+            return f"{spec.title}正在排队发起"
+        if phase == "launching":
+            return f"{spec.title}发起后等待回复"
+        if phase == "running":
+            next_time = float(state.get(spec.next_time_key, 0) or 0)
+            if next_time > 0 and next_time <= now + lead_sec:
+                return f"{spec.title}临近归位结算（{fmt_remaining(next_time)}）"
+    return ""
+
+
 def _schedule_summary_trigger_retry(spec, now, *, preserve_started_at=False):
     set_phase(spec, "summary_due")
     if not preserve_started_at or float(state.get(spec.summary_sent_at_key, 0) or 0) <= 0:
@@ -889,6 +909,7 @@ __all__ = [
     "finalize_summary_broadcast",
     "get_block_reason",
     "get_phase_text",
+    "get_phaseful_summary_risk_reason",
     "get_status_detail_text",
     "has_phaseful_summary_block",
     "mark_success",
