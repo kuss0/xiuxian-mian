@@ -840,7 +840,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("old", payload["reason"])
 
-    def test_existing_same_reason_marker_returns_without_notify_when_global_enabled(self):
+    def test_existing_same_reason_marker_refuses_when_global_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = safety_watchdog.Path(tmpdir)
             state_dir = root / "data" / "state"
@@ -867,12 +867,12 @@ class SafetyWatchdogTests(unittest.TestCase):
                 value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()[0]
             payload = safety_watchdog.json.loads(marker.read_text(encoding="utf-8"))
 
-        self.assertEqual("1", value)
+        self.assertEqual("0", value)
         self.assertEqual("same breach", payload["reason"])
-        self.assertEqual([], payload["actions"])
+        self.assertEqual(["global_enabled=0"], payload["actions"])
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
-        self.assertIn("already fused for same reason", printed)
-        send_mock.assert_not_called()
+        self.assertIn("stale fuse marker with global enabled", printed)
+        send_mock.assert_called_once()
 
     def test_fuse_message_mentions_all_configured_admins(self):
         message = safety_watchdog.format_fuse_message(
