@@ -84,6 +84,7 @@ from .features.stargazer import sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, get_storage_bag_transfer_snapshot, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
+from .features.yinluo import execute_yinluo_manual_action
 from .features.yuanying import get_yuanying_phase_text
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -3514,6 +3515,23 @@ async def ui_set_nanlong_choice(send_as_id, choice):
     return True, f"{message}[{get_identity_display_name(send_as_id)}]"
 
 
+async def ui_execute_yinluo_action(send_as_id, action, arg=""):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    if not get_identity_enabled(send_as_id):
+        return False, "身份已停用。"
+    if "阴罗宗" not in get_available_module_names(send_as_id):
+        return False, "阴罗宗对该身份不可用。"
+    action = str(action or "").strip()
+    if action not in {"banner", "collect", "refine", "convert", "blood_forest", "demon_summon"}:
+        return False, "未知阴罗宗按钮动作"
+    ok, message, _plan = await execute_yinluo_manual_action(action, str(arg or "").strip(), send_as_id=send_as_id)
+    if not ok:
+        return False, message
+    return True, f"{message}[{get_identity_display_name(send_as_id)}]"
+
+
 async def ui_set_module_window(send_as_id, module_name, start_hour_local, end_hour_local):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
@@ -4947,6 +4965,20 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_nanlong_choice(send_as_id, choice)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/yinluo-action":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    action = payload.get("action")
+                    arg = payload.get("arg") or ""
+                    if send_as_id in {None, ""} or not action:
+                        _write_json_bad_request(writer, "缺少 send_as_id 或 action 参数", auth_headers)
+                    else:
+                        ok, message = await ui_execute_yinluo_action(send_as_id, action, arg)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/pet-name":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -5277,6 +5309,7 @@ __all__ = [
     "ui_set_module_enabled",
     "ui_set_jiyin_choice",
     "ui_set_nanlong_choice",
+    "ui_execute_yinluo_action",
     "ui_set_module_window",
     "ui_set_pet_name",
     "ui_set_small_world_feature_enabled",

@@ -402,7 +402,8 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".血洗山林": "阴罗宗",
             ".召唤魔影": "阴罗宗",
             ".化功为煞 1000": "阴罗宗",
-            ".收取幡魂": "阴罗宗",
+            ".收取精华 1": "阴罗宗",
+            ".囚禁魂魄 2 妖兽精魄": "阴罗宗",
         }
 
         with patch.object(runtime, "is_auto_delete_sent_messages_enabled", return_value=False):
@@ -425,7 +426,8 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".血洗山林": "yinluo_blood_forest",
             ".召唤魔影": "yinluo_demon_summon",
             ".化功为煞 1000": "yinluo_convert",
-            ".收取幡魂": "yinluo_collect",
+            ".收取精华 1": "yinluo_collect",
+            ".囚禁魂魄 2 妖兽精魄": "yinluo_refine",
             ".下咒 @target": "yinluo_curse",
             ".夺舍 @target": "yinluo_possess",
         }

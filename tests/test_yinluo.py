@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -41,14 +41,32 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(54, parsed["soul_total"])
         self.assertEqual(11, parsed["battle_bonus_percent"])
         self.assertEqual(1, parsed["ready_slots"])
+        self.assertEqual([4], parsed["ready_slot_numbers"])
         self.assertEqual(1, parsed["refining_slots"])
         self.assertEqual(191, parsed["soul_stocks"]["妖兽精魄"])
+
+    def test_sanshaoye_banner_parses_lineage_traits_and_ready_slot_number(self):
+        parsed = yinluo.parse_yinluo_text(
+            real_text("yinluo.banner.sanshaoye_ready"),
+            now=1_781_281_959.0,
+            family="yinluo_banner",
+        )
+
+        self.assertEqual("缘初子", parsed["banner_owner"])
+        self.assertEqual("阴罗本幡", parsed["banner_name"])
+        self.assertEqual("三阶下品", parsed["banner_rank"])
+        self.assertEqual(100, parsed["sha_current"])
+        self.assertEqual(1, parsed["ready_slots"])
+        self.assertEqual([1], parsed["ready_slot_numbers"])
+        self.assertEqual(4, parsed["soul_stocks"]["妖兽精魄"])
 
     def test_demon_summon_cooldown_convert_and_retreat_parse(self):
         now = 1_779_450_000.0
         success = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.success"), now=1_779_450_000.0)
         cooldown = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.cooldown"), now=1_779_450_000.0)
         realm_blocked = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.realm_blocked"), now=now)
+        pending = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.pending_fight"), now=now)
+        failed = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.failed_backlash"), now=now)
         convert = yinluo.parse_yinluo_text(real_text("yinluo.convert.success"), now=1_779_450_000.0)
         retreat = yinluo.parse_yinluo_text(real_text("yinluo.retreat.success_bonus"), now=1_779_450_000.0)
 
@@ -60,17 +78,29 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual("召唤魔影", realm_blocked["action"])
         self.assertEqual("realm_blocked", realm_blocked["result"])
         self.assertEqual("境界尚未达到结丹期", realm_blocked["last_error"])
+        self.assertEqual("pending", pending["result"])
+        self.assertEqual("failed", failed["result"])
+        self.assertEqual(1362, failed["last_backlash_loss"])
+        self.assertEqual(now + yinluo.YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, failed["next_demon_summon_time"])
         self.assertEqual(2030, convert["last_sha_gain"])
         self.assertEqual(1530, convert["last_extra_sha_gain"])
         self.assertEqual(68, retreat["last_bonus_gain"])
 
-    def test_blood_forest_success_and_cooldown_parse_real_text(self):
+    def test_blood_forest_pending_success_and_cooldown_parse_real_text(self):
         now = 1_779_450_000.0
+        pending = yinluo.parse_yinluo_text(real_text("yinluo.blood_forest.pending"), now=now)
         success = yinluo.parse_yinluo_text(real_text("yinluo.blood_forest.success"), now=now)
+        success_extra = yinluo.parse_yinluo_text(real_text("yinluo.blood_forest.success_extra_soul"), now=now)
         cooldown = yinluo.parse_yinluo_text(real_text("yinluo.blood_forest.cooldown"), now=now)
 
+        self.assertEqual("血洗山林", pending["action"])
+        self.assertEqual("pending", pending["result"])
         self.assertEqual("血洗山林", success["action"])
         self.assertEqual("success", success["result"])
+        self.assertEqual(1, success["last_soul_gain"])
+        self.assertIn("一阶妖丹 x1", success["last_resource"])
+        self.assertEqual(1, success_extra["last_extra_soul_gain"])
+        self.assertIn("妖兽精魄 x1", success_extra["last_resource"])
         self.assertEqual(now + yinluo.YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, success["next_blood_forest_time"])
         self.assertEqual("血洗山林", cooldown["action"])
         self.assertEqual("cooldown", cooldown["result"])
@@ -135,27 +165,34 @@ class YinluoManualPlanTests(unittest.TestCase):
                 "next_demon_summon_time": 0,
                 "next_blood_forest_time": now + 3600,
                 "ready_slots": 1,
+                "ready_slot_numbers": [1],
             }
             summon = yinluo.build_yinluo_manual_plan("demon_summon", now=now)
             collect = yinluo.build_yinluo_manual_plan("collect", now=now)
             convert = yinluo.build_yinluo_manual_plan("convert", "1000", now=now)
+            refine = yinluo.build_yinluo_manual_plan("refine", "2 妖兽精魄", now=now)
 
             state_module.state["yinluo_observation"]["next_demon_summon_time"] = now + 600
             summon_cooldown = yinluo.build_yinluo_manual_plan("demon_summon", now=now)
 
             state_module.state["yinluo_observation"]["next_demon_summon_time"] = 0
             state_module.state["yinluo_observation"]["ready_slots"] = 0
+            state_module.state["yinluo_observation"]["ready_slot_numbers"] = []
             collect_empty = yinluo.build_yinluo_manual_plan("collect", now=now)
 
             convert_missing_amount = yinluo.build_yinluo_manual_plan("convert", "", now=now)
             convert_too_large = yinluo.build_yinluo_manual_plan("convert", "10001", now=now)
+            refine_missing_target = yinluo.build_yinluo_manual_plan("refine", "2", now=now)
 
         self.assertTrue(summon["allowed"])
         self.assertEqual(".召唤魔影", summon["command"])
         self.assertTrue(collect["allowed"])
-        self.assertEqual(".收取幡魂", collect["command"])
+        self.assertEqual(".收取精华 1", collect["command"])
         self.assertTrue(convert["allowed"])
         self.assertEqual(".化功为煞 1000", convert["command"])
+        self.assertTrue(refine["allowed"])
+        self.assertEqual(".囚禁魂魄 2 妖兽精魄", refine["command"])
+        self.assertEqual("yinluo_refine", refine["family"])
         self.assertFalse(summon_cooldown["allowed"])
         self.assertIn("冷却", summon_cooldown["reason"])
         self.assertFalse(collect_empty["allowed"])
@@ -164,6 +201,8 @@ class YinluoManualPlanTests(unittest.TestCase):
         self.assertIn("必须指定正整数", convert_missing_amount["reason"])
         self.assertFalse(convert_too_large["allowed"])
         self.assertIn("上限", convert_too_large["reason"])
+        self.assertFalse(refine_missing_target["allowed"])
+        self.assertIn("目标", refine_missing_target["reason"])
 
     def test_summon_blocks_below_jiedan_even_with_recent_observation(self):
         now = 1_780_000_000.0
@@ -201,6 +240,10 @@ class YinluoManualPlanTests(unittest.TestCase):
             state_module.state["yinluo_observation"]["next_blood_forest_time"] = now + 600
             cooldown = yinluo.build_yinluo_manual_plan("血洗山林", now=now)
 
+            state_module.state["yinluo_observation"]["next_blood_forest_time"] = 0
+            state_module.state["yinluo_observation"]["last_result"] = "pending"
+            pending = yinluo.build_yinluo_manual_plan("血洗山林", now=now)
+
             curse = yinluo.build_yinluo_manual_plan("下咒", now=now)
             possess = yinluo.build_yinluo_manual_plan("夺舍", now=now)
 
@@ -209,6 +252,8 @@ class YinluoManualPlanTests(unittest.TestCase):
         self.assertEqual("yinluo_blood_forest", due["family"])
         self.assertFalse(cooldown["allowed"])
         self.assertIn("冷却", cooldown["reason"])
+        self.assertFalse(pending["allowed"])
+        self.assertIn("结算中", pending["reason"])
         self.assertFalse(curse["allowed"])
         self.assertFalse(possess["allowed"])
         self.assertIn("只观察/人工处理", curse["reason"])
@@ -273,22 +318,24 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("阴罗宗", send_mock.await_args.kwargs["source_module"])
         self.assertEqual("banner", observed["auto_last_action"])
 
-    async def test_scheduler_collects_ready_slots_and_clears_local_ready_hint(self):
+    async def test_scheduler_collects_one_ready_slot_and_keeps_remaining_hint(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
             "banner_owner": "水镜真人",
             "banner_name": "灭法幡",
             "ready_slots": 2,
+            "ready_slot_numbers": [1, 4],
             "next_blood_forest_time": now + 3600,
             "next_demon_summon_time": now + 3600,
             "auto_next_time": now - 1,
         }, now=now)
 
         send_mock.assert_awaited_once()
-        self.assertEqual(".收取幡魂", send_mock.await_args.args[0])
+        self.assertEqual(".收取精华 1", send_mock.await_args.args[0])
         self.assertEqual("collect", observed["auto_last_action"])
-        self.assertEqual(0, observed["ready_slots"])
+        self.assertEqual(1, observed["ready_slots"])
+        self.assertEqual([4], observed["ready_slot_numbers"])
 
     async def test_scheduler_summons_demon_only_after_banner_hint_and_due(self):
         now = 1_780_000_000.0
@@ -520,6 +567,64 @@ class YinluoPassiveInboxTests(unittest.TestCase):
 
         self.assertGreaterEqual(len(samples), 8)
         self.assertTrue(all(sample.family.startswith("yinluo_") for sample in samples))
+
+
+class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state["identity_ids"] = []
+        state_module._meta_state["identity_states"] = {}
+        state_module._meta_state["send_as_profiles"] = {}
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+
+    def _prepare_identity(self, send_as_id=3301, *, sect_name="阴罗宗", enabled=True):
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(
+            send_as_id,
+            username=f"yinluo_ui_{send_as_id}",
+            label=f"yinluo_ui_{send_as_id}",
+            sect_name=sect_name,
+            enabled=enabled,
+        )
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_enabled"] = True
+        return send_as_id
+
+    async def test_ui_blocks_non_yinluo_identity_before_sending(self):
+        from model import ui
+
+        send_as_id = self._prepare_identity(3301, sect_name="星宫")
+        with patch.object(ui, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "sent", {}))) as execute_mock:
+            ok, message = await ui.ui_execute_yinluo_action(send_as_id, "banner")
+
+        self.assertFalse(ok)
+        self.assertIn("不可用", message)
+        execute_mock.assert_not_awaited()
+
+    async def test_ui_blocks_disabled_identity_before_sending(self):
+        from model import ui
+
+        send_as_id = self._prepare_identity(3302, sect_name="阴罗宗", enabled=False)
+        with patch.object(ui, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "sent", {}))) as execute_mock:
+            ok, message = await ui.ui_execute_yinluo_action(send_as_id, "banner")
+
+        self.assertFalse(ok)
+        self.assertIn("停用", message)
+        execute_mock.assert_not_awaited()
+
+    async def test_ui_dispatches_available_yinluo_action(self):
+        from model import ui
+
+        send_as_id = self._prepare_identity(3303, sect_name="阴罗宗")
+        with patch.object(ui, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "sent", {}))) as execute_mock:
+            ok, message = await ui.ui_execute_yinluo_action(send_as_id, "refine", "1 妖兽精魄")
+
+        self.assertTrue(ok)
+        self.assertIn("sent", message)
+        execute_mock.assert_awaited_once_with("refine", "1 妖兽精魄", send_as_id=send_as_id)
 
 
 if __name__ == "__main__":

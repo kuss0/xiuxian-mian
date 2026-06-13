@@ -237,7 +237,7 @@ RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s
 RE_CMD_STORAGE_BAG_API_REFRESH = re.compile(r"^\.(?:更新储物袋|刷新储物袋|储物袋更新|储物袋刷新)$")
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
 RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
-RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|召唤魔影|召唤|收取幡魂|收取|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
+RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|召唤魔影|召唤|收取精华|收取幡魂|收取|炼化|囚禁魂魄|囚禁|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
 RE_CMD_XUTIAN_FOLLOWUP_MANUAL = re.compile(r"^(?:\.选择道路\s+(?:冰|火)|\.阵策\s+(?:稳|压|势)|\.争鼎\s+(?:求稳|夺鼎)|\.后殿抉择\s+(?:收手|冲关)|\.后殿阵策\s+(?:镇|夺|卦))$")
 RE_STORAGE_BAG_RECENT_DAYS = re.compile(r"近\s*(\d{1,2})\s*天")
 STORAGE_BAG_REPORT_TIMEOUT_SEC = 30
@@ -4278,7 +4278,8 @@ THREE_SECT_MANUAL_USAGE = (
     "- .阴罗查幡 @身份\n"
     "- .阴罗召唤 @身份\n"
     "- .阴罗血洗 @身份\n"
-    "- .阴罗收取 @身份\n"
+    "- .阴罗收取 [槽位] @身份\n"
+    "- .阴罗炼化 <槽位> <目标魂魄> @身份\n"
     "- .阴罗化煞 <数量> @身份"
 )
 

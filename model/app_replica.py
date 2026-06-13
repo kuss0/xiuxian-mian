@@ -548,17 +548,21 @@ def _make_replica_button_event_id(token_key):
     return int(digest, 16) or 0
 
 
-def _replica_command_action_button(text, command, chat_id, listener_account_id=0, *, token_key="", ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC):
+def _replica_command_action_button(text, command, chat_id, listener_account_id=0, *, token_key="", ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC, exclusive_key=""):
     token_key = token_key or f"replica_command:{chat_id}:{listener_account_id}:{command}"
+    payload = {
+        "command": str(command or "").strip(),
+        "chat_id": int(chat_id or 0),
+        "listener_account_id": int(listener_account_id or 0),
+        "event_id": _make_replica_button_event_id(token_key),
+    }
+    exclusive_key = str(exclusive_key or "").strip()
+    if exclusive_key:
+        payload["exclusive_key"] = exclusive_key
     return _replica_action_button(
         text,
         "replica_command",
-        {
-            "command": str(command or "").strip(),
-            "chat_id": int(chat_id or 0),
-            "listener_account_id": int(listener_account_id or 0),
-            "event_id": _make_replica_button_event_id(token_key),
-        },
+        payload,
         ttl_sec=ttl_sec,
         token_key=token_key,
     )
@@ -1879,8 +1883,11 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         command = str(payload.get("command") or "").strip()
         chat_id = int(payload.get("chat_id") or 0)
         listener_account_id = int(payload.get("listener_account_id") or 0)
+        exclusive_key = str(payload.get("exclusive_key") or "").strip()
         if not command or chat_id == 0:
             return False, "按钮动作缺少副本命令。"
+        if exclusive_key and _is_replica_button_exclusive_group_executed(exclusive_key):
+            return True, "本房间加入已处理过。"
         event_id = int(payload.get("event_id") or 0)
         if _is_reusable_replica_command_text(command):
             event_id = 0
@@ -1892,6 +1899,8 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
             event_id=event_id,
         )
         handled = await _handle_replica_group_command(event)
+        if handled and exclusive_key:
+            _mark_replica_button_exclusive_group_executed(exclusive_key, actor_id=actor_id, command=command)
         return bool(handled), f"已触发：{command}" if handled else f"未识别副本命令：{command}"
     if action_type == "log_group_panel":
         query_text = str(payload.get("query_text") or "").strip()
@@ -3032,7 +3041,7 @@ def _lightweight_action_context(item):
     return int(item.get("replica_chat_id") or 0), int(item.get("listener_account_id") or 0)
 
 
-def _lightweight_replica_command_button(item, label, command, *, token_suffix=""):
+def _lightweight_replica_command_button(item, label, command, *, token_suffix="", exclusive_key=""):
     chat_id, listener_account_id = _lightweight_action_context(item)
     if chat_id == 0:
         return {}
@@ -3044,6 +3053,7 @@ def _lightweight_replica_command_button(item, label, command, *, token_suffix=""
         chat_id,
         listener_account_id=listener_account_id,
         token_key=token_key,
+        exclusive_key=exclusive_key,
     )
 
 
@@ -3073,19 +3083,47 @@ def _lightweight_join_button(room, command, *, label="加入推荐"):
     command = str(command or "").strip()
     if not command or "@用户名" in command:
         return {}
+    room = room if isinstance(room, dict) else {}
+    room_id = str(room.get("room_id") or "").strip()
+    replica_kind = str(room.get("replica_kind") or "").strip()
+    chat_id = int(room.get("replica_chat_id") or 0)
+    exclusive_key = f"lightweight_join:{chat_id}:{replica_kind}:{room_id}" if chat_id and replica_kind and room_id else ""
     return _lightweight_replica_command_button(
         room,
         label,
         command,
         token_suffix=f"join:{room.get('room_id') or ''}:{command}",
+        exclusive_key=exclusive_key,
     )
 
 
-def _build_lightweight_room_action_buttons(room, *, join_command="", join_label="加入推荐", include_enter=True, include_dissolve=True, include_query=False):
+def _build_lightweight_room_action_buttons(
+    room,
+    *,
+    join_command="",
+    join_label="加入推荐",
+    extra_join_actions=None,
+    include_enter=True,
+    include_dissolve=True,
+    include_query=False,
+):
     first_row = []
     join_button = _lightweight_join_button(room, join_command, label=join_label)
     if join_button:
         first_row.append(join_button)
+    if extra_join_actions is None and str(join_command or "").strip():
+        extra_join_actions = _get_lightweight_room_extra_join_actions(room, join_command)
+    elif extra_join_actions is None:
+        extra_join_actions = []
+    for action in extra_join_actions or []:
+        action = action if isinstance(action, dict) else {}
+        extra_join_button = _lightweight_join_button(
+            room,
+            action.get("join_command") or "",
+            label=action.get("join_label") or "加入备选",
+        )
+        if extra_join_button:
+            first_row.append(extra_join_button)
     if include_enter:
         enter_button = _lightweight_enter_button(room)
         if enter_button:
@@ -3149,12 +3187,14 @@ def _get_lightweight_room_recommendation_action(room):
     if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
         return _get_lightweight_virtual_hall_recommendation_action(room)
     if replica_kind in _REPLICA_KINDS:
+        join_command = _get_lightweight_profession_recommendation_join_command(
+            replica_kind,
+            int(room.get("leader_identity_id") or 0),
+        )
         return {
-            "join_command": _get_lightweight_profession_recommendation_join_command(
-                replica_kind,
-                int(room.get("leader_identity_id") or 0),
-            ),
+            "join_command": join_command,
             "join_label": "加入推荐",
+            "extra_join_actions": _get_lightweight_room_extra_join_actions(room, join_command),
             "include_enter": True,
         }
     return {"join_command": "", "join_label": "加入推荐", "include_enter": False}
@@ -3718,6 +3758,50 @@ def _get_lightweight_profession_recommendation_join_command(replica_kind, leader
     ]
     usernames = [username for username in usernames if username]
     return ".加入副本 " + " ".join(usernames) if usernames else ""
+
+
+def _get_cangkun_backup_join_command(leader_identity_id=0, *, primary_join_command=""):
+    leader_identity_id = int(leader_identity_id or 0)
+    excluded_usernames = tuple(_normalize_replica_username_list(_CANGKUN_BACKUP_EXCLUDED_USERNAMES))
+    if not excluded_usernames:
+        return ""
+    primary_join_command = str(primary_join_command or "").strip()
+    if not primary_join_command:
+        primary_join_command = _get_lightweight_profession_recommendation_join_command(
+            _REPLICA_KIND_CANGKUN,
+            leader_identity_id,
+        )
+    primary_usernames = set(_normalize_replica_username_list(_extract_replica_usernames(primary_join_command)))
+    if not primary_usernames.intersection(excluded_usernames):
+        return ""
+    backup_team_ids = _pick_lightweight_profession_team(
+        _REPLICA_KIND_CANGKUN,
+        leader_identity_id=leader_identity_id,
+        limit=4 if leader_identity_id else 5,
+        excluded_usernames=excluded_usernames,
+    )
+    backup_usernames = [
+        _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        for identity_id in backup_team_ids
+    ]
+    backup_usernames = [username for username in backup_usernames if username]
+    if not backup_usernames:
+        return ""
+    backup_command = ".加入副本 " + " ".join(backup_usernames)
+    return "" if backup_command == primary_join_command else backup_command
+
+
+def _get_lightweight_room_extra_join_actions(room, primary_join_command=""):
+    room = room if isinstance(room, dict) else {}
+    if room.get("replica_kind") != _REPLICA_KIND_CANGKUN:
+        return []
+    backup_command = _get_cangkun_backup_join_command(
+        int(room.get("leader_identity_id") or 0),
+        primary_join_command=primary_join_command,
+    )
+    if not backup_command:
+        return []
+    return [{"join_command": backup_command, "join_label": "加入备选"}]
 
 
 def _format_cangkun_backup_recommendation_lines(leader_identity_id, primary_team_ids, *, html=False):

@@ -1389,6 +1389,40 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(leader_id, send_args.kwargs["send_as_id"])
         self.assertIn("已触发：.开启副本 @leader 苍", answer_calls[-1].args[1])
 
+    def test_replica_command_buttons_with_same_exclusive_key_trigger_once(self):
+        first = app_replica._replica_command_action_button(
+            "加入推荐",
+            ".加入副本 @first",
+            -100777,
+            listener_account_id=9001,
+            token_key="join-primary",
+            exclusive_key="lightweight_join:-100777:cangkun:47",
+        )
+        second = app_replica._replica_command_action_button(
+            "加入备选",
+            ".加入副本 @second",
+            -100777,
+            listener_account_id=9001,
+            token_key="join-backup",
+            exclusive_key="lightweight_join:-100777:cangkun:47",
+        )
+        _first_token, first_action = app_replica._get_replica_button_action(first["callback_data"])
+        _second_token, second_action = app_replica._get_replica_button_action(second["callback_data"])
+
+        async def run_test():
+            with patch("model.app_replica._handle_replica_group_command", new=AsyncMock(return_value=True)) as handle_mock:
+                first_ok, first_message = await app_replica._execute_replica_button_action(first_action, actor_id=123456)
+                second_ok, second_message = await app_replica._execute_replica_button_action(second_action, actor_id=123456)
+                return first_ok, first_message, second_ok, second_message, handle_mock.await_args_list
+
+        first_ok, first_message, second_ok, second_message, handle_calls = asyncio.run(run_test())
+        self.assertTrue(first_ok)
+        self.assertIn(".加入副本 @first", first_message)
+        self.assertTrue(second_ok)
+        self.assertIn("本房间加入已处理过", second_message)
+        self.assertEqual(1, len(handle_calls))
+        self.assertEqual(".加入副本 @first", handle_calls[0].args[0].raw_text)
+
     def test_log_group_open_button_can_open_explicit_non_kunwu_kind(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         event = self._prepare_replica_group([leader_id])
@@ -1634,6 +1668,56 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("备选加入（不带 @walterwa2000，可复制）：@shield @healer @blade @curse", section)
         self.assertIn("备选校验：五职业已齐；@shield 可调神识 1200 已过千。", section)
         self.assertNotIn(".加入副本", section)
+
+    def test_cangkun_room_buttons_include_backup_join_without_wa2000(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
+        wa_id = self._register_replica_identity(991202, "WalterWA2000", professions="御山", realm="结丹初期", root_type="伪灵根", sect_name="太一门")
+        backup_shield_id = self._register_replica_identity(991203, "shield", professions="御山", realm="结丹初期", root_type="天灵根")
+        healer_id = self._register_replica_identity(991204, "healer", professions="灵医", realm="结丹初期")
+        blade_id = self._register_replica_identity(991205, "blade", professions="影刃", realm="结丹初期")
+        curse_id = self._register_replica_identity(991206, "curse", professions="咒师", realm="结丹初期")
+        state_module.set_replica_participant_identity_ids([
+            leader_id,
+            wa_id,
+            backup_shield_id,
+            healer_id,
+            blade_id,
+            curse_id,
+        ])
+        state_module.set_tianjige_dao_path_records({
+            str(wa_id): {"spiritual_sense": 13610},
+            str(backup_shield_id): {"spiritual_sense": 1200},
+        })
+        room = {
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "room_id": "47",
+            "leader_identity_id": leader_id,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+        }
+        join_command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+
+        buttons = app_replica._build_lightweight_room_action_buttons(
+            room,
+            join_command=join_command,
+            include_enter=True,
+            include_dissolve=True,
+            include_query=True,
+        )
+
+        button_texts = self._button_texts(buttons)
+        self.assertIn("加入推荐", button_texts)
+        self.assertIn("加入备选", button_texts)
+        self.assertIn("进入苍坤洞府", button_texts)
+        primary_payload = self._button_payload_by_text(buttons, "加入推荐")
+        backup_payload = self._button_payload_by_text(buttons, "加入备选")
+        self.assertEqual(".加入副本 @walterwa2000 @healer @blade @curse", primary_payload.get("command"))
+        self.assertEqual(".加入副本 @shield @healer @blade @curse", backup_payload.get("command"))
+        self.assertEqual("lightweight_join:-100777:cangkun:47", primary_payload.get("exclusive_key"))
+        self.assertEqual(primary_payload.get("exclusive_key"), backup_payload.get("exclusive_key"))
 
     def test_virtual_hall_recommendation_summarizes_route_advice_without_commands(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")

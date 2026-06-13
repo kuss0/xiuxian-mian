@@ -40,6 +40,7 @@ from .config import (
     CMD_YINLUO_CURSE,
     CMD_YINLUO_DEMON_SUMMON,
     CMD_YINLUO_POSSESS,
+    CMD_YINLUO_REFINE,
     CMD_YINDAO,
     CMD_YUANYING,
 )
@@ -275,7 +276,14 @@ ACTION_SPECS = {
     "yinluo_collect": {
         "commands": (CMD_YINLUO_COLLECT,),
         "kind": ACTION_KIND_HIGH_RISK,
-        "label": "收取幡魂",
+        "label": "收取精华",
+        "max_attempts": 1,
+        "ttl_sec": 30 * 60,
+    },
+    "yinluo_refine": {
+        "commands": (CMD_YINLUO_REFINE,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "囚禁魂魄",
         "max_attempts": 1,
         "ttl_sec": 30 * 60,
     },
@@ -344,6 +352,7 @@ FAMILY_TO_ACTION_KEYS = {
     "yinluo_demon_summon": ("yinluo_demon_summon",),
     "yinluo_convert": ("yinluo_convert",),
     "yinluo_collect": ("yinluo_collect",),
+    "yinluo_refine": ("yinluo_refine",),
     "yinluo_blood_forest": ("yinluo_blood_forest",),
     "yinluo_curse": ("yinluo_curse",),
     "yinluo_possess": ("yinluo_possess",),

@@ -174,6 +174,13 @@
     "event_type": "message",
     "text": "【水镜真人的阴罗幡】\n\n本命魔兵: 灭法幡\n幡体等阶: 三阶中品\n煞气池: 269465 / 25000 (100%)\n幡威状态: 万魂沸腾\n主魂流派: 灭法幡\n幡魂总炼化: 54 缕\n武器战力加成: +11% (幡阶 3% / 主魂 4% / 煞涌 3%)\n幡魂评语: 戾魄蚀法，最易引动真正的魔域异象。\n\n魂魄储备:\n - 妖兽精魄: 191 缕\n - 修士残魂: 134 缕\n - 怨魂: 47 缕\n - 凶兽戾魄: 1 缕\n\n炼化槽:\n1号槽: [空闲]\n2号槽: [空闲]\n3号槽: [空闲]\n4号槽: [精华已成] - 凶兽戾魄\n5号槽: [炼化中] - 凶兽戾魄 (剩余: 3小时28分钟48秒)"
   },
+  "yinluo.banner.sanshaoye_ready": {
+    "source": "data/state/passive_event_ledger/2026-06-13.jsonl:715",
+    "module": "yinluo",
+    "family": "yinluo_banner",
+    "event_type": "message",
+    "text": "【缘初子的阴罗幡】\n\n本命魔兵: 阴罗本幡\n幡体等阶: 三阶下品\n煞气池: 100 / 15000 (0%)\n幡威状态: 幡息沉潜\n主魂流派: 阴罗本幡\n幡魂总炼化: 0 缕\n武器战力加成: +3% (幡阶 3% / 主魂 0% / 煞涌 0%)\n幡魂评语: 本命魔兵尚在养炼，未显幡魂路数。\n\n幡魂谱系:\n - 怨魂 · 摄魂幡: 0 缕\n - 修士残魂 · 噬灵幡: 0 缕\n - 妖兽精魄 · 血煞幡: 0 缕\n - 凶兽戾魄 · 灭法幡: 0 缕\n\n当前特性:\n - 斗法拘魂: +0%\n - 召魔镇压: +0%\n\n魂魄储备:\n - 妖兽精魄: 4 缕\n\n炼化槽:\n1号槽: [精华已成] - 妖兽精魄\n2号槽: [空闲]\n3号槽: [空闲]\n4号槽: [空闲]\n5号槽: [空闲]\n6号槽: [空闲]\n7号槽: [空闲]\n8号槽: [空闲]\n9号槽: [空闲]"
+  },
   "yinluo.demon_summon.success": {
     "source": "data/messages/2026-05-16.log:10642",
     "module": "yinluo",
@@ -195,6 +202,20 @@
     "event_type": "message",
     "text": "你的境界尚未达到【结丹期】，神魂之力不足以撕开魔域裂隙。"
   },
+  "yinluo.demon_summon.pending_fight": {
+    "source": "data/state/passive_event_ledger/2026-06-13.jsonl:652",
+    "module": "yinluo",
+    "family": "yinluo_demon_summon",
+    "event_type": "edit",
+    "text": "魔影已降临！你开始与其进行神魂角力... (基础胜率: 75% + 幡体加持: 0% + 幡魂加持: 0% = 75%)"
+  },
+  "yinluo.demon_summon.failed_backlash": {
+    "source": "data/state/passive_event_ledger/2026-06-13.jsonl:654",
+    "module": "yinluo",
+    "family": "yinluo_demon_summon",
+    "event_type": "edit",
+    "text": "召唤成功，镇压失败！\n魔影过于强大，你遭其反噬，修为暴跌了 1362 点！"
+  },
   "yinluo.convert.success": {
     "source": "data/messages/2026-05-16.log:11867",
     "module": "yinluo",
@@ -208,6 +229,20 @@
     "family": "yinluo_blood_forest",
     "event_type": "edit",
     "text": "【血洗功成】\n你在一片山林中掀起了一场腥风血雨！成功捕获了 1 缕【妖兽精魄】！\n在搜刮战场时，你还额外发现了 【一阶妖丹】x1！"
+  },
+  "yinluo.blood_forest.pending": {
+    "source": "data/state/passive_event_ledger/2026-06-13.jsonl:753",
+    "module": "yinluo",
+    "family": "yinluo_blood_forest",
+    "event_type": "message",
+    "text": "你催动煞气，前往附近的山脉进行无情的扫荡..."
+  },
+  "yinluo.blood_forest.success_extra_soul": {
+    "source": "data/state/passive_event_ledger/2026-06-13.jsonl:10301759",
+    "module": "yinluo",
+    "family": "yinluo_blood_forest",
+    "event_type": "edit",
+    "text": "【血洗功成】\n你在一片山林中掀起了一场腥风血雨！成功捕获了 1 缕【妖兽精魄】！\n血煞幡 嗜血震鸣，额外拘来 1 缕【妖兽精魄】！\n在搜刮战场时，你还额外发现了 【凝血草】x3！"
   },
   "yinluo.blood_forest.cooldown": {
     "source": "data/messages/2026-06-02.log:40471",
