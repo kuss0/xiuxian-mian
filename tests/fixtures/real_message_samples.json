@@ -153,6 +153,20 @@
     "event_type": "message",
     "text": "【野外历练 · 妖兽遭遇】\n命盘【太阴】照命，主趋吉避凶，探索更易避祸，斗法更善脱身，但闭关悟性略降。\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n【改命待发】此道改命尚可维持 23小时5分钟\n【天星偏转】 趋吉偏转，材料显化上扬\n@PeggyArmstrong_a776 遭遇 独角雷蛟。\n战力对比: 你 268543829 / 妖兽 378146637，胜算 44%。\n一番斗法后，妖兽伏诛。\n获得修为 +45000，获得 【养魂木】x1。\n此战只结算 NPC 历练收益，不触发玩家仇怨。"
   },
+  "tianxing.modifier.change_triggered": {
+    "source": "data/messages/2026-06-13.log:5959",
+    "module": "tianxing",
+    "family": "tianxing_modifier",
+    "event_type": "edit",
+    "text": "【野外历练 · 改命脱险】\n命盘【贪狼】照命，主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n【改命待发】此道改命尚可维持 18小时31分钟\n【天星偏转】 趋吉偏转，材料显化上扬\n@PeggyArmstrong_a776 遭遇 幽冥鬼蛛，本已要负伤折返，司命盘却替你撬开了一线退路。\n【改命回天】你强行拨正命轨，硬从凶数中抢回一线生机。\n你虽未能尽取机缘，却仍带回了 【养魂木】x1，且 本次未损修为。"
+  },
+  "tianxing.modifier.prediction_miss": {
+    "source": "data/messages/2026-06-01.log:45301",
+    "module": "tianxing",
+    "family": "tianxing_modifier",
+    "event_type": "edit",
+    "text": "【野外历练 · 妖兽遭遇】\n命盘【贪狼】照命，主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n【推命落空】你行事偏离先前演算，逆命劫 +1\n【改命待发】此道改命尚可维持 17小时57分钟\n【天星偏转】 材料显化上扬\n@PeggyArmstrong_a776 遭遇 幽冥鬼蛛。\n战力对比: 你 102655972 / 妖兽 130878411，胜算 32%。\n一番斗法后，妖兽伏诛。\n获得修为 +45000，获得 【三级妖丹】x1。\n此战只结算 NPC 历练收益，不触发玩家仇怨。"
+  },
   "tianxing.clear_calamity.basic": {
     "source": "data/messages/2026-06-02.log:9563",
     "module": "tianxing",

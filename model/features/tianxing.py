@@ -35,6 +35,7 @@ RE_TIANJI_GAIN = re.compile(r"天机值\s*\+(?P<gain>\d+)")
 RE_CONTRIB_GAIN = re.compile(r"宗门贡献\s*\+(?P<gain>\d+)")
 RE_TIANJI_VALUE = re.compile(r"天机值[:：]\s*(?P<value>\d+)")
 RE_CALAMITY = re.compile(r"逆命劫[:：]\s*(?P<value>\d+)")
+RE_CALAMITY_GAIN = re.compile(r"逆命劫\s*\+(?P<gain>\d+)")
 RE_COUNTS = re.compile(r"命中\s*/\s*落空\s*/\s*改命[:：]\s*(?P<hit>\d+)\s*/\s*(?P<miss>\d+)\s*/\s*(?P<change>\d+)")
 RE_BONUS_GAIN = re.compile(r"因【天星宗】灵脉加持，你额外获得了\s*(?P<gain>\d+)\s*点修为")
 
@@ -274,12 +275,12 @@ def parse_tianxing_text(text, now=None, family=""):
         or RE_STAR_EFFECT.search(raw_text)
     ):
         result = "modifier"
-        if "【推命命中】" in raw_text:
+        if "【改命回天】" in raw_text:
+            result = "change_triggered"
+        elif "【推命命中】" in raw_text:
             result = "prediction_hit"
         elif "【推命落空】" in raw_text:
             result = "prediction_miss"
-        elif "【改命回天】" in raw_text:
-            result = "change_triggered"
         star_effect = ""
         star_match = RE_STAR_EFFECT.search(raw_text)
         if star_match:
@@ -287,11 +288,20 @@ def parse_tianxing_text(text, now=None, family=""):
         parsed.update(action="命盘偏转", result=result, summary=_short_summary(raw_text), last_star_effect=star_effect)
         tianji_gain_match = RE_TIANJI_GAIN.search(raw_text)
         contrib_gain_match = RE_CONTRIB_GAIN.search(raw_text)
+        calamity_gain_match = RE_CALAMITY_GAIN.search(raw_text)
         if tianji_gain_match:
             parsed["last_tianji_gain"] = int(tianji_gain_match.group("gain") or 0)
         if contrib_gain_match:
             parsed["last_contrib_gain"] = int(contrib_gain_match.group("gain") or 0)
-        if "【改命待发】" in raw_text:
+        if calamity_gain_match:
+            parsed["calamity_delta"] = int(calamity_gain_match.group("gain") or 0)
+        if "【推命命中】" in raw_text or "【推命落空】" in raw_text:
+            parsed["current_prediction"] = ""
+            parsed["current_prediction_until"] = 0
+        if "【改命回天】" in raw_text:
+            parsed["current_change"] = ""
+            parsed["current_change_until"] = 0
+        elif "【改命待发】" in raw_text:
             parsed["current_change_until"] = _wait_until(raw_text, now)
         return parsed
 
@@ -328,6 +338,8 @@ def apply_tianxing_passive(text, now=None, family=""):
     for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain"):
         if parsed.get(key) is not None:
             observed[key] = int(parsed.get(key) or 0)
+    if parsed.get("calamity_delta") is not None:
+        observed["calamity_count"] = max(0, int(observed.get("calamity_count", 0) or 0) + int(parsed.get("calamity_delta") or 0))
     if parsed.get("action") == "消劫" and parsed.get("result") == "success":
         observed["calamity_count"] = max(0, int(observed.get("calamity_count", 0) or 0) - 1)
     observed["auto_last_error"] = ""

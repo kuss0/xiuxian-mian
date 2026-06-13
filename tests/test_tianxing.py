@@ -43,6 +43,8 @@ class TianxingParserTests(unittest.TestCase):
         predict = tianxing.parse_tianxing_text(real_text("tianxing.predict.basic"), now=1_780_000_000.0)
         change = tianxing.parse_tianxing_text(real_text("tianxing.change_fate.basic"), now=1_780_000_000.0)
         modifier = tianxing.parse_tianxing_text(real_text("tianxing.modifier.wild"), now=1_780_000_000.0)
+        triggered = tianxing.parse_tianxing_text(real_text("tianxing.modifier.change_triggered"), now=1_780_000_000.0)
+        missed = tianxing.parse_tianxing_text(real_text("tianxing.modifier.prediction_miss"), now=1_780_000_000.0)
 
         self.assertEqual(["天府", "太阴", "贪狼"], observe["available_stars"])
         self.assertEqual("炼制", predict["current_prediction"])
@@ -53,6 +55,16 @@ class TianxingParserTests(unittest.TestCase):
         self.assertEqual(1, modifier["last_tianji_gain"])
         self.assertEqual(30, modifier["last_contrib_gain"])
         self.assertIn("太阴", modifier["last_star_effect"])
+        self.assertEqual("change_triggered", triggered["result"])
+        self.assertEqual("", triggered["current_prediction"])
+        self.assertEqual(0, triggered["current_prediction_until"])
+        self.assertEqual("", triggered["current_change"])
+        self.assertEqual(0, triggered["current_change_until"])
+        self.assertEqual("prediction_miss", missed["result"])
+        self.assertEqual(1, missed["calamity_delta"])
+        self.assertEqual("", missed["current_prediction"])
+        self.assertEqual(0, missed["current_prediction_until"])
+        self.assertGreater(missed["current_change_until"], 1_780_000_000.0)
 
     def test_clear_calamity_and_join_blocked_parse(self):
         clear = tianxing.parse_tianxing_text(real_text("tianxing.clear_calamity.basic"), now=1_780_000_000.0)
@@ -355,10 +367,50 @@ class TianxingPassiveInboxTests(unittest.TestCase):
             self.assertEqual("prediction_hit", observed["last_result"])
             self.assertEqual(30, observed["last_contrib_gain"])
 
+    def test_apply_modifier_clears_consumed_prediction_and_change_state(self):
+        send_as_id = self._prepare_identity(username="PeggyArmstrong_a776")
+        now = 1_780_000_000.0
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 3600,
+                "current_change": "探索",
+                "current_change_until": now + 7200,
+                "calamity_count": 2,
+            }
+            changed = tianxing.apply_tianxing_passive(real_text("tianxing.modifier.prediction_miss"), now=now)
+            observed = state_module.state["tianxing_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual("prediction_miss", observed["last_result"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("探索", observed["current_change"])
+        self.assertGreater(observed["current_change_until"], now)
+        self.assertEqual(3, observed["calamity_count"])
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianxing_observation"].update({
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "探索",
+                "current_change_until": now + 7200,
+            })
+            changed = tianxing.apply_tianxing_passive(real_text("tianxing.modifier.change_triggered"), now=now)
+            observed = state_module.state["tianxing_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual("change_triggered", observed["last_result"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("", observed["current_change"])
+        self.assertEqual(0, observed["current_change_until"])
+
     def test_real_message_fixture_includes_tianxing_samples(self):
         samples = list(iter_real_message_samples(FIXTURE_PATH, module="tianxing"))
 
-        self.assertGreaterEqual(len(samples), 7)
+        self.assertGreaterEqual(len(samples), 9)
         self.assertTrue(all(sample.family.startswith("tianxing_") for sample in samples))
 
 
