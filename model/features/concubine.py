@@ -954,8 +954,33 @@ def _defer_gift_for_phaseful_summary(now):
     return _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error")
 
 
+PHASEFUL_SUMMARY_WAIT_ERROR_SUFFIX = "等待闭关/元婴结算，稍后处理"
+
+
+def _is_phaseful_summary_wait_error(value):
+    return str(value or "").strip().endswith(PHASEFUL_SUMMARY_WAIT_ERROR_SUFFIX)
+
+
+def _clear_stale_phaseful_summary_wait_errors(now):
+    if _has_phaseful_summary_window(now):
+        return False
+    changed = False
+    for key in (
+        "concubine_last_error",
+        "concubine_tianji_last_error",
+        "concubine_greet_last_error",
+        "concubine_gift_last_error",
+        "concubine_heart_last_error",
+        "concubine_voyage_last_error",
+    ):
+        if _is_phaseful_summary_wait_error(state.get(key)):
+            state[key] = ""
+            changed = True
+    return changed
+
+
 def _clear_stale_tianji_summary_wait_error():
-    if str(state.get("concubine_tianji_last_error") or "") == "天机代卜等待闭关/元婴结算，稍后处理":
+    if _is_phaseful_summary_wait_error(state.get("concubine_tianji_last_error")):
         state["concubine_tianji_last_error"] = ""
 
 
@@ -4393,6 +4418,9 @@ async def _run_concubine_scheduler(now):
         return
 
     if _normalize_tianji_affinity_error(now):
+        save_state()
+
+    if _clear_stale_phaseful_summary_wait_errors(now):
         save_state()
 
     phase = _phase()

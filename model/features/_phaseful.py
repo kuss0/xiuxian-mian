@@ -3,7 +3,7 @@ import random
 import time
 from dataclasses import dataclass
 
-from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
+from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CMD_WILD_TRAINING, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
 from ..runtime import _fire_and_forget, console_log, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
@@ -77,7 +77,7 @@ SUMMARY_BLOCKING_PHASES = {"queued_launch"}
 _REGISTERED_SPECS = []
 _SUMMARY_CONSUMED_COMMANDS = {}
 
-SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TOWER, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN}
+SUMMARY_REPLAYABLE_COMMANDS = {CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TOWER, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE, CMD_CONCUBINE_VOYAGE_RETURN, CMD_WILD_TRAINING}
 SUMMARY_REPLAY_MAX_AGE_SEC = 10 * 60
 SUMMARY_REPLAY_DELAY_MIN_SEC = 1
 SUMMARY_REPLAY_DELAY_MAX_SEC = 5
@@ -224,17 +224,18 @@ def begin_post_summary_wait(spec, now, delay=None, *, confirmed=False):
         delay = spec.post_summary_wait_sec
     clear_summary_flags(spec)
     set_phase(spec, "post_summary_wait")
-    # In post_summary_wait, the probe flag is a persisted provenance marker:
-    # True means a real summary or an active status confirmation proved the
-    # phase may safely relaunch; False means query status before any relaunch.
+    # In post_summary_wait, the probe flag only records provenance. Relaunch is
+    # driven by the business command after the buffer; abnormal/no-reply paths
+    # use active status queries for calibration.
     state[spec.probe_pending_key] = bool(confirmed)
     state[spec.next_time_key] = now + delay
     save_state()
 
 
-def begin_summary_wait(spec, now):
+def begin_summary_wait(spec, now, *, launch_probe=False):
     set_phase(spec, "waiting_summary")
     state[spec.summary_sent_at_key] = now
+    state[spec.probe_pending_key] = bool(launch_probe)
     save_state()
 
 
@@ -271,12 +272,17 @@ def _is_summary_replayable_command(command):
     command = str(command or "").strip()
     if command in SUMMARY_REPLAYABLE_COMMANDS:
         return True
-    return command.startswith(f"{CMD_CONCUBINE_VOYAGE} ")
+    return command.startswith(f"{CMD_CONCUBINE_VOYAGE} ") or command.startswith(f"{CMD_WILD_TRAINING} ")
 
 
 def _is_voyage_replay_command(command):
     command = str(command or "").strip()
     return command == CMD_CONCUBINE_VOYAGE_RETURN or command == CMD_CONCUBINE_VOYAGE or command.startswith(f"{CMD_CONCUBINE_VOYAGE} ")
+
+
+def _is_wild_training_replay_command(command):
+    command = str(command or "").strip()
+    return command == CMD_WILD_TRAINING or command.startswith(f"{CMD_WILD_TRAINING} ")
 
 
 def _is_replayable_summary_consumed_command(spec, command, reply_to=0):
@@ -390,6 +396,21 @@ def _prepare_replayed_command_state(command, now, *, old_msg_id=0):
         set_concubine_phase("idle")
         return True
 
+    if _is_wild_training_replay_command(command):
+        if not state.get("wild_training_enabled"):
+            return False
+        if int(old_msg_id or 0) <= 0:
+            return False
+        if int(state.get("wild_training_reply_to_msg_id", 0) or 0) != int(old_msg_id or 0):
+            return False
+        if int(state.get("wild_training_retry_count", 0) or 0) >= 1:
+            return False
+        state["wild_training_reply_to_msg_id"] = 0
+        state["wild_training_reply_due_at"] = 0
+        state["wild_training_retry_count"] = 1
+        state["next_wild_training_time"] = float(now)
+        return True
+
     if command != CMD_TOWER:
         return True
     from .tower import TOWER_RETRY_LIMIT
@@ -440,6 +461,21 @@ def _finalize_replayed_command_state(command, msg):
         state["concubine_voyage_last_error"] = ""
         return True
 
+    if _is_wild_training_replay_command(command) and msg:
+        from .wild_training import WILD_TRAINING_REPLY_TIMEOUT_SEC, normalize_wild_training_strategy
+
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        due_at = sent_at + WILD_TRAINING_REPLY_TIMEOUT_SEC
+        strategy = command.replace(CMD_WILD_TRAINING, "", 1).strip() or state.get("wild_training_strategy")
+        state["wild_training_reply_to_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["wild_training_reply_due_at"] = due_at
+        state["wild_training_retry_count"] = max(int(state.get("wild_training_retry_count", 0) or 0), 1)
+        state["wild_training_last_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["wild_training_last_result"] = f"已发送：{normalize_wild_training_strategy(strategy)}"
+        state["wild_training_last_error"] = ""
+        state["next_wild_training_time"] = due_at
+        return True
+
     if command != CMD_TOWER or not msg:
         return False
     from .tower import TOWER_REPLY_TIMEOUT_SEC
@@ -473,6 +509,10 @@ async def _replay_summary_consumed_command(send_as_id, payload):
         track = False
         max_retry = 0
         send_intent.setdefault("source_module", "闯塔")
+    if _is_wild_training_replay_command(command):
+        track = False
+        max_retry = 0
+        send_intent.setdefault("source_module", "野外历练")
 
     with use_identity(send_as_id):
         now = time.time()
@@ -697,6 +737,27 @@ async def _send_summary_trigger(spec, console_message):
     return True
 
 
+async def _send_summary_launch(spec, launch_command, console_message):
+    await delete_summary_trigger_msg(spec)
+    console_log(console_message)
+    msg = await send_game_command(
+        launch_command,
+        track=False,
+        priority="chain",
+        source_module=spec.source_module or None,
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        _schedule_summary_trigger_retry(spec, sent_at)
+        await send_audit_log(f"{spec.title} 续轮指令未发出，已延后重试。")
+        return False
+
+    begin_summary_wait(spec, sent_at, launch_probe=True)
+    state[spec.last_summary_msg_id_key] = int(msg.id)
+    save_state()
+    return True
+
+
 async def _send_active_summary_query(spec, now):
     await delete_summary_trigger_msg(spec)
     state[spec.probe_pending_key] = False
@@ -819,6 +880,10 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] > 0 and now - state[spec.summary_sent_at_key] >= spec.summary_timeout_sec:
+        if state.get(spec.probe_pending_key):
+            await send_audit_log(f"{spec.title} 续轮指令超时无确认，改用状态查询校准。")
+            await _send_active_summary_query(spec, now)
+            return
         await _fallback_to_normal_cd(spec, now, spec.waiting_timeout_audit)
         return
 
@@ -832,12 +897,12 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
     if _phase(spec) == "summary_due":
         if now < state[spec.next_time_key]:
             return
-        if spec.summary_due_timeout_action == "wait_passive":
-            await _extend_summary_due_wait(spec, now)
-            return
         grace_sec = float(spec.summary_active_query_grace_sec or 0)
         if grace_sec > 0 and _summary_due_elapsed(spec, now) < grace_sec:
             await _extend_summary_due_wait(spec, now)
+            return
+        if spec.summary_due_timeout_action == "wait_passive":
+            await _send_summary_launch(spec, launch_command, spec.cd_due_console)
             return
         await _send_summary_trigger(spec, spec.cd_due_console)
         return
@@ -845,11 +910,6 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
     if _phase(spec) == "post_summary_wait":
         await update_block_log_state(spec, waiting=False, protect=False)
         if now < state[spec.next_time_key]:
-            return
-
-        if not state.get(spec.probe_pending_key):
-            await send_audit_log(f"{spec.title} 缓冲到期但缺少总结/状态确认，先查询状态确认，避免重复发起。")
-            await _send_active_summary_query(spec, now)
             return
 
         console_log(spec.post_wait_console)

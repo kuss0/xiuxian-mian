@@ -233,6 +233,17 @@ def is_guarded_business_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in GUARDED_BUSINESS_PREFIXES)
 
 
+def event_identity_id(item: dict[str, object]) -> int:
+    for key in ("sender_id", "send_as_id", "identity_id"):
+        try:
+            value = int(item.get(key, 0) or 0)
+        except Exception:
+            value = 0
+        if value:
+            return value
+    return 0
+
+
 def read_recent_message_events(log_file: Path, max_lines: int = 10000) -> list[dict[str, object]]:
     if not log_file.exists():
         return []
@@ -279,11 +290,18 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
 
     active_counts = Counter(command_key(str(item.get("text") or "")) for item in sent)
     active_counts = Counter({key: count for key, count in active_counts.items() if key in ACTIVE_STATUS_COMMANDS})
-    for command, count in sorted(active_counts.items()):
+    active_by_identity: Counter[tuple[int, str]] = Counter()
+    for item in sent:
+        command = command_key(str(item.get("text") or ""))
+        if command in ACTIVE_STATUS_COMMANDS:
+            active_by_identity[(event_identity_id(item), command)] += 1
+    for (identity_id, command), count in sorted(active_by_identity.items()):
         if count >= 2:
+            identity_part = f"{identity_id}:" if identity_id else ""
             alerts.append(
                 business_alert(
-                    f"active status query repeated: {command} x{count}/{int(window_sec / 60)}m",
+                    f"active status query repeated: {identity_part}{command} x{count}/{int(window_sec / 60)}m",
+                    identity_id=identity_id or None,
                     command=command,
                     count=count,
                 )
@@ -330,6 +348,7 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         "last_sent_at": last_sent_at,
         "last_sent_ts": local_ts(last_sent_at) if last_sent_at > 0 else "",
         "active_status_counts": dict(active_counts),
+        "active_status_identity_counts": {f"{identity_id}:{command}": count for (identity_id, command), count in active_by_identity.items()},
         "cooldown_reply_count": len(cooldown_replies),
         "alerts": alerts,
     }

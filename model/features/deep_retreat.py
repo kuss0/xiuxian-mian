@@ -37,6 +37,8 @@ from . import workflow_log
 
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
+DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MIN_SEC = 5
+DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MAX_SEC = 15
 DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
 
 DEEP_RETREAT_SPEC = PhasefulSpec(
@@ -357,17 +359,17 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         is_due = float(state.get("next_deep_retreat_time", 0) or 0) <= now
         if phase in ("summary_due", "observing_summary", "waiting_summary", "running", "queued_launch") or (phase == "idle" and is_due):
             await delete_deep_retreat_summary_trigger_msg()
-            delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC)
+            delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MAX_SEC)
             begin_deep_retreat_post_summary_wait(now, delay=delay, confirmed=True)
             _record_deep_retreat_event(
                 "确认未处于深闭",
                 reply_to=reply_to,
-                detail=f"retry={int(delay)}s",
+                detail=f"relaunch={int(delay)}s",
                 matched_text=text,
-                decision="not_running_retry_later",
+                decision="not_running_relaunch_soon",
             )
             await update_deep_retreat_block_log_state(waiting=False, protect=False)
-            await send_audit_log(f"🧘 已确认未处于深闭，{int(delay / 60)}分钟后排队发起深度闭关。")
+            await send_audit_log(f"🧘 已确认未处于深闭，{int(delay)}秒后排队发起深度闭关。")
             return True
 
     return False

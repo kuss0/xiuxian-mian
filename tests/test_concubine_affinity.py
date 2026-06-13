@@ -501,6 +501,34 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 90, state_module.state["next_concubine_time"])
         self.assertIn("天机代卜等待闭关/元婴结算", state_module.state["concubine_tianji_last_error"])
 
+    async def test_scheduler_clears_stale_phaseful_summary_wait_errors_after_window_closes(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_error"] = "入梦寻图等待闭关/元婴结算，稍后处理"
+            identity_state["concubine_tianji_last_error"] = "天机代卜等待闭关/元婴结算，稍后处理"
+            identity_state["concubine_greet_last_error"] = "每日问安等待闭关/元婴结算，稍后处理"
+            identity_state["concubine_gift_last_error"] = "赠予侍妾等待闭关/元婴结算，稍后处理"
+            identity_state["concubine_voyage_last_error"] = "侍妾远航等待闭关/元婴结算，稍后处理"
+            identity_state["deep_retreat_enabled"] = True
+            identity_state["deep_retreat_phase"] = "idle"
+            identity_state["yuanying_enabled"] = True
+            identity_state["yuanying_phase"] = "idle"
+            identity_state["next_concubine_time"] = now + 3600
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state") as save_mock, \
+             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_awaited()
+        save_mock.assert_called()
+        self.assertEqual("", state_module.state["concubine_last_error"])
+        self.assertEqual("", state_module.state["concubine_tianji_last_error"])
+        self.assertEqual("", state_module.state["concubine_greet_last_error"])
+        self.assertEqual("", state_module.state["concubine_gift_last_error"])
+        self.assertEqual("", state_module.state["concubine_voyage_last_error"])
+
     async def test_dream_reply_keeps_due_tianji_on_short_chain(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now - 1)

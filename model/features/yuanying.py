@@ -160,8 +160,10 @@ async def handle_yuanying_success_reply(text, now, reply_to, matched_family=None
         return False
 
     if "你心念一动" in text and "元婴化作一道流光飞出" in text:
-        mark_yuanying_success(now)
-        target_time = fmt_time_after(YUANYING_CD + CD_BUFFER_SEC)
+        wait_sec = parse_wait_time(text)
+        cd_sec = wait_sec if wait_sec > 0 else YUANYING_CD
+        mark_yuanying_success(now, now + cd_sec + CD_BUFFER_SEC)
+        target_time = fmt_time_after(cd_sec + CD_BUFFER_SEC)
         await send_audit_log(f"👶 元婴成功→{target_time}")
         return True
 
