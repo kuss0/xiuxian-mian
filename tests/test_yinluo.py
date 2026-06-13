@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -388,6 +389,26 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("blood_forest", observed["auto_last_action"])
         self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
 
+    async def test_scheduler_waits_for_pending_resolution_before_any_followup(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "last_action": "血洗山林",
+            "last_result": "pending",
+            "banner_owner": "水镜真人",
+            "banner_name": "灭法幡",
+            "ready_slots": 1,
+            "ready_slot_numbers": [1],
+            "next_blood_forest_time": 0,
+            "next_demon_summon_time": 0,
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("pending", observed["auto_last_action"])
+        self.assertIn("结算中", observed["auto_last_error"])
+        self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
+
     async def test_scheduler_rechecks_banner_for_non_member_like_state_instead_of_high_risk_actions(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
@@ -420,6 +441,15 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 await yinluo.run_yinluo_scheduler(now)
 
             send_mock.assert_not_called()
+
+
+class YinluoAppWiringTests(unittest.TestCase):
+    def test_yinluo_scheduler_is_wired_into_identity_scheduler_loop(self):
+        source = (PROJECT_ROOT / "model" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("from .features.yinluo import run_yinluo_scheduler", source)
+        match = re.search(r"ordinary_schedulers = \((?P<body>.*?)\)", source, re.S)
+        self.assertIsNotNone(match)
+        self.assertIn("run_yinluo_scheduler", match.group("body"))
 
 
 class YinluoPassiveInboxTests(unittest.TestCase):

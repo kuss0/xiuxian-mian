@@ -669,6 +669,13 @@ def _has_yinluo_due_followup(observed, now):
     return False
 
 
+def _has_pending_yinluo_resolution(observed):
+    return (
+        str(observed.get("last_result") or "") == "pending"
+        and str(observed.get("last_action") or "") in {"血洗山林", "召唤魔影"}
+    )
+
+
 def _yinluo_next_after_action(observed, now):
     if _has_yinluo_due_followup(observed, now):
         return float(now + YINLUO_AUTO_CHAIN_STEP_SEC)
@@ -759,6 +766,17 @@ async def run_yinluo_scheduler(now):
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
+        return
+
+    if _has_recent_observation(observed, now) and _has_pending_yinluo_resolution(observed):
+        pending_action = str(observed.get("last_action") or "阴罗宗动作")
+        _set_yinluo_auto_wait(
+            observed,
+            now,
+            "pending",
+            now + YINLUO_AUTO_CHAIN_STEP_SEC,
+            f"{pending_action}上一轮仍在结算中，暂停自动发送。",
+        )
         return
 
     if not _has_recent_observation(observed, now):

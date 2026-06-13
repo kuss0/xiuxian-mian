@@ -78,6 +78,8 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
+from .features.yinluo import run_yinluo_scheduler
+from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
 from .features.small_world import (
     handle_small_world_disaster_broadcast,
     handle_small_world_harvest_reply,
@@ -257,6 +259,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "taiyi_yindao": ("引道", "太一", "五行", "神识"),
     "taiyi_node_search": ("搜寻节点", "空间节点", "虚空", "神识"),
     "taiyi_node_define": ("定星", "空间节点", "稳固", "材料"),
+    "world_boss": ("真仙试锋", "讨伐青元子", "青元子", "魔压", "阵势", "世界Boss"),
 }
 
 
@@ -612,6 +615,11 @@ async def _dispatch_small_world_broadcast_fallbacks(event, text, now):
         await _run_until_handled_for_enabled_identities(handle_small_world_disaster_broadcast, text, now, event)
 
 
+async def _dispatch_world_boss_broadcast_fallbacks(event, text, now):
+    if _claim_runtime_event(event, scope="world_boss_event"):
+        await handle_world_boss_broadcast(text, now, event=event)
+
+
 async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="nanlong_result"):
         await _run_until_handled_for_enabled_identities(handle_nanlong_result_broadcast, text, now, event)
@@ -726,6 +734,7 @@ async def _run_identity_schedulers(now):
         run_jiyin_scheduler,
         run_concubine_scheduler,
         run_nanlong_scheduler,
+        run_yinluo_scheduler,
         run_small_world_scheduler,
         run_wendao_scheduler,
         run_checkin_scheduler,
@@ -769,6 +778,7 @@ async def _run_global_schedulers(now):
     await run_storage_bag_api_keepalive_scheduler(now)
     await run_storage_bag_transfer_scheduler(now)
     await run_divination_scheduler(now)
+    await run_world_boss_scheduler(now)
     await run_tiandao_judgement_scheduler(now)
     await run_tianji_quiz_scheduler(now)
 
@@ -953,6 +963,14 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 matched_family=matched_family,
                 reply_context=reply_context,
             ) or handled_any
+            handled_any = await handle_world_boss_reply(
+                text,
+                now,
+                reply_to=reply_to,
+                matched_family=matched_family,
+                reply_context=reply_context,
+                current_msg_id=event.id,
+            ) or handled_any
             handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -1085,6 +1103,7 @@ async def on_message(event):
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
         await _dispatch_formation_broadcast_fallbacks(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="message")
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
+        await _dispatch_world_boss_broadcast_fallbacks(event, text, now)
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
@@ -1183,6 +1202,7 @@ async def on_message_edited(event):
         await _dispatch_message_edited_stargazer_panel(event, text, now)
         await _dispatch_message_edited_guanxing_monitor(event, text, now)
         await _dispatch_formation_broadcast_fallbacks(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")
+        await _dispatch_world_boss_broadcast_fallbacks(event, text, now)
         await _dispatch_message_edited_tiandao_judgement_prompt(event, text, now)
         await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
         await _dispatch_concubine_affinity_fallbacks(event, text, now)

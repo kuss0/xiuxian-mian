@@ -27,7 +27,7 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
@@ -54,6 +54,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_greet_msg_id", "concubine_last_greet_day", "concubine_greet_retry_count", "concubine_greet_last_error", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id", "concubine_gift_msg_id", "concubine_gift_amount", "concubine_last_gift_day", "concubine_gift_attempt_day", "concubine_gift_last_error", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_voyage_msg_id", "concubine_voyage_retry_count", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_heart_choice_prompt_msg_id", "concubine_heart_choice_round", "concubine_heart_choice_sent_at", "concubine_heart_choice_retry_count", "concubine_fragment_count", "concubine_fragment_total", "concubine_fragment_xutian_count", "concubine_fragment_xutian_total", "concubine_fragment_cangkun_count", "concubine_fragment_cangkun_total", "concubine_fragment_confirm_key", "concubine_fragment_confirmed_at", "concubine_voyage_status", "concubine_voyage_route", "concubine_voyage_return_at", "concubine_voyage_last_result", "concubine_voyage_last_error", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
     "hehuan_observation", "tianxing_observation", "yinluo_observation",
+    "world_boss_action_count", "world_boss_action_limit", "world_boss_attack_count", "world_boss_pending_msg_id", "world_boss_pending_action", "world_boss_pending_since", "world_boss_last_action", "world_boss_last_action_at", "world_boss_last_reply_msg_id", "world_boss_exhausted", "world_boss_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_last_error",
     "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_god_cooldown_until", "small_world_pending_god_action", "small_world_pending_god_reason", "small_world_pending_god_priority", "small_world_pending_god_at", "small_world_last_disaster_wave_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_panel_snapshot", "small_world_last_panel_at", "small_world_last_error",
     "resource_shortage_backoffs", "action_guard_sessions",
@@ -69,16 +70,16 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "yinluo_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged",
     "second_soul_heart_demon_notified",
     "explore_rift_manual_required",
-    "tree_maturing_logged",
+    "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized"}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -205,6 +206,7 @@ IDENTITY_STATE_TEMPLATE = {
     "hehuan_enabled": False,
     "tianxing_enabled": False,
     "yinluo_enabled": False,
+    "world_boss_enabled": False,
     "nanlong_enabled": False,
     "tianti_enabled": False,
     "tianti_wenxin_enabled": True,
@@ -454,6 +456,19 @@ IDENTITY_STATE_TEMPLATE = {
     "tianxing_observation": {},
     "yinluo_observation": {},
 
+    # 真仙试锋世界事件
+    "world_boss_action_count": 0,
+    "world_boss_action_limit": 5,
+    "world_boss_attack_count": 0,
+    "world_boss_pending_msg_id": 0,
+    "world_boss_pending_action": "",
+    "world_boss_pending_since": 0,
+    "world_boss_last_action": "",
+    "world_boss_last_action_at": 0,
+    "world_boss_last_reply_msg_id": 0,
+    "world_boss_exhausted": False,
+    "world_boss_last_error": "",
+
     # 南陇侯模块
     "next_nanlong_time": 0,
     "nanlong_reply_to_msg_id": 0,
@@ -603,6 +618,7 @@ GLOBAL_STATE_DEFAULTS = {
     "tianji_quiz_pending": {},
     "divination_pending_exchanges": {},
     "divination_run_state": {},
+    "world_boss_run_state": {},
     "guanxing_monitor_enabled": False,
     "guanxing_monitor_targets": list(GUANXING_TARGET_KEYWORDS[:2]),
     "guanxing_shift_target": "",
@@ -998,6 +1014,16 @@ def get_divination_run_state():
 def set_divination_run_state(records):
     _meta_state["divination_run_state"] = records if isinstance(records, dict) else {}
     return get_divination_run_state()
+
+
+def get_world_boss_run_state():
+    records = _meta_state.get("world_boss_run_state") or {}
+    return records if isinstance(records, dict) else {}
+
+
+def set_world_boss_run_state(records):
+    _meta_state["world_boss_run_state"] = records if isinstance(records, dict) else {}
+    return get_world_boss_run_state()
 
 
 def normalize_divination_daily_limit(value):
@@ -2129,6 +2155,7 @@ __all__ = [
     "get_divination_daily_limit",
     "get_divination_pending_exchanges",
     "get_divination_run_state",
+    "get_world_boss_run_state",
     "get_storage_bag_api_config",
     "get_storage_bag_records",
     "get_storage_bag_item_rules",
@@ -2185,6 +2212,7 @@ __all__ = [
     "set_divination_daily_limit",
     "set_divination_pending_exchanges",
     "set_divination_run_state",
+    "set_world_boss_run_state",
     "set_storage_bag_api_config",
     "set_storage_bag_records",
     "set_storage_bag_item_rules",

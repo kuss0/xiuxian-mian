@@ -66,6 +66,16 @@ def get_passive_event_ledger_path(ts=None):
     return os.path.join(_resolve_ledger_dir(), f"{_day_key(ts)}.jsonl")
 
 
+def _recent_ledger_paths(limit_files=30):
+    ledger_dir = _resolve_ledger_dir()
+    try:
+        names = sorted(name for name in os.listdir(ledger_dir) if name.endswith(".jsonl"))
+    except OSError:
+        return []
+    safe_limit = max(1, int(limit_files or 30))
+    return [os.path.join(ledger_dir, name) for name in names[-safe_limit:]]
+
+
 def _cleanup_old_ledgers(now=None):
     global _last_cleanup_at
     now = _safe_float(now) or time.time()
@@ -171,13 +181,19 @@ def append_passive_event(
 
 
 def iter_passive_events(path=None, limit=100):
-    source_path = path or get_passive_event_ledger_path()
     safe_limit = max(1, min(int(limit or 100), 1000))
-    try:
-        with open(source_path, "r", encoding="utf-8") as fp:
-            lines = fp.readlines()[-safe_limit:]
-    except OSError:
-        return []
+    source_paths = [path] if path else _recent_ledger_paths()
+    if not source_paths:
+        source_paths = [get_passive_event_ledger_path()]
+    lines = []
+    for source_path in source_paths:
+        try:
+            with open(source_path, "r", encoding="utf-8") as fp:
+                lines.extend(fp.readlines())
+                if len(lines) > safe_limit:
+                    lines = lines[-safe_limit:]
+        except OSError:
+            continue
     events = []
     for line in lines:
         line = line.strip()

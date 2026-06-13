@@ -105,6 +105,10 @@ from .config import (
     CMD_YINLUO_GUIDE,
     CMD_YINLUO_POSSESS,
     CMD_YINLUO_REFINE,
+    CMD_QINGYUANZI_ATTACK,
+    CMD_QINGYUANZI_GUARD,
+    CMD_QINGYUANZI_SUPPRESS,
+    CMD_WORLD_BOSS_STATUS,
     CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
@@ -273,6 +277,10 @@ DUNGEON_QUIET_ALLOWED_PREFIXES = (
     ".黄龙抉择",
     ".苍坤抉择",
     ".落云抉择",
+    CMD_WORLD_BOSS_STATUS,
+    CMD_QINGYUANZI_SUPPRESS,
+    CMD_QINGYUANZI_GUARD,
+    CMD_QINGYUANZI_ATTACK,
 )
 
 
@@ -624,6 +632,7 @@ REPLY_FAMILY_COMMANDS = {
     "yinluo_refine": {CMD_YINLUO_REFINE},
     "yinluo_curse": {CMD_YINLUO_CURSE},
     "yinluo_possess": {CMD_YINLUO_POSSESS},
+    "world_boss": {CMD_WORLD_BOSS_STATUS, CMD_QINGYUANZI_SUPPRESS, CMD_QINGYUANZI_GUARD, CMD_QINGYUANZI_ATTACK},
     "nanlong": {CMD_NANLONG_EXCHANGE_FABAO, CMD_NANLONG_EXCHANGE_GONGFA, CMD_NANLONG_REJECT},
     "second_soul_status": {CMD_SECOND_SOUL_STATUS},
     "second_soul_train": {CMD_SECOND_SOUL_TRAIN},
@@ -1519,7 +1528,7 @@ _low_priority_audit_seq = 0
 
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
     source_module = str((item or {}).get("source_module") or "").strip()
-    return source_module == "卜筮问天" or str(family or "").strip() == "divination"
+    return source_module in {"卜筮问天", "真仙试锋"} or str(family or "").strip() in {"divination", "world_boss"}
 _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
 _recent_dungeon_quiet_send_blocks = {}
 

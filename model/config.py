@@ -310,6 +310,10 @@ CMD_YINLUO_COLLECT = ".收取精华"
 CMD_YINLUO_REFINE = ".囚禁魂魄"
 CMD_YINLUO_CURSE = ".下咒"
 CMD_YINLUO_POSSESS = ".夺舍"
+CMD_WORLD_BOSS_STATUS = ".世界boss"
+CMD_QINGYUANZI_SUPPRESS = ".讨伐青元子 镇魂"
+CMD_QINGYUANZI_GUARD = ".讨伐青元子 护阵"
+CMD_QINGYUANZI_ATTACK = ".讨伐青元子 强攻"
 CMD_SMALL_WORLD_QUERY = ".小世界"
 CMD_SMALL_WORLD_MANIFEST = ".显灵"
 CMD_SMALL_WORLD_HARVEST = ".收割香火"
@@ -484,6 +488,10 @@ SCRIPT_COMMANDS = [
     CMD_YINLUO_REFINE,
     CMD_YINLUO_CURSE,
     CMD_YINLUO_POSSESS,
+    CMD_WORLD_BOSS_STATUS,
+    CMD_QINGYUANZI_SUPPRESS,
+    CMD_QINGYUANZI_GUARD,
+    CMD_QINGYUANZI_ATTACK,
     CMD_SMALL_WORLD_QUERY,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_HARVEST,
@@ -504,7 +512,7 @@ SCRIPT_COMMANDS = [
     "1",
 ]
 DIVINATION_DEFAULT_DAILY_LIMIT = 6
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -526,6 +534,7 @@ MODULE_KEY_MAP = {
     "合欢宗": "hehuan_enabled",
     "天星宗": "tianxing_enabled",
     "阴罗宗": "yinluo_enabled",
+    "真仙试锋": "world_boss_enabled",
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",
     "探寻裂缝": "explore_rift_enabled",
@@ -741,6 +750,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.合欢宗状态$'), "合欢宗"),
     (re.compile(r'^\.天星宗状态$'), "天星宗"),
     (re.compile(r'^\.阴罗宗状态$'), "阴罗宗"),
+    (re.compile(r'^\.(真仙试锋|青元子|世界boss)状态$'), "真仙试锋"),
     (re.compile(r'^\.南陇侯状态$'), "南陇侯"),
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.探寻裂缝状态$'), "探寻裂缝"),
@@ -795,6 +805,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)天星宗$'), "天星宗", False),
     (re.compile(r'^\.(开启|打开)阴罗宗$'), "阴罗宗", True),
     (re.compile(r'^\.(关闭|关掉)阴罗宗$'), "阴罗宗", False),
+    (re.compile(r'^\.(开启|打开)(真仙试锋|青元子|世界boss)$'), "真仙试锋", True),
+    (re.compile(r'^\.(关闭|关掉)(真仙试锋|青元子|世界boss)$'), "真仙试锋", False),
     (re.compile(r'^\.(开启|打开)南陇侯$'), "南陇侯", True),
     (re.compile(r'^\.(关闭|关掉)南陇侯$'), "南陇侯", False),
     (re.compile(r'^\.(开启|打开)元婴$'), "元婴", True),

@@ -34,6 +34,7 @@ from .state import (
     get_pending_command,
     get_divination_pending_exchanges,
     get_divination_run_state,
+    get_world_boss_run_state,
     get_replica_group_id,
     get_replica_group_ids,
     get_replica_dispatch_group_ids,
@@ -63,6 +64,7 @@ from .state import (
     set_game_topic_id,
     set_divination_pending_exchanges,
     set_divination_run_state,
+    set_world_boss_run_state,
     set_guanxing_monitor_enabled,
     set_guanxing_monitor_targets,
     set_guanxing_round_state,
@@ -177,6 +179,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianxing_enabled INTEGER NOT NULL DEFAULT 0")
     if "yinluo_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN yinluo_enabled INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN world_boss_enabled INTEGER NOT NULL DEFAULT 0")
     if "nanlong_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN nanlong_enabled INTEGER NOT NULL DEFAULT 0")
     if "guanxing_monitor_enabled" not in module_columns:
@@ -482,6 +486,28 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_observation TEXT NOT NULL DEFAULT '{}' ")
     if "yinluo_observation" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yinluo_observation TEXT NOT NULL DEFAULT '{}' ")
+    if "world_boss_action_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_action_count INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_action_limit" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_action_limit INTEGER NOT NULL DEFAULT 5")
+    if "world_boss_attack_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_attack_count INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_pending_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_pending_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_action TEXT NOT NULL DEFAULT ''")
+    if "world_boss_pending_since" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_since REAL NOT NULL DEFAULT 0")
+    if "world_boss_last_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_action TEXT NOT NULL DEFAULT ''")
+    if "world_boss_last_action_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_action_at REAL NOT NULL DEFAULT 0")
+    if "world_boss_last_reply_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_reply_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_exhausted" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_exhausted INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_trial_last_error" not in runtime_columns:
@@ -957,6 +983,7 @@ def init_db():
             hehuan_enabled INTEGER NOT NULL DEFAULT 0,
             tianxing_enabled INTEGER NOT NULL DEFAULT 0,
             yinluo_enabled INTEGER NOT NULL DEFAULT 0,
+            world_boss_enabled INTEGER NOT NULL DEFAULT 0,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             explore_rift_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1197,6 +1224,17 @@ def init_db():
             hehuan_observation TEXT NOT NULL DEFAULT '{}',
             tianxing_observation TEXT NOT NULL DEFAULT '{}',
             yinluo_observation TEXT NOT NULL DEFAULT '{}',
+            world_boss_action_count INTEGER NOT NULL DEFAULT 0,
+            world_boss_action_limit INTEGER NOT NULL DEFAULT 5,
+            world_boss_attack_count INTEGER NOT NULL DEFAULT 0,
+            world_boss_pending_msg_id INTEGER NOT NULL DEFAULT 0,
+            world_boss_pending_action TEXT NOT NULL DEFAULT '',
+            world_boss_pending_since REAL NOT NULL DEFAULT 0,
+            world_boss_last_action TEXT NOT NULL DEFAULT '',
+            world_boss_last_action_at REAL NOT NULL DEFAULT 0,
+            world_boss_last_reply_msg_id INTEGER NOT NULL DEFAULT 0,
+            world_boss_exhausted INTEGER NOT NULL DEFAULT 0,
+            world_boss_last_error TEXT NOT NULL DEFAULT '',
             nanlong_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             nanlong_reply_due_at REAL NOT NULL DEFAULT 0,
             nanlong_last_msg_id INTEGER NOT NULL DEFAULT 0,
@@ -1382,6 +1420,10 @@ def init_db():
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("divination_run_state", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("world_boss_run_state", "{}"),
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
@@ -1822,6 +1864,11 @@ _META_STATE_CODEC = {
         get_divination_run_state,
         _encode_meta_json,
         lambda value: set_divination_run_state(_decode_meta_json(value, {})),
+    ),
+    "world_boss_run_state": (
+        get_world_boss_run_state,
+        _encode_meta_json,
+        lambda value: set_world_boss_run_state(_decode_meta_json(value, {})),
     ),
     "guanxing_monitor_enabled": (
         get_guanxing_monitor_enabled,

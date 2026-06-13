@@ -41,6 +41,9 @@ from .config import (
     CMD_PET,
     CMD_PET_WARM,
     CMD_PET_TRIAL,
+    CMD_QINGYUANZI_ATTACK,
+    CMD_QINGYUANZI_GUARD,
+    CMD_QINGYUANZI_SUPPRESS,
     CMD_QUIZ_ANSWER,
     CMD_RANCH,
     CMD_SECOND_SOUL_CHOICE_BREAK,
@@ -69,6 +72,7 @@ from .config import (
     CMD_TREE_WATER,
     CMD_WILD_TRAINING,
     CMD_WENDAO,
+    CMD_WORLD_BOSS_STATUS,
     CMD_YINDAO,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
@@ -141,6 +145,7 @@ from .features.tianxing import execute_tianxing_manual_action, get_tianxing_stat
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text, request_tree_bootstrap_check
+from .features.world_boss import clear_world_boss_identity_state, get_world_boss_status_text
 from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
@@ -1086,6 +1091,17 @@ def _manual_enable_explore_rift_module_state(now):
     state["explore_rift_manual_required"] = True
 
 
+def _manual_disable_world_boss_module_state():
+    state["world_boss_enabled"] = False
+    clear_world_boss_identity_state(persist=False)
+    _clear_pending_tasks_by_commands({CMD_WORLD_BOSS_STATUS, CMD_QINGYUANZI_SUPPRESS, CMD_QINGYUANZI_GUARD, CMD_QINGYUANZI_ATTACK})
+
+
+def _manual_enable_world_boss_module_state(now):
+    state["world_boss_enabled"] = True
+    clear_world_boss_identity_state(persist=False, keep_last_error=False)
+
+
 def get_explore_rift_status_text():
     last_result = str(state.get("explore_rift_last_result") or "").strip() or "无"
     last_error = str(state.get("explore_rift_last_error") or "").strip() or "无"
@@ -1238,6 +1254,10 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_SMALL_WORLD_REFINE: "小世界",
     CMD_SMALL_WORLD_PREACH: "小世界",
     CMD_SMALL_WORLD_RELIEF: "小世界",
+    CMD_WORLD_BOSS_STATUS: "真仙试锋",
+    CMD_QINGYUANZI_SUPPRESS: "真仙试锋",
+    CMD_QINGYUANZI_GUARD: "真仙试锋",
+    CMD_QINGYUANZI_ATTACK: "真仙试锋",
     CMD_RANCH: "放养",
     CMD_WILD_TRAINING: "野外历练",
     CMD_CHECKIN: "点卯",
@@ -1276,6 +1296,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "天机代卜": (_manual_enable_concubine_tianji_module_state, _manual_disable_concubine_tianji_module_state),
     "共历心劫": (_manual_enable_concubine_heart_module_state, _manual_disable_concubine_heart_module_state),
     "侍妾远航": (_manual_enable_concubine_voyage_module_state, _manual_disable_concubine_voyage_module_state),
+    "真仙试锋": (_manual_enable_world_boss_module_state, _manual_disable_world_boss_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
     "探寻裂缝": (_manual_enable_explore_rift_module_state, _manual_disable_explore_rift_module_state),
@@ -1306,6 +1327,7 @@ MODULE_DISABLE_HANDLERS = {
     "天机代卜": _manual_disable_concubine_tianji_module_state,
     "共历心劫": _manual_disable_concubine_heart_module_state,
     "侍妾远航": _manual_disable_concubine_voyage_module_state,
+    "真仙试锋": _manual_disable_world_boss_module_state,
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
     "元婴": _disable_yuanying_module_state,
@@ -1563,6 +1585,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "合欢宗": get_hehuan_status_text,
         "天星宗": get_tianxing_status_text,
         "阴罗宗": get_yinluo_status_text,
+        "真仙试锋": get_world_boss_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
         "元婴": get_yuanying_status_detail_text,
