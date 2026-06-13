@@ -208,6 +208,8 @@ _REPLICA_BUTTON_ACTION_TTL_SEC = 30 * 60
 _REPLICA_BUTTON_ACTION_MAX = 500
 _REPLICA_BUTTON_EXCLUSIVE_MAX = 500
 _REPLICA_BUTTON_CALLBACK_PREFIX = "rp:"
+_CANGKUN_STAGE_GUARD_TTL_SEC = 30 * 60
+_CANGKUN_STAGE_GUARD_MAX = 100
 _REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_SEC = 30
 _REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_MAX = 200
 _XUTIAN_DECISION_NOTICE_TTL_SEC = 30 * 60
@@ -280,6 +282,8 @@ _REPLICA_QUERY_PROFESSION_NAMES = ("破军", "御山", "灵医", "影刃", "咒�
 _CANGKUN_REQUIRED_PROFESSIONS = ("破军", "御山", "灵医", "影刃", "咒师")
 _CANGKUN_MIN_REALM = "结丹初期"
 _CANGKUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_CANGKUN_MIN_REALM)
+_CANGKUN_SENSE_MIN_REALM = "化神初期"
+_CANGKUN_SENSE_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_CANGKUN_SENSE_MIN_REALM)
 _CANGKUN_ROOT_GRADE_PRIORITY = ("天", "异", "真", "伪")
 _CANGKUN_PREFERRED_SECT = "太一门"
 _CANGKUN_BACKUP_EXCLUDED_USERNAMES = ("@walterwa2000",)
@@ -522,7 +526,7 @@ def _is_reusable_replica_command_text(command):
         return False
     if command.startswith(".开启副本 "):
         return True
-    return command in {".查询副本", ".解散副本"}
+    return command == ".查询副本"
 
 
 def _is_reusable_replica_command_action(action):
@@ -584,16 +588,33 @@ def _log_group_panel_action_button(text, query_text, chat_id, listener_account_i
     )
 
 
-def _game_command_action_button(text, command, identity_id, *, source_msg_id=0, token_key="", ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC, exclusive_key=""):
+def _game_command_action_button(
+    text,
+    command,
+    identity_id,
+    *,
+    source_msg_id=0,
+    token_key="",
+    ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC,
+    exclusive_key="",
+    stage_guard_scope="",
+    stage_guard_key="",
+):
+    payload = {
+        "command": str(command or "").strip(),
+        "identity_id": int(identity_id or 0),
+        "source_msg_id": int(source_msg_id or 0),
+        "exclusive_key": str(exclusive_key or "").strip(),
+    }
+    stage_guard_scope = str(stage_guard_scope or "").strip()
+    stage_guard_key = str(stage_guard_key or "").strip()
+    if stage_guard_scope and stage_guard_key:
+        payload["stage_guard_scope"] = stage_guard_scope
+        payload["stage_guard_key"] = stage_guard_key
     return _replica_action_button(
         text,
         "game_command",
-        {
-            "command": str(command or "").strip(),
-            "identity_id": int(identity_id or 0),
-            "source_msg_id": int(source_msg_id or 0),
-            "exclusive_key": str(exclusive_key or "").strip(),
-        },
+        payload,
         ttl_sec=ttl_sec,
         token_key=token_key or f"game_command:{identity_id}:{source_msg_id}:{command}",
     )
@@ -645,6 +666,71 @@ def _mark_xutian_decision_notice_once(key, now=None):
     run_state["xutian_decision_notices"] = records
     _save_replica_run_state_dict(run_state)
     return True
+
+
+def _cleanup_cangkun_stage_guard_records(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("cangkun_current_stage_by_scope")
+    if not isinstance(records, dict):
+        records = {}
+    changed = False
+    for scope, item in list(records.items()):
+        if not isinstance(item, dict):
+            records.pop(scope, None)
+            changed = True
+            continue
+        expires_at = float(item.get("expires_at") or 0)
+        if expires_at > 0 and now >= expires_at:
+            records.pop(scope, None)
+            changed = True
+    if len(records) > _CANGKUN_STAGE_GUARD_MAX:
+        keep = {
+            scope
+            for scope, _item in sorted(
+                records.items(),
+                key=lambda item: float((item[1] or {}).get("updated_at") or 0),
+                reverse=True,
+            )[:_CANGKUN_STAGE_GUARD_MAX]
+        }
+        for scope in list(records):
+            if scope not in keep:
+                records.pop(scope, None)
+                changed = True
+    run_state["cangkun_current_stage_by_scope"] = records
+    if changed:
+        _save_replica_run_state_dict(run_state)
+    return records
+
+
+def _set_cangkun_stage_guard_current(scope, stage_key, now=None):
+    scope = str(scope or "").strip()
+    stage_key = str(stage_key or "").strip()
+    if not scope or not stage_key:
+        return False
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_cangkun_stage_guard_records(now)
+    records[scope] = {
+        "stage_key": stage_key,
+        "updated_at": now,
+        "expires_at": now + _CANGKUN_STAGE_GUARD_TTL_SEC,
+    }
+    run_state["cangkun_current_stage_by_scope"] = records
+    _save_replica_run_state_dict(run_state)
+    return True
+
+
+def _is_cangkun_stage_guard_current(scope, stage_key, now=None):
+    scope = str(scope or "").strip()
+    stage_key = str(stage_key or "").strip()
+    if not scope or not stage_key:
+        return True
+    item = _cleanup_cangkun_stage_guard_records(now).get(scope)
+    if not isinstance(item, dict):
+        return True
+    current_key = str(item.get("stage_key") or "").strip()
+    return not current_key or current_key == stage_key
 
 
 def _cleanup_lightweight_fast_retry_records(now=None):
@@ -902,21 +988,24 @@ def _get_latest_replica_room_id(replica_kind, now=None, leader_username=""):
     return candidates[0][1]
 
 
+def _make_cangkun_decision_scope(event, text, leader_username="", now=None):
+    leader_username = _normalize_replica_username(leader_username) or _parse_replica_leader_username(text)
+    room_id = _get_latest_replica_room_id(_REPLICA_KIND_CANGKUN, now=now, leader_username=leader_username)
+    if room_id:
+        return f"room:{room_id}"
+    elif leader_username:
+        return f"leader:{leader_username}"
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    return f"chat:{chat_id}"
+
+
 def _make_cangkun_decision_notice_key(event, text, stage_info, leader_username="", now=None):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     stage = str(stage_info.get("stage") or "").strip()
     audience = str(stage_info.get("audience") or "leader").strip()
     commands_key = "|".join(str(command or "").strip() for _label, command in stage_info.get("commands") or ())
     commands_digest = hashlib.sha1(commands_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
-    leader_username = _normalize_replica_username(leader_username) or _parse_replica_leader_username(text)
-    room_id = _get_latest_replica_room_id(_REPLICA_KIND_CANGKUN, now=now, leader_username=leader_username)
-    if room_id:
-        scope = f"room:{room_id}"
-    elif leader_username:
-        scope = f"leader:{leader_username}"
-    else:
-        chat_id = int(getattr(event, "chat_id", 0) or 0)
-        scope = f"chat:{chat_id}"
+    scope = _make_cangkun_decision_scope(event, text, leader_username=leader_username, now=now)
     return f"cangkun:{scope}:{audience}:{stage}:{commands_digest}"
 
 
@@ -1038,12 +1127,14 @@ def _format_cangkun_decision_advice(stage_info, text, *, html=False):
     return escape(advice) if html else advice
 
 
-def _build_cangkun_decision_buttons(stage_info, leader_identity_id, event, text, source_key=""):
+def _build_cangkun_decision_buttons(stage_info, leader_identity_id, event, text, source_key="", now=None):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     leader_identity_id = int(leader_identity_id or 0)
     if leader_identity_id <= 0:
         return []
-    source_key = str(source_key or "").strip() or _make_cangkun_decision_notice_key(event, text, stage_info, now=time.time())
+    now = float(now or time.time())
+    source_key = str(source_key or "").strip() or _make_cangkun_decision_notice_key(event, text, stage_info, now=now)
+    stage_scope = "cangkun:" + _make_cangkun_decision_scope(event, text, leader_username=_parse_replica_leader_username(text), now=now)
     source_msg_id = int(getattr(event, "id", 0) or 0)
     buttons = []
     for label, command in stage_info.get("commands") or ():
@@ -1054,6 +1145,8 @@ def _build_cangkun_decision_buttons(stage_info, leader_identity_id, event, text,
             source_msg_id=source_msg_id,
             token_key=f"cangkun:{source_key}:{leader_identity_id}:{command}",
             exclusive_key=f"cangkun:{source_key}",
+            stage_guard_scope=stage_scope,
+            stage_guard_key=source_key,
         )
         if button:
             buttons.append(button)
@@ -1084,6 +1177,12 @@ def _build_cangkun_team_decision_buttons(stage_info, event, text, now, leader_id
         leader_username=_parse_replica_leader_username(text),
         now=now,
     )
+    stage_scope = "cangkun:" + _make_cangkun_decision_scope(
+        event,
+        text,
+        leader_username=_parse_replica_leader_username(text),
+        now=now,
+    )
     source_msg_id = int(getattr(event, "id", 0) or 0)
     buttons = []
     for identity_id in _get_cangkun_team_decision_identity_ids(event, text, now, leader_identity_id=leader_identity_id):
@@ -1096,6 +1195,8 @@ def _build_cangkun_team_decision_buttons(stage_info, event, text, now, leader_id
                 source_msg_id=source_msg_id,
                 token_key=f"cangkun:{source_key}:{identity_id}:{command}",
                 exclusive_key=f"cangkun:{source_key}:{identity_id}",
+                stage_guard_scope=stage_scope,
+                stage_guard_key=source_key,
             )
             if button:
                 buttons.append(button)
@@ -1144,6 +1245,13 @@ async def _maybe_send_cangkun_decision_notice(event, text, now):
         leader_username=leader_username,
         now=now,
     )
+    stage_scope = "cangkun:" + _make_cangkun_decision_scope(
+        event,
+        text,
+        leader_username=leader_username,
+        now=now,
+    )
+    _set_cangkun_stage_guard_current(stage_scope, notice_key, now)
     if not _mark_xutian_decision_notice_once(notice_key, now):
         return False
     if stage_info.get("audience") == "team":
@@ -1156,7 +1264,7 @@ async def _maybe_send_cangkun_decision_notice(event, text, now):
             source_key=notice_key,
         )
     else:
-        buttons = _build_cangkun_decision_buttons(stage_info, leader_identity_id, event, text, source_key=notice_key)
+        buttons = _build_cangkun_decision_buttons(stage_info, leader_identity_id, event, text, source_key=notice_key, now=now)
     if not buttons and stage_info.get("audience") != "team":
         return False
     commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
@@ -1584,21 +1692,15 @@ async def _send_kunwu_auto_choice_notice(stage_info, now, result, *, leader_iden
         return False
     title = str((stage_info or {}).get("title") or "后续抉择").strip()
     leader_username = _normalize_replica_username(leader_username)
-    leader_text = f"｜队长 {mono(leader_username)}" if leader_username else ""
-    notice_text = (
-        f"昆吾山自动抉择：{title}{leader_text}\n"
-        f"已发送：{mono(result.get('command') or '')}\n"
-        "3秒内无回复会补发一次。"
-    )
-    if await _send_replica_kind_notice(_REPLICA_KIND_KUNWU, notice_text, now, html=True):
-        return True
-    return await send_audit_log(
-        notice_text,
-        scope="identity",
+    console_log(
+        f"昆吾山自动抉择：{title}"
+        + (f"｜队长 {leader_username}" if leader_username else "")
+        + f"｜已发送 {str(result.get('command') or '').strip()}",
+        scope="replica",
         send_as_id=int(leader_identity_id or 0) or int(result.get("identity_id") or 0),
-        priority="medium",
-        limit=700,
+        limit=220,
     )
+    return False
 
 
 async def _maybe_auto_send_kunwu_decision(event, text, stage_info, now):
@@ -1821,7 +1923,17 @@ def _compact_replica_button_rows(*rows):
     return result
 
 
-def _make_replica_command_event(command, chat_id, actor_id=0, *, listener_account_id=0, event_id=0):
+def _make_replica_command_event(
+    command,
+    chat_id,
+    actor_id=0,
+    *,
+    listener_account_id=0,
+    event_id=0,
+    button_message_id=0,
+    button_actor_id=0,
+    button_action_type="",
+):
     client_obj = get_all_clients().get(int(listener_account_id or 0)) if int(listener_account_id or 0) > 0 else None
     if client_obj is None:
         client_obj = next(iter(get_all_clients().values()), None)
@@ -1834,6 +1946,12 @@ def _make_replica_command_event(command, chat_id, actor_id=0, *, listener_accoun
     )
     if int(listener_account_id or 0) > 0:
         event._replica_button_listener_account_id = int(listener_account_id or 0)
+    if int(button_message_id or 0) > 0:
+        event._replica_button_message_id = int(button_message_id or 0)
+    if int(button_actor_id or 0) > 0:
+        event._replica_button_actor_id = int(button_actor_id or 0)
+    if str(button_action_type or "").strip():
+        event._replica_button_action_type = str(button_action_type or "").strip()
     return event
 
 
@@ -1891,12 +2009,17 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         event_id = int(payload.get("event_id") or 0)
         if _is_reusable_replica_command_text(command):
             event_id = 0
+        elif _callback_message_id(callback_query) > 0:
+            event_id = _callback_message_id(callback_query)
         event = _make_replica_command_event(
             command,
             chat_id,
             actor_id=actor_id,
             listener_account_id=listener_account_id,
             event_id=event_id,
+            button_message_id=_callback_message_id(callback_query),
+            button_actor_id=actor_id,
+            button_action_type=action_type,
         )
         handled = await _handle_replica_group_command(event)
         if handled and exclusive_key:
@@ -1925,6 +2048,10 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
             return False, "按钮动作缺少游戏命令或身份。"
         if not get_identity_enabled(identity_id):
             return False, "身份已停用。"
+        stage_guard_scope = str(payload.get("stage_guard_scope") or "").strip()
+        stage_guard_key = str(payload.get("stage_guard_key") or "").strip()
+        if stage_guard_scope and stage_guard_key and not _is_cangkun_stage_guard_current(stage_guard_scope, stage_guard_key):
+            return True, "阶段已过期，未发送。"
         if exclusive_key and _is_replica_button_exclusive_group_executed(exclusive_key):
             return True, "本阶段已处理过。"
         msg = await send_game_command(
@@ -2441,10 +2568,18 @@ def _format_lightweight_existing_room_notice(room, *, html=False):
             _format_lightweight_next_commands(".查询副本", html=html),
         ]
     else:
+        next_commands = [".加入副本 @用户名 @用户名"]
+        if replica_kind != _REPLICA_KIND_CANGKUN or _is_lightweight_room_enter_actionable(room):
+            enter_command = (_REPLICA_KIND_META.get(replica_kind) or {}).get("enter_command") or ""
+            if enter_command:
+                next_commands.append(enter_command)
+        next_commands.append(".解散副本")
         lines = [
             f"已有{replica_name}房间 {room_id}" + (f"｜队长 {leader}" if leader else "") + "，未重复开房。",
-            _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", html=html),
+            _format_lightweight_next_commands(*next_commands, html=html),
         ]
+        if replica_kind == _REPLICA_KIND_CANGKUN:
+            lines.insert(1, _format_cangkun_spiritual_sense_status(_get_lightweight_room_team_identity_ids(room), html=html))
     return "\n".join(line for line in lines if line)
 
 
@@ -2469,10 +2604,13 @@ def _format_lightweight_dissolve_pending_notice(room, *, html=False):
         f"{replica_name}房间 {room_id} 已请求解散，未重复发送解散命令。",
         _format_lightweight_next_commands(".查询副本", html=html),
     ]
+    source_detail = str(room.get("dissolve_source_detail") or "").strip()
+    if source_detail:
+        lines.insert(1, f"触发：{escape(source_detail) if html else source_detail}。")
     return "\n".join(line for line in lines if line)
 
 
-def _reserve_lightweight_room_dissolve(room, now=None, *, source="", source_msg_id=0):
+def _reserve_lightweight_room_dissolve(room, now=None, *, source="", source_msg_id=0, actor_id=0, source_detail=""):
     room = room if isinstance(room, dict) else {}
     chat_id = int(room.get("replica_chat_id") or 0)
     room_id = str(room.get("room_id") or "").strip()
@@ -2503,6 +2641,8 @@ def _reserve_lightweight_room_dissolve(room, now=None, *, source="", source_msg_
         "dissolve_requested_at": now,
         "dissolve_source": str(source or ""),
         "dissolve_source_msg_id": int(source_msg_id or 0),
+        "dissolve_actor_id": int(actor_id or 0),
+        "dissolve_source_detail": str(source_detail or "").strip(),
         "updated_at": now,
     })
     rooms[str(chat_id)] = current
@@ -2693,6 +2833,25 @@ def _get_lightweight_room_usernames(room):
         + list(room.get("join_requested_usernames") or [])
         + list(room.get("team_usernames") or [])
     )
+
+
+def _get_lightweight_room_team_identity_ids(room, now=None):
+    room = room if isinstance(room, dict) else {}
+    usernames = _get_lightweight_room_usernames(room)
+    identity_ids = _map_replica_usernames_to_identity_ids(usernames)
+    leader_identity_id = int(room.get("leader_identity_id") or 0)
+    if leader_identity_id > 0 and leader_identity_id not in identity_ids:
+        identity_ids.insert(0, leader_identity_id)
+    active_ids = _get_active_replica_team_identity_ids_for_usernames(
+        usernames or [room.get("leader_username") or ""],
+        now or time.time(),
+        replica_kind=room.get("replica_kind"),
+    )
+    return _normalize_replica_identity_ids(identity_ids + active_ids)
+
+
+def _get_cangkun_room_spiritual_sense_snapshot(room, now=None):
+    return _get_cangkun_team_spiritual_sense_snapshot(_get_lightweight_room_team_identity_ids(room, now=now))
 
 
 def _mark_lightweight_room_dissolved(room_id, leader_username="", replica_kind="", now=None):
@@ -3107,6 +3266,8 @@ def _build_lightweight_room_action_buttons(
     include_dissolve=True,
     include_query=False,
 ):
+    if include_enter and not _is_lightweight_room_enter_actionable(room):
+        include_enter = False
     first_row = []
     join_button = _lightweight_join_button(room, join_command, label=join_label)
     if join_button:
@@ -3195,7 +3356,7 @@ def _get_lightweight_room_recommendation_action(room):
             "join_command": join_command,
             "join_label": "加入推荐",
             "extra_join_actions": _get_lightweight_room_extra_join_actions(room, join_command),
-            "include_enter": True,
+            "include_enter": _is_lightweight_room_enter_actionable(room),
         }
     return {"join_command": "", "join_label": "加入推荐", "include_enter": False}
 
@@ -3207,6 +3368,8 @@ def _get_lightweight_recommended_join_command_for_room(room):
 def _is_lightweight_room_enter_actionable(room):
     room = room if isinstance(room, dict) else {}
     if room.get("replica_kind") != _REPLICA_KIND_VIRTUAL_HALL:
+        if room.get("replica_kind") == _REPLICA_KIND_CANGKUN:
+            return _get_cangkun_room_spiritual_sense_snapshot(room).get("status") == "ok"
         return True
     return bool(_get_lightweight_room_recommendation_action(room).get("include_enter"))
 
@@ -3514,40 +3677,207 @@ def _parse_int_like(value, default=0):
         return int(default or 0)
 
 
-def _get_identity_cangkun_spiritual_sense(identity_id):
+def _is_cangkun_sense_realm_identity(identity_id):
+    realm = _get_cangkun_realm(identity_id)
+    if not realm or realm not in REALM_SORT_ORDER:
+        return False
+    return REALM_SORT_ORDER.index(realm) >= _CANGKUN_SENSE_MIN_REALM_INDEX
+
+
+def _get_cangkun_spiritual_sense_candidate_reason(identity_id):
+    profile = get_send_as_profile(identity_id)
+    sect_name = _normalize_replica_sect_name(profile.get("sect_name") or "")
+    if sect_name == _CANGKUN_PREFERRED_SECT:
+        return _CANGKUN_PREFERRED_SECT
+    realm = _get_cangkun_realm(identity_id)
+    if _is_cangkun_sense_realm_identity(identity_id):
+        return realm or _CANGKUN_SENSE_MIN_REALM
+    return ""
+
+
+def _is_cangkun_spiritual_sense_candidate(identity_id):
+    return bool(_get_cangkun_spiritual_sense_candidate_reason(identity_id))
+
+
+def _get_identity_cangkun_spiritual_sense_snapshot(identity_id):
     try:
         identity_id = int(identity_id or 0)
     except (TypeError, ValueError):
-        return 0
+        identity_id = 0
     if identity_id <= 0:
-        return 0
+        return {"identity_id": 0, "value": 0, "status": "ineligible", "candidate": False, "candidate_reason": ""}
+    candidate_reason = _get_cangkun_spiritual_sense_candidate_reason(identity_id)
+    if not candidate_reason:
+        return {
+            "identity_id": identity_id,
+            "value": 0,
+            "status": "ineligible",
+            "candidate": False,
+            "candidate_reason": "",
+        }
     try:
         records = get_tianjige_dao_path_records()
     except Exception:
         records = {}
     record = records.get(str(identity_id)) if isinstance(records, dict) else {}
     if not isinstance(record, dict):
-        return 0
-    main_sense = _parse_int_like(record.get("spiritual_sense") or record.get("shenshi_points"))
-    taiyi_sense = _parse_int_like(record.get("taiyi_spiritual_sense") or record.get("taiyi_shenshi_points"))
-    return max(0, main_sense) + max(0, taiyi_sense)
+        return {
+            "identity_id": identity_id,
+            "value": 0,
+            "status": "unknown",
+            "candidate": True,
+            "candidate_reason": candidate_reason,
+        }
+    main_values = [
+        _parse_int_like(record.get(key))
+        for key in ("spiritual_sense", "shenshi_points", "spiritual_sense_points")
+        if key in record and record.get(key) not in (None, "")
+    ]
+    taiyi_values = [
+        _parse_int_like(record.get(key))
+        for key in ("taiyi_spiritual_sense", "taiyi_shenshi_points", "taiyi_spiritual_sense_points")
+        if key in record and record.get(key) not in (None, "")
+    ]
+    if not main_values and not taiyi_values:
+        return {
+            "identity_id": identity_id,
+            "value": 0,
+            "status": "unknown",
+            "candidate": True,
+            "candidate_reason": candidate_reason,
+        }
+    value = max(0, max(main_values) if main_values else 0) + max(0, max(taiyi_values) if taiyi_values else 0)
+    if value >= 1000:
+        status = "ok"
+    elif value > 0:
+        status = "low"
+    else:
+        status = "unknown"
+    return {
+        "identity_id": identity_id,
+        "value": value,
+        "status": status,
+        "candidate": True,
+        "candidate_reason": candidate_reason,
+    }
+
+
+def _get_identity_cangkun_spiritual_sense(identity_id):
+    return int(_get_identity_cangkun_spiritual_sense_snapshot(identity_id).get("value") or 0)
 
 
 def _has_cangkun_required_spiritual_sense(identity_id):
-    return _get_identity_cangkun_spiritual_sense(identity_id) >= 1000
+    return _get_identity_cangkun_spiritual_sense_snapshot(identity_id).get("status") == "ok"
+
+
+def _get_cangkun_spiritual_sense_sort_rank(identity_id):
+    snapshot = _get_identity_cangkun_spiritual_sense_snapshot(identity_id)
+    status = str(snapshot.get("status") or "")
+    if status == "ok":
+        return 0
+    if status == "unknown":
+        return 1
+    if status == "low":
+        return 2
+    return 3
+
+
+def _get_cangkun_team_spiritual_sense_snapshot(identity_ids):
+    ok_candidates = []
+    low_candidates = []
+    unknown_candidates = []
+    unknown_count = 0
+    qualified_count = 0
+    ineligible_count = 0
+    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
+        snapshot = _get_identity_cangkun_spiritual_sense_snapshot(identity_id)
+        status = str(snapshot.get("status") or "unknown")
+        sense = int(snapshot.get("value") or 0)
+        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        reason = str(snapshot.get("candidate_reason") or "").strip()
+        item = (sense, username, identity_id, reason)
+        if status == "ineligible":
+            ineligible_count += 1
+            continue
+        qualified_count += 1
+        if status == "ok":
+            ok_candidates.append(item)
+        elif status == "low":
+            low_candidates.append(item)
+        else:
+            unknown_count += 1
+            unknown_candidates.append(item)
+    if ok_candidates:
+        sense, _username, identity_id, reason = sorted(ok_candidates, key=lambda item: (-item[0], item[1], item[2]))[0]
+        return {
+            "identity_id": identity_id,
+            "value": sense,
+            "status": "ok",
+            "unknown_count": unknown_count,
+            "qualified_count": qualified_count,
+            "ineligible_count": ineligible_count,
+            "candidate_reason": reason,
+        }
+    if unknown_count > 0:
+        if low_candidates:
+            sense, _username, identity_id, reason = sorted(low_candidates, key=lambda item: (-item[0], item[1], item[2]))[0]
+        else:
+            sense, _username, identity_id, reason = sorted(unknown_candidates, key=lambda item: (item[1], item[2]))[0]
+        return {
+            "identity_id": identity_id,
+            "value": sense,
+            "status": "unknown",
+            "unknown_count": unknown_count,
+            "qualified_count": qualified_count,
+            "ineligible_count": ineligible_count,
+            "candidate_reason": reason,
+        }
+    if low_candidates:
+        sense, _username, identity_id, reason = sorted(low_candidates, key=lambda item: (-item[0], item[1], item[2]))[0]
+        return {
+            "identity_id": identity_id,
+            "value": sense,
+            "status": "low",
+            "unknown_count": 0,
+            "qualified_count": qualified_count,
+            "ineligible_count": ineligible_count,
+            "candidate_reason": reason,
+        }
+    return {
+        "identity_id": 0,
+        "value": 0,
+        "status": "low",
+        "unknown_count": 0,
+        "qualified_count": 0,
+        "ineligible_count": ineligible_count,
+        "reason": "no_candidate",
+        "candidate_reason": "",
+    }
 
 
 def _get_cangkun_team_spiritual_sense_identity(identity_ids):
-    candidates = []
-    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
-        sense = _get_identity_cangkun_spiritual_sense(identity_id)
-        if sense > 0:
-            username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-            candidates.append((sense, username, identity_id))
-    if not candidates:
-        return 0, 0
-    sense, _username, identity_id = sorted(candidates, key=lambda item: (-item[0], item[1], item[2]))[0]
-    return identity_id, sense
+    snapshot = _get_cangkun_team_spiritual_sense_snapshot(identity_ids)
+    return int(snapshot.get("identity_id") or 0), int(snapshot.get("value") or 0)
+
+
+def _format_cangkun_spiritual_sense_status(identity_ids, *, html=False, prefix="神识校验"):
+    snapshot = _get_cangkun_team_spiritual_sense_snapshot(identity_ids)
+    status = str(snapshot.get("status") or "unknown")
+    sense_value = int(snapshot.get("value") or 0)
+    sense_identity_id = int(snapshot.get("identity_id") or 0)
+    reason = str(snapshot.get("candidate_reason") or "").strip()
+    if status == "ok":
+        sense_username = _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or str(sense_identity_id))
+        sense_display = mono(sense_username) if html else sense_username
+        reason_text = f"{reason}，" if reason else ""
+        return f"{prefix}：{sense_display} {reason_text}可调神识 {sense_value}，已覆盖过千需求。"
+    if status == "low":
+        if str(snapshot.get("reason") or "") == "no_candidate":
+            return f"{prefix}：队内无太一/化神身份，不能满足过千神识需求；不要自动进入。"
+        return f"{prefix}：神识候选最高 {sense_value}，已确认未过千；不要自动进入。"
+    if sense_value > 0:
+        return f"{prefix}：神识候选最高 {sense_value}，但仍有太一/化神候选未确认；刷新天机阁后再进入。"
+    return f"{prefix}：队内有太一/化神候选，但天机阁快照未确认；刷新天机阁后再进入。"
 
 
 def _normalize_replica_sect_name(text):
@@ -3590,7 +3920,7 @@ def _best_cangkun_profession_assignment(identity_ids, *, leader_identity_id=0):
         professions = _get_replica_profile_professions(identity_id)
         username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         return (
-            0 if _has_cangkun_required_spiritual_sense(identity_id) else 1,
+            _get_cangkun_spiritual_sense_sort_rank(identity_id),
             0 if _is_cangkun_preferred_sect_identity(identity_id) else 1,
             _get_cangkun_root_grade_rank(identity_id),
             -sum(1 for role in _CANGKUN_REQUIRED_PROFESSIONS if role in professions),
@@ -3608,13 +3938,14 @@ def _best_cangkun_profession_assignment(identity_ids, *, leader_identity_id=0):
         assigned_ids = [identity_id for _role, identity_id in assignments]
         coverage_count = len(assignments)
         high_sense_count = 1 if any(_has_cangkun_required_spiritual_sense(identity_id) for identity_id in assigned_ids) else 0
+        sense_candidate_count = sum(1 for identity_id in assigned_ids if _is_cangkun_spiritual_sense_candidate(identity_id))
         preferred_count = sum(1 for identity_id in assigned_ids if _is_cangkun_preferred_sect_identity(identity_id))
         root_score = sum(_get_cangkun_root_grade_rank(identity_id) for identity_id in assigned_ids)
         role_count_score = sum(
             sum(1 for role in _CANGKUN_REQUIRED_PROFESSIONS if role in _get_replica_profile_professions(identity_id))
             for identity_id in assigned_ids
         )
-        score = (coverage_count, high_sense_count, preferred_count, -root_score, role_count_score)
+        score = (coverage_count, high_sense_count, sense_candidate_count, preferred_count, -root_score, role_count_score)
         key = "|".join(
             f"{role}:{_normalize_replica_username(get_send_as_profile(identity_id).get('username') or identity_id)}"
             for role, identity_id in assignments
@@ -3837,17 +4168,25 @@ def _format_cangkun_backup_recommendation_lines(leader_identity_id, primary_team
         leader_identity_id=leader_identity_id,
     )
     coverage_note = "五职业已齐" if missing_text == "无" else f"缺职业 {missing_text}"
-    sense_identity_id, sense_value = _get_cangkun_team_spiritual_sense_identity(
-        ([leader_identity_id] if leader_identity_id else []) + backup_team_ids
-    )
-    if sense_value >= 1000:
+    sense_snapshot = _get_cangkun_team_spiritual_sense_snapshot(([leader_identity_id] if leader_identity_id else []) + backup_team_ids)
+    sense_status = str(sense_snapshot.get("status") or "unknown")
+    sense_value = int(sense_snapshot.get("value") or 0)
+    if sense_status == "ok":
+        sense_identity_id = int(sense_snapshot.get("identity_id") or 0)
         sense_username = _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or str(sense_identity_id))
         sense_display = mono(sense_username) if html else sense_username
-        sense_note = f"{sense_display} 可调神识 {sense_value} 已过千"
+        reason = str(sense_snapshot.get("candidate_reason") or "").strip()
+        reason_text = f"{reason}，" if reason else ""
+        sense_note = f"{sense_display} {reason_text}可调神识 {sense_value} 已过千"
+    elif sense_status == "low":
+        if str(sense_snapshot.get("reason") or "") == "no_candidate":
+            sense_note = "队内无太一/化神身份"
+        else:
+            sense_note = f"神识候选最高 {sense_value}，已确认未过千"
     elif sense_value > 0:
-        sense_note = f"当前快照最高 {sense_value}，未确认过千"
+        sense_note = f"神识候选最高 {sense_value}，但仍有候选未确认"
     else:
-        sense_note = "天机阁快照未确认神识"
+        sense_note = "太一/化神候选快照未确认"
     return [
         f"备选加入（不带 {excluded_display}，可复制）：{backup_display}",
         f"备选校验：{coverage_note}；{sense_note}。",
@@ -3887,15 +4226,7 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
             lines.append(f"缺职业：{missing_text}")
         if leader_identity_id > 0 and not _is_cangkun_realm_available(leader_identity_id):
             lines.append(f"开房身份未达要求，不计入职业覆盖：{_format_cangkun_realm_requirement(leader_identity_id)}。")
-        sense_identity_id, sense_value = _get_cangkun_team_spiritual_sense_identity(([leader_identity_id] if leader_identity_id else []) + team_ids)
-        if sense_value >= 1000:
-            sense_username = _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or str(sense_identity_id))
-            sense_display = mono(sense_username) if html else sense_username
-            lines.append(f"神识校验：{sense_display} 可调神识 {sense_value}，已覆盖过千需求。")
-        elif sense_value > 0:
-            lines.append(f"神识校验：当前快照最高 {sense_value}，未确认过千；入本前看第一幕可调神识。")
-        else:
-            lines.append("神识校验：天机阁快照未确认；入本前确保队内一名可调神识>=1000。")
+        lines.append(_format_cangkun_spiritual_sense_status(([leader_identity_id] if leader_identity_id else []) + team_ids, html=html))
         lines.append("提示：苍坤要求结丹初期及以上、五职业齐全、队内一名可调神识>=1000；无需DPS标识。默认路线 .苍坤抉择 1 / 3 / 2。")
     elif replica_kind == _REPLICA_KIND_LUOYUN:
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
@@ -3977,6 +4308,21 @@ def _format_log_group_replica_room_line(room, *, html=False):
     line = f"房间：{replica_name} {room_id}｜{phase_text}"
     if leader:
         line += f"｜队长 {leader}"
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        team_count = len(_get_lightweight_room_usernames(room))
+        sense_snapshot = _get_cangkun_room_spiritual_sense_snapshot(room)
+        sense_status = str(sense_snapshot.get("status") or "unknown")
+        if phase == "opened" and team_count >= 5:
+            line += "｜满员待进入"
+        if sense_status == "ok":
+            line += f"｜神识过千 {int(sense_snapshot.get('value') or 0)}"
+        elif sense_status == "low":
+            if str(sense_snapshot.get("reason") or "") == "no_candidate":
+                line += "｜无神识候选"
+            else:
+                line += f"｜神识不足 {int(sense_snapshot.get('value') or 0)}"
+        else:
+            line += "｜神识未知"
     return escape(line) if html else line
 
 
@@ -9042,8 +9388,13 @@ async def _handle_lightweight_join_command(event):
     summary = f"{action_label}{_REPLICA_KIND_META[replica_kind]['name']} {room_id}：{' '.join(sent_usernames) if sent_usernames else '无'}"
     if skipped:
         summary += f"\n未发送：{' '.join(skipped)}"
+    enter_actionable = _is_lightweight_room_enter_actionable(room)
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        summary += "\n" + _format_cangkun_spiritual_sense_status(_get_lightweight_room_team_identity_ids(room, now=time.time()))
     summary = escape(summary)
-    summary += "\n\n" + _format_lightweight_next_commands(_REPLICA_KIND_META[replica_kind]["enter_command"], ".解散副本", html=True)
+    next_commands = [_REPLICA_KIND_META[replica_kind]["enter_command"]] if enter_actionable else []
+    next_commands.append(".解散副本")
+    summary += "\n\n" + _format_lightweight_next_commands(*next_commands, html=True)
     await _send_replica_group_message(
         event.client,
         event.chat_id,
@@ -9051,7 +9402,7 @@ async def _handle_lightweight_join_command(event):
         parse_mode="html",
         listener_account_id=listener_account_id,
         log_text=_strip_html_code_tags(summary),
-        buttons=_build_lightweight_room_action_buttons(room, include_enter=True, include_dissolve=True, include_query=True),
+        buttons=_build_lightweight_room_action_buttons(room, include_enter=enter_actionable, include_dissolve=True, include_query=True),
     )
     return True
 
@@ -9124,6 +9475,23 @@ async def _handle_lightweight_enter_command(event):
             buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
         )
         return True
+    cangkun_sense_snapshot = {}
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        cangkun_team_ids = _get_lightweight_room_team_identity_ids(room, now=now)
+        cangkun_sense_snapshot = _get_cangkun_team_spiritual_sense_snapshot(cangkun_team_ids)
+        if cangkun_sense_snapshot.get("status") != "ok":
+            sense_text = _format_cangkun_spiritual_sense_status(cangkun_team_ids, html=True)
+            text = f"{escape(command)} 未发送：{sense_text}\n\n" + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", ".查询副本", html=True)
+            await _send_replica_group_message(
+                event.client,
+                event.chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+            )
+            return True
     phase = str(room.get("phase") or "")
     if phase == "entered":
         text = f"{escape(_REPLICA_KIND_META[replica_kind]['name'])}房间 {escape(room_id or '-')} 已确认进入，未重复发送进入命令。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
@@ -9188,6 +9556,8 @@ async def _handle_lightweight_enter_command(event):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         room["entered_at"] = now
         room["expires_at"] = now + _get_lightweight_entered_ttl_sec(replica_kind)
+        room["enter_sense_status"] = str(cangkun_sense_snapshot.get("status") or "unknown")
+        room["enter_sense_value"] = int(cangkun_sense_snapshot.get("value") or 0)
     _set_lightweight_last_room(room)
     leader_username = room.get("leader_username") or get_send_as_profile(leader_identity_id).get("username") or str(leader_identity_id)
     if replica_kind == _REPLICA_KIND_CANGKUN:
@@ -9197,7 +9567,8 @@ async def _handle_lightweight_enter_command(event):
             source_msg_id=msg_id,
             leader_username=str(leader_username),
         )
-        text = f"已用 {escape(str(leader_username))} 发送 {escape(command)}，已按苍坤流程标记进入，等待后续抉择/结算。\n\n" + _format_lightweight_next_commands(".查询副本", ".解散副本", html=True)
+        sense_text = _format_cangkun_spiritual_sense_status(_get_lightweight_room_team_identity_ids(room, now=now), html=True)
+        text = f"已用 {escape(str(leader_username))} 发送 {escape(command)}，已按苍坤流程标记进入，等待后续抉择/结算。\n{sense_text}\n\n" + _format_lightweight_next_commands(".查询副本", ".解散副本", html=True)
     else:
         text = f"已用 {escape(str(leader_username))} 发送 {escape(command)}，等待游戏确认进入。\n\n" + _format_lightweight_next_commands(".查询副本", ".解散副本", html=True)
     _schedule_lightweight_game_command_fast_retry(
@@ -9280,11 +9651,18 @@ async def _handle_lightweight_dissolve_command(event):
             buttons=_build_lightweight_room_action_buttons(room, include_enter=True, include_dissolve=False, include_query=True),
         )
         return True
+    button_message_id = int(getattr(event, "_replica_button_message_id", 0) or 0)
+    button_actor_id = int(getattr(event, "_replica_button_actor_id", 0) or 0)
+    source_msg_id = int(getattr(event, "id", 0) or 0) or button_message_id
+    source = "button" if button_message_id > 0 else "manual"
+    source_detail = f"按钮消息 {button_message_id}" if button_message_id > 0 else ""
     reserve_status, room = _reserve_lightweight_room_dissolve(
         room,
         now,
-        source="manual",
-        source_msg_id=int(getattr(event, "id", 0) or 0),
+        source=source,
+        source_msg_id=source_msg_id,
+        actor_id=button_actor_id or int(getattr(event, "sender_id", 0) or 0),
+        source_detail=source_detail,
     )
     if reserve_status == "pending":
         text = _format_lightweight_dissolve_pending_notice(room, html=True)
@@ -9373,7 +9751,10 @@ async def _handle_lightweight_dissolve_command(event):
         msg_id,
     )
     leader_username = room.get("leader_username") or get_send_as_profile(leader_identity_id).get("username") or str(leader_identity_id)
-    text = f"已用 {escape(str(leader_username))} 发送 {escape(str(command))}，房间 {escape(str(room.get('room_id') or '-'))}，等待游戏确认解散。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+    source_note = ""
+    if str(room.get("dissolve_source_detail") or "").strip():
+        source_note = f"｜触发：{escape(str(room.get('dissolve_source_detail') or '').strip())}"
+    text = f"已用 {escape(str(leader_username))} 发送 {escape(str(command))}，房间 {escape(str(room.get('room_id') or '-'))}，等待游戏确认解散{source_note}。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
     await _send_replica_group_message(
         event.client,
         event.chat_id,

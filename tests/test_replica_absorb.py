@@ -1307,6 +1307,41 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("已刷新：.查询虚", answer_calls[0].args[1])
         self.assertIn("已刷新：.查询虚", answer_calls[1].args[1])
 
+    def test_dissolve_button_is_single_use_and_preserves_callback_source(self):
+        button = app_replica._replica_command_action_button(
+            "解散副本",
+            ".解散副本",
+            -100777,
+            listener_account_id=9001,
+            token_key="dissolve-room-47",
+        )
+
+        async def run_test():
+            with patch("model.app_replica.ADMIN_IDS", frozenset({123456})), \
+                    patch("model.app_replica._handle_replica_group_command", new=AsyncMock(return_value=True)) as handle_mock, \
+                    patch("model.app_replica.answer_log_bot_callback", new=AsyncMock()) as answer_mock:
+                callback_query = {
+                    "id": "cb-dissolve",
+                    "data": button["callback_data"],
+                    "from": {"id": 123456},
+                    "message": {"message_id": 7788, "chat": {"id": -100999}},
+                }
+                first = await app_replica.handle_replica_button_callback(callback_query)
+                second = await app_replica.handle_replica_button_callback(callback_query)
+                return first, second, handle_mock.await_args_list, answer_mock.await_args_list
+
+        first, second, handle_calls, answer_calls = asyncio.run(run_test())
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(1, len(handle_calls))
+        event = handle_calls[0].args[0]
+        self.assertEqual(".解散副本", event.raw_text)
+        self.assertEqual(7788, event.id)
+        self.assertEqual(7788, event._replica_button_message_id)
+        self.assertEqual(123456, event._replica_button_actor_id)
+        self.assertIn("已触发：.解散副本", answer_calls[0].args[1])
+        self.assertIn("已处理过", answer_calls[1].args[1])
+
     def test_log_group_room_panel_uses_log_refresh_button(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         self._prepare_replica_group([leader_id])
@@ -1609,8 +1644,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_cangkun_recommendation_prefers_high_sense_without_dps_marker(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
-        low_sense_shield_id = self._register_replica_identity(991202, "aa_low_sense_shield", professions="御山", realm="结丹初期", root_type="天灵根")
-        high_sense_shield_id = self._register_replica_identity(991203, "zz_high_sense_shield", professions="御山", realm="结丹初期", root_type="伪灵根")
+        low_sense_shield_id = self._register_replica_identity(991202, "aa_low_sense_shield", professions="御山", realm="结丹初期", root_type="天灵根", sect_name="太一门")
+        high_sense_shield_id = self._register_replica_identity(991203, "zz_high_sense_shield", professions="御山", realm="结丹初期", root_type="伪灵根", sect_name="太一门")
         healer_id = self._register_replica_identity(991204, "healer", professions="灵医", realm="结丹初期")
         blade_id = self._register_replica_identity(991205, "blade", professions="影刃", realm="结丹初期")
         curse_id = self._register_replica_identity(991206, "curse", professions="咒师", realm="结丹初期")
@@ -1623,6 +1658,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             curse_id,
         ])
         state_module.set_tianjige_dao_path_records({
+            str(low_sense_shield_id): {"spiritual_sense": 200, "taiyi_spiritual_sense": 0},
             str(high_sense_shield_id): {"spiritual_sense": 1200, "taiyi_spiritual_sense": 0},
         })
 
@@ -1633,15 +1669,48 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertIn("推荐加入：@zz_high_sense_shield @healer @blade @curse", section)
         self.assertNotIn("@aa_low_sense_shield", section)
-        self.assertIn("神识校验：@zz_high_sense_shield 可调神识 1200", section)
+        self.assertIn("神识校验：@zz_high_sense_shield 太一门，可调神识 1200", section)
         self.assertIn("无需DPS标识", section)
         self.assertIn("默认路线 .苍坤抉择 1 / 3 / 2", section)
         self.assertNotIn("DPS：", section)
 
+    def test_cangkun_recommendation_treats_missing_sense_snapshot_as_unknown(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="结丹初期")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="结丹初期")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃", realm="结丹初期")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师", realm="结丹初期")
+        state_module.set_replica_participant_identity_ids([leader_id, shield_id, healer_id, blade_id, curse_id])
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+
+        self.assertIn("五职业已齐。", section)
+        self.assertIn("神识校验：队内无太一/化神身份，不能满足过千神识需求；不要自动进入。", section)
+        self.assertNotIn("天机阁快照未确认", section)
+
+    def test_cangkun_recommendation_marks_taiyi_missing_sense_snapshot_unknown(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="结丹初期", sect_name="太一门")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医", realm="结丹初期")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃", realm="结丹初期")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师", realm="结丹初期")
+        state_module.set_replica_participant_identity_ids([leader_id, shield_id, healer_id, blade_id, curse_id])
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+
+        self.assertIn("五职业已齐。", section)
+        self.assertIn("神识校验：队内有太一/化神候选，但天机阁快照未确认；刷新天机阁后再进入。", section)
+
     def test_cangkun_recommendation_shows_backup_without_wa2000(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
         wa_id = self._register_replica_identity(991202, "WalterWA2000", professions="御山", realm="结丹初期", root_type="伪灵根", sect_name="太一门")
-        backup_shield_id = self._register_replica_identity(991203, "shield", professions="御山", realm="结丹初期", root_type="天灵根")
+        backup_shield_id = self._register_replica_identity(991203, "shield", professions="御山", realm="化神初期", root_type="天灵根")
         healer_id = self._register_replica_identity(991204, "healer", professions="灵医", realm="结丹初期")
         blade_id = self._register_replica_identity(991205, "blade", professions="影刃", realm="结丹初期")
         curse_id = self._register_replica_identity(991206, "curse", professions="咒师", realm="结丹初期")
@@ -1664,15 +1733,15 @@ class ReplicaAbsorbTests(unittest.TestCase):
         )
 
         self.assertIn("推荐加入：@walterwa2000 @healer @blade @curse", section)
-        self.assertIn("神识校验：@walterwa2000 可调神识 13610", section)
+        self.assertIn("神识校验：@walterwa2000 太一门，可调神识 13610", section)
         self.assertIn("备选加入（不带 @walterwa2000，可复制）：@shield @healer @blade @curse", section)
-        self.assertIn("备选校验：五职业已齐；@shield 可调神识 1200 已过千。", section)
+        self.assertIn("备选校验：五职业已齐；@shield 化神初期，可调神识 1200 已过千。", section)
         self.assertNotIn(".加入副本", section)
 
     def test_cangkun_room_buttons_include_backup_join_without_wa2000(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
         wa_id = self._register_replica_identity(991202, "WalterWA2000", professions="御山", realm="结丹初期", root_type="伪灵根", sect_name="太一门")
-        backup_shield_id = self._register_replica_identity(991203, "shield", professions="御山", realm="结丹初期", root_type="天灵根")
+        backup_shield_id = self._register_replica_identity(991203, "shield", professions="御山", realm="化神初期", root_type="天灵根")
         healer_id = self._register_replica_identity(991204, "healer", professions="灵医", realm="结丹初期")
         blade_id = self._register_replica_identity(991205, "blade", professions="影刃", realm="结丹初期")
         curse_id = self._register_replica_identity(991206, "curse", professions="咒师", realm="结丹初期")
@@ -1694,6 +1763,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "leader_identity_id": leader_id,
             "replica_chat_id": -100777,
             "listener_account_id": 9001,
+            "join_requested_usernames": ["@WalterWA2000", "@healer", "@blade", "@curse"],
         }
         join_command = app_replica._get_lightweight_profession_recommendation_join_command(
             app_replica._REPLICA_KIND_CANGKUN,
@@ -2379,6 +2449,31 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(second)
         self.assertEqual(1, notice_count)
 
+    def test_cangkun_old_stage_button_is_blocked_after_stage_advances(self):
+        leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
+        button = app_replica._game_command_action_button(
+            "选1",
+            ".苍坤抉择 1",
+            leader_id,
+            source_msg_id=8806,
+            token_key="old-cangkun-stage",
+            exclusive_key="cangkun:old-stage",
+            stage_guard_scope="cangkun:room:47",
+            stage_guard_key="old-stage",
+        )
+        _token, action = app_replica._get_replica_button_action(button["callback_data"])
+        app_replica._set_cangkun_stage_guard_current("cangkun:room:47", "new-stage")
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=901))) as send_mock:
+                ok, message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                return ok, message, send_mock.await_args_list
+
+        ok, message, send_calls = asyncio.run(run_test())
+        self.assertTrue(ok)
+        self.assertIn("阶段已过期", message)
+        self.assertEqual([], send_calls)
+
     def test_kunwu_road_stage_auto_sends_preferred_choice(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])
@@ -2409,16 +2504,17 @@ class ReplicaAbsorbTests(unittest.TestCase):
             with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
                     patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
                     patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=901))) as send_mock, \
+                    patch("model.app_replica.console_log") as console_mock, \
                     patch("model.app_replica._fire_and_forget", side_effect=self._close_scheduled):
                 handled = await app_replica._handle_replica_progress_event(event, now)
                 audit_mock.assert_not_awaited()
-                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1], send_mock.await_args_list
+                return handled, notice_mock.await_count, console_mock.call_args, send_mock.await_args_list
 
-        handled, notice_item, notice_text, send_calls = asyncio.run(run_test())
+        handled, notice_count, console_args, send_calls = asyncio.run(run_test())
         self.assertTrue(handled)
-        self.assertEqual(-100777, notice_item["replica_chat_id"])
-        self.assertIn("昆吾山自动抉择：昆吾山第1层", notice_text)
-        self.assertIn(".选择 岔路1", notice_text)
+        self.assertEqual(0, notice_count)
+        self.assertIn("昆吾山自动抉择：昆吾山第1层", console_args.args[0])
+        self.assertIn(".选择 岔路1", console_args.args[0])
         self.assertEqual(1, len(send_calls))
         self.assertEqual(".选择 岔路1", send_calls[0].args[0])
         self.assertEqual(leader_id, send_calls[0].kwargs["send_as_id"])
@@ -4147,10 +4243,13 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn(".查询副本", reply_text)
 
     def test_opened_text_records_latest_room_for_lightweight_flow(self):
-        leader_id = self._register_replica_identity(991201, "leader")
+        leader_id = self._register_replica_identity(991201, "leader", sect_name="太一门")
         first_id = self._register_replica_identity(991202, "first", professions="御山")
         event = self._prepare_replica_group([leader_id])
         state_module.set_replica_participant_identity_ids([leader_id, first_id])
+        state_module.set_tianjige_dao_path_records({
+            str(leader_id): {"spiritual_sense": 1200},
+        })
         now = 1000.0
         flow = {
             "flow_id": "flow-1",
@@ -4338,11 +4437,14 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(app_replica._REPLICA_KIND_LUOYUN, room["replica_kind"])
 
     def test_lightweight_enter_command_marks_cangkun_entered_once(self):
-        leader_id = self._register_replica_identity(991201, "leader")
+        leader_id = self._register_replica_identity(991201, "leader", sect_name="太一门")
         member_id = self._register_replica_identity(991202, "member", professions="御山")
         event = self._prepare_replica_group([leader_id, member_id])
         event.raw_text = ".进入苍坤洞府"
         now = 1000.0
+        state_module.set_tianjige_dao_path_records({
+            str(leader_id): {"spiritual_sense": 1200},
+        })
         app_replica._mark_replica_team_joined_from_text(
             "【苍坤上人洞府·集结】\n@leader 以【苍坤残图】锁定了太妙神禁的薄弱方位！\n房间ID: 16",
             now=now,
@@ -4413,6 +4515,48 @@ class ReplicaAbsorbTests(unittest.TestCase):
         duplicate_handled, duplicate_text = asyncio.run(run_duplicate())
         self.assertTrue(duplicate_handled)
         self.assertIn("已确认进入", duplicate_text)
+
+    def test_lightweight_enter_command_blocks_cangkun_confirmed_low_sense(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        member_id = self._register_replica_identity(991202, "member", professions="御山", sect_name="太一门")
+        event = self._prepare_replica_group([leader_id, member_id])
+        event.raw_text = ".进入苍坤洞府"
+        now = 1000.0
+        state_module.set_tianjige_dao_path_records({
+            str(member_id): {"spiritual_sense": 200},
+        })
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "16",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "join_requested_usernames": ["@member"],
+            "opened_at": now,
+            "expires_at": 9999999999,
+            "updated_at": now,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=now + 2), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_enter_command(event)
+                send_mock.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, self._button_texts(buttons)
+
+        handled, reply_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("已确认未过千", reply_text)
+        self.assertIn("未发送", reply_text)
+        self.assertNotIn("进入苍坤洞府", button_texts)
+        self.assertIn("解散副本", button_texts)
 
     def test_opened_text_recommendation_is_deduped_by_opened_message(self):
         leader_id = self._register_replica_identity(991201, "leader")
@@ -5566,12 +5710,51 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("未发送解散命令", reply_text)
         self.assertEqual({}, state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"])
 
+    def test_lightweight_dissolve_records_button_source_metadata(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".解散副本"
+        event.id = 7788
+        event._replica_button_message_id = 7788
+        event._replica_button_actor_id = 123456
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "16",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=801))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=702))):
+                handled = await app_replica._handle_lightweight_dissolve_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                saved_room = app_replica._get_lightweight_last_room(event.chat_id, now=time.time())
+                return handled, reply_text, saved_room
+
+        handled, reply_text, saved_room = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("按钮消息 7788", reply_text)
+        self.assertEqual("button", saved_room["dissolve_source"])
+        self.assertEqual(7788, saved_room["dissolve_source_msg_id"])
+        self.assertEqual(123456, saved_room["dissolve_actor_id"])
+
     def test_lightweight_join_and_dissolve_use_latest_room(self):
         leader_id = self._register_replica_identity(991201, "leader")
-        first_id = self._register_replica_identity(991202, "first")
+        first_id = self._register_replica_identity(991202, "first", sect_name="太一门")
         second_id = self._register_replica_identity(991203, "second")
         event = self._prepare_replica_group([leader_id, first_id, second_id])
         event.sender_id = 4242
+        state_module.set_tianjige_dao_path_records({
+            str(first_id): {"spiritual_sense": 1200},
+        })
         app_replica._set_lightweight_last_room({
             "phase": "opened",
             "room_id": "16",
