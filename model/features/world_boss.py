@@ -561,7 +561,7 @@ async def _open_event(parsed, now, current_msg_id=0):
     return True
 
 
-async def _close_event(parsed, now):
+async def _close_event(parsed, now, *, log=True):
     run_state = _get_run_state(now)
     result = str(parsed.get("result") or "结束").strip()
     conclusion_key = str(parsed.get("key") or result or get_day_key(now))
@@ -582,7 +582,7 @@ async def _close_event(parsed, now):
         identity_state["world_boss_pending_msg_id"] = 0
         identity_state["world_boss_pending_action"] = ""
         identity_state["world_boss_pending_since"] = 0
-    if not duplicate:
+    if log and not duplicate:
         await _maybe_log_progress(run_state, now, force=True)
         summary = _normalize_summary(run_state.get("summary"))
         await send_audit_log(
@@ -601,7 +601,15 @@ async def _mark_inactive(now):
         run_state["active"] = False
         run_state["closed_at"] = float(now)
         run_state["last_result"] = run_state.get("last_result") or "已结束"
-        _set_run_state(run_state)
+    for identity_id in get_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        identity_state["world_boss_pending_msg_id"] = 0
+        identity_state["world_boss_pending_action"] = ""
+        identity_state["world_boss_pending_since"] = 0
+    _set_run_state(run_state)
     return True
 
 
@@ -713,6 +721,14 @@ async def handle_world_boss_broadcast(text, now, event=None):
         return False
     event_id = _coerce_int(getattr(event, "id", 0), 0)
     parsed_type = parsed.get("type")
+    enabled = bool(_enabled_identity_ids())
+    if not enabled:
+        run_state = _get_run_state(now)
+        if parsed_type == "conclusion" and run_state.get("active"):
+            return await _close_event(parsed, now, log=False)
+        if parsed_type == "inactive" and run_state.get("active"):
+            return await _mark_inactive(now)
+        return False
     if parsed_type == "open":
         return await _open_event(parsed, now, current_msg_id=event_id)
     if parsed_type == "conclusion":

@@ -225,6 +225,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_conclusion_log_is_deduped_by_event_text(self):
         now = 1_781_319_000.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=True)
         state_module.set_world_boss_run_state(
             {
                 "active": True,
@@ -243,6 +244,85 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(1, audit_mock.await_count)
         self.assertFalse(state_module.get_world_boss_run_state()["active"])
+
+    async def test_broadcast_is_quiet_when_no_identity_enabled(self):
+        now = 1_781_319_100.0
+        self._register(8659059191, label="WalterWA2000", world_boss_enabled=False)
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            opened = await world_boss.handle_world_boss_broadcast(OPEN_TEXT, now, event=SimpleNamespace(id=11001))
+            status = await world_boss.handle_world_boss_broadcast(STATUS_TEXT, now + 1, event=SimpleNamespace(id=11002))
+
+        self.assertFalse(opened)
+        self.assertFalse(status)
+        audit_mock.assert_not_awaited()
+        self.assertFalse(state_module.get_world_boss_run_state().get("active"))
+
+    async def test_inactive_broadcast_closes_stale_event_and_clears_pending_without_enabled_identities(self):
+        identity_id = 8659059191
+        identity_state = self._register(identity_id, label="WalterWA2000", world_boss_enabled=False)
+        identity_state["world_boss_pending_msg_id"] = 9301
+        identity_state["world_boss_pending_action"] = "status"
+        identity_state["world_boss_pending_since"] = 1_781_319_000.0
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-13:stale",
+                "opened_at": 1_781_319_000.0,
+                "phase": "第一阶段·万火归源",
+                "last_status_at": 1_781_319_000.0,
+            }
+        )
+
+        with patch.object(world_boss, "save_state", return_value=True):
+            handled = await world_boss.handle_world_boss_broadcast(
+                "当前没有进行中的【真仙试锋】。",
+                1_781_319_120.0,
+                event=SimpleNamespace(id=11003),
+            )
+
+        self.assertTrue(handled)
+        self.assertFalse(state_module.get_world_boss_run_state()["active"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
+        self.assertEqual(0, identity_state["world_boss_pending_since"])
+
+    async def test_conclusion_broadcast_closes_stale_event_silently_without_enabled_identities(self):
+        identity_id = 8659059191
+        identity_state = self._register(identity_id, label="WalterWA2000", world_boss_enabled=False)
+        identity_state["world_boss_pending_msg_id"] = 9401
+        identity_state["world_boss_pending_action"] = "镇魂"
+        identity_state["world_boss_pending_since"] = 1_781_319_000.0
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-13:stale",
+                "opened_at": 1_781_319_000.0,
+                "summary": {"镇魂": 1, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+        ):
+            handled = await world_boss.handle_world_boss_broadcast(
+                CONCLUSION_TEXT,
+                1_781_319_120.0,
+                event=SimpleNamespace(id=11004),
+            )
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertTrue(handled)
+        self.assertFalse(run_state["active"])
+        self.assertEqual("败退", run_state["last_result"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
+        self.assertEqual(0, identity_state["world_boss_pending_since"])
+        audit_mock.assert_not_awaited()
 
     def test_manifest_maps_world_boss_to_module(self):
         self.assertEqual("真仙试锋", module_manifest.get_module_name_for_reply_family("world_boss"))
