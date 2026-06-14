@@ -1170,6 +1170,11 @@ def _tianjige_profile_updates_from_row(row):
     realm = _tianjige_string(row.get("cultivation_level") or row.get("realm") or row.get("level"))
     if realm:
         updates["realm"] = realm
+    cultivation_points = row.get("cultivation_points")
+    if cultivation_points in (None, ""):
+        cultivation_points = row.get("points")
+    if cultivation_points not in (None, ""):
+        updates["xiuwei_current"] = _tianjige_number(cultivation_points)
     sect_name = _tianjige_clean_sect_name(row.get("sect_name") or row.get("sect"))
     if sect_name:
         updates["sect_name"] = sect_name
