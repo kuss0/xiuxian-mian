@@ -1024,7 +1024,11 @@ def _build_auto_refine_arg(observed, now=None):
     if not stocks:
         return "", "缺少魂魄储备记录，不自动囚禁魂魄。"
     sha_current = int(observed.get("sha_current", 0) or 0)
-    slot_no = int(empty_slot_numbers[0])
+    slot_candidates = [_safe_int(value) for value in empty_slot_numbers]
+    slot_candidates = [value for value in slot_candidates if 1 <= value <= 99]
+    if not slot_candidates:
+        return "", "缺少有效空闲槽编号，不自动囚禁魂魄。"
+    slot_no = min(slot_candidates)
     shortage = []
     for target in _auto_refine_targets(observed):
         count = int(stocks.get(target, 0) or 0)
@@ -1134,6 +1138,22 @@ def _mark_collect_slot_sent(observed, command, sent_at=0):
             "slots": pending_slots,
             "sent_at": float(sent_at or time.time()),
         }
+        refining_slot_numbers_before = list(observed.get("refining_slot_numbers") or [])
+        observed = _remove_slot_number(observed, "refining_slot_numbers", slot_no)
+        details = observed.get("refining_slots_detail") if isinstance(observed.get("refining_slots_detail"), list) else []
+        filtered_details = [item for item in details if _safe_int(item.get("slot")) != slot_no]
+        observed["refining_slots_detail"] = filtered_details
+        removed_refining_slot = (
+            slot_no in [_safe_int(value) for value in refining_slot_numbers_before]
+            or len(filtered_details) != len(details)
+        )
+        if removed_refining_slot:
+            if observed.get("refining_slot_numbers"):
+                observed["refining_slots"] = len(observed.get("refining_slot_numbers") or [])
+            elif filtered_details:
+                observed["refining_slots"] = len(filtered_details)
+            else:
+                observed["refining_slots"] = max(0, int(observed.get("refining_slots", 0) or 0) - 1)
     return observed
 
 
@@ -1229,7 +1249,14 @@ def _next_refining_finish_time(observed, now):
     return min(finish_times) if finish_times else 0
 
 
-def _has_due_refining_finish(observed, now):
+def _due_refining_slot(observed, now):
+    observed = normalize_yinluo_observation(observed)
+    refining_slot_numbers = {
+        _safe_int(value)
+        for value in observed.get("refining_slot_numbers") or []
+        if 1 <= _safe_int(value) <= 99
+    }
+    due_slots = []
     details = observed.get("refining_slots_detail") if isinstance(observed.get("refining_slots_detail"), list) else []
     for item in details:
         if not isinstance(item, dict):
@@ -1239,8 +1266,27 @@ def _has_due_refining_finish(observed, now):
         except (TypeError, ValueError):
             continue
         if 0 < finish_time <= now:
-            return True
-    return False
+            slot_no = _safe_int(item.get("slot"))
+            if 1 <= slot_no <= 99 and (not refining_slot_numbers or slot_no in refining_slot_numbers):
+                due_slots.append(slot_no)
+    return min(due_slots) if due_slots else 0
+
+
+def _has_due_refining_finish(observed, now):
+    return _due_refining_slot(observed, now) > 0
+
+
+def _build_due_refining_collect_plan(observed, now):
+    slot_no = _due_refining_slot(observed, now)
+    if slot_no <= 0:
+        return _manual_block("collect", "没有已知到期的炼化槽。", CMD_YINLUO_COLLECT, "yinluo_collect")
+    command = f"{CMD_YINLUO_COLLECT} {slot_no}"
+    phaseful_block = _phaseful_risk_block("collect", command, "yinluo_collect", now)
+    if phaseful_block:
+        return phaseful_block
+    if _has_collect_pending(observed):
+        return _manual_block("collect", "收取精华上一轮正在等待真实回复，不并行发送。", command, "yinluo_collect")
+    return _manual_allow("collect", command, "yinluo_collect", now)
 
 
 def _has_yinluo_due_followup(observed, now):
@@ -1441,10 +1487,7 @@ async def run_yinluo_scheduler(now):
     elif _auto_action_enabled(observed, "collect") and int(observed.get("ready_slots", 0) or 0) > 0:
         plan = build_yinluo_manual_plan("collect", now=now)
     elif _auto_action_enabled(observed, "collect") and _has_due_refining_finish(observed, now):
-        observed["auto_calibrate_reason"] = "炼化槽预计已到期，需查幡确认精华。"
-        state["yinluo_observation"] = observed
-        save_state()
-        plan = build_yinluo_manual_plan("banner", now=now)
+        plan = _build_due_refining_collect_plan(observed, now)
     elif not _has_banner_hint(observed):
         plan = build_yinluo_manual_plan("banner", now=now)
     else:

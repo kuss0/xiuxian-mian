@@ -582,6 +582,35 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
         self.assertEqual(3, observed["auto_refine_pending"]["slot"])
 
+    async def test_scheduler_auto_refine_uses_lowest_empty_slot_number(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 1300,
+            "sha_max": 15000,
+            "empty_slots": 3,
+            "empty_slot_numbers": [6, 4, 5],
+            "ready_slots": 0,
+            "soul_stocks": {"凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": ["凶兽戾魄"],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".囚禁魂魄 4 凶兽戾魄", send_mock.await_args.args[0])
+        self.assertEqual(4, observed["auto_refine_pending"]["slot"])
+
     async def test_scheduler_does_not_auto_refine_without_selected_targets(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
@@ -610,7 +639,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_called()
         self.assertEqual("idle", observed["auto_last_action"])
 
-    async def test_scheduler_queries_banner_when_refining_slot_due(self):
+    async def test_scheduler_collects_refining_slot_directly_when_due(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -634,9 +663,13 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         }, now=now)
 
         send_mock.assert_awaited_once()
-        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
-        self.assertEqual("banner", observed["auto_last_action"])
-        self.assertIn("预计已到期", observed["auto_calibrate_reason"])
+        self.assertEqual(".收取精华 3", send_mock.await_args.args[0])
+        self.assertEqual("collect", observed["auto_last_action"])
+        self.assertEqual("", observed["auto_calibrate_reason"])
+        self.assertEqual([3], observed["auto_collect_pending"]["slots"])
+        self.assertEqual([], observed["refining_slot_numbers"])
+        self.assertEqual([], observed["refining_slots_detail"])
+        self.assertEqual(0, observed["refining_slots"])
 
     async def test_scheduler_auto_converts_only_when_enabled_and_refine_needs_sha(self):
         now = 1_780_000_000.0
