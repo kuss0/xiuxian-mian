@@ -1042,11 +1042,17 @@ class YinluoPassiveInboxTests(unittest.TestCase):
                 "sha_max": 15000,
             }
             changed = yinluo.apply_yinluo_passive("【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！", now=now)
+            changed_again = yinluo.apply_yinluo_passive(
+                "【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！",
+                now=now + 30,
+            )
             observed = state_module.state["yinluo_observation"]
             profile = state_module.get_send_as_profile(send_as_id)
 
         self.assertTrue(changed)
+        self.assertTrue(changed_again)
         self.assertEqual(2300, observed["sha_current"])
+        self.assertEqual(now + yinluo.YINLUO_CONVERT_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, observed["next_convert_time"])
         self.assertEqual(2000, profile["xiuwei_current"])
 
     def test_apply_refine_success_is_idempotent_after_auto_sent_marker(self):

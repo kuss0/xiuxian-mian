@@ -811,6 +811,19 @@ def _tianjige_number(value, default=0):
         return int(default)
 
 
+def _tianjige_parse_number(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.replace(",", "").strip()
+        if not value or value.lower() in {"none", "null"}:
+            return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
 def _tianjige_float(value, default=0.0):
     try:
         if isinstance(value, str):
@@ -1174,7 +1187,9 @@ def _tianjige_profile_updates_from_row(row):
     if cultivation_points in (None, ""):
         cultivation_points = row.get("points")
     if cultivation_points not in (None, ""):
-        updates["xiuwei_current"] = _tianjige_number(cultivation_points)
+        parsed_points = _tianjige_parse_number(cultivation_points)
+        if parsed_points is not None:
+            updates["xiuwei_current"] = parsed_points
     sect_name = _tianjige_clean_sect_name(row.get("sect_name") or row.get("sect"))
     if sect_name:
         updates["sect_name"] = sect_name

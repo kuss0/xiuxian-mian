@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import re
 import time
 
@@ -122,6 +123,7 @@ def _default_yinluo_observation():
         "last_extra_sha_gain": 0,
         "last_backlash_loss": 0,
         "last_bonus_gain": 0,
+        "last_convert_result_key": "",
         "last_sample_gap": "夺舍 @目标 成功/冷却文案未收录",
         "auto_next_time": 0,
         "auto_last_action": "",
@@ -183,6 +185,7 @@ def normalize_yinluo_observation(value=None):
     if not isinstance(observed.get("recent"), list):
         observed["recent"] = []
     observed["recent"] = [item for item in observed.get("recent", []) if isinstance(item, dict)][-8:]
+    observed["last_convert_result_key"] = str(observed.get("last_convert_result_key") or "")
     for key in ("last_observed_at", "next_demon_summon_time", "next_blood_forest_time", "next_convert_time", "auto_next_time"):
         try:
             observed[key] = float(observed.get(key, 0) or 0)
@@ -278,6 +281,12 @@ def _append_slot_number(observed, key, slot_no):
         values.append(slot_no)
     observed[key] = sorted(_safe_int(value) for value in values if 1 <= _safe_int(value) <= 99)
     return observed
+
+
+def _yinluo_text_result_key(action, raw_text):
+    compact_text = re.sub(r"\s+", "", str(raw_text or ""))
+    digest = hashlib.sha1(compact_text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    return f"{action}:{digest}"
 
 
 def _restore_auto_refine_pending(observed):
@@ -596,6 +605,7 @@ def parse_yinluo_text(text, now=None, family=""):
             "last_convert_amount": int(amount_match.group("amount") or 0) if amount_match else 0,
             "last_sha_gain": int(sha_match.group("gain") or 0) if sha_match else 0,
             "last_extra_sha_gain": int(extra_match.group("gain") or 0) if extra_match else 0,
+            "convert_result_key": _yinluo_text_result_key("convert", raw_text),
             "next_convert_time": float(now + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC),
         }
 
@@ -737,6 +747,14 @@ def apply_yinluo_passive(text, now=None, family=""):
         return False
 
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    previous_observed = copy.deepcopy(observed)
+    convert_result_key = str(parsed.get("convert_result_key") or "")
+    convert_already_accounted = (
+        parsed.get("action") == "化功为煞"
+        and parsed.get("result") == "success"
+        and convert_result_key
+        and convert_result_key == str(previous_observed.get("last_convert_result_key") or "")
+    )
     observed["last_observed_at"] = now
     for key in (
         "last_error",
@@ -776,6 +794,8 @@ def apply_yinluo_passive(text, now=None, family=""):
         "last_bonus_gain",
         "last_sample_gap",
     ):
+        if convert_already_accounted and key == "next_convert_time":
+            continue
         if key in parsed:
             observed[key] = parsed.get(key)
     observed["last_action"] = parsed.get("action") or ""
@@ -786,12 +806,15 @@ def apply_yinluo_passive(text, now=None, family=""):
         observed["auto_calibrate_reason"] = ""
     if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") == "success":
         gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
-        if gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
+        should_apply_gain = parsed.get("action") != "化功为煞" or not convert_already_accounted
+        if should_apply_gain and gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
             observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
             if int(observed.get("sha_max", 0) or 0) > 0:
                 observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
-        if parsed.get("action") == "化功为煞":
+        if parsed.get("action") == "化功为煞" and not convert_already_accounted:
             _deduct_profile_xiuwei(parsed.get("last_convert_amount", 0))
+            if convert_result_key:
+                observed["last_convert_result_key"] = convert_result_key
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
         observed = _restore_auto_refine_pending(observed)
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":

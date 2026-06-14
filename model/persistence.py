@@ -437,6 +437,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_sent_at REAL NOT NULL DEFAULT 0")
     if "concubine_heart_choice_retry_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_heart_choice_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "concubine_last_recovered_reply_key" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_recovered_reply_key TEXT NOT NULL DEFAULT ''")
+    if "concubine_last_recovered_reply_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_last_recovered_reply_at REAL NOT NULL DEFAULT 0")
     if "concubine_fragment_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN concubine_fragment_count INTEGER NOT NULL DEFAULT 0")
     if "concubine_fragment_total" not in runtime_columns:
@@ -1208,6 +1212,8 @@ def init_db():
             concubine_heart_choice_round INTEGER NOT NULL DEFAULT 0,
             concubine_heart_choice_sent_at REAL NOT NULL DEFAULT 0,
             concubine_heart_choice_retry_count INTEGER NOT NULL DEFAULT 0,
+            concubine_last_recovered_reply_key TEXT NOT NULL DEFAULT '',
+            concubine_last_recovered_reply_at REAL NOT NULL DEFAULT 0,
             concubine_fragment_count INTEGER NOT NULL DEFAULT 0,
             concubine_fragment_total INTEGER NOT NULL DEFAULT 4,
             concubine_fragment_xutian_count INTEGER NOT NULL DEFAULT 0,

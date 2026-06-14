@@ -754,6 +754,44 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(88, record["spiritual_sense"])
         self.assertEqual(12, record["taiyi_spiritual_sense"])
 
+    async def test_manual_identity_api_refresh_skips_malformed_cultivation_points_for_profile(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "token-from-html",
+        })
+        state_module.update_send_as_profile(self.identity_id, xiuwei_current=54321)
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "telegram_id": self.identity_id,
+                "username": "source",
+                "dao_name": "青源",
+                "cultivation_level": "化神中期",
+                "cultivation_points": "bad-value",
+                "sect_name": "太一门",
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/cultivator/source",
+        )
+
+        async def fake_fetch(config, path):
+            if path == storage_bag_api_client.build_cultivator_path("source"):
+                return api_result
+            raise AssertionError(f"unexpected path: {path}")
+
+        with patch("model.ui.fetch_storage_bag_result", new=fake_fetch), \
+                patch("model.ui.send_game_command", new=AsyncMock()) as send_mock:
+            ok, _message, _snapshot = await ui.ui_refresh_identity_from_api(self.identity_id)
+
+        self.assertTrue(ok)
+        send_mock.assert_not_called()
+        profile = state_module.get_send_as_profile(self.identity_id)
+        self.assertEqual(54321, profile["xiuwei_current"])
+        record = state_module.get_tianjige_dao_path_records()[str(self.identity_id)]
+        self.assertEqual(0, record["cultivation_points"])
+
     async def test_dao_path_snapshot_tolerates_malformed_persisted_values(self):
         with patch("model.ui.get_identity_ids", return_value=[self.identity_id]):
             state_module.set_tianjige_dao_path_records({

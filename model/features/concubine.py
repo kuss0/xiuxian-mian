@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -223,6 +224,8 @@ def _clear_heart_choice_guard():
     state["concubine_heart_choice_round"] = 0
     state["concubine_heart_choice_sent_at"] = 0
     state["concubine_heart_choice_retry_count"] = 0
+    state["concubine_last_recovered_reply_key"] = ""
+    state["concubine_last_recovered_reply_at"] = 0
 
 
 def _has_sent_heart_choice(prompt_msg_id, round_no):
@@ -1822,9 +1825,24 @@ def _find_logged_pending_reply(now, phase):
     return found
 
 
+def _concubine_recovered_reply_key(phase, logged_reply):
+    text = str((logged_reply or {}).get("text") or "")
+    digest = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    message_id = _msg_id_int((logged_reply or {}).get("message_id"))
+    reply_to_msg_id = _msg_id_int((logged_reply or {}).get("reply_to_msg_id"))
+    return f"{phase}:{message_id}:{reply_to_msg_id}:{digest}"
+
+
 async def _recover_concubine_pending_from_message_log(now, phase):
     logged_reply = _find_logged_pending_reply(now, phase)
     if not logged_reply:
+        return False
+    recovery_key = _concubine_recovered_reply_key(phase, logged_reply)
+    if (
+        phase == "heart_choice_reply_pending"
+        and recovery_key
+        and recovery_key == str(state.get("concubine_last_recovered_reply_key") or "")
+    ):
         return False
     spec = logged_reply["spec"]
     before_phase = _phase()
@@ -1850,6 +1868,9 @@ async def _recover_concubine_pending_from_message_log(now, phase):
     state_changed = _phase() != before_phase or float(state.get("next_concubine_time", 0) or 0) != before_next
     if not handled and not state_changed:
         return False
+    if phase == "heart_choice_reply_pending":
+        state["concubine_last_recovered_reply_key"] = recovery_key
+        state["concubine_last_recovered_reply_at"] = float(now or 0)
     await send_audit_log(
         f"🌸 侍妾日志补偿：{phase} 已按真实回复接管（msg_id={logged_reply['message_id']}）。",
         scope="identity",
@@ -2397,7 +2418,7 @@ def _needs_active_status_calibration(now):
     snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
     if _has_heart_due_action(now):
         panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-        return snapshot_at <= 0 or panel_msg_id <= 0 or float(now) - snapshot_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC
+        return snapshot_at <= 0 or panel_msg_id <= 0
     return False
 
 
@@ -2421,6 +2442,7 @@ def _has_active_nanlong_pending(now):
 
 
 def _clear_partner_snapshot(*, clear_voyage=True):
+    state["concubine_last_panel_msg_id"] = 0
     state["concubine_name"] = ""
     state["concubine_kind"] = ""
     state["concubine_location"] = ""
@@ -3110,7 +3132,7 @@ async def _send_heart_command(now):
 
     panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
     panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_seen_at <= 0 or now - panel_seen_at > CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
+    if panel_msg_id <= 0 or panel_seen_at <= 0:
         state["concubine_heart_last_error"] = "共历心劫需先刷新侍妾面板"
         await _send_status_command(now)
         return False

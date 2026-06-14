@@ -427,7 +427,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(expected_due, state_module.state["concubine_tianji_due_at"])
         self.assertEqual(expected_due + 30, state_module.state["next_concubine_time"])
 
-    async def test_scheduler_refreshes_status_when_heart_panel_is_stale(self):
+    async def test_scheduler_uses_cached_panel_for_heart_even_when_snapshot_is_stale(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now + 3600)
         with state_module.use_identity(send_as_id) as identity_state:
@@ -442,9 +442,28 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
              patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_HEART, track=False, reply_to=123, priority="chain")
+        self.assertEqual("heart_pending", state_module.state["concubine_phase"])
+        self.assertEqual(988, state_module.state["concubine_heart_msg_id"])
+
+    async def test_scheduler_refreshes_status_when_heart_panel_is_missing(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["concubine_last_panel_msg_id"] = 0
+            identity_state["concubine_last_snapshot_at"] = now - 60
+
+        sent_msg = SimpleNamespace(id=989, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
         mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
         self.assertEqual("status_pending", state_module.state["concubine_phase"])
-        self.assertEqual(988, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(989, state_module.state["concubine_status_msg_id"])
 
     async def test_scheduler_allows_replayable_dream_during_summary_due(self):
         now = 1_700_000_000.0
@@ -1233,6 +1252,64 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, state_module.state["concubine_heart_round"])
         self.assertEqual(901, state_module.state["concubine_heart_prompt_msg_id"])
         self.assertEqual(now - 7, state_module.state["next_concubine_time"])
+        self.assertTrue(state_module.state["concubine_last_recovered_reply_key"])
+
+    async def test_heart_choice_log_recovery_is_idempotent_for_same_edit(self):
+        now = 1_700_000_900.0
+        send_as_id = self._prepare_identity()
+        edit_text = (
+            "【坠魔心劫·第1轮已定】\n"
+            "你稳守灵台，不贪快功，魔影首轮试探未能动你分毫。\n\n"
+            "【坠魔心劫·第2轮】\n"
+            "幻境再变，请继续回复 .稳 / .狠 / .骗。"
+        )
+        logged_reply = {
+            "message_id": 901,
+            "reply_to_msg_id": 901,
+            "text": edit_text,
+        }
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 800
+            identity_state["concubine_heart_prompt_msg_id"] = 901
+            identity_state["concubine_heart_round"] = 1
+            identity_state["concubine_heart_choice_prompt_msg_id"] = 901
+            identity_state["concubine_heart_choice_round"] = 1
+            identity_state["concubine_heart_choice_sent_at"] = now - 20
+            identity_state["next_concubine_time"] = now - 1
+            identity_state["concubine_last_recovered_reply_key"] = concubine._concubine_recovered_reply_key(
+                "heart_choice_reply_pending",
+                logged_reply,
+            )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(
+                tmpdir,
+                [
+                    {
+                        "ts": self._log_ts(now - 10),
+                        "event_type": "edit",
+                        "message_id": 901,
+                        "reply_to_msg_id": 800,
+                        "text": edit_text,
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_audit_log", new=AsyncMock()) as mock_audit:
+                recovered = await concubine._recover_concubine_pending_from_message_log(
+                    now,
+                    "heart_choice_reply_pending",
+                )
+
+        self.assertFalse(recovered)
+        mock_audit.assert_not_awaited()
+        self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
 
     async def test_cangkun_puzzle_success_clears_only_cangkun_progress(self):
         now = 1_700_000_000.0
