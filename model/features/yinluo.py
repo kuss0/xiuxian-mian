@@ -12,7 +12,15 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import send_game_command
-from ..state import REALM_SORT_INDEX, get_send_as_profile, infer_realm_from_xiuwei_max, state, use_identity
+from ..state import (
+    REALM_SORT_INDEX,
+    get_current_identity_id,
+    get_send_as_profile,
+    infer_realm_from_xiuwei_max,
+    state,
+    update_send_as_profile,
+    use_identity,
+)
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
 
@@ -782,6 +790,8 @@ def apply_yinluo_passive(text, now=None, family=""):
             observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
             if int(observed.get("sha_max", 0) or 0) > 0:
                 observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
+        if parsed.get("action") == "化功为煞":
+            _deduct_profile_xiuwei(parsed.get("last_convert_amount", 0))
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
         observed = _restore_auto_refine_pending(observed)
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":
@@ -997,6 +1007,28 @@ def _has_known_sha_pool(observed):
     return int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0
 
 
+def _known_profile_xiuwei_current():
+    return _safe_int(get_send_as_profile().get("xiuwei_current", 0))
+
+
+def _convert_xiuwei_shortage_reason(amount):
+    amount = _safe_int(amount)
+    current = _known_profile_xiuwei_current()
+    if amount <= 0 or current <= 0:
+        return ""
+    if current < amount:
+        return f"当前修为 {current}，不足以化功为煞 {amount} 点。"
+    return ""
+
+
+def _deduct_profile_xiuwei(amount):
+    amount = _safe_int(amount)
+    current = _known_profile_xiuwei_current()
+    if amount <= 0 or current <= 0:
+        return
+    update_send_as_profile(get_current_identity_id(), xiuwei_current=max(0, current - amount))
+
+
 def _auto_config(observed):
     return normalize_yinluo_auto_config(observed.get("auto_config") if isinstance(observed, dict) else {})
 
@@ -1052,6 +1084,9 @@ def _build_auto_convert_arg(observed, now=None):
     amount = _safe_int(config.get("convert_amount", 0))
     if amount < YINLUO_CONVERT_MIN_AMOUNT or amount > YINLUO_CONVERT_MAX_AMOUNT:
         return "", "自动化煞数量未配置或不合法。"
+    shortage_reason = _convert_xiuwei_shortage_reason(amount)
+    if shortage_reason:
+        return "", shortage_reason
     if not _has_recent_observation(observed, now):
         return "", "阴罗宗状态过旧，不自动化煞。"
     next_time = float(observed.get("next_convert_time", 0) or 0)
@@ -1398,6 +1433,9 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
             return _manual_block(action, f"化功为煞每次需在 {YINLUO_CONVERT_MIN_AMOUNT} 至 {YINLUO_CONVERT_MAX_AMOUNT} 点之间。", "", "yinluo_convert")
         if amount > YINLUO_CONVERT_MAX_AMOUNT:
             return _manual_block(action, f"单次化功为煞上限 {YINLUO_CONVERT_MAX_AMOUNT}，避免误消耗过大。", "", "yinluo_convert")
+        shortage_reason = _convert_xiuwei_shortage_reason(amount)
+        if shortage_reason:
+            return _manual_block(action, shortage_reason, CMD_YINLUO_CONVERT, "yinluo_convert")
         next_time = float(observed.get("next_convert_time", 0) or 0)
         if next_time > now:
             return _manual_block(action, f"化功为煞仍在冷却中，{fmt_remaining(next_time)} 后再试。", CMD_YINLUO_CONVERT, "yinluo_convert")

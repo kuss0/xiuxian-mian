@@ -275,6 +275,22 @@ class YinluoManualPlanTests(unittest.TestCase):
         self.assertFalse(refine_missing_target["allowed"])
         self.assertIn("目标", refine_missing_target["reason"])
 
+    def test_convert_blocks_when_known_xiuwei_is_insufficient(self):
+        now = 1_780_000_000.0
+        state_module.update_send_as_profile(self.identity_id, xiuwei_current=800, xiuwei_max=50000)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "last_action": "阴罗幡",
+                "last_result": "panel",
+            }
+
+            convert = yinluo.build_yinluo_manual_plan("convert", "1000", now=now)
+
+        self.assertFalse(convert["allowed"])
+        self.assertIn("当前修为 800", convert["reason"])
+
     def test_active_yinluo_actions_block_during_phaseful_summary_risk(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
@@ -703,6 +719,37 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("convert", observed["auto_last_action"])
         self.assertGreater(observed["next_convert_time"], now)
 
+    async def test_scheduler_blocks_auto_convert_when_known_xiuwei_is_insufficient(self):
+        now = 1_780_000_000.0
+        state_module.update_send_as_profile(self.identity_id, xiuwei_current=800, xiuwei_max=50000)
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 300,
+            "sha_max": 15000,
+            "empty_slots": 1,
+            "empty_slot_numbers": [3],
+            "ready_slots": 0,
+            "soul_stocks": {"凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "next_convert_time": 0,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": True,
+                "convert_amount": 10000,
+                "refine_targets": ["凶兽戾魄"],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("idle", observed["auto_last_action"])
+
     async def test_scheduler_does_not_refine_without_known_empty_slot_number(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
@@ -981,6 +1028,26 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual(1300, observed["sha_current"])
         self.assertEqual(0, observed["next_convert_time"])
         self.assertEqual("每日献祭", observed["last_action"])
+
+    def test_apply_convert_success_deducts_known_profile_xiuwei(self):
+        now = 1_779_450_000.0
+        send_as_id = self._prepare_identity()
+        state_module.update_send_as_profile(send_as_id, xiuwei_current=12000, xiuwei_max=50000)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "banner_owner": "缘初子",
+                "sha_current": 300,
+                "sha_max": 15000,
+            }
+            changed = yinluo.apply_yinluo_passive("【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！", now=now)
+            observed = state_module.state["yinluo_observation"]
+            profile = state_module.get_send_as_profile(send_as_id)
+
+        self.assertTrue(changed)
+        self.assertEqual(2300, observed["sha_current"])
+        self.assertEqual(2000, profile["xiuwei_current"])
 
     def test_apply_refine_success_is_idempotent_after_auto_sent_marker(self):
         now = 1_779_450_000.0
