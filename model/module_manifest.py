@@ -9,6 +9,19 @@ ACTIVE_QUERY_FALLBACK_ONLY = "fallback_only"
 ACTIVE_QUERY_LAST_RESORT = "last_resort"
 
 
+class BehaviorPriority:
+    PHASEFUL = 10
+    PASSIVE_CRITICAL = 20
+    PASSIVE = 30
+    NORMAL = 50
+
+
+PRIORITY_PHASEFUL = BehaviorPriority.PHASEFUL
+PRIORITY_PASSIVE_CRITICAL = BehaviorPriority.PASSIVE_CRITICAL
+PRIORITY_PASSIVE = BehaviorPriority.PASSIVE
+PRIORITY_NORMAL = BehaviorPriority.NORMAL
+
+
 @dataclass(frozen=True)
 class ModuleManifest:
     name: str
@@ -20,6 +33,56 @@ class ModuleManifest:
     duplicate_guard: str = "runtime"
     replay_required: bool = True
     workflow_names: tuple = ()
+
+
+@dataclass(frozen=True)
+class BehaviorSpec:
+    name: str
+    module: str
+    state_key: str = ""
+    triggers: tuple = ()
+    reply_families: tuple = ()
+    replay_modules: tuple = ()
+    priority: int = PRIORITY_NORMAL
+    send_policy: str = SEND_POLICY_OBSERVE_THEN_SEND
+    active_query_policy: str = ACTIVE_QUERY_FALLBACK_ONLY
+    duplicate_guard: str = "runtime"
+    replay_required: bool = True
+    workflow_names: tuple = ()
+    registry_index: int = 0
+    action_specs: tuple = ()
+    phaseful: bool = False
+
+    @classmethod
+    def from_manifest(cls, manifest, registry_index=0):
+        replay_modules = tuple(manifest.replay_modules or ())
+        phaseful = manifest.duplicate_guard == "phaseful"
+        if phaseful:
+            priority = PRIORITY_PHASEFUL
+        elif (
+            manifest.send_policy == SEND_POLICY_PASSIVE_FIRST
+            and manifest.active_query_policy == ACTIVE_QUERY_LAST_RESORT
+        ):
+            priority = PRIORITY_PASSIVE_CRITICAL
+        elif manifest.send_policy == SEND_POLICY_PASSIVE_FIRST:
+            priority = PRIORITY_PASSIVE
+        else:
+            priority = PRIORITY_NORMAL
+        return cls(
+            name=manifest.name,
+            module=replay_modules[0] if replay_modules else manifest.name,
+            state_key=manifest.state_key,
+            reply_families=tuple(manifest.reply_families or ()),
+            replay_modules=replay_modules,
+            priority=priority,
+            send_policy=manifest.send_policy,
+            active_query_policy=manifest.active_query_policy,
+            duplicate_guard=manifest.duplicate_guard,
+            replay_required=manifest.replay_required,
+            workflow_names=tuple(manifest.workflow_names or ()),
+            registry_index=registry_index,
+            phaseful=phaseful,
+        )
 
 
 _MANIFESTS = (
@@ -61,6 +124,11 @@ _MANIFESTS = (
 )
 
 MODULE_MANIFESTS = {manifest.name: manifest for manifest in _MANIFESTS}
+_BEHAVIOR_SPECS = tuple(
+    BehaviorSpec.from_manifest(manifest, registry_index=index)
+    for index, manifest in enumerate(_MANIFESTS)
+)
+BEHAVIOR_SPECS = {spec.name: spec for spec in _BEHAVIOR_SPECS}
 REPLY_FAMILY_TO_MODULE = {
     family: manifest.name
     for manifest in _MANIFESTS
@@ -82,6 +150,10 @@ def get_module_manifest(name):
     return MODULE_MANIFESTS.get(str(name or "").strip())
 
 
+def get_behavior_spec(name):
+    return BEHAVIOR_SPECS.get(str(name or "").strip())
+
+
 def get_module_name_for_reply_family(family):
     return REPLY_FAMILY_TO_MODULE.get(str(family or "").strip(), "")
 
@@ -96,6 +168,19 @@ def get_module_name_for_replay_module(replay_module):
 
 def iter_module_manifests():
     return tuple(_MANIFESTS)
+
+
+def iter_behavior_specs():
+    return tuple(_BEHAVIOR_SPECS)
+
+
+def execution_order():
+    return tuple(
+        sorted(
+            _BEHAVIOR_SPECS,
+            key=lambda spec: (spec.priority, spec.registry_index, spec.name),
+        )
+    )
 
 
 def validate_module_manifest_coverage():
@@ -131,6 +216,46 @@ def validate_module_manifest_coverage():
         "duplicate_replay_modules": duplicate_replay_modules,
         "duplicate_reply_families": duplicate_reply_families,
         "duplicate_workflows": duplicate_workflows,
+    }
+
+
+def validate_behavior_spec_coverage():
+    manifest_result = validate_module_manifest_coverage()
+    seen_names = {}
+    duplicate_names = []
+    seen_families = {}
+    duplicate_reply_families = []
+    missing_manifests = []
+    mismatched_registry_indexes = []
+    for index, spec in enumerate(_BEHAVIOR_SPECS):
+        if spec.name in seen_names:
+            duplicate_names.append(spec.name)
+        seen_names[spec.name] = True
+        if spec.name not in MODULE_MANIFESTS:
+            missing_manifests.append(spec.name)
+        if spec.registry_index != index:
+            mismatched_registry_indexes.append(spec.name)
+        for family in tuple(spec.reply_families or ()):
+            if family in seen_families:
+                duplicate_reply_families.append(family)
+            seen_families[family] = spec.name
+
+    missing_specs = [manifest.name for manifest in _MANIFESTS if manifest.name not in BEHAVIOR_SPECS]
+    return {
+        "ok": (
+            manifest_result["ok"]
+            and not duplicate_names
+            and not duplicate_reply_families
+            and not missing_manifests
+            and not missing_specs
+            and not mismatched_registry_indexes
+        ),
+        "manifest_coverage": manifest_result,
+        "duplicate_names": duplicate_names,
+        "duplicate_reply_families": duplicate_reply_families,
+        "missing_manifests": missing_manifests,
+        "missing_specs": missing_specs,
+        "mismatched_registry_indexes": mismatched_registry_indexes,
     }
 
 

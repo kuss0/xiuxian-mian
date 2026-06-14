@@ -19,6 +19,33 @@ from tools import message_contract_report
 
 
 class MessageContractTests(unittest.TestCase):
+    def test_verified_game_event_from_simple_namespace_preserves_routing_identity(self):
+        event = SimpleNamespace(id=10140775, chat_id=-1001680975844, sender_id=8325841058)
+        reply_context = {
+            "send_as_id": 3504367852,
+            "family": "concubine_voyage",
+            "reply_to_msg_id": 10140774,
+            "root_msg_id": 10140770,
+            "reply_to_sender_id": 8325841058,
+        }
+
+        verified = message_contract.from_telegram_event(
+            event,
+            "【乱星海远航·启】\n预计归航时间：12小时 后",
+            reply_context,
+            event_kind="edit",
+        )
+
+        self.assertEqual("edit", verified.event_type)
+        self.assertEqual(-1001680975844, verified.chat_id)
+        self.assertEqual(10140775, verified.msg_id)
+        self.assertEqual(8325841058, verified.sender_id)
+        self.assertEqual(3504367852, verified.identity_id)
+        self.assertEqual("concubine_voyage", verified.family)
+        self.assertEqual(10140770, verified.root_msg_id)
+        self.assertEqual("edit:reply_context", verified.route_source)
+        self.assertEqual(8325841058, verified.reply_to_sender_id)
+
     def test_record_unhandled_routed_reply_uses_manifest_owner(self):
         event = SimpleNamespace(id=10140775, chat_id=-1001680975844)
 
@@ -47,6 +74,60 @@ class MessageContractTests(unittest.TestCase):
         self.assertEqual(8325841058, kwargs["reply_to_sender_id"])
         self.assertEqual("edit:reply_context", kwargs["route_source"])
         self.assertTrue(kwargs["include_recent"])
+
+    def test_record_unhandled_routed_reply_accepts_verified_event_like_old_arguments(self):
+        event = SimpleNamespace(id=10140775, chat_id=-1001680975844, sender_id=8325841058)
+        text = "【乱星海远航·启】\n预计归航时间：12小时 后"
+        reply_context = {
+            "send_as_id": 3504367852,
+            "family": "concubine_voyage",
+            "reply_to_msg_id": 10140774,
+            "root_msg_id": 10140774,
+            "reply_to_sender_id": 8325841058,
+        }
+        verified = message_contract.from_telegram_event(event, text, reply_context, event_kind="edit")
+
+        with patch.object(message_contract.passive_inbox, "record_passive_inbox_event", return_value=True) as inbox_mock:
+            old_ok = message_contract.record_unhandled_routed_reply(
+                event,
+                text,
+                3504367852,
+                "concubine_voyage",
+                10140774,
+                event_kind="edit",
+                reply_to_sender_id=8325841058,
+            )
+            verified_ok = message_contract.record_unhandled_routed_reply(verified)
+
+        self.assertTrue(old_ok)
+        self.assertTrue(verified_ok)
+        self.assertEqual(2, inbox_mock.call_count)
+        old_call = inbox_mock.call_args_list[0]
+        verified_call = inbox_mock.call_args_list[1]
+        self.assertEqual(old_call.args, verified_call.args)
+        for key in (
+            "module",
+            "identity_id",
+            "reason",
+            "summary",
+            "family",
+            "chat_id",
+            "msg_id",
+            "reply_to_msg_id",
+            "reply_to_sender_id",
+            "root_msg_id",
+            "event_type",
+            "route_source",
+            "matched_text",
+            "decision",
+            "source_message_id",
+            "include_recent",
+        ):
+            self.assertEqual(old_call.kwargs[key], verified_call.kwargs[key])
+        self.assertEqual("edit:reply_context", verified_call.kwargs["route_source"])
+        self.assertEqual("concubine_voyage", verified_call.kwargs["family"])
+        self.assertEqual(10140774, verified_call.kwargs["root_msg_id"])
+        self.assertEqual(10140775, verified_call.kwargs["msg_id"])
 
     def test_unhandled_reply_iterator_summary_and_fixture_suggestion(self):
         with tempfile.TemporaryDirectory() as tmpdir:

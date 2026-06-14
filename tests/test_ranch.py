@@ -237,6 +237,65 @@ class RanchTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("无休息中灵兽，继续等待归来", state_module.state["ranch_last_result"])
             self.assertEqual("", state_module.state["ranch_last_error"])
 
+    async def test_scheduler_blocks_dirty_next_ranch_time_without_mutation(self):
+        send_as_id = 3711993782
+        now = 1_700_000_000.0
+        dirty_next_time = "冷却数据异常"
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="xuruode4")
+        with state_module.use_identity(send_as_id):
+            state_module.state["ranch_enabled"] = True
+            state_module.state["next_ranch_time"] = dirty_next_time
+            state_module.state["ranch_last_result"] = "无休息中灵兽"
+
+            with (
+                patch.object(
+                    ranch,
+                    "_recover_possible_silent_ranch_success_from_log",
+                    return_value=True,
+                ) as recover_mock,
+                patch.object(ranch, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(ranch, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(ranch, "save_state") as save_mock,
+            ):
+                await ranch.run_ranch_scheduler(now)
+
+            recover_mock.assert_not_called()
+            send_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+            save_mock.assert_not_called()
+            self.assertEqual(dirty_next_time, state_module.state["next_ranch_time"])
+            self.assertEqual("无休息中灵兽", state_module.state["ranch_last_result"])
+
+    async def test_scheduler_blocks_dirty_pending_reply_due_without_clearing(self):
+        send_as_id = 3711993783
+        now = 1_700_000_000.0
+        dirty_due_at = "待回复时间异常"
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="xuruode5")
+        with state_module.use_identity(send_as_id):
+            state_module.state["ranch_enabled"] = True
+            state_module.state["next_ranch_time"] = now - 1
+            state_module.state["ranch_reply_to_msg_id"] = 333
+            state_module.state["ranch_reply_due_at"] = dirty_due_at
+            state_module.state["ranch_retry_count"] = 0
+            state_module.state["ranch_return_wait_since"] = 123
+
+            with (
+                patch.object(ranch, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(ranch, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(ranch, "save_state") as save_mock,
+            ):
+                await ranch.run_ranch_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+            save_mock.assert_not_called()
+            self.assertEqual(333, state_module.state["ranch_reply_to_msg_id"])
+            self.assertEqual(dirty_due_at, state_module.state["ranch_reply_due_at"])
+            self.assertEqual(0, state_module.state["ranch_retry_count"])
+            self.assertEqual(123, state_module.state["ranch_return_wait_since"])
+
     async def test_retry_due_during_dungeon_quiet_defers_without_consuming_retry(self):
         send_as_id = 3711993781
         now = 1_700_000_000.0

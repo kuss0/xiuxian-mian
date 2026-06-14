@@ -1,6 +1,5 @@
 import asyncio
 import copy
-import re
 import sys
 import unittest
 from pathlib import Path
@@ -12,6 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
+from model import app
 from model.features import deep_retreat, passive_inbox, yinluo
 from model.real_message_replay import get_real_message_text, iter_real_message_samples
 
@@ -1051,11 +1051,9 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
 class YinluoAppWiringTests(unittest.TestCase):
     def test_yinluo_scheduler_is_wired_into_identity_scheduler_loop(self):
-        source = (PROJECT_ROOT / "model" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("from .features.yinluo import run_yinluo_scheduler", source)
-        match = re.search(r"ordinary_schedulers = \((?P<body>.*?)\)", source, re.S)
-        self.assertIsNotNone(match)
-        self.assertIn("run_yinluo_scheduler", match.group("body"))
+        ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
+
+        self.assertIn("run_yinluo_scheduler", ordinary)
 
 
 class YinluoPassiveInboxTests(unittest.TestCase):
@@ -1407,10 +1405,103 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sent", message)
         execute_mock.assert_awaited_once_with("refine", "1 妖兽精魄", send_as_id=send_as_id)
 
+    def test_set_auto_config_same_value_does_not_save_observation(self):
+        send_as_id = self._prepare_identity(3304, sect_name="阴罗宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = yinluo.normalize_yinluo_observation({
+                "last_observed_at": 1_779_450_000.0,
+                "auto_config": {
+                    "collect": False,
+                    "refine": True,
+                    "blood_forest": False,
+                    "demon_summon": True,
+                    "convert": True,
+                    "convert_amount": 10000,
+                    "refine_targets": ["凶兽戾魄", "妖兽精魄"],
+                },
+            })
+            before = copy.deepcopy(state_module.state["yinluo_observation"])
+            with patch.object(yinluo, "save_state") as save_mock:
+                ok, message, ui_state = yinluo.set_yinluo_auto_config({
+                    "collect": False,
+                    "refine": True,
+                    "blood_forest": False,
+                    "demon_summon": True,
+                    "convert": True,
+                    "convert_amount": 10000,
+                    "refine_targets": "凶兽戾魄 妖兽精魄",
+                })
+
+            self.assertTrue(ok, message)
+            self.assertEqual(10000, ui_state["auto_config"]["convert_amount"])
+            self.assertEqual(before, state_module.state["yinluo_observation"])
+            save_mock.assert_not_called()
+
+    def test_set_auto_config_same_value_normalizes_partial_observation(self):
+        send_as_id = self._prepare_identity(3305, sect_name="阴罗宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_450_000.0,
+                "auto_config": {
+                    "collect": False,
+                    "refine": True,
+                    "refine_targets": ["凶兽戾魄", "妖兽精魄"],
+                },
+            }
+            with patch.object(yinluo, "save_state") as save_mock:
+                ok, message, _ui_state = yinluo.set_yinluo_auto_config({
+                    "collect": False,
+                    "refine": True,
+                    "refine_targets": "凶兽戾魄 妖兽精魄",
+                })
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertTrue(ok, message)
+        save_mock.assert_called_once()
+        self.assertIn("auto_next_time", observed)
+        self.assertIn("auto_last_error", observed)
+        self.assertFalse(observed["auto_config"]["collect"])
+        self.assertTrue(observed["auto_config"]["refine"])
+        self.assertEqual(["凶兽戾魄", "妖兽精魄"], observed["auto_config"]["refine_targets"])
+
+    def test_set_auto_config_changed_value_saves_plain_payload(self):
+        send_as_id = self._prepare_identity(3306, sect_name="阴罗宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_450_000.0,
+                "auto_config": {
+                    "collect": True,
+                    "refine": True,
+                    "blood_forest": True,
+                    "demon_summon": True,
+                    "convert": False,
+                    "convert_amount": 0,
+                    "refine_targets": [],
+                },
+            }
+            with patch.object(yinluo, "save_state") as save_mock:
+                ok, message, _ui_state = yinluo.set_yinluo_auto_config({
+                    "collect": False,
+                    "convert": True,
+                    "convert_amount": 10000,
+                    "refine_targets": "凶兽戾魄 妖兽精魄",
+                })
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertTrue(ok, message)
+        save_mock.assert_called_once()
+        self.assertIs(type(observed), dict)
+        self.assertIs(type(observed["auto_config"]), dict)
+        self.assertIs(type(observed["auto_config"]["refine_targets"]), list)
+        self.assertFalse(observed["auto_config"]["collect"])
+        self.assertTrue(observed["auto_config"]["convert"])
+        self.assertEqual(10000, observed["auto_config"]["convert_amount"])
+        self.assertEqual(["凶兽戾魄", "妖兽精魄"], observed["auto_config"]["refine_targets"])
+
     async def test_ui_updates_yinluo_auto_config_for_available_identity(self):
         from model import ui
 
-        send_as_id = self._prepare_identity(3304, sect_name="阴罗宗")
+        send_as_id = self._prepare_identity(3307, sect_name="阴罗宗")
         with patch.object(yinluo, "save_state"):
             ok, message = await ui.ui_set_yinluo_auto_config(send_as_id, {
                 "collect": False,

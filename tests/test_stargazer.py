@@ -68,6 +68,94 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["stargazer_queued_action"])
             self.assertEqual(0, state_module.state["stargazer_followup_due_at"])
 
+    async def test_scheduler_blocks_dirty_panel_cooldown_without_rewriting(self):
+        now = 1000.0
+        identity_id = 3756719391
+        dirty_cooldown = "观星冷却数据异常"
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["next_stargazer_panel_time"] = dirty_cooldown
+
+            with (
+                patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock()) as queue_mock,
+                patch.object(stargazer, "save_state") as save_mock,
+            ):
+                await stargazer.run_stargazer_scheduler(now)
+
+            queue_mock.assert_not_awaited()
+            save_mock.assert_not_called()
+            self.assertEqual(dirty_cooldown, state_module.state["next_stargazer_panel_time"])
+
+    def test_status_text_tolerates_dirty_panel_cooldown(self):
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["next_stargazer_panel_time"] = "观星冷却数据异常"
+
+            text = stargazer.get_stargazer_status_text()
+
+        self.assertIn("🔭 观星台", text)
+        self.assertIn("未设置", text)
+
+    async def test_scheduler_queues_panel_when_numeric_panel_cooldown_due(self):
+        now = 1000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["next_stargazer_panel_time"] = now - 1
+
+            with patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock(return_value=True)) as queue_mock:
+                await stargazer.run_stargazer_scheduler(now)
+
+            queue_mock.assert_awaited_once_with(now, "panel", audit_text="🌠 观星台到时，查面板")
+
+    async def test_scheduler_keeps_future_numeric_panel_cooldown_blocked(self):
+        now = 1000.0
+        identity_id = 3756719391
+        next_panel_time = now + 60
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["next_stargazer_panel_time"] = next_panel_time
+
+            with patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock()) as queue_mock:
+                await stargazer.run_stargazer_scheduler(now)
+
+            queue_mock.assert_not_awaited()
+            self.assertEqual(next_panel_time, state_module.state["next_stargazer_panel_time"])
+
+    async def test_scheduler_blocks_dirty_followup_due_without_clearing_queue(self):
+        now = 1000.0
+        identity_id = 3756719391
+        dirty_due = "观星后续时间异常"
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_followup_due_at"] = dirty_due
+            state_module.state["stargazer_queued_action"] = "guide"
+            state_module.state["stargazer_last_action"] = "queue_guide"
+
+            with (
+                patch.object(stargazer, "_send_stargazer_guide", new=AsyncMock()) as guide_mock,
+                patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock()) as queue_mock,
+                patch.object(stargazer, "save_state") as save_mock,
+            ):
+                await stargazer.run_stargazer_scheduler(now)
+
+            guide_mock.assert_not_awaited()
+            queue_mock.assert_not_awaited()
+            save_mock.assert_not_called()
+            self.assertEqual(dirty_due, state_module.state["stargazer_followup_due_at"])
+            self.assertEqual("guide", state_module.state["stargazer_queued_action"])
+            self.assertEqual("queue_guide", state_module.state["stargazer_last_action"])
+
     async def test_guide_send_disables_blind_retry_and_schedules_panel_fallback(self):
         now = 1500.0
         sent_at = now + 3

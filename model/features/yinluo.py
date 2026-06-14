@@ -12,6 +12,7 @@ from ..config import (
     CMD_YINLUO_REFINE,
 )
 from ..persistence import save_state
+from ..persisted_state import PersistedState
 from ..runtime import send_game_command
 from ..state import (
     REALM_SORT_INDEX,
@@ -1871,7 +1872,10 @@ def get_yinluo_ui_state(now=None):
 def set_yinluo_auto_config(updates):
     if not isinstance(updates, dict):
         return False, "阴罗自动策略参数必须是对象。", get_yinluo_ui_state()
-    observed = normalize_yinluo_observation(state.get("yinluo_observation"))
+    raw_observation = state.get("yinluo_observation")
+    observed = normalize_yinluo_observation(raw_observation)
+    persisted = PersistedState({})
+    persisted.restore(raw_observation if isinstance(raw_observation, dict) else {})
     current = _auto_config(observed)
     next_config = copy.deepcopy(current)
     for key in YINLUO_AUTO_ACTION_KEYS:
@@ -1885,9 +1889,13 @@ def set_yinluo_auto_config(updates):
     if "refine_targets" in updates:
         targets = _split_refine_targets(updates.get("refine_targets"))
         next_config["refine_targets"] = targets
-    observed["auto_config"] = normalize_yinluo_auto_config(next_config)
-    state["yinluo_observation"] = observed
-    save_state()
+    next_config = normalize_yinluo_auto_config(next_config)
+    observed["auto_config"] = next_config
+    persisted.set(observed)
+    snapshot = persisted.snapshot_if_dirty()
+    if snapshot is not None:
+        state["yinluo_observation"] = snapshot
+        save_state()
     return True, "已更新阴罗自动策略。", get_yinluo_ui_state()
 
 

@@ -1,4 +1,5 @@
 import json
+import math
 import random
 import re
 from datetime import datetime, timedelta
@@ -16,8 +17,18 @@ from ..state import (
     state,
     use_identity,
 )
-from ..timing import fmt_abs_ts, fmt_remaining
-from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
+from ..timing import (
+    CD_STATE_UNPARSEABLE,
+    cd_blocks,
+    cd_state,
+    fmt_abs_ts,
+    fmt_remaining,
+)
+from .dungeon_quiet import (
+    get_dungeon_quiet_reason,
+    get_dungeon_quiet_until,
+    is_dungeon_quiet_active,
+)
 
 
 RANCH_CYCLE_MIN_SEC = 4 * 3600 + 10 * 60
@@ -61,6 +72,35 @@ def _schedule_after_dungeon_quiet(now):
     next_time = float(until + random.uniform(RANCH_DUNGEON_QUIET_RESUME_MIN_SEC, RANCH_DUNGEON_QUIET_RESUME_MAX_SEC))
     state["next_ranch_time"] = next_time
     return next_time
+
+
+def _is_nonfinite_time_value(raw_value):
+    try:
+        return not math.isfinite(float(raw_value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _ranch_time_is_dirty(raw_value, now):
+    if _is_nonfinite_time_value(raw_value):
+        return True
+    return cd_state(raw_value, now, 0) == CD_STATE_UNPARSEABLE
+
+
+def _ranch_time_blocks(raw_value, now):
+    if _is_nonfinite_time_value(raw_value):
+        return True
+    return cd_blocks(raw_value, now, 0)
+
+
+def _safe_ranch_time_value(raw_value, default=0.0):
+    try:
+        value = float(raw_value or default)
+    except (TypeError, ValueError):
+        return float(default)
+    if not math.isfinite(value):
+        return float(default)
+    return value
 
 
 async def _defer_ranch_for_dungeon_quiet(now, *, action):
@@ -434,9 +474,10 @@ async def run_ranch_scheduler(now):
 
     reply_to_msg_id = int(state.get("ranch_reply_to_msg_id", 0) or 0)
     if reply_to_msg_id > 0:
-        if now < float(state.get("ranch_reply_due_at", 0) or 0):
+        reply_due_at_raw = state.get("ranch_reply_due_at", 0)
+        if _ranch_time_blocks(reply_due_at_raw, now):
             return
-        possible_sent_at = float(state.get("ranch_reply_due_at", 0) or 0) - RANCH_REPLY_TIMEOUT_SEC
+        possible_sent_at = _safe_ranch_time_value(reply_due_at_raw, 0) - RANCH_REPLY_TIMEOUT_SEC
         state["ranch_reply_to_msg_id"] = 0
         state["ranch_reply_due_at"] = 0
         if int(state.get("ranch_retry_count", 0) or 0) < 1:
@@ -451,12 +492,15 @@ async def run_ranch_scheduler(now):
         await send_audit_log(f"⚠️ {state['ranch_last_error']}", scope="identity")
         return
 
+    if _ranch_time_is_dirty(state.get("next_ranch_time", 0), now):
+        return
+
     if _recover_possible_silent_ranch_success_from_log(now):
         save_state()
         await send_audit_log("🐾 放养历史补偿：补发返回无休息中，按首发可能已生效继续等待归来广播。", scope="identity")
         return
 
-    if now < float(state.get("next_ranch_time", 0) or 0):
+    if _ranch_time_blocks(state.get("next_ranch_time", 0), now):
         return
     if state.get("ranch_return_pending"):
         if _is_ranch_return_wait_stale(now):

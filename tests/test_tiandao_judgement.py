@@ -45,6 +45,19 @@ from model.features.tiandao_judgement import parse_tiandao_judgement_prompt
 
 
 class TiandaoJudgementTests(unittest.TestCase):
+    def test_due_schedule_does_not_create_sleep_or_fire_and_forget_task(self):
+        with (
+            patch.object(tiandao_judgement.asyncio, "sleep", new=AsyncMock()) as sleep_mock,
+            patch.object(tiandao_judgement, "run_tiandao_judgement_scheduler", new=AsyncMock()) as scheduler_mock,
+        ):
+            result = tiandao_judgement._schedule_tiandao_judgement_due_task(1_700_000_100.0)
+
+        self.assertIsNone(result)
+        sleep_mock.assert_not_called()
+        scheduler_mock.assert_not_awaited()
+        self.assertNotIn("_fire_and_forget", vars(tiandao_judgement))
+        self.assertFalse(hasattr(tiandao_judgement, "_run_tiandao_judgement_due_task"))
+
     def test_parse_mod_arithmetic_with_token(self):
         text = (
             "🚨 【天道审判 · 挂机嫌疑】 🚨\n\n"
@@ -864,6 +877,47 @@ class TiandaoJudgementIdentityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, send_mock.await_count)
         self.assertEqual({}, state_module.state["tiandao_judgement_pending"])
         self.assertIn("已重试 1 次，停止重试", audit_mock.await_args_list[-1].args[0])
+
+    async def test_proof_scheduler_sends_intent_metadata(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        state_module.state["tiandao_judgement_enabled"] = True
+        state_module.state["tiandao_judgement_pending"] = {
+            "1:10": {
+                "target": "march_7777",
+                "token": "ABCD",
+                "command": ".自证",
+                "identity_id": identity_id,
+                "question": "炼制玄铁剑消耗灵石 加 十 等于？",
+                "answer": "20",
+                "due_at": now - 1,
+                "deadline_at": now + 120,
+                "created_at": now - 10,
+                "msg_id": 10,
+                "chat_id": 1,
+                "retry_count": 0,
+            }
+        }
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=555, sent_at=now))
+
+        with (
+            patch.object(tiandao_judgement, "send_game_command", new=send_mock),
+            patch.object(tiandao_judgement, "send_audit_log", new=AsyncMock()),
+            patch.object(tiandao_judgement, "save_state"),
+        ):
+            await tiandao_judgement.run_tiandao_judgement_scheduler(now)
+
+        send_mock.assert_awaited_once_with(
+            ".自证 ABCD 20",
+            track=False,
+            reply_to=10,
+            send_as_id=identity_id,
+            priority="p0",
+            source_module="天道审判",
+            op_id="tiandao_judgement:1:10:prove",
+            chain_id="tiandao_judgement:1:10",
+        )
+        self.assertEqual({}, state_module.state["tiandao_judgement_pending"])
 
 
 if __name__ == "__main__":

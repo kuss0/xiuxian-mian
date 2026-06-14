@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 
 from ..action_guard import close_by_family as close_action_guard_by_family
 from ..config import CMD_DIVINATION, CMD_DIVINATION_EXCHANGE, MESSAGES_DIR, PROJECT_ROOT_DIR, TZ_LOCAL
+from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
 from ..runtime import mono, send_audit_log, send_game_command
 from ..state import (
@@ -127,13 +128,22 @@ def _set_pending_records(records, *, persist=True):
 
 
 def _run_records():
-    records = get_divination_run_state()
+    state = PersistedState({})
+    state.restore(get_divination_run_state())
+    records = state.get()
     return records if isinstance(records, dict) else {}
 
 
 def _set_run_records(records, *, persist=True):
-    set_divination_run_state(records if isinstance(records, dict) else {})
+    state = PersistedState({})
+    state.restore(get_divination_run_state())
+    state.set(records if isinstance(records, dict) else {})
+    snapshot = state.snapshot_if_dirty()
+    if snapshot is None:
+        return False
+    set_divination_run_state(snapshot)
     _save_or_mark_dirty(persist=persist)
+    return True
 
 
 def _run_key(identity_id):
@@ -919,6 +929,12 @@ def _is_divination_enabled(identity_id):
     return bool(get_identity_enabled(identity_id) and get_identity_state(identity_id).get("divination_enabled", False))
 
 
+def _is_manual_reply_context(reply_context):
+    if not isinstance(reply_context, dict):
+        return False
+    return str(reply_context.get("source") or "").strip() == "manual_game_command"
+
+
 async def _send_exchange(pending, now, *, reason="", refreshed_identity_ids=None, fail_on_shortage=True):
     pending = pending if isinstance(pending, dict) else {}
     identity_id = int(pending.get("target_identity_id") or 0)
@@ -1117,6 +1133,8 @@ async def handle_divination_reply(text, now, event=None, reply_to=None, matched_
     if identity_id <= 0:
         return True
     if not _is_divination_enabled(identity_id):
+        return True
+    if _is_manual_reply_context(reply_context):
         return True
     key = _make_pending_key(event, raw_text)
     records = _pending_records()

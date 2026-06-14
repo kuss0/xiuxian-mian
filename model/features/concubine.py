@@ -43,6 +43,7 @@ from ..config import (
     RE_WHITESPACE,
     TZ_LOCAL,
 )
+from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
@@ -165,6 +166,15 @@ CONCUBINE_PARTNER_SNAPSHOT_KEYS = (
     "concubine_fragment_cangkun_total",
     "concubine_fragment_confirm_key",
     "concubine_fragment_confirmed_at",
+)
+CONCUBINE_VOYAGE_RUNTIME_KEYS = (
+    "concubine_voyage_msg_id",
+    "concubine_voyage_status",
+    "concubine_voyage_route",
+    "concubine_voyage_return_at",
+    "concubine_voyage_last_result",
+    "concubine_voyage_last_error",
+    "concubine_voyage_retry_count",
 )
 DREAM_KIND_XUTIAN = "xutian"
 DREAM_KIND_CANGKUN = "cangkun"
@@ -759,19 +769,26 @@ def _voyage_runtime_snapshot():
 
 def _restore_voyage_runtime_snapshot(snapshot):
     if not isinstance(snapshot, dict):
-        return
-    for key in (
-        "concubine_voyage_msg_id",
-        "concubine_voyage_status",
-        "concubine_voyage_route",
-        "concubine_voyage_return_at",
-        "concubine_voyage_last_result",
-        "concubine_voyage_last_error",
-        "concubine_voyage_retry_count",
-    ):
-        state[key] = snapshot.get(key, state.get(key))
+        return False
+    current = _voyage_runtime_snapshot()
+    restored = dict(current)
+    for key in CONCUBINE_VOYAGE_RUNTIME_KEYS:
+        restored[key] = snapshot.get(key, current.get(key))
     if state.get("concubine_voyage_enabled") and snapshot.get("phase") in CONCUBINE_VOYAGE_PENDING_PHASES:
-        _set_phase(snapshot.get("phase"))
+        restored["phase"] = snapshot.get("phase")
+
+    persisted = PersistedState({})
+    persisted.restore(current)
+    persisted.set(restored)
+    payload = persisted.snapshot_if_dirty()
+    if payload is None:
+        return False
+
+    for key in CONCUBINE_VOYAGE_RUNTIME_KEYS:
+        state[key] = payload.get(key, state.get(key))
+    if payload.get("phase") in CONCUBINE_VOYAGE_PENDING_PHASES:
+        _set_phase(payload.get("phase"))
+    return True
 
 
 def _is_voyage_sailing(now):

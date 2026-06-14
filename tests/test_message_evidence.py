@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import action_guard, runtime
 from model import state as state_module
 from model.features import passive_event_ledger, passive_inbox, workflow_log
+from model.verified_event import from_telegram_event
 
 
 class PassiveInboxEvidenceTests(unittest.TestCase):
@@ -73,6 +74,48 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
             self.assertEqual(1, snapshot["changed"])
             self.assertEqual(1, snapshot["modules"]["tree"])
             self.assertEqual(identity_id, snapshot["recent"][-1]["identity_id"])
+            self.assertEqual("message:passive_you_line", snapshot["recent"][-1]["route_source"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_verified_event_can_route_tree_panel_without_reply_identity(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 3800619925
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="growrdick", label="丁丁", daohao="随缘子")
+            event = SimpleNamespace(chat_id=-1001680975844, id=9512605, sender_id=8325841058)
+            text = "\n".join([
+                "【落云宗 · 灵眼之树】",
+                "✨ 状态: 成熟采摘期",
+                "🏆 本轮最终分枝榜 (天道快照):",
+                "7. growrdick (你): 1039 ⏳(未领)",
+                "",
+                "👤 你的当前状态: 1039 点",
+            ])
+            verified = from_telegram_event(
+                event,
+                text,
+                {"family": "tree_panel", "reply_to_msg_id": 9512604, "root_msg_id": 9512604},
+                event_kind="message",
+            )
+
+            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    verified,
+                    now=1_779_978_314.0,
+                ))
+
+            self.assertTrue(handled)
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(1, snapshot["changed"])
+            self.assertEqual(identity_id, snapshot["recent"][-1]["identity_id"])
+            self.assertEqual(9512605, snapshot["recent"][-1]["msg_id"])
+            self.assertEqual(9512604, snapshot["recent"][-1]["reply_to_msg_id"])
             self.assertEqual("message:passive_you_line", snapshot["recent"][-1]["route_source"])
         finally:
             state_module._meta_state.clear()
@@ -162,6 +205,32 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
                 reply_context=reply_context,
                 event=event,
                 event_type="message",
+            ))
+
+        self.assertFalse(first)
+        self.assertFalse(second)
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["total"])
+        self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
+
+    def test_duplicate_verified_event_text_is_ignored(self):
+        event = SimpleNamespace(chat_id=-1001680975844, id=9512505, sender_id=8325841058)
+        text = "【琉璃问心塔】\n你深吸一口气，踏入了古塔的第 1 层。"
+        verified = from_telegram_event(
+            event,
+            text,
+            {"family": "tower", "reply_to_msg_id": 9512504, "root_msg_id": 9512504},
+            event_kind="message",
+        )
+
+        with patch.object(passive_inbox, "_save_passive_stats"):
+            first = asyncio.run(passive_inbox.handle_passive_module_card(
+                verified,
+                now=1_779_978_314.0,
+            ))
+            second = asyncio.run(passive_inbox.handle_passive_module_card(
+                verified,
+                now=1_779_978_315.0,
             ))
 
         self.assertFalse(first)

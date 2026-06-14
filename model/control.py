@@ -1,6 +1,7 @@
 import asyncio
 import html
 import json
+import math
 import re
 import random
 import sys
@@ -977,9 +978,28 @@ def _manual_disable_jiyin_module_state():
     state["jiyin_enabled"] = False
 
 
+def _parse_manual_toggle_next_time(module_name, timer_key):
+    raw_next_time = state.get(timer_key, 0)
+    try:
+        next_time = float(raw_next_time or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_time = 0.0
+        timer_dirty = True
+    else:
+        timer_dirty = not math.isfinite(next_time)
+    if timer_dirty:
+        console_log(
+            f"⚠️ 手动开启{module_name}模块时检测到异常计时：{timer_key}={raw_next_time!r}，已保留待回复状态",
+            scope="identity",
+            send_as_id=get_current_identity_id(),
+        )
+    return next_time, timer_dirty
+
+
 def _manual_enable_jiyin_module_state(now):
     state["jiyin_enabled"] = True
-    if float(state.get("next_jiyin_time", 0) or 0) > now:
+    next_jiyin_time, timer_dirty = _parse_manual_toggle_next_time("极阴祖师", "next_jiyin_time")
+    if timer_dirty or next_jiyin_time > now:
         return
     clear_jiyin_state(persist=False)
 
@@ -995,7 +1015,8 @@ def _manual_disable_nanlong_module_state():
 
 def _manual_enable_nanlong_module_state(now):
     state["nanlong_enabled"] = True
-    if float(state.get("next_nanlong_time", 0) or 0) > now:
+    next_nanlong_time, timer_dirty = _parse_manual_toggle_next_time("南陇侯", "next_nanlong_time")
+    if timer_dirty or next_nanlong_time > now:
         return
     clear_nanlong_state(persist=False)
 

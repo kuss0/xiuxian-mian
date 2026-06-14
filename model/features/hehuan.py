@@ -1,4 +1,5 @@
 import copy
+import math
 import re
 import time
 
@@ -30,6 +31,41 @@ RE_INSIGHT = re.compile(r"共同领悟了【(?P<item>[^】]+)】")
 RE_FINAL_GAIN = re.compile(r"本次闭关，你的修为最终增加了\s*(?P<gain>\d+)\s*点")
 RE_BASE_GAIN = re.compile(r"基础修为增加了\s*(?P<gain>\d+)\s*点")
 RE_BONUS_GAIN = re.compile(r"因【合欢宗】灵脉加持，你额外获得了\s*(?P<gain>\d+)\s*点修为")
+
+HEHUAN_OBSERVATION_TIME_KEYS = (
+    "last_observed_at",
+    "next_hehuan_time",
+    "contract_until",
+    "heart_seal_until",
+    "auto_next_time",
+)
+
+
+def _is_empty_state_value(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _parse_observation_float(value):
+    if _is_empty_state_value(value):
+        return 0.0, False
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, True
+    if not math.isfinite(parsed):
+        return 0.0, True
+    return parsed, False
+
+
+def _dirty_hehuan_time_fields(value=None):
+    if not isinstance(value, dict):
+        return []
+    dirty_fields = []
+    for key in HEHUAN_OBSERVATION_TIME_KEYS:
+        _parsed, dirty = _parse_observation_float(value.get(key, 0))
+        if dirty:
+            dirty_fields.append(key)
+    return dirty_fields
 
 
 def _default_hehuan_observation():
@@ -63,17 +99,19 @@ def normalize_hehuan_observation(value=None):
         observed["last_gains"] = {}
     if not isinstance(observed.get("recent"), list):
         observed["recent"] = []
-    observed["recent"] = [
-        item for item in observed.get("recent", []) if isinstance(item, dict)
-    ][-8:]
-    for key in ("last_observed_at", "next_hehuan_time", "contract_until", "heart_seal_until", "auto_next_time"):
-        try:
-            observed[key] = float(observed.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            observed[key] = 0
+    recent = []
+    for item in observed.get("recent", []):
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        entry["ts"], _dirty = _parse_observation_float(entry.get("ts", 0))
+        recent.append(entry)
+    observed["recent"] = recent[-8:]
+    for key in HEHUAN_OBSERVATION_TIME_KEYS:
+        observed[key], _dirty = _parse_observation_float(observed.get(key, 0))
     try:
         observed["last_contrib_gain"] = int(observed.get("last_contrib_gain", 0) or 0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         observed["last_contrib_gain"] = 0
     return observed
 
@@ -373,6 +411,10 @@ async def run_hehuan_scheduler(now):
     if not state.get("hehuan_enabled"):
         return
 
+    dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
+    if dirty_fields:
+        return
+
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
@@ -399,7 +441,8 @@ async def run_hehuan_scheduler(now):
         _set_hehuan_auto_block(observed, now, "合欢宗自动温养发送失败或被安全策略拦截", now + HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC)
         return
 
-    sent_at = float(getattr(msg, "sent_at", 0) or now)
+    parsed_sent_at, sent_at_dirty = _parse_observation_float(getattr(msg, "sent_at", 0))
+    sent_at = now if sent_at_dirty or parsed_sent_at <= 0 else parsed_sent_at
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = ""
     observed["next_hehuan_time"] = max(float(observed.get("next_hehuan_time", 0) or 0), sent_at + HEHUAN_WARM_OBSERVED_CD_SEC + HEHUAN_CD_BUFFER_SEC)
@@ -430,6 +473,16 @@ def build_hehuan_manual_plan(action="warm", now=None):
             "reason": "合欢宗模块未开启。",
         }
 
+    dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
+    if dirty_fields:
+        return {
+            "allowed": False,
+            "action": normalized_action,
+            "command": f"{CMD_HEHUAN_DUAL} 温养",
+            "family": "hehuan_dual",
+            "reason": f"合欢宗状态字段异常（{'、'.join(dirty_fields)}），不猜测冷却或契印时间。",
+        }
+
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     next_time = float(observed.get("next_hehuan_time", 0) or 0)
     if next_time > now:
@@ -439,6 +492,23 @@ def build_hehuan_manual_plan(action="warm", now=None):
             "command": f"{CMD_HEHUAN_DUAL} 温养",
             "family": "hehuan_dual",
             "reason": f"温养双修仍在冷却中，{fmt_remaining(next_time)} 后再试。",
+        }
+    if str(observed.get("last_result") or "").strip().lower() == "cooldown" and next_time <= 0:
+        return {
+            "allowed": False,
+            "action": normalized_action,
+            "command": f"{CMD_HEHUAN_DUAL} 温养",
+            "family": "hehuan_dual",
+            "reason": "合欢宗冷却时间不可解析，不发送温养双修。",
+        }
+
+    if str(observed.get("last_result") or "").strip().lower() == "pending":
+        return {
+            "allowed": False,
+            "action": normalized_action,
+            "command": f"{CMD_HEHUAN_DUAL} 温养",
+            "family": "hehuan_dual",
+            "reason": "合欢宗温养结算仍待真实结果，不发送温养双修。",
         }
 
     last_observed_at = float(observed.get("last_observed_at", 0) or 0)
@@ -513,6 +583,7 @@ def _format_gain_map(gains):
 
 
 def get_hehuan_status_text():
+    dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     lines = [
         "🌸 合欢宗",
@@ -527,6 +598,8 @@ def get_hehuan_status_text():
         f"- 心印/炉鼎：{fmt_abs_ts(observed.get('heart_seal_until', 0))}（{fmt_remaining(observed.get('heart_seal_until', 0))}）",
         f"- 修为/贡献：{_format_gain_map(observed.get('last_gains'))}｜贡献 {int(observed.get('last_contrib_gain', 0) or 0)}",
     ]
+    if dirty_fields:
+        lines.append(f"- 状态异常：{'、'.join(dirty_fields)} 不可解析，自动发送已暂停")
     if observed.get("last_partner"):
         lines.append(f"- 道友：{observed.get('last_partner')}")
     if observed.get("last_target"):

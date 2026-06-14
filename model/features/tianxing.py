@@ -1,4 +1,5 @@
 import copy
+import math
 import re
 import time
 
@@ -38,6 +39,40 @@ RE_CALAMITY = re.compile(r"逆命劫[:：]\s*(?P<value>\d+)")
 RE_CALAMITY_GAIN = re.compile(r"逆命劫\s*\+(?P<gain>\d+)")
 RE_COUNTS = re.compile(r"命中\s*/\s*落空\s*/\s*改命[:：]\s*(?P<hit>\d+)\s*/\s*(?P<miss>\d+)\s*/\s*(?P<change>\d+)")
 RE_BONUS_GAIN = re.compile(r"因【天星宗】灵脉加持，你额外获得了\s*(?P<gain>\d+)\s*点修为")
+
+TIANXING_OBSERVATION_TIME_KEYS = (
+    "last_observed_at",
+    "current_prediction_until",
+    "current_change_until",
+    "auto_next_time",
+)
+
+
+def _is_empty_state_value(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _parse_observation_float(value):
+    if _is_empty_state_value(value):
+        return 0.0, False
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, True
+    if not math.isfinite(parsed):
+        return 0.0, True
+    return parsed, False
+
+
+def _dirty_tianxing_time_fields(value=None):
+    if not isinstance(value, dict):
+        return []
+    dirty_fields = []
+    for key in TIANXING_OBSERVATION_TIME_KEYS:
+        _parsed, dirty = _parse_observation_float(value.get(key, 0))
+        if dirty:
+            dirty_fields.append(key)
+    return dirty_fields
 
 
 def _default_tianxing_observation():
@@ -79,16 +114,20 @@ def normalize_tianxing_observation(value=None):
     observed["available_stars"] = [str(item) for item in observed.get("available_stars") or [] if str(item or "").strip()]
     if not isinstance(observed.get("recent"), list):
         observed["recent"] = []
-    observed["recent"] = [item for item in observed.get("recent", []) if isinstance(item, dict)][-8:]
-    for key in ("last_observed_at", "current_prediction_until", "current_change_until", "auto_next_time"):
-        try:
-            observed[key] = float(observed.get(key, 0) or 0)
-        except (TypeError, ValueError):
-            observed[key] = 0
+    recent = []
+    for item in observed.get("recent", []):
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        entry["ts"], _dirty = _parse_observation_float(entry.get("ts", 0))
+        recent.append(entry)
+    observed["recent"] = recent[-8:]
+    for key in TIANXING_OBSERVATION_TIME_KEYS:
+        observed[key], _dirty = _parse_observation_float(observed.get(key, 0))
     for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             observed[key] = 0
     return observed
 
@@ -427,6 +466,10 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None):
     if action == "observe":
         return _manual_allow(action, CMD_TIANXING_OBSERVE, "tianxing_observe", now)
 
+    dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
+    if dirty_fields:
+        return _manual_block(action, f"天星宗状态字段异常（{_format_list(dirty_fields)}），不猜测冷却或待办时间。")
+
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     last_observed_at = float(observed.get("last_observed_at", 0) or 0)
     if last_observed_at <= 0:
@@ -456,6 +499,9 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None):
         if prediction_until > now:
             current = observed.get("current_prediction") or "未记录"
             return _manual_block(action, f"已有推命 {current} 尚未应验，{fmt_remaining(prediction_until)} 后再试。")
+        if str(observed.get("current_prediction") or "").strip() and prediction_until <= 0:
+            current = observed.get("current_prediction") or "未记录"
+            return _manual_block(action, f"已有推命 {current} 尚未应验，但时间不可解析，不发送推命。")
         return _manual_allow(action, f"{CMD_TIANXING_PREDICT} {route}", "tianxing_predict", now)
 
     if action == "change_fate":
@@ -466,6 +512,9 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None):
         if change_until > now:
             current = observed.get("current_change") or "未记录"
             return _manual_block(action, f"已有改命 {current} 尚未触发，{fmt_remaining(change_until)} 后再试。")
+        if str(observed.get("current_change") or "").strip() and change_until <= 0:
+            current = observed.get("current_change") or "未记录"
+            return _manual_block(action, f"已有改命 {current} 尚未触发，但时间不可解析，不发送改命。")
         if int(observed.get("tianji_value", 0) or 0) < 3:
             return _manual_block(action, f"天机值不足 3，当前记录为 {int(observed.get('tianji_value', 0) or 0)}。")
         return _manual_allow(action, f"{CMD_TIANXING_CHANGE_FATE} {route}", "tianxing_change_fate", now)
@@ -489,6 +538,10 @@ def _set_tianxing_auto_wait(observed, now, action, next_time=None, error=""):
 async def run_tianxing_scheduler(now):
     now = float(now if now is not None else time.time())
     if not state.get("tianxing_enabled"):
+        return
+
+    dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
+    if dirty_fields:
         return
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
@@ -525,7 +578,10 @@ async def run_tianxing_scheduler(now):
         source_module="天星宗",
         op_id=f"tianxing-auto-{action}-{int(now)}",
     )
-    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else now
+    sent_at = now
+    if msg:
+        parsed_sent_at, sent_at_dirty = _parse_observation_float(getattr(msg, "sent_at", 0))
+        sent_at = now if sent_at_dirty or parsed_sent_at <= 0 else parsed_sent_at
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if not msg:
         _set_tianxing_auto_wait(
@@ -579,6 +635,7 @@ def get_tianxing_status_text():
             "- 模块：关闭（不会主动发送）",
             "- 运行快照：关闭时不展示旧观察记录",
         ])
+    dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     lines = [
         "🌌 天星宗",
@@ -593,6 +650,8 @@ def get_tianxing_status_text():
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
     ]
+    if dirty_fields:
+        lines.append(f"- 状态异常：{_format_list(dirty_fields)} 不可解析，自动发送已暂停")
     if observed.get("last_star_effect"):
         lines.append(f"- 命盘照命：{observed.get('last_star_effect')}")
     if observed.get("last_tianji_gain") or observed.get("last_contrib_gain"):

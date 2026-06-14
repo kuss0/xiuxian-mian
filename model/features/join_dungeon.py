@@ -10,6 +10,7 @@ from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_c
 from ..state import (
     get_dungeon_join_run_state,
     get_game_bot_ids,
+    get_game_group_id,
     get_game_topic_id,
     get_identity_enabled,
     get_identity_ids,
@@ -199,6 +200,9 @@ def _cleanup(now=None):
 def record_game_group_message(event, *, now=None, event_type="message"):
     if str(event_type or "message") != "message":
         return
+    game_group_id = int(get_game_group_id() or 0)
+    if not game_group_id or _event_chat_id(event) != game_group_id:
+        return False
     now = _now_ts(now)
     _cleanup(now)
     msg_id = int(getattr(event, "id", 0) or 0)

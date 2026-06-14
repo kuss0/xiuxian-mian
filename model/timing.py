@@ -1,3 +1,4 @@
+import math
 import random
 import time
 from datetime import datetime, timedelta, timezone
@@ -6,6 +7,18 @@ from .config import RE_HOURS, RE_MINUTES, RE_SECONDS, TZ_LOCAL
 from .state import get_module_window_hours, state
 
 _save_state = None
+
+CD_STATE_NO_RECORD = "no_record"
+CD_STATE_READY = "ready"
+CD_STATE_ON_CD = "on_cd"
+CD_STATE_UNPARSEABLE = "unparseable"
+
+_CD_NO_RECORD_STRINGS = {"", "none", "null", "undefined"}
+_CD_DATETIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S UTC+8",
+    "%Y-%m-%d %H:%M:%S %Z",
+)
 
 
 def configure_timing(save_state_func):
@@ -35,6 +48,63 @@ def parse_wait_time(text):
 
 def has_wait_time(text):
     return any(pattern.search(text or "") for pattern in (RE_HOURS, RE_MINUTES, RE_SECONDS))
+
+
+def _parse_cd_last_at(raw_last_at):
+    if raw_last_at is None:
+        return CD_STATE_NO_RECORD, None
+    if isinstance(raw_last_at, datetime):
+        dt = raw_last_at if raw_last_at.tzinfo else raw_last_at.replace(tzinfo=TZ_LOCAL)
+        return CD_STATE_READY, dt.timestamp()
+    if isinstance(raw_last_at, (int, float)):
+        raw_ts = float(raw_last_at)
+        if not math.isfinite(raw_ts):
+            return CD_STATE_UNPARSEABLE, None
+        if raw_ts <= 0:
+            return CD_STATE_NO_RECORD, None
+        return CD_STATE_READY, raw_ts
+
+    raw_text = str(raw_last_at).strip()
+    if raw_text.lower() in _CD_NO_RECORD_STRINGS:
+        return CD_STATE_NO_RECORD, None
+    try:
+        raw_ts = float(raw_text)
+        if not math.isfinite(raw_ts):
+            return CD_STATE_UNPARSEABLE, None
+        return CD_STATE_READY, raw_ts
+    except (TypeError, ValueError):
+        pass
+
+    iso_text = raw_text[:-1] + "+00:00" if raw_text.endswith("Z") else raw_text
+    try:
+        dt = datetime.fromisoformat(iso_text)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=TZ_LOCAL)
+        return CD_STATE_READY, dt.timestamp()
+    except ValueError:
+        pass
+
+    for fmt in _CD_DATETIME_FORMATS:
+        try:
+            return CD_STATE_READY, datetime.strptime(raw_text, fmt).replace(tzinfo=TZ_LOCAL).timestamp()
+        except ValueError:
+            continue
+    return CD_STATE_UNPARSEABLE, None
+
+
+def cd_state(raw_last_at, now, window_sec):
+    parse_state, last_at = _parse_cd_last_at(raw_last_at)
+    if parse_state != CD_STATE_READY:
+        return parse_state
+    now_ts = now.timestamp() if isinstance(now, datetime) else float(now)
+    window = max(0.0, float(window_sec or 0))
+    if last_at > now_ts or now_ts - last_at < window:
+        return CD_STATE_ON_CD
+    return CD_STATE_READY
+
+
+def cd_blocks(raw_last_at, now, window_sec):
+    return cd_state(raw_last_at, now, window_sec) in {CD_STATE_ON_CD, CD_STATE_UNPARSEABLE}
 
 
 def fmt_time_after(seconds):
@@ -173,10 +243,16 @@ def schedule_next_tower_after_completion(now=None, persist=True):
 
 
 __all__ = [
+    "CD_STATE_NO_RECORD",
+    "CD_STATE_ON_CD",
+    "CD_STATE_READY",
+    "CD_STATE_UNPARSEABLE",
     "calc_next_checkin_time",
     "calc_next_daily_window_after_completion",
     "calc_next_daily_window_time",
     "calc_next_tower_time",
+    "cd_blocks",
+    "cd_state",
     "configure_timing",
     "fmt_abs_ts",
     "fmt_remaining",

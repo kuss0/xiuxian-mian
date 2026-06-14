@@ -44,6 +44,7 @@ from model import state as state_module
 from model import runtime
 from model import ui
 from model.features import storage_bag, workflow_log
+from model.verified_event import VerifiedGameEvent
 from model.features.storage_bag import (
     apply_storage_bag_item_deltas,
     cancel_storage_bag_transfer_task,
@@ -442,15 +443,19 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertFalse(handled)
-        contract_mock.assert_called_once_with(
-            event,
-            text,
-            self.target_id,
-            "divination",
-            9966099,
-            event_kind="edit",
-            reply_to_sender_id=0,
-        )
+        contract_mock.assert_called_once()
+        verified = contract_mock.call_args.args[0]
+        self.assertIsInstance(verified, VerifiedGameEvent)
+        self.assertEqual("edit", verified.event_type)
+        self.assertEqual(-1001680975844, verified.chat_id)
+        self.assertEqual(9966101, verified.msg_id)
+        self.assertEqual(888001, verified.sender_id)
+        self.assertEqual(text, verified.text)
+        self.assertEqual(self.target_id, verified.identity_id)
+        self.assertEqual("divination", verified.family)
+        self.assertEqual(9966099, verified.root_msg_id)
+        self.assertEqual("edit:reply_context", verified.route_source)
+        self.assertEqual(0, verified.reply_to_sender_id)
 
     async def test_resolve_event_reply_keeps_reply_sender_as_evidence_only(self):
         reply_to = SimpleNamespace(id=9966201, sender_id=8325841058, raw_text=".侍妾远航 冒险")

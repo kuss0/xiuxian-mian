@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -159,6 +159,64 @@ class TianjiQuizTargetTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(second)
         self.assertEqual(["-100:321"], list(state_module.state["tianji_quiz_pending"].keys()))
         schedule_mock.assert_called_once_with(1_700_000_010.0)
+
+    def test_schedule_tianji_quiz_due_task_does_not_create_sleep_task(self):
+        def close_coro(coro):
+            if hasattr(coro, "close"):
+                coro.close()
+
+        fire_mock = Mock(side_effect=close_coro)
+
+        with patch.object(tianji_quiz, "_fire_and_forget", new=fire_mock, create=True):
+            result = tianji_quiz._schedule_tianji_quiz_due_task(1_700_000_010.0)
+
+        self.assertIsNone(result)
+        fire_mock.assert_not_called()
+
+    async def test_scheduler_sends_answer_with_intent_metadata(self):
+        identity_id = self._register_identity(username="local_user")
+        now = 1_700_000_010.0
+        state_module.state["tianji_quiz_pending"] = {
+            "-100:321": {
+                "target": "@local_user",
+                "identity_id": identity_id,
+                "question": self.QUESTION,
+                "options": self.OPTIONS,
+                "answer": "B",
+                "due_at": now - 1,
+                "deadline_at": now + 120,
+                "created_at": now - 10,
+                "msg_id": 321,
+                "chat_id": -100,
+                "retry_count": 0,
+                "phase": "queued",
+                "sent_msg_id": 0,
+                "result_due_at": 0,
+            }
+        }
+        send_mock = AsyncMock(return_value=SimpleNamespace(id=555, sent_at=now))
+
+        with (
+            patch.object(tianji_quiz, "send_game_command", new=send_mock),
+            patch.object(tianji_quiz, "send_audit_log", new=AsyncMock()),
+            patch.object(tianji_quiz, "save_state"),
+        ):
+            await tianji_quiz.run_tianji_quiz_scheduler(now)
+
+        send_mock.assert_awaited_once_with(
+            "B",
+            track=False,
+            reply_to=321,
+            send_as_id=identity_id,
+            priority="p0",
+            source_module="天机考验",
+            op_id="tianji_quiz:-100:321:answer",
+            chain_id="tianji_quiz:-100:321",
+        )
+        item = state_module.state["tianji_quiz_pending"]["-100:321"]
+        self.assertEqual("waiting_result", item["phase"])
+        self.assertEqual(555, item["sent_msg_id"])
+        self.assertEqual(now + tianji_quiz.TIANJI_QUIZ_RESULT_TIMEOUT_SEC, item["due_at"])
 
     async def test_real_timeout_result_reply_clears_pending_with_terminal_label(self):
         state_module.state["tianji_quiz_pending"] = {

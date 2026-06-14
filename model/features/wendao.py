@@ -14,7 +14,7 @@ from ..config import (
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_send_as_profile, state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
 
 
@@ -84,6 +84,10 @@ def _set_wendao_error(message, *, next_delay=None, now=None, persist=True):
         save_state()
     else:
         mark_dirty()
+
+
+def _wendao_next_time_blocks(now):
+    return cd_blocks(state.get("next_wendao_time", 0), now, 0)
 
 
 def _clear_wendao_pending():
@@ -249,7 +253,7 @@ async def run_wendao_scheduler(now):
         return
 
     if _is_profile_unknown_sect():
-        if float(state.get("next_wendao_time", 0) or 0) <= now:
+        if not _wendao_next_time_blocks(now):
             _set_wendao_error("宗门未知，等待身份资料确认后再问道", next_delay=RETRY_MAX_SEC, now=now)
         return
 
@@ -261,7 +265,7 @@ async def run_wendao_scheduler(now):
         return
 
     if not _has_known_enough_xiuwei():
-        if float(state.get("next_wendao_time", 0) or 0) <= now:
+        if not _wendao_next_time_blocks(now):
             _set_wendao_error("修为不足1000，暂不发送问道", next_delay=RETRY_MAX_SEC, now=now)
         return
 
@@ -277,7 +281,7 @@ async def run_wendao_scheduler(now):
         await send_audit_log(f"⚠️ 问道回复超时，消息ID={reply_to_msg_id}，稍后重试。", scope="identity", limit=220)
         return
 
-    if now < float(state.get("next_wendao_time", 0) or 0):
+    if _wendao_next_time_blocks(now):
         return
 
     msg = await send_game_command(CMD_WENDAO, track=False, max_retry=0, source_module="问道")

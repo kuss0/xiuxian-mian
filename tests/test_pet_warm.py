@@ -92,6 +92,38 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 await pet.run_pet_scheduler(now + 1)
             send_mock.assert_not_awaited()
 
+    async def test_pet_scheduler_blocks_malformed_next_times_without_retry_spam(self):
+        send_as_id = 8659059188
+        now = 5000.0
+        cases = [
+            ("pet_enabled", "next_pet_time", "pet_last_error"),
+            ("pet_trial_enabled", "next_pet_trial_time", "pet_trial_last_error"),
+            ("pet_warm_enabled", "next_pet_warm_time", "pet_warm_last_error"),
+        ]
+        state_module.ensure_identity_registered(send_as_id)
+
+        for enabled_key, next_key, error_key in cases:
+            with self.subTest(next_key=next_key), state_module.use_identity(send_as_id):
+                state_module.state["pet_enabled"] = False
+                state_module.state["pet_trial_enabled"] = False
+                state_module.state["pet_warm_enabled"] = False
+                state_module.state["pending_tasks"] = {}
+                state_module.state[enabled_key] = True
+                state_module.state[next_key] = "冷却数据异常"
+                state_module.state[error_key] = ""
+
+                with (
+                    patch.object(pet, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(pet, "save_state") as save_mock,
+                ):
+                    await pet.run_pet_scheduler(now)
+
+                send_mock.assert_not_awaited()
+                save_mock.assert_not_called()
+                self.assertEqual("冷却数据异常", state_module.state[next_key])
+                self.assertEqual("", state_module.state[error_key])
+                self.assertEqual({}, state_module.state["pending_tasks"])
+
     async def test_pet_touch_success_reply_confirms_and_clears_pending(self):
         send_as_id = 8659059189
         now = 6000.0

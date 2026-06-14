@@ -37,6 +37,57 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(set(config.MODULE_NAMES), set(config.MODULE_NAMES) & set(module_manifest.MODULE_MANIFESTS))
 
+    def test_behavior_specs_cover_manifest_entries(self):
+        result = module_manifest.validate_behavior_spec_coverage()
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(
+            [manifest.name for manifest in module_manifest.iter_module_manifests()],
+            [spec.name for spec in module_manifest.iter_behavior_specs()],
+        )
+
+    def test_behavior_execution_order_is_stable(self):
+        self.assertEqual(
+            [
+                "元婴",
+                "深度闭关",
+                "周天星斗",
+                "合欢宗",
+                "天星宗",
+                "阴罗宗",
+                "真仙试锋",
+                "探寻裂缝",
+                "观星监控",
+                "灵树",
+                "法宝",
+                "温养器灵",
+                "器灵试炼",
+                "放养",
+                "野外历练",
+                "观星台",
+                "观星",
+                "登天阶",
+                "玄骨考校",
+                "极阴祖师",
+                "侍妾",
+                "天机代卜",
+                "共历心劫",
+                "侍妾远航",
+                "南陇侯",
+                "问道",
+                "小世界",
+                "卜筮问天",
+                "点卯",
+                "宗门传功",
+                "闯塔",
+                "第二元神",
+                "太一",
+                "自动副本",
+                "储物袋",
+            ],
+            [spec.name for spec in module_manifest.execution_order()],
+        )
+
     def test_reply_family_maps_to_source_module(self):
         self.assertEqual("太一", module_manifest.get_module_name_for_reply_family("taiyi_yindao"))
         self.assertEqual("深度闭关", module_manifest.get_module_name_for_reply_family("deep_retreat"))
@@ -52,6 +103,20 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("问道", module_manifest.get_module_name_for_reply_family("wendao"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_start"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_assist"))
+
+    def test_reply_families_have_single_behavior_owner(self):
+        owners = {}
+        duplicates = []
+        for spec in module_manifest.iter_behavior_specs():
+            for family in spec.reply_families:
+                if family in owners:
+                    duplicates.append((family, owners[family], spec.name))
+                owners[family] = spec.name
+
+        self.assertEqual([], duplicates)
+        self.assertEqual("太一", owners["taiyi_yindao"])
+        self.assertEqual("自动副本", owners["replica_join"])
+        self.assertEqual("储物袋", owners["storage_bag_buy"])
 
     def test_workflow_names_map_to_manifest_owner(self):
         self.assertEqual("太一", module_manifest.get_module_name_for_workflow("taiyi"))
@@ -127,6 +192,26 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, explore_rift.active_query_policy)
         self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, formation.send_policy)
         self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, formation.active_query_policy)
+
+    def test_phaseful_and_passive_behavior_priority_policy(self):
+        deep_retreat = module_manifest.get_behavior_spec("深度闭关")
+        yuanying = module_manifest.get_behavior_spec("元婴")
+        explore_rift = module_manifest.get_behavior_spec("探寻裂缝")
+        formation = module_manifest.get_behavior_spec("周天星斗")
+        guanxing_monitor = module_manifest.get_behavior_spec("观星监控")
+        tree = module_manifest.get_behavior_spec("灵树")
+
+        self.assertTrue(deep_retreat.phaseful)
+        self.assertTrue(yuanying.phaseful)
+        self.assertEqual(module_manifest.PRIORITY_PHASEFUL, deep_retreat.priority)
+        self.assertEqual(module_manifest.PRIORITY_PHASEFUL, yuanying.priority)
+        self.assertEqual(module_manifest.PRIORITY_PASSIVE_CRITICAL, explore_rift.priority)
+        self.assertEqual(module_manifest.PRIORITY_PASSIVE_CRITICAL, formation.priority)
+        self.assertEqual(module_manifest.PRIORITY_PASSIVE, guanxing_monitor.priority)
+        self.assertEqual(module_manifest.PRIORITY_NORMAL, tree.priority)
+        self.assertLess(deep_retreat.priority, explore_rift.priority)
+        self.assertLess(explore_rift.priority, guanxing_monitor.priority)
+        self.assertLess(guanxing_monitor.priority, tree.priority)
 
 
 if __name__ == "__main__":

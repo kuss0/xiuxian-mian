@@ -7,7 +7,7 @@ import time
 
 from ..config import TIANJI_QUIZ_BANK_FILE
 from ..persistence import save_state
-from ..runtime import _fire_and_forget, mono, send_audit_log, send_game_command
+from ..runtime import mono, send_audit_log, send_game_command
 from ..state import get_identity_ids, get_send_as_tags, state
 
 
@@ -292,15 +292,9 @@ def _build_tianji_quiz_pending_item(parsed, identity_id, answer, event, now):
     }
 
 
-async def _run_tianji_quiz_due_task(due_at):
-    await asyncio.sleep(max(0.0, float(due_at or 0) - time.time()))
-    await run_tianji_quiz_scheduler(time.time())
-
-
 def _schedule_tianji_quiz_due_task(due_at):
-    due_at = float(due_at or 0)
-    if due_at > 0:
-        _fire_and_forget(_run_tianji_quiz_due_task(due_at))
+    # Global scheduler polling owns due processing; do not create per-item sleep tasks.
+    _ = due_at
 
 
 async def _queue_tianji_quiz_answer(parsed, now, event):
@@ -643,7 +637,17 @@ async def _run_tianji_quiz_scheduler_locked(now):
             )
             continue
 
-        msg = await send_game_command(answer, track=False, reply_to=msg_id, send_as_id=identity_id, priority="p0")
+        chain_id = f"tianji_quiz:{pending_key}"
+        msg = await send_game_command(
+            answer,
+            track=False,
+            reply_to=msg_id,
+            send_as_id=identity_id,
+            priority="p0",
+            source_module="天机考验",
+            op_id=f"{chain_id}:answer",
+            chain_id=chain_id,
+        )
         if msg:
             sent_at = float(getattr(msg, "sent_at", 0) or time.time())
             item["phase"] = "waiting_result"

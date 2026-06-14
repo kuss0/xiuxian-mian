@@ -2933,6 +2933,51 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["concubine_voyage_return_at"])
         self.assertEqual(0, state_module.state["concubine_voyage_retry_count"])
 
+    def test_restore_voyage_runtime_snapshot_noops_for_same_payload(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_phase"] = "voyage_return_pending"
+            identity_state["concubine_voyage_msg_id"] = 918
+            identity_state["concubine_voyage_status"] = "returned"
+            identity_state["concubine_voyage_route"] = "冒险"
+            identity_state["concubine_voyage_return_at"] = now - 1
+            identity_state["concubine_voyage_last_result"] = "灵石 x 100"
+            identity_state["concubine_voyage_last_error"] = ""
+            identity_state["concubine_voyage_retry_count"] = 1
+
+        with state_module.use_identity(send_as_id):
+            snapshot = concubine._voyage_runtime_snapshot()
+            before = copy.deepcopy(dict(state_module.state.items()))
+            self.assertFalse(concubine._restore_voyage_runtime_snapshot(snapshot))
+            after = copy.deepcopy(dict(state_module.state.items()))
+
+        self.assertEqual(before, after)
+
+    def test_restore_voyage_runtime_snapshot_keeps_plain_payload_shape(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        payload = {
+            "phase": "voyage_pending",
+            "concubine_voyage_msg_id": 920,
+            "concubine_voyage_status": "sailing",
+            "concubine_voyage_route": "冒险",
+            "concubine_voyage_return_at": now + 3600,
+            "concubine_voyage_last_result": "",
+            "concubine_voyage_last_error": "等待归航",
+            "concubine_voyage_retry_count": 2,
+        }
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_phase"] = "idle"
+
+        with state_module.use_identity(send_as_id):
+            self.assertTrue(concubine._restore_voyage_runtime_snapshot(payload))
+            restored = concubine._voyage_runtime_snapshot()
+
+        self.assertEqual(payload, restored)
+
     async def test_status_reply_ignored_during_voyage_pending(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)

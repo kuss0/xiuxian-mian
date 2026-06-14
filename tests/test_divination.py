@@ -93,6 +93,55 @@ class DivinationTests(unittest.TestCase):
                 handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return path
 
+    def test_run_records_same_value_update_does_not_save(self):
+        payload = {
+            "991201": {
+                "day_key": get_day_key(1000.0),
+                "phase": "idle",
+                "count": 1,
+                "next_query_at": 1200.0,
+            }
+        }
+        state_module.set_divination_run_state(copy.deepcopy(payload))
+        self.save_state_mock.reset_mock()
+
+        changed = divination._set_run_records(copy.deepcopy(payload))
+
+        self.assertFalse(changed)
+        self.save_state_mock.assert_not_called()
+        self.assertEqual(payload, state_module.get_divination_run_state())
+
+    def test_run_records_changed_update_preserves_plain_payload_shape(self):
+        payload = {
+            "991201": {
+                "day_key": get_day_key(1000.0),
+                "phase": "idle",
+                "count": 1,
+                "next_query_at": 1200.0,
+            }
+        }
+        state_module.set_divination_run_state(copy.deepcopy(payload))
+        records = divination._run_records()
+        records["991201"]["phase"] = "waiting_intermediate"
+        records["991201"]["pending_query_msg_id"] = 9001
+
+        changed = divination._set_run_records(records)
+
+        self.assertTrue(changed)
+        self.save_state_mock.assert_called_once()
+        self.assertEqual(
+            {
+                "991201": {
+                    "day_key": get_day_key(1000.0),
+                    "phase": "waiting_intermediate",
+                    "count": 1,
+                    "next_query_at": 1200.0,
+                    "pending_query_msg_id": 9001,
+                }
+            },
+            state_module.get_divination_run_state(),
+        )
+
     def test_default_disabled_and_daily_limit_is_six(self):
         identity_id = self._register_identity(991201, "target")
 
@@ -994,6 +1043,32 @@ class DivinationTests(unittest.TestCase):
         pending = next(iter(state_module.get_divination_pending_exchanges().values()))
         self.assertEqual("exchange_sent", pending["status"])
         self.assertEqual({"三级妖丹": 4, "养魂木": 1}, pending["costs"])
+
+    def test_manual_treasure_reply_does_not_auto_exchange(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        state_module.set_storage_bag_records({str(identity_id): {"items": {"三级妖丹": 4, "养魂木": 1}, "sections": {}}})
+        event = SimpleNamespace(id=9955440, chat_id=-1001680975844)
+
+        async def run_test():
+            with patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                handled = await divination.handle_divination_reply(
+                    REAL_TREASURE_TEXT,
+                    1000.0,
+                    event=event,
+                    reply_context={
+                        "send_as_id": identity_id,
+                        "reply_to_msg_id": 9955438,
+                        "source": "manual_game_command",
+                    },
+                )
+                send_mock.assert_not_awaited()
+                return handled
+
+        handled = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.api_refresh_mock.assert_not_awaited()
+        self.assertEqual({}, state_module.get_divination_pending_exchanges())
 
     def test_real_treasure_text_with_x6_material_costs_sends_exchange(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)

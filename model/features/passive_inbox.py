@@ -10,6 +10,7 @@ from ..config import STATE_DIR
 from ..persistence import save_state
 from ..state import get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, state, use_identity
 from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait_time
+from ..verified_event import VerifiedGameEvent
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
 from . import hehuan as hehuan_mod
@@ -1186,9 +1187,33 @@ def _looks_like_supported_passive(text, family):
     return False
 
 
+def _normalize_passive_module_card_input(text, reply_context=None, event=None, event_type=""):
+    if not isinstance(text, VerifiedGameEvent):
+        return str(text or ""), reply_context, event, str(event_type or "").strip()
+
+    verified = text
+    context = dict(verified.reply_context) if isinstance(verified.reply_context, dict) else {}
+    if verified.identity_id and not context.get("send_as_id"):
+        context["send_as_id"] = verified.identity_id
+    if verified.family and not context.get("family"):
+        context["family"] = verified.family
+    if verified.root_msg_id and not context.get("root_msg_id"):
+        context["root_msg_id"] = verified.root_msg_id
+    if verified.reply_to_sender_id and not context.get("reply_to_sender_id"):
+        context["reply_to_sender_id"] = verified.reply_to_sender_id
+    normalized_event = SimpleNamespace(id=verified.msg_id, chat_id=verified.chat_id)
+    return verified.text, context, normalized_event, verified.event_type
+
+
 async def handle_passive_module_card(text, now=None, reply_context=None, event=None, event_type=""):
     now = float(now or time.time())
-    raw_text = str(text or "")
+    raw_text, reply_context, event, event_type = _normalize_passive_module_card_input(
+        text,
+        reply_context=reply_context,
+        event=event,
+        event_type=event_type,
+    )
+    raw_text = str(raw_text or "")
     observed_msg_id = _event_int(getattr(event, "id", 0))
     observed_chat_id = _event_int(getattr(event, "chat_id", 0))
     event_type = str(event_type or "").strip()

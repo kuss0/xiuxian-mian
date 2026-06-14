@@ -153,10 +153,18 @@ class TianxingManualPlanTests(unittest.TestCase):
             prediction_cooldown = tianxing.build_tianxing_manual_plan("predict", "炼制", now=now)
 
             state_module.state["tianxing_observation"]["current_prediction_until"] = 0
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            prediction_unknown_time = tianxing.build_tianxing_manual_plan("predict", "炼制", now=now)
+
+            state_module.state["tianxing_observation"]["current_prediction"] = ""
             state_module.state["tianxing_observation"]["current_change_until"] = now + 600
             change_cooldown = tianxing.build_tianxing_manual_plan("change_fate", "探索", now=now)
 
             state_module.state["tianxing_observation"]["current_change_until"] = 0
+            state_module.state["tianxing_observation"]["current_change"] = "探索"
+            change_unknown_time = tianxing.build_tianxing_manual_plan("change_fate", "探索", now=now)
+
+            state_module.state["tianxing_observation"]["current_change"] = ""
             state_module.state["tianxing_observation"]["tianji_value"] = 2
             tianji_shortage = tianxing.build_tianxing_manual_plan("change_fate", "探索", now=now)
 
@@ -172,8 +180,12 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual(".消劫", clear["command"])
         self.assertFalse(prediction_cooldown["allowed"])
         self.assertIn("已有推命", prediction_cooldown["reason"])
+        self.assertFalse(prediction_unknown_time["allowed"])
+        self.assertIn("时间不可解析", prediction_unknown_time["reason"])
         self.assertFalse(change_cooldown["allowed"])
         self.assertIn("已有改命", change_cooldown["reason"])
+        self.assertFalse(change_unknown_time["allowed"])
+        self.assertIn("时间不可解析", change_unknown_time["reason"])
         self.assertFalse(tianji_shortage["allowed"])
         self.assertIn("天机值不足", tianji_shortage["reason"])
         self.assertFalse(no_calamity["allowed"])
@@ -194,6 +206,42 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertIn("不展示旧观察记录", text)
         self.assertNotIn("旧天星错误", text)
         self.assertNotIn("推命", text)
+
+    def test_state_actions_block_dirty_time_fields_without_guessing(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["天府"],
+                "fixed_star": "",
+                "current_prediction_until": "nan",
+                "current_change_until": 0,
+                "tianji_value": 3,
+                "calamity_count": 1,
+            }
+
+            plan = tianxing.build_tianxing_manual_plan("predict", "炼制", now=now)
+
+        self.assertFalse(plan["allowed"])
+        self.assertIn("状态字段异常", plan["reason"])
+
+    def test_status_text_tolerates_dirty_time_fields(self):
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": "观测时间异常",
+                "current_prediction_until": "inf",
+                "current_change_until": "-inf",
+                "auto_next_time": "nan",
+                "recent": [{"ts": "inf", "action": "推命", "result": "success"}],
+            }
+
+            text = tianxing.get_tianxing_status_text()
+
+        self.assertIn("🌌 天星宗", text)
+        self.assertIn("状态异常", text)
+        self.assertIn("未设置", text)
 
 
 class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -288,6 +336,37 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 await tianxing.run_tianxing_scheduler(now)
 
             send_mock.assert_not_called()
+
+    async def test_scheduler_blocks_dirty_time_fields_without_clearing_or_saving(self):
+        now = 1_780_000_000.0
+        dirty_cases = (
+            ("auto_next_time", "nan"),
+            ("last_observed_at", "观测时间异常"),
+            ("current_prediction_until", "inf"),
+            ("current_change_until", "-inf"),
+        )
+        for field_name, dirty_value in dirty_cases:
+            with self.subTest(field_name=field_name):
+                observation = {
+                    "last_observed_at": now - 60,
+                    "available_stars": [],
+                    "fixed_star": "",
+                    "calamity_count": 0,
+                    "auto_next_time": now - 1,
+                }
+                observation[field_name] = dirty_value
+                with state_module.use_identity(self.identity_id):
+                    state_module.state["tianxing_enabled"] = True
+                    state_module.state["tianxing_observation"] = observation
+                    with (
+                        patch.object(tianxing, "save_state") as save_mock,
+                        patch.object(tianxing, "send_game_command") as send_mock,
+                    ):
+                        await tianxing.run_tianxing_scheduler(now)
+
+                    send_mock.assert_not_called()
+                    save_mock.assert_not_called()
+                    self.assertEqual(dirty_value, state_module.state["tianxing_observation"][field_name])
 
 
 class TianxingPassiveInboxTests(unittest.TestCase):

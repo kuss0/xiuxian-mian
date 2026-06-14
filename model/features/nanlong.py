@@ -1,3 +1,4 @@
+import math
 import random
 import re
 import time
@@ -48,6 +49,31 @@ NANLONG_CONFIRM_CHOICES = {NANLONG_CHOICE_EXCHANGE_FABAO, NANLONG_CHOICE_EXCHANG
 
 def _normalize_text(text):
     return RE_WHITESPACE.sub("", text or "").strip().lower()
+
+
+def _parse_nanlong_pending_int(value):
+    if value is None:
+        return 0, True
+    if isinstance(value, str) and not value.strip():
+        return 0, True
+    try:
+        return int(value), True
+    except (TypeError, ValueError, OverflowError):
+        return 0, False
+
+
+def _parse_nanlong_pending_float(value):
+    if value is None:
+        return 0.0, True
+    if isinstance(value, str) and not value.strip():
+        return 0.0, True
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, False
+    if not math.isfinite(parsed):
+        return 0.0, False
+    return parsed, True
 
 
 def normalize_nanlong_choice(choice):
@@ -129,10 +155,14 @@ def _parse_nanlong_prompt(text):
 
 
 def _get_nanlong_pending_state():
+    reply_to_msg_id, reply_to_valid = _parse_nanlong_pending_int(state.get("nanlong_reply_to_msg_id", 0))
+    deadline, deadline_valid = _parse_nanlong_pending_float(state.get("next_nanlong_time", 0))
+    reply_due_at, reply_due_valid = _parse_nanlong_pending_float(state.get("nanlong_reply_due_at", 0))
     return (
-        int(state.get("nanlong_reply_to_msg_id", 0) or 0),
-        float(state.get("next_nanlong_time", 0) or 0),
-        float(state.get("nanlong_reply_due_at", 0) or 0),
+        reply_to_msg_id,
+        deadline,
+        reply_due_at,
+        reply_to_valid and deadline_valid and reply_due_valid,
     )
 
 
@@ -141,7 +171,9 @@ def _is_nanlong_success_reply(text):
 
 
 def _has_active_nanlong_pending(now):
-    reply_to_msg_id, deadline, _reply_due_at = _get_nanlong_pending_state()
+    reply_to_msg_id, deadline, _reply_due_at, pending_valid = _get_nanlong_pending_state()
+    if not pending_valid:
+        return False
     return reply_to_msg_id > 0 and deadline > now
 
 
@@ -192,7 +224,7 @@ async def _finalize_nanlong_success(audit_text):
 
 def get_nanlong_status_text():
     choice = normalize_nanlong_choice(get_nanlong_choice())
-    reply_to_msg_id, deadline, reply_due_at = _get_nanlong_pending_state()
+    reply_to_msg_id, deadline, reply_due_at, _pending_valid = _get_nanlong_pending_state()
     lines = [
         "🤝 南陇侯",
         f"- 当前选择：{get_nanlong_choice_label(choice)}",
@@ -226,7 +258,11 @@ async def apply_nanlong_choice(choice, now=None):
 
     set_nanlong_choice(get_current_identity_id(), normalized_choice)
 
-    pending_reply_to, _deadline, reply_due_at = _get_nanlong_pending_state()
+    _pending_reply_to, _deadline, reply_due_at, pending_valid = _get_nanlong_pending_state()
+    if not pending_valid:
+        save_state()
+        return True, f"已保存南陇侯选择：{get_nanlong_choice_label(normalized_choice)}，待回复状态异常，未自动回复"
+
     if not state.get("nanlong_enabled") or not _has_active_nanlong_pending(now):
         save_state()
         return True, f"已保存南陇侯选择：{get_nanlong_choice_label(normalized_choice)}"
@@ -246,7 +282,10 @@ async def handle_nanlong_prompt(text, now, event):
         return False
 
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
-    prev_reply_to_msg_id, prev_deadline, _prev_due_at = _get_nanlong_pending_state()
+    prev_reply_to_msg_id, prev_deadline, _prev_due_at, prev_pending_valid = _get_nanlong_pending_state()
+    if not prev_pending_valid:
+        prev_reply_to_msg_id = 0
+        prev_deadline = 0
     await _maybe_audit_nanlong_prompt_override(prev_reply_to_msg_id, prev_deadline, now, reply_to_msg_id)
 
     _set_nanlong_pending(reply_to_msg_id, now + float(parsed["timeout_sec"]), now)
@@ -258,7 +297,9 @@ async def run_nanlong_scheduler(now):
     if not state.get("nanlong_enabled"):
         return
 
-    reply_to_msg_id, next_nanlong_time, reply_due_at = _get_nanlong_pending_state()
+    reply_to_msg_id, next_nanlong_time, reply_due_at, pending_valid = _get_nanlong_pending_state()
+    if not pending_valid:
+        return
     if reply_to_msg_id <= 0 or next_nanlong_time <= 0:
         return
     if now >= next_nanlong_time:

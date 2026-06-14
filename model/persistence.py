@@ -6,6 +6,11 @@ import time
 import traceback
 
 from .config import DB_FILE, DB_SCHEMA_VERSION, DIVINATION_DEFAULT_DAILY_LIMIT, FLUSH_INTERVAL_SEC, RETRY_LIMIT
+from .delayed_actions import (
+    DELAYED_ACTIONS_STATE_KEY,
+    export_to_state as export_delayed_actions_to_state,
+    restore_from_state as restore_delayed_actions_from_state,
+)
 from .state import (
     IDENTITY_BOOL_FIELDS,
     IDENTITY_JSON_COLUMNS,
@@ -1817,6 +1822,21 @@ def _set_meta_value(key, value):
     return value
 
 
+def _get_delayed_actions_state():
+    bucket = {}
+    export_delayed_actions_to_state(bucket)
+    snapshot = bucket.get(DELAYED_ACTIONS_STATE_KEY, {})
+    _meta_state[DELAYED_ACTIONS_STATE_KEY] = snapshot
+    return snapshot
+
+
+def _restore_delayed_actions_state(value):
+    bucket = {DELAYED_ACTIONS_STATE_KEY: _decode_meta_json(value, {})}
+    restored = restore_delayed_actions_from_state(bucket)
+    _meta_state[DELAYED_ACTIONS_STATE_KEY] = restored
+    return restored
+
+
 _META_STATE_CODEC = {
     "game_group_id": (
         get_game_group_id,
@@ -2077,6 +2097,11 @@ _META_STATE_CODEC = {
         lambda: bool(_meta_state.get("identity_membership_initialized", False)),
         lambda value: "1" if value else "0",
         lambda value: _set_meta_value("identity_membership_initialized", _decode_meta_bool_flag(value, False)),
+    ),
+    "delayed_actions_state": (
+        _get_delayed_actions_state,
+        _encode_meta_json,
+        _restore_delayed_actions_state,
     ),
 }
 

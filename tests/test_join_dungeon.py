@@ -56,11 +56,11 @@ class MessageEntityMentionName:
         self.user_id = user_id
 
 
-def _event(msg_id, sender_id, text, *, reply_to=0, topic=123, entities=None, forum_topic=True):
+def _event(msg_id, sender_id, text, *, reply_to=0, topic=123, entities=None, forum_topic=True, chat_id=-100):
     return SimpleNamespace(
         id=msg_id,
         sender_id=sender_id,
-        chat_id=-100,
+        chat_id=chat_id,
         raw_text=text,
         reply_to=SimpleNamespace(reply_to_msg_id=reply_to, reply_to_top_id=topic, forum_topic=forum_topic),
         message=SimpleNamespace(entities=entities or []),
@@ -85,6 +85,7 @@ class _StateIsolationMixin:
         join_dungeon._join_keys.clear()
         join_dungeon._join_throttle.clear()
         join_dungeon._settlement_notice_keys.clear()
+        state_module.set_game_group_id(-100)
 
     def tearDown(self):
         join_dungeon._inbox.clear()
@@ -103,6 +104,38 @@ class JoinDungeonTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         state_module.update_send_as_profile(identity_id, username=username, enabled=True)
         state_module.get_identity_state(identity_id)["dungeon_join_enabled"] = True
         return identity_id
+
+    def test_record_game_group_message_rejects_non_game_chat_without_state_change(self):
+        state_module.set_dungeon_join_run_state({
+            "90001": {
+                "participating": True,
+                "room_id": "old-room",
+                "updated_at": 999.0,
+            }
+        })
+        before_state = copy.deepcopy(state_module.get_dungeon_join_run_state())
+
+        result = join_dungeon.record_game_group_message(
+            _event(1, 7900199668, "副本ID: 999", chat_id=-200),
+            now=1000.0,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual([], list(join_dungeon._inbox))
+        self.assertEqual({}, join_dungeon._by_msg_id)
+        self.assertEqual(before_state, state_module.get_dungeon_join_run_state())
+
+    def test_record_game_group_message_accepts_configured_game_chat(self):
+        join_dungeon.record_game_group_message(
+            _event(2, 111, "副本ID: 998", chat_id=-100),
+            now=1001.0,
+        )
+
+        self.assertEqual(1, len(join_dungeon._inbox))
+        self.assertEqual(2, join_dungeon._inbox[-1]["msg_id"])
+        self.assertEqual(-100, join_dungeon._inbox[-1]["chat_id"])
+        with patch.object(join_dungeon.time, "time", return_value=1002.0):
+            self.assertEqual("998", join_dungeon.get_dungeon_join_inbox_snapshot()[-1]["dungeon_id"])
 
     async def test_strict_reply_chain_mentions_join(self):
         identity_id = self._prepare_identity()

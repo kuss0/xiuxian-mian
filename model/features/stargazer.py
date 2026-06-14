@@ -14,7 +14,7 @@ from ..config import (
 from ..persistence import save_state
 from ..runtime import console_log, send_audit_log, send_game_command, track_reply_chain_message
 from ..state import get_current_identity_id, get_pending_command, get_stargazer_star_choice, get_stargazer_total_slots, set_stargazer_total_slots, state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_text_delta
 
@@ -66,6 +66,13 @@ def _extract_guide_star_choice(command_text):
 def _extract_stargazer_collected_slot_count(text):
     match = RE_STARGAZER_COLLECTED_SLOT_COUNT.search(str(text or ""))
     return int(match.group(1) or 0) if match else 0
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value or default)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _parse_stargazer_panel(text):
@@ -175,6 +182,14 @@ def _clear_stargazer_collect_flags():
     state["stargazer_soothe_before_collect"] = False
 
 
+def _stargazer_next_panel_time_blocks(now):
+    return cd_blocks(state.get("next_stargazer_panel_time", 0), now, 0)
+
+
+def _stargazer_followup_due_blocks(now):
+    return cd_blocks(state.get("stargazer_followup_due_at", 0), now, 0)
+
+
 async def _queue_stargazer_action(now, action, delay=None, audit_text=None):
     if delay is None:
         delay = random.uniform(5, 10)
@@ -267,8 +282,9 @@ def get_stargazer_status_text():
     dim_slot_count = int(state.get('stargazer_dim_slot_count', 0) or 0)
     ready_slot_count = int(state.get('stargazer_ready_slot_count', 0) or 0)
     guiding_slot_count = max(0, total_slots - idle_slot_count - dim_slot_count - ready_slot_count)
-    followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
-    next_panel_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+    followup_due_at = _safe_float(state.get("stargazer_followup_due_at", 0), 0)
+
+    next_panel_time = _safe_float(state.get("next_stargazer_panel_time", 0), 0)
     next_due_at = 0
     if followup_due_at > 0 and next_panel_time > 0:
         next_due_at = min(followup_due_at, next_panel_time)
@@ -572,7 +588,10 @@ async def run_stargazer_scheduler(now):
     if _has_pending_stargazer_command():
         return
 
-    followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
+    if _stargazer_followup_due_blocks(now):
+        return
+
+    followup_due_at = _safe_float(state.get("stargazer_followup_due_at", 0), 0)
     if followup_due_at > 0:
         if now < followup_due_at:
             return
@@ -601,7 +620,10 @@ async def run_stargazer_scheduler(now):
         )
         return
 
-    next_panel_time = float(state.get("next_stargazer_panel_time", 0) or 0)
+    if _stargazer_next_panel_time_blocks(now):
+        return
+
+    next_panel_time = _safe_float(state.get("next_stargazer_panel_time", 0), 0)
     if next_panel_time <= 0:
         _schedule_next_stargazer_action(now)
         save_state()

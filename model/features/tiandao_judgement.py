@@ -9,7 +9,7 @@ import time
 
 from ..config import CMD_TIANDAO_JUDGEMENT_PROVE, MESSAGES_DIR
 from ..persistence import save_state
-from ..runtime import _fire_and_forget, _get_identity_client, console_log, get_reply_context, mono, send_audit_log, send_game_command
+from ..runtime import _get_identity_client, console_log, get_reply_context, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_account,
@@ -956,15 +956,9 @@ def _build_pending_item(parsed, identity_id, event, now):
     }
 
 
-async def _run_tiandao_judgement_due_task(due_at):
-    await asyncio.sleep(max(0.0, float(due_at or 0) - time.time()))
-    await run_tiandao_judgement_scheduler(time.time())
-
-
 def _schedule_tiandao_judgement_due_task(due_at):
-    due_at = float(due_at or 0)
-    if due_at > 0:
-        _fire_and_forget(_run_tiandao_judgement_due_task(due_at))
+    # The global scheduler polls pending due items; do not allocate per-item sleep tasks here.
+    return None
 
 
 async def handle_tiandao_judgement_prompt(text, now, event=None):
@@ -1118,12 +1112,16 @@ async def _run_tiandao_judgement_scheduler_locked(now):
             command_prefix = CMD_TIANDAO_JUDGEMENT_PROVE
         command = f"{command_prefix} {token} {answer}" if token else f"{command_prefix} {answer}"
         reply_to_msg_id = int((item or {}).get("msg_id", 0) or 0)
+        chain_id = f"tiandao_judgement:{pending_key}"
         msg = await send_game_command(
             command,
             track=False,
             reply_to=reply_to_msg_id or None,
             send_as_id=identity_id,
             priority="p0",
+            source_module="天道审判",
+            op_id=f"{chain_id}:prove",
+            chain_id=chain_id,
         )
         if msg:
             pending.pop(pending_key, None)

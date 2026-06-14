@@ -63,6 +63,24 @@ class WendaoTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + wendao.WENDAO_REPLY_TIMEOUT_SEC, state_module.state["wendao_reply_due_at"])
             self.assertEqual("已发送", state_module.state["wendao_last_result"])
 
+    async def test_scheduler_blocks_unparseable_next_time_without_retry_spam(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wendao_enabled"] = True
+            state_module.state["next_wendao_time"] = "冷却数据异常"
+            with (
+                patch.object(wendao, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wendao, "save_state") as save_mock,
+            ):
+                await wendao.run_wendao_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            save_mock.assert_not_called()
+            self.assertEqual("冷却数据异常", state_module.state["next_wendao_time"])
+            self.assertEqual(0, state_module.state.get("wendao_reply_to_msg_id", 0))
+            self.assertEqual("", state_module.state.get("wendao_last_error", ""))
+
     async def test_scheduler_blocks_unknown_sect_without_sending(self):
         identity_id = self._prepare_identity(sect_name="")
         now = 1_700_000_000.0

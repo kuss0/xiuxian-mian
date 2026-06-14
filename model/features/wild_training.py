@@ -8,7 +8,7 @@ from ..config import CD_BUFFER_SEC, CMD_WILD_TRAINING, MESSAGES_DIR, TZ_LOCAL, W
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
 
 
@@ -405,7 +405,7 @@ async def run_wild_training_scheduler(now):
         await send_audit_log(f"⚠️ {state['wild_training_last_error']}", scope="identity")
         return
 
-    if now < float(state.get("next_wild_training_time", 0) or 0):
+    if cd_blocks(state.get("next_wild_training_time", 0), now, 0):
         return
     if _guard_recent_completed_result(now):
         return

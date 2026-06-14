@@ -146,7 +146,9 @@ from .persistence import (
     save_state,
 )
 from .action_guard import close_by_family as close_action_guard_by_family
+from .delayed_actions import drain_due_actions
 from .message_contract import record_unhandled_routed_reply
+from .verified_event import from_telegram_event
 from .runtime import (
     _fire_and_forget,
     check_bot_health_timeout,
@@ -204,6 +206,105 @@ UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
 UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
 HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANZUN_BOT_NAME_MARKER = "天尊"
+
+_PHASEFUL_IDENTITY_SCHEDULERS = (
+    run_deep_retreat_scheduler,
+    run_yuanying_scheduler,
+)
+_ORDINARY_IDENTITY_SCHEDULERS = (
+    run_tree_bootstrap_check,
+    run_tree_scheduler,
+    run_pet_scheduler,
+    run_ranch_scheduler,
+    run_wild_training_scheduler,
+    run_stargazer_scheduler,
+    run_formation_scheduler,
+    run_tianti_scheduler,
+    run_quiz_scheduler,
+    run_jiyin_scheduler,
+    run_concubine_scheduler,
+    run_nanlong_scheduler,
+    run_yinluo_scheduler,
+    run_small_world_scheduler,
+    run_wendao_scheduler,
+    run_checkin_scheduler,
+    run_tower_scheduler,
+    run_second_soul_bootstrap_check,
+    run_second_soul_scheduler,
+    run_taiyi_bootstrap_check,
+    run_taiyi_scheduler,
+)
+_GLOBAL_SCHEDULERS = (
+    ("delayed_actions", drain_due_actions),
+    ("guanxing_monitor", run_guanxing_monitor_scheduler),
+    ("guanxing", run_guanxing_scheduler),
+    ("storage_bag_api_keepalive", run_storage_bag_api_keepalive_scheduler),
+    ("storage_bag_transfer", run_storage_bag_transfer_scheduler),
+    ("divination", run_divination_scheduler),
+    ("world_boss", run_world_boss_scheduler),
+    ("tiandao_judgement", run_tiandao_judgement_scheduler),
+    ("tianji_quiz", run_tianji_quiz_scheduler),
+)
+
+_SCHEDULER_MANIFEST_BRIDGE = {
+    "delayed_actions": {"manifest_names": (), "helper": True},
+    "guanxing_monitor": {"manifest_names": ("观星监控",), "helper": False},
+    "guanxing": {"manifest_names": ("观星",), "helper": False},
+    "storage_bag_api_keepalive": {"manifest_names": ("储物袋",), "helper": True},
+    "storage_bag_transfer": {"manifest_names": ("储物袋",), "helper": False},
+    "divination": {"manifest_names": ("卜筮问天",), "helper": False},
+    "world_boss": {"manifest_names": ("真仙试锋",), "helper": False},
+    "tiandao_judgement": {"manifest_names": (), "helper": True},
+    "tianji_quiz": {"manifest_names": (), "helper": True},
+    "run_checkin_scheduler": {"manifest_names": ("点卯", "宗门传功"), "helper": False},
+    "run_concubine_scheduler": {"manifest_names": ("侍妾", "天机代卜", "共历心劫", "侍妾远航"), "helper": False},
+    "run_deep_retreat_scheduler": {"manifest_names": ("深度闭关",), "helper": False},
+    "run_formation_scheduler": {"manifest_names": ("周天星斗",), "helper": False},
+    "run_jiyin_scheduler": {"manifest_names": ("极阴祖师",), "helper": False},
+    "run_nanlong_scheduler": {"manifest_names": ("南陇侯",), "helper": False},
+    "run_pet_scheduler": {"manifest_names": ("法宝", "温养器灵", "器灵试炼"), "helper": False},
+    "run_quiz_scheduler": {"manifest_names": ("玄骨考校",), "helper": False},
+    "run_ranch_scheduler": {"manifest_names": ("放养",), "helper": False},
+    "run_second_soul_bootstrap_check": {"manifest_names": ("第二元神",), "helper": True},
+    "run_second_soul_scheduler": {"manifest_names": ("第二元神",), "helper": False},
+    "run_small_world_scheduler": {"manifest_names": ("小世界",), "helper": False},
+    "run_stargazer_scheduler": {"manifest_names": ("观星台",), "helper": False},
+    "run_taiyi_bootstrap_check": {"manifest_names": ("太一",), "helper": True},
+    "run_taiyi_scheduler": {"manifest_names": ("太一",), "helper": False},
+    "run_tianti_scheduler": {"manifest_names": ("登天阶",), "helper": False},
+    "run_tower_scheduler": {"manifest_names": ("闯塔",), "helper": False},
+    "run_tree_bootstrap_check": {"manifest_names": ("灵树",), "helper": True},
+    "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
+    "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
+    "run_wild_training_scheduler": {"manifest_names": ("野外历练",), "helper": False},
+    "run_yinluo_scheduler": {"manifest_names": ("阴罗宗",), "helper": False},
+    "run_yuanying_scheduler": {"manifest_names": ("元婴",), "helper": False},
+}
+
+
+def _scheduler_function_names(schedulers):
+    return tuple(scheduler.__name__ for scheduler in schedulers)
+
+
+def get_identity_scheduler_order_contract():
+    return {
+        "phaseful": _scheduler_function_names(_PHASEFUL_IDENTITY_SCHEDULERS),
+        "ordinary": _scheduler_function_names(_ORDINARY_IDENTITY_SCHEDULERS),
+    }
+
+
+def get_global_scheduler_order_contract():
+    return tuple(name for name, _scheduler in _GLOBAL_SCHEDULERS)
+
+
+def get_scheduler_manifest_bridge_contract():
+    return {
+        name: {
+            "manifest_names": tuple(entry.get("manifest_names") or ()),
+            "helper": bool(entry.get("helper")),
+        }
+        for name, entry in _SCHEDULER_MANIFEST_BRIDGE.items()
+    }
 
 BOT_REPLY_FAMILY_HINTS = {
     "checkin": ("点卯", "已点卯", "已经点过", "宗门"),
@@ -270,7 +371,13 @@ def _track_manual_game_command(sender_id, text, msg_id):
         return
     family = resolve_reply_family(command)
     if family:
-        track_reply_chain_message(msg_id, sender_id, family, root_msg_id=msg_id)
+        track_reply_chain_message(
+            msg_id,
+            sender_id,
+            family,
+            root_msg_id=msg_id,
+            source="manual_game_command",
+        )
 
 
 def _resolve_identity_sender_id(sender_id):
@@ -718,34 +825,6 @@ async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, rep
 
 
 async def _run_identity_schedulers(now):
-    phaseful_schedulers = (
-        run_deep_retreat_scheduler,
-        run_yuanying_scheduler,
-    )
-    ordinary_schedulers = (
-        run_tree_bootstrap_check,
-        run_tree_scheduler,
-        run_pet_scheduler,
-        run_ranch_scheduler,
-        run_wild_training_scheduler,
-        run_stargazer_scheduler,
-        run_formation_scheduler,
-        run_tianti_scheduler,
-        run_quiz_scheduler,
-        run_jiyin_scheduler,
-        run_concubine_scheduler,
-        run_nanlong_scheduler,
-        run_yinluo_scheduler,
-        run_small_world_scheduler,
-        run_wendao_scheduler,
-        run_checkin_scheduler,
-        run_tower_scheduler,
-        run_second_soul_bootstrap_check,
-        run_second_soul_scheduler,
-        run_taiyi_bootstrap_check,
-        run_taiyi_scheduler,
-    )
-
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
             continue
@@ -754,7 +833,7 @@ async def _run_identity_schedulers(now):
         with use_identity(identity_id):
             if is_identity_weak(identity_id, now):
                 continue
-            for scheduler in phaseful_schedulers:
+            for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
                 await scheduler(now)
 
     for identity_id in get_identity_ids():
@@ -769,19 +848,16 @@ async def _run_identity_schedulers(now):
             if has_phaseful_summary_block(now):
                 await run_tree_bootstrap_check(now)
                 continue
-            for scheduler in ordinary_schedulers:
+            for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
                 await scheduler(now)
 
 
 async def _run_global_schedulers(now):
-    await run_guanxing_monitor_scheduler(now)
-    await run_guanxing_scheduler(now)
-    await run_storage_bag_api_keepalive_scheduler(now)
-    await run_storage_bag_transfer_scheduler(now)
-    await run_divination_scheduler(now)
-    await run_world_boss_scheduler(now)
-    await run_tiandao_judgement_scheduler(now)
-    await run_tianji_quiz_scheduler(now)
+    for name, scheduler in _GLOBAL_SCHEDULERS:
+        if name == "delayed_actions":
+            await scheduler(now, send_game_command)
+        else:
+            await scheduler(now)
 
 
 async def _run_identity_schedulers_background(now):
@@ -984,13 +1060,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             _mark_runtime_message_consumed(event, matched_family)
         elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:
             record_unhandled_routed_reply(
-                event,
-                text,
-                routed_identity_id,
-                matched_family,
-                root_msg_id,
-                event_kind=kind_scope,
-                reply_to_sender_id=(reply_context or {}).get("reply_to_sender_id", 0),
+                from_telegram_event(
+                    event,
+                    text,
+                    reply_context,
+                    event_kind=kind_scope,
+                    root_msg_id=root_msg_id,
+                )
             )
 
     await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
@@ -1096,7 +1172,7 @@ async def on_message(event):
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
             if handled_reply:
-                await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="message")
+                await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="message"), now)
                 return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
@@ -1109,7 +1185,7 @@ async def on_message(event):
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
         await handle_passive_identity_profile_card(text, now)
-        await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="message")
+        await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="message"), now)
         await handle_storage_bag_reply(text, now, reply_to)
 
     except Exception:
@@ -1185,7 +1261,7 @@ async def on_message_edited(event):
                 event_kind="edit",
             )
             if handled_reply:
-                await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
+                await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="edit"), now)
                 return
 
         if await handle_divination_reply(
@@ -1196,7 +1272,7 @@ async def on_message_edited(event):
             matched_family=None,
             reply_context=reply_context,
         ):
-            await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
+            await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="edit"), now)
             return
 
         await _dispatch_message_edited_tree_panel(event, text, now)
@@ -1209,7 +1285,7 @@ async def on_message_edited(event):
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
         await handle_passive_identity_profile_card(text, now)
-        await handle_passive_module_card(text, now, reply_context=reply_context, event=event, event_type="edit")
+        await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="edit"), now)
     except Exception:
         print(traceback.format_exc())
 

@@ -118,6 +118,66 @@ class TowerSchedulerTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase
             self.assertEqual(0, state_module.state["tower_reply_due_at"])
             self.assertEqual(failed_at + tower.RETRY_MAX_SEC, state_module.state["next_tower_time"])
 
+    async def test_dirty_next_tower_time_fail_closed_without_sending(self):
+        now = 1_700_000_080.0
+        dirty_values = ("not-a-timestamp", "nan", "inf")
+
+        for offset, dirty_value in enumerate(dirty_values):
+            with self.subTest(dirty_value=dirty_value):
+                send_as_id = 8659059310 + offset
+                self._prepare_identity(send_as_id)
+
+                with state_module.use_identity(send_as_id):
+                    state_module.state["tower_enabled"] = True
+                    state_module.state["last_tower_day"] = ""
+                    state_module.state["last_tower_msg_id"] = 0
+                    state_module.state["tower_reply_due_at"] = 0
+                    state_module.state["tower_retry_count"] = 0
+                    state_module.state["next_tower_time"] = dirty_value
+
+                    with (
+                        patch.object(tower, "send_game_command", new=AsyncMock()) as send_mock,
+                        patch.object(tower, "mark_dirty") as dirty_mock,
+                        patch.object(tower, "save_state") as save_mock,
+                    ):
+                        await tower.run_tower_scheduler(now + offset)
+
+                    send_mock.assert_not_awaited()
+                    dirty_mock.assert_not_called()
+                    save_mock.assert_not_called()
+                    self.assertEqual(dirty_value, state_module.state["next_tower_time"])
+
+    async def test_dirty_tower_reply_due_at_fail_closed_keeps_waiting(self):
+        send_as_id = 8659059313
+        now = 1_700_000_090.0
+        dirty_due_at = "nan"
+        self._prepare_identity(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tower_enabled"] = True
+            state_module.state["last_tower_day"] = ""
+            state_module.state["last_tower_msg_id"] = 5001
+            state_module.state["tower_reply_due_at"] = dirty_due_at
+            state_module.state["tower_retry_count"] = 0
+            state_module.state["next_tower_time"] = now - 1
+
+            with (
+                patch.object(tower.random, "uniform", return_value=3),
+                patch.object(tower, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tower, "mark_dirty") as dirty_mock,
+                patch.object(tower, "save_state") as save_mock,
+                patch.object(tower, "send_audit_log", new=AsyncMock()),
+            ):
+                await tower.run_tower_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            dirty_mock.assert_not_called()
+            save_mock.assert_not_called()
+            self.assertEqual(5001, state_module.state["last_tower_msg_id"])
+            self.assertEqual(dirty_due_at, state_module.state["tower_reply_due_at"])
+            self.assertEqual(0, state_module.state["tower_retry_count"])
+            self.assertEqual(now - 1, state_module.state["next_tower_time"])
+
     async def test_timeout_schedules_one_short_retry_then_next_day(self):
         send_as_id = 8659059302
         now = 1_700_000_100.0

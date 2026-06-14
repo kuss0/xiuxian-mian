@@ -17,13 +17,17 @@ from model import state as state_module
 class RuntimeReplyContextTests(unittest.TestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._reply_chain_tracker_snapshot = copy.deepcopy(runtime._reply_chain_tracker)
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
+        runtime._reply_chain_tracker.clear()
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        runtime._reply_chain_tracker.clear()
+        runtime._reply_chain_tracker.update(copy.deepcopy(self._reply_chain_tracker_snapshot))
 
     def _register_identity(self, identity_id, username="@target"):
         state_module.ensure_identity_registered(identity_id)
@@ -71,3 +75,42 @@ class RuntimeReplyContextTests(unittest.TestCase):
         self.assertIsNone(context["send_as_id"])
         self.assertIsNone(context["family"])
         self.assertNotEqual("sent_message_log", context["matched_via"])
+        self.assertEqual("", context["source"])
+
+    def test_reply_context_preserves_manual_game_command_source(self):
+        identity_id = self._register_identity(991201)
+
+        tracked = runtime.track_reply_chain_message(
+            7001,
+            identity_id,
+            "concubine_voyage",
+            root_msg_id=7001,
+            source="manual_game_command",
+        )
+        context = runtime.get_reply_context(reply_to_msg_id=7001)
+
+        self.assertTrue(tracked)
+        self.assertEqual("manual_game_command", runtime._reply_chain_tracker[7001]["source"])
+        self.assertEqual(identity_id, context["send_as_id"])
+        self.assertEqual("concubine_voyage", context["family"])
+        self.assertEqual("reply_chain_tracker", context["matched_via"])
+        self.assertEqual(7001, context["root_msg_id"])
+        self.assertEqual("manual_game_command", context["source"])
+
+    def test_reply_context_keeps_legacy_track_source_empty(self):
+        identity_id = self._register_identity(991201)
+
+        tracked = runtime.track_reply_chain_message(
+            7001,
+            identity_id,
+            "concubine_voyage",
+            root_msg_id=7001,
+        )
+        context = runtime.get_reply_context(reply_to_msg_id=7001)
+
+        self.assertTrue(tracked)
+        self.assertEqual("", runtime._reply_chain_tracker[7001]["source"])
+        self.assertEqual(identity_id, context["send_as_id"])
+        self.assertEqual("concubine_voyage", context["family"])
+        self.assertEqual("reply_chain_tracker", context["matched_via"])
+        self.assertEqual("", context["source"])

@@ -1040,23 +1040,27 @@ def _resolve_identity_message_family(msg_id, send_as_id):
     msg_id = int(msg_id or 0)
     send_as_id = int(send_as_id or 0)
     if msg_id <= 0 or send_as_id <= 0 or not has_identity(send_as_id):
-        return None, 0
+        return None, 0, ""
 
     _gc_reply_chain_tracker()
     tracker_payload = _reply_chain_tracker.get(msg_id)
     if tracker_payload and int(tracker_payload.get("send_as_id", 0) or 0) == send_as_id:
-        return tracker_payload.get("family") or None, int(tracker_payload.get("root_msg_id", 0) or msg_id)
+        return (
+            tracker_payload.get("family") or None,
+            int(tracker_payload.get("root_msg_id", 0) or msg_id),
+            str(tracker_payload.get("source") or "").strip(),
+        )
 
     identity_state = get_identity_state(send_as_id)
     pending_item = identity_state.get("pending_tasks", {}).get(msg_id)
     if pending_item:
-        return resolve_reply_family(get_pending_command(pending_item)), msg_id
+        return resolve_reply_family(get_pending_command(pending_item)), msg_id, ""
 
     special_family = _get_special_tracked_message_family(identity_state, msg_id)
     if special_family:
-        return special_family, msg_id
+        return special_family, msg_id, ""
 
-    return None, msg_id
+    return None, msg_id, ""
 
 
 def _recent_sent_message_log_paths(*, days=2):
@@ -1130,12 +1134,14 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
             "reply_to_msg_id": 0,
             "matched_via": "none",
             "root_msg_id": 0,
+            "source": "",
         }
 
     resolved_send_as_id, matched_via = _resolve_identity_message_owner(resolved_reply_to_msg_id, send_as_id=send_as_id)
     if resolved_send_as_id is None and reply_to is not None:
         resolved_send_as_id, matched_via = _resolve_identity_from_message_sender(reply_to, send_as_id=send_as_id)
     family = None
+    source = ""
     root_msg_id = resolved_reply_to_msg_id
     if resolved_send_as_id is None:
         resolved_send_as_id, family, root_msg_id, matched_via = _resolve_identity_from_sent_message_log(
@@ -1143,8 +1149,12 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
             send_as_id=send_as_id,
         )
     if resolved_send_as_id is not None:
-        resolved_family, resolved_root_msg_id = _resolve_identity_message_family(resolved_reply_to_msg_id, resolved_send_as_id)
+        resolved_family, resolved_root_msg_id, resolved_source = _resolve_identity_message_family(
+            resolved_reply_to_msg_id,
+            resolved_send_as_id,
+        )
         family = family or resolved_family
+        source = resolved_source or source
         root_msg_id = int(root_msg_id or resolved_root_msg_id or resolved_reply_to_msg_id)
     if family is None and reply_to is not None:
         family = resolve_reply_family(getattr(reply_to, "raw_text", ""))
@@ -1164,14 +1174,16 @@ def get_reply_context(reply_to=None, *, reply_to_msg_id=None, send_as_id=None):
         "reply_to_msg_id": resolved_reply_to_msg_id,
         "matched_via": matched_via or ("reply_header" if reply_to is None else "reply_object"),
         "root_msg_id": int(root_msg_id or resolved_reply_to_msg_id),
+        "source": source,
     }
 
 
-def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None):
+def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, source=""):
     msg_id = int(msg_id or 0)
     send_as_id = int(send_as_id or 0)
     family = str(family or "").strip()
     root_msg_id = int(root_msg_id or 0) or msg_id
+    source = str(source or "").strip()
     if msg_id <= 0 or send_as_id <= 0 or not family:
         return False
     _gc_reply_chain_tracker()
@@ -1179,6 +1191,7 @@ def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None):
         "send_as_id": send_as_id,
         "family": family,
         "root_msg_id": root_msg_id,
+        "source": source,
         "tracked_at": time.time(),
     }
     return True

@@ -181,10 +181,55 @@ class HehuanManualPlanTests(unittest.TestCase):
             }
             cooldown = hehuan.build_hehuan_manual_plan("warm", now=now)
 
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_result": "cooldown",
+                "last_partner": "@dao_partner",
+            }
+            unknown_cooldown = hehuan.build_hehuan_manual_plan("warm", now=now)
+
         self.assertFalse(no_contract["allowed"])
         self.assertIn("未确认有效同参契印", no_contract["reason"])
         self.assertFalse(cooldown["allowed"])
         self.assertIn("冷却", cooldown["reason"])
+        self.assertFalse(unknown_cooldown["allowed"])
+        self.assertIn("冷却时间不可解析", unknown_cooldown["reason"])
+
+    def test_warm_plan_blocks_dirty_time_fields_without_guessing(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": "inf",
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+            }
+
+            plan = hehuan.build_hehuan_manual_plan("warm", now=now)
+
+        self.assertFalse(plan["allowed"])
+        self.assertIn("状态字段异常", plan["reason"])
+
+    def test_status_text_tolerates_dirty_time_fields(self):
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": "观测时间异常",
+                "contract_until": "inf",
+                "next_hehuan_time": "nan",
+                "heart_seal_until": "-inf",
+                "auto_next_time": "自动时间异常",
+                "recent": [{"ts": "inf", "path": "同参道", "action": "双修 温养", "result": "pending"}],
+            }
+
+            text = hehuan.get_hehuan_status_text()
+
+        self.assertIn("🌸 合欢宗", text)
+        self.assertIn("状态异常", text)
+        self.assertIn("未设置", text)
 
 
 class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
@@ -265,6 +310,58 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("warm", observed["auto_last_action"])
             self.assertIn("未确认有效同参契印", observed["auto_last_error"])
             self.assertGreaterEqual(observed["auto_next_time"], now + hehuan.HEHUAN_AUTO_BLOCK_BACKOFF_SEC)
+
+    async def test_scheduler_blocks_dirty_time_fields_without_clearing_or_saving(self):
+        now = 1_780_000_000.0
+        dirty_cases = (
+            ("auto_next_time", "nan"),
+            ("next_hehuan_time", "inf"),
+            ("contract_until", "契印时间异常"),
+            ("last_observed_at", "-inf"),
+        )
+        for field_name, dirty_value in dirty_cases:
+            with self.subTest(field_name=field_name):
+                observation = {
+                    "last_observed_at": now - 60,
+                    "contract_until": now + 3600,
+                    "next_hehuan_time": 0,
+                    "last_partner": "@dao_partner",
+                    "auto_next_time": now - 1,
+                }
+                observation[field_name] = dirty_value
+                with state_module.use_identity(self.identity_id):
+                    state_module.state["hehuan_enabled"] = True
+                    state_module.state["hehuan_observation"] = observation
+                    with (
+                        patch.object(hehuan, "save_state") as save_mock,
+                        patch.object(hehuan, "send_game_command") as send_mock,
+                    ):
+                        await hehuan.run_hehuan_scheduler(now)
+
+                    send_mock.assert_not_called()
+                    save_mock.assert_not_called()
+                    self.assertEqual(dirty_value, state_module.state["hehuan_observation"][field_name])
+
+    async def test_scheduler_blocks_pending_warm_settlement_without_sending(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "last_result": "pending",
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+            }
+            with patch.object(hehuan, "save_state") as save_mock, patch.object(hehuan, "send_game_command") as send_mock:
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_called()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("pending", observed["last_result"])
+            self.assertIn("仍待真实结果", observed["auto_last_error"])
 
 
 class HehuanPassiveInboxTests(unittest.TestCase):

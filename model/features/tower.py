@@ -1,3 +1,4 @@
+import math
 import random
 import time
 from datetime import datetime, timezone
@@ -15,6 +16,19 @@ TOWER_REPLAY_DELAY_MIN_SEC = 2
 TOWER_REPLAY_DELAY_MAX_SEC = 5
 TOWER_RETRY_LIMIT = 1
 TOWER_DUPLICATE_SEND_GUARD_SEC = TOWER_REPLY_TIMEOUT_SEC
+
+
+def _read_tower_timestamp(field_name):
+    raw_value = state.get(field_name, 0)
+    if raw_value is None or raw_value == "":
+        return 0.0, False
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        return 0.0, True
+    if not math.isfinite(value):
+        return 0.0, True
+    return value, False
 
 
 def _schedule_tower_next_day(now):
@@ -89,12 +103,14 @@ def _mark_tower_done_today(now):
 
 def _normalize_tower_schedule(now):
     day_key = get_day_key(now)
-    next_tower_time = float(state.get("next_tower_time", 0) or 0)
+    next_tower_time, next_tower_time_dirty = _read_tower_timestamp("next_tower_time")
+    reply_due_at, reply_due_at_dirty = _read_tower_timestamp("tower_reply_due_at")
+    if next_tower_time_dirty or reply_due_at_dirty:
+        return 0.0, True
     if _has_tower_pending():
         return next_tower_time, True
 
     last_msg_id = int(state.get("last_tower_msg_id", 0) or 0)
-    reply_due_at = float(state.get("tower_reply_due_at", 0) or 0)
     retry_count = int(state.get("tower_retry_count", 0) or 0)
     if last_msg_id > 0 or reply_due_at > 0:
         if str(state.get("last_tower_day") or "") == day_key:

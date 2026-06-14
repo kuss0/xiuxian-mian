@@ -1,3 +1,4 @@
+import math
 import re
 import time
 
@@ -137,16 +138,40 @@ def _parse_jiyin_prompt(text):
     }
 
 
+def _is_empty_state_value(value):
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _parse_state_int(value):
+    if _is_empty_state_value(value):
+        return 0, False
+    try:
+        return int(value or 0), False
+    except (TypeError, ValueError, OverflowError):
+        return 0, True
+
+
+def _parse_state_timestamp(value):
+    if _is_empty_state_value(value):
+        return 0.0, False
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0, True
+    if not math.isfinite(parsed):
+        return 0.0, True
+    return parsed, False
+
+
 def _get_jiyin_pending_state():
-    return (
-        int(state.get("jiyin_reply_to_msg_id", 0) or 0),
-        float(state.get("next_jiyin_time", 0) or 0),
-    )
+    reply_to_msg_id, reply_dirty = _parse_state_int(state.get("jiyin_reply_to_msg_id", 0))
+    deadline, deadline_dirty = _parse_state_timestamp(state.get("next_jiyin_time", 0))
+    return reply_to_msg_id, deadline, reply_dirty or deadline_dirty
 
 
 def _has_active_jiyin_pending(now):
-    reply_to_msg_id, deadline = _get_jiyin_pending_state()
-    return reply_to_msg_id > 0 and deadline > now
+    reply_to_msg_id, deadline, pending_dirty = _get_jiyin_pending_state()
+    return not pending_dirty and reply_to_msg_id > 0 and deadline > now
 
 
 def _resolve_effective_jiyin_command(send_as_id=None):
@@ -192,7 +217,7 @@ async def _finalize_jiyin_success(audit_text):
 def get_jiyin_status_text():
     saved_choice = normalize_jiyin_choice(get_jiyin_choice())
     effective_choice, choice_source = resolve_jiyin_choice()
-    reply_to_msg_id, deadline = _get_jiyin_pending_state()
+    reply_to_msg_id, deadline, _ = _get_jiyin_pending_state()
     strategy_text = (
         f"已手动保存：{get_jiyin_choice_label(saved_choice)}"
         if saved_choice
@@ -232,9 +257,9 @@ async def apply_jiyin_choice(choice, now=None):
 
     set_jiyin_choice(get_current_identity_id(), normalized_choice)
 
-    pending_reply_to, _ = _get_jiyin_pending_state()
+    pending_reply_to, _, pending_dirty = _get_jiyin_pending_state()
     effective_choice, choice_source, command = _resolve_effective_jiyin_command()
-    if not state.get("jiyin_enabled") or not _has_active_jiyin_pending(now):
+    if not state.get("jiyin_enabled") or pending_dirty or not _has_active_jiyin_pending(now):
         save_state()
         if reset_to_auto:
             return True, f"已恢复极阴祖师自动判断：{get_jiyin_choice_label(effective_choice)}"
@@ -264,7 +289,7 @@ async def handle_jiyin_prompt(text, now, event):
         return False
 
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
-    prev_reply_to_msg_id, prev_deadline = _get_jiyin_pending_state()
+    prev_reply_to_msg_id, prev_deadline, _ = _get_jiyin_pending_state()
     await _maybe_audit_jiyin_prompt_override(prev_reply_to_msg_id, prev_deadline, now, reply_to_msg_id)
 
     _set_jiyin_pending(reply_to_msg_id, now + float(parsed["timeout_sec"]))
@@ -291,7 +316,9 @@ async def run_jiyin_scheduler(now):
     if not state.get("jiyin_enabled"):
         return
 
-    reply_to_msg_id, next_jiyin_time = _get_jiyin_pending_state()
+    reply_to_msg_id, next_jiyin_time, pending_dirty = _get_jiyin_pending_state()
+    if pending_dirty:
+        return
     if reply_to_msg_id <= 0 or next_jiyin_time <= 0 or now < next_jiyin_time:
         return
 

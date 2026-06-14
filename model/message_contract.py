@@ -4,6 +4,7 @@ from datetime import datetime
 
 from .features import passive_event_ledger, passive_inbox
 from .module_manifest import get_module_manifest, get_module_name_for_reply_family
+from .verified_event import VerifiedGameEvent, from_telegram_event
 
 
 UNHANDLED_ROUTED_REPLY_REASON = "unhandled_routed_reply"
@@ -43,12 +44,27 @@ def replay_module_for_family(family):
     return replay_modules[0] if replay_modules else ""
 
 
-def record_unhandled_routed_reply(event, text, routed_identity_id, matched_family, root_msg_id, *, event_kind="message", reply_to_sender_id=0):
+def record_unhandled_routed_reply(event, text=None, routed_identity_id=None, matched_family=None, root_msg_id=None, *, event_kind="message", reply_to_sender_id=0):
+    if isinstance(event, VerifiedGameEvent):
+        verified_event = event
+        text = verified_event.text
+        routed_identity_id = verified_event.identity_id
+        matched_family = verified_event.family
+        root_msg_id = verified_event.root_msg_id
+        event_kind = verified_event.event_type
+        reply_to_sender_id = verified_event.reply_to_sender_id
+        message_id = verified_event.msg_id
+        chat_id = verified_event.chat_id
+        route_source = verified_event.route_source or f"{event_kind}:reply_context"
+    else:
+        message_id = _safe_int(getattr(event, "id", 0))
+        chat_id = _safe_int(getattr(event, "chat_id", 0))
+        route_source = ""
+
     family = str(matched_family or "").strip()
     if not family:
         return False
     event_type = str(event_kind or "message").strip() or "message"
-    message_id = _safe_int(getattr(event, "id", 0))
     return passive_inbox.record_passive_inbox_event(
         "skipped",
         module=get_module_name_for_reply_family(family),
@@ -56,13 +72,13 @@ def record_unhandled_routed_reply(event, text, routed_identity_id, matched_famil
         reason=UNHANDLED_ROUTED_REPLY_REASON,
         summary=family,
         family=family,
-        chat_id=_safe_int(getattr(event, "chat_id", 0)),
+        chat_id=chat_id,
         msg_id=message_id,
         reply_to_msg_id=_safe_int(root_msg_id),
         reply_to_sender_id=_safe_int(reply_to_sender_id),
         root_msg_id=_safe_int(root_msg_id),
         event_type=event_type,
-        route_source=f"{event_type}:reply_context",
+        route_source=route_source or f"{event_type}:reply_context",
         matched_text=text,
         decision=UNHANDLED_ROUTED_REPLY_DECISION,
         source_message_id=message_id,
@@ -257,9 +273,11 @@ __all__ = [
     "UNHANDLED_ROUTED_REPLY_DECISION",
     "UNHANDLED_ROUTED_REPLY_REASON",
     "MESSAGE_CONTRACT_GAP_REASONS",
+    "VerifiedGameEvent",
     "build_replay_sample_suggestion",
     "dumps_replay_sample_suggestion",
     "format_unhandled_reply_line",
+    "from_telegram_event",
     "get_message_contract_status_text",
     "is_message_contract_gap_event",
     "is_unhandled_routed_reply_event",

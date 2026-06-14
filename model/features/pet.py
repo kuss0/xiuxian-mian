@@ -7,7 +7,7 @@ from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, PET_CD
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, state
-from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_text_delta
 
@@ -42,6 +42,10 @@ def _set_pet_trial_next_time(next_time):
 def _set_pet_warm_next_time(next_time):
     state["next_pet_warm_time"] = float(next_time or 0)
     save_state()
+
+
+def _pet_next_time_blocks(key, now):
+    return cd_blocks(state.get(key, 0), now, 0)
 
 
 def _is_pet_cd_reply(text, reply_to, matched_family=None):
@@ -293,7 +297,7 @@ async def run_pet_scheduler(now):
 
 
 async def _run_pet_scheduler(now):
-    if state.get("pet_enabled") and now >= float(state.get("next_pet_time", 0) or 0):
+    if state.get("pet_enabled") and not _pet_next_time_blocks("next_pet_time", now):
         if _has_pending_pet_command(CMD_PET):
             return
         p_delay = PET_CD + random.uniform(0, 30)
@@ -310,7 +314,7 @@ async def _run_pet_scheduler(now):
         console_log(f"🗡️ 法宝[{get_pet_name()}]已发送，等待回复确认。")
         return
 
-    if state.get("pet_trial_enabled") and now >= float(state.get("next_pet_trial_time", 0) or 0):
+    if state.get("pet_trial_enabled") and not _pet_next_time_blocks("next_pet_trial_time", now):
         if _has_pending_pet_command(CMD_PET_TRIAL):
             return
         trial_delay = PET_TRIAL_CD + random.uniform(0, 60)
@@ -327,7 +331,7 @@ async def _run_pet_scheduler(now):
         console_log(f"🗡️ 器灵试炼[{get_pet_trial_name()}]已发送，等待回复确认。")
         return
 
-    if state.get("pet_warm_enabled") and now >= float(state.get("next_pet_warm_time", 0) or 0):
+    if state.get("pet_warm_enabled") and not _pet_next_time_blocks("next_pet_warm_time", now):
         if _has_pending_pet_command(CMD_PET_WARM):
             return
         warm_delay = PET_WARM_CD + random.uniform(60, 300)
