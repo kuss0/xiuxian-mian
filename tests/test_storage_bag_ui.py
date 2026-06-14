@@ -59,8 +59,10 @@ def test_storage_bag_transfer_runtime_allows_queueing_next_plan():
     )[0]
 
     assert 'data-storage-transfer-preview="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
-    assert 'data-storage-transfer-start="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
+    assert 'data-storage-transfer-start="1"${syncBusy ? \' disabled\' : \'\'}' in render_panel
+    assert "startPending" in render_panel
     assert "加入队列" in render_panel
+    assert "if (state.busy) return" not in start_transfer
     assert "当前已有储物袋转移任务执行中" not in start_transfer
 
 

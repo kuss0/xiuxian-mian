@@ -45,6 +45,7 @@
         manualText: '',
         preview: null,
         busy: false,
+        startPending: 0,
         batchMode: false,
         batchAllSources: true,
         batchSourceIds: [],
@@ -55,6 +56,7 @@
     }
     if (!appState.storageBagTransfer.selectedItems) appState.storageBagTransfer.selectedItems = {};
     if (!Array.isArray(appState.storageBagTransfer.batchSourceIds)) appState.storageBagTransfer.batchSourceIds = [];
+    if (!Number(appState.storageBagTransfer.startPending || 0)) appState.storageBagTransfer.startPending = 0;
     if (!Number(appState.storageBagTransfer.listingCount || 0)) appState.storageBagTransfer.listingCount = 1;
     if (['space', 'compact'].indexOf(String(appState.storageBagTransfer.listingSyntax || 'space')) < 0) appState.storageBagTransfer.listingSyntax = 'space';
     if (!appState.storageBagTransfer.batchQuantityMode) appState.storageBagTransfer.batchQuantityMode = 'all';
@@ -773,16 +775,17 @@
     }).join('\n') : '';
     const transferRunning = !!runtime.running || !!batchRuntime.running;
     const busy = !!state.busy;
+    const startPending = Number(state.startPending || 0) > 0;
     const syncBusy = !!syncRuntime.running;
     const sourceLabel = sourceRow ? (sourceRow.label || sourceRow.display_name || state.sourceId) : '来源';
-    const startLabel = transferRunning
+    const startLabel = transferRunning || startPending
       ? (state.batchMode ? '加入批量队列' : '加入队列')
       : (state.batchMode ? '执行批量转移' : '执行转移');
     const modeButtons = `
       <div class="storage-bag-transfer-mode">
-        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${busy || syncBusy ? ' disabled' : ''}>单次</button>
-        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${busy || syncBusy ? ' disabled' : ''}>批量</button>
-        <button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${busy || syncBusy ? ' disabled' : ''}>洗钱预设</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${syncBusy ? ' disabled' : ''}>单次</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${syncBusy ? ' disabled' : ''}>批量</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${syncBusy ? ' disabled' : ''}>洗钱预设</button>
       </div>`;
     const listingFormatControl = `
         <label class="field-label">上架数量<input class="text-input" type="number" min="1" data-storage-transfer-field="listingCount" value="${esc(Math.max(1, Number(state.listingCount) || 1))}" /></label>
@@ -829,7 +832,7 @@
       </div>
       <div class="storage-bag-transfer-actions">
         <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
-        <button type="button" class="btn" data-storage-transfer-start="1"${busy || syncBusy ? ' disabled' : ''}>${startLabel}</button>
+        <button type="button" class="btn" data-storage-transfer-start="1"${syncBusy ? ' disabled' : ''}>${startLabel}</button>
         <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${transferRunning ? '' : ' disabled'}>取消任务</button>
       </div>
       <div id="storage-bag-transfer-preview" class="storage-bag-transfer-preview">${renderTransferPreviewHtml(preview)}${renderBatchRuntimeHtml(batchRuntime)}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
@@ -959,15 +962,15 @@
 
   async function startTransfer() {
     const state = transferState();
-    if (state.busy) return;
     if (state.batchMode && !state.batchAllSources && selectedBatchSourceIds().length <= 0) {
       setFlash('请至少选择一个批量来源身份', true);
       return;
     }
-    state.busy = true;
+    const payload = transferPayload();
+    state.startPending = Math.max(0, Number(state.startPending || 0)) + 1;
     renderTransferPanel();
     try {
-      const data = await post('/api/storage-bag-transfer-start', transferPayload());
+      const data = await post('/api/storage-bag-transfer-start', payload);
       setFlash(data.message || '已开始储物袋转移', false);
       if (typeof applySnapshot === 'function') applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
       renderTransferPanel();
@@ -975,7 +978,7 @@
       setFlash((error && error.message) || '启动储物袋转移失败', true);
       renderTransferPanel();
     } finally {
-      state.busy = false;
+      state.startPending = Math.max(0, Number(state.startPending || 0) - 1);
       renderTransferPanel();
     }
   }
