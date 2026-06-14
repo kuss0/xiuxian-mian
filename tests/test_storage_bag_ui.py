@@ -46,3 +46,18 @@ def test_storage_bag_transfer_presets_keep_normal_and_money_listing_items_separa
     assert "state.listingItem = '黄芽丹'" not in preferred_listing
     assert "state.listingItem = '黄芽丹'" in money_preset
     assert "state.listingSyntax = 'compact'" in money_preset
+
+
+def test_storage_bag_transfer_runtime_only_blocks_execution_not_local_preview():
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+
+    render_panel = script.split("function renderTransferPanel", 1)[1].split(
+        "function resetTransferPreviewOnly", 1
+    )[0]
+    start_transfer = script.split("async function startTransfer", 1)[1].split(
+        "async function cancelTransfer", 1
+    )[0]
+
+    assert 'data-storage-transfer-preview="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
+    assert 'data-storage-transfer-start="1"${transferRunning || busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
+    assert "runtime.running || batchRuntime.running" in start_transfer

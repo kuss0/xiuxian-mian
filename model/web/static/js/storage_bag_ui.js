@@ -750,15 +750,15 @@
     const logs = Array.isArray(runtime.logs) ? runtime.logs.slice(-8).map(function (log) {
       return `${log.ts || ''} ${log.message || ''}`;
     }).join('\n') : '';
-    const running = !!runtime.running || !!batchRuntime.running;
+    const transferRunning = !!runtime.running || !!batchRuntime.running;
     const busy = !!state.busy;
     const syncBusy = !!syncRuntime.running;
     const sourceLabel = sourceRow ? (sourceRow.label || sourceRow.display_name || state.sourceId) : '来源';
     const modeButtons = `
       <div class="storage-bag-transfer-mode">
-        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${running || busy || syncBusy ? ' disabled' : ''}>单次</button>
-        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${running || busy || syncBusy ? ' disabled' : ''}>批量</button>
-        <button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${running || busy || syncBusy ? ' disabled' : ''}>洗钱预设</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${busy || syncBusy ? ' disabled' : ''}>单次</button>
+        <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${busy || syncBusy ? ' disabled' : ''}>批量</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${busy || syncBusy ? ' disabled' : ''}>洗钱预设</button>
       </div>`;
     const listingFormatControl = `
         <label class="field-label">上架数量<input class="text-input" type="number" min="1" data-storage-transfer-field="listingCount" value="${esc(Math.max(1, Number(state.listingCount) || 1))}" /></label>
@@ -804,9 +804,9 @@
         </section>
       </div>
       <div class="storage-bag-transfer-actions">
-        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${running || busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
-        <button type="button" class="btn" data-storage-transfer-start="1"${running || busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '执行批量转移' : '执行转移'}</button>
-        <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${running ? '' : ' disabled'}>取消任务</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
+        <button type="button" class="btn" data-storage-transfer-start="1"${transferRunning || busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '执行批量转移' : '执行转移'}</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${transferRunning ? '' : ' disabled'}>取消任务</button>
       </div>
       <div id="storage-bag-transfer-preview" class="storage-bag-transfer-preview">${renderTransferPreviewHtml(preview)}${renderBatchRuntimeHtml(batchRuntime)}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
   }
@@ -936,6 +936,12 @@
   async function startTransfer() {
     const state = transferState();
     if (state.busy) return;
+    const runtime = snapshot().storage_bag_transfer || {};
+    const batchRuntime = runtime.batch || {};
+    if (runtime.running || batchRuntime.running) {
+      setFlash('当前已有储物袋转移任务执行中，请等待完成后再执行当前计划', true);
+      return;
+    }
     if (state.batchMode && !state.batchAllSources && selectedBatchSourceIds().length <= 0) {
       setFlash('请至少选择一个批量来源身份', true);
       return;
