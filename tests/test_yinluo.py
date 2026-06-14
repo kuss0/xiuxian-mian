@@ -68,6 +68,27 @@ class YinluoParserTests(unittest.TestCase):
         self.assertNotIn("妖兽精魄 · 血煞幡", parsed["soul_stocks"])
         self.assertNotIn("凶兽戾魄 · 灭法幡", parsed["soul_stocks"])
 
+    def test_banner_zero_second_refining_slot_schedules_recheck_not_collect(self):
+        now = 1_781_443_187.0
+        parsed = yinluo.parse_yinluo_text(
+            "【缘初子的阴罗幡】\n"
+            "煞气池: 2140 / 15000 (14%)\n"
+            "魂魄储备:\n"
+            " - 妖兽精魄: 15 缕\n\n"
+            "炼化槽:\n"
+            "3号槽: [炼化中] - 凶兽戾魄 (剩余: 0秒)\n"
+            "6号槽: [空闲]",
+            now=now,
+            family="yinluo_banner",
+        )
+
+        self.assertEqual([], parsed["ready_slot_numbers"])
+        self.assertEqual([3], parsed["refining_slot_numbers"])
+        detail = parsed["refining_slots_detail"][0]
+        self.assertEqual(0, detail["remaining_sec"])
+        self.assertNotIn("finish_time", detail)
+        self.assertEqual(now + yinluo.YINLUO_REFINING_DUE_RECHECK_SEC, detail["recheck_time"])
+
     def test_empty_collect_result_is_not_treated_as_success(self):
         parsed = yinluo.parse_yinluo_text(
             "收取成功！\n你从 0 个炼化槽中获得了: ！",
@@ -655,7 +676,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_called()
         self.assertEqual("idle", observed["auto_last_action"])
 
-    async def test_scheduler_collects_refining_slot_directly_when_due(self):
+    async def test_scheduler_rechecks_banner_when_refining_slot_prediction_is_due(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
             "last_observed_at": now - 60,
@@ -679,13 +700,13 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         }, now=now)
 
         send_mock.assert_awaited_once()
-        self.assertEqual(".收取精华 3", send_mock.await_args.args[0])
-        self.assertEqual("collect", observed["auto_last_action"])
-        self.assertEqual("", observed["auto_calibrate_reason"])
-        self.assertEqual([3], observed["auto_collect_pending"]["slots"])
-        self.assertEqual([], observed["refining_slot_numbers"])
-        self.assertEqual([], observed["refining_slots_detail"])
-        self.assertEqual(0, observed["refining_slots"])
+        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
+        self.assertEqual("banner", observed["auto_last_action"])
+        self.assertIn("预计到期", observed["auto_calibrate_reason"])
+        self.assertEqual({}, observed["auto_collect_pending"])
+        self.assertEqual([3], observed["refining_slot_numbers"])
+        self.assertEqual(1, observed["refining_slots"])
+        self.assertEqual(now + yinluo.YINLUO_AUTO_CALIBRATE_RETRY_SEC, observed["auto_next_time"])
 
     async def test_scheduler_auto_converts_only_when_enabled_and_refine_needs_sha(self):
         now = 1_780_000_000.0
@@ -1105,6 +1126,32 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual([], observed["ready_slot_numbers"])
         self.assertEqual({}, observed["auto_collect_pending"])
         self.assertIn("收取精华空结果", observed["auto_calibrate_reason"])
+
+    def test_apply_zero_second_banner_keeps_short_recheck_timer(self):
+        now = 1_781_443_187.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "auto_next_time": now + yinluo.YINLUO_AUTO_STATUS_BACKOFF_SEC,
+                "next_blood_forest_time": now + 4 * 3600,
+                "next_demon_summon_time": now + 8 * 3600,
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(
+                "【缘初子的阴罗幡】\n"
+                "煞气池: 2140 / 15000 (14%)\n"
+                "魂魄储备:\n"
+                " - 妖兽精魄: 15 缕\n\n"
+                "炼化槽:\n"
+                "3号槽: [炼化中] - 凶兽戾魄 (剩余: 0秒)\n"
+                "6号槽: [空闲]",
+                now=now,
+            ))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual("阴罗幡", observed["last_action"])
+        self.assertEqual([], observed["ready_slot_numbers"])
+        self.assertEqual(now + yinluo.YINLUO_REFINING_DUE_RECHECK_SEC, observed["auto_next_time"])
 
     def test_passive_inbox_updates_yinluo_from_reply_context(self):
         send_as_id = self._prepare_identity()

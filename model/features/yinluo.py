@@ -34,6 +34,7 @@ YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
 YINLUO_AUTO_CHAIN_STEP_SEC = 2 * 60
 YINLUO_AUTO_CALIBRATE_RETRY_SEC = 10 * 60
 YINLUO_AUTO_COLLECT_CONFIRM_TIMEOUT_SEC = 5 * 60
+YINLUO_REFINING_DUE_RECHECK_SEC = 10 * 60
 YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC = 8 * 3600
 YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC = 4 * 3600
 YINLUO_DEMON_SUMMON_MIN_REALM = "结丹初期"
@@ -451,6 +452,8 @@ def parse_yinluo_text(text, now=None, family=""):
                         }
                         if remaining_sec > 0:
                             detail["finish_time"] = float(now + remaining_sec + YINLUO_TIME_BUFFER_SEC)
+                        elif remaining_text:
+                            detail["recheck_time"] = float(now + YINLUO_REFINING_DUE_RECHECK_SEC)
                         parsed["refining_slots_detail"].append(detail)
         sha_match = RE_SHA_POOL.search(raw_text)
         soul_total_match = RE_SOUL_TOTAL.search(raw_text)
@@ -1298,12 +1301,13 @@ def _next_refining_finish_time(observed, now):
     for item in details:
         if not isinstance(item, dict):
             continue
-        try:
-            finish_time = float(item.get("finish_time", 0) or 0)
-        except (TypeError, ValueError):
-            continue
-        if finish_time > now:
-            finish_times.append(finish_time)
+        for key in ("finish_time", "recheck_time"):
+            try:
+                finish_time = float(item.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if finish_time > now:
+                finish_times.append(finish_time)
     return min(finish_times) if finish_times else 0
 
 
@@ -1319,14 +1323,20 @@ def _due_refining_slot(observed, now):
     for item in details:
         if not isinstance(item, dict):
             continue
-        try:
-            finish_time = float(item.get("finish_time", 0) or 0)
-        except (TypeError, ValueError):
+        due = False
+        for key in ("finish_time", "recheck_time"):
+            try:
+                check_time = float(item.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if 0 < check_time <= now:
+                due = True
+                break
+        if not due:
             continue
-        if 0 < finish_time <= now:
-            slot_no = _safe_int(item.get("slot"))
-            if 1 <= slot_no <= 99 and (not refining_slot_numbers or slot_no in refining_slot_numbers):
-                due_slots.append(slot_no)
+        slot_no = _safe_int(item.get("slot"))
+        if 1 <= slot_no <= 99 and (not refining_slot_numbers or slot_no in refining_slot_numbers):
+            due_slots.append(slot_no)
     return min(due_slots) if due_slots else 0
 
 
@@ -1548,7 +1558,9 @@ async def run_yinluo_scheduler(now):
     elif _auto_action_enabled(observed, "collect") and int(observed.get("ready_slots", 0) or 0) > 0:
         plan = build_yinluo_manual_plan("collect", now=now)
     elif _auto_action_enabled(observed, "collect") and _has_due_refining_finish(observed, now):
-        plan = _build_due_refining_collect_plan(observed, now)
+        observed["auto_calibrate_reason"] = "炼化槽预计到期，先查幡确认精华已成。"
+        state["yinluo_observation"] = observed
+        plan = build_yinluo_manual_plan("banner", now=now)
     elif not _has_banner_hint(observed):
         plan = build_yinluo_manual_plan("banner", now=now)
     else:
