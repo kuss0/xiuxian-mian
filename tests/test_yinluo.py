@@ -127,6 +127,7 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(1000, success["last_convert_amount"])
         self.assertEqual(200, success["last_sha_gain"])
         self.assertEqual(now + yinluo.YINLUO_CONVERT_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, success["next_convert_time"])
+        self.assertEqual(now + 60 * 60 + yinluo.YINLUO_TIME_BUFFER_SEC, success["next_convert_time"])
         self.assertEqual("cooldown", cooldown["result"])
         self.assertEqual(now + 59 * 60 + 50 + yinluo.YINLUO_TIME_BUFFER_SEC, cooldown["next_convert_time"])
         self.assertEqual("invalid_amount", invalid["result"])
@@ -561,6 +562,14 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "soul_stocks": {"妖兽精魄": 14, "凶兽戾魄": 1},
             "next_blood_forest_time": now + 3600,
             "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": ["凶兽戾魄"],
+            },
             "auto_next_time": now - 1,
         }, now=now)
 
@@ -572,6 +581,62 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(300, observed["sha_current"])
         self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
         self.assertEqual(3, observed["auto_refine_pending"]["slot"])
+
+    async def test_scheduler_does_not_auto_refine_without_selected_targets(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 1300,
+            "sha_max": 15000,
+            "empty_slots": 2,
+            "empty_slot_numbers": [3, 4],
+            "ready_slots": 0,
+            "soul_stocks": {"妖兽精魄": 14, "凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": [],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("idle", observed["auto_last_action"])
+
+    async def test_scheduler_queries_banner_when_refining_slot_due(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "ready_slots": 0,
+            "refining_slots": 1,
+            "refining_slot_numbers": [3],
+            "refining_slots_detail": [{"slot": 3, "target": "凶兽戾魄", "finish_time": now - 1}],
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": False,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": [],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
+        self.assertEqual("banner", observed["auto_last_action"])
+        self.assertIn("预计已到期", observed["auto_calibrate_reason"])
 
     async def test_scheduler_auto_converts_only_when_enabled_and_refine_needs_sha(self):
         now = 1_780_000_000.0
@@ -618,6 +683,14 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "soul_stocks": {"凶兽戾魄": 1},
             "next_blood_forest_time": now + 3600,
             "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": ["凶兽戾魄"],
+            },
             "auto_next_time": now - 1,
         }, now=now)
 
@@ -638,6 +711,14 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "soul_stocks": {"凶兽戾魄": 1},
             "next_blood_forest_time": now + 3600,
             "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": ["凶兽戾魄"],
+            },
             "auto_next_time": now - 1,
         }, now=now)
         send_mock.assert_awaited_once()

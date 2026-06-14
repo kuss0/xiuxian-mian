@@ -60,7 +60,7 @@
     yinluoDraft.convert_amount = config && config.convert_amount ? String(config.convert_amount) : '';
     yinluoDraft.refine_slot = '';
     const targets = Array.isArray(config && config.refine_targets) ? config.refine_targets : [];
-    yinluoDraft.refine_target = targets[0] || '妖兽精魄';
+    yinluoDraft.refine_target = targets[0] || '';
     yinluoDraft.auto_refine_targets = targets.join(' ');
   }
 
@@ -116,7 +116,7 @@
       renderAutoToggle('convert', '化煞', config),
       '</div>',
       '<div class="yinluo-action-row yinluo-action-row-combo">',
-      '<label class="yinluo-field yinluo-field-wide"><span>目标</span><input class="text-input yinluo-target-input" type="text" value="' + esc(yinluoDraft.auto_refine_targets) + '" placeholder="凶兽戾魄 妖兽精魄" data-yinluo-draft="auto_refine_targets" /></label>',
+      '<label class="yinluo-field yinluo-field-wide"><span>目标</span><input class="text-input yinluo-target-input" type="text" value="' + esc(yinluoDraft.auto_refine_targets) + '" placeholder="例如 凶兽戾魄" data-yinluo-draft="auto_refine_targets" /></label>',
       '<label class="yinluo-field"><span>化煞</span><input class="text-input yinluo-amount-input" type="number" min="0" max="50000" step="1000" inputmode="numeric" value="' + esc(yinluoDraft.convert_amount) + '" data-yinluo-draft="convert_amount" /></label>',
       '<button type="button" class="btn btn-secondary" data-yinluo-config-save="1">保存策略</button>',
       '</div>',
@@ -134,7 +134,7 @@
       '</div>',
       '<div class="yinluo-action-row yinluo-action-row-combo">',
       '<label class="yinluo-field"><span>槽位</span><input class="text-input yinluo-slot-input" type="number" min="1" max="99" step="1" inputmode="numeric" value="' + esc(yinluoDraft.refine_slot) + '" data-yinluo-draft="refine_slot" /></label>',
-      '<label class="yinluo-field yinluo-field-wide"><span>目标</span><input class="text-input yinluo-target-input" type="text" value="' + esc(yinluoDraft.refine_target) + '" placeholder="妖兽精魄" data-yinluo-draft="refine_target" /></label>',
+      '<label class="yinluo-field yinluo-field-wide"><span>目标</span><input class="text-input yinluo-target-input" type="text" value="' + esc(yinluoDraft.refine_target) + '" placeholder="例如 凶兽戾魄" data-yinluo-draft="refine_target" /></label>',
       '<button type="button" class="btn btn-secondary" data-yinluo-action="refine">炼化</button>',
       '</div>',
       '<div class="yinluo-action-row">',
@@ -189,13 +189,13 @@
       demon_summon: true,
       convert: false,
       convert_amount: 0,
-      refine_targets: '凶兽戾魄 妖兽精魄 修士残魂 怨魂'
+      refine_targets: ''
     }, getYinluoConfig(selectedIdentity()));
     if (changedKey) {
       config[changedKey] = !!enabled;
     }
     config.convert_amount = Number(String(yinluoDraft.convert_amount || config.convert_amount || 0).trim()) || 0;
-    config.refine_targets = String(yinluoDraft.auto_refine_targets || (Array.isArray(config.refine_targets) ? config.refine_targets.join(' ') : config.refine_targets) || '').trim();
+    config.refine_targets = String(yinluoDraft.auto_refine_targets || '').trim();
     return config;
   }
 

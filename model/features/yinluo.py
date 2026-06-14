@@ -57,7 +57,7 @@ RE_REFINING_SLOT_DETAIL = re.compile(
     r"^\s*(?P<slot>\d+)号槽[:：]\s*\[炼化中\]\s*-\s*(?P<target>[^()]+?)(?:\s*\(剩余[:：]\s*(?P<remaining>[^)]+)\))?\s*$"
 )
 
-YINLUO_AUTO_REFINE_TARGETS = ("凶兽戾魄", "妖兽精魄", "修士残魂", "怨魂")
+YINLUO_AUTO_REFINE_TARGETS = ()
 YINLUO_AUTO_ACTION_KEYS = ("collect", "refine", "blood_forest", "demon_summon", "convert")
 
 
@@ -69,7 +69,7 @@ def _default_yinluo_auto_config():
         "demon_summon": True,
         "convert": False,
         "convert_amount": 0,
-        "refine_targets": list(YINLUO_AUTO_REFINE_TARGETS),
+        "refine_targets": [],
     }
 
 
@@ -1007,7 +1007,7 @@ def _auto_action_enabled(observed, action):
 
 def _auto_refine_targets(observed):
     targets = _auto_config(observed).get("refine_targets") or []
-    return _split_refine_targets(targets) or list(YINLUO_AUTO_REFINE_TARGETS)
+    return _split_refine_targets(targets)
 
 
 def _build_auto_refine_arg(observed, now=None):
@@ -1206,8 +1206,41 @@ def _earliest_yinluo_next_time(observed, now):
         value = float(observed.get(key, 0) or 0)
         if value > now:
             candidates.append(value)
+    if _auto_action_enabled(observed, "collect"):
+        finish_time = _next_refining_finish_time(observed, now)
+        if finish_time > now:
+            candidates.append(finish_time)
     candidates.append(now + YINLUO_AUTO_STATUS_BACKOFF_SEC)
     return min(candidates)
+
+
+def _next_refining_finish_time(observed, now):
+    finish_times = []
+    details = observed.get("refining_slots_detail") if isinstance(observed.get("refining_slots_detail"), list) else []
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        try:
+            finish_time = float(item.get("finish_time", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if finish_time > now:
+            finish_times.append(finish_time)
+    return min(finish_times) if finish_times else 0
+
+
+def _has_due_refining_finish(observed, now):
+    details = observed.get("refining_slots_detail") if isinstance(observed.get("refining_slots_detail"), list) else []
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        try:
+            finish_time = float(item.get("finish_time", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if 0 < finish_time <= now:
+            return True
+    return False
 
 
 def _has_yinluo_due_followup(observed, now):
@@ -1216,6 +1249,8 @@ def _has_yinluo_due_followup(observed, now):
     if _has_collect_pending(observed):
         return True
     if _auto_action_enabled(observed, "collect") and int(observed.get("ready_slots", 0) or 0) > 0:
+        return True
+    if _auto_action_enabled(observed, "collect") and _has_due_refining_finish(observed, now):
         return True
     if _auto_action_enabled(observed, "refine"):
         auto_refine_arg, _reason = _build_auto_refine_arg(observed, now=now)
@@ -1405,6 +1440,11 @@ async def run_yinluo_scheduler(now):
         plan = build_yinluo_manual_plan("banner", now=now)
     elif _auto_action_enabled(observed, "collect") and int(observed.get("ready_slots", 0) or 0) > 0:
         plan = build_yinluo_manual_plan("collect", now=now)
+    elif _auto_action_enabled(observed, "collect") and _has_due_refining_finish(observed, now):
+        observed["auto_calibrate_reason"] = "炼化槽预计已到期，需查幡确认精华。"
+        state["yinluo_observation"] = observed
+        save_state()
+        plan = build_yinluo_manual_plan("banner", now=now)
     elif not _has_banner_hint(observed):
         plan = build_yinluo_manual_plan("banner", now=now)
     else:
@@ -1600,8 +1640,6 @@ def set_yinluo_auto_config(updates):
         next_config["convert_amount"] = max(0, amount)
     if "refine_targets" in updates:
         targets = _split_refine_targets(updates.get("refine_targets"))
-        if not targets:
-            return False, "自动炼化目标不能为空；不想自动炼化请关闭炼化开关。", get_yinluo_ui_state()
         next_config["refine_targets"] = targets
     observed["auto_config"] = normalize_yinluo_auto_config(next_config)
     state["yinluo_observation"] = observed
