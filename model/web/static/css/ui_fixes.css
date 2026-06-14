@@ -1278,6 +1278,34 @@
   font-size: 12px;
 }
 
+.storage-bag-transfer-runtime-section {
+  margin-top: 8px;
+}
+
+.storage-bag-transfer-queue-line,
+.storage-bag-transfer-queue-list {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.storage-bag-transfer-queue-line {
+  padding: 6px 8px;
+  overflow-wrap: anywhere;
+}
+
+.storage-bag-transfer-queue-list {
+  margin: 4px 0 0;
+  padding: 6px 8px 6px 28px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.storage-bag-transfer-queue-list li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
 .storage-bag-transfer-runtime pre {
   margin-bottom: 0;
   max-height: 160px;

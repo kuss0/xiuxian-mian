@@ -61,3 +61,16 @@ def test_storage_bag_transfer_runtime_only_blocks_execution_not_local_preview():
     assert 'data-storage-transfer-preview="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
     assert 'data-storage-transfer-start="1"${transferRunning || busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
     assert "runtime.running || batchRuntime.running" in start_transfer
+
+
+def test_storage_bag_batch_runtime_expands_pending_queue_details():
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+
+    runtime_render = script.split("function renderBatchRuntimeHtml", 1)[1].split(
+        "function renderTransferPanel", 1
+    )[0]
+
+    assert "function storageTransferTaskLine" in script
+    assert "storage-bag-transfer-queue-list" in runtime_render
+    assert "后续队列" in runtime_render
+    assert "queue.slice(0, queueLimit)" in runtime_render

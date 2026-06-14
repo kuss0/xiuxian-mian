@@ -692,13 +692,23 @@
     return `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成预览')}</div>${renderTransferWarnings(preview)}<pre>${esc((preview.commands || []).map(function (cmd) { return `${cmd.identity_id}｜${cmd.command}｜${cmd.note || ''}`; }).join('\n'))}</pre>`;
   }
 
+  function storageTransferTaskLine(task, index) {
+    const prefix = Number.isFinite(index) ? `${index}. ` : '';
+    const itemText = ((task || {}).items || []).map(function (item) {
+      return `${item.item_name}x${Number(item.quantity || 0).toLocaleString()}`;
+    }).join('、') || '无物品';
+    const listing = task && task.listing_item ? `｜上架 ${task.listing_item}x${Math.max(1, Number(task.listing_count) || 1)}` : '';
+    return `${prefix}${(task || {}).source_label || (task || {}).source_identity_id || '来源'} -> ${(task || {}).target_label || (task || {}).target_identity_id || '目标'}｜${itemText}${listing}`;
+  }
+
   function renderBatchRuntimeHtml(batchRuntime) {
     const rawLogs = Array.isArray((batchRuntime || {}).logs) ? batchRuntime.logs : [];
     const status = String((batchRuntime || {}).status || '');
     if (!batchRuntime || (!batchRuntime.running && (!status || status === 'idle') && !rawLogs.length && !batchRuntime.last_message)) return '';
     const completed = Array.isArray(batchRuntime.completed) ? batchRuntime.completed.length : 0;
     const failed = Array.isArray(batchRuntime.failed) ? batchRuntime.failed.length : 0;
-    const queued = Array.isArray(batchRuntime.queue) ? batchRuntime.queue.length : 0;
+    const queue = Array.isArray(batchRuntime.queue) ? batchRuntime.queue : [];
+    const queued = queue.length;
     const total = Number(batchRuntime.total || 0);
     const active = batchRuntime.active_task || null;
     const statusLine = [
@@ -711,7 +721,18 @@
     const logs = rawLogs.slice(-10).map(function (log) {
       return `${log.ts || ''} ${log.message || ''}`;
     }).join('\n');
-    return `<div class="storage-bag-transfer-runtime"><div>${esc(statusLine || batchRuntime.last_message || '')}</div>${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
+    const queueLimit = 20;
+    const activeHtml = active
+      ? `<div class="storage-bag-transfer-runtime-section"><div class="form-label">当前执行</div><div class="storage-bag-transfer-queue-line">${esc(storageTransferTaskLine(active))}</div></div>`
+      : '';
+    const queueLines = queue.slice(0, queueLimit).map(function (task, index) {
+      return `<li>${esc(storageTransferTaskLine(task, index + 1))}</li>`;
+    }).join('');
+    const moreLine = queued > queueLimit ? `<div class="form-label">还有 ${esc(queued - queueLimit)} 条未展开</div>` : '';
+    const queueHtml = queued
+      ? `<div class="storage-bag-transfer-runtime-section"><div class="form-label">后续队列 ${esc(queued)} 条</div><ol class="storage-bag-transfer-queue-list">${queueLines}</ol>${moreLine}</div>`
+      : '';
+    return `<div class="storage-bag-transfer-runtime"><div>${esc(statusLine || batchRuntime.last_message || '')}</div>${activeHtml}${queueHtml}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
   }
 
   function renderTransferPanel() {
