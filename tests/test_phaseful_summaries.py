@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import control, runtime
-from model.features import _phaseful, concubine, deep_retreat, tower, wild_training, yuanying
+from model.features import _phaseful, concubine, deep_retreat, tower, yuanying
 
 
 class _StateIsolationMixin:
@@ -842,7 +842,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(msg_id, payload["msg_id"])
             self.assertEqual(["deep_retreat_phase"], payload["specs"])
 
-    def test_deep_retreat_summary_due_keeps_wild_training_trigger(self):
+    def test_deep_retreat_summary_due_ignores_wild_training_replay(self):
         send_as_id = 8659059232
         now = 1_700_000_457.0
         msg_id = 9338526
@@ -867,12 +867,8 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                     source_module="野外历练",
                 )
 
-            self.assertEqual("observing_summary", state_module.state["deep_retreat_phase"])
-            payload = _phaseful._SUMMARY_CONSUMED_COMMANDS.get(send_as_id)
-            self.assertIsNotNone(payload)
-            self.assertEqual(command, payload["cmd"])
-            self.assertEqual(msg_id, payload["msg_id"])
-            self.assertEqual(["deep_retreat_phase"], payload["specs"])
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertNotIn(send_as_id, _phaseful._SUMMARY_CONSUMED_COMMANDS)
 
     def test_deep_retreat_summary_due_ignores_replayable_reply_echo(self):
         send_as_id = 8659059230
@@ -1325,25 +1321,15 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
     def test_summary_replay_allows_voyage_command_with_route_suffix(self):
         self.assertTrue(_phaseful._is_summary_replayable_command(f"{concubine.CMD_CONCUBINE_VOYAGE} 冒险"))
 
-    def test_summary_replay_allows_wild_training_with_strategy_suffix(self):
-        self.assertTrue(_phaseful._is_summary_replayable_command(".野外历练 谨慎"))
+    def test_summary_replay_rejects_wild_training_with_strategy_suffix(self):
+        self.assertFalse(_phaseful._is_summary_replayable_command(".野外历练 谨慎"))
 
-    async def test_summary_replay_wild_training_rebuilds_pending_state(self):
+    async def test_summary_replay_ignores_stale_wild_training_payload(self):
         send_as_id = 8659059221
         now = 1_700_001_200.0
         old_msg_id = 9338525
-        new_msg_id = 9338526
         command = ".野外历练 谨慎"
         self._prepare_identity(send_as_id, "WildReplay")
-
-        with state_module.use_identity(send_as_id):
-            state_module.state["wild_training_enabled"] = True
-            state_module.state["wild_training_strategy"] = "谨慎"
-            state_module.state["wild_training_reply_to_msg_id"] = old_msg_id
-            state_module.state["wild_training_reply_due_at"] = now + wild_training.WILD_TRAINING_REPLY_TIMEOUT_SEC
-            state_module.state["wild_training_retry_count"] = 0
-            state_module.state["wild_training_last_msg_id"] = old_msg_id
-            state_module.state["wild_training_last_result"] = "已发送：谨慎"
 
         payload = {
             "cmd": command,
@@ -1355,35 +1341,17 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             "max_retry": 0,
             "send_intent": {"source_module": "野外历练"},
         }
-        sent_msg = SimpleNamespace(id=new_msg_id, sent_at=now + 1)
         with (
             patch.object(_phaseful.time, "time", return_value=now),
             patch.object(_phaseful.random, "uniform", return_value=0),
             patch.object(_phaseful.asyncio, "sleep", new=AsyncMock()),
-            patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+            patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
             patch.object(_phaseful, "send_audit_log", new=AsyncMock()),
             patch.object(_phaseful, "save_state"),
         ):
             await _phaseful._replay_summary_consumed_command(send_as_id, payload)
 
-        send_mock.assert_awaited_once_with(
-            command,
-            track=False,
-            send_as_id=send_as_id,
-            priority="retry",
-            max_retry=0,
-            source_module="野外历练",
-            op_id=f"phaseful_replay:{send_as_id}:{old_msg_id}:{command}",
-            chain_id=f"phaseful_replay:{send_as_id}:{old_msg_id}",
-        )
-        with state_module.use_identity(send_as_id):
-            self.assertEqual(new_msg_id, state_module.state["wild_training_reply_to_msg_id"])
-            self.assertEqual(now + 1 + wild_training.WILD_TRAINING_REPLY_TIMEOUT_SEC, state_module.state["wild_training_reply_due_at"])
-            self.assertEqual(1, state_module.state["wild_training_retry_count"])
-            self.assertEqual(new_msg_id, state_module.state["wild_training_last_msg_id"])
-            self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
-            self.assertEqual("", state_module.state["wild_training_last_error"])
-            self.assertEqual(state_module.state["wild_training_reply_due_at"], state_module.state["next_wild_training_time"])
+        send_mock.assert_not_awaited()
 
     async def test_summary_replay_tower_sets_explicit_wait_state(self):
         send_as_id = 8659059223
