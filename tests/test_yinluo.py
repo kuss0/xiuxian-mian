@@ -44,6 +44,10 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(1, parsed["ready_slots"])
         self.assertEqual([4], parsed["ready_slot_numbers"])
         self.assertEqual(1, parsed["refining_slots"])
+        self.assertEqual([1, 2, 3], parsed["empty_slot_numbers"])
+        self.assertEqual([5], parsed["refining_slot_numbers"])
+        self.assertEqual("凶兽戾魄", parsed["refining_slots_detail"][0]["target"])
+        self.assertEqual(3 * 3600 + 28 * 60 + 48, parsed["refining_slots_detail"][0]["remaining_sec"])
         self.assertEqual(191, parsed["soul_stocks"]["妖兽精魄"])
 
     def test_sanshaoye_banner_parses_lineage_traits_and_ready_slot_number(self):
@@ -59,6 +63,7 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(100, parsed["sha_current"])
         self.assertEqual(1, parsed["ready_slots"])
         self.assertEqual([1], parsed["ready_slot_numbers"])
+        self.assertEqual([2, 3, 4, 5, 6, 7, 8, 9], parsed["empty_slot_numbers"])
         self.assertEqual(4, parsed["soul_stocks"]["妖兽精魄"])
 
     def test_demon_summon_cooldown_convert_and_retreat_parse(self):
@@ -68,7 +73,8 @@ class YinluoParserTests(unittest.TestCase):
         realm_blocked = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.realm_blocked"), now=now)
         pending = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.pending_fight"), now=now)
         failed = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.failed_backlash"), now=now)
-        convert = yinluo.parse_yinluo_text(real_text("yinluo.convert.success"), now=1_779_450_000.0)
+        daily_sacrifice = yinluo.parse_yinluo_text(real_text("yinluo.convert.success"), now=1_779_450_000.0)
+        convert = yinluo.parse_yinluo_text("【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！", now=1_779_450_000.0)
         retreat = yinluo.parse_yinluo_text(real_text("yinluo.retreat.success_bonus"), now=1_779_450_000.0)
 
         self.assertEqual("召唤魔影", success["action"])
@@ -83,8 +89,13 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual("failed", failed["result"])
         self.assertEqual(1362, failed["last_backlash_loss"])
         self.assertEqual(now + yinluo.YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, failed["next_demon_summon_time"])
-        self.assertEqual(2030, convert["last_sha_gain"])
-        self.assertEqual(1530, convert["last_extra_sha_gain"])
+        self.assertEqual("每日献祭", daily_sacrifice["action"])
+        self.assertEqual(2030, daily_sacrifice["last_sha_gain"])
+        self.assertEqual(1530, daily_sacrifice["last_extra_sha_gain"])
+        self.assertNotIn("next_convert_time", daily_sacrifice)
+        self.assertEqual("化功为煞", convert["action"])
+        self.assertEqual(10000, convert["last_convert_amount"])
+        self.assertEqual(2000, convert["last_sha_gain"])
         self.assertGreater(convert["next_convert_time"], now)
         self.assertEqual(68, retreat["last_bonus_gain"])
 
@@ -202,6 +213,8 @@ class YinluoManualPlanTests(unittest.TestCase):
             collect = yinluo.build_yinluo_manual_plan("collect", now=now)
             convert = yinluo.build_yinluo_manual_plan("convert", "1000", now=now)
             refine = yinluo.build_yinluo_manual_plan("refine", "2 妖兽精魄", now=now)
+            state_module.state["yinluo_observation"]["empty_slot_numbers"] = [2]
+            refine_wrong_slot = yinluo.build_yinluo_manual_plan("refine", "3 妖兽精魄", now=now)
 
             state_module.state["yinluo_observation"]["next_demon_summon_time"] = now + 600
             summon_cooldown = yinluo.build_yinluo_manual_plan("demon_summon", now=now)
@@ -229,6 +242,8 @@ class YinluoManualPlanTests(unittest.TestCase):
         self.assertTrue(refine["allowed"])
         self.assertEqual(".囚禁魂魄 2 妖兽精魄", refine["command"])
         self.assertEqual("yinluo_refine", refine["family"])
+        self.assertFalse(refine_wrong_slot["allowed"])
+        self.assertIn("未记录为空闲槽", refine_wrong_slot["reason"])
         self.assertFalse(summon_cooldown["allowed"])
         self.assertIn("冷却", summon_cooldown["reason"])
         self.assertFalse(collect_empty["allowed"])
@@ -413,6 +428,50 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, observed["ready_slots"])
         self.assertEqual([4], observed["ready_slot_numbers"])
 
+    async def test_scheduler_auto_refines_when_slot_stock_and_sha_are_known(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 1300,
+            "sha_max": 15000,
+            "empty_slots": 2,
+            "empty_slot_numbers": [3, 4],
+            "ready_slots": 0,
+            "soul_stocks": {"妖兽精魄": 14, "凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".囚禁魂魄 3 凶兽戾魄", send_mock.await_args.args[0])
+        self.assertEqual("refine", observed["auto_last_action"])
+        self.assertEqual([4], observed["empty_slot_numbers"])
+        self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual(300, observed["sha_current"])
+        self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
+
+    async def test_scheduler_does_not_refine_without_known_empty_slot_number(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 1300,
+            "sha_max": 15000,
+            "empty_slots": 2,
+            "ready_slots": 0,
+            "soul_stocks": {"凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("idle", observed["auto_last_action"])
+
     async def test_scheduler_summons_demon_only_after_banner_hint_and_due(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
@@ -579,6 +638,58 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual("cooldown", observed["last_result"])
         self.assertEqual(now + 3 * 3600 + 59 * 60 + 20 + yinluo.YINLUO_TIME_BUFFER_SEC, observed["next_blood_forest_time"])
         self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
+
+    def test_apply_success_replies_update_soul_stock_and_daily_sacrifice(self):
+        now = 1_779_450_000.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "banner_owner": "缘初子",
+                "sha_current": 800,
+                "sha_max": 15000,
+                "soul_stocks": {"妖兽精魄": 13},
+                "empty_slots": 2,
+                "empty_slot_numbers": [1, 2],
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(real_text("yinluo.blood_forest.success"), now=now))
+            self.assertTrue(yinluo.apply_yinluo_passive(real_text("yinluo.demon_summon.success"), now=now + 1))
+            self.assertTrue(yinluo.apply_yinluo_passive("你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。", now=now + 2))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual(14, observed["soul_stocks"]["妖兽精魄"])
+        self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual(1300, observed["sha_current"])
+        self.assertEqual(0, observed["next_convert_time"])
+        self.assertEqual("每日献祭", observed["last_action"])
+
+    def test_apply_refine_success_is_idempotent_after_auto_sent_marker(self):
+        now = 1_779_450_000.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "banner_owner": "缘初子",
+                "sha_current": 300,
+                "sha_max": 15000,
+                "soul_stocks": {"凶兽戾魄": 0},
+                "empty_slots": 1,
+                "empty_slot_numbers": [4],
+                "refining_slots": 1,
+                "refining_slot_numbers": [3],
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(
+                "一缕【凶兽戾魄】被强行打入3号炼化槽，在煞气的包裹下发出阵阵哀嚎，炼化已开始。",
+                now=now,
+            ))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual(300, observed["sha_current"])
+        self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual([4], observed["empty_slot_numbers"])
+        self.assertEqual([3], observed["refining_slot_numbers"])
 
     def test_passive_inbox_updates_yinluo_from_reply_context(self):
         send_as_id = self._prepare_identity()
