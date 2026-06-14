@@ -887,7 +887,11 @@ def _apply_concubine_passive(text, now, family):
 
 def _is_tree_panel_text(text):
     raw_text = str(text or "")
-    return "【落云宗 · 灵眼之树】" in raw_text or "落云宗·灵眼之树" in raw_text
+    return (
+        "【落云宗 · 灵眼之树】" in raw_text
+        or "落云宗·灵眼之树" in raw_text
+        or tree_mod._is_tree_pulse_panel(raw_text)
+    )
 
 
 def _is_tree_mature_broadcast(text):
@@ -899,8 +903,24 @@ def _apply_tree_passive(text, now, family):
     raw_text = str(text or "")
     changed = False
     is_panel = _is_tree_panel_text(raw_text)
+    pulse_panel = tree_mod.parse_tree_pulse_panel(raw_text)
     current_status_snapshot = "你的当前状态:" in raw_text or "你的当前状态：" in raw_text
     trusted_panel = family == "tree_panel" or (is_panel and current_status_snapshot and tree_mod._tree_panel_matches_current_identity(raw_text))
+
+    if trusted_panel and pulse_panel:
+        tree_mod._apply_tree_pulse_panel(pulse_panel, now)
+        progress = float(pulse_panel.get("progress", 0.0) or 0.0)
+        daily_used = int(pulse_panel.get("daily_used", 0) or 0)
+        daily_limit = int(pulse_panel.get("daily_limit", 0) or 0)
+        if progress >= 99.9 or pulse_panel.get("blocked"):
+            state["is_maturing"] = True
+            state["pending_irrigation"] = False
+            state["next_irr_time"] = float(now + tree_mod.FREEZE_CD)
+            state["tree_pulse_last_error"] = "灵树已成熟或遭劫难，停止定脉"
+        elif daily_limit > 0 and daily_used >= daily_limit:
+            state["tree_pulse_last_error"] = "今日定脉令已满"
+        changed = True
+        return changed
 
     if trusted_panel and is_panel:
         state["tree_bootstrap_check_needed"] = False
@@ -934,7 +954,22 @@ def _apply_tree_passive(text, now, family):
                 changed = True
 
     is_irrigation_reply = family == "tree_panel"
+    is_pulse_reply = family == "tree_pulse"
     is_guard_reply = family == "tree_guard"
+    if is_irrigation_reply and tree_mod._is_tree_legacy_disabled_prompt(raw_text):
+        state["tree_pulse_mode_seen"] = True
+        state["pending_irrigation"] = False
+        state["tree_pulse_last_error"] = "旧灌溉已关闭，切换定脉"
+        changed = True
+    if is_pulse_reply and tree_mod._is_tree_pulse_blocked_prompt(raw_text):
+        state["is_maturing"] = True
+        state["pending_irrigation"] = False
+        state["next_irr_time"] = float(now + tree_mod.FREEZE_CD)
+        state["tree_pulse_last_error"] = "灵树已成熟或遭劫难，定脉停止"
+        changed = True
+    if is_pulse_reply and tree_mod._is_tree_pulse_action_success(raw_text):
+        state["tree_pulse_last_error"] = "定脉回执已确认"
+        changed = True
     if is_irrigation_reply and tree_mod._is_tree_irrigation_success(raw_text):
         tree_mod.reset_resource_shortage(tree_mod.TREE_IRRIGATION_RESOURCE_KEY)
         state["pending_irrigation"] = False
@@ -952,6 +987,10 @@ def _apply_tree_passive(text, now, family):
                 changed = True
             elif family == "tree_panel" or "灌溉" in raw_text:
                 tree_mod.reset_resource_shortage(tree_mod.TREE_IRRIGATION_RESOURCE_KEY)
+                state["next_irr_time"] = float(now + wait_sec + tree_mod.CD_BUFFER_SEC)
+                changed = True
+            elif family == "tree_pulse" or "定脉" in raw_text:
+                tree_mod.reset_resource_shortage(tree_mod.TREE_PULSE_RESOURCE_KEY)
                 state["next_irr_time"] = float(now + wait_sec + tree_mod.CD_BUFFER_SEC)
                 changed = True
 
@@ -1121,6 +1160,7 @@ def _looks_like_supported_passive(text, family):
             "pet_warm",
             "pet_trial",
             "tree_panel",
+            "tree_pulse",
             "tree_guard",
             "tree_harvest",
             "wild_training",
@@ -1334,7 +1374,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append("yinluo")
             changed = module_changed or changed
-        if family in {"tree_panel", "tree_guard", "tree_harvest"} or _is_tree_panel_text(raw_text) or _is_tree_mature_broadcast(raw_text):
+        if family in {"tree_panel", "tree_pulse", "tree_guard", "tree_harvest"} or _is_tree_panel_text(raw_text) or _is_tree_mature_broadcast(raw_text):
             module_changed = _apply_tree_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append("tree")

@@ -68,6 +68,17 @@ class YinluoParserTests(unittest.TestCase):
         self.assertNotIn("妖兽精魄 · 血煞幡", parsed["soul_stocks"])
         self.assertNotIn("凶兽戾魄 · 灭法幡", parsed["soul_stocks"])
 
+    def test_empty_collect_result_is_not_treated_as_success(self):
+        parsed = yinluo.parse_yinluo_text(
+            "收取成功！\n你从 0 个炼化槽中获得了: ！",
+            now=1_781_430_176.0,
+        )
+
+        self.assertEqual("收取精华", parsed["action"])
+        self.assertEqual("empty", parsed["result"])
+        self.assertEqual(0, parsed["last_collect_count"])
+        self.assertIn("查幡校准", parsed["last_error"])
+
     def test_demon_summon_cooldown_convert_and_retreat_parse(self):
         now = 1_779_450_000.0
         success = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.success"), now=1_779_450_000.0)
@@ -429,6 +440,112 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("collect", observed["auto_last_action"])
         self.assertEqual(1, observed["ready_slots"])
         self.assertEqual([4], observed["ready_slot_numbers"])
+        self.assertEqual([1], observed["auto_collect_pending"]["slots"])
+
+    async def test_scheduler_waits_for_collect_reply_before_next_ready_slot(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "水镜真人",
+            "banner_name": "灭法幡",
+            "ready_slots": 1,
+            "ready_slot_numbers": [4],
+            "auto_collect_pending": {"slots": [1], "sent_at": now - 30},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("collect_pending", observed["auto_last_action"])
+        self.assertIn("等待真实回复", observed["auto_last_error"])
+
+    async def test_scheduler_queries_banner_when_collect_reply_times_out(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "水镜真人",
+            "banner_name": "灭法幡",
+            "ready_slots": 1,
+            "ready_slot_numbers": [4],
+            "auto_collect_pending": {"slots": [1], "sent_at": now - yinluo.YINLUO_AUTO_COLLECT_CONFIRM_TIMEOUT_SEC - 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
+        self.assertEqual("banner", observed["auto_last_action"])
+        self.assertIn("收取精华等待回复超时", observed["auto_calibrate_reason"])
+
+    async def test_scheduler_respects_collect_auto_toggle(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "水镜真人",
+            "banner_name": "灭法幡",
+            "ready_slots": 1,
+            "ready_slot_numbers": [1],
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": False,
+                "refine": False,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": ["凶兽戾魄"],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("idle", observed["auto_last_action"])
+
+    async def test_manual_collect_marks_slot_pending_before_auto_can_repeat(self):
+        now = 1_780_000_000.0
+        msg = SimpleNamespace(id=9301, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "banner_owner": "缘初子",
+                "banner_name": "血煞幡胚",
+                "ready_slots": 2,
+                "ready_slot_numbers": [1, 2],
+                "next_blood_forest_time": now + 3600,
+                "next_demon_summon_time": now + 3600,
+            }
+            with patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
+                ok, message, plan = await yinluo.execute_yinluo_manual_action("collect", "1", now=now)
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertTrue(ok, message)
+        self.assertEqual(".收取精华 1", plan["command"])
+        send_mock.assert_awaited_once()
+        self.assertEqual([2], observed["ready_slot_numbers"])
+        self.assertEqual([1], observed["auto_collect_pending"]["slots"])
+
+    async def test_manual_collect_blocks_while_collect_pending(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "banner_owner": "缘初子",
+                "banner_name": "血煞幡胚",
+                "ready_slots": 1,
+                "ready_slot_numbers": [2],
+                "auto_collect_pending": {"slots": [1], "sent_at": now - 30},
+            }
+            with patch.object(yinluo, "send_game_command") as send_mock:
+                ok, message, plan = await yinluo.execute_yinluo_manual_action("collect", "2", now=now)
+
+        self.assertFalse(ok)
+        self.assertIn("等待真实回复", message)
+        self.assertFalse(plan["allowed"])
+        send_mock.assert_not_called()
 
     async def test_scheduler_auto_refines_when_slot_stock_and_sha_are_known(self):
         now = 1_780_000_000.0
@@ -455,6 +572,38 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(300, observed["sha_current"])
         self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
         self.assertEqual(3, observed["auto_refine_pending"]["slot"])
+
+    async def test_scheduler_auto_converts_only_when_enabled_and_refine_needs_sha(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 300,
+            "sha_max": 15000,
+            "empty_slots": 1,
+            "empty_slot_numbers": [3],
+            "ready_slots": 0,
+            "soul_stocks": {"凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "next_convert_time": 0,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": True,
+                "convert_amount": 10000,
+                "refine_targets": ["凶兽戾魄"],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".化功为煞 10000", send_mock.await_args.args[0])
+        self.assertEqual("convert", observed["auto_last_action"])
+        self.assertGreater(observed["next_convert_time"], now)
 
     async def test_scheduler_does_not_refine_without_known_empty_slot_number(self):
         now = 1_780_000_000.0
@@ -746,6 +895,30 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual([4], observed["empty_slot_numbers"])
         self.assertEqual([3], observed["refining_slot_numbers"])
 
+    def test_apply_empty_collect_result_requires_banner_calibration(self):
+        now = 1_779_450_000.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "banner_owner": "缘初子",
+                "ready_slots": 2,
+                "ready_slot_numbers": [1, 2],
+                "auto_collect_pending": {"slots": [1], "sent_at": now - 10},
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(
+                "收取成功！\n你从 0 个炼化槽中获得了: ！",
+                now=now,
+            ))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual("empty", observed["last_result"])
+        self.assertEqual(0, observed["ready_slots"])
+        self.assertEqual([], observed["ready_slot_numbers"])
+        self.assertEqual({}, observed["auto_collect_pending"])
+        self.assertIn("收取精华空结果", observed["auto_calibrate_reason"])
+
     def test_passive_inbox_updates_yinluo_from_reply_context(self):
         send_as_id = self._prepare_identity()
         event = SimpleNamespace(chat_id=-1001680975844, id=8954045)
@@ -913,6 +1086,29 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertIn("sent", message)
         execute_mock.assert_awaited_once_with("refine", "1 妖兽精魄", send_as_id=send_as_id)
+
+    async def test_ui_updates_yinluo_auto_config_for_available_identity(self):
+        from model import ui
+
+        send_as_id = self._prepare_identity(3304, sect_name="阴罗宗")
+        with patch.object(yinluo, "save_state"):
+            ok, message = await ui.ui_set_yinluo_auto_config(send_as_id, {
+                "collect": False,
+                "refine": True,
+                "blood_forest": False,
+                "demon_summon": True,
+                "convert": True,
+                "convert_amount": 10000,
+                "refine_targets": "凶兽戾魄 妖兽精魄",
+            })
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            config = state_module.state["yinluo_observation"]["auto_config"]
+        self.assertFalse(config["collect"])
+        self.assertTrue(config["convert"])
+        self.assertEqual(10000, config["convert_amount"])
+        self.assertEqual(["凶兽戾魄", "妖兽精魄"], config["refine_targets"])
 
 
 if __name__ == "__main__":

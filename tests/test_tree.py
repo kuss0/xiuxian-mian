@@ -287,7 +287,7 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertFalse(state_module.state["tree_bootstrap_check_needed"])
             self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
 
-    async def test_irrigation_scheduler_allows_one_short_retry_while_keeping_conservative_fallback(self):
+    async def test_tree_scheduler_queries_pulse_panel_without_recent_snapshot(self):
         now = 1000.0
         identity_id = 3800619925
         state_module.ensure_identity_registered(identity_id)
@@ -297,21 +297,88 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["is_maturing"] = False
             state_module.state["is_invading"] = False
             state_module.state["next_irr_time"] = now - 1
+            state_module.state["tree_pulse_last_panel_at"] = 0
 
             with (
-                patch.object(tree, "_next_irrigation_delay", return_value=7200),
                 patch.object(tree, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9911628, sent_at=now + 1))) as send_mock,
-                patch.object(tree, "send_audit_log", new=AsyncMock()),
                 patch.object(tree, "save_state"),
             ):
                 await tree.run_tree_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                tree.CMD_TREE_WATER,
-                max_retry=tree.TREE_IRRIGATION_RETRY_LIMIT,
-                reply_timeout=tree.TREE_IRRIGATION_REPLY_TIMEOUT_SEC,
+                tree.CMD_TREE_PULSE_STATUS,
+                track=False,
+                max_retry=0,
+                source_module="灵树",
             )
-            self.assertEqual(now + 1 + 7200, state_module.state["next_irr_time"])
+            self.assertGreaterEqual(state_module.state["next_irr_time"], now + 1 + tree.TREE_PULSE_STATUS_SPREAD_MIN_SEC)
+            self.assertLessEqual(state_module.state["next_irr_time"], now + 1 + tree.TREE_PULSE_STATUS_SPREAD_MAX_SEC)
+
+    async def test_tree_scheduler_sends_one_pulse_action_from_recent_panel(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["next_irr_time"] = now - 1
+            state_module.state["tree_pulse_last_panel_at"] = now - 60
+            state_module.state["tree_pulse_progress"] = 50.0
+            state_module.state["tree_pulse_main"] = "木"
+            state_module.state["tree_pulse_aux"] = "水"
+            state_module.state["tree_pulse_reverse"] = "火"
+            state_module.state["tree_pulse_neutral"] = "土/金"
+            state_module.state["tree_pulse_stability"] = 62
+            state_module.state["tree_pulse_turbidity"] = 0
+            state_module.state["tree_pulse_daily_used"] = 0
+            state_module.state["tree_pulse_daily_limit"] = 6
+
+            with (
+                patch.object(tree, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9911629, sent_at=now + 2))) as send_mock,
+                patch.object(tree, "save_state"),
+            ):
+                await tree.run_tree_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                ".定脉 注灵 木",
+                max_retry=0,
+                reply_timeout=tree.TREE_PULSE_REPLY_TIMEOUT_SEC,
+                source_module="灵树",
+            )
+            self.assertEqual(now + 2 + 10 * 60, state_module.state["next_irr_time"])
+
+    async def test_tree_pulse_full_progress_stops_actions(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        panel = (
+            "【落云宗 · 灵树玩法】\n"
+            "⚙️ 当前玩法: 云梦灵眼定脉\n"
+            "🌲 进度:\n"
+            "🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩🟩 100.00%\n"
+            "🧭 今日脉象: 主脉【木】 / 辅脉【水】 / 逆脉【火】 / 平脉【土/金】\n"
+            "🧷 脉稳: 62/100 (脉象平稳) | ☁️ 浊息/紊乱: 0/165\n"
+            "📜 今日定脉令: 0/6 | 冲脉 0/2\n"
+            "指令: .定脉 注灵 木 / .定脉 固脉 土 / .定脉 净浊 / .定脉 冲脉 火"
+        )
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["next_irr_time"] = now - 1
+            with (
+                patch.object(tree, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(tree, "save_state"),
+            ):
+                handled = await tree.handle_tree_panel(panel, now, True)
+
+            self.assertTrue(handled)
+            self.assertTrue(state_module.state["is_maturing"])
+            self.assertGreater(state_module.state["next_irr_time"], now + 24 * 3600)
+            self.assertEqual("灵树已成熟或遭劫难，停止定脉", state_module.state["tree_pulse_last_error"])
+            audit_mock.assert_awaited_once()
 
     async def test_irrigation_success_reply_confirms_next_time_from_real_receipt(self):
         now = 2000.0

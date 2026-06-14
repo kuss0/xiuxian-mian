@@ -23,7 +23,7 @@ class ModuleManifest:
 
 
 _MANIFESTS = (
-    ModuleManifest("灵树", MODULE_KEY_MAP["灵树"], reply_families=("tree_panel", "tree_guard", "tree_harvest"), replay_required=False, duplicate_guard="action_guard"),
+    ModuleManifest("灵树", MODULE_KEY_MAP["灵树"], reply_families=("tree_panel", "tree_pulse", "tree_guard", "tree_harvest"), replay_required=False, duplicate_guard="action_guard"),
     ModuleManifest("法宝", MODULE_KEY_MAP["法宝"], reply_families=("pet",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("温养器灵", MODULE_KEY_MAP["温养器灵"], reply_families=("pet_warm",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("器灵试炼", MODULE_KEY_MAP["器灵试炼"], reply_families=("pet_trial",), replay_required=False, duplicate_guard="pending_reply"),

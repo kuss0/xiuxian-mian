@@ -218,6 +218,8 @@ TZ_LOCAL = timezone(timedelta(hours=8))
 CMD_TREE_WATER = ".灵树灌溉"
 CMD_TREE_GUARD = ".协同守山"
 CMD_TREE_STATUS = ".灵树状态"
+CMD_TREE_PULSE_STATUS = ".灵树定脉"
+CMD_TREE_PULSE = ".定脉"
 CMD_TREE_HARVEST = ".采摘灵果"
 CMD_PET = ".抚摸法宝"
 CMD_PET_WARM = ".温养器灵"
@@ -421,6 +423,8 @@ SCRIPT_COMMANDS = [
     CMD_TREE_WATER,
     CMD_TREE_GUARD,
     CMD_TREE_STATUS,
+    CMD_TREE_PULSE_STATUS,
+    CMD_TREE_PULSE,
     CMD_TREE_HARVEST,
     CMD_PET,
     CMD_PET_TRIAL,
@@ -732,6 +736,7 @@ RE_CMD_AUDIT_PUSH_STATUS = re.compile(r'^\.(日志推送状态|推送状态|日�
 RE_CMD_AUDIT_FLUSH_SUMMARY = re.compile(r'^\.(发送日志汇总|刷新日志汇总|立即日志汇总|日志汇总)$')
 RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.灵树状态$'), "灵树"),
+    (re.compile(r'^\.灵树定脉$'), "灵树"),
     (re.compile(r'^\.法宝状态$'), "法宝"),
     (re.compile(r'^\.温养器灵状态$'), "温养器灵"),
     (re.compile(r'^\.器灵试炼状态$'), "器灵试炼"),

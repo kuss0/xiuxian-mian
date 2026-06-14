@@ -2014,6 +2014,62 @@ body {
   border-top: 1px solid rgba(148, 163, 184, 0.14);
 }
 
+.yinluo-observed {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.yinluo-observed span,
+.yinluo-auto-toggle {
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.58);
+  padding: 4px 7px;
+}
+
+.yinluo-warn {
+  color: #fbbf24;
+}
+
+.yinluo-auto-panel,
+.yinluo-manual-panel {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.yinluo-section-label {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.yinluo-auto-toggle-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.yinluo-auto-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #cbd5e1;
+  font-size: 12px;
+  min-height: 30px;
+}
+
+.yinluo-auto-toggle input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
 .yinluo-action-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

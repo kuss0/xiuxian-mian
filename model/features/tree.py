@@ -7,6 +7,8 @@ from ..config import (
     CD_BUFFER_SEC,
     CMD_TREE_GUARD,
     CMD_TREE_HARVEST,
+    CMD_TREE_PULSE,
+    CMD_TREE_PULSE_STATUS,
     CMD_TREE_STATUS,
     CMD_TREE_WATER,
     FREEZE_CD,
@@ -49,15 +51,33 @@ TREE_HARVEST_ABNORMAL_CHECK_MAX_SEC = 180
 TREE_HARVEST_RETRY_LIMIT = 1
 TREE_IRRIGATION_RETRY_LIMIT = 1
 TREE_IRRIGATION_REPLY_TIMEOUT_SEC = 30
+TREE_PULSE_REPLY_TIMEOUT_SEC = 45
+TREE_PULSE_PANEL_RECENT_SEC = 12 * 3600
+TREE_PULSE_STATUS_SPREAD_MIN_SEC = 10 * 60
+TREE_PULSE_STATUS_SPREAD_MAX_SEC = 45 * 60
+TREE_PULSE_ACTION_DELAY_MIN_SEC = 35
+TREE_PULSE_ACTION_DELAY_MAX_SEC = 90
+TREE_PULSE_ACTION_FOLLOWUP_MIN_SEC = 75
+TREE_PULSE_ACTION_FOLLOWUP_MAX_SEC = 150
+TREE_PULSE_BLOCKED_CHECK_MIN_SEC = 30 * 60
+TREE_PULSE_BLOCKED_CHECK_MAX_SEC = 60 * 60
+TREE_PULSE_LOW_STABILITY_THRESHOLD = 45
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 45 * 60
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 75 * 60
 TREE_IRRIGATION_RESOURCE_KEY = "tree_irrigation"
 TREE_GUARD_RESOURCE_KEY = "tree_guard"
+TREE_PULSE_RESOURCE_KEY = "tree_pulse"
 RE_TREE_HARVEST_FRUIT = re.compile(r"你摘下一枚【([^】]+)】")
 RE_TREE_HARVEST_XIUWEI = re.compile(r"修为增长[:：]\s*\+?\s*([\d,]+)")
 RE_TREE_HARVEST_LINGWEN = re.compile(r"灵纹回馈[:：].*?\+\s*([\d,]+)\s*点修为")
 RE_TREE_HARVEST_REWARD_ITEM = re.compile(r"【([^】]+)】\s*(?:[xX×]\s*([\d,]+))?")
 TREE_HARVEST_REWARD_KEYWORDS = ("获得【", "分得【", "稳定分得【")
+RE_TREE_PULSE_PROGRESS = re.compile(r"([0-9]+(?:\.[0-9]+)?)%")
+RE_TREE_PULSE_ELEMENTS = re.compile(r"主脉【([^】]+)】\s*/\s*辅脉【([^】]+)】\s*/\s*逆脉【([^】]+)】\s*/\s*平脉【([^】]+)】")
+RE_TREE_PULSE_STABILITY = re.compile(r"脉稳[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_TREE_PULSE_TURBIDITY = re.compile(r"浊息/紊乱[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_TREE_PULSE_DAILY = re.compile(r"今日定脉令[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_TREE_PULSE_RUSH = re.compile(r"冲脉\s*(\d+)\s*/\s*(\d+)")
 
 
 def _parse_tree_int(text):
@@ -112,6 +132,181 @@ def _format_tree_harvest_audit(parsed, storage_changed):
         sync_text = "已同步" if storage_changed else "未变更"
         parts.append(f"储物袋 +{_format_tree_harvest_items(items)}（{sync_text}）")
     return "｜".join(parts)
+
+
+def _is_tree_pulse_panel(text):
+    raw_text = str(text or "")
+    return (
+        "【落云宗 · 灵树玩法】" in raw_text
+        or "云梦灵眼定脉" in raw_text
+        or "今日脉象:" in raw_text
+        or "今日脉象：" in raw_text
+    ) and ("今日定脉令" in raw_text or "定脉玩法" in raw_text)
+
+
+def _split_tree_elements(raw_value):
+    return [part.strip() for part in re.split(r"[/、,，\s]+", str(raw_value or "")) if part.strip()]
+
+
+def parse_tree_pulse_panel(text):
+    raw_text = str(text or "")
+    if not _is_tree_pulse_panel(raw_text):
+        return None
+
+    progress_match = RE_TREE_PULSE_PROGRESS.search(raw_text)
+    element_match = RE_TREE_PULSE_ELEMENTS.search(raw_text)
+    stability_match = RE_TREE_PULSE_STABILITY.search(raw_text)
+    turbidity_match = RE_TREE_PULSE_TURBIDITY.search(raw_text)
+    daily_match = RE_TREE_PULSE_DAILY.search(raw_text)
+    rush_match = RE_TREE_PULSE_RUSH.search(raw_text)
+    neutral_raw = element_match.group(4).strip() if element_match else ""
+    return {
+        "progress": float(progress_match.group(1)) if progress_match else 0.0,
+        "main": element_match.group(1).strip() if element_match else "",
+        "aux": element_match.group(2).strip() if element_match else "",
+        "reverse": element_match.group(3).strip() if element_match else "",
+        "neutral": neutral_raw,
+        "neutral_elements": _split_tree_elements(neutral_raw),
+        "stability": int(stability_match.group(1)) if stability_match else 0,
+        "stability_max": int(stability_match.group(2)) if stability_match else 0,
+        "turbidity": int(turbidity_match.group(1)) if turbidity_match else 0,
+        "turbidity_max": int(turbidity_match.group(2)) if turbidity_match else 0,
+        "daily_used": int(daily_match.group(1)) if daily_match else 0,
+        "daily_limit": int(daily_match.group(2)) if daily_match else 0,
+        "rush_used": int(rush_match.group(1)) if rush_match else 0,
+        "rush_limit": int(rush_match.group(2)) if rush_match else 0,
+        "blocked": "已成熟" in raw_text or "正遭劫难" in raw_text or "不可定脉" in raw_text,
+    }
+
+
+def _apply_tree_pulse_panel(parsed, now):
+    if not isinstance(parsed, dict):
+        return False
+    state["tree_pulse_mode_seen"] = True
+    state["tree_pulse_last_panel_at"] = float(now or time.time())
+    state["tree_pulse_progress"] = float(parsed.get("progress", 0.0) or 0.0)
+    state["tree_pulse_main"] = str(parsed.get("main") or "")
+    state["tree_pulse_aux"] = str(parsed.get("aux") or "")
+    state["tree_pulse_reverse"] = str(parsed.get("reverse") or "")
+    state["tree_pulse_neutral"] = str(parsed.get("neutral") or "")
+    state["tree_pulse_stability"] = int(parsed.get("stability", 0) or 0)
+    state["tree_pulse_stability_max"] = int(parsed.get("stability_max", 0) or 0)
+    state["tree_pulse_turbidity"] = int(parsed.get("turbidity", 0) or 0)
+    state["tree_pulse_turbidity_max"] = int(parsed.get("turbidity_max", 0) or 0)
+    state["tree_pulse_daily_used"] = int(parsed.get("daily_used", 0) or 0)
+    state["tree_pulse_daily_limit"] = int(parsed.get("daily_limit", 0) or 0)
+    state["tree_pulse_rush_used"] = int(parsed.get("rush_used", 0) or 0)
+    state["tree_pulse_rush_limit"] = int(parsed.get("rush_limit", 0) or 0)
+    return True
+
+
+def _format_tree_pulse_command(action, element=""):
+    action = str(action or "").strip()
+    element = str(element or "").strip()
+    if not action:
+        return ""
+    return f"{CMD_TREE_PULSE} {action} {element}".strip()
+
+
+def _tree_pulse_next_day_delay(now):
+    local_now = time.localtime(float(now or time.time()))
+    next_midnight = time.mktime((
+        local_now.tm_year,
+        local_now.tm_mon,
+        local_now.tm_mday + 1,
+        0,
+        0,
+        0,
+        local_now.tm_wday,
+        local_now.tm_yday,
+        local_now.tm_isdst,
+    ))
+    return max(30 * 60, next_midnight - float(now or time.time()) + random.uniform(10 * 60, 45 * 60))
+
+
+def _schedule_tree_pulse_status_spread(now=None):
+    now = float(now if now is not None else time.time())
+    delay = random.uniform(TREE_PULSE_STATUS_SPREAD_MIN_SEC, TREE_PULSE_STATUS_SPREAD_MAX_SEC)
+    state["next_irr_time"] = now + delay
+    return delay
+
+
+def _schedule_tree_pulse_blocked_check(now=None):
+    now = float(now if now is not None else time.time())
+    delay = random.uniform(TREE_PULSE_BLOCKED_CHECK_MIN_SEC, TREE_PULSE_BLOCKED_CHECK_MAX_SEC)
+    state["tree_pulse_blocked_until"] = now + delay
+    state["next_irr_time"] = now + delay
+    return delay
+
+
+def _choose_tree_pulse_command(parsed):
+    if not isinstance(parsed, dict):
+        return "", "未读到定脉面板"
+    progress = float(parsed.get("progress", 0.0) or 0.0)
+    daily_limit = int(parsed.get("daily_limit", 0) or 0)
+    daily_used = int(parsed.get("daily_used", 0) or 0)
+    main = str(parsed.get("main") or "").strip()
+    neutral_elements = list(parsed.get("neutral_elements") or [])
+    stability = int(parsed.get("stability", 0) or 0)
+    turbidity = int(parsed.get("turbidity", 0) or 0)
+
+    if parsed.get("blocked") or progress >= 99.9:
+        return "", "灵树已成熟或遭劫难"
+    if daily_limit > 0 and daily_used >= daily_limit:
+        return "", "今日定脉令已满"
+    if not main:
+        return "", "未识别主脉"
+    if turbidity > 0:
+        return _format_tree_pulse_command("净浊"), "浊息优先净化"
+    if stability > 0 and stability < TREE_PULSE_LOW_STABILITY_THRESHOLD:
+        element = "土" if "土" in neutral_elements else (neutral_elements[0] if neutral_elements else main)
+        return _format_tree_pulse_command("固脉", element), "脉稳偏低"
+    return _format_tree_pulse_command("注灵", main), "主脉注灵"
+
+
+def _tree_pulse_snapshot_from_state():
+    neutral = str(state.get("tree_pulse_neutral") or "")
+    return {
+        "progress": float(state.get("tree_pulse_progress", 0.0) or 0.0),
+        "main": str(state.get("tree_pulse_main") or ""),
+        "aux": str(state.get("tree_pulse_aux") or ""),
+        "reverse": str(state.get("tree_pulse_reverse") or ""),
+        "neutral": neutral,
+        "neutral_elements": _split_tree_elements(neutral),
+        "stability": int(state.get("tree_pulse_stability", 0) or 0),
+        "stability_max": int(state.get("tree_pulse_stability_max", 0) or 0),
+        "turbidity": int(state.get("tree_pulse_turbidity", 0) or 0),
+        "turbidity_max": int(state.get("tree_pulse_turbidity_max", 0) or 0),
+        "daily_used": int(state.get("tree_pulse_daily_used", 0) or 0),
+        "daily_limit": int(state.get("tree_pulse_daily_limit", 0) or 0),
+        "rush_used": int(state.get("tree_pulse_rush_used", 0) or 0),
+        "rush_limit": int(state.get("tree_pulse_rush_limit", 0) or 0),
+        "blocked": False,
+    }
+
+
+def _tree_pulse_panel_is_recent(now=None):
+    now = float(now if now is not None else time.time())
+    last_panel_at = float(state.get("tree_pulse_last_panel_at", 0) or 0)
+    return last_panel_at > 0 and now - last_panel_at < TREE_PULSE_PANEL_RECENT_SEC
+
+
+def _is_tree_legacy_disabled_prompt(text):
+    raw_text = str(text or "")
+    return "当前管理员已关闭旧版【灵树灌溉】玩法" in raw_text or "请改用【云梦灵眼定脉】" in raw_text
+
+
+def _is_tree_pulse_blocked_prompt(text):
+    return "灵眼之树已成熟或正遭劫难，此刻不可定脉" in str(text or "")
+
+
+def _is_tree_pulse_action_success(text):
+    raw_text = str(text or "")
+    if _is_tree_pulse_blocked_prompt(raw_text) or _is_tree_legacy_disabled_prompt(raw_text):
+        return False
+    if any(keyword in raw_text for keyword in ("冷却", "等待", "不足", "不可", "不能", "失败")):
+        return False
+    return any(keyword in raw_text for keyword in ("定脉", "注灵", "固脉", "净浊", "冲脉", "脉稳", "浊息", "进度", "宗门贡献"))
 
 
 def _is_duplicate_tree_harvest_result(result_msg_id, reply_to_msg_id):
@@ -211,7 +406,7 @@ def _has_pending_tree_command(*commands):
 def _clear_pending_tree_status(*, persist=False):
     remove_ids = [
         msg_id for msg_id, pending in state.get("pending_tasks", {}).items()
-        if get_pending_command(pending) == CMD_TREE_STATUS
+        if get_pending_command(pending) in {CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS}
     ]
     for msg_id in remove_ids:
         state["pending_tasks"].pop(msg_id, None)
@@ -411,7 +606,7 @@ async def recover_tree_normal_round_for_all_enabled(now=None, *, reason="普通�
 
     if changed_ids:
         await send_audit_log(
-            f"🌳 {reason}确认当前不是成熟期，已释放 {len(changed_ids)} 个卡住的灵树状态，灌溉错峰 45-75 分钟恢复。",
+            f"🌳 {reason}确认当前不是成熟期，已释放 {len(changed_ids)} 个卡住的灵树状态，定脉错峰 45-75 分钟恢复。",
             scope="global",
             limit=240,
         )
@@ -496,7 +691,11 @@ async def _send_tree_status(now=None, *, force=False):
     if not force and last_sent_at > 0 and now - last_sent_at < TREE_STATUS_DEDUPE_SEC:
         return False
 
-    msg = await send_game_command(CMD_TREE_STATUS, track=False)
+    msg = await send_game_command(
+        CMD_TREE_PULSE_STATUS,
+        track=False,
+        source_module="灵树",
+    )
     if not msg:
         return False
     state["last_tree_status_sent_at"] = float(getattr(msg, "sent_at", 0) or time.time())
@@ -556,25 +755,50 @@ def get_tree_status_text():
                 if state['next_guard_time'] > time.time() + TREE_GUARD_FREEZE_THRESHOLD_SEC
                 else f"- 下次守山：{fmt_abs_ts(state['next_guard_time'])}（{fmt_remaining(state['next_guard_time'])}）"
             ),
-            f"- 待补偿灌溉：{'是' if state['pending_irrigation'] else '否'}",
+            f"- 待补偿定脉：{'是' if state['pending_irrigation'] else '否'}",
         ])
     elif state['is_maturing']:
         lines.extend([
             "- 当前状态：成熟采摘期",
             f"- 已采摘：{'是' if state['is_harvested'] else '否'}",
-            f"- 待补偿灌溉：{'是' if state['pending_irrigation'] else '否'}",
+            f"- 待补偿定脉：{'是' if state['pending_irrigation'] else '否'}",
         ])
     else:
-        lines.extend([
-            "- 当前状态：正常生长",
-            f"- 下次灌溉：{fmt_abs_ts(state['next_irr_time'])}（{fmt_remaining(state['next_irr_time'])}）",
-        ])
+        if state.get("tree_pulse_mode_seen") or float(state.get("tree_pulse_last_panel_at", 0) or 0) > 0:
+            daily_used = int(state.get("tree_pulse_daily_used", 0) or 0)
+            daily_limit = int(state.get("tree_pulse_daily_limit", 0) or 0)
+            progress = float(state.get("tree_pulse_progress", 0.0) or 0.0)
+            main = str(state.get("tree_pulse_main") or "?")
+            aux = str(state.get("tree_pulse_aux") or "?")
+            reverse = str(state.get("tree_pulse_reverse") or "?")
+            stability = int(state.get("tree_pulse_stability", 0) or 0)
+            stability_max = int(state.get("tree_pulse_stability_max", 0) or 0)
+            turbidity = int(state.get("tree_pulse_turbidity", 0) or 0)
+            turbidity_max = int(state.get("tree_pulse_turbidity_max", 0) or 0)
+            lines.extend([
+                "- 当前玩法：云梦灵眼定脉",
+                f"- 进度：{progress:.2f}%",
+                f"- 今日定脉：{daily_used}/{daily_limit or '?'}",
+                f"- 脉象：主 {main} / 辅 {aux} / 逆 {reverse}",
+                f"- 脉稳/浊息：{stability}/{stability_max or '?'} | {turbidity}/{turbidity_max or '?'}",
+                f"- 下次定脉：{fmt_abs_ts(state['next_irr_time'])}（{fmt_remaining(state['next_irr_time'])}）",
+            ])
+            last_error = str(state.get("tree_pulse_last_error") or "").strip()
+            if last_error:
+                lines.append(f"- 最近状态：{last_error}")
+        else:
+            lines.extend([
+                "- 当前状态：等待定脉面板",
+                f"- 下次校准：{fmt_abs_ts(state['next_irr_time'])}（{fmt_remaining(state['next_irr_time'])}）",
+            ])
         if state['tree_bootstrap_check_needed']:
             due_at = float(state.get("tree_bootstrap_check_due_at", 0) or 0)
             if due_at > time.time():
                 lines.append(f"- 启动校验：{fmt_abs_ts(due_at)}（{fmt_remaining(due_at)}）")
             else:
                 lines.append("- 启动校验待执行：是")
+        return "\n".join(lines)
+
     return "\n".join(lines)
 
 
@@ -594,7 +818,7 @@ async def handle_tree_invasion_start(text, now):
                 audit_text = f"🚨 检测到入侵，本轮主动守山，{delay:.0f}s 后执行。"
             else:
                 state["next_guard_time"] = now + FREEZE_CD
-                audit_text = "🚨 检测到入侵，本轮不主动守山，仅暂停灌溉。"
+                audit_text = "🚨 检测到入侵，本轮不主动守山，仅暂停定脉。"
             save_state()
             await send_audit_log(audit_text)
 
@@ -613,7 +837,7 @@ async def handle_tree_invasion_end(text, now, is_reply_to_me):
                 state["pending_irrigation"] = False
                 state["next_irr_time"] = now
                 save_state()
-                await send_audit_log("🛡️ 入侵结束，立即补灌溉。")
+                await send_audit_log("🛡️ 入侵结束，立即恢复定脉。")
             else:
                 save_state()
                 await send_audit_log("🛡️ 入侵结束，恢复常规监控。")
@@ -634,7 +858,7 @@ async def handle_tree_rebirth_reset(text, now):
             state["next_irr_time"] = now + delay
             save_state()
             target_time = fmt_time_after(delay)
-            await send_audit_log(f"🌳 轮回重置，{delay:.1f}s 后恢复灌溉（{target_time}）。")
+            await send_audit_log(f"🌳 轮回重置，{delay:.1f}s 后恢复定脉（{target_time}）。")
         else:
             save_state()
 
@@ -644,7 +868,8 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
         return False
 
     orig_cmd = reply_to.raw_text if reply_to else ""
-    is_irrigation_reply = matched_family == "tree_panel" or CMD_TREE_WATER in orig_cmd
+    is_irrigation_reply = matched_family == "tree_panel" or CMD_TREE_WATER in orig_cmd or CMD_TREE_PULSE_STATUS in orig_cmd
+    is_pulse_reply = matched_family == "tree_pulse" or str(orig_cmd or "").strip().startswith(CMD_TREE_PULSE)
     is_guard_reply = (
         matched_family == "tree_guard"
         or CMD_TREE_GUARD in orig_cmd
@@ -652,6 +877,40 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
         or "协同" in str(text or "")
         or "大阵注入灵力" in str(text or "")
     )
+
+    if _is_tree_legacy_disabled_prompt(text) and is_irrigation_reply:
+        state["tree_pulse_mode_seen"] = True
+        state["pending_irrigation"] = False
+        state["tree_pulse_last_error"] = "旧灌溉已关闭，切换定脉"
+        _schedule_tree_pulse_status_spread(now)
+        save_state()
+        return True
+
+    if _is_tree_pulse_blocked_prompt(text) and is_pulse_reply:
+        state["is_maturing"] = True
+        state["pending_irrigation"] = False
+        state["next_irr_time"] = now + FREEZE_CD
+        state["tree_pulse_last_error"] = "灵树已成熟或遭劫难，定脉停止"
+        delay = _schedule_tree_abnormal_confirmation(now)
+        save_state()
+        await send_audit_log(f"🌳 定脉被拒：灵树已成熟或遭劫难，{delay:.0f}s 后复查面板。")
+        return True
+
+    if is_pulse_reply and _is_tree_pulse_action_success(text):
+        reset_resource_shortage(TREE_PULSE_RESOURCE_KEY)
+        used = int(state.get("tree_pulse_daily_used", 0) or 0)
+        limit = int(state.get("tree_pulse_daily_limit", 0) or 0)
+        if limit <= 0 or used < limit:
+            state["tree_pulse_daily_used"] = used + 1
+        next_used = int(state.get("tree_pulse_daily_used", 0) or 0)
+        if limit > 0 and next_used >= limit:
+            delay = _tree_pulse_next_day_delay(now)
+        else:
+            delay = random.uniform(TREE_PULSE_ACTION_FOLLOWUP_MIN_SEC, TREE_PULSE_ACTION_FOLLOWUP_MAX_SEC)
+        state["next_irr_time"] = now + delay
+        state["tree_pulse_last_error"] = "定脉回执已确认"
+        save_state()
+        return True
 
     if _is_tree_irrigation_success(text) and is_irrigation_reply:
         delay = _next_irrigation_delay()
@@ -693,7 +952,24 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
         )
         return True
 
+    if is_pulse_reply and "修为不足" in str(text or ""):
+        backoff = record_resource_shortage(TREE_PULSE_RESOURCE_KEY, now, reason=text)
+        due_at = float(backoff.get("next_at", 0) or 0)
+        state["next_irr_time"] = due_at
+        state["tree_pulse_last_error"] = "定脉修为不足"
+        save_state()
+        await send_audit_log(
+            f"⚠️ 定脉修为不足，第 {int(backoff.get('count', 1) or 1)} 档退避→{fmt_time_after(max(0, due_at - now))}"
+        )
+        return True
+
     if not any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息", "调息"]):
+        if is_pulse_reply:
+            delay = _schedule_tree_pulse_blocked_check(now)
+            state["tree_pulse_last_error"] = "定脉未知回执，已阻塞"
+            save_state()
+            await send_audit_log(f"⚠️ 灵树定脉未知回执，已停止动作并 {delay / 60:.0f} 分钟后复查。")
+            return True
         return False
 
     wait_sec = parse_wait_time(text)
@@ -708,11 +984,18 @@ async def handle_tree_cd_fix(text, now, reply_to, matched_family=None):
         save_state()
         await send_audit_log(f"⏳ 守山 CD→{target_time}")
         return True
-    if matched_family == "tree_panel" or "灌溉" in text or CMD_TREE_WATER in orig_cmd:
+    if (matched_family == "tree_panel" and CMD_TREE_PULSE_STATUS not in orig_cmd) or "灌溉" in text or CMD_TREE_WATER in orig_cmd:
         reset_resource_shortage(TREE_IRRIGATION_RESOURCE_KEY)
         state["next_irr_time"] = now + wait_sec + CD_BUFFER_SEC
         save_state()
         await send_audit_log(f"⏳ 灌溉 CD→{target_time}")
+        return True
+    if is_pulse_reply or "定脉" in text:
+        reset_resource_shortage(TREE_PULSE_RESOURCE_KEY)
+        state["next_irr_time"] = now + wait_sec + CD_BUFFER_SEC
+        state["tree_pulse_last_error"] = f"定脉 CD→{target_time}"
+        save_state()
+        await send_audit_log(f"⏳ 定脉 CD→{target_time}")
         return True
     return False
 
@@ -721,9 +1004,13 @@ async def handle_tree_exception_prompt(text, now=None):
     if not state["tree_enabled"]:
         return False
 
-    if "已然成熟或正遭劫难" not in text:
+    if "已然成熟或正遭劫难" not in text and not _is_tree_pulse_blocked_prompt(text):
         return False
 
+    state["is_maturing"] = True
+    state["pending_irrigation"] = False
+    state["next_irr_time"] = float(now if now is not None else time.time()) + FREEZE_CD
+    state["tree_pulse_last_error"] = "灵树已成熟或遭劫难，等待复查"
     delay = _schedule_tree_abnormal_confirmation(now)
     save_state()
     console_log(f"🔍 灵树异常，{delay}s 后查状态。")
@@ -733,6 +1020,69 @@ async def handle_tree_exception_prompt(text, now=None):
 async def handle_tree_panel(text, now, is_reply_to_me):
     if not state["tree_enabled"]:
         return False
+
+    pulse_panel = parse_tree_pulse_panel(text)
+    if pulse_panel:
+        if not is_reply_to_me:
+            return False
+
+        was_maturing = bool(state.get("is_maturing"))
+        _apply_tree_pulse_panel(pulse_panel, now)
+        state["tree_bootstrap_check_needed"] = False
+        state["tree_bootstrap_check_due_at"] = 0
+        state["last_tree_status_sent_at"] = now
+
+        progress = float(pulse_panel.get("progress", 0.0) or 0.0)
+        daily_used = int(pulse_panel.get("daily_used", 0) or 0)
+        daily_limit = int(pulse_panel.get("daily_limit", 0) or 0)
+        command, reason = _choose_tree_pulse_command(pulse_panel)
+
+        if progress >= 99.9 or pulse_panel.get("blocked"):
+            state["is_maturing"] = True
+            state["pending_irrigation"] = False
+            state["next_irr_time"] = now + FREEZE_CD
+            state["tree_pulse_last_error"] = "灵树已成熟或遭劫难，停止定脉"
+            if not state.get("tree_bootstrap_check_needed") and float(state.get("tree_harvest_followup_due_at", 0) or 0) <= now:
+                next_followup_at = now + TREE_HARVEST_FOLLOWUP_DELAY_SEC
+                state["tree_harvest_followup_due_at"] = next_followup_at
+                _schedule_tree_bootstrap_check(
+                    now,
+                    min_sec=TREE_HARVEST_FOLLOWUP_DELAY_SEC,
+                    max_sec=TREE_HARVEST_FOLLOWUP_DELAY_SEC,
+                )
+            save_state()
+            if not was_maturing:
+                await send_audit_log("🌳 定脉进度已满，停止定脉，等待采摘/劫难后续文案。")
+            return True
+
+        if state.get("is_maturing"):
+            state["is_maturing"] = False
+            state["is_harvested"] = False
+            state["tree_maturing_logged"] = False
+            state["tree_harvest_followup_due_at"] = 0
+            state["tree_harvest_inflight_until"] = 0
+
+        if daily_limit > 0 and daily_used >= daily_limit:
+            delay = _tree_pulse_next_day_delay(now)
+            state["next_irr_time"] = now + delay
+            state["tree_pulse_last_error"] = "今日定脉令已满"
+            save_state()
+            return True
+
+        if command:
+            delay = random.uniform(TREE_PULSE_ACTION_DELAY_MIN_SEC, TREE_PULSE_ACTION_DELAY_MAX_SEC)
+            state["next_irr_time"] = now + delay
+            state["tree_pulse_last_action"] = command
+            state["tree_pulse_last_error"] = reason
+            state["tree_pulse_blocked_until"] = 0
+            save_state()
+            return True
+
+        state["tree_pulse_last_error"] = reason
+        _schedule_tree_pulse_blocked_check(now)
+        save_state()
+        await send_audit_log(f"⚠️ 灵树定脉暂不动作：{reason}，稍后复查。")
+        return True
 
     is_tree_panel = "【落云宗 · 灵眼之树】" in text or "落云宗·灵眼之树" in text
     is_maturing_broadcast = "🍎 灵果已完全成熟！ 采摘期开启！" in text and "📊 天道榜单已定格！" in text
@@ -764,7 +1114,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
     if is_maturing_broadcast and not is_tree_panel:
         remove_ids = [
             msg_id for msg_id, pending in state["pending_tasks"].items()
-            if get_pending_command(pending) in {CMD_TREE_WATER, CMD_TREE_STATUS}
+            if get_pending_command(pending) in {CMD_TREE_WATER, CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS}
         ]
         for msg_id in remove_ids:
             state["pending_tasks"].pop(msg_id, None)
@@ -775,7 +1125,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             delay = _schedule_tree_mature_confirmation(now)
             save_state()
             await send_audit_log(
-                f"🌳 收到成熟广播，{delay:.0f}s 后先查 .灵树状态确认，确认成熟后再全员采摘。",
+                f"🌳 收到成熟广播，{delay:.0f}s 后先查 .灵树定脉确认，确认成熟后再全员采摘。",
                 scope="global",
                 limit=220,
             )
@@ -793,7 +1143,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
     if "成熟采摘期" in text or is_maturing_broadcast:
         was_maturing = state["is_maturing"]
         state["is_maturing"] = True
-        has_pending_status = any(get_pending_command(p) == CMD_TREE_STATUS for p in state["pending_tasks"].values())
+        has_pending_status = any(get_pending_command(p) in {CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS} for p in state["pending_tasks"].values())
 
         remaining_match = RE_TREE_REMAINING.search(text)
         remain_sec = parse_wait_time(remaining_match.group(1)) if remaining_match else 0
@@ -869,7 +1219,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             state_changed = True
             if state.get("tree_maturing_logged", False):
                 state["tree_maturing_logged"] = False
-                await send_audit_log("🌳 成熟期结束，恢复灌溉。")
+                await send_audit_log("🌳 成熟期结束，恢复定脉。")
         if state["is_harvested"]:
             state["is_harvested"] = False
             state["tree_harvest_inflight_until"] = 0
@@ -879,7 +1229,7 @@ async def handle_tree_panel(text, now, is_reply_to_me):
             state["pending_irrigation"] = False
             state["next_irr_time"] = now
             state_changed = True
-            console_log("🌳 已释放补偿灌溉，恢复调度。")
+            console_log("🌳 已释放补偿定脉，恢复调度。")
         if state_changed:
             save_state()
         return True
@@ -919,7 +1269,7 @@ async def handle_tree_harvest_reply(text, now, reply_to, matched_family=None, cu
         state["tree_harvest_inflight_until"] = 0
         delay = _schedule_tree_abnormal_confirmation(now)
         save_state()
-        await send_audit_log(f"⚠️ 采摘未完成，{delay:.0f}s 后查 .灵树状态确认阶段。")
+        await send_audit_log(f"⚠️ 采摘未完成，{delay:.0f}s 后查 .灵树定脉确认阶段。")
         return True
 
     return False
@@ -940,7 +1290,7 @@ async def run_tree_bootstrap_check(now):
     if due_at <= 0:
         delay = _schedule_tree_bootstrap_check(now)
         save_state()
-        console_log(f"🌳 启动校验已错峰，{delay / 60:.1f} 分钟后查询灵树状态。")
+        console_log(f"🌳 启动校验已错峰，{delay / 60:.1f} 分钟后查询灵树定脉。")
         return
     if now < due_at:
         return
@@ -959,7 +1309,7 @@ async def run_tree_bootstrap_check(now):
         save_state()
         return
 
-    console_log("🌳 启动校验：查询灵树状态（无补发）。")
+    console_log("🌳 启动校验：查询灵树定脉（无补发）。")
     sent = await _send_tree_status(now, force=urgent_probe)
     if sent:
         state["tree_bootstrap_check_needed"] = False
@@ -978,6 +1328,8 @@ async def run_tree_scheduler(now):
         CMD_TREE_WATER,
         CMD_TREE_GUARD,
         CMD_TREE_STATUS,
+        CMD_TREE_PULSE_STATUS,
+        CMD_TREE_PULSE,
         CMD_TREE_HARVEST,
     )
 
@@ -989,24 +1341,53 @@ async def run_tree_scheduler(now):
                 state["pending_irrigation"] = True
                 state["next_irr_time"] = now + FREEZE_CD
                 save_state()
-                await send_audit_log("⏳ 入侵中，灌溉已转补偿队列。")
+                await send_audit_log("⏳ 入侵中，灵树定脉已暂停。")
         else:
-            delay = _next_irrigation_delay()
-            msg = await send_game_command(
-                CMD_TREE_WATER,
-                max_retry=TREE_IRRIGATION_RETRY_LIMIT,
-                reply_timeout=TREE_IRRIGATION_REPLY_TIMEOUT_SEC,
-            )
-            sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-            if not msg:
-                state["next_irr_time"] = sent_at + RETRY_MAX_SEC
-                save_state()
-                await send_audit_log("❌ 灌溉发送失败，稍后重试。")
+            if not _tree_pulse_panel_is_recent(now):
+                msg = await send_game_command(
+                    CMD_TREE_PULSE_STATUS,
+                    track=False,
+                    max_retry=0,
+                    source_module="灵树",
+                )
+                sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+                if not msg:
+                    state["next_irr_time"] = sent_at + RETRY_MAX_SEC
+                    save_state()
+                else:
+                    state["last_tree_status_sent_at"] = sent_at
+                    _schedule_tree_pulse_status_spread(sent_at)
+                    save_state()
             else:
-                state["next_irr_time"] = sent_at + delay
-                save_state()
-                next_t_str = fmt_time_after(delay)
-                await send_audit_log(f"🚀 灌溉已发送，等待回执；无回最多补发一次，兜底→{next_t_str}")
+                snapshot = _tree_pulse_snapshot_from_state()
+                command, reason = _choose_tree_pulse_command(snapshot)
+                if not command:
+                    if reason == "今日定脉令已满":
+                        delay = _tree_pulse_next_day_delay(now)
+                        state["next_irr_time"] = now + delay
+                    elif reason == "灵树已成熟或遭劫难":
+                        state["is_maturing"] = True
+                        state["next_irr_time"] = now + FREEZE_CD
+                    else:
+                        _schedule_tree_pulse_blocked_check(now)
+                    state["tree_pulse_last_error"] = reason
+                    save_state()
+                else:
+                    msg = await send_game_command(
+                        command,
+                        max_retry=0,
+                        reply_timeout=TREE_PULSE_REPLY_TIMEOUT_SEC,
+                        source_module="灵树",
+                    )
+                    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+                    if not msg:
+                        state["next_irr_time"] = sent_at + RETRY_MAX_SEC
+                        save_state()
+                    else:
+                        state["tree_pulse_last_action"] = command
+                        state["tree_pulse_last_error"] = reason
+                        state["next_irr_time"] = sent_at + 10 * 60
+                        save_state()
 
     if state["is_invading"] and now >= state["next_guard_time"]:
         if has_pending_tree_action:

@@ -84,7 +84,7 @@ from .features.stargazer import sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
-from .features.yinluo import execute_yinluo_manual_action
+from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
 from .features.yuanying import get_yuanying_phase_text
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -2922,6 +2922,7 @@ def get_identity_ui_snapshot(send_as_id):
             "small_world_harvest_enabled": bool(identity_state.get("small_world_harvest_enabled", False)),
             "small_world_refine_enabled": bool(identity_state.get("small_world_refine_enabled", False)),
             "small_world_refresh_enabled": bool(identity_state.get("small_world_refresh_enabled", False)),
+            "yinluo": get_yinluo_ui_state() if "阴罗宗" in available_module_names else {},
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),
             "jiyin_choice_source": _jiyin_choice_source,
@@ -3577,6 +3578,21 @@ async def ui_execute_yinluo_action(send_as_id, action, arg=""):
     if action not in {"banner", "collect", "refine", "convert", "blood_forest", "demon_summon"}:
         return False, "未知阴罗宗按钮动作"
     ok, message, _plan = await execute_yinluo_manual_action(action, str(arg or "").strip(), send_as_id=send_as_id)
+    if not ok:
+        return False, message
+    return True, f"{message}[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_yinluo_auto_config(send_as_id, config):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    if not get_identity_enabled(send_as_id):
+        return False, "身份已停用。"
+    if "阴罗宗" not in get_available_module_names(send_as_id):
+        return False, "阴罗宗对该身份不可用。"
+    with use_identity(send_as_id):
+        ok, message, _snapshot = set_yinluo_auto_config(config if isinstance(config, dict) else {})
     if not ok:
         return False, message
     return True, f"{message}[{get_identity_display_name(send_as_id)}]"
@@ -5029,6 +5045,19 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_execute_yinluo_action(send_as_id, action, arg)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/yinluo-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    config = payload.get("config") or {}
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_yinluo_auto_config(send_as_id, config)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/pet-name":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -5360,6 +5389,7 @@ __all__ = [
     "ui_set_jiyin_choice",
     "ui_set_nanlong_choice",
     "ui_execute_yinluo_action",
+    "ui_set_yinluo_auto_config",
     "ui_set_module_window",
     "ui_set_pet_name",
     "ui_set_small_world_feature_enabled",

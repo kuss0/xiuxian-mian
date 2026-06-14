@@ -74,6 +74,8 @@ from .config import (
     CMD_TOWER,
     CMD_TREE_GUARD,
     CMD_TREE_HARVEST,
+    CMD_TREE_PULSE,
+    CMD_TREE_PULSE_STATUS,
     CMD_TREE_STATUS,
     CMD_TREE_WATER,
     CMD_WILD_TRAINING,
@@ -527,10 +529,28 @@ def _disable_tree_module_state():
     state["is_harvested"] = False
     state["pending_irrigation"] = False
     state["tree_bootstrap_check_needed"] = False
+    state["tree_pulse_mode_seen"] = False
+    state["tree_pulse_last_panel_at"] = 0
+    state["tree_pulse_progress"] = 0.0
+    state["tree_pulse_main"] = ""
+    state["tree_pulse_aux"] = ""
+    state["tree_pulse_reverse"] = ""
+    state["tree_pulse_neutral"] = ""
+    state["tree_pulse_stability"] = 0
+    state["tree_pulse_stability_max"] = 0
+    state["tree_pulse_turbidity"] = 0
+    state["tree_pulse_turbidity_max"] = 0
+    state["tree_pulse_daily_used"] = 0
+    state["tree_pulse_daily_limit"] = 0
+    state["tree_pulse_rush_used"] = 0
+    state["tree_pulse_rush_limit"] = 0
+    state["tree_pulse_last_action"] = ""
+    state["tree_pulse_last_error"] = ""
+    state["tree_pulse_blocked_until"] = 0
     state["tree_maturing_logged"] = False
     state["tree_harvest_followup_due_at"] = 0
     state["tree_harvest_inflight_until"] = 0
-    _clear_pending_tasks_by_commands({CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TREE_STATUS, CMD_TREE_HARVEST})
+    _clear_pending_tasks_by_commands({CMD_TREE_WATER, CMD_TREE_GUARD, CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS, CMD_TREE_PULSE, CMD_TREE_HARVEST})
 
 
 def _disable_second_soul_module_state():
@@ -1272,6 +1292,8 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TREE_WATER: "灵树",
     CMD_TREE_GUARD: "灵树",
     CMD_TREE_STATUS: "灵树",
+    CMD_TREE_PULSE_STATUS: "灵树",
+    CMD_TREE_PULSE: "灵树",
     CMD_TREE_HARVEST: "灵树",
     CMD_PET: "法宝",
     CMD_PET_WARM: "温养器灵",
