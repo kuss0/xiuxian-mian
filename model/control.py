@@ -54,6 +54,12 @@ from .config import (
     CMD_TIANTI_GANGFENG,
     CMD_TIANTI_STATUS,
     CMD_TIANTI_WENXIN,
+    CMD_TIANXING_CHANGE_FATE,
+    CMD_TIANXING_CLEAR_CALAMITY,
+    CMD_TIANXING_OBSERVE,
+    CMD_TIANXING_PANEL,
+    CMD_TIANXING_PREDICT,
+    CMD_TIANXING_SET_STAR,
     CMD_SECT_TEACH,
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_MANIFEST,
@@ -74,6 +80,12 @@ from .config import (
     CMD_WENDAO,
     CMD_WORLD_BOSS_STATUS,
     CMD_YINDAO,
+    CMD_YINLUO_BANNER,
+    CMD_YINLUO_BLOOD_FOREST,
+    CMD_YINLUO_COLLECT,
+    CMD_YINLUO_CONVERT,
+    CMD_YINLUO_DEMON_SUMMON,
+    CMD_YINLUO_REFINE,
     CMD_YUANYING,
     CMD_YUANYING_STATUS,
     CD_BUFFER_SEC,
@@ -639,6 +651,50 @@ def _manual_enable_guanxing_module_state(now):
     state["guanxing_enabled"] = True
     clear_guanxing_identity_runtime(get_current_identity_id())
     restore_guanxing_round_runtime(now)
+
+
+def _disable_tianxing_module_state():
+    state["tianxing_enabled"] = False
+    state["tianxing_observation"] = {}
+    _clear_pending_tasks_by_commands({
+        CMD_TIANXING_PANEL,
+        CMD_TIANXING_OBSERVE,
+        CMD_TIANXING_SET_STAR,
+        CMD_TIANXING_PREDICT,
+        CMD_TIANXING_CHANGE_FATE,
+        CMD_TIANXING_CLEAR_CALAMITY,
+    })
+
+
+def _manual_disable_tianxing_module_state():
+    _disable_tianxing_module_state()
+
+
+def _manual_enable_tianxing_module_state(now):
+    state["tianxing_enabled"] = True
+    state["tianxing_observation"] = {}
+
+
+def _disable_yinluo_module_state():
+    state["yinluo_enabled"] = False
+    state["yinluo_observation"] = {}
+    _clear_pending_tasks_by_commands({
+        CMD_YINLUO_BANNER,
+        CMD_YINLUO_BLOOD_FOREST,
+        CMD_YINLUO_DEMON_SUMMON,
+        CMD_YINLUO_CONVERT,
+        CMD_YINLUO_COLLECT,
+        CMD_YINLUO_REFINE,
+    })
+
+
+def _manual_disable_yinluo_module_state():
+    _disable_yinluo_module_state()
+
+
+def _manual_enable_yinluo_module_state(now):
+    state["yinluo_enabled"] = True
+    state["yinluo_observation"] = {}
 
 
 def _disable_formation_module_state():
@@ -1296,6 +1352,8 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "天机代卜": (_manual_enable_concubine_tianji_module_state, _manual_disable_concubine_tianji_module_state),
     "共历心劫": (_manual_enable_concubine_heart_module_state, _manual_disable_concubine_heart_module_state),
     "侍妾远航": (_manual_enable_concubine_voyage_module_state, _manual_disable_concubine_voyage_module_state),
+    "天星宗": (_manual_enable_tianxing_module_state, _manual_disable_tianxing_module_state),
+    "阴罗宗": (_manual_enable_yinluo_module_state, _manual_disable_yinluo_module_state),
     "真仙试锋": (_manual_enable_world_boss_module_state, _manual_disable_world_boss_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
@@ -1327,6 +1385,8 @@ MODULE_DISABLE_HANDLERS = {
     "天机代卜": _manual_disable_concubine_tianji_module_state,
     "共历心劫": _manual_disable_concubine_heart_module_state,
     "侍妾远航": _manual_disable_concubine_voyage_module_state,
+    "天星宗": _disable_tianxing_module_state,
+    "阴罗宗": _disable_yinluo_module_state,
     "真仙试锋": _manual_disable_world_boss_module_state,
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
@@ -2040,30 +2100,30 @@ def _format_staging_preflight_text():
 
 
 RUNTIME_HEALTH_ERROR_KEYS = [
-    ("wild_training_last_error", "野外历练"),
-    ("small_world_last_error", "小世界"),
-    ("taiyi_last_error", "太一"),
-    ("concubine_last_error", "侍妾"),
-    ("concubine_tianji_last_error", "侍妾天机"),
-    ("concubine_heart_last_error", "侍妾心法"),
-    ("deep_retreat_last_error", "深度闭关"),
-    ("yuanying_last_error", "元婴"),
-    ("identity_info_last_error", "身份"),
-    ("ranch_last_error", "放养"),
-    ("pet_last_error", "灵兽"),
-    ("pet_warm_last_error", "温养"),
-    ("pet_trial_last_error", "器灵试炼"),
-    ("stargazer_last_error", "观星台"),
-    ("tianti_last_error", "登天阶"),
-    ("nanlong_last_error", "南陇侯"),
-    ("second_soul_last_error", "第二元神"),
+    ("wild_training_last_error", "野外历练", "wild_training_enabled"),
+    ("small_world_last_error", "小世界", "small_world_enabled"),
+    ("taiyi_last_error", "太一", "taiyi_enabled"),
+    ("concubine_last_error", "侍妾", "concubine_enabled"),
+    ("concubine_tianji_last_error", "侍妾天机", "concubine_tianji_enabled"),
+    ("concubine_heart_last_error", "侍妾心法", "concubine_heart_enabled"),
+    ("deep_retreat_last_error", "深度闭关", "deep_retreat_enabled"),
+    ("yuanying_last_error", "元婴", "yuanying_enabled"),
+    ("identity_info_last_error", "身份", ""),
+    ("ranch_last_error", "放养", "ranch_enabled"),
+    ("pet_last_error", "灵兽", "pet_enabled"),
+    ("pet_warm_last_error", "温养", "pet_warm_enabled"),
+    ("pet_trial_last_error", "器灵试炼", "pet_trial_enabled"),
+    ("stargazer_last_error", "观星台", "stargazer_enabled"),
+    ("tianti_last_error", "登天阶", "tianti_enabled"),
+    ("nanlong_last_error", "南陇侯", "nanlong_enabled"),
+    ("second_soul_last_error", "第二元神", "second_soul_enabled"),
 ]
 
 RUNTIME_HEALTH_PHASE_KEYS = [
-    ("wild_training_reply_to_msg_id", "野外历练待回复"),
-    ("small_world_phase", "小世界"),
-    ("taiyi_phase", "太一"),
-    ("concubine_phase", "侍妾"),
+    ("wild_training_reply_to_msg_id", "野外历练待回复", "wild_training_enabled"),
+    ("small_world_phase", "小世界", "small_world_enabled"),
+    ("taiyi_phase", "太一", "taiyi_enabled"),
+    ("concubine_phase", "侍妾", "concubine_enabled"),
 ]
 
 
@@ -2072,6 +2132,12 @@ def _format_runtime_counter_map(items, limit=6):
         return "无"
     ordered = sorted(items.items(), key=lambda pair: (-int(pair[1] or 0), str(pair[0])))
     return "、".join(f"{key}:{value}" for key, value in ordered[:limit])
+
+
+def _runtime_health_module_active(module_key):
+    if not module_key:
+        return True
+    return bool(state.get(module_key, False))
 
 
 def _format_runtime_health_text():
@@ -2101,12 +2167,16 @@ def _format_runtime_health_text():
                     samples.append(f"{command}{age_text}{retry_text}".strip())
                 pending_rows.append(f"- {display_name}: {len(pending_tasks)} 个｜{'；'.join(samples)}")
 
-            for key, label in RUNTIME_HEALTH_ERROR_KEYS:
+            for key, label, module_key in RUNTIME_HEALTH_ERROR_KEYS:
+                if not _runtime_health_module_active(module_key):
+                    continue
                 value = str(state.get(key) or "").strip()
                 if value:
                     error_rows.append(f"- {display_name}: {label}｜{_short_analysis_text(value, 90)}")
 
-            for key, label in RUNTIME_HEALTH_PHASE_KEYS:
+            for key, label, module_key in RUNTIME_HEALTH_PHASE_KEYS:
+                if not _runtime_health_module_active(module_key):
+                    continue
                 value = state.get(key)
                 if key.endswith("_reply_to_msg_id"):
                     try:
@@ -2638,6 +2708,18 @@ def _restore_phaseful_runtime(module_name, now):
         return
 
 
+def _clear_disabled_passive_observations():
+    changed = False
+    if not state.get("tianxing_enabled") and state.get("tianxing_observation"):
+        state["tianxing_observation"] = {}
+        changed = True
+    if not state.get("yinluo_enabled") and state.get("yinluo_observation"):
+        state["yinluo_observation"] = {}
+        changed = True
+    if changed:
+        mark_dirty()
+
+
 
 def initialize_identity_runtime(send_as_id, now=None):
     send_as_id = int(send_as_id)
@@ -2646,6 +2728,7 @@ def initialize_identity_runtime(send_as_id, now=None):
     if not get_identity_enabled(send_as_id):
         return
     with use_identity(send_as_id):
+        _clear_disabled_passive_observations()
         if state["tree_enabled"]:
             _restore_tree_runtime(now)
         if state["pet_enabled"] and state["next_pet_time"] <= 0:

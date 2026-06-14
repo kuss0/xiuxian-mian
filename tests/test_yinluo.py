@@ -667,6 +667,23 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["skip_reasons"]["external_owner_no_match"])
 
+    def test_status_hides_stale_observation_when_module_disabled(self):
+        send_as_id = self._prepare_identity(username="yinluo_user")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_enabled"] = False
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_450_000.0,
+                "last_action": "血洗山林",
+                "last_error": "旧阴罗错误",
+            }
+
+            text = yinluo.get_yinluo_status_text()
+
+        self.assertIn("模块：关闭", text)
+        self.assertIn("不展示旧观察记录", text)
+        self.assertNotIn("旧阴罗错误", text)
+        self.assertNotIn("血洗山林", text)
+
     def test_real_message_fixture_includes_yinluo_samples(self):
         samples = list(iter_real_message_samples(FIXTURE_PATH, module="yinluo"))
 

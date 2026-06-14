@@ -173,6 +173,68 @@ class ControlBoolCoercionTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["last_sect_teach_msg_id"])
             self.assertEqual({201: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
 
+    def test_disabling_tianxing_clears_observation_and_pending(self):
+        send_as_id = 990344
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {"last_observed_at": now, "last_error": "旧天星错误"}
+            state_module.state["pending_tasks"] = {
+                301: {"cmd": config.CMD_TIANXING_PANEL, "sent_at": now, "retry": 0},
+                302: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0},
+            }
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("天星宗", False, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["tianxing_enabled"])
+            self.assertEqual({}, state_module.state["tianxing_observation"])
+            self.assertEqual({302: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
+
+    def test_disabling_yinluo_clears_observation_and_pending(self):
+        send_as_id = 990345
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="阴罗宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {"last_observed_at": now, "last_error": "旧阴罗错误"}
+            state_module.state["pending_tasks"] = {
+                401: {"cmd": config.CMD_YINLUO_BANNER, "sent_at": now, "retry": 0},
+                402: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0},
+            }
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("阴罗宗", False, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["yinluo_enabled"])
+            self.assertEqual({}, state_module.state["yinluo_observation"])
+            self.assertEqual({402: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
+
+    def test_startup_initialization_clears_disabled_passive_observations(self):
+        send_as_id = 990346
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianxing_enabled"] = False
+            state_module.state["tianxing_observation"] = {"last_error": "旧天星错误"}
+            state_module.state["yinluo_enabled"] = False
+            state_module.state["yinluo_observation"] = {"last_error": "旧阴罗错误"}
+
+        with patch.object(control, "mark_dirty") as mark_dirty_mock:
+            control.initialize_identity_runtime(send_as_id, now=1_700_000_000.0)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual({}, state_module.state["tianxing_observation"])
+            self.assertEqual({}, state_module.state["yinluo_observation"])
+        mark_dirty_mock.assert_called()
+
     def test_toggling_concubine_preserves_partner_snapshot(self):
         send_as_id = 990343
         now = 1_700_000_000.0

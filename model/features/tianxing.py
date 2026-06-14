@@ -573,6 +573,12 @@ def _format_list(values):
 
 
 def get_tianxing_status_text():
+    if not state.get("tianxing_enabled"):
+        return "\n".join([
+            "🌌 天星宗",
+            "- 模块：关闭（不会主动发送）",
+            "- 运行快照：关闭时不展示旧观察记录",
+        ])
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     lines = [
         "🌌 天星宗",

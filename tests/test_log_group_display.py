@@ -526,8 +526,12 @@ class LogGroupDisplayTests(unittest.TestCase):
             "pending_tasks": {
                 9: {"cmd": ".小世界", "sent_at": 1000, "retry": 1, "max_retry": 1},
             },
+            "wild_training_enabled": True,
             "wild_training_last_error": "回复超时，准备补发一次",
+            "small_world_enabled": True,
             "small_world_phase": "calibration_wait",
+            "taiyi_enabled": False,
+            "taiyi_last_error": "旧太一错误不应展示",
         }
         inbox = {
             "total": 3,
@@ -566,6 +570,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".小世界 60s retry=1/1", text)
         self.assertIn("小世界=calibration_wait", text)
         self.assertIn("野外历练", text)
+        self.assertNotIn("旧太一错误不应展示", text)
         self.assertIn("消息盒子: total=3 changed=2 skipped=1", text)
         self.assertIn("msg=99", text)
 

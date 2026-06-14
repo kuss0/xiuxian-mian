@@ -179,6 +179,22 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertFalse(no_calamity["allowed"])
         self.assertIn("未记录逆命劫", no_calamity["reason"])
 
+    def test_status_hides_stale_observation_when_module_disabled(self):
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = False
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": 1_780_000_000.0,
+                "last_action": "推命",
+                "last_error": "旧天星错误",
+            }
+
+            text = tianxing.get_tianxing_status_text()
+
+        self.assertIn("模块：关闭", text)
+        self.assertIn("不展示旧观察记录", text)
+        self.assertNotIn("旧天星错误", text)
+        self.assertNotIn("推命", text)
+
 
 class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):

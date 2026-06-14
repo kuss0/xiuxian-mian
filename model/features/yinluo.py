@@ -1065,6 +1065,12 @@ def _format_ready_slots(observed):
 
 
 def get_yinluo_status_text():
+    if not state.get("yinluo_enabled"):
+        return "\n".join([
+            "🌑 阴罗宗",
+            "- 模块：关闭（不会主动发送）",
+            "- 运行快照：关闭时不展示旧观察记录",
+        ])
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     lines = [
         "🌑 阴罗宗",
