@@ -48,7 +48,7 @@ def test_storage_bag_transfer_presets_keep_normal_and_money_listing_items_separa
     assert "state.listingSyntax = 'compact'" in money_preset
 
 
-def test_storage_bag_transfer_runtime_only_blocks_execution_not_local_preview():
+def test_storage_bag_transfer_runtime_allows_queueing_next_plan():
     script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
 
     render_panel = script.split("function renderTransferPanel", 1)[1].split(
@@ -59,8 +59,9 @@ def test_storage_bag_transfer_runtime_only_blocks_execution_not_local_preview():
     )[0]
 
     assert 'data-storage-transfer-preview="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
-    assert 'data-storage-transfer-start="1"${transferRunning || busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
-    assert "runtime.running || batchRuntime.running" in start_transfer
+    assert 'data-storage-transfer-start="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
+    assert "加入队列" in render_panel
+    assert "当前已有储物袋转移任务执行中" not in start_transfer
 
 
 def test_storage_bag_batch_runtime_expands_pending_queue_details():

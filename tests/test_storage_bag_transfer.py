@@ -660,6 +660,67 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(5000, records[str(self.target_id)]["items"]["灵石"])
         self.assertEqual(1, records[str(self.target_id)]["items"]["黄芽丹"])
 
+    async def test_single_transfer_start_queues_while_another_transfer_is_running(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            msg_id = 650 + len(sent)
+            sent.append((command, kwargs, msg_id))
+            return SimpleNamespace(id=msg_id)
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, _snapshot = await ui.ui_start_storage_bag_transfer({
+                "source_identity_id": self.source_id,
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "items": [{"item_name": "妖丹", "quantity": 3}],
+            })
+            self.assertTrue(ok, message)
+            self.assertEqual(".上架 灵石 1 换 妖丹*3", sent[0][0])
+
+            queued_ok, queued_message, queued_snapshot = await ui.ui_start_storage_bag_transfer({
+                "source_identity_id": self.source_id,
+                "target_identity_id": self.target_id,
+                "listing_item": "灵石",
+                "items": [{"item_name": "木髓", "quantity": 2}],
+            })
+            self.assertTrue(queued_ok, queued_message)
+            self.assertIn("队列", queued_message)
+            self.assertEqual(1, len(sent))
+            self.assertTrue(queued_snapshot["batch"]["running"])
+            self.assertEqual(1, len(queued_snapshot["batch"]["queue"]))
+            self.assertIsNone(queued_snapshot["batch"]["active_task"])
+
+            handled_listing = await handle_storage_bag_transfer_reply(
+                "上架成功！\n"
+                "你已将 【灵石】x1 上架至万宝楼。\n"
+                "捆绑总价: 妖丹*3\n"
+                "挂单ID: 902",
+                1000.0,
+                SimpleNamespace(id=sent[0][2], raw_text=sent[0][0]),
+                reply_context={"reply_to_msg_id": sent[0][2]},
+            )
+            self.assertTrue(handled_listing)
+
+            handled_buy = await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【灵石】x1。",
+                1001.0,
+                SimpleNamespace(id=sent[1][2], raw_text=sent[1][0]),
+                reply_context={"reply_to_msg_id": sent[1][2]},
+            )
+            self.assertTrue(handled_buy)
+
+            await run_storage_bag_transfer_scheduler(1002.0)
+            await asyncio.sleep(0.05)
+
+            self.assertGreaterEqual(len(sent), 3)
+            self.assertEqual(".上架 灵石 1 换 木髓*2", sent[2][0])
+            self.assertEqual("running_task", storage_bag._storage_bag_transfer_batch_state["status"])
+            self.assertEqual(self.source_id, storage_bag._storage_bag_transfer_batch_state["active_task"]["source_identity_id"])
+            self.assertEqual([], storage_bag._storage_bag_transfer_batch_state["queue"])
+
     async def test_batch_transfer_advances_serially_after_each_success(self):
         other_id = 1003
         state_module.ensure_identity_registered(other_id)

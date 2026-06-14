@@ -2069,6 +2069,24 @@ async def ui_start_storage_bag_transfer(payload):
     ok, message, preview = ui_preview_storage_bag_transfer(payload)
     if not ok:
         return False, message, None
+    transfer_snapshot = get_storage_bag_transfer_snapshot()
+    transfer_batch = transfer_snapshot.get("batch") or {}
+    if transfer_snapshot.get("running") or transfer_batch.get("running"):
+        return await start_storage_bag_transfer_batch(
+            [{
+                "source_identity_id": preview["source_identity_id"],
+                "target_identity_id": preview["target_identity_id"],
+                "items": preview.get("items") or [],
+                "listing_item": preview.get("listing_item") or "",
+                "listing_count": preview.get("listing_count") or 1,
+                "listing_syntax": preview.get("listing_syntax") or "space",
+            }],
+            target_identity_id=preview["target_identity_id"],
+            listing_item=preview.get("listing_item") or "",
+            listing_count=preview.get("listing_count") or 1,
+            listing_syntax=preview.get("listing_syntax") or "space",
+            stop_on_error=True,
+        )
     return await start_storage_bag_transfer_task(
         preview["source_identity_id"],
         preview["target_identity_id"],

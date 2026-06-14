@@ -473,11 +473,17 @@ def _finalize_storage_bag_transfer_batch(success, message):
     _storage_transfer_batch_log(message, level="success" if success else "error")
 
 
-async def _maybe_advance_storage_bag_transfer_batch(success, message):
+async def _maybe_advance_storage_bag_transfer_batch(success, message, *, op_id=""):
     if not _storage_bag_transfer_batch_state.get("running"):
         return False
     active_task = _storage_bag_transfer_batch_state.get("active_task")
     if not isinstance(active_task, dict):
+        if _storage_bag_transfer_batch_state.get("queue") and not _storage_bag_transfer_state.get("running"):
+            return await _start_next_storage_bag_transfer_batch_task()
+        return False
+    active_op_id = str(active_task.get("op_id") or "")
+    completed_op_id = str(op_id or "")
+    if completed_op_id and active_op_id and completed_op_id != active_op_id:
         return False
     task_record = dict(active_task)
     task_record["message"] = str(message or "")
@@ -517,6 +523,7 @@ async def _maybe_advance_storage_bag_transfer_batch(success, message):
 
 
 def _finalize_storage_bag_transfer(success, message, *, advance_batch=True):
+    completed_op_id = str(_storage_bag_transfer_state.get("op_id") or "")
     _storage_bag_transfer_state["running"] = False
     _storage_bag_transfer_state["step"] = "done" if success else "failed"
     _storage_bag_transfer_state["last_error"] = "" if success else str(message or "")
@@ -526,7 +533,7 @@ def _finalize_storage_bag_transfer(success, message, *, advance_batch=True):
     if advance_batch:
         try:
             from ..runtime import _fire_and_forget
-            _fire_and_forget(_maybe_advance_storage_bag_transfer_batch(bool(success), str(message or "")))
+            _fire_and_forget(_maybe_advance_storage_bag_transfer_batch(bool(success), str(message or ""), op_id=completed_op_id))
         except Exception:
             pass
 
@@ -1028,6 +1035,10 @@ async def _start_next_storage_bag_transfer_batch_task():
         listing_syntax=task.get("listing_syntax") or _storage_bag_transfer_batch_state.get("listing_syntax") or "space",
         batch_child=True,
     )
+    if ok:
+        active_task = _storage_bag_transfer_batch_state.get("active_task")
+        if isinstance(active_task, dict):
+            active_task["op_id"] = str(_storage_bag_transfer_state.get("op_id") or "")
     if not ok:
         _storage_bag_transfer_batch_state["active_task"] = None
         failed_task = {**task, "message": str(message or ""), "finished_at": time.time()}
@@ -1041,6 +1052,54 @@ async def _start_next_storage_bag_transfer_batch_task():
     return True
 
 
+async def _enqueue_storage_bag_transfer_batch_tasks(
+    normalized_tasks,
+    *,
+    target_identity_id=0,
+    listing_item="",
+    listing_count=1,
+    listing_syntax="space",
+    stop_on_error=True,
+):
+    now = time.time()
+    if not _storage_bag_transfer_batch_state.get("running"):
+        _clear_storage_bag_transfer_batch_state()
+        _storage_bag_transfer_batch_state.update({
+            "running": True,
+            "batch_id": uuid.uuid4().hex[:12],
+            "target_identity_id": int(target_identity_id or 0),
+            "listing_item": str(listing_item or "").strip(),
+            "listing_count": normalize_storage_bag_listing_count(listing_count),
+            "listing_syntax": normalize_storage_bag_listing_syntax(listing_syntax),
+            "queue": [],
+            "active_task": None,
+            "completed": [],
+            "failed": [],
+            "total": 0,
+            "stop_on_error": bool(stop_on_error),
+            "status": "queued",
+            "last_message": "",
+            "created_at": now,
+            "updated_at": now,
+        })
+    queue = _storage_bag_transfer_batch_state.get("queue")
+    if not isinstance(queue, list):
+        queue = []
+        _storage_bag_transfer_batch_state["queue"] = queue
+    added_tasks = [dict(task) for task in normalized_tasks]
+    queue.extend(added_tasks)
+    _storage_bag_transfer_batch_state["total"] = int(_storage_bag_transfer_batch_state.get("total") or 0) + len(added_tasks)
+    _storage_bag_transfer_batch_state["status"] = "queued" if not _storage_bag_transfer_batch_state.get("active_task") else "running_task"
+    _storage_bag_transfer_batch_state["last_message"] = f"已加入转移队列：{len(added_tasks)} 个来源"
+    _storage_bag_transfer_batch_state["updated_at"] = now
+    _storage_transfer_batch_log(
+        f"加入转移队列：{len(added_tasks)} 个来源，待跑 {len(queue)}"
+    )
+    if not _storage_bag_transfer_state.get("running") and not _storage_bag_transfer_batch_state.get("active_task"):
+        await _start_next_storage_bag_transfer_batch_task()
+    return True, f"已加入储物袋转移队列：{len(added_tasks)} 个来源", get_storage_bag_transfer_snapshot()
+
+
 async def start_storage_bag_transfer_batch(
     tasks,
     *,
@@ -1050,8 +1109,6 @@ async def start_storage_bag_transfer_batch(
     listing_syntax="space",
     stop_on_error=True,
 ):
-    if _storage_bag_transfer_state.get("running") or _storage_bag_transfer_batch_state.get("running"):
-        return False, "已有储物袋转移任务正在执行", get_storage_bag_transfer_snapshot()
     normalized_tasks = []
     known_ids = {int(identity_id) for identity_id in get_identity_ids()}
     try:
@@ -1103,6 +1160,15 @@ async def start_storage_bag_transfer_batch(
         })
     if not normalized_tasks:
         return False, "没有可执行的批量转移任务", get_storage_bag_transfer_snapshot()
+    if _storage_bag_transfer_state.get("running") or _storage_bag_transfer_batch_state.get("running"):
+        return await _enqueue_storage_bag_transfer_batch_tasks(
+            normalized_tasks,
+            target_identity_id=target_identity_id,
+            listing_item=listing_item,
+            listing_count=listing_count,
+            listing_syntax=listing_syntax,
+            stop_on_error=stop_on_error,
+        )
     now = time.time()
     _clear_storage_bag_transfer_state()
     _clear_storage_bag_transfer_batch_state()
