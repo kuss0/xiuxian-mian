@@ -183,6 +183,29 @@ class StorageBagTransferTests(unittest.TestCase):
         ], preview["commands"])
         self.assertIn("可手动开始执行", preview["summary"])
 
+    def test_money_preset_preview_uses_compact_huangyadan_listing(self):
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"灵石": 12000}},
+            str(self.target_id): {"updated_at": 1000, "items": {"黄芽丹": 2}},
+        })
+
+        ok, message, preview = ui.ui_preview_storage_bag_transfer({
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+            "listing_item": "黄芽丹",
+            "listing_count": 1,
+            "listing_syntax": "compact",
+            "items": [{"item_name": "灵石", "quantity": 5000}],
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual([
+            {"identity_id": self.target_id, "command": ".上架 黄芽丹*1 换 灵石*5000", "note": "目标身份上架换购物品"},
+            {"identity_id": self.source_id, "command": ".购买 <挂单ID>", "note": "上架成功后来源身份购买挂单"},
+        ], preview["commands"])
+        self.assertEqual(1, preview["listing_count"])
+        self.assertEqual("compact", preview["listing_syntax"])
+
     def test_gift_transfer_preview_uses_target_marker_and_source_gift_reply(self):
         ok, message, preview = ui.ui_preview_storage_bag_transfer({
             "source_identity_id": self.source_id,
@@ -588,6 +611,54 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, records[str(self.source_id)]["items"].get("灵石", 0) - 1000)
         self.assertEqual(3, records[str(self.target_id)]["items"]["妖丹"])
         self.assertEqual(99, records[str(self.target_id)]["items"]["灵石"])
+
+    async def test_money_preset_transfer_executes_compact_listing_and_syncs_records(self):
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"灵石": 12000}},
+            str(self.target_id): {"updated_at": 1000, "items": {"黄芽丹": 2}},
+        })
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=200 + len(sent))
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "灵石", "quantity": 5000, "method": "basic"}],
+                "黄芽丹",
+                listing_count=1,
+                listing_syntax="compact",
+            )
+            self.assertTrue(ok, message)
+            self.assertEqual(".上架 黄芽丹*1 换 灵石*5000", sent[0][0])
+
+            handled_listing = await handle_storage_bag_transfer_reply(
+                "上架成功！\n你已将 【黄芽丹】x1 上架至万宝楼。\n捆绑总价: 灵石*5000\n挂单ID: 1888",
+                1000.0,
+                SimpleNamespace(id=201, raw_text=sent[0][0]),
+                reply_context={"reply_to_msg_id": 201},
+            )
+            self.assertTrue(handled_listing)
+            self.assertEqual(".购买 1888", sent[1][0])
+
+            handled_buy = await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【黄芽丹】x1。",
+                1001.0,
+                SimpleNamespace(id=202, raw_text=sent[1][0]),
+                reply_context={"reply_to_msg_id": 202},
+            )
+
+        self.assertTrue(handled_buy)
+        records = state_module.get_storage_bag_records()
+        self.assertEqual(7000, records[str(self.source_id)]["items"]["灵石"])
+        self.assertEqual(1, records[str(self.source_id)]["items"]["黄芽丹"])
+        self.assertEqual(5000, records[str(self.target_id)]["items"]["灵石"])
+        self.assertEqual(1, records[str(self.target_id)]["items"]["黄芽丹"])
 
     async def test_batch_transfer_advances_serially_after_each_success(self):
         other_id = 1003

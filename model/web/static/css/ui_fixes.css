@@ -1167,13 +1167,13 @@
 
 .storage-bag-transfer-controls {
   display: grid;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: 8px;
   align-items: end;
 }
 
 .storage-bag-transfer-controls-batch {
-  grid-template-columns: minmax(160px, 1fr) minmax(180px, 1fr) minmax(150px, 0.7fr);
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 }
 
 .storage-bag-transfer-batch-options {

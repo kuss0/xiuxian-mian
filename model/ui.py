@@ -81,7 +81,7 @@ from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normaliz
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.stargazer import sync_stargazer_total_slots
-from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, get_storage_bag_transfer_snapshot, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action
@@ -2003,18 +2003,27 @@ def ui_preview_storage_bag_transfer(payload):
         return False, "请至少选择一个有效物品", None
 
     listing_item = str(payload.get("listing_item") or "").strip()
-    listing_count = 0
+    requested_listing_count = normalize_storage_bag_listing_count(payload.get("listing_count") or 1)
+    listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or "space")
+    listing_stock_count = 0
     commands = []
     if exchange_parts:
         if not listing_item:
             return False, "请选择目标身份用于上架的物品", None
-        listing_count = _get_storage_bag_item_count(rows, target_identity_id, listing_item)
-        if listing_count <= 0:
+        listing_stock_count = _get_storage_bag_item_count(rows, target_identity_id, listing_item)
+        if listing_stock_count <= 0:
             warnings.append(f"上架物 {listing_item} 未在目标快照中确认库存")
+        elif listing_stock_count < requested_listing_count:
+            warnings.append(f"上架物 {listing_item} 计划 {requested_listing_count}，目标快照仅 {listing_stock_count}")
         commands.extend([
             {
                 "identity_id": target_identity_id,
-                "command": f".上架 {listing_item} 1 换 {' '.join(exchange_parts)}",
+                "command": format_storage_bag_listing_command(
+                    listing_item,
+                    requested_listing_count,
+                    exchange_parts,
+                    listing_syntax=listing_syntax,
+                ),
                 "note": "目标身份上架换购物品",
             },
             {
@@ -2040,7 +2049,9 @@ def ui_preview_storage_bag_transfer(payload):
         "source_identity_id": source_identity_id,
         "target_identity_id": target_identity_id,
         "listing_item": listing_item,
-        "listing_count": listing_count,
+        "listing_count": requested_listing_count,
+        "listing_syntax": listing_syntax,
+        "listing_stock_count": listing_stock_count,
         "items": normalized_items,
         "commands": commands,
         "warnings": warnings,
@@ -2063,6 +2074,8 @@ async def ui_start_storage_bag_transfer(payload):
         preview["target_identity_id"],
         preview.get("items") or [],
         preview.get("listing_item") or "",
+        listing_count=preview.get("listing_count") or 1,
+        listing_syntax=preview.get("listing_syntax") or "space",
     )
 
 
@@ -2085,6 +2098,8 @@ def ui_preview_storage_bag_transfer_batch(payload):
     storage_bag = get_storage_bag_snapshot()
     rows = storage_bag.get("rows") or []
     listing_item = str(payload.get("listing_item") or "").strip()
+    listing_count = normalize_storage_bag_listing_count(payload.get("listing_count") or 1)
+    listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or "space")
     mode = str(payload.get("mode") or "all").strip().lower()
     if mode not in {"all", "fixed"}:
         mode = "all"
@@ -2122,6 +2137,11 @@ def ui_preview_storage_bag_transfer_batch(payload):
             continue
         if any(str(item.get("method") or "unknown") != "gift" for item in task_items) and not listing_item:
             return False, "请选择集中号用于上架的物品", None
+        task_exchange_parts = [
+            f"{item['item_name']}*{int(item['quantity'])}"
+            for item in task_items
+            if str(item.get("method") or "unknown") != "gift"
+        ]
         source_row = next((row for row in rows if int(row.get("identity_id") or 0) == int(source_id)), {})
         target_row = next((row for row in rows if int(row.get("identity_id") or 0) == int(target_identity_id)), {})
         tasks.append({
@@ -2130,6 +2150,14 @@ def ui_preview_storage_bag_transfer_batch(payload):
             "target_identity_id": target_identity_id,
             "target_label": target_row.get("label") or target_row.get("display_name") or str(target_identity_id),
             "listing_item": listing_item,
+            "listing_count": listing_count,
+            "listing_syntax": listing_syntax,
+            "listing_command": format_storage_bag_listing_command(
+                listing_item,
+                listing_count,
+                task_exchange_parts,
+                listing_syntax=listing_syntax,
+            ) if task_exchange_parts else "",
             "items": task_items,
         })
     if not tasks:
@@ -2139,6 +2167,8 @@ def ui_preview_storage_bag_transfer_batch(payload):
     preview = {
         "target_identity_id": target_identity_id,
         "listing_item": listing_item,
+        "listing_count": listing_count,
+        "listing_syntax": listing_syntax,
         "mode": mode,
         "tasks": tasks,
         "skipped_source_ids": skipped,
@@ -2158,6 +2188,8 @@ async def ui_start_storage_bag_transfer_batch(payload):
         preview.get("tasks") or [],
         target_identity_id=preview.get("target_identity_id") or 0,
         listing_item=preview.get("listing_item") or "",
+        listing_count=preview.get("listing_count") or 1,
+        listing_syntax=preview.get("listing_syntax") or "space",
         stop_on_error=not bool(payload.get("continue_on_error")),
     )
 

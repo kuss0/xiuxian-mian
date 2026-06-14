@@ -39,6 +39,8 @@
         sourceId: '',
         targetId: '',
         listingItem: '',
+        listingCount: 1,
+        listingSyntax: 'space',
         selectedItems: {},
         manualText: '',
         preview: null,
@@ -53,6 +55,8 @@
     }
     if (!appState.storageBagTransfer.selectedItems) appState.storageBagTransfer.selectedItems = {};
     if (!Array.isArray(appState.storageBagTransfer.batchSourceIds)) appState.storageBagTransfer.batchSourceIds = [];
+    if (!Number(appState.storageBagTransfer.listingCount || 0)) appState.storageBagTransfer.listingCount = 1;
+    if (['space', 'compact'].indexOf(String(appState.storageBagTransfer.listingSyntax || 'space')) < 0) appState.storageBagTransfer.listingSyntax = 'space';
     if (!appState.storageBagTransfer.batchQuantityMode) appState.storageBagTransfer.batchQuantityMode = 'all';
     if (typeof appState.storageBagTransfer.batchAllSources !== 'boolean') appState.storageBagTransfer.batchAllSources = true;
     return appState.storageBagTransfer;
@@ -210,6 +214,8 @@
         batch: true,
         target_identity_id: Number(state.targetId) || 0,
         listing_item: String(state.listingItem || '').trim(),
+        listing_count: Math.max(1, Number(state.listingCount) || 1),
+        listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
         mode: String(state.batchQuantityMode || 'all') === 'fixed' ? 'fixed' : 'all',
         items: Array.from(merged.entries()).map(function (entry) {
           return { item_name: entry[0], quantity: entry[1] };
@@ -224,6 +230,8 @@
       source_identity_id: Number(state.sourceId) || 0,
       target_identity_id: Number(state.targetId) || 0,
       listing_item: String(state.listingItem || '').trim(),
+      listing_count: Math.max(1, Number(state.listingCount) || 1),
+      listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
       items: Array.from(merged.entries()).map(function (entry) {
         return { item_name: entry[0], quantity: entry[1] };
       }),
@@ -239,6 +247,8 @@
       state.targetId = ids.find(function (id) { return id !== Number(state.sourceId); }) || '';
     }
     if (!state.listingItem) state.listingItem = preferredListingItem(state.targetId);
+    if (!Number(state.listingCount || 0)) state.listingCount = 1;
+    if (['space', 'compact'].indexOf(String(state.listingSyntax || 'space')) < 0) state.listingSyntax = 'space';
     if (!state.batchAllSources) {
       const selected = selectedBatchSourceIds();
       state.batchSourceIds = selected.length ? selected : availableBatchSourceRows().map(function (row) {
@@ -259,6 +269,8 @@
     state.sourceId = sourceId || '';
     state.targetId = Number(targetRow.identity_id) || '';
     state.listingItem = preferredListingItem(state.targetId);
+    state.listingCount = 1;
+    state.listingSyntax = 'space';
     state.selectedItems = {};
     state.manualText = '';
     state.preview = null;
@@ -268,6 +280,19 @@
         return Number(row.identity_id) || 0;
       }).filter(Boolean);
     }
+  }
+
+  function applyMoneyPreset() {
+    const state = transferState();
+    state.listingItem = '黄芽丹';
+    state.listingCount = 1;
+    state.listingSyntax = 'compact';
+    state.selectedItems = { '灵石': 1 };
+    state.manualText = '';
+    state.batchQuantityMode = 'fixed';
+    state.preview = null;
+    resetTransferPreviewOnly();
+    renderTransferPanel();
   }
 
   function storageBagViewState() {
@@ -655,7 +680,8 @@
         const itemText = (task.items || []).map(function (item) {
           return `${item.item_name}x${Number(item.quantity || 0).toLocaleString()}`;
         }).join('、');
-        return `${index + 1}. ${task.source_label || task.source_identity_id} -> ${task.target_label || task.target_identity_id}｜${itemText}`;
+        const commandText = task.listing_command ? `｜${task.listing_command}` : '';
+        return `${index + 1}. ${task.source_label || task.source_identity_id} -> ${task.target_label || task.target_identity_id}｜${itemText}${commandText}`;
       });
       const skipped = Array.isArray(preview.skipped_source_ids) && preview.skipped_source_ids.length
         ? `<div class="form-label">已跳过无匹配库存来源：${esc(preview.skipped_source_ids.join('、'))}</div>`
@@ -731,11 +757,16 @@
       <div class="storage-bag-transfer-mode">
         <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${running || busy || syncBusy ? ' disabled' : ''}>单次</button>
         <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${running || busy || syncBusy ? ' disabled' : ''}>批量</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${running || busy || syncBusy ? ' disabled' : ''}>洗钱预设</button>
       </div>`;
+    const listingFormatControl = `
+        <label class="field-label">上架数量<input class="text-input" type="number" min="1" data-storage-transfer-field="listingCount" value="${esc(Math.max(1, Number(state.listingCount) || 1))}" /></label>
+        <label class="field-label">上架格式<select class="text-input" data-storage-transfer-field="listingSyntax"><option value="space"${state.listingSyntax !== 'compact' ? ' selected' : ''}>物品 数量</option><option value="compact"${state.listingSyntax === 'compact' ? ' selected' : ''}>物品*数量</option></select></label>`;
     const sourceControls = state.batchMode ? `
       <div class="storage-bag-transfer-controls storage-bag-transfer-controls-batch">
         <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
         <label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>
+        ${listingFormatControl}
         <label class="field-label">数量模式<select class="text-input" data-storage-transfer-field="batchQuantityMode"><option value="all"${state.batchQuantityMode !== 'fixed' ? ' selected' : ''}>转移全部库存</option><option value="fixed"${state.batchQuantityMode === 'fixed' ? ' selected' : ''}>每号固定上限</option></select></label>
       </div>
       <div class="storage-bag-transfer-batch-options">
@@ -756,6 +787,7 @@
         <label class="field-label">资源号<select class="text-input" data-storage-transfer-field="sourceId">${identityOptions(state.sourceId)}</select></label>
         <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
         <label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>
+        ${listingFormatControl}
       </div>`;
     panel.innerHTML = `
       ${modeButtons}
@@ -955,6 +987,7 @@
     if (event.target.closest('[data-storage-bag-api-save]')) return saveStorageBagApiConfig();
     if (event.target.closest('[data-storage-bag-api-verify]')) return verifyStorageBagApi();
     if (event.target.closest('[data-storage-bag-api-refresh]')) return refreshStorageBagApi();
+    if (event.target.closest('[data-storage-transfer-money-preset]')) return applyMoneyPreset();
     const modeButton = event.target.closest('[data-storage-transfer-mode]');
     if (modeButton) {
       const state = transferState();
@@ -1127,7 +1160,7 @@
     const field = event.target.closest('[data-storage-transfer-field]');
     if (!field) return;
     const key = field.getAttribute('data-storage-transfer-field');
-    if (key === 'manualText' || key === 'listingItem') {
+    if (key === 'manualText' || key === 'listingItem' || key === 'listingCount') {
       transferState()[key] = field.value;
       transferState().preview = null;
     }

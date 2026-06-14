@@ -32,6 +32,7 @@ STORAGE_TRANSFER_GIFT_SUCCESS_PREFIX = "【赠送成功】"
 STORAGE_TRANSFER_LOCATOR_MESSAGES = ("稍等", "我看下", "转一下", "放这", "这边", "好了")
 STORAGE_TRANSFER_GIFT_INTERVAL_SEC = 20
 STORAGE_TRANSFER_EXEC_METHODS = {"basic", "gift", "unknown"}
+STORAGE_TRANSFER_LISTING_SYNTAXES = {"space", "compact"}
 STORAGE_BAG_NON_ITEM_NAMES = {
     "修为",
     "宗门贡献",
@@ -54,6 +55,8 @@ _storage_bag_transfer_state = {
     "basic_items": [],
     "gift_items": [],
     "listing_item": "",
+    "listing_count": 1,
+    "listing_syntax": "space",
     "listing_command": "",
     "listing_msg_id": 0,
     "listing_id": "",
@@ -81,6 +84,8 @@ _storage_bag_transfer_batch_state = {
     "batch_id": "",
     "target_identity_id": 0,
     "listing_item": "",
+    "listing_count": 1,
+    "listing_syntax": "space",
     "queue": [],
     "active_task": None,
     "completed": [],
@@ -97,6 +102,31 @@ _storage_bag_transfer_batch_state = {
 
 def _normalize_owner_key(value):
     return str(value or "").strip().lstrip("@").casefold()
+
+
+def normalize_storage_bag_listing_count(value, default=1):
+    try:
+        count = int(value if value not in {None, ""} else default)
+    except (TypeError, ValueError):
+        count = int(default or 1)
+    return max(1, count)
+
+
+def normalize_storage_bag_listing_syntax(value):
+    syntax = str(value or "space").strip().lower()
+    return syntax if syntax in STORAGE_TRANSFER_LISTING_SYNTAXES else "space"
+
+
+def format_storage_bag_listing_command(listing_item, listing_count, exchange_parts, *, listing_syntax="space"):
+    listing_item = str(listing_item or "").strip()
+    listing_count = normalize_storage_bag_listing_count(listing_count)
+    syntax = normalize_storage_bag_listing_syntax(listing_syntax)
+    exchange_text = " ".join(str(part or "").strip() for part in (exchange_parts or []) if str(part or "").strip())
+    if syntax == "compact":
+        listing_text = f"{listing_item}*{listing_count}"
+    else:
+        listing_text = f"{listing_item} {listing_count}"
+    return f"{CMD_STORAGE_BAG_LISTING} {listing_text} 换 {exchange_text}".strip()
 
 
 def _normalize_username(value):
@@ -379,6 +409,8 @@ def _clear_storage_bag_transfer_state():
         "basic_items": [],
         "gift_items": [],
         "listing_item": "",
+        "listing_count": 1,
+        "listing_syntax": "space",
         "listing_command": "",
         "listing_msg_id": 0,
         "listing_id": "",
@@ -408,6 +440,8 @@ def _clear_storage_bag_transfer_batch_state():
         "batch_id": "",
         "target_identity_id": 0,
         "listing_item": "",
+        "listing_count": 1,
+        "listing_syntax": "space",
         "queue": [],
         "active_task": None,
         "completed": [],
@@ -623,10 +657,11 @@ def _storage_transfer_apply_basic_items_move():
         if _storage_transfer_apply_item_move(item.get("item_name"), int(item.get("quantity") or 0)):
             changed_count += 1
     listing_item = str(_storage_bag_transfer_state.get("listing_item") or "").strip()
+    listing_count = normalize_storage_bag_listing_count(_storage_bag_transfer_state.get("listing_count") or 1)
     target_id = int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0)
     source_id = int(_storage_bag_transfer_state.get("source_identity_id", 0) or 0)
-    if listing_item and apply_storage_bag_item_deltas(target_id, {listing_item: -1}):
-        apply_storage_bag_item_deltas(source_id, {listing_item: 1})
+    if listing_item and apply_storage_bag_item_deltas(target_id, {listing_item: -listing_count}):
+        apply_storage_bag_item_deltas(source_id, {listing_item: listing_count})
     return changed_count
 
 
@@ -648,9 +683,10 @@ def _storage_transfer_listing_success_matches_expected(success):
     if not success:
         return False
     listing_item = str(_storage_bag_transfer_state.get("listing_item") or "").strip()
+    listing_count = normalize_storage_bag_listing_count(_storage_bag_transfer_state.get("listing_count") or 1)
     if str(success.get("item") or "").strip() != listing_item:
         return False
-    if int(success.get("count") or 0) != 1:
+    if int(success.get("count") or 0) != listing_count:
         return False
     return _storage_transfer_price_items(success.get("price")) == _storage_transfer_expected_exchange_items()
 
@@ -867,7 +903,16 @@ async def _start_storage_bag_gift_phase():
     return await _send_next_storage_bag_gift()
 
 
-async def start_storage_bag_transfer_task(source_identity_id, target_identity_id, items, listing_item, *, batch_child=False):
+async def start_storage_bag_transfer_task(
+    source_identity_id,
+    target_identity_id,
+    items,
+    listing_item,
+    *,
+    listing_count=1,
+    listing_syntax="space",
+    batch_child=False,
+):
     if _storage_bag_transfer_state.get("running"):
         return False, "已有储物袋转移任务正在执行", get_storage_bag_transfer_snapshot()
     if _storage_bag_transfer_batch_state.get("running") and not batch_child:
@@ -898,12 +943,19 @@ async def start_storage_bag_transfer_task(source_identity_id, target_identity_id
     if not basic_items and not gift_items:
         return False, "当前没有可执行的转移物品", None
     listing_item = str(listing_item or "").strip()
+    listing_count = normalize_storage_bag_listing_count(listing_count)
+    listing_syntax = normalize_storage_bag_listing_syntax(listing_syntax)
     listing_command = ""
     if basic_items:
         if not listing_item:
             return False, "请选择目标身份用于上架的物品", None
         exchange_parts = [f"{item['item_name']}*{int(item['quantity'])}" for item in basic_items]
-        listing_command = f"{CMD_STORAGE_BAG_LISTING} {listing_item} 1 换 {' '.join(exchange_parts)}"
+        listing_command = format_storage_bag_listing_command(
+            listing_item,
+            listing_count,
+            exchange_parts,
+            listing_syntax=listing_syntax,
+        )
     now = time.time()
     _clear_storage_bag_transfer_state()
     _storage_bag_transfer_state.update({
@@ -915,6 +967,8 @@ async def start_storage_bag_transfer_task(source_identity_id, target_identity_id
         "basic_items": basic_items,
         "gift_items": gift_items,
         "listing_item": listing_item,
+        "listing_count": listing_count,
+        "listing_syntax": listing_syntax,
         "listing_command": listing_command,
         "step": "listing" if basic_items else "gift_marker",
         "created_at": now,
@@ -970,6 +1024,8 @@ async def _start_next_storage_bag_transfer_batch_task():
         task.get("target_identity_id"),
         task.get("items") or [],
         task.get("listing_item") or "",
+        listing_count=task.get("listing_count") or _storage_bag_transfer_batch_state.get("listing_count") or 1,
+        listing_syntax=task.get("listing_syntax") or _storage_bag_transfer_batch_state.get("listing_syntax") or "space",
         batch_child=True,
     )
     if not ok:
@@ -985,7 +1041,15 @@ async def _start_next_storage_bag_transfer_batch_task():
     return True
 
 
-async def start_storage_bag_transfer_batch(tasks, *, target_identity_id=0, listing_item="", stop_on_error=True):
+async def start_storage_bag_transfer_batch(
+    tasks,
+    *,
+    target_identity_id=0,
+    listing_item="",
+    listing_count=1,
+    listing_syntax="space",
+    stop_on_error=True,
+):
     if _storage_bag_transfer_state.get("running") or _storage_bag_transfer_batch_state.get("running"):
         return False, "已有储物袋转移任务正在执行", get_storage_bag_transfer_snapshot()
     normalized_tasks = []
@@ -996,6 +1060,8 @@ async def start_storage_bag_transfer_batch(tasks, *, target_identity_id=0, listi
         target_identity_id = 0
     if target_identity_id not in known_ids:
         return False, "目标身份无效", get_storage_bag_transfer_snapshot()
+    listing_count = normalize_storage_bag_listing_count(listing_count)
+    listing_syntax = normalize_storage_bag_listing_syntax(listing_syntax)
     for raw_task in tasks if isinstance(tasks, (list, tuple)) else []:
         if not isinstance(raw_task, dict):
             continue
@@ -1019,6 +1085,8 @@ async def start_storage_bag_transfer_batch(tasks, *, target_identity_id=0, listi
         if not normalized_items:
             continue
         task_listing_item = str(raw_task.get("listing_item") or listing_item or "").strip()
+        task_listing_count = normalize_storage_bag_listing_count(raw_task.get("listing_count") or listing_count)
+        task_listing_syntax = normalize_storage_bag_listing_syntax(raw_task.get("listing_syntax") or listing_syntax)
         if any(str(item.get("method") or "unknown") != "gift" for item in normalized_items) and not task_listing_item:
             return False, "请选择目标身份用于上架的物品", get_storage_bag_transfer_snapshot()
         source_profile = get_send_as_profile(source_identity_id)
@@ -1030,6 +1098,8 @@ async def start_storage_bag_transfer_batch(tasks, *, target_identity_id=0, listi
             "target_label": target_profile.get("label") or target_profile.get("username") or str(target_identity_id),
             "items": normalized_items,
             "listing_item": task_listing_item,
+            "listing_count": task_listing_count,
+            "listing_syntax": task_listing_syntax,
         })
     if not normalized_tasks:
         return False, "没有可执行的批量转移任务", get_storage_bag_transfer_snapshot()
@@ -1041,6 +1111,8 @@ async def start_storage_bag_transfer_batch(tasks, *, target_identity_id=0, listi
         "batch_id": uuid.uuid4().hex[:12],
         "target_identity_id": target_identity_id,
         "listing_item": str(listing_item or "").strip(),
+        "listing_count": listing_count,
+        "listing_syntax": listing_syntax,
         "queue": [dict(task) for task in normalized_tasks],
         "active_task": None,
         "completed": [],
