@@ -1,4 +1,5 @@
 import math
+import random
 import re
 import time
 
@@ -8,6 +9,7 @@ from ..config import (
     JIYIN_REPLY_TIMEOUT_SEC,
     RE_WHITESPACE,
 )
+from ..delayed_actions import cancel_delayed_action, schedule_delayed_action
 from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import (
@@ -39,6 +41,11 @@ JIYIN_CHOICE_COMMANDS = {
 JIYIN_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 RE_JIYIN_TARGET_TAG = re.compile(rf"@({JIYIN_TARGET_TAG_PATTERN})")
 RE_JIYIN_MINUTES = re.compile(r"你必须在\s*(\d+)\s*分钟")
+JIYIN_REPLY_DELAY_MIN_SEC = 20
+JIYIN_REPLY_DELAY_MAX_SEC = 30
+JIYIN_REPLY_DEADLINE_GRACE_SEC = 5
+JIYIN_DELAYED_SOURCE_MODULE = "jiyin"
+JIYIN_DELAYED_OP_ID = "jiyin_prompt_reply"
 
 
 def _normalize_text(text):
@@ -195,6 +202,40 @@ def _set_jiyin_pending(reply_to_msg_id, deadline_at):
     state["jiyin_last_error"] = ""
 
 
+def _jiyin_delayed_dedupe_key(send_as_id=None):
+    identity_id = int(send_as_id or get_current_identity_id() or 0)
+    return f"jiyin-prompt-reply:{identity_id}"
+
+
+def _calc_jiyin_reply_due_at(now, timeout_sec):
+    timeout_sec = max(1, int(timeout_sec or JIYIN_REPLY_TIMEOUT_SEC))
+    latest_delay = max(1, timeout_sec - JIYIN_REPLY_DEADLINE_GRACE_SEC)
+    max_delay = min(JIYIN_REPLY_DELAY_MAX_SEC, latest_delay)
+    min_delay = min(JIYIN_REPLY_DELAY_MIN_SEC, max_delay)
+    return float(now + random.randint(min_delay, max_delay))
+
+
+def _schedule_jiyin_delayed_reply(command, reply_to_msg_id, now, timeout_sec, *, choice="", choice_source=""):
+    identity_id = get_current_identity_id()
+    due_at = _calc_jiyin_reply_due_at(now, timeout_sec)
+    return schedule_delayed_action(
+        command,
+        due_at,
+        send_as_id=identity_id,
+        track=False,
+        reply_to_msg_id=reply_to_msg_id,
+        priority="reactive",
+        source_module=JIYIN_DELAYED_SOURCE_MODULE,
+        op_id=JIYIN_DELAYED_OP_ID,
+        chain_id=f"jiyin:{identity_id}:{reply_to_msg_id}",
+        dedupe_key=_jiyin_delayed_dedupe_key(identity_id),
+        max_send_attempts=1,
+        retry_delay_sec=30,
+        now=now,
+        extra={"choice": choice, "choice_source": choice_source},
+    )
+
+
 def _set_jiyin_error_and_save(message):
     state["jiyin_last_error"] = message
     save_state()
@@ -235,6 +276,7 @@ def get_jiyin_status_text():
 
 
 def clear_jiyin_state(*, persist=False, keep_last_error=False):
+    cancel_delayed_action(dedupe_key=_jiyin_delayed_dedupe_key())
     state["next_jiyin_time"] = 0
     state["jiyin_reply_to_msg_id"] = 0
     if not keep_last_error:
@@ -267,11 +309,13 @@ async def apply_jiyin_choice(choice, now=None):
 
     sent_msg = await _send_jiyin_command(command, pending_reply_to)
     if not sent_msg:
+        cancel_delayed_action(dedupe_key=_jiyin_delayed_dedupe_key())
         _set_jiyin_error_and_save("极阴祖师选择发送失败")
         if reset_to_auto:
             return False, f"已恢复自动判断，但发送失败：{get_jiyin_choice_label(effective_choice)}"
         return False, f"已保存极阴祖师选择，但发送失败：{get_jiyin_choice_label(normalized_choice)}"
 
+    cancel_delayed_action(dedupe_key=_jiyin_delayed_dedupe_key())
     await _finalize_jiyin_success(
         f"🌑 {'恢复自动' if reset_to_auto else '执行选择'}：{get_jiyin_choice_label(effective_choice)}（{'手动' if choice_source == 'manual' else '自动'}）"
     )
@@ -293,22 +337,49 @@ async def handle_jiyin_prompt(text, now, event):
     await _maybe_audit_jiyin_prompt_override(prev_reply_to_msg_id, prev_deadline, now, reply_to_msg_id)
 
     _set_jiyin_pending(reply_to_msg_id, now + float(parsed["timeout_sec"]))
-    save_state()
 
     choice, choice_source, command = _resolve_effective_jiyin_command()
     if not command:
         _set_jiyin_error_and_save("极阴祖师选择无效")
         return True
 
-    sent_msg = await _send_jiyin_command(command, reply_to_msg_id)
-    if not sent_msg:
-        _set_jiyin_error_and_save("极阴祖师自动回复发送失败")
-        await send_audit_log("❌ 极阴自动回复失败，待处理已保留。")
+    _schedule_jiyin_delayed_reply(
+        command,
+        reply_to_msg_id,
+        now,
+        parsed["timeout_sec"],
+        choice=choice,
+        choice_source=choice_source,
+    )
+    save_state()
+    return True
+
+
+async def handle_jiyin_delayed_action_result(result):
+    if not isinstance(result, dict):
+        return False
+    if result.get("source_module") != JIYIN_DELAYED_SOURCE_MODULE or result.get("op_id") != JIYIN_DELAYED_OP_ID:
+        return False
+
+    reply_to_msg_id, _deadline, pending_dirty = _get_jiyin_pending_state()
+    if pending_dirty:
+        return True
+    if reply_to_msg_id <= 0 or int(result.get("reply_to_msg_id") or 0) != reply_to_msg_id:
         return True
 
-    await _finalize_jiyin_success(
-        f"🌑 自动选择：{get_jiyin_choice_label(choice)}（{'手动' if choice_source == 'manual' else '自动'}）"
-    )
+    status = str(result.get("status") or "")
+    extra = result.get("extra") if isinstance(result.get("extra"), dict) else {}
+    choice = normalize_jiyin_choice(extra.get("choice")) or resolve_jiyin_choice()[0]
+    choice_source = str(extra.get("choice_source") or "auto")
+    choice_source_text = "手动" if choice_source == "manual" else "自动"
+    if status == "sent":
+        await _finalize_jiyin_success(f"🌑 延迟自动选择：{get_jiyin_choice_label(choice)}（{choice_source_text}）")
+        return True
+    if status == "failed":
+        state["jiyin_last_error"] = "极阴祖师延迟回复发送失败"
+        save_state()
+        await send_audit_log("❌ 极阴延迟回复失败，待处理已保留。")
+        return True
     return True
 
 
@@ -335,6 +406,7 @@ __all__ = [
     "get_jiyin_choice_command",
     "get_jiyin_choice_label",
     "get_jiyin_status_text",
+    "handle_jiyin_delayed_action_result",
     "handle_jiyin_prompt",
     "normalize_jiyin_choice",
     "resolve_jiyin_choice",

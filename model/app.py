@@ -71,7 +71,7 @@ from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_t
 from .features.passive_inbox import handle_passive_module_card
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.rare_daily_report import run_rare_daily_report_scheduler
-from .features.jiyin import handle_jiyin_prompt, run_jiyin_scheduler
+from .features.jiyin import handle_jiyin_delayed_action_result, handle_jiyin_prompt, run_jiyin_scheduler
 from .features.join_dungeon import handle_dungeon_join_bot_message, handle_dungeon_join_mention, record_game_group_message
 from .features.nanlong import handle_nanlong_prompt, handle_nanlong_reply, handle_nanlong_result_broadcast, run_nanlong_scheduler
 from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, handle_quiz_result_broadcast, run_quiz_learning_scheduler, run_quiz_scheduler
@@ -855,7 +855,13 @@ async def _run_identity_schedulers(now):
 async def _run_global_schedulers(now):
     for name, scheduler in _GLOBAL_SCHEDULERS:
         if name == "delayed_actions":
-            await scheduler(now, send_game_command)
+            results = await scheduler(now, send_game_command)
+            for result in results or ():
+                send_as_id = int((result or {}).get("send_as_id") or 0)
+                if send_as_id <= 0:
+                    continue
+                with use_identity(send_as_id):
+                    await handle_jiyin_delayed_action_result(result)
         else:
             await scheduler(now)
 

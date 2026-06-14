@@ -48,6 +48,8 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
             ".测试",
             10,
             send_as_id=123,
+            track=False,
+            reply_to_msg_id=456,
             priority="retry",
             max_retry=2,
             reply_timeout=33,
@@ -64,6 +66,8 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         command, kwargs = calls[0]
         self.assertEqual(".测试", command)
         self.assertEqual(123, kwargs["send_as_id"])
+        self.assertFalse(kwargs["track"])
+        self.assertEqual(456, kwargs["reply_to"])
         self.assertEqual("retry", kwargs["priority"])
         self.assertEqual(2, kwargs["max_retry"])
         self.assertEqual(33, kwargs["reply_timeout"])
@@ -98,13 +102,22 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         )
 
         first = await delayed_actions.drain_due_actions(10, fake_send)
-        self.assertEqual([{"id": 1, "status": "rescheduled", "due_at": 70.0, "attempts": 1}], first)
+        self.assertEqual(1, len(first))
+        self.assertEqual("rescheduled", first[0]["status"])
+        self.assertEqual(70.0, first[0]["due_at"])
+        self.assertEqual(1, first[0]["attempts"])
+        self.assertEqual(".会失败", first[0]["command"])
+        self.assertEqual(1, first[0]["send_as_id"])
         pending = delayed_actions.list_delayed_actions()
         self.assertEqual("pending", pending[0]["status"])
         self.assertEqual(70, pending[0]["due_at"])
 
         second = await delayed_actions.drain_due_actions(70, fake_send)
-        self.assertEqual([{"id": 1, "status": "failed", "attempts": 2}], second)
+        self.assertEqual(1, len(second))
+        self.assertEqual(1, second[0]["id"])
+        self.assertEqual("failed", second[0]["status"])
+        self.assertEqual(2, second[0]["attempts"])
+        self.assertEqual(".会失败", second[0]["command"])
         self.assertEqual([], delayed_actions.list_delayed_actions())
         failed = delayed_actions.list_delayed_actions(include_non_pending=True)
         self.assertEqual(1, len(failed))
@@ -122,7 +135,12 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         result = await delayed_actions.drain_due_actions(10, fake_send)
 
         self.assertEqual([], calls)
-        self.assertEqual([{"id": 1, "status": "failed", "attempts": 0, "reason": "missing send_as_id"}], result)
+        self.assertEqual(1, len(result))
+        self.assertEqual("failed", result[0]["status"])
+        self.assertEqual(0, result[0]["attempts"])
+        self.assertEqual("missing send_as_id", result[0]["reason"])
+        self.assertEqual(".缺身份", result[0]["command"])
+        self.assertEqual(0, result[0]["send_as_id"])
         self.assertEqual([], delayed_actions.list_delayed_actions())
 
     def test_schedule_rejects_bad_timing_values_without_pending(self):
@@ -190,10 +208,12 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
                 result = await delayed_actions.drain_due_actions(20, fake_send)
 
                 self.assertEqual([], calls)
-                self.assertEqual(
-                    [{"id": scheduled["id"], "status": "failed", "attempts": 0, "reason": "due_at must be finite"}],
-                    result,
-                )
+                self.assertEqual(1, len(result))
+                self.assertEqual(scheduled["id"], result[0]["id"])
+                self.assertEqual("failed", result[0]["status"])
+                self.assertEqual(0, result[0]["attempts"])
+                self.assertEqual("due_at must be finite", result[0]["reason"])
+                self.assertEqual(".坏时间", result[0]["command"])
                 self.assertEqual([], delayed_actions.list_delayed_actions())
                 failed = delayed_actions.list_delayed_actions(include_non_pending=True)
                 self.assertEqual("failed", failed[0]["status"])
@@ -241,6 +261,8 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["id"], items[0]["id"])
         self.assertEqual(".第一", items[0]["command"])
         self.assertEqual({"kind": "check"}, items[0]["extra"])
+        self.assertTrue(items[0]["track"])
+        self.assertEqual(0, items[0]["reply_to_msg_id"])
         self.assertGreater(next_item["id"], snapshot["next_id"])
 
     def test_state_adapter_round_trips_and_fails_closed_on_bad_payload(self):
@@ -299,8 +321,12 @@ class DelayedActionsTests(unittest.IsolatedAsyncioTestCase):
 
         results = await delayed_actions.drain_due_actions(10, fake_send)
 
-        self.assertEqual([(".恢复后发送", {"send_as_id": 66})], sent)
-        self.assertEqual([{"id": 5, "status": "sent", "message_id": 8801}], results)
+        self.assertEqual([(".恢复后发送", {"send_as_id": 66, "track": True})], sent)
+        self.assertEqual(1, len(results))
+        self.assertEqual(5, results[0]["id"])
+        self.assertEqual("sent", results[0]["status"])
+        self.assertEqual(8801, results[0]["message_id"])
+        self.assertEqual(66, results[0]["send_as_id"])
         self.assertEqual([], delayed_actions.list_delayed_actions())
 
 
@@ -403,7 +429,10 @@ class DelayedActionsPersistenceTests(unittest.TestCase):
 
                 result = asyncio.run(delayed_actions.drain_due_actions(10, fake_send))
 
-                self.assertEqual([{"id": 1, "status": "sent", "message_id": 901}], result)
+                self.assertEqual(1, len(result))
+                self.assertEqual("sent", result[0]["status"])
+                self.assertEqual(901, result[0]["message_id"])
+                self.assertEqual(".会发送", result[0]["command"])
                 self.assertTrue(persistence._state_dirty)
                 self.assertTrue(persistence.save_state())
 
@@ -435,7 +464,11 @@ class DelayedActionsPersistenceTests(unittest.TestCase):
 
                 result = asyncio.run(delayed_actions.drain_due_actions(10, fake_send))
 
-                self.assertEqual([{"id": 1, "status": "rescheduled", "due_at": 70.0, "attempts": 1}], result)
+                self.assertEqual(1, len(result))
+                self.assertEqual("rescheduled", result[0]["status"])
+                self.assertEqual(70.0, result[0]["due_at"])
+                self.assertEqual(1, result[0]["attempts"])
+                self.assertEqual(".会重排", result[0]["command"])
                 self.assertTrue(persistence._state_dirty)
                 self.assertTrue(persistence.save_state())
 

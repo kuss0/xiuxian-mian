@@ -1,6 +1,8 @@
+import copy
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -8,6 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import app
 from model import module_manifest
+from model import state as state_module
 
 
 IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
@@ -189,6 +192,47 @@ class AppSchedulerContractTests(unittest.TestCase):
             runtime_phaseful,
             "BehaviorSpec.execution_order documents coverage/priority only; app scheduler helpers remain the runtime order contract.",
         )
+
+
+class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(self._meta_state_snapshot)
+        super().tearDown()
+
+    async def test_delayed_action_results_run_inside_target_identity_context(self):
+        identity_id = 991777
+        state_module.ensure_identity_registered(identity_id)
+        seen_identity_ids = []
+
+        async def fake_delayed_scheduler(now, send_func):
+            self.assertIs(send_func, app.send_game_command)
+            return [
+                {
+                    "id": 1,
+                    "status": "sent",
+                    "send_as_id": identity_id,
+                    "source_module": "jiyin",
+                    "op_id": "jiyin_prompt_reply",
+                }
+            ]
+
+        async def fake_jiyin_result_handler(result):
+            seen_identity_ids.append(state_module.get_current_identity_id())
+            return True
+
+        with (
+            patch.object(app, "_GLOBAL_SCHEDULERS", (("delayed_actions", fake_delayed_scheduler),)),
+            patch.object(app, "handle_jiyin_delayed_action_result", new=AsyncMock(side_effect=fake_jiyin_result_handler)) as handler_mock,
+        ):
+            await app._run_global_schedulers(1_700_000_000.0)
+
+        handler_mock.assert_awaited_once()
+        self.assertEqual([identity_id], seen_identity_ids)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@ class DelayedAction:
     command: str
     due_at: float
     send_as_id: int = 0
+    track: bool = True
+    reply_to_msg_id: int = 0
     priority: str = ""
     max_retry: int | None = None
     reply_timeout: float | None = None
@@ -37,6 +39,8 @@ class DelayedAction:
             "command": self.command,
             "due_at": self.due_at,
             "send_as_id": self.send_as_id,
+            "track": self.track,
+            "reply_to_msg_id": self.reply_to_msg_id,
             "priority": self.priority,
             "max_retry": self.max_retry,
             "reply_timeout": self.reply_timeout,
@@ -95,6 +99,28 @@ def _optional_int(value):
     return int(value)
 
 
+def _non_negative_int(value, field_name):
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{field_name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return parsed
+
+
+def _bool_flag(value, default=True):
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"0", "false", "off", "no"}:
+            return False
+        if normalized in {"1", "true", "on", "yes"}:
+            return True
+    return bool(value)
+
+
 def _finite_float(value, field_name):
     try:
         result = float(value)
@@ -147,6 +173,8 @@ def _coerce_snapshot_action(item):
         command=command,
         due_at=_snapshot_finite_float(item, "due_at"),
         send_as_id=send_as_id,
+        track=_bool_flag(item.get("track"), True),
+        reply_to_msg_id=_non_negative_int(item.get("reply_to_msg_id", 0), "reply_to_msg_id"),
         priority=str(item.get("priority") or ""),
         max_retry=_optional_int(item.get("max_retry")),
         reply_timeout=_optional_finite_float(item.get("reply_timeout"), "reply_timeout"),
@@ -247,6 +275,8 @@ def schedule_delayed_action(
     due_at,
     *,
     send_as_id=0,
+    track=True,
+    reply_to_msg_id=0,
     priority="",
     max_retry=None,
     reply_timeout=None,
@@ -273,6 +303,7 @@ def schedule_delayed_action(
         ),
     )
     reply_timeout = _optional_finite_float(reply_timeout, "reply_timeout")
+    reply_to_msg_id = _non_negative_int(reply_to_msg_id, "reply_to_msg_id")
     max_send_attempts = max(1, int(max_send_attempts or DEFAULT_DELAYED_ACTION_MAX_ATTEMPTS))
 
     action = _find_pending_by_dedupe_key(dedupe_key)
@@ -289,6 +320,8 @@ def schedule_delayed_action(
     action.command = clean_command
     action.due_at = due_at
     action.send_as_id = int(send_as_id or 0)
+    action.track = bool(track)
+    action.reply_to_msg_id = reply_to_msg_id
     action.priority = str(priority or "")
     action.max_retry = None if max_retry is None else int(max_retry)
     action.reply_timeout = reply_timeout
@@ -332,7 +365,9 @@ def list_delayed_actions(*, include_non_pending=False):
 
 
 def _send_kwargs(action):
-    kwargs = {"send_as_id": action.send_as_id}
+    kwargs = {"send_as_id": action.send_as_id, "track": bool(action.track)}
+    if action.reply_to_msg_id > 0:
+        kwargs["reply_to"] = action.reply_to_msg_id
     if action.priority:
         kwargs["priority"] = action.priority
     if action.max_retry is not None:
@@ -367,7 +402,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.updated_at = now
             action.last_error = str(exc)[:200]
             changed = True
-            results.append({"id": action.id, "status": "failed", "attempts": action.attempts, "reason": action.last_error})
+            results.append(_result_payload(action, "failed", reason=action.last_error))
             continue
         if due_at <= now:
             due_actions.append((due_at, action))
@@ -379,7 +414,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.updated_at = now
             action.last_error = "missing send_as_id"
             changed = True
-            results.append({"id": action.id, "status": "failed", "attempts": action.attempts, "reason": action.last_error})
+            results.append(_result_payload(action, "failed", reason=action.last_error))
             continue
         try:
             send_kwargs = _send_kwargs(action)
@@ -389,7 +424,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.updated_at = now
             action.last_error = str(exc)[:200]
             changed = True
-            results.append({"id": action.id, "status": "failed", "attempts": action.attempts, "reason": action.last_error})
+            results.append(_result_payload(action, "failed", reason=action.last_error))
             continue
         action.attempts += 1
         action.status = "sending"
@@ -402,7 +437,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
         if sent is not None:
             _DELAYED_ACTIONS.pop(action.id, None)
             changed = True
-            results.append({"id": action.id, "status": "sent", "message_id": int(getattr(sent, "id", 0) or 0)})
+            results.append(_result_payload(action, "sent", message_id=int(getattr(sent, "id", 0) or 0)))
             continue
 
         if not action.last_error:
@@ -410,7 +445,7 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
         if action.attempts >= action.max_send_attempts:
             action.status = "failed"
             changed = True
-            results.append({"id": action.id, "status": "failed", "attempts": action.attempts})
+            results.append(_result_payload(action, "failed"))
             continue
 
         try:
@@ -421,19 +456,36 @@ async def drain_due_actions(now, send_func: DelayedSendFunc, *, max_items=20):
             action.updated_at = now
             action.last_error = str(exc)[:200]
             changed = True
-            results.append({"id": action.id, "status": "failed", "attempts": action.attempts, "reason": action.last_error})
+            results.append(_result_payload(action, "failed", reason=action.last_error))
             continue
 
         action.status = "pending"
         action.due_at = now + retry_delay_sec
         action.updated_at = now
         changed = True
-        results.append({"id": action.id, "status": "rescheduled", "due_at": action.due_at, "attempts": action.attempts})
+        results.append(_result_payload(action, "rescheduled", due_at=action.due_at))
 
     if changed:
         _mark_dirty()
 
     return results
+
+
+def _result_payload(action, status, **extra):
+    payload = {
+        "id": action.id,
+        "status": status,
+        "command": action.command,
+        "send_as_id": action.send_as_id,
+        "reply_to_msg_id": action.reply_to_msg_id,
+        "source_module": action.source_module,
+        "op_id": action.op_id,
+        "chain_id": action.chain_id,
+        "attempts": action.attempts,
+        "extra": dict(action.extra or {}),
+    }
+    payload.update(extra)
+    return payload
 
 
 __all__ = [
