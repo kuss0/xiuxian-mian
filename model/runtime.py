@@ -207,6 +207,7 @@ SEND_PRIORITY_P0 = "p0"
 SEND_PRIORITY_CHAIN = "chain"
 SEND_PRIORITY_REACTIVE = "reactive"
 SEND_PRIORITY_URGENT_REACTIVE = "urgent_reactive"
+SEND_PRIORITY_EVENT_BURST = "event_burst"
 SEND_PRIORITY_RETRY = "retry"
 SEND_PRIORITY_PROBE = "probe"
 SEND_PRIORITY_NORMAL = "normal"
@@ -221,6 +222,8 @@ REACTIVE_SEND_GAP_MIN_SEC = 14.0
 REACTIVE_SEND_GAP_MAX_SEC = 22.0
 URGENT_REACTIVE_SEND_GAP_MIN_SEC = 1.0
 URGENT_REACTIVE_SEND_GAP_MAX_SEC = 3.0
+EVENT_BURST_SEND_GAP_MIN_SEC = 0.55
+EVENT_BURST_SEND_GAP_MAX_SEC = 0.95
 RETRY_SEND_GAP_MIN_SEC = 1.0
 RETRY_SEND_GAP_MAX_SEC = 3.0
 NORMAL_SEND_GAP_MIN_SEC = 20.0
@@ -440,7 +443,16 @@ def should_pause_for_bot_health():
 
 def _normalize_send_priority(command, priority=None):
     explicit = str(priority or "").strip().lower()
-    if explicit in {SEND_PRIORITY_P0, SEND_PRIORITY_CHAIN, SEND_PRIORITY_REACTIVE, SEND_PRIORITY_URGENT_REACTIVE, SEND_PRIORITY_RETRY, SEND_PRIORITY_PROBE, SEND_PRIORITY_NORMAL}:
+    if explicit in {
+        SEND_PRIORITY_P0,
+        SEND_PRIORITY_CHAIN,
+        SEND_PRIORITY_REACTIVE,
+        SEND_PRIORITY_URGENT_REACTIVE,
+        SEND_PRIORITY_EVENT_BURST,
+        SEND_PRIORITY_RETRY,
+        SEND_PRIORITY_PROBE,
+        SEND_PRIORITY_NORMAL,
+    }:
         return explicit
     cmd = str(command or "").strip()
     if any(cmd.startswith(prefix) for prefix in P0_COMMAND_PREFIXES):
@@ -480,6 +492,8 @@ def _get_send_gap_range(priority):
         return P0_SEND_GAP_MIN_SEC, P0_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_URGENT_REACTIVE:
         return URGENT_REACTIVE_SEND_GAP_MIN_SEC, URGENT_REACTIVE_SEND_GAP_MAX_SEC
+    if priority == SEND_PRIORITY_EVENT_BURST:
+        return EVENT_BURST_SEND_GAP_MIN_SEC, EVENT_BURST_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_RETRY:
         return RETRY_SEND_GAP_MIN_SEC, RETRY_SEND_GAP_MAX_SEC
     if priority == SEND_PRIORITY_REACTIVE:

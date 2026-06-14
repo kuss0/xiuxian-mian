@@ -12,7 +12,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
@@ -37,8 +37,9 @@ WORLD_BOSS_ACTION_COMMANDS = {
 }
 WORLD_BOSS_PENDING_TIMEOUT_SEC = 3 * 60
 WORLD_BOSS_REPLY_TIMEOUT_SEC = 90
-WORLD_BOSS_ACTION_GAP_SEC = 75
-WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC = 45
+WORLD_BOSS_ACTION_GAP_SEC = 0.0
+WORLD_BOSS_MAX_ACTIONS_PER_TICK = 25
+WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC = 0
 WORLD_BOSS_STATUS_STALE_SEC = 90
 WORLD_BOSS_STATUS_QUERY_GAP_SEC = 3 * 60
 WORLD_BOSS_EVENT_TTL_SEC = 35 * 60
@@ -49,6 +50,8 @@ WORLD_BOSS_FALLBACK_START_MINUTE = 13 * 60 + 25
 WORLD_BOSS_FALLBACK_END_MINUTE = 14 * 60 + 10
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
+WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {f"{CMD_WORLD_BOSS_STATUS} 查看战况"}
+WORLD_BOSS_EVENT_PRIORITY = "event_burst"
 
 RE_WORLD_BOSS_OPEN = re.compile(r"【世界通告｜真仙试锋开启】")
 RE_WORLD_BOSS_NOTICE = re.compile(r"【世界通告｜真仙试锋(?P<title>[^】]+)】")
@@ -356,6 +359,10 @@ def _reset_all_identity_event_state(*, persist=False):
         save_state()
 
 
+def _clear_world_boss_pending_tasks():
+    clear_pending_tasks_by_commands(WORLD_BOSS_PENDING_COMMANDS)
+
+
 def _enabled_identity_ids():
     result = []
     for identity_id in get_identity_ids():
@@ -390,6 +397,11 @@ def _status_is_fresh(run_state, now):
     return bool(run_state.get("active")) and float(run_state.get("last_status_at") or 0) > 0 and now - float(run_state.get("last_status_at") or 0) <= WORLD_BOSS_STATUS_STALE_SEC
 
 
+def _event_chain_id(run_state, now=None):
+    event_key = str((run_state or {}).get("event_key") or "").strip() or f"{get_day_key(now or time.time())}:unknown"
+    return f"world_boss:{event_key}"
+
+
 def _strong_attack_allowed(run_state):
     phase = str(run_state.get("phase") or "")
     if "第二阶段" not in phase:
@@ -403,16 +415,21 @@ def _strong_attack_allowed(run_state):
 
 
 def _choose_maintenance_action(run_state):
+    phase = str(run_state.get("phase") or "")
     moya = _coerce_int(run_state.get("moya"), -1)
     zhen = _coerce_int(run_state.get("zhen"), -1)
     summary = _normalize_summary(run_state.get("summary"))
-    if moya >= 85:
+    if moya >= 65:
         return "镇魂"
-    if 0 <= zhen <= 70:
+    if "第二阶段" in phase and moya >= 55:
+        return "镇魂"
+    if 0 <= zhen <= 35 and moya < 85:
         return "护阵"
-    if moya >= 70:
-        return "镇魂"
-    return "镇魂" if summary["镇魂"] <= summary["护阵"] else "护阵"
+    if 0 <= zhen <= 50 and moya < 70 and summary["护阵"] <= max(0, summary["镇魂"] // 3):
+        return "护阵"
+    if 0 <= zhen <= 65 and moya < 50 and summary["护阵"] * 4 <= max(1, summary["镇魂"]):
+        return "护阵"
+    return "镇魂"
 
 
 def choose_world_boss_action(identity_id, identity_state, run_state, now=None):
@@ -545,11 +562,12 @@ async def _open_event(parsed, now, current_msg_id=0):
         enabled_count = len(_enabled_identity_ids())
         if enabled_count > 0:
             await send_audit_log(
-                f"🗡 真仙试锋开启：已启用 {enabled_count} 个身份，等待战况后低频参与。",
+                f"🗡 真仙试锋开启：已启用 {enabled_count} 个身份，等待战况后快速参与。",
                 scope="global",
                 priority="medium",
                 limit=220,
             )
+    _clear_world_boss_pending_tasks()
     _reset_all_identity_event_state(persist=False)
     run_state = _blank_run_state(now)
     run_state["active"] = True
@@ -582,6 +600,7 @@ async def _close_event(parsed, now, *, log=True):
         identity_state["world_boss_pending_msg_id"] = 0
         identity_state["world_boss_pending_action"] = ""
         identity_state["world_boss_pending_since"] = 0
+    _clear_world_boss_pending_tasks()
     if log and not duplicate:
         await _maybe_log_progress(run_state, now, force=True)
         summary = _normalize_summary(run_state.get("summary"))
@@ -609,6 +628,7 @@ async def _mark_inactive(now):
         identity_state["world_boss_pending_msg_id"] = 0
         identity_state["world_boss_pending_action"] = ""
         identity_state["world_boss_pending_since"] = 0
+    _clear_world_boss_pending_tasks()
     _set_run_state(run_state)
     return True
 
@@ -622,6 +642,22 @@ def _apply_identity_own_count(identity_state, parsed):
         identity_state["world_boss_action_count"] = max(_coerce_int(identity_state.get("world_boss_action_count"), 0), own_actions)
     if own_limit > 0 and own_actions >= own_limit:
         identity_state["world_boss_exhausted"] = True
+
+
+def _note_identity_action_reply(identity_state, action, now, *, pending_action=""):
+    action = str(action or "").strip()
+    pending_action = str(pending_action or "").strip()
+    if action not in WORLD_BOSS_ACTIONS:
+        return False
+    counted_by_send = bool(pending_action and pending_action == action)
+    if not counted_by_send:
+        identity_state["world_boss_action_count"] = _coerce_int(identity_state.get("world_boss_action_count"), 0) + 1
+        if action == "强攻":
+            identity_state["world_boss_attack_count"] = _coerce_int(identity_state.get("world_boss_attack_count"), 0) + 1
+        identity_state["world_boss_last_action_at"] = float(now)
+    identity_state["world_boss_last_action"] = action
+    identity_state["world_boss_last_error"] = ""
+    return True
 
 
 async def _handle_status(parsed, now, *, identity_id=0, current_msg_id=0):
@@ -663,9 +699,7 @@ async def _handle_action(parsed, now, *, identity_id=0, current_msg_id=0):
             identity_state["world_boss_pending_action"] = ""
             identity_state["world_boss_pending_since"] = 0
             identity_state["world_boss_last_reply_msg_id"] = int(current_msg_id or 0)
-            if action in WORLD_BOSS_ACTIONS:
-                identity_state["world_boss_last_action"] = action
-                identity_state["world_boss_last_error"] = ""
+            if _note_identity_action_reply(identity_state, action, now, pending_action=pending_action):
                 summary = _normalize_summary(run_state.get("summary"))
                 summary[action] = summary.get(action, 0) + 1
                 run_state["summary"] = summary
@@ -743,14 +777,17 @@ async def handle_world_boss_broadcast(text, now, event=None):
 
 
 async def _send_status_query(identity_id, now, run_state, reason):
+    chain_id = _event_chain_id(run_state, now)
     msg = await send_game_command(
         f"{CMD_WORLD_BOSS_STATUS} 查看战况",
         track=True,
         max_retry=0,
         reply_timeout=WORLD_BOSS_REPLY_TIMEOUT_SEC,
         send_as_id=identity_id,
-        priority="normal",
+        priority=WORLD_BOSS_EVENT_PRIORITY,
         source_module=WORLD_BOSS_MODULE_NAME,
+        op_id=f"{chain_id}:status:{identity_id}:{int(now)}",
+        chain_id=chain_id,
     )
     sent_at = _coerce_float(getattr(msg, "sent_at", 0), 0) or time.time()
     if not msg:
@@ -780,14 +817,18 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
     command = WORLD_BOSS_ACTION_COMMANDS.get(action)
     if not command:
         return False
+    chain_id = _event_chain_id(run_state, now)
+    next_count = _coerce_int(identity_state.get("world_boss_action_count"), 0) + 1
     msg = await send_game_command(
         command,
         track=True,
         max_retry=0,
         reply_timeout=WORLD_BOSS_REPLY_TIMEOUT_SEC,
         send_as_id=identity_id,
-        priority="normal",
+        priority=WORLD_BOSS_EVENT_PRIORITY,
         source_module=WORLD_BOSS_MODULE_NAME,
+        op_id=f"{chain_id}:action:{identity_id}:{action}:{next_count}",
+        chain_id=chain_id,
     )
     sent_at = _coerce_float(getattr(msg, "sent_at", 0), 0) or time.time()
     if not msg:
@@ -795,25 +836,35 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
         run_state["next_action_at"] = sent_at + WORLD_BOSS_STATUS_QUERY_GAP_SEC
         _set_run_state(run_state)
         return False
+    latest_run_state = _get_run_state(sent_at)
     identity_state["world_boss_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
     identity_state["world_boss_pending_action"] = action
     identity_state["world_boss_pending_since"] = sent_at
+    if not latest_run_state.get("active") or latest_run_state.get("event_key") != run_state.get("event_key"):
+        identity_state["world_boss_pending_msg_id"] = 0
+        identity_state["world_boss_pending_action"] = ""
+        identity_state["world_boss_pending_since"] = 0
+        identity_state["world_boss_last_error"] = "发送后事件已结束，等待无进行中回包"
+        clear_pending_tasks_by_commands({command}, send_as_id=identity_id)
+        _set_run_state(latest_run_state)
+        return sent_at
+    run_state = latest_run_state
     identity_state["world_boss_last_action"] = action
     identity_state["world_boss_last_action_at"] = sent_at
     identity_state["world_boss_last_error"] = ""
-    identity_state["world_boss_action_count"] = _coerce_int(identity_state.get("world_boss_action_count"), 0) + 1
+    identity_state["world_boss_action_count"] = next_count
     if action == "强攻":
         identity_state["world_boss_attack_count"] = _coerce_int(identity_state.get("world_boss_attack_count"), 0) + 1
     run_state["last_action_at"] = sent_at
     run_state["next_action_at"] = sent_at + WORLD_BOSS_ACTION_GAP_SEC
     _set_run_state(run_state)
     console_log(
-        f"🗡 真仙试锋[{_identity_label(identity_id)}] 已发送{action}，下次全局动作 {fmt_time_after(WORLD_BOSS_ACTION_GAP_SEC)}。",
+        f"🗡 真仙试锋[{_identity_label(identity_id)}] 已发送{action}，快速轮询下一身份。",
         scope="identity",
         send_as_id=identity_id,
         limit=180,
     )
-    return True
+    return sent_at
 
 
 def _fallback_window_open(now):
@@ -857,13 +908,22 @@ async def run_world_boss_scheduler(now):
                 _set_run_state(run_state, persist=False)
             return
 
-        if now < _coerce_float(run_state.get("next_action_at"), 0):
-            return
+        sent_count = 0
+        while sent_count < WORLD_BOSS_MAX_ACTIONS_PER_TICK:
+            run_state = _get_run_state(now)
+            if not run_state.get("active") or not _status_is_fresh(run_state, now):
+                return
+            if now < _coerce_float(run_state.get("next_action_at"), 0):
+                return
 
-        identity_id, identity_state, action = _select_identity_and_action(run_state, now)
-        if not identity_id or not identity_state or not action:
-            return
-        await _send_action(identity_id, identity_state, action, now, run_state)
+            identity_id, identity_state, action = _select_identity_and_action(run_state, now)
+            if not identity_id or not identity_state or not action:
+                return
+            sent_at = await _send_action(identity_id, identity_state, action, now, run_state)
+            if not sent_at:
+                return
+            sent_count += 1
+            now = max(float(now), _coerce_float(sent_at, now))
 
 
 def get_world_boss_status_text():

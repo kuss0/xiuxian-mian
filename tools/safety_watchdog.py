@@ -113,6 +113,15 @@ DIVINATION_QUERY_COMMAND = ".卜筮问天"
 DIVINATION_SOURCE_MODULE = "卜筮问天"
 DIVINATION_DAILY_QUERY_MIN_GAP_SEC = 55
 DIVINATION_DAILY_QUERY_MAX_ATTEMPTS_45M = 20
+WORLD_BOSS_SOURCE_MODULE = "真仙试锋"
+WORLD_BOSS_FAMILY = "world_boss"
+WORLD_BOSS_EVENT_COMMANDS = {
+    ".世界boss 查看战况",
+    ".讨伐青元子 镇魂",
+    ".讨伐青元子 护阵",
+    ".讨伐青元子 强攻",
+}
+WORLD_BOSS_MAX_SENDS_PER_IDENTITY_45M = 8
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
@@ -252,6 +261,8 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
     return (
         is_dungeon_fast_chain_command(str(prev.get("text") or ""))
         or is_dungeon_fast_chain_command(str(cur.get("text") or ""))
+        or is_world_boss_event(cur)
+        or is_world_boss_event(prev)
         or is_controlled_retry_event(cur)
         or is_safe_heart_global_gap_pair(prev, cur)
     )
@@ -526,6 +537,16 @@ def is_small_world_tool_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in SMALL_WORLD_TOOL_PREFIXES)
 
 
+def is_world_boss_event(item: dict, text: str | None = None) -> bool:
+    raw = command_key(str(text if text is not None else item.get("text") or ""))
+    if raw not in WORLD_BOSS_EVENT_COMMANDS:
+        return False
+    return (
+        str(item.get("source_module") or "").strip() == WORLD_BOSS_SOURCE_MODULE
+        or str(item.get("family") or "").strip() == WORLD_BOSS_FAMILY
+    )
+
+
 def command_key(text: str) -> str:
     raw = str(text or "").strip()
     if raw.startswith(".器灵试炼 "):
@@ -545,6 +566,7 @@ def is_send_burst_exempt_event(item: dict) -> bool:
     text = str(item.get("text") or "")
     return (
         is_dungeon_fast_chain_command(text)
+        or is_world_boss_event(item, text)
         or (is_heart_choice_command(text) and is_concubine_heart_event(item))
     )
 
@@ -614,6 +636,19 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
     if count_non_burst_exempt_since(sent, now, 900) >= cfg.total_15m_limit:
         return f"send burst: {cfg.total_15m_limit}+ sends in 900s"
 
+    world_boss_by_sender: dict[int, list[dict]] = defaultdict(list)
+    for item in sent:
+        if float(item.get("_epoch", 0) or 0) < now - 45 * 60:
+            continue
+        if not is_world_boss_event(item):
+            continue
+        sender_id = int(item.get("sender_id", 0) or 0)
+        if sender_id > 0:
+            world_boss_by_sender[sender_id].append(item)
+    for sender_id, items in world_boss_by_sender.items():
+        if len(items) > WORLD_BOSS_MAX_SENDS_PER_IDENTITY_45M:
+            return f"world boss over attempts: {sender_id} {len(items)}/45m"
+
     recent_gap_sent = [item for item in sent if float(item["_epoch"]) >= now - 30 * 60]
     for prev, cur in zip(recent_gap_sent, recent_gap_sent[1:]):
         gap = float(cur["_epoch"]) - float(prev["_epoch"])
@@ -644,7 +679,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         heart_choice = is_heart_choice_command(text) and is_safe_heart_choice_repeat(items)
         replica_choice = all(is_replica_choice_event(item, text) for item in items)
         divination_daily_query_chain = is_safe_divination_daily_query_chain(items, text)
-        if sect_teach or heart_choice:
+        world_boss_chain = all(is_world_boss_event(item, text) for item in items)
+        if sect_teach or heart_choice or world_boss_chain:
             min_gap = 0
         elif divination_daily_query_chain:
             min_gap = DIVINATION_DAILY_QUERY_MIN_GAP_SEC
@@ -679,6 +715,12 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
 
         if replica_choice and has_duplicate_replica_choice_op_id(items, text):
             return f"same command repeat: {sender_id}:{text} duplicate replica choice op_id"
+        if world_boss_chain:
+            op_ids = [str(item.get("op_id") or "").strip() for item in items]
+            if not all(op_ids):
+                return f"same command repeat: {sender_id}:{text} missing world boss op_id"
+            if len(op_ids) != len(set(op_ids)):
+                return f"same command repeat: {sender_id}:{text} duplicate world boss op_id"
         if guarded and not replica_choice and not divination_daily_query_chain and len(items) > cfg.guarded_max_attempts_45m:
             return f"guarded command over attempts: {sender_id}:{text} {len(items)}/45m"
         if guarded and not replica_choice and not divination_daily_query_chain and len(items) >= 4:

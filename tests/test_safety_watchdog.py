@@ -639,6 +639,80 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("send burst", breach)
 
+    def test_marked_world_boss_event_burst_is_not_send_burst_or_gap(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(
+                now - (9 - index) * 0.8,
+                3000 + index,
+                ".讨伐青元子 镇魂",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst",
+                op_id=f"world_boss:test:action:{3000 + index}:镇魂:1",
+                chain_id="world_boss:test",
+            )
+            for index in range(10)
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_unmarked_world_boss_burst_still_fuses(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(now - (5 - index) * 0.8, 3000 + index, ".讨伐青元子 镇魂")
+            for index in range(6)
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("send burst", breach)
+
+    def test_world_boss_same_identity_requires_unique_op_id_and_attempt_cap(self):
+        now = time.time()
+        sender_id = 301299112
+        events = [
+            _event(
+                now - (2 - index) * 0.8,
+                sender_id,
+                ".讨伐青元子 镇魂",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst",
+                op_id="world_boss:test:action:301299112:镇魂:1",
+                chain_id="world_boss:test",
+            )
+            for index in range(3)
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("duplicate world boss op_id", breach)
+
+        capped_events = [
+            _event(
+                now - (8 - index) * 0.8,
+                sender_id,
+                ".讨伐青元子 镇魂" if index % 2 == 0 else ".讨伐青元子 护阵",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst",
+                op_id=f"world_boss:test:action:301299112:{index}",
+                chain_id="world_boss:test",
+            )
+            for index in range(9)
+        ]
+
+        breach = safety_watchdog.find_send_breach(capped_events, now, self._config())
+
+        self.assertIn("world boss over attempts", breach)
+
     def test_marked_heart_choices_do_not_count_as_send_burst(self):
         now = time.time()
         sender_id = 8659059191
