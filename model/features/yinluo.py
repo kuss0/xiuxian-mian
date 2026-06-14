@@ -23,6 +23,7 @@ YINLUO_AUTO_STATUS_BACKOFF_SEC = 6 * 3600
 YINLUO_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
 YINLUO_AUTO_CHAIN_STEP_SEC = 2 * 60
+YINLUO_AUTO_CALIBRATE_RETRY_SEC = 10 * 60
 YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC = 8 * 3600
 YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC = 4 * 3600
 YINLUO_DEMON_SUMMON_MIN_REALM = "结丹初期"
@@ -103,6 +104,8 @@ def _default_yinluo_observation():
         "auto_next_time": 0,
         "auto_last_action": "",
         "auto_last_error": "",
+        "auto_calibrate_reason": "",
+        "auto_refine_pending": {},
         "recent": [],
     }
 
@@ -113,6 +116,15 @@ def normalize_yinluo_observation(value=None):
         observed.update(value)
     if not isinstance(observed.get("soul_stocks"), dict):
         observed["soul_stocks"] = {}
+    cleaned_stocks = {}
+    for name, count in observed.get("soul_stocks", {}).items():
+        stock_name = str(name or "").strip()
+        if not stock_name or "·" in stock_name:
+            continue
+        cleaned_stocks[stock_name] = max(0, _safe_int(count))
+    observed["soul_stocks"] = cleaned_stocks
+    if not isinstance(observed.get("auto_refine_pending"), dict):
+        observed["auto_refine_pending"] = {}
     for key in ("ready_slot_numbers", "empty_slot_numbers", "refining_slot_numbers"):
         if not isinstance(observed.get(key), list):
             observed[key] = []
@@ -195,6 +207,23 @@ def _append_slot_number(observed, key, slot_no):
     if slot_no not in [_safe_int(value) for value in values]:
         values.append(slot_no)
     observed[key] = sorted(_safe_int(value) for value in values if 1 <= _safe_int(value) <= 99)
+    return observed
+
+
+def _restore_auto_refine_pending(observed):
+    pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
+    if not pending:
+        return observed
+    for key in ("empty_slot_numbers", "refining_slot_numbers"):
+        if isinstance(pending.get(f"pre_{key}"), list):
+            observed[key] = list(pending.get(f"pre_{key}") or [])
+    for key in ("empty_slots", "refining_slots", "sha_current", "sha_percent"):
+        if f"pre_{key}" in pending:
+            observed[key] = _safe_int(pending.get(f"pre_{key}"))
+    if isinstance(pending.get("pre_soul_stocks"), dict):
+        observed["soul_stocks"] = copy.deepcopy(pending.get("pre_soul_stocks") or {})
+    observed["auto_refine_pending"] = {}
+    observed["auto_calibrate_reason"] = "囚禁魂魄失败，需查幡校准。"
     return observed
 
 
@@ -301,8 +330,14 @@ def parse_yinluo_text(text, now=None, family=""):
             "refining_slot_numbers": [],
             "refining_slots_detail": [],
         }
+        in_soul_stock_section = False
         for line in raw_text.splitlines():
             stripped = line.strip()
+            if stripped.startswith("魂魄储备"):
+                in_soul_stock_section = True
+                continue
+            if in_soul_stock_section and stripped and not stripped.startswith("-"):
+                in_soul_stock_section = False
             if stripped.startswith("本命魔兵"):
                 parsed["banner_name"] = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
             elif stripped.startswith("幡体等阶"):
@@ -311,7 +346,7 @@ def parse_yinluo_text(text, now=None, family=""):
                 parsed["banner_status"] = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
             elif stripped.startswith("主魂流派"):
                 parsed["main_soul_path"] = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
-            else:
+            elif in_soul_stock_section:
                 stock_match = RE_SOUL_STOCK.match(stripped)
                 if stock_match:
                     parsed["soul_stocks"][stock_match.group("name").strip()] = int(stock_match.group("count") or 0)
@@ -663,12 +698,17 @@ def apply_yinluo_passive(text, now=None, family=""):
     observed["last_action"] = parsed.get("action") or ""
     observed["last_result"] = parsed.get("result") or ""
     observed["last_summary"] = parsed.get("summary") or _short_summary(text)
+    if parsed.get("action") == "阴罗幡" and parsed.get("result") == "panel":
+        observed["auto_refine_pending"] = {}
+        observed["auto_calibrate_reason"] = ""
     if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") == "success":
         gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
         if gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
             observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
             if int(observed.get("sha_max", 0) or 0) > 0:
                 observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
+    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
+        observed = _restore_auto_refine_pending(observed)
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":
         slot_no = int(parsed.get("last_refine_slot", 0) or 0)
         refine_already_accounted = (
@@ -694,6 +734,8 @@ def apply_yinluo_passive(text, now=None, family=""):
                 observed["sha_percent"] = int(min(100, observed["sha_current"] * 100 / max(1, int(observed.get("sha_max", 0) or 0))))
         if resource and not refine_already_accounted:
             observed = _adjust_soul_stock(observed, resource, -1)
+        observed["auto_refine_pending"] = {}
+        observed["auto_calibrate_reason"] = ""
     if parsed.get("action") == "收取精华" and parsed.get("result") == "success":
         collect_count = max(1, int(parsed.get("last_collect_count", 0) or 0))
         ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
@@ -712,7 +754,10 @@ def apply_yinluo_passive(text, now=None, family=""):
     if parsed.get("action") == "血洗山林" and parsed.get("result") == "success":
         observed = _adjust_soul_stock(observed, parsed.get("last_soul_name"), parsed.get("last_soul_gain"))
         observed = _adjust_soul_stock(observed, parsed.get("last_extra_soul_name"), parsed.get("last_extra_soul_gain"))
-    observed["auto_last_error"] = ""
+    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
+        observed["auto_last_error"] = parsed.get("last_error") or parsed.get("summary") or ""
+    else:
+        observed["auto_last_error"] = ""
     if int(observed.get("ready_slots", 0) or 0) > 0:
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     elif any(float(observed.get(key, 0) or 0) > now for key in ("next_blood_forest_time", "next_demon_summon_time")):
@@ -924,10 +969,23 @@ def _mark_collect_slot_sent(observed, command):
     return observed
 
 
-def _mark_refine_slot_sent(observed, command):
+def _mark_refine_slot_sent(observed, command, sent_at=0):
     observed = normalize_yinluo_observation(observed)
     slot_no = _extract_refine_slot(command)
     target = _extract_refine_target(command)
+    observed["auto_refine_pending"] = {
+        "slot": slot_no,
+        "target": target,
+        "cost": _estimate_refine_sha_cost(target),
+        "sent_at": float(sent_at or 0),
+        "pre_empty_slot_numbers": list(observed.get("empty_slot_numbers") or []),
+        "pre_refining_slot_numbers": list(observed.get("refining_slot_numbers") or []),
+        "pre_empty_slots": int(observed.get("empty_slots", 0) or 0),
+        "pre_refining_slots": int(observed.get("refining_slots", 0) or 0),
+        "pre_sha_current": int(observed.get("sha_current", 0) or 0),
+        "pre_sha_percent": int(observed.get("sha_percent", 0) or 0),
+        "pre_soul_stocks": copy.deepcopy(observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}),
+    }
     observed = _remove_slot_number(observed, "empty_slot_numbers", slot_no)
     observed = _append_slot_number(observed, "refining_slot_numbers", slot_no)
     if observed.get("empty_slot_numbers"):
@@ -985,6 +1043,8 @@ def _earliest_yinluo_next_time(observed, now):
 
 
 def _has_yinluo_due_followup(observed, now):
+    if str(observed.get("auto_calibrate_reason") or "").strip():
+        return True
     if int(observed.get("ready_slots", 0) or 0) > 0:
         return True
     auto_refine_arg, _reason = _build_auto_refine_arg(observed, now=now)
@@ -1152,16 +1212,19 @@ async def run_yinluo_scheduler(now):
     elif not _has_banner_hint(observed):
         plan = build_yinluo_manual_plan("banner", now=now)
     else:
-        auto_refine_arg, _auto_refine_reason = _build_auto_refine_arg(observed, now=now)
-        if auto_refine_arg:
-            plan = build_yinluo_manual_plan("refine", auto_refine_arg, now=now)
-        elif float(observed.get("next_blood_forest_time", 0) or 0) <= now:
-            plan = build_yinluo_manual_plan("blood_forest", now=now)
-        elif float(observed.get("next_demon_summon_time", 0) or 0) <= now:
-            plan = build_yinluo_manual_plan("demon_summon", now=now)
+        if str(observed.get("auto_calibrate_reason") or "").strip():
+            plan = build_yinluo_manual_plan("banner", now=now)
         else:
-            _set_yinluo_auto_wait(observed, now, "idle", _earliest_yinluo_next_time(observed, now))
-            return
+            auto_refine_arg, _auto_refine_reason = _build_auto_refine_arg(observed, now=now)
+            if auto_refine_arg:
+                plan = build_yinluo_manual_plan("refine", auto_refine_arg, now=now)
+            elif float(observed.get("next_blood_forest_time", 0) or 0) <= now:
+                plan = build_yinluo_manual_plan("blood_forest", now=now)
+            elif float(observed.get("next_demon_summon_time", 0) or 0) <= now:
+                plan = build_yinluo_manual_plan("demon_summon", now=now)
+            else:
+                _set_yinluo_auto_wait(observed, now, "idle", _earliest_yinluo_next_time(observed, now))
+                return
 
     action = str(plan.get("action") or "")
     if not plan.get("allowed"):
@@ -1200,8 +1263,13 @@ async def run_yinluo_scheduler(now):
         observed = _mark_collect_slot_sent(observed, plan.get("command") or "")
         observed["auto_next_time"] = _yinluo_next_after_action(observed, sent_at)
     elif action == "refine":
-        observed = _mark_refine_slot_sent(observed, plan.get("command") or "")
+        observed = _mark_refine_slot_sent(observed, plan.get("command") or "", sent_at)
         observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
+    elif action == "banner":
+        if str(observed.get("auto_calibrate_reason") or "").strip():
+            observed["auto_next_time"] = sent_at + YINLUO_AUTO_CALIBRATE_RETRY_SEC
+        else:
+            observed["auto_next_time"] = sent_at + YINLUO_AUTO_STATUS_BACKOFF_SEC
     elif action == "blood_forest":
         observed["next_blood_forest_time"] = max(
             float(observed.get("next_blood_forest_time", 0) or 0),

@@ -65,6 +65,8 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual([1], parsed["ready_slot_numbers"])
         self.assertEqual([2, 3, 4, 5, 6, 7, 8, 9], parsed["empty_slot_numbers"])
         self.assertEqual(4, parsed["soul_stocks"]["妖兽精魄"])
+        self.assertNotIn("妖兽精魄 · 血煞幡", parsed["soul_stocks"])
+        self.assertNotIn("凶兽戾魄 · 灭法幡", parsed["soul_stocks"])
 
     def test_demon_summon_cooldown_convert_and_retreat_parse(self):
         now = 1_779_450_000.0
@@ -452,6 +454,7 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["soul_stocks"]["凶兽戾魄"])
         self.assertEqual(300, observed["sha_current"])
         self.assertEqual(now + yinluo.YINLUO_AUTO_CHAIN_STEP_SEC, observed["auto_next_time"])
+        self.assertEqual(3, observed["auto_refine_pending"]["slot"])
 
     async def test_scheduler_does_not_refine_without_known_empty_slot_number(self):
         now = 1_780_000_000.0
@@ -471,6 +474,58 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         send_mock.assert_not_called()
         self.assertEqual("idle", observed["auto_last_action"])
+
+    async def test_auto_refine_failure_rolls_back_and_requires_banner_calibration(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 1300,
+            "sha_max": 15000,
+            "empty_slots": 1,
+            "empty_slot_numbers": [3],
+            "ready_slots": 0,
+            "soul_stocks": {"凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_next_time": now - 1,
+        }, now=now)
+        send_mock.assert_awaited_once()
+        self.assertEqual(".囚禁魂魄 3 凶兽戾魄", send_mock.await_args.args[0])
+
+        with state_module.use_identity(self.identity_id):
+            self.assertTrue(yinluo.apply_yinluo_passive("你的煞气不足！炼化需要消耗 1000 点煞气。", now=now + 1))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual([3], observed["empty_slot_numbers"])
+        self.assertEqual([], observed["refining_slot_numbers"])
+        self.assertEqual(1300, observed["sha_current"])
+        self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual({}, observed["auto_refine_pending"])
+        self.assertIn("囚禁魂魄失败", observed["auto_calibrate_reason"])
+
+    async def test_scheduler_queries_banner_before_refine_when_calibration_required(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "sha_current": 1300,
+            "sha_max": 15000,
+            "empty_slots": 1,
+            "empty_slot_numbers": [3],
+            "ready_slots": 0,
+            "soul_stocks": {"凶兽戾魄": 1},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_calibrate_reason": "囚禁魂魄失败，需查幡校准。",
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".我的阴罗幡", send_mock.await_args.args[0])
+        self.assertEqual("banner", observed["auto_last_action"])
 
     async def test_scheduler_summons_demon_only_after_banner_hint_and_due(self):
         now = 1_780_000_000.0
