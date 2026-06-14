@@ -30,3 +30,19 @@ def test_storage_bag_frontend_has_explicit_category_overrides():
     assert "真仙试锋" in script
     assert "紫灵的轻吻" in script
     assert "稳控全场" in script
+
+
+def test_storage_bag_transfer_presets_keep_normal_and_money_listing_items_separate():
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+
+    preferred_listing = script.split("function preferredListingItem", 1)[1].split(
+        "function availableBatchSourceRows", 1
+    )[0]
+    money_preset = script.split("function applyMoneyPreset", 1)[1].split(
+        "function storageBagViewState", 1
+    )[0]
+
+    assert "name === '凝血草'" in preferred_listing
+    assert "state.listingItem = '黄芽丹'" not in preferred_listing
+    assert "state.listingItem = '黄芽丹'" in money_preset
+    assert "state.listingSyntax = 'compact'" in money_preset

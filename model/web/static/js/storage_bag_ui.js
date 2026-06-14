@@ -130,7 +130,8 @@
     const row = rowById(targetId);
     const inv = (row || {}).items || {};
     const names = Object.keys(inv).filter(function (name) { return Number(inv[name] || 0) > 0; });
-    return names.find(function (name) { return name.indexOf('凝血草') >= 0; })
+    return names.find(function (name) { return name === '凝血草'; })
+      || names.find(function (name) { return name.indexOf('凝血草') >= 0; })
       || names.find(function (name) { return /草|花|果|芝|参|药/.test(name); })
       || names.find(function (name) { return name.indexOf('灵石') < 0; })
       || names[0]
