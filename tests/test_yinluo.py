@@ -43,6 +43,7 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(11, parsed["battle_bonus_percent"])
         self.assertEqual(1, parsed["ready_slots"])
         self.assertEqual([4], parsed["ready_slot_numbers"])
+        self.assertEqual([{"slot": 4, "target": "凶兽戾魄"}], parsed["ready_slots_detail"])
         self.assertEqual(1, parsed["refining_slots"])
         self.assertEqual([1, 2, 3], parsed["empty_slot_numbers"])
         self.assertEqual([5], parsed["refining_slot_numbers"])
@@ -480,6 +481,69 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([4], observed["ready_slot_numbers"])
         self.assertEqual([1], observed["auto_collect_pending"]["slots"])
 
+    async def test_scheduler_skips_collect_blocked_ready_slots(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "灭法幡胚",
+            "ready_slots": 2,
+            "ready_slot_numbers": [2, 4],
+            "ready_slots_detail": [
+                {"slot": 2, "target": "妖兽精魄"},
+                {"slot": 4, "target": "凶兽戾魄"},
+            ],
+            "collect_blocked_slots": {
+                "2": {"until": now + 7 * 86400, "target": "妖兽精魄", "reason": "测试保护"},
+            },
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": False,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": [],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".收取精华 4", send_mock.await_args.args[0])
+        self.assertEqual([2], observed["collect_blocked_ready_slot_numbers"])
+        self.assertEqual([], observed["ready_slot_numbers"])
+        self.assertEqual([4], observed["auto_collect_pending"]["slots"])
+
+    async def test_scheduler_does_not_collect_when_all_ready_slots_are_blocked(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "灭法幡胚",
+            "ready_slots": 1,
+            "ready_slot_numbers": [2],
+            "ready_slots_detail": [{"slot": 2, "target": "妖兽精魄"}],
+            "collect_blocked_slots": {
+                "2": {"until": now + 7 * 86400, "target": "妖兽精魄", "reason": "测试保护"},
+            },
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": False,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": [],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("idle", observed["auto_last_action"])
+        self.assertIn("收取保护期", observed["auto_last_error"])
+
     async def test_scheduler_waits_for_collect_reply_before_next_ready_slot(self):
         now = 1_780_000_000.0
         send_mock, observed = await self._run_with_observation({
@@ -582,6 +646,28 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(ok)
         self.assertIn("等待真实回复", message)
+        self.assertFalse(plan["allowed"])
+        send_mock.assert_not_called()
+
+    async def test_manual_collect_blocks_protected_slot(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "banner_owner": "缘初子",
+                "ready_slots": 1,
+                "ready_slot_numbers": [2],
+                "ready_slots_detail": [{"slot": 2, "target": "妖兽精魄"}],
+                "collect_blocked_slots": {
+                    "2": {"until": now + 7 * 86400, "target": "妖兽精魄", "reason": "测试保护"},
+                },
+            }
+            with patch.object(yinluo, "send_game_command") as send_mock:
+                ok, message, plan = await yinluo.execute_yinluo_manual_action("collect", "2", now=now)
+
+        self.assertFalse(ok)
+        self.assertIn("收取保护", message)
         self.assertFalse(plan["allowed"])
         send_mock.assert_not_called()
 

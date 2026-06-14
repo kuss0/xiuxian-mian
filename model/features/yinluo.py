@@ -53,6 +53,7 @@ RE_EXTRA_SHA_GAIN = re.compile(r"额外获得了\s*(?P<gain>\d+)\s*点精纯煞�
 RE_COLLECT_SLOT = re.compile(r"你从\s*(?P<count>\d+)\s*个炼化槽中获得了[:：]\s*(?P<items>.+)")
 RE_COLLECT_SOUL_GAIN = re.compile(r"幡魂谱系精进[:：]\s*(?P<name>[^+。]+)\+(?P<count>\d+)")
 RE_SLOT_LINE = re.compile(r"^\s*(?P<slot>\d+)号槽[:：]\s*\[(?P<status>[^\]]+)\]")
+RE_READY_SLOT_DETAIL = re.compile(r"^\s*(?P<slot>\d+)号槽[:：]\s*\[精华已成\]\s*-\s*(?P<target>.+?)\s*$")
 RE_BLOOD_SOUL_GAIN = re.compile(r"成功捕获了\s*(?P<count>\d+)\s*缕【(?P<name>[^】]+)】")
 RE_BLOOD_EXTRA_ITEM = re.compile(r"额外发现了\s*【(?P<name>[^】]+)】x(?P<count>\d+)")
 RE_BLOOD_EXTRA_SOUL = re.compile(r"额外拘来\s*(?P<count>\d+)\s*缕【(?P<name>[^】]+)】")
@@ -106,6 +107,9 @@ def _default_yinluo_observation():
         "soul_stocks": {},
         "ready_slots": 0,
         "ready_slot_numbers": [],
+        "ready_slots_detail": [],
+        "collect_blocked_slots": {},
+        "collect_blocked_ready_slot_numbers": [],
         "refining_slots": 0,
         "refining_slot_numbers": [],
         "refining_slots_detail": [],
@@ -166,7 +170,7 @@ def normalize_yinluo_observation(value=None):
         observed["auto_collect_pending"] = {}
     if not isinstance(observed.get("auto_refine_pending"), dict):
         observed["auto_refine_pending"] = {}
-    for key in ("ready_slot_numbers", "empty_slot_numbers", "refining_slot_numbers"):
+    for key in ("ready_slot_numbers", "collect_blocked_ready_slot_numbers", "empty_slot_numbers", "refining_slot_numbers"):
         if not isinstance(observed.get(key), list):
             observed[key] = []
         slot_numbers = []
@@ -178,6 +182,11 @@ def normalize_yinluo_observation(value=None):
             if 1 <= slot_no <= 99 and slot_no not in slot_numbers:
                 slot_numbers.append(slot_no)
         observed[key] = slot_numbers
+    if not isinstance(observed.get("ready_slots_detail"), list):
+        observed["ready_slots_detail"] = []
+    observed["ready_slots_detail"] = [
+        item for item in observed.get("ready_slots_detail", []) if isinstance(item, dict)
+    ][-20:]
     if not isinstance(observed.get("refining_slots_detail"), list):
         observed["refining_slots_detail"] = []
     observed["refining_slots_detail"] = [
@@ -187,6 +196,21 @@ def normalize_yinluo_observation(value=None):
         observed["recent"] = []
     observed["recent"] = [item for item in observed.get("recent", []) if isinstance(item, dict)][-8:]
     observed["last_convert_result_key"] = str(observed.get("last_convert_result_key") or "")
+    blocked_slots = observed.get("collect_blocked_slots") if isinstance(observed.get("collect_blocked_slots"), dict) else {}
+    cleaned_blocked_slots = {}
+    for slot_key, block in blocked_slots.items():
+        slot_no = _safe_int(slot_key)
+        if not (1 <= slot_no <= 99) or not isinstance(block, dict):
+            continue
+        until = _safe_float(block.get("until"), 0)
+        if until <= 0:
+            continue
+        cleaned_blocked_slots[str(slot_no)] = {
+            "until": until,
+            "target": str(block.get("target") or "").strip(),
+            "reason": str(block.get("reason") or "").strip(),
+        }
+    observed["collect_blocked_slots"] = cleaned_blocked_slots
     for key in ("last_observed_at", "next_demon_summon_time", "next_blood_forest_time", "next_convert_time", "auto_next_time"):
         try:
             observed[key] = float(observed.get(key, 0) or 0)
@@ -218,6 +242,13 @@ def _safe_int(value, default=0):
         return int(value or 0)
     except (TypeError, ValueError):
         return int(default or 0)
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return float(default or 0.0)
 
 
 def _split_refine_targets(value):
@@ -281,6 +312,76 @@ def _append_slot_number(observed, key, slot_no):
     if slot_no not in [_safe_int(value) for value in values]:
         values.append(slot_no)
     observed[key] = sorted(_safe_int(value) for value in values if 1 <= _safe_int(value) <= 99)
+    return observed
+
+
+def _ready_slot_target_map(observed):
+    details = observed.get("ready_slots_detail") if isinstance(observed.get("ready_slots_detail"), list) else []
+    targets = {}
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        slot_no = _safe_int(item.get("slot"))
+        target = str(item.get("target") or "").strip()
+        if 1 <= slot_no <= 99 and target:
+            targets[slot_no] = target
+    return targets
+
+
+def _active_collect_blockers(observed, now=None):
+    now = float(now if now is not None else time.time())
+    blockers = observed.get("collect_blocked_slots") if isinstance(observed.get("collect_blocked_slots"), dict) else {}
+    active = {}
+    for slot_key, block in blockers.items():
+        slot_no = _safe_int(slot_key)
+        if not (1 <= slot_no <= 99) or not isinstance(block, dict):
+            continue
+        until = _safe_float(block.get("until"), 0)
+        if until <= now:
+            continue
+        active[str(slot_no)] = {
+            "until": until,
+            "target": str(block.get("target") or "").strip(),
+            "reason": str(block.get("reason") or "").strip(),
+        }
+    return active
+
+
+def _slot_collect_block_reason(observed, slot_no, now=None):
+    slot_no = _safe_int(slot_no)
+    if slot_no <= 0:
+        return ""
+    blockers = _active_collect_blockers(observed, now=now)
+    block = blockers.get(str(slot_no))
+    if not block:
+        return ""
+    target = _ready_slot_target_map(observed).get(slot_no, "")
+    block_target = str(block.get("target") or "").strip()
+    if block_target and target and block_target != target:
+        return ""
+    until = _safe_float(block.get("until"), 0)
+    target_part = f"【{block_target}】" if block_target else "该槽"
+    return f"{slot_no}号槽{target_part}收取保护中，{fmt_abs_ts(until)} 前不收取。"
+
+
+def _apply_collect_blockers(observed, now=None):
+    observed = normalize_yinluo_observation(observed)
+    active = _active_collect_blockers(observed, now=now)
+    observed["collect_blocked_slots"] = active
+    ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
+    if not ready_slot_numbers:
+        observed["collect_blocked_ready_slot_numbers"] = []
+        return observed
+    allowed_slots = []
+    blocked_slots = []
+    for slot_no in ready_slot_numbers:
+        if _slot_collect_block_reason(observed, slot_no, now=now):
+            blocked_slots.append(slot_no)
+        else:
+            allowed_slots.append(slot_no)
+    observed["ready_slot_numbers"] = allowed_slots
+    observed["ready_slots"] = len(allowed_slots)
+    observed["collect_blocked_ready_slot_numbers"] = blocked_slots
     return observed
 
 
@@ -406,6 +507,7 @@ def parse_yinluo_text(text, now=None, family=""):
             "banner_owner": title_match.group("owner").strip(),
             "soul_stocks": {},
             "ready_slot_numbers": [],
+            "ready_slots_detail": [],
             "empty_slot_numbers": [],
             "refining_slot_numbers": [],
             "refining_slots_detail": [],
@@ -436,6 +538,12 @@ def parse_yinluo_text(text, now=None, family=""):
                 slot_status = slot_match.group("status")
                 if "精华已成" in slot_status:
                     parsed["ready_slot_numbers"].append(slot_no)
+                    detail_match = RE_READY_SLOT_DETAIL.match(stripped)
+                    if detail_match:
+                        parsed["ready_slots_detail"].append({
+                            "slot": slot_no,
+                            "target": detail_match.group("target").strip(),
+                        })
                 elif "空闲" in slot_status:
                     parsed["empty_slot_numbers"].append(slot_no)
                 elif "炼化中" in slot_status:
@@ -777,6 +885,7 @@ def apply_yinluo_passive(text, now=None, family=""):
         "soul_stocks",
         "ready_slots",
         "ready_slot_numbers",
+        "ready_slots_detail",
         "refining_slots",
         "refining_slot_numbers",
         "refining_slots_detail",
@@ -807,6 +916,7 @@ def apply_yinluo_passive(text, now=None, family=""):
     if parsed.get("action") == "阴罗幡" and parsed.get("result") == "panel":
         observed["auto_refine_pending"] = {}
         observed["auto_calibrate_reason"] = ""
+        observed = _apply_collect_blockers(observed, now=now)
     if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") == "success":
         gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
         should_apply_gain = parsed.get("action") != "化功为煞" or not convert_already_accounted
@@ -861,6 +971,10 @@ def apply_yinluo_passive(text, now=None, family=""):
             observed = _append_slot_number(observed, "empty_slot_numbers", slot_no)
         if released_slots:
             observed["empty_slots"] = len(observed.get("empty_slot_numbers") or [])
+            ready_details = observed.get("ready_slots_detail") if isinstance(observed.get("ready_slots_detail"), list) else []
+            observed["ready_slots_detail"] = [
+                item for item in ready_details if _safe_int(item.get("slot")) not in released_slots
+            ]
         observed["auto_calibrate_reason"] = ""
     if parsed.get("action") == "收取精华" and parsed.get("result") == "empty":
         observed["auto_collect_pending"] = {}
@@ -976,12 +1090,16 @@ def _parse_slot_arg(arg):
     return slot_no if 1 <= slot_no <= 99 else -1
 
 
-def _build_collect_command(observed, arg=""):
+def _build_collect_command(observed, arg="", now=None):
+    observed = _apply_collect_blockers(observed, now=now)
     explicit_slot = _parse_slot_arg(arg)
     if explicit_slot < 0:
         return "", "收取精华槽位必须是 1-99 的整数。"
     ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
     if explicit_slot:
+        block_reason = _slot_collect_block_reason(observed, explicit_slot, now=now)
+        if block_reason:
+            return "", block_reason
         if ready_slot_numbers and explicit_slot not in ready_slot_numbers:
             return "", f"{explicit_slot}号槽未记录为精华已成，不发送收取精华。"
         return f"{CMD_YINLUO_COLLECT} {explicit_slot}", ""
@@ -989,6 +1107,9 @@ def _build_collect_command(observed, arg=""):
         return f"{CMD_YINLUO_COLLECT} {ready_slot_numbers[0]}", ""
     if int(observed.get("ready_slots", 0) or 0) > 0:
         return "", "已知有精华已成，但缺少槽位编号；请先查幡刷新槽位。"
+    blocked_ready_slots = list(observed.get("collect_blocked_ready_slot_numbers") or [])
+    if blocked_ready_slots:
+        return "", f"精华槽 {','.join(str(slot) for slot in blocked_ready_slots)} 处于收取保护期，不发送收取精华。"
     return "", "未记录可收取的精华炼化槽，不发送收取精华。"
 
 
@@ -1358,6 +1479,7 @@ def _build_due_refining_collect_plan(observed, now):
 
 
 def _has_yinluo_due_followup(observed, now):
+    observed = _apply_collect_blockers(observed, now=now)
     if str(observed.get("auto_calibrate_reason") or "").strip():
         return True
     if _has_collect_pending(observed):
@@ -1447,7 +1569,7 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
             return phaseful_block
         if _has_collect_pending(observed):
             return _manual_block(action, "收取精华上一轮正在等待真实回复，不并行发送。", CMD_YINLUO_COLLECT, "yinluo_collect")
-        command, reason = _build_collect_command(observed, arg)
+        command, reason = _build_collect_command(observed, arg, now=now)
         if not command:
             return _manual_block(action, reason, CMD_YINLUO_COLLECT, "yinluo_collect")
         return _manual_allow(action, command, "yinluo_collect", now)
@@ -1522,6 +1644,8 @@ async def run_yinluo_scheduler(now):
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
         return
+    observed = _apply_collect_blockers(observed, now=now)
+    state["yinluo_observation"] = observed
 
     if _has_recent_observation(observed, now) and _has_pending_yinluo_resolution(observed):
         pending_action = str(observed.get("last_action") or "阴罗宗动作")
@@ -1577,7 +1701,11 @@ async def run_yinluo_scheduler(now):
         elif _auto_action_enabled(observed, "demon_summon") and float(observed.get("next_demon_summon_time", 0) or 0) <= now:
             plan = build_yinluo_manual_plan("demon_summon", now=now)
         else:
-            _set_yinluo_auto_wait(observed, now, "idle", _earliest_yinluo_next_time(observed, now))
+            blocked_ready_slots = list(observed.get("collect_blocked_ready_slot_numbers") or [])
+            block_error = ""
+            if _auto_action_enabled(observed, "collect") and blocked_ready_slots:
+                block_error = f"精华槽 {','.join(str(slot) for slot in blocked_ready_slots)} 处于收取保护期。"
+            _set_yinluo_auto_wait(observed, now, "idle", _earliest_yinluo_next_time(observed, now), block_error)
             return
 
     action = str(plan.get("action") or "")
