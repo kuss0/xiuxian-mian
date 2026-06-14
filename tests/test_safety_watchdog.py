@@ -840,7 +840,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("old", payload["reason"])
 
-    def test_existing_same_reason_marker_refuses_when_global_enabled(self):
+    def test_existing_same_reason_marker_reasserts_pause_without_notify(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = safety_watchdog.Path(tmpdir)
             state_dir = root / "data" / "state"
@@ -869,10 +869,10 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("0", value)
         self.assertEqual("same breach", payload["reason"])
-        self.assertEqual(["global_enabled=0"], payload["actions"])
+        self.assertEqual([], payload["actions"])
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
-        self.assertIn("stale fuse marker with global enabled", printed)
-        send_mock.assert_called_once()
+        self.assertIn("already fused for same reason; refreshed global_enabled=0", printed)
+        send_mock.assert_not_called()
 
     def test_fuse_message_mentions_all_configured_admins(self):
         message = safety_watchdog.format_fuse_message(
@@ -952,6 +952,30 @@ class SafetyWatchdogTests(unittest.TestCase):
         ]
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_phaseful_chain_relaunch_does_not_same_command_fuse(self):
+        now = time.time()
+        sender_id = 3823558636
+        events = [
+            _event(
+                now - 70,
+                sender_id,
+                ".深度闭关",
+                family="deep_retreat",
+                source_module="深度闭关",
+                priority="chain",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".深度闭关",
+                family="deep_retreat",
+                source_module="深度闭关",
+                priority="chain",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
     def test_retry_without_intent_metadata_still_fuses(self):
         now = time.time()

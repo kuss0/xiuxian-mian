@@ -44,7 +44,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "tree_maturing_logged", "tree_harvest_followup_due_at", "tree_harvest_inflight_until", "tree_last_harvest_result_msg_id", "tree_last_harvest_reply_to_msg_id", "tree_bootstrap_check_due_at", "last_tree_status_sent_at",
     "last_tower_msg_id", "last_tower_command_sent_at", "tower_reply_due_at", "tower_retry_count", "pet_last_error", "pet_warm_last_error", "pet_trial_last_error",
     "ranch_reply_to_msg_id", "ranch_reply_due_at", "ranch_retry_count", "ranch_last_msg_id", "ranch_last_result", "ranch_last_error", "ranch_return_pending", "ranch_return_seen_msg_id", "ranch_return_wait_since", "ranch_return_last_notified_at",
-    "wild_training_strategy", "wild_training_reply_to_msg_id", "wild_training_reply_due_at", "wild_training_retry_count", "wild_training_last_msg_id", "wild_training_last_result", "wild_training_last_error",
+    "wild_training_strategy", "wild_training_reply_to_msg_id", "wild_training_reply_due_at", "wild_training_retry_count", "wild_training_last_msg_id", "wild_training_last_result", "wild_training_last_result_at", "wild_training_last_error",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_queued_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
@@ -276,6 +276,7 @@ IDENTITY_STATE_TEMPLATE = {
     "wild_training_retry_count": 0,
     "wild_training_last_msg_id": 0,
     "wild_training_last_result": "",
+    "wild_training_last_result_at": 0,
     "wild_training_last_error": "",
 
     # 观星台模块

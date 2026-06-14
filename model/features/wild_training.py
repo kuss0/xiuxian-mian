@@ -21,6 +21,7 @@ WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
+WILD_TRAINING_RECENT_RESULT_GUARD_GRACE_SEC = 60
 WILD_TRAINING_TITLE = "【野外历练"
 WILD_TRAINING_RESULT_TITLES = (
     "【野外历练 · 妖兽遭遇】",
@@ -61,6 +62,34 @@ def _schedule_after_dungeon_quiet(now):
     next_time = float(until + random.uniform(WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC, WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC))
     state["next_wild_training_time"] = next_time
     return next_time
+
+
+def _is_completed_wild_training_summary(summary):
+    text = str(summary or "").strip()
+    if not text:
+        return False
+    if text.startswith(("已发送", "已出发")):
+        return False
+    if text in {"冷却中"}:
+        return False
+    if any(marker in text for marker in ("发送失败", "回复超时", "补发", "冷却")):
+        return False
+    return True
+
+
+def _guard_recent_completed_result(now):
+    last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
+    if last_result_at <= 0:
+        return False
+    if not _is_completed_wild_training_summary(state.get("wild_training_last_result")):
+        return False
+    if float(now or 0) - last_result_at >= WILD_TRAINING_CYCLE_MIN_SEC - WILD_TRAINING_RECENT_RESULT_GUARD_GRACE_SEC:
+        return False
+    _schedule_next(last_result_at)
+    state["wild_training_last_error"] = "野外历练结果后计时器异常，已按正常周期顺延"
+    save_state()
+    console_log(f"🏞️ {state['wild_training_last_error']}→{fmt_abs_ts(state['next_wild_training_time'])}", scope="identity")
+    return True
 
 
 async def _defer_wild_training_for_dungeon_quiet(now, *, action):
@@ -118,6 +147,7 @@ def clear_wild_training_state(*, persist=False, keep_last_error=False):
     state["wild_training_retry_count"] = 0
     state["wild_training_last_msg_id"] = 0
     state["wild_training_last_result"] = ""
+    state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = last_error or ""
     if persist:
         save_state()
@@ -211,6 +241,7 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     state["wild_training_reply_due_at"] = 0
     state["wild_training_last_msg_id"] = int(msg_id or 0)
     state["wild_training_last_result"] = _result_summary(raw_text)
+    state["wild_training_last_result_at"] = float(now or 0)
     state["wild_training_last_error"] = ""
     _schedule_next(now)
 
@@ -305,6 +336,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
         state["wild_training_retry_count"] = 0
         state["wild_training_last_msg_id"] = msg_id
         state["wild_training_last_result"] = "冷却中"
+        state["wild_training_last_result_at"] = float(now or 0)
         state["wild_training_last_error"] = ""
         save_state()
         await send_audit_log(f"🏞️ 野外历练 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity")
@@ -315,6 +347,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
             state["wild_training_reply_to_msg_id"] = msg_id
         state["wild_training_last_msg_id"] = msg_id
         state["wild_training_last_result"] = _start_summary(raw_text)
+        state["wild_training_last_result_at"] = 0
         state["wild_training_last_error"] = ""
         if float(state.get("wild_training_reply_due_at", 0) or 0) <= now:
             state["wild_training_reply_due_at"] = float(now + WILD_TRAINING_REPLY_TIMEOUT_SEC)
@@ -356,6 +389,7 @@ async def run_wild_training_scheduler(now):
         if str(state.get("wild_training_last_result") or "").startswith("已出发"):
             _schedule_next(now)
             state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
+            state["wild_training_last_result_at"] = float(now or 0)
             state["wild_training_last_error"] = ""
             save_state()
             console_log(f"🏞️ 野外历练{state['wild_training_last_result']}", scope="identity")
@@ -372,6 +406,8 @@ async def run_wild_training_scheduler(now):
         return
 
     if now < float(state.get("next_wild_training_time", 0) or 0):
+        return
+    if _guard_recent_completed_result(now):
         return
 
     strategy = normalize_wild_training_strategy(get_wild_training_strategy())
@@ -406,6 +442,7 @@ async def run_wild_training_scheduler(now):
     state["wild_training_reply_due_at"] = sent_at + WILD_TRAINING_REPLY_TIMEOUT_SEC
     state["wild_training_last_msg_id"] = int(getattr(msg, "id", 0) or 0)
     state["wild_training_last_result"] = f"已发送：{strategy}"
+    state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = ""
     save_state()
     console_log(f"🏞️ 野外历练已发送：{strategy}（msg_id={msg.id}）", scope="identity")

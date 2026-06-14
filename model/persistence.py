@@ -108,6 +108,10 @@ LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
 LIVE_GUARD_MANIFEST_FILE = os.path.join(LIVE_GUARD_DIR, "manifest.json")
 
 
+def _safety_watchdog_fused_file():
+    return os.path.join(os.path.dirname(os.path.abspath(DB_FILE)), "safety_watchdog_fused.json")
+
+
 def get_db_conn():
     global _db_conn
     if _db_conn is None:
@@ -546,6 +550,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_msg_id INTEGER NOT NULL DEFAULT 0")
     if "wild_training_last_result" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result TEXT NOT NULL DEFAULT ''")
+    if "wild_training_last_result_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result_at REAL NOT NULL DEFAULT 0")
     if "wild_training_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_last_panel_msg_id" not in runtime_columns:
@@ -1087,6 +1093,7 @@ def init_db():
             wild_training_retry_count INTEGER NOT NULL DEFAULT 0,
             wild_training_last_msg_id INTEGER NOT NULL DEFAULT 0,
             wild_training_last_result TEXT NOT NULL DEFAULT '',
+            wild_training_last_result_at REAL NOT NULL DEFAULT 0,
             wild_training_last_error TEXT NOT NULL DEFAULT '',
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             stargazer_last_action TEXT NOT NULL DEFAULT '',
@@ -2084,6 +2091,18 @@ def save_quiz_learning_watchers_state():
         traceback.print_exc()
 
 
+def _sync_external_safety_pause_before_save(conn):
+    if not get_global_enabled():
+        return
+    if not os.path.exists(_safety_watchdog_fused_file()):
+        return
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", ("global_enabled",)).fetchone()
+    if not row:
+        return
+    if str(row["value"] or "").strip() in {"0", "false", "False", ""}:
+        set_global_enabled(False)
+
+
 def _save_meta_state(conn):
     for key, (getter, encoder, _) in _META_STATE_CODEC.items():
         conn.execute(
@@ -2258,6 +2277,7 @@ def save_state():
         init_db()
         conn = get_db_conn()
         _ensure_schema_columns(conn)
+        _sync_external_safety_pause_before_save(conn)
         _save_meta_state(conn)
         existing_ids = {
             int(row["send_as_id"])

@@ -61,6 +61,27 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.load_state())
                 self.assertEqual(9, state_module.get_divination_daily_limit(identity_id))
 
+    def test_save_state_preserves_external_safety_watchdog_pause(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            state_dir = Path(db_path).parent
+            with patch.object(persistence, "DB_FILE", db_path):
+                persistence.init_db()
+                conn = persistence.get_db_conn()
+                conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('global_enabled', '0')")
+                conn.commit()
+                (state_dir / "safety_watchdog_fused.json").write_text(
+                    '{"reason":"same command repeat"}',
+                    encoding="utf-8",
+                )
+                state_module.set_global_enabled(True)
+
+                self.assertTrue(persistence.save_state())
+                value = conn.execute("SELECT value FROM meta WHERE key = 'global_enabled'").fetchone()["value"]
+
+        self.assertEqual("0", value)
+        self.assertFalse(state_module.get_global_enabled())
+
     def test_small_world_preach_legacy_default_normalization_is_one_time(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

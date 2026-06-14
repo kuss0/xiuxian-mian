@@ -105,6 +105,10 @@ CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍�
 PHASEFUL_REPLAY_OP_PREFIX = "phaseful_replay:"
 CONCUBINE_VOYAGE_RETRY_OP_PREFIX = "concubine_voyage_retry:"
 TOWER_SOURCE_MODULE = "闯塔"
+PHASEFUL_CHAIN_COMMANDS = {".深度闭关", ".元婴出窍"}
+PHASEFUL_CHAIN_MARKERS = {"deep_retreat", "yuanying", "深度闭关", "元婴"}
+PHASEFUL_CHAIN_MIN_GAP_SEC = 20
+PHASEFUL_CHAIN_MAX_GAP_SEC = 5 * 60
 DIVINATION_QUERY_COMMAND = ".卜筮问天"
 DIVINATION_SOURCE_MODULE = "卜筮问天"
 DIVINATION_DAILY_QUERY_MIN_GAP_SEC = 55
@@ -382,6 +386,25 @@ def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
     return has_matching_send_markers(prev, cur)
 
 
+def is_safe_phaseful_chain_relaunch(prev: dict, cur: dict, text: str, gap: float) -> bool:
+    if command_key(text) not in PHASEFUL_CHAIN_COMMANDS:
+        return False
+    if not (PHASEFUL_CHAIN_MIN_GAP_SEC <= float(gap) <= PHASEFUL_CHAIN_MAX_GAP_SEC):
+        return False
+    if str(prev.get("priority") or "").strip().lower() != "chain":
+        return False
+    if str(cur.get("priority") or "").strip().lower() != "chain":
+        return False
+    markers = {
+        str(prev.get("family") or "").strip(),
+        str(prev.get("source_module") or "").strip(),
+        str(cur.get("family") or "").strip(),
+        str(cur.get("source_module") or "").strip(),
+    }
+    markers.discard("")
+    return bool(markers.intersection(PHASEFUL_CHAIN_MARKERS) and has_matching_send_markers(prev, cur))
+
+
 def is_replica_button_choice_event(item: dict, text: str) -> bool:
     if not is_dungeon_fast_chain_command(text):
         return False
@@ -645,6 +668,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
                 continue
             if is_safe_same_command_retry(prev, cur, text):
                 continue
+            if is_safe_phaseful_chain_relaunch(prev, cur, text, gap):
+                continue
             if is_safe_replica_choice_repeat(prev, cur, text):
                 continue
             if is_safe_replica_lightweight_retry_repeat(prev, cur, text):
@@ -871,10 +896,20 @@ def read_fuse_marker_reason(project_root: Path) -> str:
 def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
     marker = fuse_marker_path(cfg.project_root)
     if marker.exists():
-        if cfg.dry_run or not is_global_switch_enabled(cfg.project_root):
+        if cfg.dry_run:
             print(f"already fused: {marker}")
             return
         marker_reason = read_fuse_marker_reason(cfg.project_root)
+        if marker_reason == reason:
+            if is_global_switch_enabled(cfg.project_root):
+                action = disable_global_switch(cfg.project_root)
+                print(f"already fused for same reason; refreshed {action}: {marker}")
+            else:
+                print(f"already fused: {marker}")
+            return
+        if not is_global_switch_enabled(cfg.project_root):
+            print(f"already fused: {marker}")
+            return
         if marker_reason:
             print(f"stale fuse marker with global enabled, re-fusing: {marker}")
         else:
