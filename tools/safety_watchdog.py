@@ -103,6 +103,7 @@ HEART_CHOICE_COMMANDS = {".稳", ".狠", ".骗"}
 CONCUBINE_STATUS_COMMAND = ".我的侍妾"
 CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍妾")
 PHASEFUL_REPLAY_OP_PREFIX = "phaseful_replay:"
+CONCUBINE_HEART_CHOICE_OP_PREFIX = "concubine_heart_choice:"
 CONCUBINE_VOYAGE_RETRY_OP_PREFIX = "concubine_voyage_retry:"
 TOWER_SOURCE_MODULE = "闯塔"
 PHASEFUL_CHAIN_COMMANDS = {".深度闭关", ".元婴出窍"}
@@ -291,8 +292,6 @@ def is_safe_heart_global_gap_pair(prev: dict, cur: dict) -> bool:
     if not is_concubine_heart_event(cur):
         return False
     cur_text = command_key(str(cur.get("text") or ""))
-    if cur_text in HEART_CHOICE_COMMANDS:
-        return True
     prev_sender = int(prev.get("sender_id", 0) or 0)
     cur_sender = int(cur.get("sender_id", 0) or 0)
     if prev_sender <= 0 or prev_sender != cur_sender:
@@ -302,15 +301,135 @@ def is_safe_heart_global_gap_pair(prev: dict, cur: dict) -> bool:
     if prev_text == ".共历心劫" and cur_text in HEART_CHOICE_COMMANDS and is_concubine_heart_event(prev):
         return True
     if prev_text in HEART_CHOICE_COMMANDS and cur_text in HEART_CHOICE_COMMANDS and is_concubine_heart_event(prev):
+        prev_parsed = parse_heart_choice_op(prev)
+        cur_parsed = parse_heart_choice_op(cur)
+        if prev_parsed and cur_parsed:
+            prev_prompt, prev_round, prev_try, _prev_command = prev_parsed
+            cur_prompt, cur_round, cur_try, _cur_command = cur_parsed
+            if prev_prompt != cur_prompt:
+                return False
+            if cur_round == prev_round and cur_try == prev_try + 1:
+                return True
+            return cur_round == prev_round + 1 and cur_try == 0
         prev_reply = int(prev.get("reply_to_msg_id", 0) or 0)
         cur_reply = int(cur.get("reply_to_msg_id", 0) or 0)
         return prev_reply > 0 and prev_reply == cur_reply
     return False
 
 
-def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
-    if len(items) > 3:
+def parse_heart_choice_op(item: dict) -> tuple[int, int, int, str] | None:
+    op_id = str(item.get("op_id") or "").strip()
+    if not op_id.startswith(CONCUBINE_HEART_CHOICE_OP_PREFIX):
+        return None
+    parts = op_id.split(":")
+    if len(parts) != 6 or parts[0] != CONCUBINE_HEART_CHOICE_OP_PREFIX.rstrip(":"):
+        return None
+    try:
+        sender_id = int(parts[1])
+        prompt_msg_id = int(parts[2])
+    except (TypeError, ValueError):
+        return None
+    round_token = parts[3]
+    try_token = parts[4]
+    if not round_token.startswith("round") or not try_token.startswith("try"):
+        return None
+    try:
+        round_no = int(round_token.removeprefix("round"))
+        try_no = int(try_token.removeprefix("try"))
+    except (TypeError, ValueError):
+        return None
+    command = command_key(parts[5])
+    chain_id = str(item.get("chain_id") or "").strip()
+    if chain_id != ":".join(parts[:4]):
+        return None
+    if sender_id <= 0 or int(item.get("sender_id", 0) or 0) != sender_id:
+        return None
+    if prompt_msg_id <= 0 or int(item.get("reply_to_msg_id", 0) or 0) != prompt_msg_id:
+        return None
+    if round_no not in {1, 2, 3} or try_no not in {0, 1}:
+        return None
+    if command not in HEART_CHOICE_COMMANDS:
+        return None
+    if command_key(str(item.get("text") or "")) != command:
+        return None
+    return prompt_msg_id, round_no, try_no, command
+
+
+def is_safe_marked_heart_choice_repeat(items: list[dict]) -> bool:
+    if len(items) > 6:
         return False
+    parsed_items = []
+    for item in sorted(items, key=lambda payload: float(payload.get("_epoch", 0) or 0)):
+        parsed = parse_heart_choice_op(item)
+        if not parsed:
+            return False
+        parsed_items.append((item, parsed))
+
+    prompt_ids = {parsed[0] for _item, parsed in parsed_items}
+    if len(prompt_ids) != 1:
+        return False
+
+    seen_round_tries: dict[int, set[int]] = defaultdict(set)
+    last_round = 0
+    for item, (_prompt_msg_id, round_no, try_no, _command) in parsed_items:
+        if try_no in seen_round_tries[round_no]:
+            return False
+        if try_no == 0:
+            if str(item.get("priority") or "").strip().lower() == "retry":
+                return False
+            if round_no != last_round + 1:
+                return False
+            last_round = round_no
+        else:
+            if not is_controlled_retry_event(item):
+                return False
+            if 0 not in seen_round_tries[round_no]:
+                return False
+            if round_no != last_round:
+                return False
+        seen_round_tries[round_no].add(try_no)
+
+    return all(0 in tries and tries.issubset({0, 1}) for tries in seen_round_tries.values())
+
+
+def is_safe_marked_heart_choice_sequence(items: list[dict]) -> bool:
+    if not items or len(items) > 6:
+        return False
+    parsed_items = []
+    for item in sorted(items, key=lambda payload: float(payload.get("_epoch", 0) or 0)):
+        parsed = parse_heart_choice_op(item)
+        if not parsed:
+            return False
+        parsed_items.append((item, parsed))
+
+    prompt_ids = {parsed[0] for _item, parsed in parsed_items}
+    if len(prompt_ids) != 1:
+        return False
+
+    seen_round_tries: dict[int, set[int]] = defaultdict(set)
+    last_round = 0
+    for item, (_prompt_msg_id, round_no, try_no, _command) in parsed_items:
+        if try_no in seen_round_tries[round_no]:
+            return False
+        if try_no == 0:
+            if str(item.get("priority") or "").strip().lower() == "retry":
+                return False
+            if round_no < last_round or round_no > last_round + 1:
+                return False
+            last_round = max(last_round, round_no)
+        else:
+            if not is_controlled_retry_event(item):
+                return False
+            if 0 not in seen_round_tries[round_no]:
+                return False
+            if round_no != last_round:
+                return False
+        seen_round_tries[round_no].add(try_no)
+
+    return True
+
+
+def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
     if not all(is_concubine_heart_event(item) for item in items):
         return False
     reply_ids = {
@@ -318,7 +437,17 @@ def is_safe_heart_choice_repeat(items: list[dict]) -> bool:
         for item in items
     }
     reply_ids.discard(0)
-    return len(reply_ids) == 1
+    if len(reply_ids) != 1:
+        return False
+    has_marked_choice = any(
+        str(item.get("op_id") or "").strip().startswith(CONCUBINE_HEART_CHOICE_OP_PREFIX)
+        for item in items
+    )
+    if has_marked_choice:
+        return is_safe_marked_heart_choice_repeat(items)
+    if len(items) <= 3:
+        return True
+    return False
 
 
 def has_matching_send_markers(prev: dict, cur: dict) -> bool:
@@ -567,7 +696,6 @@ def is_send_burst_exempt_event(item: dict) -> bool:
     return (
         is_dungeon_fast_chain_command(text)
         or is_world_boss_event(item, text)
-        or (is_heart_choice_command(text) and is_concubine_heart_event(item))
     )
 
 
@@ -609,13 +737,36 @@ def count_since(events: list[dict], now: float, seconds: float) -> int:
     return sum(1 for item in events if float(item.get("_epoch", 0) or 0) >= start)
 
 
+def get_marked_heart_choice_burst_exempt_ids(events: list[dict]) -> set[int]:
+    grouped: dict[tuple[int, int], list[dict]] = defaultdict(list)
+    for item in events:
+        if not is_heart_choice_command(str(item.get("text") or "")) or not is_concubine_heart_event(item):
+            continue
+        parsed = parse_heart_choice_op(item)
+        if not parsed:
+            continue
+        prompt_msg_id, _round_no, _try_no, _command = parsed
+        sender_id = int(item.get("sender_id", 0) or 0)
+        if sender_id <= 0 or prompt_msg_id <= 0:
+            continue
+        grouped[(sender_id, prompt_msg_id)].append(item)
+
+    exempt_ids: set[int] = set()
+    for items in grouped.values():
+        if is_safe_marked_heart_choice_sequence(items):
+            exempt_ids.update(id(item) for item in items)
+    return exempt_ids
+
+
 def count_non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> int:
     start = now - float(seconds)
+    recent = [item for item in events if float(item.get("_epoch", 0) or 0) >= start]
+    marked_heart_choice_exempt_ids = get_marked_heart_choice_burst_exempt_ids(recent)
     return sum(
         1
-        for item in events
-        if float(item.get("_epoch", 0) or 0) >= start
-        and not is_send_burst_exempt_event(item)
+        for item in recent
+        if not is_send_burst_exempt_event(item)
+        and id(item) not in marked_heart_choice_exempt_ids
     )
 
 
@@ -677,10 +828,11 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         if len(items) < 2:
             continue
         heart_choice = is_heart_choice_command(text) and is_safe_heart_choice_repeat(items)
+        marked_heart_choice_sequence = is_heart_choice_command(text) and is_safe_marked_heart_choice_sequence(items)
         replica_choice = all(is_replica_choice_event(item, text) for item in items)
         divination_daily_query_chain = is_safe_divination_daily_query_chain(items, text)
         world_boss_chain = all(is_world_boss_event(item, text) for item in items)
-        if sect_teach or heart_choice or world_boss_chain:
+        if sect_teach or heart_choice or marked_heart_choice_sequence or world_boss_chain:
             min_gap = 0
         elif divination_daily_query_chain:
             min_gap = DIVINATION_DAILY_QUERY_MIN_GAP_SEC

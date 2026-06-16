@@ -3217,6 +3217,64 @@ class ReplicaAbsorbTests(unittest.TestCase):
             self.assertEqual("47", state_item["last_completed_room_id"])
             self.assertGreaterEqual(state_item["cooldown_until"], now + 180 + app_replica.REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC)
 
+    def test_zhuimo_settlement_uses_two_hour_cd_and_lightweight_team(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        first_id = self._register_replica_identity(991202, "growrdick", professions="御山")
+        second_id = self._register_replica_identity(991203, "myios17", professions="灵医")
+        third_id = self._register_replica_identity(991204, "xuruode1", professions="影刃")
+        fourth_id = self._register_replica_identity(991205, "jfdffdddd", professions="咒师")
+        state_module.set_replica_participant_identity_ids([leader_id, first_id, second_id, third_id, fourth_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "95",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "join_requested_usernames": ["@growrdick", "@myios17", "@xuruode1", "@jfdffdddd"],
+            "opened_at": now,
+            "entered_at": now + 10,
+            "updated_at": now + 10,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(
+                        id=9983305,
+                        raw_text=(
+                            "【坠魔谷·封魔成功】\n"
+                            "古魔残识被彻底镇压，封印重塑完成！\n\n"
+                            "结算：每位队员获得 8000修为、650贡献\n"
+                            "天命所归，幸运道友 @jfdffdddd 额外获得 【阴凝之晶】x2。\n"
+                            "低魔染封印完成，全队额外获得【镇魔残篆】x1\n"
+                            "最终魔染值：27 | 封印进度：124"
+                        ),
+                    ),
+                    now + 180,
+                )
+                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1]
+
+        handled, notice_item, notice_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(-100777, notice_item["replica_chat_id"])
+        self.assertIn("坠魔谷结算：封魔成功", notice_text)
+        self.assertIn("已清理轻量房间记录", notice_text)
+        self.assertIn("已记录 5 个身份 CD", notice_text)
+        self.assertIn("最终魔染值", notice_text)
+        self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=now + 181))
+        records = state_module.get_replica_run_state()["by_identity"]
+        for identity_id in (leader_id, first_id, second_id, third_id, fourth_id):
+            state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_ZHUIMO]
+            self.assertFalse(state_item["participating"])
+            self.assertEqual("", state_item["room_id"])
+            self.assertEqual("95", state_item["last_completed_room_id"])
+            self.assertEqual(now + 180 + app_replica.REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC, state_item["cooldown_until"])
+
     def test_virtual_hall_duoding_settlement_does_not_clear_active_cangkun_room(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
         first_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")

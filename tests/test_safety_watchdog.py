@@ -713,23 +713,67 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("world boss over attempts", breach)
 
-    def test_marked_heart_choices_do_not_count_as_send_burst(self):
+    def test_verified_marked_heart_choices_do_not_count_as_send_burst(self):
         now = time.time()
         sender_id = 8659059191
         prompt_msg_id = 9754425
+
+        def heart_choice(round_no, try_no):
+            chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round{round_no}"
+            return {
+                "priority": "retry" if try_no else "urgent_reactive",
+                "op_id": f"{chain_id}:try{try_no}:.稳",
+                "chain_id": chain_id,
+            }
+
         events = [
             _event(now - 90, 1001, ".我的侍妾"),
             _event(now - 80, 1002, ".小世界"),
             _event(now - 70, 1003, ".灵树状态"),
             _event(now - 20, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
-            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
-            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
-            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫"),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 0)),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 1)),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(2, 0)),
         ]
         cfg = self._config()
         cfg.total_2m_limit = 5
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_multi_sender_unmarked_heart_burst_is_not_exempt(self):
+        now = time.time()
+        events = [
+            _event(now - 20, 1001, ".稳", 9754425, "concubine_heart", "共历心劫"),
+            _event(now - 18, 1002, ".稳", 9754425, "concubine_heart", "共历心劫"),
+            _event(now - 16, 1003, ".稳", 9754425, "concubine_heart", "共历心劫"),
+            _event(now - 14, 1004, ".稳", 9754425, "concubine_heart", "共历心劫"),
+            _event(now - 12, 1005, ".稳", 9754425, "concubine_heart", "共历心劫"),
+            _event(now - 10, 1006, ".稳", 9754425, "concubine_heart", "共历心劫"),
+        ]
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("send burst", breach)
+
+    def test_unmarked_alternating_heart_choices_are_not_exempt(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 20, sender_id, ".稳", 9754425),
+            _event(now - 18, sender_id, ".狠", 9754425),
+            _event(now - 16, sender_id, ".骗", 9754425),
+            _event(now - 14, sender_id, ".稳", 9754425),
+            _event(now - 12, sender_id, ".狠", 9754425),
+            _event(now - 10, sender_id, ".骗", 9754425),
+        ]
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("send burst", breach)
 
     def test_non_virtual_dungeon_join_repeat_is_not_same_command_fuse(self):
         now = time.time()
@@ -810,7 +854,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
-    def test_concubine_heart_choice_after_unrelated_command_does_not_global_fuse(self):
+    def test_unmarked_heart_choice_after_unrelated_command_global_fuses(self):
         now = time.time()
         prompt_msg_id = 9754425
         events = [
@@ -822,7 +866,9 @@ class SafetyWatchdogTests(unittest.TestCase):
         cfg = self._config()
         cfg.min_any_gap_sec = 12
 
-        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("global lock breach", breach)
 
     def test_concubine_heart_choice_fourth_still_fuses(self):
         now = time.time()
@@ -839,6 +885,108 @@ class SafetyWatchdogTests(unittest.TestCase):
         cfg.min_any_gap_sec = 12
 
         breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("same command repeat", breach)
+
+    def test_marked_heart_choice_old_round_retry_is_not_safe(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+
+        def heart_choice(round_no, try_no):
+            chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round{round_no}"
+            return {
+                "priority": "retry" if try_no else "urgent_reactive",
+                "op_id": f"{chain_id}:try{try_no}:.稳",
+                "chain_id": chain_id,
+            }
+
+        events = [
+            _event(now - 25, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
+            _event(now - 20, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 0)),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 1)),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(2, 0)),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 1)),
+        ]
+
+        self.assertFalse(safety_watchdog.is_safe_marked_heart_choice_repeat(events[1:]))
+
+    def test_marked_heart_choice_valid_sequence_still_safe(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+
+        def heart_choice(round_no, try_no):
+            chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round{round_no}"
+            return {
+                "priority": "retry" if try_no else "urgent_reactive",
+                "op_id": f"{chain_id}:try{try_no}:.稳",
+                "chain_id": chain_id,
+            }
+
+        events = [
+            _event(now - 25, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
+            _event(now - 20, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 0)),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 1)),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(2, 0)),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(2, 1)),
+            _event(now - 1, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(3, 0)),
+        ]
+
+        self.assertTrue(safety_watchdog.is_safe_marked_heart_choice_repeat(events[1:]))
+
+    def test_concubine_heart_controlled_retry_does_not_fuse_fourth_choice(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+
+        def heart_choice(round_no, try_no):
+            chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round{round_no}"
+            return {
+                "priority": "retry" if try_no else "urgent_reactive",
+                "op_id": f"{chain_id}:try{try_no}:.稳",
+                "chain_id": chain_id,
+            }
+
+        events = [
+            _event(now - 20, sender_id, ".共历心劫", 9754314, "concubine_heart", "共历心劫"),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 0)),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(1, 1)),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(2, 0)),
+            _event(now - 1, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(3, 0)),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_concubine_heart_duplicate_controlled_retry_still_fuses(self):
+        now = time.time()
+        sender_id = 8659059191
+        prompt_msg_id = 9754425
+        chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round1"
+        retry_kwargs = {
+            "priority": "retry",
+            "op_id": f"{chain_id}:try1:.稳",
+            "chain_id": chain_id,
+        }
+        events = [
+            _event(
+                now - 15,
+                sender_id,
+                ".稳",
+                prompt_msg_id,
+                "concubine_heart",
+                "共历心劫",
+                priority="urgent_reactive",
+                op_id=f"{chain_id}:try0:.稳",
+                chain_id=chain_id,
+            ),
+            _event(now - 10, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **retry_kwargs),
+            _event(now - 5, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **retry_kwargs),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
 
         self.assertIn("same command repeat", breach)
 

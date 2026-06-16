@@ -34,6 +34,7 @@ from .config import (
     REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC,
     REPLICA_FAILURE_GRACE_SEC,
     REPLICA_SUCCESS_COOLDOWN_SEC,
+    REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC,
     TZ_LOCAL,
     get_account_offline_reason,
     get_all_clients,
@@ -96,6 +97,8 @@ _REPLICA_KINDS = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_ZHUIMO, _REPLICA_KIN
 def _get_replica_success_cooldown_sec(replica_kind):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC
+    if replica_kind == _REPLICA_KIND_ZHUIMO:
+        return REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC
     return REPLICA_SUCCESS_COOLDOWN_SEC
 
 
@@ -1354,6 +1357,7 @@ def _is_replica_settlement_text(text):
     raw_text = str(text or "")
     return (
         "【战利品结算" in raw_text
+        or "【坠魔谷·封魔成功】" in raw_text
         or "【登顶昆吾山】" in raw_text
         or ("【后殿冲关止步】" in raw_text and "结算所得早已锁定" in raw_text)
         or any(keyword in raw_text for keyword in ("挑战成功", "通关成功", "试炼成功", "探索完成"))
@@ -1363,6 +1367,8 @@ def _is_replica_settlement_text(text):
 
 def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
+    if "【坠魔谷·封魔成功】" in raw_text:
+        return _REPLICA_KIND_ZHUIMO
     if "【登顶昆吾山】" in raw_text:
         return _REPLICA_KIND_KUNWU
     if any(marker in raw_text for marker in (
@@ -1395,7 +1401,7 @@ def _get_replica_settlement_title(replica_kind, text):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return _get_cangkun_settlement_title(text)
     raw_text = str(text or "")
-    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|登顶昆吾山)[^】]*)】", raw_text)
+    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|登顶昆吾山)[^】]*)】", raw_text)
     if match:
         title = match.group(1).strip()
         title = re.sub(r"^(?:虚天殿|坠魔谷|黄龙山大战?|昆吾山)[·\s]*", "", title).strip()
@@ -7955,23 +7961,24 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         )
         if not settlement_room:
             settlement_room = _get_latest_lightweight_room_for_kind(replica_settlement_kind, now=now)
-        if not event_usernames and settlement_room:
-            event_usernames = _get_lightweight_room_usernames(settlement_room)
+        room_usernames = _get_lightweight_room_usernames(settlement_room) if settlement_room else []
+        team_usernames = room_usernames or event_usernames
         settlement_notice_item = dict(settlement_room) if isinstance(settlement_room, dict) and settlement_room else _get_latest_lightweight_room_for_kind(replica_settlement_kind, now=now)
-        identity_ids = _get_active_replica_team_identity_ids_for_usernames(event_usernames, now, replica_kind=replica_settlement_kind)
+        identity_ids = _get_active_replica_team_identity_ids_for_usernames(team_usernames, now, replica_kind=replica_settlement_kind)
         if not identity_ids:
-            identity_ids = _map_replica_usernames_to_identity_ids(event_usernames)
+            identity_ids = _map_replica_usernames_to_identity_ids(team_usernames)
         if not identity_ids:
             identity_ids = _get_active_replica_identity_ids(now, replica_kind=replica_settlement_kind)
         lightweight_room_finished = _clear_latest_lightweight_room_for_kind(
             replica_settlement_kind,
             now=now,
-            usernames=event_usernames,
+            usernames=team_usernames,
         )
         if identity_ids:
             leader_username = (
                 _parse_replica_leader_username(text)
-                or (event_usernames[0] if event_usernames else "")
+                or ((settlement_room or {}).get("leader_username") if isinstance(settlement_room, dict) else "")
+                or (team_usernames[0] if team_usernames else "")
                 or _get_latest_replica_leader_username(replica_settlement_kind, now=now)
             )
             _mark_replica_success_cooldown(
