@@ -323,6 +323,36 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertEqual(reply_to.id, state_module.state["tianti_last_status_msg_id"])
             self.assertEqual(now, state_module.state["tianti_last_status_seen_at"])
 
+    def test_passive_status_panel_clears_short_retry(self):
+        send_as_id = 95021
+        now = 21_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "【凌霄云阶】\n"
+            "当前进度: 9 / 12 阶\n"
+            "已完成周天: 30 轮\n"
+            "罡风淬体: 12 / 12 层\n"
+            "登阶冷却: 2小时5分钟49秒\n"
+            "问心状态: 今日尚未问心。可使用 .问心台 获取登阶加持。"
+        )
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti.random, "randint", return_value=0), \
+                patch.object(passive_inbox, "_save_passive_stats"), \
+                patch.object(passive_inbox, "save_state"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["next_tianti_status_time"] = now + 60
+
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={"send_as_id": send_as_id, "family": "tianti_status"},
+            ))
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["next_tianti_status_time"])
+            self.assertEqual(now, state_module.state["tianti_last_status_seen_at"])
+
     def test_fresh_status_snapshot_allows_due_gangfeng(self):
         send_as_id = 95011
         now = 11_000.0
@@ -493,6 +523,142 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             passive_log.assert_not_called()
             self.assertEqual("今日已问心，下次登天阶奖励提升", state_module.state["tianti_wenxin_status"])
             self.assertEqual(9447960, state_module.state["tianti_last_wenxin_msg_id"])
+
+    def test_climb_no_progress_reply_updates_state_and_schedules_retry(self):
+        send_as_id = 95020
+        now = 20_000.0
+        reply_to = SimpleNamespace(id=884422, raw_text=".登天阶")
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "【凌霄云阶】\n"
+            "你消耗了 510 点修为，踏上了第 8 阶云阶。\n"
+            "一阵逆卷罡风将你逼退半步，本次未能更进一步。\n"
+            "当前云阶进度仍为 7 / 12，罡风淬体: 11 / 12。"
+        )
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti.random, "randint", return_value=5), \
+                patch.object(tianti, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                patch.object(tianti, "save_state"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_progress_current"] = 8
+            state_module.state["tianti_gangfeng_level"] = 12
+
+            handled = asyncio.run(tianti.handle_tianti_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="tianti_climb",
+            ))
+
+            self.assertTrue(handled)
+            self.assertEqual(reply_to.id, state_module.state["tianti_last_climb_msg_id"])
+            self.assertEqual(510, state_module.state["tianti_last_cost_xiuwei"])
+            self.assertEqual(0, state_module.state["tianti_last_gain_xiuwei"])
+            self.assertEqual(0, state_module.state["tianti_last_gain_contrib"])
+            self.assertEqual(7, state_module.state["tianti_progress_current"])
+            self.assertEqual(12, state_module.state["tianti_progress_total"])
+            self.assertEqual(11, state_module.state["tianti_gangfeng_level"])
+            self.assertEqual(12, state_module.state["tianti_gangfeng_total"])
+            self.assertGreater(state_module.state["next_tianti_climb_time"], now)
+            audit_mock.assert_awaited_once()
+
+    def test_passive_climb_no_progress_reply_updates_state(self):
+        send_as_id = 95022
+        now = 22_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "【凌霄云阶】\n"
+            "你消耗了 510 点修为，踏上了第 8 阶云阶。\n"
+            "一阵逆卷罡风将你逼退半步，本次未能更进一步。\n"
+            "当前云阶进度仍为 7 / 12，罡风淬体: 11 / 12。"
+        )
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti.random, "randint", return_value=5), \
+                patch.object(passive_inbox, "_save_passive_stats"), \
+                patch.object(passive_inbox, "save_state"):
+            state_module.state["tianti_enabled"] = True
+
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={"send_as_id": send_as_id, "family": "tianti_climb"},
+            ))
+
+            self.assertTrue(handled)
+            self.assertEqual(510, state_module.state["tianti_last_cost_xiuwei"])
+            self.assertEqual(0, state_module.state["tianti_last_gain_xiuwei"])
+            self.assertEqual(0, state_module.state["tianti_last_gain_contrib"])
+            self.assertEqual(7, state_module.state["tianti_progress_current"])
+            self.assertEqual(12, state_module.state["tianti_progress_total"])
+            self.assertEqual(11, state_module.state["tianti_gangfeng_level"])
+            self.assertEqual(12, state_module.state["tianti_gangfeng_total"])
+            self.assertGreater(state_module.state["next_tianti_climb_time"], now)
+
+    def test_handled_routed_climb_reply_is_not_replayed_by_passive_tianti(self):
+        send_as_id = 95023
+        now = 23_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "【凌霄云阶】\n"
+            "你消耗了 612 点修为，踏上了第 11 阶云阶。\n"
+            "本次获得 217 点修为、106 点宗门贡献。\n"
+            "当前云阶进度: 11 / 12，罡风淬体: 12 / 12。"
+        )
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti.random, "randint", return_value=5), \
+                patch.object(passive_inbox, "_save_passive_stats"), \
+                patch.object(passive_inbox, "save_state"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["next_tianti_climb_time"] = now + 3_600
+
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "tianti_climb",
+                    "routed_reply_handled": True,
+                },
+            ))
+
+            self.assertFalse(handled)
+            self.assertEqual(now + 3_600, state_module.state["next_tianti_climb_time"])
+
+    def test_passive_status_panel_with_routed_handled_marker_does_not_reapply_climb_cd(self):
+        send_as_id = 95024
+        now = 24_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "【凌霄云阶】\n"
+            "当前进度: 9 / 12 阶\n"
+            "已完成周天: 30 轮\n"
+            "罡风淬体: 12 / 12 层\n"
+            "登阶冷却: 可立即登阶\n"
+            "问心状态: 今日尚未问心。可使用 .问心台 获取登阶加持。"
+        )
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti.random, "randint", return_value=5), \
+                patch.object(passive_inbox, "_save_passive_stats"), \
+                patch.object(passive_inbox, "save_state"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["next_tianti_climb_time"] = now + 3_600
+
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "tianti_status",
+                    "routed_reply_handled": True,
+                },
+            ))
+
+            self.assertFalse(handled)
+            self.assertEqual(now + 3_600, state_module.state["next_tianti_climb_time"])
 
 
 if __name__ == "__main__":

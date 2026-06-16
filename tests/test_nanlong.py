@@ -11,6 +11,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model.features import nanlong
+from model.real_message_replay import get_real_message_text
+
+
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "real_message_samples.json"
+
+
+def real_text(sample_id):
+    return get_real_message_text(FIXTURE_PATH, sample_id)
 
 
 class NanlongTests(unittest.IsolatedAsyncioTestCase):
@@ -221,6 +229,38 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["next_nanlong_time"])
             self.assertEqual(0, state_module.state["nanlong_reply_due_at"])
+            self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
+            self.assertEqual("", state_module.state["nanlong_last_error"])
+
+    async def test_real_nanlong_trade_result_confirms_pending_exchange(self):
+        now = 1_781_202_313.0
+        identity_id = 991300
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="nan", enabled=True)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["nanlong_enabled"] = True
+            state_module.state["nanlong_last_msg_id"] = 10226520
+            state_module.state["nanlong_reply_to_msg_id"] = 10226510
+            state_module.state["next_nanlong_time"] = now + 60
+            state_module.state["nanlong_reply_due_at"] = now + 30
+            state_module.state["nanlong_last_error"] = "等待南陇侯交易结果"
+
+            with (
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(nanlong, "save_state") as save_mock,
+            ):
+                handled = await nanlong.handle_nanlong_result_broadcast(
+                    real_text("nanlong.result.trade"),
+                    now,
+                    SimpleNamespace(id=10226525),
+                )
+
+            self.assertTrue(handled)
+            audit_mock.assert_awaited_once_with("🤝 南陇侯交易结果已确认")
+            save_mock.assert_called_once()
+            self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["next_nanlong_time"])
             self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
             self.assertEqual("", state_module.state["nanlong_last_error"])
 

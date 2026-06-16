@@ -247,7 +247,7 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("soothe", state_module.state["stargazer_last_action"])
             self.assertEqual(0, state_module.state["stargazer_followup_due_at"])
 
-    async def test_real_soothe_success_reply_queues_collect_instead_of_exception_panel(self):
+    async def test_real_soothe_success_reply_rechecks_panel_before_collect(self):
         now = 1800.0
         identity_id = 3756719391
         state_module.ensure_identity_registered(identity_id)
@@ -269,8 +269,102 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(handled)
             queue_mock.assert_awaited_once()
-            self.assertEqual("collect", queue_mock.await_args.args[1])
-            self.assertIn("安抚完成", queue_mock.await_args.kwargs["audit_text"])
+            self.assertEqual("panel", queue_mock.await_args.args[1])
+            self.assertIn("回查观星台", queue_mock.await_args.kwargs["audit_text"])
+
+    async def test_soothe_success_rechecks_panel_before_collect(self):
+        now = 1800.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        class Reply:
+            raw_text = ".安抚星辰"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "soothe"
+            state_module.state["stargazer_dim_slot_count"] = 2
+
+            with patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock(return_value=True)) as queue_mock:
+                handled = await stargazer.handle_stargazer_soothe_reply(
+                    "你消耗了 72 点修为，成功安抚了 2 座引星盘的狂暴星力！\n因有侍妾【妍丽】相助，本次消耗大幅减少。",
+                    now,
+                    Reply(),
+                    matched_family="stargazer_soothe",
+                )
+
+            self.assertTrue(handled)
+            queue_mock.assert_awaited_once()
+            self.assertEqual("panel", queue_mock.await_args.args[1])
+            self.assertIn("回查观星台", queue_mock.await_args.kwargs["audit_text"])
+
+    async def test_soothe_before_collect_success_rechecks_panel(self):
+        now = 1800.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        class Reply:
+            raw_text = ".安抚星辰"
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "soothe"
+            state_module.state["stargazer_soothe_before_collect"] = True
+            state_module.state["stargazer_queued_action"] = "collect"
+
+            with patch.object(stargazer, "_queue_stargazer_action", new=AsyncMock(return_value=True)) as queue_mock:
+                handled = await stargazer.handle_stargazer_soothe_reply(
+                    "你消耗了 72 点修为，成功安抚了 2 座引星盘的狂暴星力！\n因有侍妾【妍丽】相助，本次消耗大幅减少。",
+                    now,
+                    Reply(),
+                    matched_family="stargazer_soothe",
+                )
+
+            self.assertTrue(handled)
+            queue_mock.assert_awaited_once()
+            self.assertEqual("panel", queue_mock.await_args.args[1])
+            self.assertIn("回查观星台", queue_mock.await_args.kwargs["audit_text"])
+
+    async def test_collect_send_rechecks_panel_when_dim_slots_remain(self):
+        now = 2000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_dim_slot_count"] = 2
+            state_module.state["stargazer_queued_action"] = "collect"
+
+            with (
+                patch.object(stargazer, "_send_stargazer_panel", new=AsyncMock(return_value=True)) as panel_mock,
+                patch.object(stargazer, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                sent = await stargazer._send_stargazer_collect(now)
+
+            self.assertTrue(sent)
+            panel_mock.assert_awaited_once_with(now, audit_text="🔭 仍有黯淡盘，收集前回查")
+            send_mock.assert_not_awaited()
+
+    async def test_scheduler_collect_fallback_rechecks_panel_when_dim_slots_remain(self):
+        now = 2000.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_dim_slot_count"] = 2
+            state_module.state["stargazer_followup_due_at"] = now - 1
+            state_module.state["stargazer_last_action"] = "queue_collect"
+            state_module.state["stargazer_queued_action"] = ""
+
+            with (
+                patch.object(stargazer, "_send_stargazer_panel", new=AsyncMock(return_value=True)) as panel_mock,
+                patch.object(stargazer, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await stargazer.run_stargazer_scheduler(now)
+
+            panel_mock.assert_awaited_once_with(now, audit_text="🔭 仍有黯淡盘，收集前回查")
+            send_mock.assert_not_awaited()
 
     async def test_passive_real_soothe_success_updates_state(self):
         now = 1900.0
@@ -294,6 +388,105 @@ class StargazerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         with state_module.use_identity(identity_id):
             self.assertEqual("passive_soothe_done", state_module.state["stargazer_last_action"])
+            self.assertEqual("panel", state_module.state["stargazer_queued_action"])
+            self.assertEqual(now + 5, state_module.state["stargazer_followup_due_at"])
+
+    async def test_passive_soothe_success_clears_old_collect_queue(self):
+        now = 1900.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "queue_collect"
+            state_module.state["stargazer_queued_action"] = "collect"
+            state_module.state["stargazer_followup_due_at"] = now + 60
+            state_module.state["stargazer_soothe_before_collect"] = True
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                "你消耗了 72 点修为，成功安抚了 2 座引星盘的狂暴星力！\n因有侍妾【妍丽】相助，本次消耗大幅减少。",
+                now=now,
+                reply_context={"send_as_id": identity_id, "family": "stargazer_soothe"},
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(identity_id):
+            self.assertEqual("passive_soothe_done", state_module.state["stargazer_last_action"])
+            self.assertEqual("panel", state_module.state["stargazer_queued_action"])
+            self.assertEqual(now + 5, state_module.state["stargazer_followup_due_at"])
+            self.assertFalse(state_module.state["stargazer_soothe_before_collect"])
+
+    async def test_passive_panel_with_dim_slots_interrupts_collect_queue(self):
+        now = 1950.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        panel = (
+            "【星宫 · 观星台】 (引星盘总数: 2座)\n\n"
+            "1号引星盘: 庚金星 - 精华已成 💎\n"
+            "2号引星盘: 庚金星 - 星光黯淡"
+        )
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "queue_collect"
+            state_module.state["stargazer_queued_action"] = "collect"
+            state_module.state["stargazer_followup_due_at"] = now + 60
+            state_module.state["stargazer_dim_slot_count"] = 0
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                panel,
+                now=now,
+                reply_context={"send_as_id": identity_id, "family": "stargazer_panel"},
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(identity_id):
+            self.assertEqual(1, state_module.state["stargazer_dim_slot_count"])
+            self.assertEqual("passive_dim_slot", state_module.state["stargazer_last_action"])
+            self.assertEqual("soothe", state_module.state["stargazer_queued_action"])
+            self.assertEqual(now + 5, state_module.state["stargazer_followup_due_at"])
+
+    async def test_passive_panel_all_ready_queues_collect(self):
+        now = 1960.0
+        identity_id = 3756719391
+        state_module.ensure_identity_registered(identity_id)
+        panel = (
+            "【星宫 · 观星台】 (引星盘总数: 2座)\n\n"
+            "1号引星盘: 庚金星 - 精华已成 💎\n"
+            "2号引星盘: 庚金星 - 可收集 💎"
+        )
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_last_action"] = "queue_panel"
+            state_module.state["stargazer_queued_action"] = "panel"
+            state_module.state["stargazer_followup_due_at"] = now + 60
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                panel,
+                now=now,
+                reply_context={"send_as_id": identity_id, "family": "stargazer_panel"},
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(identity_id):
+            self.assertEqual(0, state_module.state["stargazer_dim_slot_count"])
+            self.assertEqual(2, state_module.state["stargazer_ready_slot_count"])
+            self.assertEqual("passive_all_ready", state_module.state["stargazer_last_action"])
+            self.assertEqual("collect", state_module.state["stargazer_queued_action"])
+            self.assertEqual(now + 5, state_module.state["stargazer_followup_due_at"])
 
     async def test_collect_success_adds_items_to_cached_storage_bag(self):
         now = 2000.0

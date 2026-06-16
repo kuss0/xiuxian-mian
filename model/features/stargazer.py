@@ -75,6 +75,13 @@ def _safe_float(value, default=0.0):
         return float(default)
 
 
+def _current_dim_slot_count():
+    try:
+        return max(0, int(state.get("stargazer_dim_slot_count", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _parse_stargazer_panel(text):
     raw_text = str(text or "")
     if "观星台" not in raw_text or "引星盘" not in raw_text:
@@ -238,6 +245,9 @@ async def _send_stargazer_soothe(now, audit_text=None):
 
 
 async def _send_stargazer_collect(now, audit_text=None):
+    if _current_dim_slot_count() > 0:
+        return await _send_stargazer_panel(now, audit_text="🔭 仍有黯淡盘，收集前回查")
+
     state["stargazer_last_action"] = "collect"
     state["stargazer_followup_due_at"] = 0
     _schedule_next_stargazer_action(now + RETRY_MAX_SEC)
@@ -490,7 +500,7 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
     if soothe_before_collect and not (any(keyword in text for keyword in STARGAZER_CD_HINT_KEYWORDS) and has_wait_time(text)):
         _clear_stargazer_collect_flags()
         reset_resource_shortage(STARGAZER_SOOTHE_RESOURCE_KEY)
-        await _queue_stargazer_action(now, "collect", audit_text="🌠 已收到安抚回复，收集")
+        await _queue_stargazer_action(now, "panel", audit_text="🌠 已收到安抚回复，回查观星台")
         return True
 
     if any(keyword in text for keyword in STARGAZER_CD_HINT_KEYWORDS) and has_wait_time(text):
@@ -505,7 +515,7 @@ async def handle_stargazer_soothe_reply(text, now, reply_to, matched_family=None
 
     if _is_stargazer_soothe_success(text):
         _clear_stargazer_collect_flags()
-        await _queue_stargazer_action(now, "collect", audit_text="🌠 安抚完成，收集")
+        await _queue_stargazer_action(now, "panel", audit_text="🌠 安抚完成，回查观星台")
         return True
 
     _clear_stargazer_collect_flags()

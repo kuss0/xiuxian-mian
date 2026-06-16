@@ -632,6 +632,10 @@ def _family_from_reply_context(reply_context):
     return str((reply_context or {}).get("family") or "").strip()
 
 
+def _routed_reply_already_handled(reply_context):
+    return bool((reply_context or {}).get("routed_reply_handled"))
+
+
 def _route_source(event_type, route):
     route = str(route or "").strip()
     event_type = str(event_type or "").strip()
@@ -671,11 +675,14 @@ def _missing_identity_reason(raw_text, family):
     return "reply_context_no_identity" if str(family or "").strip() else "no_reply_context"
 
 
-def _apply_tianti_passive(text, now, family):
+def _apply_tianti_passive(text, now, family, reply_context=None):
     raw_text = str(text or "")
+    if _routed_reply_already_handled(reply_context) and str(family or "").startswith("tianti_"):
+        return False
     changed = False
     panel_payload = tianti_mod._parse_tianti_panel(raw_text)
     if panel_payload:
+        changed = tianti_mod._mark_tianti_status_synced(now) or changed
         changed = tianti_mod._apply_tianti_panel_payload(panel_payload, now=now) or changed
         tianti_mod._calc_tianti_wenxin_plan(now)
     # Wenxin replies are owned by the routed active handler. Replaying them here
@@ -699,10 +706,10 @@ def _apply_tianti_passive(text, now, family):
     climb_gain_match = tianti_mod.RE_TIANTI_CLIMB_GAIN.search(raw_text)
     climb_cycle_match = tianti_mod.RE_TIANTI_CLIMB_CYCLE.search(raw_text)
     climb_result_match = tianti_mod.RE_TIANTI_CLIMB_RESULT.search(raw_text)
-    if climb_cost_match and climb_gain_match and climb_result_match:
+    if climb_cost_match and climb_result_match:
         state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
-        state["tianti_last_gain_xiuwei"] = int(climb_gain_match.group(1) or 0)
-        state["tianti_last_gain_contrib"] = int(climb_gain_match.group(2) or 0)
+        state["tianti_last_gain_xiuwei"] = int(climb_gain_match.group(1) or 0) if climb_gain_match else 0
+        state["tianti_last_gain_contrib"] = int(climb_gain_match.group(2) or 0) if climb_gain_match else 0
         if climb_cycle_match:
             state["tianti_cycle_count"] = int(climb_cycle_match.group(1) or 0)
         state["tianti_progress_current"] = int(climb_result_match.group(1) or 0)
@@ -835,11 +842,14 @@ async def _apply_small_world_passive(text, now, family="", reply_context=None):
     return True
 
 
-def _apply_concubine_passive(text, now, family):
+def _apply_concubine_passive(text, now, family, current_msg_id=0):
     raw_text = str(text or "")
     parsed = concubine_mod._parse_status_panel(raw_text, now)
     if parsed:
         concubine_mod._apply_status_snapshot(parsed, now)
+        current_msg_id = _event_int(current_msg_id)
+        if current_msg_id > 0:
+            state["concubine_last_panel_msg_id"] = current_msg_id
         return True
     voyage = concubine_mod._parse_voyage_text(raw_text, now)
     if voyage:
@@ -1098,18 +1108,37 @@ def _apply_stargazer_passive(text, now, family):
     raw_text = str(text or "")
     changed = False
     followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
-    if followup_due_at > now and str(state.get("stargazer_last_action") or "").startswith("queue_"):
+    queued_action = str(state.get("stargazer_queued_action") or "").strip()
+    last_action = str(state.get("stargazer_last_action") or "")
+    soothe_done = family == "stargazer_soothe" and (
+        stargazer_mod._is_stargazer_soothe_success(raw_text)
+        or stargazer_mod._is_stargazer_soothe_no_need(raw_text)
+    )
+    allow_soothe_recheck = soothe_done and (
+        queued_action == "collect"
+        or last_action == "queue_collect"
+        or bool(state.get("stargazer_soothe_before_collect"))
+    )
+    if followup_due_at > now and last_action.startswith("queue_") and family not in {"stargazer_panel", "stargazer_sync"} and not allow_soothe_recheck:
         return False
     if family in {"stargazer_panel", "stargazer_sync"}:
         parsed = stargazer_mod._parse_stargazer_panel(raw_text)
         if not parsed:
             return False
         stargazer_mod._sync_stargazer_panel_state(parsed, now)
-        if parsed.get("max_wait", 0) > 0:
+        if int(parsed.get("dim_slot_count", 0) or 0) > 0:
+            state["stargazer_wait_full_collect"] = False
+            stargazer_mod._clear_stargazer_collect_flags()
+            stargazer_mod._queue_stargazer_followup_action(now, "soothe", 5)
+            state["stargazer_last_action"] = "passive_dim_slot"
+        elif parsed.get("all_ready"):
+            state["stargazer_wait_full_collect"] = False
+            stargazer_mod._clear_stargazer_collect_flags()
+            stargazer_mod._queue_stargazer_followup_action(now, "collect", 5)
+            state["stargazer_last_action"] = "passive_all_ready"
+        elif parsed.get("max_wait", 0) > 0:
             state["next_stargazer_panel_time"] = float(now + int(parsed.get("max_wait", 0) or 0) + stargazer_mod.CD_BUFFER_SEC)
             state["stargazer_last_action"] = "passive_waiting_panel"
-        elif parsed.get("all_ready"):
-            state["stargazer_last_action"] = "passive_all_ready"
         elif parsed.get("idle_slot_count", 0) > 0:
             state["stargazer_last_action"] = "passive_idle_slot"
         changed = True
@@ -1128,6 +1157,8 @@ def _apply_stargazer_passive(text, now, family):
             state["stargazer_last_action"] = "passive_soothe_cd"
             changed = True
         elif stargazer_mod._is_stargazer_soothe_success(raw_text) or stargazer_mod._is_stargazer_soothe_no_need(raw_text):
+            stargazer_mod._clear_stargazer_collect_flags()
+            stargazer_mod._queue_stargazer_followup_action(now, "panel", 5)
             state["stargazer_last_action"] = "passive_soothe_done"
             changed = True
     elif family == "stargazer_collect":
@@ -1324,7 +1355,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     changed_modules = []
     with use_identity(target_id):
         if family.startswith("tianti_") or tianti_mod.RE_TIANTI_PANEL.search(raw_text):
-            module_changed = _apply_tianti_passive(raw_text, now, family)
+            module_changed = _apply_tianti_passive(raw_text, now, family, reply_context=reply_context)
             if module_changed:
                 changed_modules.append("tianti")
             changed = module_changed or changed
@@ -1380,7 +1411,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("concubine")
             changed = module_changed or changed
         elif family.startswith("concubine_"):
-            module_changed = _apply_concubine_passive(raw_text, now, family)
+            module_changed = _apply_concubine_passive(raw_text, now, family, current_msg_id=observed_msg_id)
             if module_changed:
                 changed_modules.append("concubine")
             changed = module_changed or changed

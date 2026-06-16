@@ -11,6 +11,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model.features import guanxing
+from model.real_message_replay import get_real_message_text
+
+
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "real_message_samples.json"
+
+
+def real_text(sample_id):
+    return get_real_message_text(FIXTURE_PATH, sample_id)
 
 
 class GuanxingShiftGuardTests(unittest.IsolatedAsyncioTestCase):
@@ -48,6 +56,39 @@ class GuanxingShiftGuardTests(unittest.IsolatedAsyncioTestCase):
         )
         with state_module.use_identity(identity_id):
             self.assertEqual(701, state_module.state["guanxing_last_query_msg_id"])
+
+    async def test_real_guanxing_query_panel_marks_identity_ready(self):
+        now = 1_781_107_202.0
+        identity_id = 8567800706
+        round_state = {
+            "slot_key": "2026-06-11T00",
+            "slot_start_at": now - 60,
+            "slot_end_at": now + 300,
+            "stage": guanxing.ROUND_STAGE_WAITING_FIRST_SHIFT,
+            "participant_ids": [identity_id],
+            "panel_ready_ids": [],
+        }
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["guanxing_last_query_msg_id"] = 10166164
+            with (
+                patch.object(guanxing, "sync_guanxing_round_from_monitor", return_value=(round_state, False)),
+                patch.object(guanxing, "save_state") as save_mock,
+            ):
+                handled = await guanxing.handle_guanxing_query_reply(
+                    real_text("guanxing.query.panel"),
+                    now,
+                    reply_to=SimpleNamespace(id=10166164, raw_text=".观星"),
+                    current_msg_id=10166166,
+                    matched_family="guanxing_query",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(10166166, state_module.state["guanxing_last_panel_msg_id"])
+            self.assertEqual("2026-06-11T00", state_module.state["guanxing_panel_slot_key"])
+            self.assertIn(identity_id, round_state["panel_ready_ids"])
+            save_mock.assert_called_once()
 
     async def test_guanxing_shift_uses_reactive_priority(self):
         identity_id = 8659059191

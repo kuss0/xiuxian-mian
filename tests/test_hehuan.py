@@ -117,6 +117,17 @@ class HehuanParserTests(unittest.TestCase):
         self.assertEqual(-1, parsed["contract_until"])
         self.assertGreater(parsed["next_hehuan_time"], now)
 
+    def test_contract_not_member_is_observed_without_new_runtime_branch(self):
+        parsed = hehuan.parse_hehuan_text(
+            real_text("hehuan.contract.not_member"),
+            now=1_780_000_000.0,
+            family="hehuan_contract",
+        )
+
+        self.assertEqual("未知合欢宗文案", parsed["action"])
+        self.assertEqual("observed", parsed["result"])
+        self.assertIn("并非合欢宗弟子", parsed["summary"])
+
     def test_concubine_dream_luding_text_is_not_claimed_without_hehuan_family(self):
         text = "【入梦成功】\n*她轻声道：“主人，这炉鼎…可还合用？”*"
 

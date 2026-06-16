@@ -35,7 +35,7 @@ RE_TIANTI_WENXIN_FAIL = re.compile(r"你今日已在问心台前静坐过一次�
 RE_TIANTI_CLIMB_COST = re.compile(r"你消耗了\s*(\d+)\s*点修为")
 RE_TIANTI_CLIMB_GAIN = re.compile(r"本次获得\s*(\d+)\s*点修为[、,，]\s*(\d+)\s*点宗门贡献")
 RE_TIANTI_CLIMB_CYCLE = re.compile(r"完成了第\s*(\d+)\s*轮【周天巡天】")
-RE_TIANTI_CLIMB_RESULT = re.compile(r"当前云阶进度[:：]\s*(\d+)\s*/\s*(\d+)[，,]\s*罡风淬体[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_TIANTI_CLIMB_RESULT = re.compile(r"当前云阶进度(?:[:：]|仍为)\s*(\d+)\s*/\s*(\d+)[，,]\s*罡风淬体[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_TIANTI_GANGFENG_PANEL = re.compile(r"【九天罡风】")
 RE_TIANTI_GANGFENG_COST = re.compile(r"消耗了\s*(\d+)\s*点修为")
 RE_TIANTI_GANGFENG_RESULT = re.compile(r"【罡风淬体】提升至\s*(\d+)\s*/\s*(\d+)\s*层")
@@ -110,6 +110,26 @@ def _has_pending_tianti_command(command):
         if pending_command == command or pending_command.startswith(f"{command} "):
             return True
     return False
+
+
+def _mark_tianti_status_synced(now, reply_to=None):
+    msg_id = int(getattr(reply_to, "id", 0) or 0)
+    changed = False
+    seen_at = float(now)
+    if float(state.get("tianti_last_status_seen_at", 0) or 0) != seen_at:
+        state["tianti_last_status_seen_at"] = seen_at
+        changed = True
+    if msg_id > 0:
+        if int(state.get("tianti_last_status_msg_id", 0) or 0) != msg_id:
+            state["tianti_last_status_msg_id"] = msg_id
+            changed = True
+        if int(state.get("tianti_status_reply_to_msg_id", 0) or 0) != msg_id:
+            state["tianti_status_reply_to_msg_id"] = msg_id
+            changed = True
+    if float(state.get("next_tianti_status_time", 0) or 0) != 0:
+        state["next_tianti_status_time"] = 0
+        changed = True
+    return changed
 
 
 def _tianti_inflight_key(send_as_id=None):
@@ -762,6 +782,13 @@ def _apply_tianti_panel_payload(payload, now=None):
     return changed
 
 
+def _apply_tianti_climb_result(climb_result_match):
+    state["tianti_progress_current"] = int(climb_result_match.group(1) or 0)
+    state["tianti_progress_total"] = int(climb_result_match.group(2) or 0)
+    state["tianti_gangfeng_level"] = int(climb_result_match.group(3) or 0)
+    state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
+
+
 def get_tianti_status_text():
     now = datetime.now(TZ_LOCAL).timestamp()
     lines = [
@@ -827,13 +854,12 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
 
     panel_payload = _parse_tianti_panel(raw_text)
     if panel_payload:
-        state["tianti_last_status_seen_at"] = float(now)
+        is_status_panel_reply = _is_tianti_status_panel_reply(reply_to, matched_family=matched_family)
+        if _mark_tianti_status_synced(now, reply_to if is_status_panel_reply else None):
+            handled = True
         if _apply_tianti_panel_payload(panel_payload, now=now):
             handled = True
-        if _is_tianti_status_panel_reply(reply_to, matched_family=matched_family):
-            state["tianti_last_status_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            state["tianti_status_reply_to_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
-            state["next_tianti_status_time"] = 0
+        if is_status_panel_reply:
             cooldown = str(panel_payload.get("cooldown_text") or "")
             _calc_tianti_wenxin_plan(now)
             _log_tianti_plan("天阶状态同步后")
@@ -889,10 +915,7 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         state["tianti_last_gain_contrib"] = int(climb_gain_match.group(2) or 0)
         if climb_cycle_match:
             state["tianti_cycle_count"] = int(climb_cycle_match.group(1) or 0)
-        state["tianti_progress_current"] = int(climb_result_match.group(1) or 0)
-        state["tianti_progress_total"] = int(climb_result_match.group(2) or 0)
-        state["tianti_gangfeng_level"] = int(climb_result_match.group(3) or 0)
-        state["tianti_gangfeng_total"] = int(climb_result_match.group(4) or 0)
+        _apply_tianti_climb_result(climb_result_match)
         state["tianti_last_error"] = ""
         reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
         _schedule_tianti_climb_retry(now, persist=False)
@@ -900,6 +923,22 @@ async def handle_tianti_reply(text, now, reply_to, matched_family=None):
         _log_tianti_plan("登阶成功后")
         await send_audit_log(
             f"☁️ 登阶成功：{int(state.get('tianti_progress_current', 0) or 0)}/{int(state.get('tianti_progress_total', 12) or 12)}｜罡风 {int(state.get('tianti_gangfeng_level', 0) or 0)}/{int(state.get('tianti_gangfeng_total', 12) or 12)}｜下次 {state.get('tianti_cooldown_text')}"
+        )
+        handled = True
+
+    if matched_family == "tianti_climb" and climb_cost_match and climb_result_match and not climb_gain_match:
+        _clear_tianti_climb_send_inflight()
+        state["tianti_last_climb_msg_id"] = int(getattr(reply_to, "id", 0) or 0)
+        state["tianti_last_cost_xiuwei"] = int(climb_cost_match.group(1) or 0)
+        state["tianti_last_gain_xiuwei"] = 0
+        state["tianti_last_gain_contrib"] = 0
+        _apply_tianti_climb_result(climb_result_match)
+        reset_resource_shortage(TIANTI_CLIMB_RESOURCE_KEY)
+        _schedule_tianti_climb_retry(now, persist=False)
+        _calc_tianti_wenxin_plan(now)
+        _log_tianti_plan("登阶未进后")
+        await send_audit_log(
+            f"☁️ 登阶未进：{int(state.get('tianti_progress_current', 0) or 0)}/{int(state.get('tianti_progress_total', 12) or 12)}｜罡风 {int(state.get('tianti_gangfeng_level', 0) or 0)}/{int(state.get('tianti_gangfeng_total', 12) or 12)}｜下次 {state.get('tianti_cooldown_text')}"
         )
         handled = True
 

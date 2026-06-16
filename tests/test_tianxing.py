@@ -75,6 +75,17 @@ class TianxingParserTests(unittest.TestCase):
         self.assertEqual("not_qualified", blocked["result"])
         self.assertEqual("无法感应九天星辰之力", blocked["last_error"])
 
+    def test_real_retreat_success_parses_tianxing_bonus(self):
+        parsed = tianxing.parse_tianxing_text(
+            real_text("tianxing.retreat.success"),
+            now=1_781_505_850.0,
+            family="tianxing_retreat",
+        )
+
+        self.assertEqual("闭关", parsed["action"])
+        self.assertEqual("success", parsed["result"])
+        self.assertEqual(239, parsed["last_bonus_gain"])
+
 
 class TianxingManualPlanTests(unittest.TestCase):
     def setUp(self):
