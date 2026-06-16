@@ -1318,8 +1318,8 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(1, state_module.state["concubine_voyage_retry_count"])
             self.assertEqual(now + 1 + concubine.CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC, state_module.state["next_concubine_time"])
 
-    def test_summary_replay_allows_voyage_command_with_route_suffix(self):
-        self.assertTrue(_phaseful._is_summary_replayable_command(f"{concubine.CMD_CONCUBINE_VOYAGE} 冒险"))
+    def test_summary_replay_rejects_archived_voyage_command_with_route_suffix(self):
+        self.assertFalse(_phaseful._is_summary_replayable_command(f"{concubine.CMD_CONCUBINE_VOYAGE} 冒险"))
 
     def test_summary_replay_rejects_wild_training_with_strategy_suffix(self):
         self.assertFalse(_phaseful._is_summary_replayable_command(".野外历练 谨慎"))
