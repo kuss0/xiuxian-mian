@@ -944,6 +944,9 @@ def _make_xutian_decision_notice_key(event, text, stage, now=None):
     elif raw_stage.startswith("luoyun:"):
         replica_kind = _REPLICA_KIND_LUOYUN
         stage = raw_stage.split(":", 1)[1]
+    elif raw_stage.startswith("zhuimo:"):
+        replica_kind = _REPLICA_KIND_ZHUIMO
+        stage = raw_stage.split(":", 1)[1]
     now = float(now or time.time())
     leader_username = _parse_replica_leader_username(text) or _get_latest_replica_leader_username(replica_kind, now=now)
     room_id = _get_latest_replica_room_id(replica_kind, now=now, leader_username=leader_username)
@@ -1089,6 +1092,45 @@ def _get_cangkun_decision_stage(text):
         "commands": tuple((f"选{option}", f".苍坤抉择 {option}") for option in options),
         "audience": "team" if is_team_prompt and not is_leader_prompt else "leader",
     }
+
+
+def _get_zhuimo_decision_stage(text):
+    raw_text = str(text or "")
+    if "坠魔后续抉择：" in raw_text and "兜底命令" in raw_text:
+        return {}
+    if ".坠魔抉择" not in raw_text:
+        return {}
+    if "【坠魔谷·第一幕" in raw_text and ("路径1" in raw_text or "路径2" in raw_text or "路径3" in raw_text):
+        return {
+            "stage": "first",
+            "title": "第一幕：裂隙外谷",
+            "commands": (
+                ("路径1 破煞", ".坠魔抉择 路径1"),
+                ("路径2 稳守", ".坠魔抉择 路径2"),
+                ("路径3 潜行", ".坠魔抉择 路径3"),
+            ),
+        }
+    if "【第一幕结果】" in raw_text and "【第二幕" in raw_text:
+        return {
+            "stage": "second",
+            "title": "第二幕：心魔镜域",
+            "commands": (
+                ("选1 斩念", ".坠魔抉择 1"),
+                ("选2 借力", ".坠魔抉择 2"),
+            ),
+        }
+    return {}
+
+
+def _format_zhuimo_decision_advice(stage_info, text, *, html=False):
+    stage = str((stage_info or {}).get("stage") or "")
+    if stage == "first":
+        advice = "建议：路径2 稳守阵眼；默认路线 2-1。"
+    elif stage == "second":
+        advice = "建议：选1 斩念守心；默认路线 2-1。"
+    else:
+        advice = ""
+    return escape(advice) if html else advice
 
 
 def _parse_cangkun_status_value(text, label):
@@ -1788,6 +1830,76 @@ def _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text, 
         if button:
             buttons.append(button)
     return _chunk_replica_buttons(buttons, cols=3)
+
+
+def _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, now=None):
+    stage_info = stage_info if isinstance(stage_info, dict) else {}
+    leader_identity_id = int(leader_identity_id or 0)
+    if leader_identity_id <= 0:
+        return []
+    source_key = _make_xutian_decision_notice_key(event, text, f"zhuimo:{stage_info.get('stage')}", now=now)
+    source_msg_id = int(getattr(event, "id", 0) or 0)
+    buttons = []
+    for label, command in stage_info.get("commands") or ():
+        button = _game_command_action_button(
+            label,
+            command,
+            leader_identity_id,
+            source_msg_id=source_msg_id,
+            token_key=f"zhuimo:{source_key}:{leader_identity_id}:{command}",
+            exclusive_key=f"zhuimo:{source_key}",
+        )
+        if button:
+            buttons.append(button)
+    return _chunk_replica_buttons(buttons, cols=3)
+
+
+async def _maybe_send_zhuimo_decision_notice(event, text, now):
+    stage_info = _get_zhuimo_decision_stage(text)
+    if not stage_info:
+        return False
+    parsed_leader_username = _parse_replica_leader_username(text)
+    leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
+    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    if leader_identity_id <= 0:
+        return False
+    if parsed_leader_username:
+        active_team_ids = _get_active_replica_team_identity_ids_for_usernames(
+            [parsed_leader_username],
+            now,
+            replica_kind=_REPLICA_KIND_ZHUIMO,
+        )
+        if active_team_ids and leader_identity_id not in active_team_ids:
+            return False
+    notice_key = _make_xutian_decision_notice_key(event, text, f"zhuimo:{stage_info.get('stage')}", now=now)
+    if not _mark_xutian_decision_notice_once(notice_key, now):
+        return False
+    buttons = _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, now=now)
+    if not buttons:
+        return False
+    commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
+    advice_text = _format_zhuimo_decision_advice(stage_info, text, html=True)
+    notice_text = (
+        f"坠魔后续抉择：{stage_info.get('title') or '未知阶段'}｜队长 {mono(leader_username)}\n"
+        + (f"{advice_text}\n" if advice_text else "")
+        + f"请选择一个按钮；兜底命令：\n{commands_text}"
+    )
+    if await _send_replica_kind_notice(
+        _REPLICA_KIND_ZHUIMO,
+        notice_text,
+        now,
+        html=True,
+        buttons=buttons,
+    ):
+        return True
+    return await send_audit_log(
+        notice_text,
+        scope="identity",
+        send_as_id=leader_identity_id,
+        priority="medium",
+        limit=700,
+        buttons=buttons,
+    )
 
 
 async def _maybe_send_luoyun_decision_notice(event, text, now):
@@ -2734,6 +2846,8 @@ def _parse_replica_entered_kind(text):
     if "队伍已进入虚天殿" in raw_text:
         return _REPLICA_KIND_VIRTUAL_HALL
     if "队伍已进入坠魔谷" in raw_text:
+        return _REPLICA_KIND_ZHUIMO
+    if "【坠魔谷·第一幕" in raw_text:
         return _REPLICA_KIND_ZHUIMO
     if "队伍已进入黄龙山" in raw_text:
         return _REPLICA_KIND_HUANGLONG
@@ -7720,6 +7834,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     entered_kind = _parse_replica_entered_kind(text)
     xutian_decision_stage = _get_xutian_decision_stage(text)
     cangkun_decision_stage = _get_cangkun_decision_stage(text)
+    zhuimo_decision_stage = _get_zhuimo_decision_stage(text)
     kunwu_decision_stage = _get_kunwu_decision_stage(text)
     luoyun_decision_stage = _get_luoyun_decision_stage(text)
     replica_settlement_kind = _parse_replica_settlement_kind(text)
@@ -7728,6 +7843,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     if (
         not xutian_decision_stage
         and not cangkun_decision_stage
+        and not zhuimo_decision_stage
         and not kunwu_decision_stage
         and not luoyun_decision_stage
         and not replica_settlement_kind
@@ -7770,6 +7886,23 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             usernames=event_usernames,
         )
         cangkun_notice_sent = bool(await _maybe_send_cangkun_decision_notice(event, text, now))
+    zhuimo_notice_sent = False
+    if zhuimo_decision_stage:
+        parsed_leader_username = _parse_replica_leader_username(text)
+        leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
+        _mark_replica_team_entered(
+            _REPLICA_KIND_ZHUIMO,
+            now,
+            source_msg_id=getattr(event, "id", 0),
+            leader_username=leader_username,
+        )
+        _mark_latest_lightweight_room_entered(
+            _REPLICA_KIND_ZHUIMO,
+            now=now,
+            require_recent_enter_request=False,
+            usernames=_extract_replica_usernames(text),
+        )
+        zhuimo_notice_sent = bool(await _maybe_send_zhuimo_decision_notice(event, text, now))
     kunwu_notice_sent = False
     if kunwu_decision_stage:
         parsed_leader_username = _parse_replica_leader_username(text)
@@ -7902,7 +8035,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         if identity_ids:
             _mark_replica_failure_pending(identity_ids, now, replica_kind=replica_kind)
             return True
-    return bool(xutian_notice_sent or cangkun_notice_sent or kunwu_notice_sent or luoyun_notice_sent)
+    return bool(xutian_notice_sent or cangkun_notice_sent or zhuimo_notice_sent or kunwu_notice_sent or luoyun_notice_sent)
 
 
 def _parse_virtual_hall_open_failure(text):

@@ -2410,6 +2410,124 @@ class ReplicaAbsorbTests(unittest.TestCase):
         saved_room = app_replica._get_lightweight_last_room(-100777, now=now + 3)
         self.assertGreater(saved_room["enter_confirmed_at"], now)
 
+    def test_zhuimo_first_stage_marks_entered_sends_buttons_and_cancels_enter_retry(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        member_id = self._register_replica_identity(991202, "jfdffdddd", professions="咒师")
+        group_event = self._prepare_replica_group([leader_id, member_id])
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "95",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": group_event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "join_requested_usernames": ["@jfdffdddd"],
+            "enter_requested_at": now,
+            "enter_msg_id": 778,
+            "opened_at": now - 30,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        text = (
+            "【坠魔谷·第一幕：裂隙外谷】\n"
+            "你们踏入谷口，黑雾翻涌，封印符纹时明时灭。\n"
+            "路径1 · 破煞突进：强行冲阵。\n"
+            "路径2 · 稳守阵眼：以阵法缓进。\n"
+            "路径3 · 潜行搜魂：避开主裂隙。\n"
+            "使用 .坠魔抉择 路径1/路径2/路径3 继续。"
+        )
+        event = SimpleNamespace(id=8806, chat_id=-100123, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=779))) as send_mock:
+                handled = await app_replica._handle_replica_progress_event(event, now + 2)
+                retried = await app_replica._retry_lightweight_game_command_once(
+                    "enter",
+                    leader_id,
+                    app_replica._REPLICA_KIND_ZHUIMO,
+                    "95",
+                    ".进入坠魔谷",
+                    group_event.chat_id,
+                    88006,
+                    778,
+                    delay_sec=0,
+                )
+                buttons = notice_mock.await_args.kwargs["buttons"]
+                return handled, retried, send_mock.await_count, notice_mock.await_args.args[1], self._button_texts(buttons), buttons
+
+        handled, retried, send_count, notice_text, button_texts, buttons = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertFalse(retried)
+        self.assertEqual(0, send_count)
+        self.assertIn("坠魔后续抉择：第一幕", notice_text)
+        self.assertIn("默认路线 2-1", notice_text)
+        self.assertEqual({"路径1 破煞", "路径2 稳守", "路径3 潜行"}, set(button_texts))
+        payloads = [
+            app_replica._get_replica_button_action(button["callback_data"])[1]["payload"]
+            for row in buttons
+            for button in row
+        ]
+        self.assertEqual({".坠魔抉择 路径1", ".坠魔抉择 路径2", ".坠魔抉择 路径3"}, {payload["command"] for payload in payloads})
+        self.assertEqual({leader_id}, {payload["identity_id"] for payload in payloads})
+        saved_room = app_replica._get_lightweight_last_room(group_event.chat_id, now=now + 3)
+        self.assertEqual("entered", saved_room["phase"])
+        self.assertGreater(saved_room["enter_confirmed_at"], now)
+
+    def test_zhuimo_second_stage_sends_decision_buttons(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        self._prepare_replica_group([leader_id])
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "95",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "opened_at": now - 60,
+            "entered_at": now - 30,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        text = (
+            "【第一幕结果】\n"
+            "你们先稳固阵眼，再层层推进，魔气回卷被有效压制。\n"
+            "当前状态：魔染 8 / 封印 52 / 士气 122\n\n"
+            "【第二幕：心魔镜域】\n"
+            "1 · 斩念守心：集体压制心魔杂念。\n"
+            "2 · 纵魔借力：短暂引魔入体换取爆发。\n"
+            "使用 .坠魔抉择 1 或 .坠魔抉择 2。"
+        )
+        event = SimpleNamespace(id=8807, chat_id=-100123, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_replica_progress_event(event, now + 2)
+                send_mock.assert_not_awaited()
+                buttons = notice_mock.await_args.kwargs["buttons"]
+                return handled, notice_mock.await_args.args[1], self._button_texts(buttons), buttons
+
+        handled, notice_text, button_texts, buttons = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertIn("坠魔后续抉择：第二幕", notice_text)
+        self.assertIn("选1 斩念守心", notice_text)
+        self.assertEqual({"选1 斩念", "选2 借力"}, set(button_texts))
+        payloads = [
+            app_replica._get_replica_button_action(button["callback_data"])[1]["payload"]
+            for row in buttons
+            for button in row
+        ]
+        self.assertEqual({".坠魔抉择 1", ".坠魔抉择 2"}, {payload["command"] for payload in payloads})
+
     def test_luoyun_first_stage_marks_entered_and_sends_decision_buttons(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", realm="结丹后期", sect_name="落云宗")
         member_id = self._register_replica_identity(991202, "growrdick")
