@@ -533,7 +533,7 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
     if action_key == "small_world_manifest":
         return _int_state(identity_state, "small_world_manifest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"manifest_pending"})
     if action_key == "small_world_harvest":
-        return _int_state(identity_state, "small_world_harvest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"harvest_pending"})
+        return _int_state(identity_state, "small_world_harvest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"harvest_pending", "harvest_sent", "harvest_before_manifest_sent"})
     if action_key == "small_world_refine":
         return _int_state(identity_state, "small_world_refine_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"refine_pending"})
     if action_key == "wendao":

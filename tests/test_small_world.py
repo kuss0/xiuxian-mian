@@ -415,6 +415,40 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["small_world_query_msg_id"])
             self.assertEqual("", state_module.state["small_world_pending_god_action"])
 
+    async def test_prayer_panel_harvests_before_manifest_when_incense_ready(self):
+        send_as_id = 8659059205
+        now = 22100.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【铁笔客的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 1608.92\n"
+            "🏺 香火库存: 4\n\n"
+            "🔥 凡人祈愿：丰收祭典\n"
+            "⚡ 显灵消耗: 灵石x200\n"
+            "请使用 .显灵 响应祈愿，或忽略之。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 9903
+            with (
+                patch.object(small_world, "_send_harvest_before_manifest", new=AsyncMock(return_value=True)) as harvest_mock,
+                patch.object(small_world, "_send_manifest", new=AsyncMock(return_value=True)) as manifest_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            harvest_mock.assert_awaited_once_with(now)
+            manifest_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual("灵石x200", state_module.state["small_world_manifest_cost_text"])
+
     async def test_no_prayer_small_incense_does_not_harvest_again(self):
         send_as_id = 8659059191
         now = 1000.0
@@ -670,6 +704,27 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["small_world_harvest_msg_id"])
             self.assertIn("复查面板", state_module.state["small_world_last_error"])
 
+    async def test_harvest_before_manifest_timeout_rechecks_panel_with_manifest_reason(self):
+        send_as_id = 8659059298
+        now = 3320.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_phase"] = "harvest_before_manifest_sent"
+            state_module.state["small_world_harvest_msg_id"] = 7607
+            state_module.state["next_small_world_time"] = now - 1
+
+            with patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock:
+                await small_world.run_small_world_scheduler(now)
+
+            query_mock.assert_awaited_once_with(now, "显灵前收割后复查")
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_harvest_msg_id"])
+            self.assertIn("显灵前收割香火", state_module.state["small_world_last_error"])
+
     async def test_harvest_reply_updates_inventory_only_from_real_receipt(self):
         send_as_id = 8659059297
         now = 3400.0
@@ -886,6 +941,153 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 now + wait_sec + small_world.CD_BUFFER_SEC + 60,
                 state_module.state["next_small_world_time"],
             )
+
+    async def test_relief_resource_shortage_falls_back_to_preach_without_long_pause(self):
+        send_as_id = 8659059312
+        now = 4255.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7712
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_pending_god_action"] = "relief"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 地脉翻身，赈灾安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["pending_tasks"] = {
+                7712: {"cmd": small_world.CMD_SMALL_WORLD_RELIEF, "sent_at": now - 5, "retry": 0},
+                7713: {"cmd": small_world.CMD_SMALL_WORLD_PREACH, "sent_at": now - 4, "retry": 0},
+                7714: {"cmd": small_world.CMD_SMALL_WORLD_QUERY, "sent_at": now - 3, "retry": 0},
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=True)) as preach_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "国库空虚！赈灾需要 4000 灵石。",
+                    now,
+                    reply_to=SimpleNamespace(id=7712, raw_text=small_world.CMD_SMALL_WORLD_RELIEF),
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            preach_mock.assert_awaited_once()
+            self.assertEqual(now, preach_mock.await_args.args[0])
+            self.assertIn("赈灾", preach_mock.await_args.args[1])
+            self.assertIn("布道", preach_mock.await_args.args[1])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertIn("布道", state_module.state["small_world_pending_god_reason"])
+            self.assertEqual(
+                small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                state_module.state["small_world_pending_god_priority"],
+            )
+            self.assertEqual({7714}, set(state_module.state["pending_tasks"].keys()))
+            self.assertEqual("赈灾没钱转布道", state_module.state["small_world_pending_god_reason"])
+            self.assertNotEqual(
+                now + small_world.SMALL_WORLD_LONG_PAUSE_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            audit_mock.assert_not_awaited()
+
+    async def test_relief_resource_shortage_keeps_preach_short_retry_when_send_fails(self):
+        send_as_id = 8659059314
+        now = 4256.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7718
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_pending_god_action"] = "relief"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 地脉翻身，赈灾安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["pending_tasks"] = {
+                7718: {"cmd": small_world.CMD_SMALL_WORLD_RELIEF, "sent_at": now - 5, "retry": 0},
+                7719: {"cmd": small_world.CMD_SMALL_WORLD_QUERY, "sent_at": now - 3, "retry": 0},
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock(return_value=False)) as preach_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "国库空虚！赈灾需要 4000 灵石。",
+                    now,
+                    reply_to=SimpleNamespace(id=7718, raw_text=small_world.CMD_SMALL_WORLD_RELIEF),
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            preach_mock.assert_awaited_once_with(now, "赈灾没钱转布道")
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("赈灾没钱转布道", state_module.state["small_world_pending_god_reason"])
+            self.assertEqual(
+                small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER,
+                state_module.state["small_world_pending_god_priority"],
+            )
+            self.assertNotIn("资源不足", state_module.state["small_world_last_error"])
+            self.assertNotEqual(
+                now + small_world.SMALL_WORLD_LONG_PAUSE_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            self.assertEqual({7719}, set(state_module.state["pending_tasks"].keys()))
+            audit_mock.assert_not_awaited()
+
+    async def test_preach_resource_shortage_keeps_long_pause_behavior(self):
+        send_as_id = 8659059313
+        now = 4257.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 7715
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_pending_god_action"] = "preach"
+            state_module.state["small_world_pending_god_reason"] = "灾害: 邪神蛊惑，布道安抚"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_DISASTER
+            state_module.state["pending_tasks"] = {
+                7715: {"cmd": small_world.CMD_SMALL_WORLD_PREACH, "sent_at": now - 5, "retry": 0},
+                7716: {"cmd": small_world.CMD_SMALL_WORLD_RELIEF, "sent_at": now - 4, "retry": 0},
+                7717: {"cmd": small_world.CMD_SMALL_WORLD_QUERY, "sent_at": now - 3, "retry": 0},
+            }
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    "神迹布道需要 4000 灵石，当前灵石不足。",
+                    now,
+                    reply_to=SimpleNamespace(id=7715, raw_text=small_world.CMD_SMALL_WORLD_PREACH),
+                    matched_family="small_world_preach",
+                )
+
+            self.assertTrue(handled)
+            preach_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual("", state_module.state["small_world_pending_god_action"])
+            self.assertEqual("", state_module.state["small_world_pending_god_reason"])
+            self.assertEqual(0, state_module.state["small_world_pending_god_priority"])
+            self.assertEqual({7717}, set(state_module.state["pending_tasks"].keys()))
+            self.assertIn("资源不足", state_module.state["small_world_last_error"])
+            self.assertIn("灵石不足", state_module.state["small_world_last_error"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_LONG_PAUSE_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            audit_mock.assert_awaited_once()
+            self.assertIn("小世界神迹布道资源不足", audit_mock.await_args.args[0])
 
     async def test_god_success_clears_pending_when_snapshot_is_full(self):
         send_as_id = 8659059307
@@ -1539,6 +1741,10 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             record = state_module.get_storage_bag_records()[str(send_as_id)]
             self.assertEqual(3, record["items"]["清灵丹"])
             self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
+            self.assertEqual(
+                now + 1 + small_world.SMALL_WORLD_MANIFEST_CD_SEC + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
 
     async def test_manifest_success_does_not_deduct_cultivation_as_storage_item(self):
         send_as_id = 8659059198
@@ -1591,6 +1797,10 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(3, record["items"]["清灵丹"])
             self.assertNotIn("修为", record["items"])
             self.assertEqual("", state_module.state["small_world_manifest_cost_text"])
+            self.assertEqual(
+                now + 1 + small_world.SMALL_WORLD_MANIFEST_CD_SEC + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
 
 
 if __name__ == "__main__":

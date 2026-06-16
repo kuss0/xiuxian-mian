@@ -90,6 +90,10 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         state_module.set_world_boss_run_state({})
 
     def tearDown(self):
+        task = getattr(world_boss, "_WORLD_BOSS_ROUND_TASK", None)
+        if task is not None and not task.done():
+            task.cancel()
+        world_boss._WORLD_BOSS_ROUND_TASK = None
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
@@ -99,6 +103,14 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         identity_state = state_module.get_identity_state(identity_id)
         identity_state["world_boss_enabled"] = bool(world_boss_enabled)
         return identity_state
+
+    async def _await_world_boss_round_task(self):
+        task = getattr(world_boss, "_WORLD_BOSS_ROUND_TASK", None)
+        if task is None:
+            return
+        await asyncio.wait_for(task, timeout=1.0)
+        if getattr(world_boss, "_WORLD_BOSS_ROUND_TASK", None) is task:
+            world_boss._WORLD_BOSS_ROUND_TASK = None
 
     def test_parse_real_world_boss_text_shapes(self):
         opened = world_boss.parse_world_boss_text(OPEN_TEXT, now=1_781_318_000.0)
@@ -185,9 +197,11 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("镇魂", world_boss.choose_world_boss_action(3907536807, identity_state, run_state, now=now))
 
-    async def test_scheduler_sends_one_no_retry_action_and_respects_global_gap(self):
+    async def test_scheduler_sends_one_round_with_one_second_spacing_and_round_gap(self):
         identity_id = 8659059191
+        second_id = 3504367852
         identity_state = self._register(identity_id, label="WalterWA2000")
+        second_state = self._register(second_id, label="竹节虫1")
         now = 1_781_318_600.0
         state_module.set_world_boss_run_state(
             {
@@ -205,29 +219,100 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         )
 
         with (
+            patch.object(world_boss.time, "time", return_value=now),
             patch.object(world_boss, "save_state", return_value=True),
-            patch.object(world_boss, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9001, sent_at=now + 1))) as send_mock,
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(side_effect=[
+                    SimpleNamespace(id=9001, sent_at=now),
+                    SimpleNamespace(id=9002, sent_at=now + world_boss.WORLD_BOSS_ACTION_GAP_SEC),
+                ]),
+            ) as send_mock,
         ):
             await world_boss.run_world_boss_scheduler(now)
-            send_mock.assert_awaited_once()
-            first_send_args = send_mock.await_args
-            send_mock.reset_mock()
-            await world_boss.run_world_boss_scheduler(now + 2)
-            send_mock.assert_not_awaited()
+            await self._await_world_boss_round_task()
+            self.assertEqual(2, send_mock.await_count)
+            first_send_args = send_mock.await_args_list[0]
+            second_send_args = send_mock.await_args_list[1]
 
         self.assertEqual(".讨伐青元子 镇魂", first_send_args.args[0])
+        self.assertEqual(".讨伐青元子 镇魂", second_send_args.args[0])
         self.assertEqual(0, first_send_args.kwargs["max_retry"])
         self.assertEqual("event_burst", first_send_args.kwargs["priority"])
         self.assertEqual("真仙试锋", first_send_args.kwargs["source_module"])
-        self.assertTrue(first_send_args.kwargs["op_id"].startswith("world_boss:2026-06-13:test:action:"))
+        self.assertTrue(first_send_args.kwargs["op_id"].endswith(":1:try0"))
+        self.assertTrue(second_send_args.kwargs["op_id"].endswith(":1:try0"))
         self.assertEqual("world_boss:2026-06-13:test", first_send_args.kwargs["chain_id"])
         self.assertEqual(1, identity_state["world_boss_action_count"])
+        self.assertEqual(1, second_state["world_boss_action_count"])
         self.assertEqual("镇魂", identity_state["world_boss_pending_action"])
-        self.assertEqual(9001, identity_state["world_boss_pending_msg_id"])
+        identity_call_index = next(
+            index for index, call in enumerate(send_mock.await_args_list) if call.kwargs["send_as_id"] == identity_id
+        )
+        self.assertEqual(9001 if identity_call_index == 0 else 9002, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual(
+            world_boss.WORLD_BOSS_ACTION_GAP_SEC,
+            abs(second_state["world_boss_pending_since"] - identity_state["world_boss_pending_since"]),
+        )
         run_state = state_module.get_world_boss_run_state()
-        self.assertEqual(now + 1 + world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["next_action_at"])
+        self.assertEqual(now, run_state["round_started_at"])
+        self.assertEqual(now + 2 * world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["round_completed_at"])
+        self.assertEqual(run_state["round_completed_at"] + world_boss.WORLD_BOSS_ROUND_GAP_SEC, run_state["next_action_at"])
 
-    async def test_scheduler_batches_multiple_identities_without_global_75s_gap(self):
+    async def test_scheduler_sends_twenty_two_identity_round_before_next_round_gap(self):
+        identity_ids = [3_100_000_000 + index for index in range(22)]
+        for identity_id in identity_ids:
+            self._register(identity_id, label=f"真仙{identity_id}")
+        now = 1_781_318_650.0
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-13:test22",
+                "opened_at": now - 60,
+                "phase": "第一阶段·万火归源",
+                "hp_percent": 100,
+                "moya": 86,
+                "zhen": 90,
+                "last_status_at": now,
+                "next_action_at": 0,
+                "summary": {"镇魂": 0, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+        sends = [
+            SimpleNamespace(id=9500 + index, sent_at=now + index * world_boss.WORLD_BOSS_ACTION_GAP_SEC)
+            for index in range(len(identity_ids))
+        ]
+
+        with (
+            patch.object(world_boss.time, "time", return_value=now),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
+            patch.object(world_boss, "send_game_command", new=AsyncMock(side_effect=sends)) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+            await self._await_world_boss_round_task()
+
+        self.assertEqual(22, send_mock.await_count)
+        self.assertEqual(identity_ids, [call.kwargs["send_as_id"] for call in send_mock.await_args_list])
+        sent_identity_ids = [call.kwargs["send_as_id"] for call in send_mock.await_args_list]
+        self.assertEqual(22, len(set(sent_identity_ids)))
+        self.assertTrue(all(state_module.get_identity_state(identity_id)["world_boss_action_count"] == 1 for identity_id in identity_ids))
+        pending_since_values = [
+            state_module.get_identity_state(identity_id)["world_boss_pending_since"]
+            for identity_id in identity_ids
+        ]
+        self.assertEqual(
+            [now + index * world_boss.WORLD_BOSS_ACTION_GAP_SEC for index in range(22)],
+            pending_since_values,
+        )
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual(now, run_state["round_started_at"])
+        self.assertEqual(now + 22 * world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["round_completed_at"])
+        self.assertEqual(run_state["round_completed_at"] + world_boss.WORLD_BOSS_ROUND_GAP_SEC, world_boss._next_new_round_at(run_state))
+
+    async def test_scheduler_starts_next_round_after_round_gap(self):
         first_state = self._register(301299112, label="jfdffdddd")
         second_state = self._register(3504367852, label="竹节虫1")
         now = world_boss.time.time()
@@ -246,21 +331,137 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             }
         )
 
+        next_round_at = now + 2 * world_boss.WORLD_BOSS_ACTION_GAP_SEC + world_boss.WORLD_BOSS_ROUND_GAP_SEC
         sends = [
-            SimpleNamespace(id=9101, sent_at=now + 1),
-            SimpleNamespace(id=9102, sent_at=now + 2),
+            SimpleNamespace(id=9101, sent_at=now),
+            SimpleNamespace(id=9102, sent_at=now + world_boss.WORLD_BOSS_ACTION_GAP_SEC),
+            SimpleNamespace(id=9103, sent_at=next_round_at),
+            SimpleNamespace(id=9104, sent_at=next_round_at + world_boss.WORLD_BOSS_ACTION_GAP_SEC),
         ]
         with (
+            patch.object(world_boss.time, "time", return_value=now),
             patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
             patch.object(world_boss, "send_game_command", new=AsyncMock(side_effect=sends)) as send_mock,
         ):
             await world_boss.run_world_boss_scheduler(now)
+            await self._await_world_boss_round_task()
+            world_boss._clear_world_boss_pending_action(first_state)
+            world_boss._clear_world_boss_pending_action(second_state)
+            await world_boss.run_world_boss_scheduler(next_round_at)
+            await self._await_world_boss_round_task()
 
-        self.assertEqual(2, send_mock.await_count)
-        self.assertEqual(1, first_state["world_boss_action_count"])
-        self.assertEqual(1, second_state["world_boss_action_count"])
+        self.assertEqual(4, send_mock.await_count)
+        self.assertEqual(2, first_state["world_boss_action_count"])
+        self.assertEqual(2, second_state["world_boss_action_count"])
         self.assertEqual("event_burst", send_mock.await_args_list[0].kwargs["priority"])
         self.assertEqual("event_burst", send_mock.await_args_list[1].kwargs["priority"])
+        self.assertTrue(send_mock.await_args_list[2].kwargs["op_id"].endswith(":2:try0"))
+        self.assertTrue(send_mock.await_args_list[3].kwargs["op_id"].endswith(":2:try0"))
+
+    async def test_pending_action_retries_twice_without_consuming_more_actions_then_abandons(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = 1_781_318_700.0
+        identity_state["world_boss_action_count"] = 1
+        identity_state["world_boss_pending_msg_id"] = 9201
+        identity_state["world_boss_pending_action"] = "镇魂"
+        identity_state["world_boss_pending_since"] = now - world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC - 1
+        identity_state["world_boss_pending_retry_count"] = 0
+        identity_state["world_boss_pending_action_seq"] = 1
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-13:test",
+                "opened_at": now - 60,
+                "phase": "第一阶段·万火归源",
+                "hp_percent": 100,
+                "moya": 86,
+                "zhen": 90,
+                "last_status_at": now,
+                "next_action_at": 0,
+                "summary": {"镇魂": 0, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+
+        retry2_now = now + world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC + 1
+        abandon_now = now + 2 * world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC + 2
+        with (
+            patch.object(world_boss.time, "time", return_value=now),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(side_effect=[
+                    SimpleNamespace(id=9202, sent_at=now),
+                    SimpleNamespace(id=9203, sent_at=retry2_now),
+                ]),
+            ) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+            await self._await_world_boss_round_task()
+            state_module.get_world_boss_run_state()["last_status_at"] = retry2_now
+            await world_boss.run_world_boss_scheduler(retry2_now)
+            await self._await_world_boss_round_task()
+            state_module.get_world_boss_run_state()["last_status_at"] = abandon_now
+            await world_boss.run_world_boss_scheduler(abandon_now)
+            await self._await_world_boss_round_task()
+
+        self.assertEqual(2, send_mock.await_count)
+        self.assertTrue(send_mock.await_args_list[0].kwargs["op_id"].endswith(":1:try1"))
+        self.assertTrue(send_mock.await_args_list[1].kwargs["op_id"].endswith(":1:try2"))
+        self.assertEqual(1, identity_state["world_boss_action_count"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
+        self.assertIn("放弃", identity_state["world_boss_last_error"])
+
+    async def test_stale_status_with_pending_action_waits_for_retry_without_status_query(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = 1_781_318_900.0
+        pending_since = now - 30
+        identity_state["world_boss_action_count"] = 1
+        identity_state["world_boss_pending_msg_id"] = 9601
+        identity_state["world_boss_pending_action"] = "镇魂"
+        identity_state["world_boss_pending_since"] = pending_since
+        identity_state["world_boss_pending_retry_count"] = 0
+        identity_state["world_boss_pending_action_seq"] = 1
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-13:stale-pending",
+                "opened_at": now - 600,
+                "phase": "第一阶段·万火归源",
+                "hp_percent": 100,
+                "moya": 86,
+                "zhen": 90,
+                "last_status_at": now - world_boss.WORLD_BOSS_STATUS_STALE_SEC - 1,
+                "next_status_query_at": now - 1,
+                "next_action_at": 0,
+                "summary": {"镇魂": 0, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+            send_mock.assert_not_awaited()
+            handled = await world_boss.handle_world_boss_reply(
+                SUPPRESS_REPLY,
+                now + 5,
+                matched_family="world_boss",
+                reply_context={"send_as_id": identity_id, "family": "world_boss"},
+                current_msg_id=9602,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(1, identity_state["world_boss_action_count"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
 
     async def test_scheduler_sends_status_query_once_in_fallback_window(self):
         identity_id = 301299112

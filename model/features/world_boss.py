@@ -35,12 +35,13 @@ WORLD_BOSS_ACTION_COMMANDS = {
     "护阵": CMD_QINGYUANZI_GUARD,
     "强攻": CMD_QINGYUANZI_ATTACK,
 }
-WORLD_BOSS_PENDING_TIMEOUT_SEC = 3 * 60
+WORLD_BOSS_PENDING_TIMEOUT_SEC = 90
 WORLD_BOSS_REPLY_TIMEOUT_SEC = 90
-WORLD_BOSS_ACTION_GAP_SEC = 0.0
-WORLD_BOSS_MAX_ACTIONS_PER_TICK = 25
+WORLD_BOSS_ACTION_GAP_SEC = 1.0
+WORLD_BOSS_ROUND_GAP_SEC = 70.0
+WORLD_BOSS_MAX_ACTIONS_PER_TICK = 64
 WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC = 0
-WORLD_BOSS_STATUS_STALE_SEC = 90
+WORLD_BOSS_STATUS_STALE_SEC = 120
 WORLD_BOSS_STATUS_QUERY_GAP_SEC = 3 * 60
 WORLD_BOSS_EVENT_TTL_SEC = 35 * 60
 WORLD_BOSS_STRONG_ATTACK_LIMIT = 2
@@ -48,6 +49,7 @@ WORLD_BOSS_DEFAULT_ACTION_LIMIT = 5
 WORLD_BOSS_PROGRESS_LOG_GAP_SEC = 5 * 60
 WORLD_BOSS_FALLBACK_START_MINUTE = 13 * 60 + 25
 WORLD_BOSS_FALLBACK_END_MINUTE = 14 * 60 + 10
+WORLD_BOSS_PENDING_MAX_RETRY = 2
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {f"{CMD_WORLD_BOSS_STATUS} 查看战况"}
@@ -74,6 +76,7 @@ RE_DAMAGE = re.compile(r"造成\s*([^\s。]+)\s*伤害")
 RE_PARTICIPANTS = re.compile(r"参战[:：]\s*(\d+)\s*人")
 
 _WORLD_BOSS_SCHEDULER_LOCK = asyncio.Lock()
+_WORLD_BOSS_ROUND_TASK = None
 
 
 def _empty_summary():
@@ -98,6 +101,8 @@ def _blank_run_state(now=None):
         "last_status_msg_id": 0,
         "last_action_at": 0,
         "next_action_at": 0,
+        "round_started_at": 0,
+        "round_completed_at": 0,
         "next_status_query_at": 0,
         "summary": _empty_summary(),
         "last_summary_log_at": 0,
@@ -147,6 +152,8 @@ def _normalize_run_state(raw=None, now=None):
         "last_status_at",
         "last_action_at",
         "next_action_at",
+        "round_started_at",
+        "round_completed_at",
         "next_status_query_at",
         "last_summary_log_at",
         "last_conclusion_at",
@@ -340,6 +347,8 @@ def clear_world_boss_identity_state(send_as_id=None, *, persist=True, keep_last_
     identity_state["world_boss_pending_msg_id"] = 0
     identity_state["world_boss_pending_action"] = ""
     identity_state["world_boss_pending_since"] = 0
+    identity_state["world_boss_pending_retry_count"] = 0
+    identity_state["world_boss_pending_action_seq"] = 0
     identity_state["world_boss_last_action"] = ""
     identity_state["world_boss_last_action_at"] = 0
     identity_state["world_boss_last_reply_msg_id"] = 0
@@ -361,6 +370,91 @@ def _reset_all_identity_event_state(*, persist=False):
 
 def _clear_world_boss_pending_tasks():
     clear_pending_tasks_by_commands(WORLD_BOSS_PENDING_COMMANDS)
+
+
+def _clear_world_boss_pending_action(identity_state):
+    identity_state["world_boss_pending_msg_id"] = 0
+    identity_state["world_boss_pending_action"] = ""
+    identity_state["world_boss_pending_since"] = 0
+    identity_state["world_boss_pending_retry_count"] = 0
+    identity_state["world_boss_pending_action_seq"] = 0
+
+
+def _reset_world_boss_round(run_state, now, *, persist=True):
+    run_state["round_started_at"] = float(now)
+    run_state["round_completed_at"] = 0
+    run_state["next_action_at"] = float(now)
+    _set_run_state(run_state, persist=persist)
+    return run_state
+
+
+def _complete_world_boss_round(run_state, now, *, persist=True):
+    completed_at = max(float(now), _coerce_float(run_state.get("last_action_at"), 0))
+    run_state["round_completed_at"] = completed_at
+    return _schedule_next_world_boss_action(run_state, completed_at, persist=persist)
+
+
+def _has_pending_world_boss_action(identity_state):
+    pending_msg_id = _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0)
+    pending_action = str(identity_state.get("world_boss_pending_action") or "").strip()
+    pending_since = _coerce_float(identity_state.get("world_boss_pending_since"), 0)
+    return pending_msg_id > 0 and pending_action in WORLD_BOSS_ACTION_COMMANDS and pending_since > 0
+
+
+def _pending_action_due_at(identity_state):
+    if not _has_pending_world_boss_action(identity_state):
+        return 0
+    return _coerce_float(identity_state.get("world_boss_pending_since"), 0) + WORLD_BOSS_PENDING_TIMEOUT_SEC
+
+
+def _next_pending_action_due_at():
+    due_times = []
+    for identity_id in _enabled_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        due_at = _pending_action_due_at(identity_state)
+        if due_at > 0:
+            due_times.append(due_at)
+    return min(due_times) if due_times else 0
+
+
+def _has_any_pending_action():
+    for identity_id in _enabled_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if _has_pending_world_boss_action(identity_state):
+            return True
+    return False
+
+
+def _has_due_pending_action(now):
+    due_at = _next_pending_action_due_at()
+    return due_at > 0 and float(now) >= due_at
+
+
+def _next_new_round_at(run_state):
+    completed_at = _coerce_float(run_state.get("round_completed_at"), 0)
+    if completed_at <= 0:
+        return 0
+    return completed_at + WORLD_BOSS_ROUND_GAP_SEC
+
+
+def _schedule_next_world_boss_action(run_state, now, *, persist=True):
+    candidates = []
+    next_round_at = _next_new_round_at(run_state)
+    if next_round_at > 0:
+        candidates.append(next_round_at)
+    next_pending_due_at = _next_pending_action_due_at()
+    if next_pending_due_at > 0:
+        candidates.append(next_pending_due_at)
+    if candidates:
+        run_state["next_action_at"] = max(float(now), min(candidates))
+    _set_run_state(run_state, persist=persist)
+    return run_state
 
 
 def _enabled_identity_ids():
@@ -456,12 +550,13 @@ def _clear_expired_pending(identity_id, identity_state, now):
     if pending_since > 0 and now - pending_since <= WORLD_BOSS_PENDING_TIMEOUT_SEC:
         return True
     pending_action = str(identity_state.get("world_boss_pending_action") or "").strip()
-    identity_state["world_boss_pending_msg_id"] = 0
-    identity_state["world_boss_pending_action"] = ""
-    identity_state["world_boss_pending_since"] = 0
-    identity_state["world_boss_last_error"] = f"{pending_action or '指令'}等待回复超时，未补发"
+    retry_count = _coerce_int(identity_state.get("world_boss_pending_retry_count"), 0)
+    if pending_action in WORLD_BOSS_ACTION_COMMANDS and retry_count < WORLD_BOSS_PENDING_MAX_RETRY:
+        return False
+    _clear_world_boss_pending_action(identity_state)
+    identity_state["world_boss_last_error"] = f"{pending_action or '指令'}等待回复超时，已补发 {retry_count} 次后放弃"
     console_log(
-        f"🗡 真仙试锋[{_identity_label(identity_id)}] {pending_action or '指令'}超时，按已发送计数等待后续战况。",
+        f"🗡 真仙试锋[{_identity_label(identity_id)}] {pending_action or '指令'}超时，已补发 {retry_count} 次后放弃。",
         scope="identity",
         send_as_id=identity_id,
         limit=180,
@@ -481,19 +576,47 @@ def _eligible_identity_action(identity_id, run_state, now):
     return action, identity_state
 
 
-def _select_identity_and_action(run_state, now):
+def _identity_sort_key(identity_id, identity_state, run_state):
+    return (
+        _coerce_float(identity_state.get("world_boss_last_action_at"), 0),
+        _coerce_int(identity_state.get("world_boss_action_count"), 0),
+        _coerce_int(identity_state.get("world_boss_pending_retry_count"), 0),
+        _coerce_int(identity_state.get("world_boss_pending_action_seq"), 0),
+        int(identity_id),
+    )
+
+
+def _select_identity_and_action(run_state, now, *, allow_new_actions=True):
     candidates = []
+    round_started_at = _coerce_float(run_state.get("round_started_at"), 0)
     for identity_id in _enabled_identity_ids():
         try:
             identity_state = get_identity_state(identity_id)
         except KeyError:
             continue
-        candidates.append((float(identity_state.get("world_boss_last_action_at", 0) or 0), int(identity_state.get("world_boss_action_count", 0) or 0), int(identity_id)))
+        pending_msg_id = _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0)
+        pending_action = str(identity_state.get("world_boss_pending_action") or "").strip()
+        if pending_msg_id > 0 and pending_action:
+            if _clear_expired_pending(identity_id, identity_state, now):
+                continue
+            if _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0) > 0 and pending_action in WORLD_BOSS_ACTION_COMMANDS:
+                candidates.append((0.0, 0, 0, 0, int(identity_id), identity_state, pending_action))
+            continue
+        if not allow_new_actions:
+            continue
+        if _coerce_int(identity_state.get("world_boss_action_count"), 0) >= max(1, _coerce_int(identity_state.get("world_boss_action_limit"), WORLD_BOSS_DEFAULT_ACTION_LIMIT)):
+            continue
+        last_action_at = _coerce_float(identity_state.get("world_boss_last_action_at"), 0)
+        if round_started_at > 0 and last_action_at >= round_started_at:
+            continue
+        candidates.append((*_identity_sort_key(identity_id, identity_state, run_state)[:-1], int(identity_id), identity_state, ""))
     candidates.sort()
     if _strong_attack_allowed(run_state):
-        candidates.sort(key=lambda item: (0 if _strong_attacker(item[2]) else 1, item[0], item[1], item[2]))
-    for _last_at, _count, identity_id in candidates:
-        action, identity_state = _eligible_identity_action(identity_id, run_state, now)
+        candidates.sort(key=lambda item: (0 if _strong_attacker(item[4]) else 1, item[0], item[1], item[2], item[4]))
+    for _last_at, _count, _retry_count, _action_seq, identity_id, identity_state, pending_action in candidates:
+        if pending_action:
+            return identity_id, identity_state, pending_action
+        action = choose_world_boss_action(identity_id, identity_state, run_state, now)
         if action:
             return identity_id, identity_state, action
     return 0, None, ""
@@ -597,9 +720,7 @@ async def _close_event(parsed, now, *, log=True):
             identity_state = get_identity_state(identity_id)
         except KeyError:
             continue
-        identity_state["world_boss_pending_msg_id"] = 0
-        identity_state["world_boss_pending_action"] = ""
-        identity_state["world_boss_pending_since"] = 0
+        _clear_world_boss_pending_action(identity_state)
     _clear_world_boss_pending_tasks()
     if log and not duplicate:
         await _maybe_log_progress(run_state, now, force=True)
@@ -625,9 +746,7 @@ async def _mark_inactive(now):
             identity_state = get_identity_state(identity_id)
         except KeyError:
             continue
-        identity_state["world_boss_pending_msg_id"] = 0
-        identity_state["world_boss_pending_action"] = ""
-        identity_state["world_boss_pending_since"] = 0
+        _clear_world_boss_pending_action(identity_state)
     _clear_world_boss_pending_tasks()
     _set_run_state(run_state)
     return True
@@ -672,9 +791,7 @@ async def _handle_status(parsed, now, *, identity_id=0, current_msg_id=0):
             identity_state = get_identity_state(identity_id)
             _apply_identity_own_count(identity_state, parsed)
             if identity_state.get("world_boss_pending_action") == "status":
-                identity_state["world_boss_pending_msg_id"] = 0
-                identity_state["world_boss_pending_action"] = ""
-                identity_state["world_boss_pending_since"] = 0
+                _clear_world_boss_pending_action(identity_state)
         except KeyError:
             pass
     await _maybe_log_phase_change(run_state, now)
@@ -695,9 +812,7 @@ async def _handle_action(parsed, now, *, identity_id=0, current_msg_id=0):
                 return True
             pending_action = str(identity_state.get("world_boss_pending_action") or "").strip()
             action = str(parsed.get("action") or pending_action).strip()
-            identity_state["world_boss_pending_msg_id"] = 0
-            identity_state["world_boss_pending_action"] = ""
-            identity_state["world_boss_pending_since"] = 0
+            _clear_world_boss_pending_action(identity_state)
             identity_state["world_boss_last_reply_msg_id"] = int(current_msg_id or 0)
             if _note_identity_action_reply(identity_state, action, now, pending_action=pending_action):
                 summary = _normalize_summary(run_state.get("summary"))
@@ -715,9 +830,7 @@ async def _handle_exhausted(parsed, now, *, identity_id=0):
             identity_state = get_identity_state(identity_id)
             _apply_identity_own_count(identity_state, parsed)
             identity_state["world_boss_exhausted"] = True
-            identity_state["world_boss_pending_msg_id"] = 0
-            identity_state["world_boss_pending_action"] = ""
-            identity_state["world_boss_pending_since"] = 0
+            _clear_world_boss_pending_action(identity_state)
             identity_state["world_boss_last_error"] = "本期出手已尽"
             save_state()
         except KeyError:
@@ -801,9 +914,12 @@ async def _send_status_query(identity_id, now, run_state, reason):
         return False
     try:
         identity_state = get_identity_state(identity_id)
-        identity_state["world_boss_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        identity_state["world_boss_pending_action"] = "status"
-        identity_state["world_boss_pending_since"] = sent_at
+        if not _has_pending_world_boss_action(identity_state):
+            identity_state["world_boss_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
+            identity_state["world_boss_pending_action"] = "status"
+            identity_state["world_boss_pending_since"] = sent_at
+            identity_state["world_boss_pending_retry_count"] = 0
+            identity_state["world_boss_pending_action_seq"] = 0
         identity_state["world_boss_last_error"] = ""
     except KeyError:
         pass
@@ -818,7 +934,16 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
     if not command:
         return False
     chain_id = _event_chain_id(run_state, now)
-    next_count = _coerce_int(identity_state.get("world_boss_action_count"), 0) + 1
+    is_retry = (
+        _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0) > 0
+        and str(identity_state.get("world_boss_pending_action") or "").strip() == action
+    )
+    action_seq = (
+        _coerce_int(identity_state.get("world_boss_pending_action_seq"), 0)
+        if is_retry
+        else _coerce_int(identity_state.get("world_boss_action_count"), 0) + 1
+    )
+    retry_count = _coerce_int(identity_state.get("world_boss_pending_retry_count"), 0) + 1 if is_retry else 0
     msg = await send_game_command(
         command,
         track=True,
@@ -827,7 +952,7 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
         send_as_id=identity_id,
         priority=WORLD_BOSS_EVENT_PRIORITY,
         source_module=WORLD_BOSS_MODULE_NAME,
-        op_id=f"{chain_id}:action:{identity_id}:{action}:{next_count}",
+        op_id=f"{chain_id}:action:{identity_id}:{action}:{action_seq}:try{retry_count}",
         chain_id=chain_id,
     )
     sent_at = _coerce_float(getattr(msg, "sent_at", 0), 0) or time.time()
@@ -840,10 +965,10 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
     identity_state["world_boss_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
     identity_state["world_boss_pending_action"] = action
     identity_state["world_boss_pending_since"] = sent_at
+    identity_state["world_boss_pending_retry_count"] = retry_count
+    identity_state["world_boss_pending_action_seq"] = action_seq
     if not latest_run_state.get("active") or latest_run_state.get("event_key") != run_state.get("event_key"):
-        identity_state["world_boss_pending_msg_id"] = 0
-        identity_state["world_boss_pending_action"] = ""
-        identity_state["world_boss_pending_since"] = 0
+        _clear_world_boss_pending_action(identity_state)
         identity_state["world_boss_last_error"] = "发送后事件已结束，等待无进行中回包"
         clear_pending_tasks_by_commands({command}, send_as_id=identity_id)
         _set_run_state(latest_run_state)
@@ -852,19 +977,125 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
     identity_state["world_boss_last_action"] = action
     identity_state["world_boss_last_action_at"] = sent_at
     identity_state["world_boss_last_error"] = ""
-    identity_state["world_boss_action_count"] = next_count
-    if action == "强攻":
+    if not is_retry:
+        identity_state["world_boss_action_count"] = action_seq
+    if action == "强攻" and not is_retry:
         identity_state["world_boss_attack_count"] = _coerce_int(identity_state.get("world_boss_attack_count"), 0) + 1
     run_state["last_action_at"] = sent_at
     run_state["next_action_at"] = sent_at + WORLD_BOSS_ACTION_GAP_SEC
     _set_run_state(run_state)
+    retry_suffix = f"补发{retry_count}" if is_retry else ""
     console_log(
-        f"🗡 真仙试锋[{_identity_label(identity_id)}] 已发送{action}，快速轮询下一身份。",
+        f"🗡 真仙试锋[{_identity_label(identity_id)}] 已发送{action}{retry_suffix}，快速轮询下一身份。",
         scope="identity",
         send_as_id=identity_id,
         limit=180,
     )
     return sent_at
+
+
+def _world_boss_round_task_running():
+    return _WORLD_BOSS_ROUND_TASK is not None and not _WORLD_BOSS_ROUND_TASK.done()
+
+
+def _world_boss_round_done(task):
+    global _WORLD_BOSS_ROUND_TASK
+    if _WORLD_BOSS_ROUND_TASK is task:
+        _WORLD_BOSS_ROUND_TASK = None
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        import traceback
+
+        console_log("⚠️ 真仙试锋轮转任务异常：\n" + traceback.format_exc(), limit=1200)
+
+
+def _start_world_boss_round_task(now):
+    global _WORLD_BOSS_ROUND_TASK
+    if _world_boss_round_task_running():
+        return False
+    try:
+        task = asyncio.create_task(_run_world_boss_action_round(float(now or time.time())))
+    except RuntimeError:
+        return False
+    _WORLD_BOSS_ROUND_TASK = task
+    task.add_done_callback(_world_boss_round_done)
+    return True
+
+
+async def _run_world_boss_action_round(now):
+    current_now = float(now)
+    sent_count = 0
+    allow_new_actions = True
+    async with _WORLD_BOSS_SCHEDULER_LOCK:
+        run_state = _get_run_state(current_now)
+        if not run_state.get("active"):
+            return
+        if not _status_is_fresh(run_state, current_now) and not _has_due_pending_action(current_now):
+            if _has_any_pending_action():
+                _schedule_next_world_boss_action(run_state, current_now)
+            return
+        if current_now < _coerce_float(run_state.get("next_action_at"), 0):
+            return
+        next_round_at = _next_new_round_at(run_state)
+        if next_round_at > 0:
+            if current_now >= next_round_at:
+                run_state = _reset_world_boss_round(run_state, current_now)
+            elif _has_due_pending_action(current_now):
+                allow_new_actions = False
+            else:
+                _schedule_next_world_boss_action(run_state, current_now)
+                return
+        elif _coerce_float(run_state.get("round_completed_at"), 0) > 0:
+            _schedule_next_world_boss_action(run_state, current_now)
+            return
+        elif _coerce_float(run_state.get("round_started_at"), 0) <= 0 and _status_is_fresh(run_state, current_now):
+            run_state = _reset_world_boss_round(run_state, current_now)
+        elif not _status_is_fresh(run_state, current_now):
+            allow_new_actions = False
+
+        while sent_count < WORLD_BOSS_MAX_ACTIONS_PER_TICK:
+            run_state = _get_run_state(current_now)
+            if not run_state.get("active"):
+                return
+            if not _status_is_fresh(run_state, current_now) and not _has_due_pending_action(current_now):
+                if sent_count > 0 and allow_new_actions:
+                    _complete_world_boss_round(run_state, current_now)
+                else:
+                    _schedule_next_world_boss_action(run_state, current_now)
+                return
+            next_action_at = _coerce_float(run_state.get("next_action_at"), 0)
+            if current_now < next_action_at:
+                await asyncio.sleep(min(1.0, max(0.0, next_action_at - current_now)))
+                current_now = max(current_now, next_action_at)
+                continue
+
+            identity_id, identity_state, action = _select_identity_and_action(run_state, current_now, allow_new_actions=allow_new_actions)
+            if not identity_id or not identity_state or not action:
+                if sent_count > 0 and allow_new_actions:
+                    _complete_world_boss_round(run_state, current_now)
+                else:
+                    _schedule_next_world_boss_action(run_state, current_now)
+                return
+            sent_at = await _send_action(identity_id, identity_state, action, current_now, run_state)
+            if not sent_at:
+                return
+            sent_count += 1
+            current_now = max(current_now, _coerce_float(sent_at, current_now))
+            if sent_count < WORLD_BOSS_MAX_ACTIONS_PER_TICK:
+                run_state = _get_run_state(current_now)
+                delay = max(0.0, _coerce_float(run_state.get("next_action_at"), 0) - current_now)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                    current_now = max(current_now, _coerce_float(run_state.get("next_action_at"), current_now))
+
+        run_state = _get_run_state(current_now)
+        if allow_new_actions:
+            _complete_world_boss_round(run_state, current_now)
+        else:
+            _schedule_next_world_boss_action(run_state, current_now)
 
 
 def _fallback_window_open(now):
@@ -902,28 +1133,20 @@ async def run_world_boss_scheduler(now):
             return
 
         if not _status_is_fresh(run_state, now):
+            if _has_any_pending_action():
+                _schedule_next_world_boss_action(run_state, now)
+                if not _has_due_pending_action(now):
+                    return
+                if not _world_boss_round_task_running():
+                    _start_world_boss_round_task(now)
+                return
             if now >= _coerce_float(run_state.get("next_status_query_at"), 0):
                 await _send_status_query(enabled_ids[0], now, run_state, "战况过期")
             else:
                 _set_run_state(run_state, persist=False)
             return
-
-        sent_count = 0
-        while sent_count < WORLD_BOSS_MAX_ACTIONS_PER_TICK:
-            run_state = _get_run_state(now)
-            if not run_state.get("active") or not _status_is_fresh(run_state, now):
-                return
-            if now < _coerce_float(run_state.get("next_action_at"), 0):
-                return
-
-            identity_id, identity_state, action = _select_identity_and_action(run_state, now)
-            if not identity_id or not identity_state or not action:
-                return
-            sent_at = await _send_action(identity_id, identity_state, action, now, run_state)
-            if not sent_at:
-                return
-            sent_count += 1
-            now = max(float(now), _coerce_float(sent_at, now))
+        if not _world_boss_round_task_running():
+            _start_world_boss_round_task(now)
 
 
 def get_world_boss_status_text():

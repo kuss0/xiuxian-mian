@@ -511,6 +511,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_action TEXT NOT NULL DEFAULT ''")
     if "world_boss_pending_since" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_since REAL NOT NULL DEFAULT 0")
+    if "world_boss_pending_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_retry_count INTEGER NOT NULL DEFAULT 0")
+    if "world_boss_pending_action_seq" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_pending_action_seq INTEGER NOT NULL DEFAULT 0")
     if "world_boss_last_action" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_last_action TEXT NOT NULL DEFAULT ''")
     if "world_boss_last_action_at" not in runtime_columns:
@@ -1248,6 +1252,8 @@ def init_db():
             world_boss_pending_msg_id INTEGER NOT NULL DEFAULT 0,
             world_boss_pending_action TEXT NOT NULL DEFAULT '',
             world_boss_pending_since REAL NOT NULL DEFAULT 0,
+            world_boss_pending_retry_count INTEGER NOT NULL DEFAULT 0,
+            world_boss_pending_action_seq INTEGER NOT NULL DEFAULT 0,
             world_boss_last_action TEXT NOT NULL DEFAULT '',
             world_boss_last_action_at REAL NOT NULL DEFAULT 0,
             world_boss_last_reply_msg_id INTEGER NOT NULL DEFAULT 0,

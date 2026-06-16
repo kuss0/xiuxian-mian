@@ -402,9 +402,19 @@ def _restore_tianti_active_cooldown_runtime(now):
     if not state.get("tianti_enabled"):
         return
     needs_status = False
-    if state.get("tianti_gangfeng_enabled") and float(state.get("next_tianti_gangfeng_time", 0) or 0) <= now:
-        state["next_tianti_gangfeng_time"] = now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
-        needs_status = True
+    if state.get("tianti_gangfeng_enabled"):
+        next_gangfeng_time = float(state.get("next_tianti_gangfeng_time", 0) or 0)
+        has_gangfeng_snapshot = any(
+            value not in {None, "", 0, "未记录"}
+            for value in (
+                state.get("tianti_cycle_count"),
+                state.get("tianti_gangfeng_level"),
+                state.get("tianti_gangfeng_status"),
+            )
+        )
+        if next_gangfeng_time <= 0 and not has_gangfeng_snapshot:
+            state["next_tianti_gangfeng_time"] = now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
+            needs_status = True
     next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
     cooldown_text = str(state.get("tianti_cooldown_text") or "").strip()
     if next_climb_time <= now and cooldown_text:

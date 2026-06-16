@@ -33,6 +33,7 @@ SMALL_WORLD_REFRESH_MIN_SEC = 5 * 60
 SMALL_WORLD_REFRESH_MAX_SEC = 8 * 60
 SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 7
 SMALL_WORLD_CYCLE_CD_SEC = 8 * 3600
+SMALL_WORLD_MANIFEST_CD_SEC = 6 * 3600
 SMALL_WORLD_LONG_PAUSE_SEC = 8 * 3600
 SMALL_WORLD_JITTER_MIN_SEC = 60
 SMALL_WORLD_JITTER_MAX_SEC = 20 * 60
@@ -64,6 +65,7 @@ RE_SMALL_WORLD_FAITH_VALUE = re.compile(r"信仰(?:值大幅)?提升至\s*(\d+)"
 RE_SMALL_WORLD_STABILITY_VALUE = re.compile(r"稳定提升至\s*(\d+)")
 RE_SMALL_WORLD_RELIEF_POPULATION = re.compile(r"人口恢复了\s*(\d+)\s*人")
 RE_SMALL_WORLD_GOD_COOLDOWN = re.compile(r"凡间方才承受神谕，需再等待\s*([^\n。)）]+)")
+RE_SMALL_WORLD_GOD_RESOURCE_NEED = re.compile(r"需要\s*\d+\s*([^\s。！？!，,、]+)")
 
 RE_SMALL_WORLD_PANEL = re.compile(r"【(?P<owner>[^】]+)的小世界】")
 RE_TEMPLE = re.compile(r"神庙\s*[:：]\s*Lv\.(\d+)(?:【([^】]+)】)?")
@@ -149,7 +151,7 @@ def _clear_chain_pending():
     state["small_world_manifest_cost_text"] = ""
     state["small_world_harvest_msg_id"] = 0
     state["small_world_refine_msg_id"] = 0
-    if _phase() in SMALL_WORLD_CHAIN_PENDING or _phase() in {"harvest_sent", "refine_sent"}:
+    if _phase() in SMALL_WORLD_CHAIN_PENDING or _phase() in {"harvest_sent", "harvest_before_manifest_sent", "refine_sent"}:
         _set_phase("idle")
 
 
@@ -670,6 +672,46 @@ def _resource_label_from_text(text):
     return "资源"
 
 
+def _is_god_resource_shortage_text(text):
+    raw_text = str(text or "")
+    return (
+        "国库空虚" in raw_text
+        or _is_resource_shortage_text(raw_text)
+        or ("神迹" in raw_text and "不足" in raw_text)
+        or ("布道" in raw_text and "不足" in raw_text)
+        or ("赈灾" in raw_text and "不足" in raw_text)
+    )
+
+
+def _god_resource_label_from_text(text):
+    raw_text = str(text or "")
+    if "国库空虚" in raw_text:
+        return "灵石"
+    matched = RE_SMALL_WORLD_GOD_RESOURCE_NEED.search(raw_text)
+    if matched:
+        return matched.group(1).strip()
+    return _resource_label_from_text(raw_text)
+
+
+def _god_action_name_from_context(reply_to, matched_family):
+    orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
+    if matched_family == "small_world_relief" or CMD_SMALL_WORLD_RELIEF in orig_cmd:
+        return "赈灾"
+    if matched_family == "small_world_preach" or CMD_SMALL_WORLD_PREACH in orig_cmd:
+        return "布道"
+    action = str(state.get("small_world_pending_god_action") or "")
+    return "赈灾" if action == "relief" else "布道"
+
+
+def _is_current_god_reply(reply_to, matched_family):
+    if matched_family in {"small_world_preach", "small_world_relief"}:
+        return True
+    if _is_reply_to_tracked_message(reply_to, "small_world_preach_reply_to_msg_id"):
+        return True
+    orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
+    return CMD_SMALL_WORLD_PREACH in orig_cmd or CMD_SMALL_WORLD_RELIEF in orig_cmd
+
+
 async def _disable_for_realm(raw_text):
     _clear_all_runtime_pending()
     state["small_world_enabled"] = False
@@ -771,6 +813,15 @@ async def _send_harvest(now):
     return True
 
 
+async def _send_harvest_before_manifest(now):
+    if not await _send_harvest(now):
+        return False
+    _set_phase("harvest_before_manifest_sent")
+    state["small_world_last_error"] = "显灵前收割香火已发送，等待回执确认"
+    save_state()
+    return True
+
+
 async def _send_refine(now, amount):
     amount = _calc_refine_amount(amount)
     if amount < 10:
@@ -852,6 +903,9 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         _clear_maintenance_god_action()
         if state.get("small_world_manifest_enabled"):
             state["small_world_manifest_cost_text"] = str(panel.get("manifest_cost") or "").strip()
+            if state.get("small_world_harvest_enabled") and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE:
+                save_state()
+                return await _send_harvest_before_manifest(now)
             save_state()
             return await _send_manifest(now)
         _schedule_next_cycle(now)
@@ -1072,6 +1126,8 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
         return False
     if not state.get("small_world_enabled") or not state.get("small_world_preach_enabled", False):
         return False
+    if not _is_current_god_reply(reply_to, matched_family):
+        return False
 
     raw_text = text or ""
     wait_sec, wait_text = _parse_wait_from_text(raw_text)
@@ -1085,6 +1141,30 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
         else:
             _schedule_panel_wait(now, wait_sec + CD_BUFFER_SEC)
         save_state()
+        return True
+
+    if _is_god_resource_shortage_text(raw_text):
+        action_name = _god_action_name_from_context(reply_to, matched_family)
+        label = _god_resource_label_from_text(raw_text)
+        if action_name == "赈灾" and label == "灵石":
+            priority = _pending_god_priority() or SMALL_WORLD_GOD_PRIORITY_DISASTER
+            _clear_preach_pending()
+            _clear_god_pending_tasks()
+            _clear_pending_god_action()
+            _queue_god_action("preach", "赈灾没钱转布道", priority, now)
+            save_state()
+            await _send_small_world_preach(now, "赈灾没钱转布道")
+            return True
+        due_at = _schedule_resource_pause(now, f"神迹{action_name}/{label}", raw_text)
+        _clear_preach_pending()
+        _clear_god_pending_tasks()
+        _clear_pending_god_action()
+        save_state()
+        await send_audit_log(
+            f"⚠️ 小世界神迹{action_name}资源不足（{label}），本轮停止，{fmt_time_after(max(0, due_at - now))} 后再查；请手动补资源。",
+            scope="identity",
+            limit=260,
+        )
         return True
 
     is_preach = RE_SMALL_WORLD_PREACH_PANEL.search(raw_text)
@@ -1184,7 +1264,7 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
         if wait_sec > 0:
             _schedule_panel_wait(now, wait_sec + CD_BUFFER_SEC)
         else:
-            _schedule_next_cycle(now)
+            _schedule_panel_wait(now, SMALL_WORLD_MANIFEST_CD_SEC + CD_BUFFER_SEC)
         save_state()
         return True
 
@@ -1204,9 +1284,12 @@ async def handle_small_world_harvest_reply(text, now, reply_to, matched_family=N
     raw_text = str(text or "")
     orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
     if _phase() not in {"harvest_sent", "harvest_pending"}:
-        return False
+        if _phase() != "harvest_before_manifest_sent":
+            return False
     if matched_family != "small_world_harvest" and not _is_reply_to_tracked_message(reply_to, "small_world_harvest_msg_id") and CMD_SMALL_WORLD_HARVEST not in orig_cmd:
         return False
+
+    was_before_manifest = _phase() == "harvest_before_manifest_sent"
 
     if "境界不足" in raw_text and "紫府小世界" in raw_text:
         return await _disable_for_realm(raw_text)
@@ -1220,6 +1303,8 @@ async def handle_small_world_harvest_reply(text, now, reply_to, matched_family=N
         _clear_chain_pending()
         refine_amount = _calc_refine_amount(stock)
         save_state()
+        if was_before_manifest:
+            return await _send_query(now, "显灵前收割后复查")
         if state.get("small_world_refine_enabled") and refine_amount >= 10:
             return await _send_refine(now, refine_amount)
         return await _send_query(now, "收割后复查")
@@ -1341,13 +1426,17 @@ async def _run_small_world_scheduler(now):
         )
         return
 
-    if phase == "harvest_sent":
+    if phase in {"harvest_sent", "harvest_before_manifest_sent"}:
         next_time = float(state.get("next_small_world_time", 0) or 0)
         if next_time > 0 and now < next_time:
             return
         _clear_chain_pending()
-        state["small_world_last_error"] = "收割香火未收到可解析回执，复查面板校准"
-        await _send_query(now, "收割后复查")
+        if phase == "harvest_before_manifest_sent":
+            state["small_world_last_error"] = "显灵前收割香火未收到可解析回执，复查面板校准"
+            await _send_query(now, "显灵前收割后复查")
+        else:
+            state["small_world_last_error"] = "收割香火未收到可解析回执，复查面板校准"
+            await _send_query(now, "收割后复查")
         return
 
     if phase == "refine_sent":

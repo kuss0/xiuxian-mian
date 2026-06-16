@@ -268,12 +268,13 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertTrue(str(state_module.state["tianti_wenxin_last_trigger_key"]).startswith(tianti.get_day_key(now)))
             save_mock.assert_called()
 
-    def test_stale_status_snapshot_syncs_before_gangfeng(self):
+    def test_stale_status_snapshot_does_not_sync_before_due_gangfeng(self):
         send_as_id = 95010
         now = 10_000.0
         state_module.ensure_identity_registered(send_as_id)
 
         with state_module.use_identity(send_as_id):
+            state_module.state["tianti_enabled"] = True
             state_module.state["tianti_gangfeng_enabled"] = True
             state_module.state["tianti_progress_current"] = 5
             state_module.state["tianti_cycle_count"] = 1
@@ -283,11 +284,37 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["next_tianti_gangfeng_time"] = now - 1
             state_module.state["tianti_last_status_seen_at"] = now - tianti.TIANTI_STATUS_FRESH_SEC - 1
 
-            self.assertTrue(tianti._tianti_status_sync_due(now))
+            self.assertFalse(tianti._tianti_status_sync_due(now))
             should_trigger, reason = tianti._should_trigger_tianti_gangfeng(now)
 
-            self.assertFalse(should_trigger)
-            self.assertEqual("gangfeng_status_stale", reason)
+            self.assertTrue(should_trigger)
+            self.assertIn("bucket=", reason)
+
+    def test_missing_tianti_snapshot_still_queries_status(self):
+        send_as_id = 95025
+        now = 25_000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_gangfeng_enabled"] = True
+
+            self.assertTrue(tianti._tianti_status_sync_due(now))
+
+    def test_available_gangfeng_panel_schedules_pre_climb_timer(self):
+        send_as_id = 95026
+        now = 26_000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["next_tianti_climb_time"] = now + 1200
+            payload = {"gangfeng_cooldown_text": "可用"}
+
+            changed = tianti._apply_tianti_panel_payload(payload, now=now)
+
+            self.assertTrue(changed)
+            self.assertEqual(now + 600, state_module.state["next_tianti_gangfeng_time"])
+            self.assertEqual("可用", state_module.state["tianti_gangfeng_status"])
 
     def test_status_panel_reply_without_family_clears_short_retry(self):
         send_as_id = 95019
@@ -388,6 +415,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["tianti_cooldown_text"] = "9分钟21秒"
             state_module.state["next_tianti_climb_time"] = jittered_next_climb
             state_module.state["next_tianti_gangfeng_time"] = 0
+            state_module.state["tianti_gangfeng_status"] = "可用"
             state_module.state["tianti_last_status_seen_at"] = now
             state_module.state["tianti_gangfeng_last_trigger_key"] = f"{tianti.get_day_key(now)}|{int(old_next_climb)}"
 
@@ -415,7 +443,7 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             state_module.state["tianti_gangfeng_level"] = 12
             state_module.state["tianti_cooldown_text"] = "9分钟21秒"
             state_module.state["next_tianti_climb_time"] = next_climb
-            state_module.state["next_tianti_gangfeng_time"] = 0
+            state_module.state["next_tianti_gangfeng_time"] = now - 1
             state_module.state["tianti_last_status_seen_at"] = now
 
             asyncio.run(tianti.run_tianti_scheduler(now))
@@ -425,6 +453,34 @@ class TiantiEnhancementTests(_StateIsolationMixin, unittest.TestCase):
             self.assertEqual("等待回复", state_module.state["tianti_gangfeng_status"])
             self.assertTrue(str(state_module.state["tianti_gangfeng_last_trigger_key"]).startswith(tianti.get_day_key(now)))
             save_mock.assert_called()
+
+    def test_due_gangfeng_timer_runs_before_status_sync(self):
+        send_as_id = 95027
+        now = datetime(2026, 5, 27, 19, 29, 2, tzinfo=tianti.TZ_LOCAL).timestamp()
+        next_climb = now + 300
+        sent_at = now + 0.5
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id), \
+                patch.object(tianti, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9466042, sent_at=sent_at))) as send_mock, \
+                patch.object(tianti, "save_state"), \
+                patch.object(tianti, "console_log"):
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_wenxin_enabled"] = False
+            state_module.state["tianti_gangfeng_enabled"] = True
+            state_module.state["tianti_progress_current"] = 10
+            state_module.state["tianti_cycle_count"] = 38
+            state_module.state["tianti_gangfeng_level"] = 11
+            state_module.state["tianti_cooldown_text"] = "5分钟"
+            state_module.state["next_tianti_climb_time"] = next_climb
+            state_module.state["next_tianti_gangfeng_time"] = now - 1
+            state_module.state["next_tianti_status_time"] = now - 1
+            state_module.state["tianti_last_status_seen_at"] = now - tianti.TIANTI_STATUS_FRESH_SEC - 1
+
+            asyncio.run(tianti.run_tianti_scheduler(now))
+
+            send_mock.assert_awaited_once_with(tianti.CMD_TIANTI_GANGFENG, max_retry=1)
+            self.assertEqual(9466042, state_module.state["tianti_last_gangfeng_msg_id"])
 
     def test_climb_reply_with_gangfeng_wait_updates_climb_gate(self):
         send_as_id = 95012
