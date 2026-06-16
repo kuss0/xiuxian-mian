@@ -66,6 +66,7 @@ from .features.concubine import (
     handle_concubine_tianji_reply,
     is_concubine_affinity_event_candidate,
     restore_concubine_runtime,
+    run_concubine_phaseful_cleanup_scheduler,
     run_concubine_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, run_pet_scheduler
@@ -234,6 +235,9 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_second_soul_scheduler,
     run_taiyi_bootstrap_check,
     run_taiyi_scheduler,
+)
+_PHASEFUL_BLOCK_CLEANUP_SCHEDULERS = (
+    run_concubine_phaseful_cleanup_scheduler,
 )
 _GLOBAL_SCHEDULERS = (
     ("delayed_actions", drain_due_actions),
@@ -862,6 +866,8 @@ async def _run_identity_schedulers(now):
             if is_identity_weak(identity_id, now):
                 continue
             if has_phaseful_summary_block(now):
+                for scheduler in _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS:
+                    await scheduler(now)
                 continue
             for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
                 await scheduler(now)

@@ -1429,6 +1429,57 @@ def _guard_heart_start_with_message_log(now):
     return True
 
 
+def _cached_heart_panel_anchor(now):
+    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+    if panel_msg_id <= 0 or panel_seen_at <= 0:
+        return None
+    if panel_seen_at < float(now or 0) - CONCUBINE_HEART_PANEL_MAX_AGE_SEC:
+        return None
+    return {
+        "msg_id": panel_msg_id,
+        "event_ts": panel_seen_at,
+        "source": "cached_panel",
+        "name": str(state.get("concubine_name") or ""),
+    }
+
+
+def _find_recent_logged_heart_panel(now):
+    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, float(now or 0) - CONCUBINE_HEART_PANEL_MAX_AGE_SEC)
+    best = None
+    for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if not _payload_matches_game_topic(payload):
+            continue
+        event_type = str(payload.get("event_type") or "").strip()
+        if event_type not in {"message", "edit"}:
+            continue
+        msg_id = _msg_id_int(payload.get("message_id"))
+        if msg_id <= 0:
+            continue
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
+            continue
+        text = str(payload.get("text") or "")
+        if CMD_CONCUBINE_HEART not in text and "共历心劫冷却" not in text:
+            continue
+        parsed = _parse_status_panel(text, event_ts)
+        if not parsed or not parsed.get("has_partner"):
+            continue
+        if best is None or event_ts > float(best.get("event_ts", 0) or 0):
+            best = {
+                "msg_id": msg_id,
+                "event_ts": event_ts,
+                "source": "message_log",
+                "name": str(parsed.get("name") or ""),
+            }
+    return best
+
+
+def _resolve_heart_panel_anchor(now):
+    return _cached_heart_panel_anchor(now) or _find_recent_logged_heart_panel(now)
+
+
 def _record_concubine_event(
     event,
     *,
@@ -2445,10 +2496,8 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
-    snapshot_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
     if _has_heart_due_action(now):
-        panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-        return snapshot_at <= 0 or panel_msg_id <= 0
+        return not bool(_resolve_heart_panel_anchor(now))
     return False
 
 
@@ -3160,9 +3209,10 @@ async def _send_heart_command(now):
         save_state()
         return False
 
-    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
-    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
-    if panel_msg_id <= 0 or panel_seen_at <= 0:
+    panel_anchor = _resolve_heart_panel_anchor(now)
+    panel_msg_id = int((panel_anchor or {}).get("msg_id", 0) or 0)
+    panel_source = str((panel_anchor or {}).get("source") or "")
+    if panel_msg_id <= 0:
         state["concubine_heart_last_error"] = "共历心劫需先刷新侍妾面板"
         await _send_status_command(now)
         return False
@@ -3187,7 +3237,7 @@ async def _send_heart_command(now):
             reason="concubine_send_failed",
             phase="idle",
             command=CMD_CONCUBINE_HEART,
-            detail=f"panel_msg_id={panel_msg_id}",
+            detail=f"panel_msg_id={panel_msg_id}｜panel_source={panel_source}",
             decision="heart_send_failed",
             workflow_status="failed",
         )
@@ -3205,7 +3255,7 @@ async def _send_heart_command(now):
         phase="heart_pending",
         command=CMD_CONCUBINE_HEART,
         msg_id=state["concubine_heart_msg_id"],
-        detail=f"panel_msg_id={panel_msg_id}",
+        detail=f"panel_msg_id={panel_msg_id}｜panel_source={panel_source}",
         decision="heart_sent",
         workflow_status="sent",
     )
@@ -4465,6 +4515,43 @@ async def run_concubine_scheduler(now):
         await _run_concubine_scheduler(now)
 
 
+async def run_concubine_phaseful_cleanup_scheduler(now):
+    if _CONCUBINE_SCHEDULER_LOCK.locked():
+        return
+    async with _CONCUBINE_SCHEDULER_LOCK:
+        await _run_concubine_phaseful_cleanup_scheduler(now)
+
+
+async def _run_concubine_phaseful_cleanup_scheduler(now):
+    if (
+        not state.get("concubine_enabled", False)
+        and not state.get("concubine_tianji_enabled", False)
+        and not state.get("concubine_heart_enabled", False)
+        and not state.get("concubine_voyage_enabled", False)
+    ):
+        return
+
+    phase = _phase()
+    if phase not in CONCUBINE_HEART_ACTIVE_PHASES:
+        if _reconcile_stale_heart_action_guard(now, "heart_stale_guard_phaseful_cleanup"):
+            save_state()
+        return
+
+    pending_until = float(state.get("next_concubine_time", 0) or 0)
+    if pending_until > now:
+        return
+    if await _recover_concubine_pending_from_message_log(now, phase):
+        return
+
+    retry_at = _close_heart_chain_without_settlement(now, f"{phase}_phaseful_cleanup_timeout")
+    save_state()
+    await send_audit_log(
+        f"⚠️ 共历心劫 {phase} 在闭关/元婴结算保护中未见推进，已停止旧链路；按长冷却等待 {fmt_time_after(max(0, retry_at - now))}。",
+        scope="identity",
+        limit=240,
+    )
+
+
 async def _run_concubine_scheduler(now):
     if (
         not state.get("concubine_enabled", False)
@@ -4705,5 +4792,6 @@ __all__ = [
     "handle_concubine_voyage_reply",
     "is_concubine_affinity_event_candidate",
     "restore_concubine_runtime",
+    "run_concubine_phaseful_cleanup_scheduler",
     "run_concubine_scheduler",
 ]

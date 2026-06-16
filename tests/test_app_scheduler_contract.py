@@ -244,6 +244,32 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         handler_mock.assert_awaited_once()
         self.assertEqual([identity_id], seen_identity_ids)
 
+    async def test_phaseful_block_runs_cleanup_without_ordinary_schedulers(self):
+        identity_id = 991778
+        state_module.ensure_identity_registered(identity_id)
+        seen = []
+
+        async def fake_cleanup(now):
+            seen.append(("cleanup", state_module.get_current_identity_id(), now))
+
+        async def fake_ordinary(now):
+            seen.append(("ordinary", state_module.get_current_identity_id(), now))
+
+        now = 1_700_000_000.0
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", ()),
+            patch.object(app, "_PHASEFUL_BLOCK_CLEANUP_SCHEDULERS", (fake_cleanup,)),
+            patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (fake_ordinary,)),
+            patch.object(app, "has_phaseful_summary_block", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+        ):
+            await app._run_identity_schedulers(now)
+
+        self.assertEqual([("cleanup", identity_id, now)], seen)
+
 
 if __name__ == "__main__":
     unittest.main()

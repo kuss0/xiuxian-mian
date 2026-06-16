@@ -93,6 +93,11 @@ class HealthObserverTests(unittest.TestCase):
                 "Jun 17 00:02:45 pve python[44241]: [xuruode3] 🧘 launching 超时，已回退。"
             )
         )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jun 17 00:16:54 pve python[44241]: [xueuode5] ⚠️ 共历心劫抉择无回合推进，已停止旧 prompt；按长冷却等待 12:09:31。"
+            )
+        )
 
     def test_journal_since_is_not_before_current_service_start(self):
         start_epoch = health_observer.parse_local_ts("2026-06-06 14:38:55")
@@ -130,6 +135,11 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(
             health_observer.is_hard_journal_line(
                 "Jun 03 18:48:25 pve python[1240250]: already fused: /opt/xiuxian-main/data/state/safety_watchdog_fused.json"
+            )
+        )
+        self.assertFalse(
+            health_observer.is_hard_journal_line(
+                "Jun 17 00:21:31 pve python[57808]: answerCallbackQuery failed: HTTP 400: {\"ok\":false,\"error_code\":400,\"description\":\"Bad Request: query is too old and response timeout expired or query ID is invalid\"}"
             )
         )
         self.assertTrue(
@@ -210,6 +220,45 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertEqual(3, result["cooldown_reply_count"])
         self.assertTrue(any("cooldown replies" in item["message"] for item in result["alerts"]))
+
+    def test_business_message_analysis_allows_marked_divination_query_chain(self):
+        now = 1_780_500_000.0
+        sender_id = 3777092103
+        events = []
+        for index in range(4):
+            events.append({
+                "event_type": "sent",
+                "_epoch": now - 600 + index * 90,
+                "message_id": 300 + index,
+                "sender_id": sender_id,
+                "text": ".卜筮问天",
+                "family": "divination",
+                "source_module": "卜筮问天",
+                "op_id": f"divination_query:{sender_id}:2026-06-17:{index + 1}:try{index + 1}",
+                "chain_id": f"divination:{sender_id}:2026-06-17",
+            })
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertFalse(any("guarded command repeated" in item["message"] for item in result["alerts"]))
+
+    def test_business_message_analysis_flags_unmarked_divination_repeats(self):
+        now = 1_780_500_000.0
+        sender_id = 3777092103
+        events = [
+            {
+                "event_type": "sent",
+                "_epoch": now - 600 + index * 90,
+                "message_id": 400 + index,
+                "sender_id": sender_id,
+                "text": ".卜筮问天",
+            }
+            for index in range(4)
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800)
+
+        self.assertTrue(any("guarded command repeated" in item["message"] for item in result["alerts"]))
 
     def test_business_db_state_flags_overdue_pending_and_stuck_phase(self):
         now = 1_780_500_000.0

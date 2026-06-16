@@ -26,9 +26,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
-BENIGN_HARD_CONTEXT_PATTERN = re.compile(r"already fused:|探寻裂缝结果：遭遇风暴", re.I)
+BENIGN_HARD_CONTEXT_PATTERN = re.compile(
+    r"already fused:|探寻裂缝结果：遭遇风暴|answerCallbackQuery failed:.*query is too old and response timeout expired",
+    re.I,
+)
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
-    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退"
+    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|共历心劫抉择无回合推进，已停止旧 prompt"
 )
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
@@ -233,6 +236,24 @@ def is_guarded_business_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in GUARDED_BUSINESS_PREFIXES)
 
 
+def is_expected_divination_query_chain(items: list[dict[str, object]]) -> bool:
+    if not items:
+        return False
+    for item in items:
+        text = command_key(str(item.get("text") or ""))
+        if text != ".卜筮问天":
+            return False
+        if str(item.get("source_module") or "").strip() != "卜筮问天":
+            return False
+        if str(item.get("family") or "").strip() != "divination":
+            return False
+        if not str(item.get("op_id") or "").strip().startswith("divination_query:"):
+            return False
+        if not str(item.get("chain_id") or "").strip().startswith("divination:"):
+            return False
+    return True
+
+
 def event_identity_id(item: dict[str, object]) -> int:
     for key in ("sender_id", "send_as_id", "identity_id"):
         try:
@@ -314,6 +335,8 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         if sender_id and text and is_guarded_business_command(text):
             grouped[(sender_id, text)].append(item)
     for (sender_id, text), items in sorted(grouped.items()):
+        if text == ".卜筮问天" and is_expected_divination_query_chain(items):
+            continue
         if len(items) >= 4:
             alerts.append(
                 business_alert(
