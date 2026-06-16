@@ -4315,12 +4315,17 @@ def _best_zhuimo_profession_assignment(identity_ids, *, leader_identity_id=0, li
         has_dps = any(_is_zhuimo_dps_identity(identity_id) for identity_id in team_ids)
         has_heart = any(_is_zhuimo_heart_identity(identity_id) for identity_id in team_ids)
         has_baji = any(_is_zhuimo_preferred_baji_identity(identity_id) for identity_id in team_ids)
+        baji_priority_role_count = sum(
+            1
+            for role, identity_id in assignments
+            if role in {"破军", "咒师"} and _is_zhuimo_preferred_baji_identity(identity_id)
+        )
         leader_counted = leader_identity_id <= 0 or leader_identity_id in assigned_ids or not set(_get_zhuimo_profile_professions(leader_identity_id)).intersection(_ZHUIMO_REQUIRED_PROFESSIONS)
         role_count_score = sum(
             sum(1 for role in _ZHUIMO_REQUIRED_PROFESSIONS if role in _get_zhuimo_profile_professions(identity_id))
             for identity_id in assigned_ids
         )
-        score = (covered_count, int(has_dps), int(has_heart), int(has_baji), int(leader_counted), -len(nonleader_ids), role_count_score)
+        score = (covered_count, int(has_dps), int(has_heart), int(has_baji), baji_priority_role_count, int(leader_counted), -len(nonleader_ids), role_count_score)
         key = "|".join(
             f"{role}:{_normalize_replica_username(get_send_as_profile(identity_id).get('username') or identity_id)}"
             for role, identity_id in assignments
@@ -4352,15 +4357,18 @@ def _best_zhuimo_profession_assignment(identity_ids, *, leader_identity_id=0, li
 def _get_zhuimo_available_candidate_ids(leader_identity_id=0, *, now=None, excluded_usernames=None):
     leader_identity_id = int(leader_identity_id or 0)
     now = float(now or time.time())
+    records = _cleanup_replica_run_state(now)
     excluded_username_set = set(_normalize_replica_username_list(excluded_usernames or []))
     identity_ids = []
     if leader_identity_id > 0:
         identity_ids.append(leader_identity_id)
-    for identity_id in _get_lightweight_available_identity_ids(_REPLICA_KIND_ZHUIMO, now=now):
+    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
         if identity_id == leader_identity_id:
             continue
         username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         if username and username in excluded_username_set:
+            continue
+        if _get_replica_identity_kind_status(identity_id, _REPLICA_KIND_ZHUIMO, now, records=records) != "可":
             continue
         identity_ids.append(identity_id)
     return _normalize_replica_identity_ids(identity_ids)
@@ -4376,22 +4384,22 @@ def _build_zhuimo_snapshot_from_identity_ids(identity_ids, *, leader_identity_id
     )
     assigned_ids = _normalize_replica_identity_ids([identity_id for _role, identity_id in assignments])
     if leader_identity_id > 0 and leader_identity_id in normalized_ids:
-        team_ids = _normalize_replica_identity_ids([leader_identity_id] + [identity_id for identity_id in normalized_ids if identity_id != leader_identity_id])
+        display_team_ids = _normalize_replica_identity_ids([leader_identity_id] + [identity_id for identity_id in assigned_ids if identity_id != leader_identity_id])
     else:
-        team_ids = normalized_ids
+        display_team_ids = assigned_ids
     covered = {role for role, _identity_id in assignments}
     missing = [role for role in _ZHUIMO_REQUIRED_PROFESSIONS if role not in covered]
-    dps_ids = [identity_id for identity_id in team_ids if _is_zhuimo_dps_identity(identity_id)]
-    heart_ids = [identity_id for identity_id in team_ids if _is_zhuimo_heart_identity(identity_id)]
+    dps_ids = [identity_id for identity_id in display_team_ids if _is_zhuimo_dps_identity(identity_id)]
+    heart_ids = [identity_id for identity_id in display_team_ids if _is_zhuimo_heart_identity(identity_id)]
     return {
         "assignments": assignments,
-        "team_ids": team_ids,
+        "team_ids": display_team_ids,
         "join_ids": [identity_id for identity_id in assigned_ids if identity_id != leader_identity_id],
         "covered": covered,
         "missing": missing,
         "dps_ids": dps_ids,
         "heart_ids": heart_ids,
-        "has_baji": any(_is_zhuimo_preferred_baji_identity(identity_id) for identity_id in team_ids),
+        "has_baji": any(_is_zhuimo_preferred_baji_identity(identity_id) for identity_id in display_team_ids),
         "actionable": not missing and bool(dps_ids) and bool(heart_ids),
     }
 
@@ -4660,6 +4668,24 @@ def _format_log_group_replica_room_line(room, *, html=False):
                 line += f"｜神识不足 {int(sense_snapshot.get('value') or 0)}"
         else:
             line += "｜神识未知"
+    elif replica_kind == _REPLICA_KIND_ZHUIMO:
+        snapshot = _get_zhuimo_room_snapshot(room)
+        missing = snapshot.get("missing") or []
+        if phase == "opened" and snapshot.get("actionable"):
+            line += "｜五职+DPS+心劫可进"
+        elif missing:
+            line += "｜缺" + "、".join(missing)
+        else:
+            line += "｜五职已齐"
+        if snapshot.get("dps_ids"):
+            line += "｜DPS " + _format_zhuimo_identity_list(snapshot.get("dps_ids")[:2])
+        else:
+            line += "｜缺DPS"
+        if snapshot.get("heart_ids"):
+            line += "｜心劫 " + _format_zhuimo_identity_list(snapshot.get("heart_ids")[:2])
+        else:
+            line += "｜缺心劫"
+        line += "｜路线2-1"
     return escape(line) if html else line
 
 

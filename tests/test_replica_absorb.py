@@ -1821,6 +1821,39 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("默认路线：2-1。", section)
         self.assertEqual(".加入副本 @dps @healer @blade @boxboxji", join_command)
 
+    def test_zhuimo_recommendation_can_use_baji_without_zhuimo_ticket(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山")
+        dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        baji_id = self._register_replica_identity(991205, "boxboxji", root_attrs="土木", professions="御山|灵医")
+        fallback_curse_id = self._register_replica_identity(991206, "curse", professions="咒师")
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, blade_id, baji_id, fallback_curse_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"坠魔谷禁制令": 1}, "sections": {}},
+            str(dps_id): {"items": {}, "sections": {}},
+            str(healer_id): {"items": {}, "sections": {}},
+            str(blade_id): {"items": {}, "sections": {}},
+            str(baji_id): {"items": {}, "sections": {}},
+            str(fallback_curse_id): {"items": {"坠魔谷禁制令": 1}, "sections": {}},
+        })
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_ZHUIMO,
+            leader_id,
+        )
+        join_command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_ZHUIMO,
+            leader_id,
+        )
+
+        self.assertIn("推荐加入：@dps @healer @blade @boxboxji", section)
+        self.assertNotIn("@curse", section)
+        self.assertIn("心劫：@boxboxji 可满足坠魔心劫。", section)
+        self.assertIn("优先：已带吧唧。", section)
+        self.assertEqual(".加入副本 @dps @healer @blade @boxboxji", join_command)
+
     def test_zhuimo_recommendation_blocks_join_without_dps(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="御山", sect_name="星宫")
         attacker_id = self._register_replica_identity(991202, "attacker", root_attrs="雷", professions="破军")
@@ -1936,6 +1969,34 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("默认路线：2-1。", reply_text)
         self.assertNotIn("进入坠魔谷", button_texts)
         self.assertIn("解散副本", button_texts)
+
+    def test_log_group_zhuimo_room_line_shows_readiness(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山", sect_name="星宫")
+        dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        baji_id = self._register_replica_identity(991205, "boxboxji", professions="御山|灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, blade_id, baji_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        room = {
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "room_id": "47",
+            "phase": "opened",
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "join_requested_usernames": ["@dps", "@healer", "@blade", "@boxboxji"],
+        }
+
+        line = app_replica._format_log_group_replica_room_line(room)
+        html_line = app_replica._format_log_group_replica_room_line(room, html=True)
+
+        self.assertIn("房间：坠魔谷 47", line)
+        self.assertIn("五职+DPS+心劫可进", line)
+        self.assertIn("DPS @dps", line)
+        self.assertIn("心劫 @leader @boxboxji", line)
+        self.assertIn("路线2-1", line)
+        self.assertIn("@boxboxji", html_line)
+        self.assertNotIn("&lt;code&gt;", html_line)
 
     def test_virtual_hall_recommendation_summarizes_route_advice_without_commands(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
