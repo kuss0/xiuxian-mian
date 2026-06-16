@@ -2006,6 +2006,9 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             track=False,
             reply_to=prompt_msg_id,
             priority="urgent_reactive",
+            source_module="共历心劫",
+            op_id=f"concubine_heart_choice:{send_as_id}:{prompt_msg_id}:round2:try0:{config.CMD_CONCUBINE_HEART_STEADY}",
+            chain_id=f"concubine_heart_choice:{send_as_id}:{prompt_msg_id}:round2",
         )
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
         self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_choice_prompt_msg_id"])
@@ -2142,7 +2145,10 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             config.CMD_CONCUBINE_HEART_STEADY,
             track=False,
             reply_to=prompt_msg_id,
-            priority="urgent_reactive",
+            priority="retry",
+            source_module="共历心劫",
+            op_id=f"concubine_heart_choice:{send_as_id}:{prompt_msg_id}:round1:try1:{config.CMD_CONCUBINE_HEART_STEADY}",
+            chain_id=f"concubine_heart_choice:{send_as_id}:{prompt_msg_id}:round1",
         )
         mock_audit.assert_not_awaited()
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
@@ -3024,6 +3030,115 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sailing", state_module.state["concubine_voyage_status"])
         self.assertEqual(0, state_module.state["concubine_voyage_return_at"])
         self.assertEqual(now + concubine.CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC, state_module.state["next_concubine_time"])
+
+    async def test_passive_concubine_status_panel_refreshes_cached_panel_msg_id(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        panel_msg_id = 9387319
+        panel_text = (
+            "你的红尘道侣: 【凌玉灵】 (状态: 随行中)\n\n"
+            "她安静地陪伴着你，虽不通星宫秘法，却也可为你牵引第二期机缘。\n\n"
+            "【第二期机缘】\n"
+            "- 入梦寻图冷却: 可施展\n"
+            "- 共历心劫冷却: 可施展\n"
+            "- 天机代卜冷却: 可施展\n"
+            "命令: .入梦寻图、.残图、.拼图、.共历心劫、.坠魔心劫、.天机代卜"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_last_panel_msg_id"] = 123
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"):
+            handled = await passive_inbox.handle_passive_module_card(
+                panel_text,
+                now=now,
+                reply_context={"send_as_id": send_as_id, "family": "concubine_status"},
+                event=SimpleNamespace(id=panel_msg_id, chat_id=-1001680975844),
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(panel_msg_id, state_module.state["concubine_last_panel_msg_id"])
+        self.assertEqual("凌玉灵", state_module.state["concubine_name"])
+
+    async def test_scheduler_uses_passively_refreshed_panel_for_heart(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        stale_panel_msg_id = 123
+        panel_msg_id = 9387319
+        panel_text = (
+            "你的红尘道侣: 【凌玉灵】 (状态: 随行中)\n\n"
+            "她安静地陪伴着你，虽不通星宫秘法，却也可为你牵引第二期机缘。\n\n"
+            "【第二期机缘】\n"
+            "- 入梦寻图冷却: 可施展\n"
+            "- 共历心劫冷却: 可施展\n"
+            "- 天机代卜冷却: 可施展\n"
+            "命令: .入梦寻图、.残图、.拼图、.共历心劫、.坠魔心劫、.天机代卜"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["concubine_last_panel_msg_id"] = stale_panel_msg_id
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"):
+            handled = await passive_inbox.handle_passive_module_card(
+                panel_text,
+                now=now,
+                reply_context={"send_as_id": send_as_id, "family": "concubine_status"},
+                event=SimpleNamespace(id=panel_msg_id, chat_id=-1001680975844),
+                event_type="message",
+            )
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_tianji_due_at"] = now + 3600
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["next_concubine_time"] = 0
+
+        sent_msg = SimpleNamespace(id=988, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        self.assertTrue(handled)
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
+        self.assertEqual("heart_pending", state_module.state["concubine_phase"])
+        self.assertEqual(988, state_module.state["concubine_heart_msg_id"])
+
+    async def test_heart_missing_panel_reply_immediately_refreshes_status_panel(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        stale_panel_msg_id = 123
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_pending"
+            identity_state["concubine_heart_msg_id"] = 9387528
+            identity_state["concubine_last_panel_msg_id"] = stale_panel_msg_id
+            identity_state["concubine_last_snapshot_at"] = now - 300
+            identity_state["concubine_heart_due_at"] = now - 1
+            identity_state["next_concubine_time"] = now + concubine.CONCUBINE_PHASE_TIMEOUT_SEC
+
+        status_msg = SimpleNamespace(id=9388001, sent_at=now + 1)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)) as mock_send:
+            handled = await concubine.handle_concubine_heart_reply(
+                "请回复一条包含侍妾/道侣内容的消息，再使用 .共历心劫。",
+                now,
+                SimpleNamespace(raw_text=config.CMD_CONCUBINE_HEART, id=9387528),
+                matched_family="concubine_heart",
+                current_msg_id=9387529,
+            )
+
+        self.assertTrue(handled)
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(9388001, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_last_panel_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_heart_msg_id"])
+        self.assertEqual("共历心劫需要回复侍妾面板，已改为状态校准", state_module.state["concubine_heart_last_error"])
 
 
 if __name__ == "__main__":

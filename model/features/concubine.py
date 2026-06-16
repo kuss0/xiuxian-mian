@@ -843,6 +843,19 @@ def _voyage_retry_send_kwargs(command):
     }
 
 
+def _heart_choice_send_kwargs(prompt_msg_id, round_no, try_no=0):
+    identity_id = int(get_current_identity_id() or 0)
+    prompt_msg_id = int(prompt_msg_id or 0)
+    round_no = int(round_no or 0)
+    try_no = max(0, int(try_no or 0))
+    chain_id = f"concubine_heart_choice:{identity_id}:{prompt_msg_id}:round{round_no}"
+    return {
+        "source_module": "共历心劫",
+        "op_id": f"{chain_id}:try{try_no}:{CMD_CONCUBINE_HEART_STEADY}",
+        "chain_id": chain_id,
+    }
+
+
 def _schedule_voyage_wait(now):
     return_at = float(state.get("concubine_voyage_return_at", 0) or 0)
     if return_at > now:
@@ -3384,7 +3397,13 @@ async def _send_heart_choice(now):
         )
         save_state()
         return False
-    msg = await send_game_command(CMD_CONCUBINE_HEART_STEADY, track=False, reply_to=prompt_msg_id, priority="urgent_reactive")
+    msg = await send_game_command(
+        CMD_CONCUBINE_HEART_STEADY,
+        track=False,
+        reply_to=prompt_msg_id,
+        priority="urgent_reactive",
+        **_heart_choice_send_kwargs(prompt_msg_id, round_no),
+    )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_heart_last_error"] = "发送 .稳 失败"
@@ -3427,7 +3446,13 @@ async def _retry_heart_choice_once(now):
     if retry_count >= CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT:
         return False
 
-    msg = await send_game_command(CMD_CONCUBINE_HEART_STEADY, track=False, reply_to=prompt_msg_id, priority="urgent_reactive")
+    msg = await send_game_command(
+        CMD_CONCUBINE_HEART_STEADY,
+        track=False,
+        reply_to=prompt_msg_id,
+        priority="retry",
+        **_heart_choice_send_kwargs(prompt_msg_id, round_no, retry_count + 1),
+    )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     state["concubine_heart_choice_retry_count"] = retry_count + 1
     state["concubine_heart_choice_sent_at"] = sent_at
@@ -4037,9 +4062,8 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
         _close_heart_action_guard(now, "heart_missing_panel_reply")
         state["concubine_heart_last_error"] = "共历心劫需要回复侍妾面板，已改为状态校准"
         state["concubine_last_panel_msg_id"] = 0
-        _set_phase("idle")
         _clear_pending_msg_ids()
-        _schedule_chain_action(now)
+        await _send_status_command(now)
         save_state()
         return True
 

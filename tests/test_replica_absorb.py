@@ -1789,6 +1789,154 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual("lightweight_join:-100777:cangkun:47", primary_payload.get("exclusive_key"))
         self.assertEqual(primary_payload.get("exclusive_key"), backup_payload.get("exclusive_key"))
 
+    def test_zhuimo_recommendation_prefers_baji_requires_dps_heart_and_items(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山")
+        dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        baji_id = self._register_replica_identity(991205, "boxboxji", root_attrs="土木", professions="御山|灵医")
+        state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, blade_id, baji_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"坠魔谷禁制令": 1, "路线图": 1, "毒囊": 1}, "sections": {}},
+        })
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_ZHUIMO,
+            leader_id,
+        )
+        join_command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_ZHUIMO,
+            leader_id,
+        )
+
+        self.assertIn("推荐配置：坠魔谷｜职业补位（开房 @leader）", section)
+        self.assertIn("推荐加入：@dps @healer @blade @boxboxji", section)
+        self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师", section)
+        self.assertIn("五职业已齐。", section)
+        self.assertIn("DPS：@dps", section)
+        self.assertIn("心劫：@boxboxji 可满足坠魔心劫。", section)
+        self.assertIn("优先：已带吧唧。", section)
+        self.assertIn("队长储物袋提醒：入本前确认路线图、毒囊、阴环均在队长储物袋；本地记录缺 阴环。", section)
+        self.assertIn("默认路线：2-1。", section)
+        self.assertEqual(".加入副本 @dps @healer @blade @boxboxji", join_command)
+
+    def test_zhuimo_recommendation_blocks_join_without_dps(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山", sect_name="星宫")
+        attacker_id = self._register_replica_identity(991202, "attacker", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
+        state_module.set_replica_participant_identity_ids([leader_id, attacker_id, healer_id, blade_id, curse_id])
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_ZHUIMO,
+            leader_id,
+        )
+        join_command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_ZHUIMO,
+            leader_id,
+        )
+
+        self.assertIn("五职业已齐。", section)
+        self.assertIn("缺 DPS：坠魔谷必须带已勾选的金/雷 DPS，当前不推荐入本。", section)
+        self.assertIn("心劫：@leader 可满足坠魔心劫。", section)
+        self.assertEqual("", join_command)
+
+    def test_zhuimo_room_buttons_require_actionable_plan(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山", sect_name="星宫")
+        attacker_id = self._register_replica_identity(991202, "attacker", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
+        state_module.set_replica_participant_identity_ids([leader_id, attacker_id, healer_id, blade_id, curse_id])
+        room = {
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "room_id": "47",
+            "leader_identity_id": leader_id,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+        }
+
+        blocked_action = app_replica._get_lightweight_room_recommendation_action(room)
+        blocked_buttons = app_replica._build_lightweight_room_action_buttons(
+            room,
+            join_command=blocked_action["join_command"],
+            include_enter=blocked_action["include_enter"],
+            include_dissolve=True,
+            include_query=True,
+        )
+        state_module.set_replica_gold_dps_enabled(attacker_id, True)
+        ready_action = app_replica._get_lightweight_room_recommendation_action(room)
+        ready_buttons = app_replica._build_lightweight_room_action_buttons(
+            room,
+            join_command=ready_action["join_command"],
+            include_enter=ready_action["include_enter"],
+            include_dissolve=True,
+            include_query=True,
+        )
+        joined_room = dict(room, join_requested_usernames=["@attacker", "@healer", "@blade", "@curse"])
+        joined_action = app_replica._get_lightweight_room_recommendation_action(joined_room)
+        joined_buttons = app_replica._build_lightweight_room_action_buttons(
+            joined_room,
+            join_command=joined_action["join_command"],
+            include_enter=joined_action["include_enter"],
+            include_dissolve=True,
+            include_query=True,
+        )
+
+        self.assertEqual("", blocked_action["join_command"])
+        self.assertNotIn("加入推荐", self._button_texts(blocked_buttons))
+        self.assertNotIn("进入坠魔谷", self._button_texts(blocked_buttons))
+        self.assertEqual(".加入副本 @attacker @healer @blade @curse", ready_action["join_command"])
+        self.assertIn("加入推荐", self._button_texts(ready_buttons))
+        self.assertNotIn("进入坠魔谷", self._button_texts(ready_buttons))
+        self.assertIn("进入坠魔谷", self._button_texts(joined_buttons))
+
+    def test_lightweight_enter_command_blocks_zhuimo_without_dps(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山", sect_name="星宫")
+        attacker_id = self._register_replica_identity(991202, "attacker", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
+        event = self._prepare_replica_group([leader_id, attacker_id, healer_id, blade_id, curse_id])
+        event.raw_text = ".进入坠魔谷"
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "47",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "join_requested_usernames": ["@attacker", "@healer", "@blade", "@curse"],
+            "opened_at": now,
+            "expires_at": 9999999999,
+            "updated_at": now,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=now + 2), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_enter_command(event)
+                send_mock.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, self._button_texts(buttons)
+
+        handled, reply_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("当前不建议自动进入", reply_text)
+        self.assertIn("缺 DPS", reply_text)
+        self.assertIn("心劫：<code>@leader</code> 可满足坠魔心劫。", reply_text)
+        self.assertIn("默认路线：2-1。", reply_text)
+        self.assertNotIn("进入坠魔谷", button_texts)
+        self.assertIn("解散副本", button_texts)
+
     def test_virtual_hall_recommendation_summarizes_route_advice_without_commands(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="土", professions="御山")
         first_id = self._register_replica_identity(991202, "first", root_attrs="金", professions="破军")
