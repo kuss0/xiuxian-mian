@@ -436,6 +436,36 @@ class MessageContractTests(unittest.TestCase):
         self.assertTrue(rows["灵树"]["archived"])
         self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
 
+    def test_report_tool_json_output_can_include_gap_classes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                passive_event_ledger.append_passive_event(
+                    kind="skipped",
+                    reason="external_identity_no_match",
+                    module="wild_training",
+                    family="wild_training",
+                    msg_id=10146047,
+                    matched_text="【野外历练】 @other 正向荒野深处行去...",
+                    now=1_781_077_200.0,
+                )
+                ledger_path = passive_event_ledger.get_passive_event_ledger_path(1_781_077_200.0)
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--json",
+                    "--latest",
+                    "1",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(1, payload["gap_summary"]["external_observation_total"])
+        self.assertEqual(0, payload["gap_summary"]["needs_attention_total"])
+        self.assertEqual({"external_observation": 1}, payload["gap_summary"]["by_class"])
+
     def test_report_tool_text_output_can_include_module_readiness_backlog(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             ledger_path = Path(tmpdir) / "ledger.jsonl"
@@ -490,6 +520,50 @@ class MessageContractTests(unittest.TestCase):
         self.assertIn("reason=reply_context_no_identity", line)
         self.assertIn("cmd_sender=8325841058", line)
 
+    def test_contract_gap_summary_classifies_external_observations(self):
+        events = [
+            {
+                "kind": "skipped",
+                "reason": "reply_context_no_identity",
+                "family": "tower",
+                "msg_id": 10146047,
+                "matched_text": "【琉璃问心塔】",
+            },
+            {
+                "kind": "skipped",
+                "reason": "external_identity_no_match",
+                "family": "wild_training",
+                "msg_id": 10146048,
+                "matched_text": "【野外历练】 @other 正向荒野深处行去...",
+            },
+            {
+                "kind": "skipped",
+                "reason": "unhandled_routed_reply",
+                "family": "concubine_voyage",
+                "msg_id": 10146049,
+                "matched_text": "【乱星海远航·归】",
+                "decision": "handler_not_matched",
+            },
+        ]
+
+        summary = message_contract.summarize_message_contract_gaps(events)
+
+        self.assertEqual(3, summary["total"])
+        self.assertEqual(2, summary["needs_attention_total"])
+        self.assertEqual(1, summary["external_observation_total"])
+        self.assertEqual(
+            {
+                "external_observation": 1,
+                "handler_gap": 1,
+                "unresolved_identity": 1,
+            },
+            summary["by_class"],
+        )
+        self.assertEqual(
+            "external_observation",
+            message_contract.classify_message_contract_gap(events[1]),
+        )
+
     def test_status_text_is_log_group_reminder_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
@@ -513,7 +587,9 @@ class MessageContractTests(unittest.TestCase):
         self.assertIn("回 Codex 补规则", text)
         self.assertIn("不做确认", text)
         self.assertIn("契约缺口：1", text)
+        self.assertIn("待修/待归因：1；外部观察：0", text)
         self.assertIn("未匹配 handler：0", text)
+        self.assertIn("按分类：unresolved_identity:1", text)
         self.assertIn("reply_context_no_identity:1", text)
         self.assertIn("sample=contract_gap.concubine_voyage.message.10146047", text)
 

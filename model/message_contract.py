@@ -17,6 +17,22 @@ MESSAGE_CONTRACT_GAP_REASONS = frozenset(
         "no_reply_context",
     }
 )
+MESSAGE_CONTRACT_CLASS_HANDLER_GAP = "handler_gap"
+MESSAGE_CONTRACT_CLASS_UNRESOLVED_IDENTITY = "unresolved_identity"
+MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION = "external_observation"
+MESSAGE_CONTRACT_CLASS_OTHER = "other"
+MESSAGE_CONTRACT_EXTERNAL_REASONS = frozenset(
+    {
+        "external_identity_no_match",
+        "external_owner_no_match",
+    }
+)
+MESSAGE_CONTRACT_UNRESOLVED_IDENTITY_REASONS = frozenset(
+    {
+        "reply_context_no_identity",
+        "no_reply_context",
+    }
+)
 
 
 def _safe_int(value):
@@ -109,6 +125,19 @@ def is_message_contract_gap_event(event):
     )
 
 
+def classify_message_contract_gap(event):
+    if not is_message_contract_gap_event(event):
+        return ""
+    reason = str(event.get("reason") or "").strip()
+    if reason == UNHANDLED_ROUTED_REPLY_REASON:
+        return MESSAGE_CONTRACT_CLASS_HANDLER_GAP
+    if reason in MESSAGE_CONTRACT_EXTERNAL_REASONS:
+        return MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION
+    if reason in MESSAGE_CONTRACT_UNRESOLVED_IDENTITY_REASONS:
+        return MESSAGE_CONTRACT_CLASS_UNRESOLVED_IDENTITY
+    return MESSAGE_CONTRACT_CLASS_OTHER
+
+
 def _routed_reply_resolution_key(event):
     if not isinstance(event, dict):
         return None
@@ -199,11 +228,17 @@ def summarize_unhandled_routed_replies(events, *, latest_limit=8):
 def summarize_message_contract_gaps(events, *, latest_limit=8):
     items = [event for event in events if is_message_contract_gap_event(event)]
     by_reason = Counter(str(event.get("reason") or "unknown") for event in items)
+    by_class = Counter(classify_message_contract_gap(event) or "unknown" for event in items)
     by_module = Counter(_event_module_name(event) for event in items)
     by_family = Counter(str(event.get("family") or "unknown") for event in items)
     latest = sorted(items, key=lambda item: (_safe_int(item.get("ts")), _safe_int(item.get("msg_id"))))[-max(1, int(latest_limit or 1)):]
+    external_observation_total = int(by_class.get(MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION, 0) or 0)
+    needs_attention_total = len(items) - external_observation_total
     return {
         "total": len(items),
+        "needs_attention_total": needs_attention_total,
+        "external_observation_total": external_observation_total,
+        "by_class": dict(sorted(by_class.items(), key=lambda pair: (-pair[1], pair[0]))),
         "by_reason": dict(sorted(by_reason.items(), key=lambda pair: (-pair[1], pair[0]))),
         "by_module": dict(sorted(by_module.items(), key=lambda pair: (-pair[1], pair[0]))),
         "by_family": dict(sorted(by_family.items(), key=lambda pair: (-pair[1], pair[0]))),
@@ -289,7 +324,9 @@ def get_message_contract_status_text(limit=500, latest=5, *, module="", family="
         "- 日志群只提醒：带 sample/msg/reply 回 Codex 补规则；不做确认、不写状态。",
         f"- 扫描：最近 {safe_limit} 行 ledger",
         f"- 契约缺口：{summary['total']}",
+        f"- 待修/待归因：{summary.get('needs_attention_total', summary['total'])}；外部观察：{summary.get('external_observation_total', 0)}",
         f"- 未匹配 handler：{unhandled['total']}",
+        f"- 按分类：{_format_counter(summary.get('by_class') or {})}",
         f"- 按原因：{_format_counter(summary.get('by_reason') or {})}",
         f"- 按模块：{_format_counter(summary.get('by_module') or {})}",
         f"- 按 family：{_format_counter(summary.get('by_family') or {})}",
@@ -309,6 +346,7 @@ __all__ = [
     "MESSAGE_CONTRACT_GAP_REASONS",
     "VerifiedGameEvent",
     "build_replay_sample_suggestion",
+    "classify_message_contract_gap",
     "dumps_replay_sample_suggestion",
     "format_unhandled_reply_line",
     "from_telegram_event",
