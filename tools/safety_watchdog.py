@@ -271,6 +271,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_verified_world_boss_action_event(cur)
         or is_verified_world_boss_action_event(prev)
         or is_controlled_retry_event(cur)
+        or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
         or is_safe_heart_global_gap_pair(prev, cur)
     )
 
@@ -359,6 +360,14 @@ def parse_heart_choice_op(item: dict) -> tuple[int, int, int, str] | None:
     if command_key(str(item.get("text") or "")) != command:
         return None
     return prompt_msg_id, round_no, try_no, command
+
+
+def is_marked_heart_choice_event(item: dict) -> bool:
+    if not is_heart_choice_command(str(item.get("text") or "")):
+        return False
+    if not is_concubine_heart_event(item):
+        return False
+    return parse_heart_choice_op(item) is not None
 
 
 def is_safe_marked_heart_choice_repeat(items: list[dict]) -> bool:

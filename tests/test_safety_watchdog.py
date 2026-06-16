@@ -1036,6 +1036,30 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("global lock breach", breach)
 
+    def test_marked_heart_choice_after_other_heart_action_does_not_global_fuse(self):
+        now = time.time()
+        prompt_msg_id = 10475775
+        sender_id = 3711993781
+        chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round1"
+        events = [
+            _event(now - 2, 3800619925, ".共历心劫", 10475603, "concubine_heart", "共历心劫"),
+            _event(
+                now - 1,
+                sender_id,
+                ".稳",
+                prompt_msg_id,
+                "concubine_heart",
+                "共历心劫",
+                priority="urgent_reactive",
+                op_id=f"{chain_id}:try0:.稳",
+                chain_id=chain_id,
+            ),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
     def test_concubine_heart_choice_fourth_still_fuses(self):
         now = time.time()
         sender_id = 8659059191
