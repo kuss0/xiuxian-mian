@@ -172,6 +172,33 @@ class WatchdogConfig:
     journal_check_interval_sec: float
 
 
+@dataclass
+class BreachConfirmationState:
+    reason: str = ""
+    first_seen: float = 0.0
+    last_seen: float = 0.0
+    hits: int = 0
+
+
+SOFT_CONFIRM_REASON_PREFIXES = (
+    "same command repeat:",
+    "global lock breach:",
+    "guarded retry too dense:",
+    "guarded command over attempts:",
+    "refresh command over attempts:",
+    "sect teach over attempts:",
+)
+HARD_BREACH_REASON_PREFIXES = (
+    "send burst:",
+    "hard-stop reply keyword:",
+    "journal hard-stop keyword:",
+    "world boss retry over limit:",
+    "world boss over attempts:",
+)
+SOFT_BREACH_CONFIRM_HITS = 2
+SOFT_BREACH_CONFIRM_WINDOW_SEC = 90.0
+
+
 def load_dotenv(env_path: Path) -> dict[str, str]:
     env = dict(os.environ)
     if not env_path.exists():
@@ -271,6 +298,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_verified_world_boss_action_event(cur)
         or is_verified_world_boss_action_event(prev)
         or is_controlled_retry_event(cur)
+        or is_marked_heart_choice_event(cur)
         or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
         or is_safe_heart_global_gap_pair(prev, cur)
     )
@@ -422,23 +450,29 @@ def is_safe_marked_heart_choice_sequence(items: list[dict]) -> bool:
         return False
 
     seen_round_tries: dict[int, set[int]] = defaultdict(set)
-    last_round = 0
+    last_round: int | None = None
     for item, (_prompt_msg_id, round_no, try_no, _command) in parsed_items:
         if try_no in seen_round_tries[round_no]:
             return False
+        if last_round is not None:
+            if round_no < last_round or round_no > last_round + 1:
+                return False
+            if round_no == last_round and not seen_round_tries[round_no]:
+                return False
         if try_no == 0:
             if str(item.get("priority") or "").strip().lower() == "retry":
                 return False
-            if round_no < last_round or round_no > last_round + 1:
+            if 1 in seen_round_tries[round_no]:
                 return False
-            last_round = max(last_round, round_no)
+            last_round = round_no
         else:
             if not is_controlled_retry_event(item):
                 return False
-            if 0 not in seen_round_tries[round_no]:
+            if 0 not in seen_round_tries[round_no] and last_round is not None:
                 return False
-            if round_no != last_round:
+            if last_round is not None and round_no != last_round:
                 return False
+            last_round = round_no
         seen_round_tries[round_no].add(try_no)
 
     return True
@@ -1236,6 +1270,48 @@ def check_once(cfg: WatchdogConfig) -> str:
     return ""
 
 
+def reset_breach_confirmation(state: BreachConfirmationState) -> None:
+    state.reason = ""
+    state.first_seen = 0.0
+    state.last_seen = 0.0
+    state.hits = 0
+
+
+def is_hard_breach_reason(reason: str) -> bool:
+    raw = str(reason or "")
+    return any(raw.startswith(prefix) for prefix in HARD_BREACH_REASON_PREFIXES)
+
+
+def needs_soft_breach_confirmation(reason: str) -> bool:
+    raw = str(reason or "")
+    if is_hard_breach_reason(raw):
+        return False
+    return any(raw.startswith(prefix) for prefix in SOFT_CONFIRM_REASON_PREFIXES)
+
+
+def should_fuse_breach(reason: str, state: BreachConfirmationState, now: float) -> bool:
+    raw = str(reason or "").strip()
+    if not raw:
+        reset_breach_confirmation(state)
+        return False
+    if not needs_soft_breach_confirmation(raw):
+        reset_breach_confirmation(state)
+        return True
+    if (
+        state.reason != raw
+        or state.last_seen <= 0
+        or float(now) - state.last_seen > SOFT_BREACH_CONFIRM_WINDOW_SEC
+    ):
+        state.reason = raw
+        state.first_seen = float(now)
+        state.last_seen = float(now)
+        state.hits = 1
+        return False
+    state.last_seen = float(now)
+    state.hits += 1
+    return state.hits >= SOFT_BREACH_CONFIRM_HITS
+
+
 def reset_fuse(cfg: WatchdogConfig) -> None:
     marker = fuse_marker_path(cfg.project_root)
     if marker.exists():
@@ -1325,6 +1401,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     last_journal_check = 0.0
+    breach_confirmation = BreachConfirmationState()
     print(f"watchdog started: root={cfg.project_root} action={cfg.action}")
     while True:
         breach = check_once(cfg)
@@ -1334,7 +1411,7 @@ def main(argv: list[str]) -> int:
             journal_breach = find_journal_breach(cfg.service_name)
             if journal_breach and not journal_breach.startswith("journal check failed"):
                 breach = journal_breach
-        if breach:
+        if breach and should_fuse_breach(breach, breach_confirmation, now):
             perform_fuse(cfg, env, breach)
         time.sleep(cfg.interval_sec)
 

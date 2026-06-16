@@ -1060,6 +1060,37 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_marked_heart_choice_after_unrelated_action_does_not_global_fuse(self):
+        now = time.time()
+        prompt_msg_id = 10479257
+        sender_id = 3943539390
+        chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round1"
+        events = [
+            _event(
+                now - 1,
+                3872695780,
+                ".侍妾远航 冒险",
+                family="concubine_voyage",
+                source_module="侍妾远航",
+                priority="chain",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".稳",
+                prompt_msg_id,
+                "concubine_heart",
+                "共历心劫",
+                priority="urgent_reactive",
+                op_id=f"{chain_id}:try0:.稳",
+                chain_id=chain_id,
+            ),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
     def test_concubine_heart_choice_fourth_still_fuses(self):
         now = time.time()
         sender_id = 8659059191
@@ -1124,6 +1155,28 @@ class SafetyWatchdogTests(unittest.TestCase):
         ]
 
         self.assertTrue(safety_watchdog.is_safe_marked_heart_choice_repeat(events[1:]))
+
+    def test_marked_heart_choice_window_suffix_does_not_fuse(self):
+        now = time.time()
+        sender_id = 3943773722
+        prompt_msg_id = 10477436
+
+        def heart_choice(round_no):
+            chain_id = f"concubine_heart_choice:{sender_id}:{prompt_msg_id}:round{round_no}"
+            return {
+                "priority": "urgent_reactive",
+                "op_id": f"{chain_id}:try0:.稳",
+                "chain_id": chain_id,
+            }
+
+        events = [
+            _event(now - 20, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(2)),
+            _event(now - 15, sender_id, ".稳", prompt_msg_id, "concubine_heart", "共历心劫", **heart_choice(3)),
+        ]
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
     def test_concubine_heart_controlled_retry_does_not_fuse_fourth_choice(self):
         now = time.time()
@@ -1328,6 +1381,36 @@ class SafetyWatchdogTests(unittest.TestCase):
         self.assertIn("/bottoken/sendMessage", captured["url"])
         self.assertEqual(["HTML"], captured["payload"]["parse_mode"])
         self.assertEqual(["-1001"], captured["payload"]["chat_id"])
+
+    def test_soft_breach_requires_two_confirming_hits(self):
+        state = safety_watchdog.BreachConfirmationState()
+        reason = "same command repeat: 3943773722:.稳 gap 5.0s"
+
+        self.assertFalse(safety_watchdog.should_fuse_breach(reason, state, 1000.0))
+        self.assertEqual(1, state.hits)
+        self.assertTrue(safety_watchdog.should_fuse_breach(reason, state, 1015.0))
+        self.assertEqual(2, state.hits)
+
+    def test_soft_breach_confirmation_resets_after_quiet_window(self):
+        state = safety_watchdog.BreachConfirmationState()
+        reason = "global lock breach: gap 2.0s between a and b"
+
+        self.assertFalse(safety_watchdog.should_fuse_breach(reason, state, 1000.0))
+        self.assertFalse(
+            safety_watchdog.should_fuse_breach(
+                "",
+                state,
+                1015.0,
+            )
+        )
+        self.assertFalse(safety_watchdog.should_fuse_breach(reason, state, 1020.0))
+        self.assertEqual(1, state.hits)
+
+    def test_hard_breach_fuses_immediately(self):
+        state = safety_watchdog.BreachConfirmationState()
+
+        self.assertTrue(safety_watchdog.should_fuse_breach("send burst: 8+ sends in 120s", state, 1000.0))
+        self.assertEqual(0, state.hits)
 
     def test_reset_marker_without_epoch_falls_back_to_file_mtime(self):
         with tempfile.TemporaryDirectory() as tmpdir:
