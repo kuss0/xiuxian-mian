@@ -75,6 +75,25 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_hard_line_ignores_explore_rift_storm_result(self):
+        self.assertFalse(
+            health_observer.is_hard_journal_line(
+                "Jun 17 00:01:03 pve python[44241]: [growrdick] 🕳 探寻裂缝结果：遭遇风暴 ｜ 修为 -33943"
+            )
+        )
+
+    def test_warn_line_ignores_expected_phaseful_recovery_audits(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jun 16 23:52:50 pve python[44241]: [xuruode3] ↩️ 归位结算吃掉原指令，已补发一次：.入梦寻图"
+            )
+        )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jun 17 00:02:45 pve python[44241]: [xuruode3] 🧘 launching 超时，已回退。"
+            )
+        )
+
     def test_journal_since_is_not_before_current_service_start(self):
         start_epoch = health_observer.parse_local_ts("2026-06-06 14:38:55")
         with patch.object(health_observer.time, "time", return_value=health_observer.parse_local_ts("2026-06-06 14:42:18")):

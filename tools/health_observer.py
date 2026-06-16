@@ -26,9 +26,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
-BENIGN_HARD_CONTEXT_PATTERN = re.compile(r"already fused:", re.I)
+BENIGN_HARD_CONTEXT_PATTERN = re.compile(r"already fused:|探寻裂缝结果：遭遇风暴", re.I)
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
-    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束"
+    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退"
 )
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
