@@ -294,6 +294,7 @@ RECOVERY_READY_MIN_SEC = 30
 RECOVERY_READY_MAX_SEC = 90
 RECOVERY_PHASEFUL_IDLE_MIN_SEC = 60
 RECOVERY_PHASEFUL_IDLE_MAX_SEC = 180
+TIANTI_RECOVERY_STATUS_FRESH_SEC = 30 * 60
 TAIYI_PRESEND_RECOVERY_MAX_SEC = 300
 RECOVERY_SPREAD_TIMER_KEYS = (
     "next_irr_time",
@@ -353,6 +354,14 @@ def _is_tianti_ready_to_climb_snapshot():
     return bool(state.get("tianti_enabled") and cooldown_text and "可立即" in cooldown_text)
 
 
+def _has_fresh_tianti_recovery_status(now):
+    try:
+        seen_at = float(state.get("tianti_last_status_seen_at", 0) or 0)
+    except (TypeError, ValueError):
+        return False
+    return seen_at > 0 and float(now or 0) - seen_at <= TIANTI_RECOVERY_STATUS_FRESH_SEC
+
+
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
         return now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC)
@@ -401,7 +410,7 @@ def _restore_tianti_active_cooldown_runtime(now):
     if next_climb_time <= now and cooldown_text:
         state["next_tianti_climb_time"] = now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
         needs_status = True
-    if needs_status:
+    if needs_status and not _has_fresh_tianti_recovery_status(now):
         status_time = float(state.get("next_tianti_status_time", 0) or 0)
         if status_time <= 0 or status_time > now + RECOVERY_SPREAD_MAX_SEC:
             state["next_tianti_status_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
@@ -2817,7 +2826,7 @@ def initialize_identity_runtime(send_as_id, now=None):
                 )
             )
             next_climb_time = float(state.get("next_tianti_climb_time", 0) or 0)
-            if not has_status_snapshot or (next_climb_time > 0 and now >= next_climb_time):
+            if (not has_status_snapshot or (next_climb_time > 0 and now >= next_climb_time)) and not _has_fresh_tianti_recovery_status(now):
                 state["next_tianti_status_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
             _restore_tianti_ready_runtime(now)
             _restore_tianti_active_cooldown_runtime(now)

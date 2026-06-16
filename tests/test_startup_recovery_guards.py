@@ -252,6 +252,27 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(now + 1, state_module.state["next_tianti_status_time"])
             self.assertEqual(now + control.RECOVERY_SPREAD_MAX_SEC + 120, state_module.state["next_tianti_gangfeng_time"])
 
+    def test_tianti_recovery_keeps_fresh_status_snapshot_quiet(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_gangfeng_enabled"] = True
+            state_module.state["next_tianti_status_time"] = 0
+            state_module.state["next_tianti_gangfeng_time"] = 0
+            state_module.state["next_tianti_climb_time"] = now + 3600
+            state_module.state["tianti_last_status_seen_at"] = now - 60
+            state_module.state["tianti_progress_current"] = 10
+            state_module.state["tianti_cooldown_text"] = "19:30:31"
+
+        with patch.object(control.random, "uniform", return_value=120):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(0, state_module.state["next_tianti_status_time"])
+            self.assertEqual(now + control.RECOVERY_SPREAD_MAX_SEC + 120, state_module.state["next_tianti_gangfeng_time"])
+
     def test_tree_recovery_does_not_query_status_for_normal_due_timer(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
