@@ -10,6 +10,7 @@ import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .module_manifest import get_module_manifest, is_module_archived
 from .config import (
     ADMIN_IDS,
     CMD_CHECKIN,
@@ -164,6 +165,11 @@ from .features.tree import get_tree_status_text, request_tree_bootstrap_check
 from .features.world_boss import clear_world_boss_identity_state, get_world_boss_status_text
 from .features.second_soul import get_second_soul_status_text
 from .features.taiyi import _has_yindao_send_evidence, _resolve_yindao_command, get_taiyi_status_text
+from .features.explore_rift import (
+    clear_explore_rift_state,
+    get_explore_rift_status_text as get_explore_rift_feature_status_text,
+    schedule_explore_rift_initial_check,
+)
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
@@ -491,6 +497,10 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
         return ""
     if module_name == "观星" and not get_guanxing_shift_target():
         return "请先在基础配置中填写观星改换目标"
+    if is_module_archived(module_name):
+        manifest = get_module_manifest(module_name)
+        reason = str(getattr(manifest, "archive_reason", "") or "").strip()
+        return f"{module_name}模块已归档" + (f"：{reason}" if reason else "")
     if is_module_available(module_name, send_as_id):
         return ""
     if module_name == "灵树":
@@ -1176,18 +1186,23 @@ def _clear_explore_rift_runtime():
     state["explore_rift_reply_to_msg_id"] = 0
     state["explore_rift_reply_due_at"] = 0
     state["explore_rift_pending_result_msg_id"] = 0
+    state["explore_rift_last_msg_id"] = 0
     _clear_pending_tasks_by_commands({CMD_EXPLORE_RIFT})
 
 
 def _manual_disable_explore_rift_module_state():
     state["explore_rift_enabled"] = False
     _clear_explore_rift_runtime()
+    clear_explore_rift_state(persist=False, keep_last_error=True)
 
 
 def _manual_enable_explore_rift_module_state(now):
     state["explore_rift_enabled"] = True
-    state["explore_rift_last_error"] = "状态机待接入真实文案，当前不会主动发送。"
-    state["explore_rift_manual_required"] = True
+    if float(state.get("next_explore_rift_time", 0) or 0) > now:
+        state["explore_rift_manual_required"] = False
+        return
+    schedule_explore_rift_initial_check(now, persist=False, keep_last_error=True)
+    state["explore_rift_manual_required"] = False
 
 
 def _manual_disable_world_boss_module_state():
@@ -1202,17 +1217,7 @@ def _manual_enable_world_boss_module_state(now):
 
 
 def get_explore_rift_status_text():
-    last_result = str(state.get("explore_rift_last_result") or "").strip() or "无"
-    last_error = str(state.get("explore_rift_last_error") or "").strip() or "无"
-    lines = [
-        "🕳 探寻裂缝",
-        "- 自动状态机：待接入真实文案（当前不会主动发送）",
-        f"- 下次执行：{fmt_abs_ts(state['next_explore_rift_time'])}（{fmt_remaining(state['next_explore_rift_time'])}）",
-        f"- 最近结果：{last_result}",
-        f"- 最近错误：{last_error}",
-        f"- 人工确认：{'需要' if state.get('explore_rift_manual_required') else '否'}",
-    ]
-    return "\n".join(lines)
+    return get_explore_rift_feature_status_text()
 
 
 def _set_checkin_module_enabled(enabled, now):
@@ -2826,6 +2831,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_phaseful_runtime("深度闭关", now)
         if state["yuanying_enabled"]:
             _restore_phaseful_runtime("元婴", now)
+        if state.get("explore_rift_enabled") and float(state.get("next_explore_rift_time", 0) or 0) <= 0:
+            schedule_explore_rift_initial_check(now, persist=False, keep_last_error=True)
         if state.get("wendao_enabled") and float(state.get("next_wendao_time", 0) or 0) <= 0:
             schedule_wendao_initial_check(now, persist=False, keep_last_error=True)
         if state["second_soul_enabled"]:

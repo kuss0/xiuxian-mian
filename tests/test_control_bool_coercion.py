@@ -91,6 +91,50 @@ class ControlBoolCoercionTests(unittest.TestCase):
 
         self.assertIn("侍妾远航", modules)
         self.assertIn("共历心劫", modules)
+        self.assertNotIn("灵树", modules)
+
+    def test_wendao_only_available_for_yuanying_sect_identity(self):
+        cases = (
+            ("unknown_sect", "", False),
+            ("wrong_sect", "落云宗", False),
+            ("yuanying_sect", "元婴宗", True),
+        )
+
+        for offset, (label, sect_name, expected_available) in enumerate(cases):
+            with self.subTest(label=label):
+                send_as_id = 990330 + offset
+                state_module.ensure_identity_registered(send_as_id)
+                state_module.update_send_as_profile(send_as_id, sect_name=sect_name, realm="元婴初期")
+
+                modules = state_module.get_available_module_names(send_as_id)
+
+                self.assertEqual(expected_available, "问道" in modules)
+
+    def test_wendao_toggle_rejected_for_non_yuanying_sect(self):
+        send_as_id = 990332
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="落云宗", realm="元婴初期")
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("问道", True, send_as_id=send_as_id))
+
+        self.assertFalse(ok)
+        self.assertIn("未提供问道模块", message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["wendao_enabled"])
+
+    def test_archived_tree_module_cannot_be_enabled(self):
+        send_as_id = 990323
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="落云宗", realm="结丹后期")
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("灵树", True, send_as_id=send_as_id))
+
+        self.assertFalse(ok)
+        self.assertIn("灵树模块已归档", message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["tree_enabled"])
 
     def test_ui_module_toggle_message_matches_coerced_false_string(self):
         send_as_id = 990331

@@ -22,6 +22,7 @@ from .config import (
     TZ_LOCAL,
     WILD_TRAINING_STRATEGIES,
 )
+from .module_manifest import is_module_archived
 
 _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
@@ -1881,7 +1882,11 @@ def is_small_world_realm_available(send_as_id=None):
 
 
 def get_available_module_names(send_as_id=None):
-    available_module_names = [module_name for module_name in MODULE_NAMES if module_name != "观星监控"]
+    available_module_names = [
+        module_name
+        for module_name in MODULE_NAMES
+        if module_name != "观星监控" and not is_module_archived(module_name)
+    ]
     sect_name = (get_send_as_profile(send_as_id).get("sect_name") or "").strip()
     if sect_name and sect_name != "落云宗":
         available_module_names = [module_name for module_name in available_module_names if module_name != "灵树"]
@@ -1901,7 +1906,7 @@ def get_available_module_names(send_as_id=None):
         available_module_names = [module_name for module_name in available_module_names if module_name != "天星宗"]
     if sect_name and sect_name != "阴罗宗":
         available_module_names = [module_name for module_name in available_module_names if module_name != "阴罗宗"]
-    if sect_name and sect_name != "元婴宗":
+    if sect_name != "元婴宗":
         available_module_names = [module_name for module_name in available_module_names if module_name != "问道"]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]

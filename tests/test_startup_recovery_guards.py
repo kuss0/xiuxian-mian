@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import action_guard, config, control
 from model import state as state_module
-from model.features import concubine, wild_training
+from model.features import concubine, explore_rift, wild_training
 
 
 class StartupRecoveryGuardTests(unittest.TestCase):
@@ -97,6 +97,31 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
             self.assertEqual(0, state_module.state["wild_training_retry_count"])
             self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+
+    def test_initialize_explore_rift_unknown_timer_schedules_recovery(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = 0
+            state_module.state["explore_rift_reply_to_msg_id"] = 10425942
+            state_module.state["explore_rift_reply_due_at"] = now - 1
+            state_module.state["explore_rift_pending_result_msg_id"] = 10425944
+            state_module.state["explore_rift_last_error"] = "保留上一条异常"
+
+        with patch.object(explore_rift.random, "uniform", return_value=explore_rift.EXPLORE_RIFT_RECOVERY_MIN_SEC):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
+            self.assertEqual(0, state_module.state["explore_rift_pending_result_msg_id"])
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_RECOVERY_MIN_SEC,
+                state_module.state["next_explore_rift_time"],
+            )
+            self.assertEqual("保留上一条异常", state_module.state["explore_rift_last_error"])
 
     def test_startup_recovery_clears_stale_action_guard_sessions(self):
         now = 1_700_000_000.0

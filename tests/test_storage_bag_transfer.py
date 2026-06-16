@@ -420,6 +420,83 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.target_id, send_mock.await_args.kwargs["send_as_id"])
         self.assertEqual(9955440, send_mock.await_args.kwargs["reply_to"])
 
+    async def test_routed_explore_rift_final_edit_replays_after_start_notice_consumed(self):
+        state_module.get_identity_state(self.target_id)["explore_rift_enabled"] = True
+        event = SimpleNamespace(id=10425944, sender_id=8757550896, chat_id=-1001680975844)
+        reply_to = SimpleNamespace(id=10425942, raw_text=".探寻裂缝")
+        reply_context = {
+            "send_as_id": self.target_id,
+            "family": "explore_rift",
+            "reply_to_msg_id": 10425942,
+            "root_msg_id": 10425942,
+        }
+        app._mark_runtime_message_consumed(event, "explore_rift")
+        final_text = (
+            "【遭遇风暴】\n"
+            "空间裂缝中风暴肆虐，你的元婴受创，被迫逃回！\n"
+            "你元气大伤，修为倒退了 33455 点！"
+        )
+
+        with patch.object(app, "handle_explore_rift_reply", new=AsyncMock(return_value=True)) as rift_mock, \
+                patch.object(app, "schedule_cleanup", new=AsyncMock()):
+            handled = await app._handle_routed_reply_event(
+                event,
+                final_text,
+                1000.0,
+                reply_to,
+                reply_context,
+                event_kind="edit",
+            )
+
+        self.assertTrue(handled)
+        rift_mock.assert_awaited_once_with(
+            final_text,
+            1000.0,
+            reply_to,
+            matched_family="explore_rift",
+            result_msg_id=10425944,
+        )
+
+    async def test_routed_wendao_final_edit_replays_after_start_notice_consumed(self):
+        state_module.get_identity_state(self.target_id)["wendao_enabled"] = True
+        event = SimpleNamespace(id=10166451, sender_id=8757550896, chat_id=-1001680975844)
+        reply_to = SimpleNamespace(id=10166450, raw_text=".问道")
+        reply_context = {
+            "send_as_id": self.target_id,
+            "family": "wendao",
+            "reply_to_msg_id": 10166450,
+            "root_msg_id": 10166450,
+        }
+        app._mark_runtime_message_consumed(event, "wendao")
+        final_text = (
+            "【问道得宝】\n"
+            "长老对你的勤勉颇为赞许，赐下诸多宝物！你获得了：\n"
+            "- 修为增加了 1312 点\n"
+            "- 【一阶妖丹】x8\n"
+            "- 灵石x147\n"
+            "- 二级妖丹x2"
+        )
+
+        with patch.object(app, "handle_wendao_reply", new=AsyncMock(return_value=True)) as wendao_mock, \
+                patch.object(app, "schedule_cleanup", new=AsyncMock()):
+            handled = await app._handle_routed_reply_event(
+                event,
+                final_text,
+                1000.0,
+                reply_to,
+                reply_context,
+                event_kind="edit",
+            )
+
+        self.assertTrue(handled)
+        wendao_mock.assert_awaited_once_with(
+            final_text,
+            1000.0,
+            reply_to,
+            matched_family="wendao",
+            result_msg_id=10166451,
+        )
+
     async def test_unhandled_routed_reply_records_passive_evidence(self):
         event = SimpleNamespace(id=9966101, sender_id=888001, chat_id=-1001680975844)
         reply_to = SimpleNamespace(id=9966099, raw_text=".卜筮问天")

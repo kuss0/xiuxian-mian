@@ -12,6 +12,7 @@ from .config import (
     CMD_DEEP_RETREAT,
     CMD_DIVINATION,
     CMD_DIVINATION_EXCHANGE,
+    CMD_EXPLORE_RIFT,
     CMD_HEHUAN_DUAL,
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
@@ -19,6 +20,7 @@ from .config import (
     CMD_PET_TRIAL,
     CMD_RANCH,
     CMD_SECOND_SOUL_TRAIN,
+    CMD_WENDAO,
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
@@ -220,6 +222,20 @@ ACTION_SPECS = {
         "max_attempts": 1,
         "ttl_sec": 5 * 60,
     },
+    "wendao": {
+        "commands": (CMD_WENDAO,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "问道",
+        "max_attempts": 1,
+        "ttl_sec": 30 * 60,
+    },
+    "explore_rift": {
+        "commands": (CMD_EXPLORE_RIFT,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "探寻裂缝",
+        "max_attempts": 1,
+        "ttl_sec": 12 * 3600,
+    },
     "hehuan_dual": {
         "commands": (CMD_HEHUAN_DUAL,),
         "kind": ACTION_KIND_HIGH_RISK,
@@ -367,6 +383,8 @@ FAMILY_TO_ACTION_KEYS = {
     "small_world_refine": ("small_world_refine",),
     "divination": ("divination",),
     "divination_exchange": ("divination_exchange",),
+    "wendao": ("wendao",),
+    "explore_rift": ("explore_rift",),
     "hehuan_dual": ("hehuan_dual",),
     "tianxing_panel": ("tianxing_panel",),
     "tianxing_observe": ("tianxing_observe",),
@@ -518,6 +536,12 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
         return _int_state(identity_state, "small_world_harvest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"harvest_pending"})
     if action_key == "small_world_refine":
         return _int_state(identity_state, "small_world_refine_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"refine_pending"})
+    if action_key == "wendao":
+        return _int_state(identity_state, "wendao_reply_to_msg_id") > 0 and _float_state(identity_state, "wendao_reply_due_at") > now
+    if action_key == "explore_rift":
+        if _int_state(identity_state, "explore_rift_reply_to_msg_id") > 0 and _float_state(identity_state, "explore_rift_reply_due_at") > now:
+            return True
+        return _int_state(identity_state, "explore_rift_pending_result_msg_id") > 0 and _float_state(identity_state, "next_explore_rift_time") > now
     if action_key == "nanlong":
         return _int_state(identity_state, "nanlong_reply_to_msg_id") > 0 and _float_state(identity_state, "nanlong_reply_due_at") > now
     if action_key in {"taiyi_yindao", "taiyi_node_search", "taiyi_node_define"}:

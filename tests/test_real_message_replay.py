@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model.config import CD_BUFFER_SEC, TAIYI_CYCLE_CD_SEC
-from model.features import deep_retreat, storage_bag, taiyi, workflow_log
+from model.features import deep_retreat, explore_rift, small_world, storage_bag, taiyi, wendao, workflow_log
 from model.features.storage_bag import handle_storage_bag_transfer_reply, start_storage_bag_transfer_task
 from model.real_message_replay import get_real_message_text, iter_real_message_samples
 
@@ -62,11 +62,249 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertGreaterEqual(len(storage_samples), 3)
         self.assertEqual(2, len(listing_samples))
-        self.assertEqual(1, len(dungeon_samples))
+        self.assertEqual(2, len(dungeon_samples))
         self.assertEqual(1, len(yuanying_samples))
         self.assertTrue(all(sample.text for sample in storage_samples))
-        self.assertIn("副本ID", dungeon_samples[0].text)
+        self.assertTrue(any("副本ID" in sample.text for sample in dungeon_samples))
         self.assertIn("元神归窍总结", yuanying_samples[0].text)
+
+    async def test_storage_bag_real_panel_updates_inventory_cache(self):
+        send_as_id = 8373721506
+        now = 1_781_452_367.0
+        self._prepare_identity(send_as_id, "zedwang125")
+        state_module.set_storage_bag_records({})
+
+        with patch.object(storage_bag, "save_state"):
+            handled = await storage_bag.handle_storage_bag_reply(
+                real_text("storage_bag.panel.zedwang"),
+                now,
+                matched_family="storage_bag",
+            )
+
+        self.assertTrue(handled)
+        records = state_module.get_storage_bag_records()
+        record = records[str(send_as_id)]
+        self.assertEqual("@zedwang125", record["owner_username"])
+        self.assertEqual(2195, record["items"]["灵石"])
+        self.assertEqual(319, record["sections"]["材料"]["凝血草"])
+        self.assertEqual(1, record["sections"]["法宝/丹药/杂物"]["真仙试锋"])
+
+    async def test_small_world_real_refine_reply_clears_pending_and_rechecks(self):
+        send_as_id = 5231593703
+        now = 1_781_453_889.0
+        self._prepare_identity(send_as_id, "smallworld")
+        reply_to = SimpleNamespace(id=10378360, sender_id=send_as_id, raw_text=".神识淬炼 7550")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_phase"] = "refine_sent"
+            state_module.state["small_world_refine_msg_id"] = 10378360
+            state_module.state["small_world_incense_stock"] = 8000
+
+            with (
+                patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_refine_reply(
+                    real_text("small_world.refine.success"),
+                    now,
+                    reply_to,
+                    matched_family="small_world_refine",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_refine_msg_id"])
+            self.assertEqual(450, state_module.state["small_world_incense_stock"])
+            query_mock.assert_awaited_once_with(now, "淬炼后复查")
+
+    async def test_small_world_real_relief_reply_updates_local_snapshot(self):
+        send_as_id = 5231593703
+        now = 1_781_400_508.0
+        self._prepare_identity(send_as_id, "smallworld")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_phase"] = "preach_pending"
+            state_module.state["small_world_preach_reply_to_msg_id"] = 10333591
+            state_module.state["small_world_preach_due_at"] = now + 30
+            state_module.state["small_world_panel_snapshot"] = {
+                "population": 188722,
+                "capacity": 190000,
+                "faith": 50,
+                "faith_max": 100,
+                "stability": 70,
+                "stability_max": 100,
+            }
+
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_preach_reply(
+                    real_text("small_world.relief.success"),
+                    now,
+                    reply_to=SimpleNamespace(id=10333591, raw_text=".神迹 赈灾"),
+                    matched_family="small_world_relief",
+                )
+
+            self.assertTrue(handled)
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertEqual(190000, snapshot["population"])
+            self.assertEqual(72, snapshot["faith"])
+            self.assertEqual(100, snapshot["stability"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
+
+    async def test_wendao_real_result_updates_storage_bag_and_default_cd(self):
+        send_as_id = 8757550896
+        now = 1_781_115_788.0
+        self._prepare_identity(send_as_id, "wendaoer")
+        state_module.set_storage_bag_records({})
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["wendao_enabled"] = True
+            state_module.state["wendao_reply_to_msg_id"] = 10166450
+            state_module.state["wendao_reply_due_at"] = now + 30
+
+            with (
+                patch.object(wendao.random, "uniform", return_value=0),
+                patch.object(wendao, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(wendao, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await wendao.handle_wendao_reply(
+                    real_text("wendao.result.basic"),
+                    now,
+                    reply_to=SimpleNamespace(id=10166450, raw_text=".问道"),
+                    matched_family="wendao",
+                    result_msg_id=10166451,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["wendao_reply_to_msg_id"])
+            self.assertEqual(now + wendao.WENDAO_CD, state_module.state["next_wendao_time"])
+            self.assertEqual("修为 +1312 ｜ 奖励：一阶妖丹x8、灵石x147、二级妖丹x2", state_module.state["wendao_last_result"])
+            records = state_module.get_storage_bag_records()
+            self.assertEqual(8, records[str(send_as_id)]["items"]["一阶妖丹"])
+            self.assertEqual(147, records[str(send_as_id)]["items"]["灵石"])
+            self.assertEqual(2, records[str(send_as_id)]["items"]["二级妖丹"])
+
+    async def test_explore_rift_real_result_updates_storage_bag_and_default_cd(self):
+        send_as_id = 8757550896
+        now = 1_781_115_788.0
+        self._prepare_identity(send_as_id, "riftseeker")
+        state_module.set_storage_bag_records({})
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 10380515
+            state_module.state["explore_rift_reply_due_at"] = now + 30
+
+            with (
+                patch.object(explore_rift.random, "uniform", return_value=0),
+                patch.object(explore_rift, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await explore_rift.handle_explore_rift_reply(
+                    real_text("explore_rift.success.tianxing"),
+                    now,
+                    reply_to=SimpleNamespace(id=10380515, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=10380517,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+            self.assertEqual(now + explore_rift.EXPLORE_RIFT_CD, state_module.state["next_explore_rift_time"])
+            self.assertEqual(
+                "奖励：法则碎片·木x1、法则碎片·雷x1、法则碎片·土x1",
+                state_module.state["explore_rift_last_result"],
+            )
+            records = state_module.get_storage_bag_records()
+            self.assertEqual(1, records[str(send_as_id)]["items"]["法则碎片·木"])
+            self.assertEqual(1, records[str(send_as_id)]["items"]["法则碎片·雷"])
+            self.assertEqual(1, records[str(send_as_id)]["items"]["法则碎片·土"])
+
+    async def test_explore_rift_real_terminal_failures_clear_pending_and_default_cd(self):
+        send_as_id = 8757550896
+        now = 1_781_115_788.0
+        self._prepare_identity(send_as_id, "riftseeker")
+
+        for sample_id, reply_to_msg_id, result_msg_id, expected_title in (
+            ("explore_rift.failure.storm", 10425942, 10425944, "遭遇风暴"),
+            ("explore_rift.failure.beast_defeat", 10426277, 10426278, "不敌败退"),
+        ):
+            with self.subTest(sample_id=sample_id):
+                with state_module.use_identity(send_as_id):
+                    state_module.state["explore_rift_enabled"] = True
+                    state_module.state["explore_rift_reply_to_msg_id"] = reply_to_msg_id
+                    state_module.state["explore_rift_reply_due_at"] = now + 30
+                    state_module.state["explore_rift_pending_result_msg_id"] = result_msg_id
+
+                    with (
+                        patch.object(explore_rift.random, "uniform", return_value=0),
+                        patch.object(explore_rift, "save_state"),
+                        patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+                    ):
+                        handled = await explore_rift.handle_explore_rift_reply(
+                            real_text(sample_id),
+                            now,
+                            reply_to=SimpleNamespace(id=reply_to_msg_id, raw_text=".探寻裂缝"),
+                            matched_family="explore_rift",
+                            result_msg_id=result_msg_id,
+                        )
+
+                    self.assertTrue(handled)
+                    self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+                    self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
+                    self.assertEqual(0, state_module.state["explore_rift_pending_result_msg_id"])
+                    self.assertEqual(now + explore_rift.EXPLORE_RIFT_CD, state_module.state["next_explore_rift_time"])
+                    self.assertIn(expected_title, state_module.state["explore_rift_last_result"])
+
+    async def test_explore_rift_real_beast_victory_updates_storage_bag_and_default_cd(self):
+        send_as_id = 8757550896
+        now = 1_781_115_788.0
+        self._prepare_identity(send_as_id, "riftseeker")
+        state_module.set_storage_bag_records({})
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 10410001
+            state_module.state["explore_rift_reply_due_at"] = now + 30
+            state_module.state["explore_rift_pending_result_msg_id"] = 10410003
+
+            with (
+                patch.object(explore_rift.random, "uniform", return_value=0),
+                patch.object(explore_rift, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await explore_rift.handle_explore_rift_reply(
+                    real_text("explore_rift.beast_victory.space_core"),
+                    now,
+                    reply_to=SimpleNamespace(id=10410001, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=10410003,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
+            self.assertEqual(0, state_module.state["explore_rift_pending_result_msg_id"])
+            self.assertEqual(now + explore_rift.EXPLORE_RIFT_CD, state_module.state["next_explore_rift_time"])
+            self.assertEqual(
+                "奖励：法则碎片·空间x1、四级妖丹x5、空间之核x1",
+                state_module.state["explore_rift_last_result"],
+            )
+            records = state_module.get_storage_bag_records()
+            self.assertEqual(1, records[str(send_as_id)]["items"]["法则碎片·空间"])
+            self.assertEqual(5, records[str(send_as_id)]["items"]["四级妖丹"])
+            self.assertEqual(1, records[str(send_as_id)]["items"]["空间之核"])
 
     async def test_deep_retreat_real_summary_finalizes_wait(self):
         send_as_id = 3870643893
@@ -179,6 +417,74 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
             and "你引动【水之道】" in event.get("text", "")
             for event in workflow_events
         ))
+
+    async def test_taiyi_real_node_search_success_enters_define_pending(self):
+        send_as_id = 8659059191
+        now = 1_780_709_397.0
+        self._prepare_identity(send_as_id, "WalterWA2000")
+        reply_to = SimpleNamespace(id=9918348, sender_id=send_as_id, raw_text=".搜寻节点")
+
+        def close_delayed_define(coro):
+            coro.close()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["taiyi_enabled"] = True
+            state_module.state["taiyi_node_search_enabled"] = True
+            state_module.state["taiyi_phase"] = "search_pending"
+            state_module.state["taiyi_node_search_msg_id"] = 9918348
+
+            with (
+                patch.object(taiyi, "_fire_and_forget", side_effect=close_delayed_define) as fire_mock,
+                patch.object(taiyi, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(taiyi, "save_state"),
+            ):
+                handled = await taiyi.handle_taiyi_node_search_reply(
+                    real_text("taiyi.node_search.success"),
+                    now,
+                    reply_to,
+                    matched_family="taiyi_node_search",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("define_pending", state_module.state["taiyi_phase"])
+            self.assertEqual("空间节点·雷暴", state_module.state["taiyi_pending_node_name"])
+            self.assertEqual(0, state_module.state["taiyi_node_search_msg_id"])
+            fire_mock.assert_called_once()
+            audit_mock.assert_awaited_once()
+
+    async def test_taiyi_real_node_define_success_closes_cycle(self):
+        send_as_id = 8659059191
+        now = 1_780_710_027.0
+        self._prepare_identity(send_as_id, "WalterWA2000")
+        reply_to = SimpleNamespace(id=9918486, sender_id=send_as_id, raw_text=".定星 空间节点·雷暴")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["taiyi_enabled"] = True
+            state_module.state["taiyi_node_search_enabled"] = True
+            state_module.state["taiyi_phase"] = "define_pending"
+            state_module.state["taiyi_pending_node_name"] = "空间节点·雷暴"
+            state_module.state["taiyi_node_define_msg_id"] = 9918486
+            state_module.state["next_taiyi_cycle_time"] = 0
+
+            with (
+                patch.object(taiyi, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(taiyi, "save_state"),
+            ):
+                handled = await taiyi.handle_taiyi_node_define_reply(
+                    real_text("taiyi.node_define.success"),
+                    now,
+                    reply_to,
+                    matched_family="taiyi_node_define",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["taiyi_phase"])
+            self.assertEqual("", state_module.state["taiyi_pending_node_name"])
+            self.assertEqual(0, state_module.state["taiyi_node_define_msg_id"])
+            self.assertGreater(state_module.state["next_taiyi_cycle_time"], now)
+            audit_text = audit_mock.await_args.args[0]
+            self.assertIn("空间节点·雷暴", audit_text)
+            self.assertIn("逆灵通道坐标", audit_text)
 
     async def test_storage_bag_real_manual_listing_replaces_original_and_syncs_inventory(self):
         source_id = 1001

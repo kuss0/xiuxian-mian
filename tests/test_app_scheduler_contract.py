@@ -29,6 +29,7 @@ IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
         "small_world_harvest",
         "small_world_refine",
     },
+    "run_explore_rift_scheduler": {"explore_rift"},
     "run_wendao_scheduler": {"wendao"},
     "run_taiyi_scheduler": {"taiyi"},
     "divination": {"divination"},
@@ -39,7 +40,6 @@ HELPER_SCHEDULERS = {
     "storage_bag_api_keepalive",
     "tiandao_judgement",
     "tianji_quiz",
-    "run_tree_bootstrap_check",
     "run_second_soul_bootstrap_check",
     "run_taiyi_bootstrap_check",
 }
@@ -68,12 +68,14 @@ class AppSchedulerContractTests(unittest.TestCase):
         )
         self.assertNotIn("run_deep_retreat_scheduler", contract["ordinary"])
         self.assertNotIn("run_yuanying_scheduler", contract["ordinary"])
-        self.assertIn("run_tree_bootstrap_check", contract["ordinary"])
+        self.assertNotIn("run_tree_bootstrap_check", contract["ordinary"])
+        self.assertNotIn("run_tree_scheduler", contract["ordinary"])
 
     def test_ordinary_identity_scheduler_keeps_current_key_module_order(self):
         ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
 
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_small_world_scheduler"))
+        self.assertLess(_index(ordinary, "run_small_world_scheduler"), _index(ordinary, "run_explore_rift_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_wendao_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_checkin_scheduler"))
         self.assertLess(_index(ordinary, "run_tower_scheduler"), _index(ordinary, "run_second_soul_bootstrap_check"))
@@ -140,9 +142,17 @@ class AppSchedulerContractTests(unittest.TestCase):
 
         for scheduler_name in HELPER_SCHEDULERS:
             self.assertTrue(bridge[scheduler_name]["helper"], scheduler_name)
-        self.assertEqual(("灵树",), bridge["run_tree_bootstrap_check"]["manifest_names"])
         self.assertEqual(("第二元神",), bridge["run_second_soul_bootstrap_check"]["manifest_names"])
         self.assertEqual(("太一",), bridge["run_taiyi_bootstrap_check"]["manifest_names"])
+
+    def test_archived_tree_schedulers_are_not_in_runtime_order(self):
+        ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
+        bridge = app.get_scheduler_manifest_bridge_contract()
+
+        self.assertTrue(module_manifest.is_module_archived("灵树"))
+        self.assertNotIn("run_tree_bootstrap_check", ordinary)
+        self.assertNotIn("run_tree_scheduler", ordinary)
+        self.assertEqual(("灵树",), bridge["run_tree_scheduler"]["manifest_names"])
 
     def test_important_runtime_scheduler_modules_have_behavior_spec_coverage(self):
         bridge = app.get_scheduler_manifest_bridge_contract()

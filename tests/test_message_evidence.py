@@ -468,6 +468,7 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".改命 探索": "天星宗",
             ".消劫": "天星宗",
             ".我的阴罗幡": "阴罗宗",
+            ".每日献祭": "阴罗宗",
             ".血洗山林": "阴罗宗",
             ".召唤魔影": "阴罗宗",
             ".化功为煞 1000": "阴罗宗",
@@ -491,7 +492,9 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".推命 炼制": "tianxing_predict",
             ".改命 探索": "tianxing_change_fate",
             ".消劫": "tianxing_clear_calamity",
+            ".探寻裂缝": "explore_rift",
             ".我的阴罗幡": "yinluo_banner",
+            ".每日献祭": "yinluo_daily_sacrifice",
             ".血洗山林": "yinluo_blood_forest",
             ".召唤魔影": "yinluo_demon_summon",
             ".化功为煞 1000": "yinluo_convert",
@@ -507,6 +510,8 @@ class SentMessageEvidenceTests(unittest.TestCase):
 
         self.assertEqual("yinluo_demon_summon", action_guard.resolve_action_key_for_family("yinluo_demon_summon"))
         self.assertEqual("tianxing_change_fate", action_guard.resolve_action_key_for_family("tianxing_change_fate"))
+        self.assertEqual("wendao", action_guard.resolve_action_key_for_family("wendao"))
+        self.assertEqual("explore_rift", action_guard.resolve_action_key_for_family("explore_rift"))
 
     def test_action_guard_closes_three_sect_sessions_by_reply_family(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)
@@ -520,6 +525,7 @@ class SentMessageEvidenceTests(unittest.TestCase):
                 ".双修 温养": "hehuan_dual",
                 ".改命 探索": "tianxing_change_fate",
                 ".召唤魔影": "yinluo_demon_summon",
+                ".探寻裂缝": "explore_rift",
             }
             for command, family in commands.items():
                 with self.subTest(command=command):
@@ -531,6 +537,92 @@ class SentMessageEvidenceTests(unittest.TestCase):
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
+
+    def test_action_guard_tracks_wendao_inflight_by_reply_state(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990303
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["wendao_reply_to_msg_id"] = 22027
+                state_module.state["wendao_reply_due_at"] = 1_780_000_100.0
+
+                allowed, reason = action_guard.before_send(".问道", send_as_id=identity_id, now=1_780_000_050.0)
+                self.assertFalse(allowed)
+                self.assertIn("问道", reason)
+
+                allowed, reason = action_guard.before_send(".问道", send_as_id=identity_id, now=1_780_000_200.0)
+                self.assertTrue(allowed, reason)
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_action_guard_tracks_explore_rift_inflight_by_reply_state(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990305
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_reply_to_msg_id"] = 10425942
+                state_module.state["explore_rift_reply_due_at"] = 1_780_000_100.0
+                state_module.state["explore_rift_pending_result_msg_id"] = 10425944
+                state_module.state["next_explore_rift_time"] = 1_780_000_100.0
+
+                allowed, reason = action_guard.before_send(".探寻裂缝", send_as_id=identity_id, now=1_780_000_050.0)
+                self.assertFalse(allowed)
+                self.assertIn("探寻裂缝", reason)
+
+                state_module.state["explore_rift_reply_due_at"] = 1_780_000_000.0
+                allowed, reason = action_guard.before_send(".探寻裂缝", send_as_id=identity_id, now=1_780_000_050.0)
+                self.assertFalse(allowed)
+                self.assertIn("探寻裂缝", reason)
+
+                state_module.state["explore_rift_pending_result_msg_id"] = 0
+                state_module.state["next_explore_rift_time"] = 1_780_000_000.0
+                allowed, reason = action_guard.before_send(".探寻裂缝", send_as_id=identity_id, now=1_780_000_050.0)
+                self.assertTrue(allowed, reason)
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_runtime_tracks_explore_rift_pending_result_ids(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990304
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_reply_to_msg_id"] = 10425942
+                state_module.state["explore_rift_pending_result_msg_id"] = 10425944
+                state_module.state["explore_rift_last_msg_id"] = 10425944
+
+            with state_module.use_identity(identity_id):
+                self.assertEqual("explore_rift", runtime._get_special_tracked_message_family(state_module.state, 10425942))
+                self.assertEqual("explore_rift", runtime._get_special_tracked_message_family(state_module.state, 10425944))
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_passive_event_iter_limit_allows_deeper_audit_window(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "ledger.jsonl"
+            with path.open("w", encoding="utf-8") as fp:
+                for msg_id in range(1205):
+                    fp.write(json.dumps({"kind": "skipped", "msg_id": msg_id}) + "\n")
+
+            events = passive_event_ledger.iter_passive_events(path=str(path), limit=1205)
+
+        self.assertEqual(1205, len(events))
+        self.assertEqual(0, events[0]["msg_id"])
+        self.assertEqual(1204, events[-1]["msg_id"])
 
 
 if __name__ == "__main__":

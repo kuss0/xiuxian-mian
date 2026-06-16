@@ -30,6 +30,7 @@ from .app_replica import (
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
+from .module_manifest import is_module_archived
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
 from .features.deep_retreat import (
@@ -99,6 +100,7 @@ from .features.stargazer import (
 )
 from .features.storage_bag import handle_storage_bag_reply, handle_storage_bag_transfer_reply, is_storage_transfer_waiting_reply, run_storage_bag_transfer_scheduler
 from .features.tower import handle_tower_reply, run_tower_scheduler
+from .features.explore_rift import handle_explore_rift_reply, run_explore_rift_scheduler
 from .features.tree import (
     handle_tree_cd_fix,
     handle_tree_exception_prompt,
@@ -212,8 +214,6 @@ _PHASEFUL_IDENTITY_SCHEDULERS = (
     run_yuanying_scheduler,
 )
 _ORDINARY_IDENTITY_SCHEDULERS = (
-    run_tree_bootstrap_check,
-    run_tree_scheduler,
     run_pet_scheduler,
     run_ranch_scheduler,
     run_wild_training_scheduler,
@@ -226,6 +226,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_nanlong_scheduler,
     run_yinluo_scheduler,
     run_small_world_scheduler,
+    run_explore_rift_scheduler,
     run_wendao_scheduler,
     run_checkin_scheduler,
     run_tower_scheduler,
@@ -268,6 +269,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_second_soul_bootstrap_check": {"manifest_names": ("第二元神",), "helper": True},
     "run_second_soul_scheduler": {"manifest_names": ("第二元神",), "helper": False},
     "run_small_world_scheduler": {"manifest_names": ("小世界",), "helper": False},
+    "run_explore_rift_scheduler": {"manifest_names": ("探寻裂缝",), "helper": False},
     "run_stargazer_scheduler": {"manifest_names": ("观星台",), "helper": False},
     "run_taiyi_bootstrap_check": {"manifest_names": ("太一",), "helper": True},
     "run_taiyi_scheduler": {"manifest_names": ("太一",), "helper": False},
@@ -284,6 +286,10 @@ _SCHEDULER_MANIFEST_BRIDGE = {
 
 def _scheduler_function_names(schedulers):
     return tuple(scheduler.__name__ for scheduler in schedulers)
+
+
+def _is_tree_runtime_archived():
+    return is_module_archived("灵树")
 
 
 def get_identity_scheduler_order_contract():
@@ -340,6 +346,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "small_world_manifest": ("显灵", "祈愿", "清灵丹", "灵石", "小世界"),
     "small_world_harvest": ("收割香火", "香火", "库存", "小世界"),
     "small_world_refine": ("神识淬炼", "香火", "神识", "小世界"),
+    "explore_rift": ("探寻成功", "激战得胜", "遭遇风暴", "不敌败退", "探寻裂缝", "满载而归", "法则碎片", "空间裂缝", "时空异兽"),
     "concubine_status": ("侍妾", "道侣", "红尘", "情缘", "残图"),
     "concubine_greet": ("侍妾", "情缘", "问安", "心意"),
     "concubine_gift": ("侍妾", "情缘", "赠予", "灵石"),
@@ -537,6 +544,12 @@ def _is_identity_account_offline(identity_id):
     return bool(account_id and is_account_offline(account_id))
 
 
+def _handled_reply_context(reply_context):
+    context = dict(reply_context) if isinstance(reply_context, dict) else {}
+    context["routed_reply_handled"] = True
+    return context
+
+
 def _get_bot_health_probe_identity_id():
     for identity_id in get_identity_ids():
         if get_identity_enabled(identity_id) and not _is_identity_account_offline(identity_id):
@@ -690,6 +703,8 @@ async def _dispatch_broadcast_handlers(event, text, now, handlers, *, reply_to=N
 
 
 async def _dispatch_tree_broadcast_fallbacks(event, text, now):
+    if _is_tree_runtime_archived():
+        return
     if _claim_runtime_event(event, scope="tree_invasion_end"):
         await _run_for_all_identities(handle_tree_invasion_end, text, now, False)
     if _claim_runtime_event(event, scope="tree_invasion_start"):
@@ -762,6 +777,8 @@ async def _dispatch_message_edited_realm_breakthrough(event, text, now):
 
 
 async def _dispatch_message_edited_tree_panel(event, text, now):
+    if _is_tree_runtime_archived():
+        return
     await _dispatch_message_edited_broadcasts(event, text, now, (("tree_panel_edit", handle_tree_panel),))
 
 
@@ -843,10 +860,8 @@ async def _run_identity_schedulers(now):
             continue
         with use_identity(identity_id):
             if is_identity_weak(identity_id, now):
-                await run_tree_bootstrap_check(now)
                 continue
             if has_phaseful_summary_block(now):
-                await run_tree_bootstrap_check(now)
                 continue
             for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
                 await scheduler(now)
@@ -927,7 +942,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
     # client than the one that sent the command. The reply_to message id is the
     # authoritative owner here; requiring the owner client would leave pending
     # tasks uncleared and trigger retry storms.
-    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {"concubine_heart", "divination", "wild_training"}
+    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {"concubine_heart", "divination", "explore_rift", "wendao", "wild_training"}
     already_consumed = bool(matched_family) and not allow_reprocessed_edit and _has_runtime_message_consumed(event, matched_family)
     with use_identity(routed_identity_id):
         is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id) or (
@@ -949,9 +964,11 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
-        await handle_tree_invasion_end(text, now, is_reply_to_me)
-        await handle_tree_invasion_start(text, now)
-        await handle_tree_rebirth_reset(text, now)
+        tree_runtime_archived = _is_tree_runtime_archived()
+        if not tree_runtime_archived:
+            await handle_tree_invasion_end(text, now, is_reply_to_me)
+            await handle_tree_invasion_start(text, now)
+            await handle_tree_rebirth_reset(text, now)
         if matched_family == "stargazer_sync":
             synced_panel = handle_stargazer_sync_reply(text, now=now)
             if synced_panel:
@@ -968,15 +985,19 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 handled_any = True
 
         if allow_tree_panel_claim and not already_consumed and matched_family != "stargazer_sync":
-            tree_panel_done = await handle_tree_panel(text, now, is_reply_to_me)
+            tree_panel_done = False
+            if not tree_runtime_archived:
+                tree_panel_done = await handle_tree_panel(text, now, is_reply_to_me)
             handled_any = handled_any or tree_panel_done
             stargazer_panel_done = await handle_stargazer_panel(text, now, is_reply_to_me, matched_family=matched_family)
             handled_any = handled_any or stargazer_panel_done
-            handled_any = await handle_tree_harvest_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
+            if not tree_runtime_archived:
+                handled_any = await handle_tree_harvest_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
 
         if not already_consumed and matched_family != "stargazer_sync":
             handled_any = await _handle_replica_join_reply(text, now, reply_to, matched_family=matched_family, event=event) or handled_any
-            handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
+            if not tree_runtime_archived:
+                handled_any = await handle_tree_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_warm_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -1025,12 +1046,14 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 matched_family=matched_family,
                 result_msg_id=event.id,
             ) or handled_any
-            handled_any = await handle_tree_exception_prompt(text, now) or handled_any
+            if not tree_runtime_archived:
+                handled_any = await handle_tree_exception_prompt(text, now) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_query_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_manifest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_refine_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_explore_rift_reply(text, now, reply_to, matched_family=matched_family, result_msg_id=event.id) or handled_any
             handled_any = await handle_divination_reply(
                 text,
                 now,
@@ -1178,7 +1201,10 @@ async def on_message(event):
         if int((reply_context or {}).get("send_as_id") or 0) > 0:
             handled_reply = await _handle_routed_reply_event(event, text, now, reply_to, reply_context)
             if handled_reply:
-                await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="message"), now)
+                await handle_passive_module_card(
+                    from_telegram_event(event, text, _handled_reply_context(reply_context), event_kind="message"),
+                    now,
+                )
                 return
 
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
@@ -1267,7 +1293,10 @@ async def on_message_edited(event):
                 event_kind="edit",
             )
             if handled_reply:
-                await handle_passive_module_card(from_telegram_event(event, text, reply_context, event_kind="edit"), now)
+                await handle_passive_module_card(
+                    from_telegram_event(event, text, _handled_reply_context(reply_context), event_kind="edit"),
+                    now,
+                )
                 return
 
         if await handle_divination_reply(
