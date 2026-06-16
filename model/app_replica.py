@@ -290,7 +290,7 @@ _CANGKUN_PREFERRED_SECT = "太一门"
 _CANGKUN_BACKUP_EXCLUDED_USERNAMES = ("@walterwa2000",)
 _ZHUIMO_REQUIRED_PROFESSIONS = ("破军", "御山", "灵医", "影刃", "咒师")
 _ZHUIMO_HEART_AFFINITY_THRESHOLD = 120
-_ZHUIMO_PREFERRED_USER_MARKERS = ("boxboxji", "吧唧")
+_ZHUIMO_PREFERRED_USER_MARKERS = ("jfdffdddd", "吧唧")
 _ZHUIMO_LEADER_REQUIRED_ITEMS = ("路线图", "毒囊", "阴环")
 _LUOYUN_REQUIRED_SECT = "落云宗"
 _LUOYUN_MIN_REALM = "结丹后期"
@@ -4742,6 +4742,17 @@ def _get_log_group_replica_kind_summary(replica_kind, now=None, records=None):
     }
 
 
+def _format_log_group_zhuimo_preview_section(summary, *, html=False):
+    summary = summary if isinstance(summary, dict) else {}
+    opener_ids = summary.get("openers") or []
+    if not opener_ids:
+        return ""
+    leader_identity_id = int(opener_ids[0] or 0)
+    if leader_identity_id <= 0:
+        return ""
+    return _format_zhuimo_recommendation_section(leader_identity_id, html=html)
+
+
 def _format_log_group_replica_summary_panel(*, html=False):
     now = time.time()
     records = _cleanup_replica_run_state(now)
@@ -4924,11 +4935,27 @@ def format_log_group_replica_panel(query_text="", *, html=False):
         return _format_log_group_replica_summary_panel(html=html)
     now = time.time()
     room = _get_latest_lightweight_room(requested_kind, now=now) if requested_kind else _get_latest_lightweight_room(now=now)
+    opener_summary = None
+    opener_section = _format_log_group_replica_openers_section(requested_kind, html=html, max_rows=5)
+    if requested_kind:
+        opener_summary = _get_log_group_replica_kind_summary(requested_kind, now=now)
+        ready_count = int(opener_summary.get("ready") or 0)
+        blocked_count = int(opener_summary.get("blocked") or 0)
+        name = (_REPLICA_KIND_META.get(requested_kind) or {}).get("name") or "副本"
+        opener_section = f"{name}可开：{ready_count}"
+        if blocked_count:
+            opener_section += f"｜冷却/占用 {blocked_count}"
+        if html:
+            opener_section = escape(opener_section)
     lines = [
         _format_log_group_replica_room_line(room, html=html),
-        _format_log_group_replica_openers_section(requested_kind, html=html, max_rows=5),
-        "操作：点按钮",
+        opener_section,
     ]
+    if requested_kind == _REPLICA_KIND_ZHUIMO and not room:
+        preview_section = _format_log_group_zhuimo_preview_section(opener_summary, html=html)
+        if preview_section:
+            lines.append(preview_section)
+    lines.append("操作：点按钮")
     return "\n".join(lines)
 
 

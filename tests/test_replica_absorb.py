@@ -1239,6 +1239,33 @@ class ReplicaAbsorbTests(unittest.TestCase):
         payload = self._button_payload_by_text(panel.get("buttons"), "开虚 @leader")
         self.assertEqual(".开启副本 @leader 虚", payload.get("command"))
 
+    def test_log_group_zhuimo_query_previews_first_opener_team(self):
+        first_leader_id = self._register_replica_identity(991201, "firstleader", professions="御山")
+        second_leader_id = self._register_replica_identity(991202, "secondleader", professions="御山")
+        dps_id = self._register_replica_identity(991203, "dps", root_attrs="雷", professions="破军")
+        healer_id = self._register_replica_identity(991204, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991205, "blade", professions="影刃")
+        baji_id = self._register_replica_identity(991206, "jfdffdddd", root_attrs="土木", professions="御山|灵医")
+        self._prepare_replica_group([first_leader_id, second_leader_id, dps_id, healer_id, blade_id, baji_id])
+        state_module.set_replica_gold_dps_enabled(dps_id, True)
+        state_module.set_storage_bag_records({
+            str(first_leader_id): {"items": {"坠魔谷禁制令": 1, "路线图": 1, "毒囊": 1}, "sections": {}},
+            str(second_leader_id): {"items": {"坠魔谷禁制令": 1}, "sections": {}},
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询坠")
+
+        text = panel.get("text") or ""
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("坠魔谷可开：2", text)
+        self.assertIn("推荐配置：坠魔谷｜职业补位（开房 @firstleader）", text)
+        self.assertNotIn("开房 @secondleader", text)
+        self.assertIn("推荐加入：@dps @healer @blade @jfdffdddd", text)
+        self.assertIn("心劫：@jfdffdddd 可满足坠魔心劫。", text)
+        self.assertIn("优先：已带吧唧。", text)
+        self.assertIn("开坠 @firstleader", button_texts)
+        self.assertIn("开坠 @secondleader", button_texts)
+
     def test_log_group_summary_query_button_refreshes_specific_panel(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         self._prepare_replica_group([leader_id])
@@ -1794,7 +1821,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
         healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
         blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
-        baji_id = self._register_replica_identity(991205, "boxboxji", root_attrs="土木", professions="御山|灵医")
+        baji_id = self._register_replica_identity(991205, "jfdffdddd", root_attrs="土木", professions="御山|灵医")
         state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, blade_id, baji_id])
         state_module.set_replica_gold_dps_enabled(dps_id, True)
         state_module.set_storage_bag_records({
@@ -1811,22 +1838,22 @@ class ReplicaAbsorbTests(unittest.TestCase):
         )
 
         self.assertIn("推荐配置：坠魔谷｜职业补位（开房 @leader）", section)
-        self.assertIn("推荐加入：@dps @healer @blade @boxboxji", section)
+        self.assertIn("推荐加入：@dps @healer @blade @jfdffdddd", section)
         self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师", section)
         self.assertIn("五职业已齐。", section)
         self.assertIn("DPS：@dps", section)
-        self.assertIn("心劫：@boxboxji 可满足坠魔心劫。", section)
+        self.assertIn("心劫：@jfdffdddd 可满足坠魔心劫。", section)
         self.assertIn("优先：已带吧唧。", section)
         self.assertIn("队长储物袋提醒：入本前确认路线图、毒囊、阴环均在队长储物袋；本地记录缺 阴环。", section)
         self.assertIn("默认路线：2-1。", section)
-        self.assertEqual(".加入副本 @dps @healer @blade @boxboxji", join_command)
+        self.assertEqual(".加入副本 @dps @healer @blade @jfdffdddd", join_command)
 
     def test_zhuimo_recommendation_can_use_baji_without_zhuimo_ticket(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="御山")
         dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
         healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
         blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
-        baji_id = self._register_replica_identity(991205, "boxboxji", root_attrs="土木", professions="御山|灵医")
+        baji_id = self._register_replica_identity(991205, "jfdffdddd", root_attrs="土木", professions="御山|灵医")
         fallback_curse_id = self._register_replica_identity(991206, "curse", professions="咒师")
         state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, blade_id, baji_id, fallback_curse_id])
         state_module.set_replica_gold_dps_enabled(dps_id, True)
@@ -1848,11 +1875,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
             leader_id,
         )
 
-        self.assertIn("推荐加入：@dps @healer @blade @boxboxji", section)
+        self.assertIn("推荐加入：@dps @healer @blade @jfdffdddd", section)
         self.assertNotIn("@curse", section)
-        self.assertIn("心劫：@boxboxji 可满足坠魔心劫。", section)
+        self.assertIn("心劫：@jfdffdddd 可满足坠魔心劫。", section)
         self.assertIn("优先：已带吧唧。", section)
-        self.assertEqual(".加入副本 @dps @healer @blade @boxboxji", join_command)
+        self.assertEqual(".加入副本 @dps @healer @blade @jfdffdddd", join_command)
 
     def test_zhuimo_recommendation_blocks_join_without_dps(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="御山", sect_name="星宫")
@@ -1975,7 +2002,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
         healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
         blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
-        baji_id = self._register_replica_identity(991205, "boxboxji", professions="御山|灵医")
+        baji_id = self._register_replica_identity(991205, "jfdffdddd", professions="御山|灵医")
         state_module.set_replica_participant_identity_ids([leader_id, dps_id, healer_id, blade_id, baji_id])
         state_module.set_replica_gold_dps_enabled(dps_id, True)
         room = {
@@ -1984,7 +2011,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "phase": "opened",
             "leader_identity_id": leader_id,
             "leader_username": "@leader",
-            "join_requested_usernames": ["@dps", "@healer", "@blade", "@boxboxji"],
+            "join_requested_usernames": ["@dps", "@healer", "@blade", "@jfdffdddd"],
         }
 
         line = app_replica._format_log_group_replica_room_line(room)
@@ -1993,9 +2020,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("房间：坠魔谷 47", line)
         self.assertIn("五职+DPS+心劫可进", line)
         self.assertIn("DPS @dps", line)
-        self.assertIn("心劫 @leader @boxboxji", line)
+        self.assertIn("心劫 @leader @jfdffdddd", line)
         self.assertIn("路线2-1", line)
-        self.assertIn("@boxboxji", html_line)
+        self.assertIn("@jfdffdddd", html_line)
         self.assertNotIn("&lt;code&gt;", html_line)
 
     def test_virtual_hall_recommendation_summarizes_route_advice_without_commands(self):
