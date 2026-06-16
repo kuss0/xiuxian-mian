@@ -203,6 +203,8 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_replay_module("explore_rift"))
         self.assertEqual("问道", module_manifest.get_module_name_for_replay_module("wendao"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_replay_module("formation"))
+        self.assertEqual("法宝", module_manifest.get_module_name_for_replay_module("pet"))
+        self.assertEqual("闯塔", module_manifest.get_module_name_for_replay_module("tower"))
         self.assertEqual("灵树", module_manifest.get_module_name_for_replay_module("灵树"))
 
     def test_real_message_sample_module_can_use_manifest_name_without_replay_alias(self):
@@ -253,6 +255,22 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("观星台", module_manifest.get_module_name_for_replay_module("stargazer"))
         self.assertTrue(replay_result["ok"], replay_result)
         self.assertEqual([], replay_result["unknown_sample_modules"])
+        self.assertTrue(admission_result["ok"], admission_result)
+        self.assertEqual([], admission_result["strict_missing_replay_routes"])
+        self.assertEqual([], admission_result["strict_missing_samples"])
+        self.assertEqual([], admission_result["strict_missing_sample_families"])
+
+    def test_pet_and_tower_replay_aliases_satisfy_strict_admission(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        admission_result = module_manifest.validate_module_admission_contract(
+            samples,
+            strict_modules=("法宝", "闯塔"),
+        )
+
+        self.assertEqual("法宝", module_manifest.get_module_name_for_replay_module("pet"))
+        self.assertEqual("闯塔", module_manifest.get_module_name_for_replay_module("tower"))
         self.assertTrue(admission_result["ok"], admission_result)
         self.assertEqual([], admission_result["strict_missing_replay_routes"])
         self.assertEqual([], admission_result["strict_missing_samples"])
