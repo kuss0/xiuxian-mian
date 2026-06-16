@@ -199,6 +199,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("三宗门手动发送", html_text)
         self.assertIn(".合欢温养 @身份", html_text)
         self.assertIn(".天星查盘 @身份", html_text)
+        self.assertIn(".阴罗献祭 @身份", html_text)
         self.assertIn(".阴罗血洗 @身份", html_text)
         self.assertIn(".阴罗化煞 &lt;数量&gt; @身份", html_text)
         self.assertIn("虚天后续兜底", html_text)
@@ -423,6 +424,39 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertTrue(handled)
         execute_mock.assert_awaited_once_with("查盘", "", send_as_id=2101)
         reply_mock.assert_awaited_once()
+
+    def test_yinluo_daily_sacrifice_manual_aliases_dispatch(self):
+        event = SimpleNamespace()
+
+        for raw_text, expected_action in (
+            (".阴罗献祭", "献祭"),
+            (".阴罗每日献祭", "每日献祭"),
+        ):
+            with self.subTest(raw_text=raw_text), \
+                    patch.object(control, "get_identity_enabled", return_value=True), \
+                    patch.object(control, "is_module_available", return_value=True), \
+                    patch.object(control, "get_identity_display_name", return_value="yl[3101]"), \
+                    patch.object(control, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "ok", {"command": ".每日献祭"}))) as execute_mock, \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                handled = asyncio.run(control._handle_three_sect_manual_command(event, raw_text, 3101))
+
+            self.assertTrue(handled)
+            execute_mock.assert_awaited_once_with(expected_action, "", send_as_id=3101)
+            reply_mock.assert_awaited_once()
+
+    def test_ui_allows_yinluo_daily_sacrifice_action(self):
+        from model import ui
+
+        with patch.object(ui, "get_identity_ids", return_value=[3101]), \
+                patch.object(ui, "get_identity_enabled", return_value=True), \
+                patch.object(ui, "get_available_module_names", return_value=["阴罗宗"]), \
+                patch.object(ui, "get_identity_display_name", return_value="yl[3101]"), \
+                patch.object(ui, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "sent", {}))) as execute_mock:
+            ok, message = asyncio.run(ui.ui_execute_yinluo_action(3101, "daily_sacrifice"))
+
+        self.assertTrue(ok)
+        self.assertIn("sent", message)
+        execute_mock.assert_awaited_once_with("daily_sacrifice", "", send_as_id=3101)
 
     def test_log_group_three_sect_command_uses_identity_selector(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)

@@ -2,14 +2,17 @@ import copy
 import hashlib
 import re
 import time
+from datetime import datetime, timedelta
 
 from ..config import (
     CMD_YINLUO_BANNER,
     CMD_YINLUO_BLOOD_FOREST,
     CMD_YINLUO_COLLECT,
     CMD_YINLUO_CONVERT,
+    CMD_YINLUO_DAILY_SACRIFICE,
     CMD_YINLUO_DEMON_SUMMON,
     CMD_YINLUO_REFINE,
+    TZ_LOCAL,
 )
 from ..persistence import save_state
 from ..persisted_state import PersistedState
@@ -23,7 +26,7 @@ from ..state import (
     update_send_as_profile,
     use_identity,
 )
-from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
+from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
 
 
@@ -70,12 +73,13 @@ RE_REFINING_SLOT_DETAIL = re.compile(
 )
 
 YINLUO_AUTO_REFINE_TARGETS = ()
-YINLUO_AUTO_ACTION_KEYS = ("collect", "refine", "blood_forest", "demon_summon", "convert")
+YINLUO_AUTO_ACTION_KEYS = ("collect", "daily_sacrifice", "refine", "blood_forest", "demon_summon", "convert")
 
 
 def _default_yinluo_auto_config():
     return {
         "collect": True,
+        "daily_sacrifice": False,
         "refine": True,
         "blood_forest": True,
         "demon_summon": True,
@@ -93,8 +97,11 @@ def _default_yinluo_observation():
         "last_summary": "",
         "last_error": "",
         "next_demon_summon_time": 0,
+        "next_daily_sacrifice_time": 0,
         "next_blood_forest_time": 0,
         "next_convert_time": 0,
+        "last_daily_sacrifice_day": "",
+        "last_daily_sacrifice_result_key": "",
         "banner_owner": "",
         "banner_name": "",
         "banner_rank": "",
@@ -197,6 +204,7 @@ def normalize_yinluo_observation(value=None):
         observed["recent"] = []
     observed["recent"] = [item for item in observed.get("recent", []) if isinstance(item, dict)][-8:]
     observed["last_convert_result_key"] = str(observed.get("last_convert_result_key") or "")
+    observed["last_daily_sacrifice_result_key"] = str(observed.get("last_daily_sacrifice_result_key") or "")
     blocked_slots = observed.get("collect_blocked_slots") if isinstance(observed.get("collect_blocked_slots"), dict) else {}
     cleaned_blocked_slots = {}
     for slot_key, block in blocked_slots.items():
@@ -212,11 +220,12 @@ def normalize_yinluo_observation(value=None):
             "reason": str(block.get("reason") or "").strip(),
         }
     observed["collect_blocked_slots"] = cleaned_blocked_slots
-    for key in ("last_observed_at", "next_demon_summon_time", "next_blood_forest_time", "next_convert_time", "auto_next_time"):
+    for key in ("last_observed_at", "next_demon_summon_time", "next_daily_sacrifice_time", "next_blood_forest_time", "next_convert_time", "auto_next_time"):
         try:
             observed[key] = float(observed.get(key, 0) or 0)
         except (TypeError, ValueError):
             observed[key] = 0
+    observed["last_daily_sacrifice_day"] = str(observed.get("last_daily_sacrifice_day") or "").strip()
     for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
@@ -236,6 +245,19 @@ def _wait_until(text, now):
         if wait_sec > 0:
             return float(now + wait_sec + YINLUO_TIME_BUFFER_SEC)
     return 0
+
+
+def _next_daily_sacrifice_time(now):
+    local_now = datetime.fromtimestamp(float(now), TZ_LOCAL)
+    next_day = (local_now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return float(next_day.timestamp() + YINLUO_TIME_BUFFER_SEC)
+
+
+def _message_sent_at(msg_id):
+    msg_id = _safe_int(msg_id)
+    if msg_id <= 0:
+        return 0.0
+    return _safe_float((state.get("my_msg_ids") or {}).get(msg_id), 0)
 
 
 def _safe_int(value, default=0):
@@ -392,6 +414,45 @@ def _yinluo_text_result_key(action, raw_text):
     return f"{action}:{digest}"
 
 
+def _yinluo_result_key(action, raw_text, event_context=None):
+    context = event_context if isinstance(event_context, dict) else {}
+    identity_id = _safe_int(context.get("identity_id"))
+    chat_id = _safe_int(context.get("chat_id"))
+    msg_id = _safe_int(context.get("msg_id"))
+    root_msg_id = _safe_int(context.get("root_msg_id"))
+    reply_to_msg_id = _safe_int(context.get("reply_to_msg_id"))
+    source_message_id = _safe_int(context.get("source_message_id"))
+    stable_parts = []
+    if identity_id:
+        stable_parts.append(f"identity={identity_id}")
+    if chat_id:
+        stable_parts.append(f"chat={chat_id}")
+    for key, value in (
+        ("root", root_msg_id),
+        ("reply", reply_to_msg_id),
+        ("msg", msg_id),
+        ("source", source_message_id),
+    ):
+        if value:
+            stable_parts.append(f"{key}={value}")
+    if any(value for value in (root_msg_id, reply_to_msg_id, msg_id, source_message_id)):
+        return f"{action}:ids:" + ":".join(stable_parts)
+    return _yinluo_text_result_key(action, raw_text)
+
+
+def _yinluo_result_day_key(now, event_context=None):
+    context = event_context if isinstance(event_context, dict) else {}
+    for key in ("root_sent_at", "reply_sent_at", "event_time", "message_time", "sent_at"):
+        ts = _safe_float(context.get(key), 0)
+        if ts > 0:
+            return get_day_key(ts)
+    for msg_key in ("root_msg_id", "reply_to_msg_id", "msg_id", "source_message_id"):
+        sent_at = _message_sent_at(context.get(msg_key))
+        if sent_at > 0:
+            return get_day_key(sent_at)
+    return get_day_key(now)
+
+
 def _restore_auto_refine_pending(observed):
     pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
     if not pending:
@@ -462,6 +523,8 @@ def looks_like_yinluo_text(text):
         return True
     if "你引动九幽煞气灌入幡中" in raw_text or ("【转化成功】" in raw_text and "煞气池增加" in raw_text):
         return True
+    if "今日已献祭" in raw_text and "幡灵已饱" in raw_text:
+        return True
     if "你开始运转魔功" in raw_text and "煞气" in raw_text:
         return True
     if "刚施展过此术" in raw_text and "经脉尚在恢复" in raw_text:
@@ -485,7 +548,7 @@ def looks_like_yinluo_text(text):
     return False
 
 
-def parse_yinluo_text(text, now=None, family=""):
+def parse_yinluo_text(text, now=None, family="", event_context=None):
     now = float(now if now is not None else time.time())
     raw_text = str(text or "").strip()
     if not raw_text:
@@ -696,6 +759,7 @@ def parse_yinluo_text(text, now=None, family=""):
     if "你引动九幽煞气灌入幡中" in raw_text:
         sha_match = RE_SHA_GAIN.search(raw_text)
         extra_match = RE_EXTRA_SHA_GAIN.search(raw_text)
+        result_day = _yinluo_result_day_key(now, event_context)
         return {
             "action": "每日献祭",
             "result": "success",
@@ -703,6 +767,20 @@ def parse_yinluo_text(text, now=None, family=""):
             "last_error": "",
             "last_sha_gain": int(sha_match.group("gain") or 0) if sha_match else 0,
             "last_extra_sha_gain": int(extra_match.group("gain") or 0) if extra_match else 0,
+            "daily_sacrifice_result_key": _yinluo_result_key("daily_sacrifice", raw_text, event_context),
+            "next_daily_sacrifice_time": _next_daily_sacrifice_time(now),
+            "last_daily_sacrifice_day": result_day,
+        }
+
+    if "今日已献祭" in raw_text and "幡灵已饱" in raw_text:
+        result_day = _yinluo_result_day_key(now, event_context)
+        return {
+            "action": "每日献祭",
+            "result": "cooldown",
+            "summary": "今日已献祭，明日再来",
+            "last_error": "今日已献祭",
+            "next_daily_sacrifice_time": _next_daily_sacrifice_time(now),
+            "last_daily_sacrifice_day": result_day,
         }
 
     if "【转化成功】" in raw_text and "煞气池增加" in raw_text:
@@ -717,7 +795,7 @@ def parse_yinluo_text(text, now=None, family=""):
             "last_convert_amount": int(amount_match.group("amount") or 0) if amount_match else 0,
             "last_sha_gain": int(sha_match.group("gain") or 0) if sha_match else 0,
             "last_extra_sha_gain": int(extra_match.group("gain") or 0) if extra_match else 0,
-            "convert_result_key": _yinluo_text_result_key("convert", raw_text),
+            "convert_result_key": _yinluo_result_key("convert", raw_text, event_context),
             "next_convert_time": float(now + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC),
         }
 
@@ -852,27 +930,37 @@ def parse_yinluo_text(text, now=None, family=""):
     }
 
 
-def apply_yinluo_passive(text, now=None, family=""):
+def apply_yinluo_passive(text, now=None, family="", event_context=None):
     now = float(now if now is not None else time.time())
-    parsed = parse_yinluo_text(text, now=now, family=family)
+    parsed = parse_yinluo_text(text, now=now, family=family, event_context=event_context)
     if not parsed:
         return False
 
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     previous_observed = copy.deepcopy(observed)
     convert_result_key = str(parsed.get("convert_result_key") or "")
+    daily_sacrifice_result_key = str(parsed.get("daily_sacrifice_result_key") or "")
     convert_already_accounted = (
         parsed.get("action") == "化功为煞"
         and parsed.get("result") == "success"
         and convert_result_key
         and convert_result_key == str(previous_observed.get("last_convert_result_key") or "")
     )
+    daily_sacrifice_already_accounted = (
+        parsed.get("action") == "每日献祭"
+        and parsed.get("result") == "success"
+        and daily_sacrifice_result_key
+        and daily_sacrifice_result_key == str(previous_observed.get("last_daily_sacrifice_result_key") or "")
+        and str(parsed.get("last_daily_sacrifice_day") or "") == str(previous_observed.get("last_daily_sacrifice_day") or "")
+    )
     observed["last_observed_at"] = now
     for key in (
         "last_error",
         "next_demon_summon_time",
+        "next_daily_sacrifice_time",
         "next_blood_forest_time",
         "next_convert_time",
+        "last_daily_sacrifice_day",
         "banner_owner",
         "banner_name",
         "banner_rank",
@@ -909,6 +997,8 @@ def apply_yinluo_passive(text, now=None, family=""):
     ):
         if convert_already_accounted and key == "next_convert_time":
             continue
+        if daily_sacrifice_already_accounted and key in {"next_daily_sacrifice_time", "last_daily_sacrifice_day"}:
+            continue
         if key in parsed:
             observed[key] = parsed.get(key)
     observed["last_action"] = parsed.get("action") or ""
@@ -920,7 +1010,10 @@ def apply_yinluo_passive(text, now=None, family=""):
         observed = _apply_collect_blockers(observed, now=now)
     if parsed.get("action") in {"化功为煞", "每日献祭"} and parsed.get("result") == "success":
         gain = int(parsed.get("last_sha_gain", 0) or 0) + int(parsed.get("last_extra_sha_gain", 0) or 0)
-        should_apply_gain = parsed.get("action") != "化功为煞" or not convert_already_accounted
+        should_apply_gain = (
+            (parsed.get("action") != "化功为煞" or not convert_already_accounted)
+            and (parsed.get("action") != "每日献祭" or not daily_sacrifice_already_accounted)
+        )
         if should_apply_gain and gain and (int(observed.get("sha_max", 0) or 0) > 0 or int(observed.get("sha_current", 0) or 0) > 0):
             observed["sha_current"] = max(0, int(observed.get("sha_current", 0) or 0) + gain)
             if int(observed.get("sha_max", 0) or 0) > 0:
@@ -929,6 +1022,8 @@ def apply_yinluo_passive(text, now=None, family=""):
             _deduct_profile_xiuwei(parsed.get("last_convert_amount", 0))
             if convert_result_key:
                 observed["last_convert_result_key"] = convert_result_key
+        if parsed.get("action") == "每日献祭" and not daily_sacrifice_already_accounted and daily_sacrifice_result_key:
+            observed["last_daily_sacrifice_result_key"] = daily_sacrifice_result_key
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
         observed = _restore_auto_refine_pending(observed)
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":
@@ -1025,6 +1120,11 @@ def _normalize_manual_action(action):
         "幡": "banner",
         "查幡": "banner",
         "阴罗幡": "banner",
+        "daily": "daily_sacrifice",
+        "sacrifice": "daily_sacrifice",
+        "daily_sacrifice": "daily_sacrifice",
+        "献祭": "daily_sacrifice",
+        "每日献祭": "daily_sacrifice",
         "summon": "demon_summon",
         "demon": "demon_summon",
         "demon_summon": "demon_summon",
@@ -1496,6 +1596,11 @@ def _has_yinluo_due_followup(observed, now):
     auto_convert_amount, _convert_reason = _build_auto_convert_arg(observed, now=now)
     if auto_convert_amount:
         return True
+    if _auto_action_enabled(observed, "daily_sacrifice"):
+        day_key = get_day_key(now)
+        next_time = float(observed.get("next_daily_sacrifice_time", 0) or 0)
+        if str(observed.get("last_daily_sacrifice_day") or "") != day_key and next_time <= float(now):
+            return True
     if _auto_action_enabled(observed, "blood_forest") and float(observed.get("next_blood_forest_time", 0) or 0) <= float(now):
         return True
     if _auto_action_enabled(observed, "demon_summon") and float(observed.get("next_demon_summon_time", 0) or 0) <= float(now):
@@ -1563,6 +1668,20 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
         if str(observed.get("last_result") or "") == "pending" and str(observed.get("last_action") or "") == "血洗山林":
             return _manual_block(action, "血洗山林上一轮仍处于结算中，不重复发送。", CMD_YINLUO_BLOOD_FOREST, "yinluo_blood_forest")
         return _manual_allow(action, CMD_YINLUO_BLOOD_FOREST, "yinluo_blood_forest", now)
+
+    if action == "daily_sacrifice":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_DAILY_SACRIFICE, "yinluo_daily_sacrifice", now)
+        if phaseful_block:
+            return phaseful_block
+        day_key = get_day_key(now)
+        next_time = float(observed.get("next_daily_sacrifice_time", 0) or 0)
+        if str(observed.get("last_daily_sacrifice_day") or "") == day_key:
+            if next_time <= now:
+                next_time = _next_daily_sacrifice_time(now)
+            return _manual_block(action, f"每日献祭今日已记录，{fmt_remaining(next_time)} 后再试。", CMD_YINLUO_DAILY_SACRIFICE, "yinluo_daily_sacrifice")
+        if next_time > now:
+            return _manual_block(action, f"每日献祭仍在冷却中，{fmt_remaining(next_time)} 后再试。", CMD_YINLUO_DAILY_SACRIFICE, "yinluo_daily_sacrifice")
+        return _manual_allow(action, CMD_YINLUO_DAILY_SACRIFICE, "yinluo_daily_sacrifice", now)
 
     if action == "collect":
         phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_COLLECT, "yinluo_collect", now)
@@ -1693,7 +1812,15 @@ async def run_yinluo_scheduler(now):
         if _auto_action_enabled(observed, "refine"):
             auto_refine_arg, _auto_refine_reason = _build_auto_refine_arg(observed, now=now)
         auto_convert_amount, _auto_convert_reason = _build_auto_convert_arg(observed, now=now)
-        if auto_refine_arg:
+        day_key = get_day_key(now)
+        daily_sacrifice_due = (
+            _auto_action_enabled(observed, "daily_sacrifice")
+            and str(observed.get("last_daily_sacrifice_day") or "") != day_key
+            and float(observed.get("next_daily_sacrifice_time", 0) or 0) <= now
+        )
+        if daily_sacrifice_due:
+            plan = build_yinluo_manual_plan("daily_sacrifice", now=now)
+        elif auto_refine_arg:
             plan = build_yinluo_manual_plan("refine", auto_refine_arg, now=now)
         elif auto_convert_amount:
             plan = build_yinluo_manual_plan("convert", auto_convert_amount, now=now)
@@ -1754,6 +1881,13 @@ async def run_yinluo_scheduler(now):
             sent_at + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
         )
         observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
+    elif action == "daily_sacrifice":
+        observed["last_daily_sacrifice_day"] = get_day_key(sent_at)
+        observed["next_daily_sacrifice_time"] = max(
+            float(observed.get("next_daily_sacrifice_time", 0) or 0),
+            _next_daily_sacrifice_time(sent_at),
+        )
+        observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
     elif action == "banner":
         if str(observed.get("auto_calibrate_reason") or "").strip():
             observed["auto_next_time"] = sent_at + YINLUO_AUTO_CALIBRATE_RETRY_SEC
@@ -1793,6 +1927,13 @@ def _mark_yinluo_sent_plan(plan, sent_at):
         observed["next_convert_time"] = max(
             float(observed.get("next_convert_time", 0) or 0),
             float(sent_at) + YINLUO_CONVERT_OBSERVED_CD_SEC + YINLUO_TIME_BUFFER_SEC,
+        )
+        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
+    elif action == "daily_sacrifice":
+        observed["last_daily_sacrifice_day"] = get_day_key(sent_at)
+        observed["next_daily_sacrifice_time"] = max(
+            float(observed.get("next_daily_sacrifice_time", 0) or 0),
+            _next_daily_sacrifice_time(sent_at),
         )
         observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
     elif action == "blood_forest":
@@ -1851,14 +1992,22 @@ def get_yinluo_ui_state(now=None):
     now = float(now if now is not None else time.time())
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     config = _auto_config(observed)
+    next_daily_sacrifice_time = float(observed.get("next_daily_sacrifice_time", 0) or 0)
+    sha_current = int(observed.get("sha_current", 0) or 0)
+    sha_max = int(observed.get("sha_max", 0) or 0)
+    sha_known = sha_current > 0 or sha_max > 0
     return {
         "auto_config": copy.deepcopy(config),
         "observed": {
             "last_observed_at": float(observed.get("last_observed_at", 0) or 0),
             "last_observed_text": fmt_abs_ts(observed.get("last_observed_at", 0)),
             "stale": not _has_recent_observation(observed, now),
-            "sha_current": int(observed.get("sha_current", 0) or 0),
-            "sha_max": int(observed.get("sha_max", 0) or 0),
+            "daily_sacrifice_done": str(observed.get("last_daily_sacrifice_day") or "") == get_day_key(now),
+            "next_daily_sacrifice_time": next_daily_sacrifice_time,
+            "next_daily_sacrifice_text": fmt_abs_ts(next_daily_sacrifice_time),
+            "sha_current": sha_current,
+            "sha_max": sha_max,
+            "sha_known": sha_known,
             "ready_slot_numbers": list(observed.get("ready_slot_numbers") or []),
             "empty_slot_numbers": list(observed.get("empty_slot_numbers") or []),
             "refining_slot_numbers": list(observed.get("refining_slot_numbers") or []),
@@ -1922,6 +2071,7 @@ def get_yinluo_status_text():
         ])
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))
     auto_config = _auto_config(observed)
+    daily_done = str(observed.get("last_daily_sacrifice_day") or "") == get_day_key()
     enabled_actions = [label for key, label in (
         ("collect", "收取"),
         ("refine", "炼化"),
@@ -1932,7 +2082,7 @@ def get_yinluo_status_text():
     lines = [
         "🌑 阴罗宗",
         f"- 模块：{'开启' if state.get('yinluo_enabled') else '关闭'}（被动观察，手动动作受控发送）",
-        "- 已收录：阴罗幡、收取精华、囚禁魂魄自动/手动、每日献祭、召唤魔影成功/失败/冷却、血洗山林中间态/成功/冷却、闭关灵脉加成、非弟子失败",
+        "- 已收录：阴罗幡、收取精华、囚禁魂魄自动/手动、每日献祭成功/已献祭、召唤魔影成功/失败/冷却、血洗山林中间态/成功/冷却、闭关灵脉加成、非弟子失败",
         f"- 自动动作：{('、'.join(enabled_actions) if enabled_actions else '全关')}｜炼化序：{'、'.join(auto_config.get('refine_targets') or [])}｜化煞量：{auto_config.get('convert_amount') or 0}",
         f"- 最近动作：{observed.get('last_action') or '未记录'} / {observed.get('last_result') or '未记录'}",
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
@@ -1940,6 +2090,7 @@ def get_yinluo_status_text():
         f"- 煞气池：{observed.get('sha_current', 0)} / {observed.get('sha_max', 0)}（{observed.get('sha_percent', 0)}%）｜战力+{observed.get('battle_bonus_percent', 0)}%",
         f"- 魂魄储备：{_format_soul_stocks(observed.get('soul_stocks'))}",
         f"- 炼化槽：精华 {_format_ready_slots(observed)}｜炼化 {observed.get('refining_slots', 0)}｜空闲 {observed.get('empty_slots', 0)}",
+        f"- 每日献祭：{'今日已记录' if daily_done else '今日未记录'}｜{fmt_abs_ts(observed.get('next_daily_sacrifice_time', 0))}（{fmt_remaining(observed.get('next_daily_sacrifice_time', 0))}）",
         f"- 血洗山林：{fmt_abs_ts(observed.get('next_blood_forest_time', 0))}（{fmt_remaining(observed.get('next_blood_forest_time', 0))}）",
         f"- 召唤魔影：{fmt_abs_ts(observed.get('next_demon_summon_time', 0))}（{fmt_remaining(observed.get('next_demon_summon_time', 0))}）",
         f"- 化功为煞：{fmt_abs_ts(observed.get('next_convert_time', 0))}（{fmt_remaining(observed.get('next_convert_time', 0))}）",

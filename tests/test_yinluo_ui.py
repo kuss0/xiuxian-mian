@@ -26,6 +26,11 @@ def test_yinluo_module_card_keeps_main_switch_and_action_panel_hook():
     assert "originalRenderModules(identity)" in yinluo_script
     assert "enhanceYinluoCard(identity)" in yinluo_script
     assert "/api/yinluo-action" in yinluo_script
+    assert "observed.sha_known" in yinluo_script
+    assert ": '未知'" in yinluo_script
 
-    for action in ("banner", "blood_forest", "demon_summon", "collect", "refine", "convert"):
+    for action in ("banner", "daily_sacrifice", "blood_forest", "demon_summon", "collect", "refine", "convert"):
         assert f'data-yinluo-action="{action}"' in yinluo_script
+
+    for action in ("collect", "daily_sacrifice", "refine", "blood_forest", "demon_summon", "convert"):
+        assert f"renderAutoToggle('{action}'" in yinluo_script

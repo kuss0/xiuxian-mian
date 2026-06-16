@@ -3595,7 +3595,7 @@ async def ui_execute_yinluo_action(send_as_id, action, arg=""):
     if "阴罗宗" not in get_available_module_names(send_as_id):
         return False, "阴罗宗对该身份不可用。"
     action = str(action or "").strip()
-    if action not in {"banner", "collect", "refine", "convert", "blood_forest", "demon_summon"}:
+    if action not in {"banner", "daily_sacrifice", "collect", "refine", "convert", "blood_forest", "demon_summon"}:
         return False, "未知阴罗宗按钮动作"
     ok, message, _plan = await execute_yinluo_manual_action(action, str(arg or "").strip(), send_as_id=send_as_id)
     if not ok:

@@ -230,12 +230,26 @@
     "event_type": "edit",
     "text": "召唤成功，镇压失败！\n魔影过于强大，你遭其反噬，修为暴跌了 1362 点！"
   },
+  "yinluo.daily_sacrifice.success": {
+    "source": "data/messages/2026-06-11.log:7210",
+    "module": "yinluo",
+    "family": "yinluo_daily_sacrifice",
+    "event_type": "message",
+    "text": "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 575 点。\n因你杀戮缠身，额外获得了 75 点精纯煞气！"
+  },
+  "yinluo.daily_sacrifice.cooldown": {
+    "source": "data/messages/2026-06-16.log:3335",
+    "module": "yinluo",
+    "family": "yinluo_daily_sacrifice",
+    "event_type": "message",
+    "text": "今日已献祭，幡灵已饱，明日再来。"
+  },
   "yinluo.convert.success": {
-    "source": "data/messages/2026-05-16.log:11867",
+    "source": "data/messages/2026-06-13.log:35371",
     "module": "yinluo",
     "family": "yinluo_convert",
-    "event_type": "message",
-    "text": "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 2030 点。\n因你杀戮缠身，额外获得了 1530 点精纯煞气！"
+    "event_type": "edit",
+    "text": "【转化成功】\n你成功将 1000 点修为炼化，煞气池增加了 200 点！"
   },
   "yinluo.blood_forest.success": {
     "source": "data/messages/2026-06-02.log:40445",

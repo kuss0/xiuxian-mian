@@ -97,6 +97,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_reply_family("hehuan_dual"))
         self.assertEqual("天星宗", module_manifest.get_module_name_for_reply_family("tianxing_panel"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_banner"))
+        self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_daily_sacrifice"))
         self.assertEqual("点卯", module_manifest.get_module_name_for_reply_family("checkin"))
         self.assertEqual("宗门传功", module_manifest.get_module_name_for_reply_family("sect_teach"))
         self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_reply_family("explore_rift"))

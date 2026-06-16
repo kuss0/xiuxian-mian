@@ -1395,7 +1395,19 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tianxing")
             changed = module_changed or changed
         if family.startswith("yinluo_") or (not family and yinluo_mod.looks_like_yinluo_text(raw_text)):
-            module_changed = yinluo_mod.apply_yinluo_passive(raw_text, now, family)
+            module_changed = yinluo_mod.apply_yinluo_passive(
+                raw_text,
+                now,
+                family,
+                event_context={
+                    "identity_id": target_id,
+                    "chat_id": observed_chat_id,
+                    "msg_id": observed_msg_id,
+                    "reply_to_msg_id": (reply_context or {}).get("reply_to_msg_id", 0),
+                    "root_msg_id": (reply_context or {}).get("root_msg_id", 0),
+                    "source_message_id": source_message_id,
+                },
+            )
             if module_changed:
                 changed_modules.append("yinluo")
             changed = module_changed or changed

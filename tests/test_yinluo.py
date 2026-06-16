@@ -108,7 +108,8 @@ class YinluoParserTests(unittest.TestCase):
         realm_blocked = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.realm_blocked"), now=now)
         pending = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.pending_fight"), now=now)
         failed = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.failed_backlash"), now=now)
-        daily_sacrifice = yinluo.parse_yinluo_text(real_text("yinluo.convert.success"), now=1_779_450_000.0)
+        daily_sacrifice = yinluo.parse_yinluo_text(real_text("yinluo.daily_sacrifice.success"), now=1_779_450_000.0)
+        daily_cooldown = yinluo.parse_yinluo_text(real_text("yinluo.daily_sacrifice.cooldown"), now=1_779_450_000.0)
         convert = yinluo.parse_yinluo_text("【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！", now=1_779_450_000.0)
         retreat = yinluo.parse_yinluo_text(real_text("yinluo.retreat.success_bonus"), now=1_779_450_000.0)
 
@@ -125,9 +126,14 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual(1362, failed["last_backlash_loss"])
         self.assertEqual(now + yinluo.YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC + yinluo.YINLUO_TIME_BUFFER_SEC, failed["next_demon_summon_time"])
         self.assertEqual("每日献祭", daily_sacrifice["action"])
-        self.assertEqual(2030, daily_sacrifice["last_sha_gain"])
-        self.assertEqual(1530, daily_sacrifice["last_extra_sha_gain"])
+        self.assertEqual(575, daily_sacrifice["last_sha_gain"])
+        self.assertEqual(75, daily_sacrifice["last_extra_sha_gain"])
         self.assertNotIn("next_convert_time", daily_sacrifice)
+        self.assertEqual(yinluo.get_day_key(1_779_450_000.0), daily_sacrifice["last_daily_sacrifice_day"])
+        self.assertGreater(daily_sacrifice["next_daily_sacrifice_time"], 1_779_450_000.0)
+        self.assertEqual("每日献祭", daily_cooldown["action"])
+        self.assertEqual("cooldown", daily_cooldown["result"])
+        self.assertGreater(daily_cooldown["next_daily_sacrifice_time"], 1_779_450_000.0)
         self.assertEqual("化功为煞", convert["action"])
         self.assertEqual(10000, convert["last_convert_amount"])
         self.assertEqual(2000, convert["last_sha_gain"])
@@ -246,6 +252,7 @@ class YinluoManualPlanTests(unittest.TestCase):
                 "soul_stocks": {"妖兽精魄": 2},
             }
             summon = yinluo.build_yinluo_manual_plan("demon_summon", now=now)
+            daily = yinluo.build_yinluo_manual_plan("daily_sacrifice", now=now)
             collect = yinluo.build_yinluo_manual_plan("collect", now=now)
             convert = yinluo.build_yinluo_manual_plan("convert", "1000", now=now)
             refine = yinluo.build_yinluo_manual_plan("refine", "2 妖兽精魄", now=now)
@@ -254,8 +261,14 @@ class YinluoManualPlanTests(unittest.TestCase):
 
             state_module.state["yinluo_observation"]["next_demon_summon_time"] = now + 600
             summon_cooldown = yinluo.build_yinluo_manual_plan("demon_summon", now=now)
+            state_module.state["yinluo_observation"]["next_daily_sacrifice_time"] = now + 600
+            daily_cooldown = yinluo.build_yinluo_manual_plan("献祭", now=now)
 
             state_module.state["yinluo_observation"]["next_demon_summon_time"] = 0
+            state_module.state["yinluo_observation"]["next_daily_sacrifice_time"] = 0
+            state_module.state["yinluo_observation"]["last_daily_sacrifice_day"] = yinluo.get_day_key(now)
+            daily_done_today = yinluo.build_yinluo_manual_plan("每日献祭", now=now)
+            state_module.state["yinluo_observation"]["last_daily_sacrifice_day"] = ""
             state_module.state["yinluo_observation"]["ready_slots"] = 0
             state_module.state["yinluo_observation"]["ready_slot_numbers"] = []
             collect_empty = yinluo.build_yinluo_manual_plan("collect", now=now)
@@ -271,6 +284,9 @@ class YinluoManualPlanTests(unittest.TestCase):
 
         self.assertTrue(summon["allowed"])
         self.assertEqual(".召唤魔影", summon["command"])
+        self.assertTrue(daily["allowed"])
+        self.assertEqual(".每日献祭", daily["command"])
+        self.assertEqual("yinluo_daily_sacrifice", daily["family"])
         self.assertTrue(collect["allowed"])
         self.assertEqual(".收取精华 1", collect["command"])
         self.assertTrue(convert["allowed"])
@@ -282,6 +298,10 @@ class YinluoManualPlanTests(unittest.TestCase):
         self.assertIn("未记录为空闲槽", refine_wrong_slot["reason"])
         self.assertFalse(summon_cooldown["allowed"])
         self.assertIn("冷却", summon_cooldown["reason"])
+        self.assertFalse(daily_cooldown["allowed"])
+        self.assertIn("冷却", daily_cooldown["reason"])
+        self.assertFalse(daily_done_today["allowed"])
+        self.assertIn("今日已记录", daily_done_today["reason"])
         self.assertFalse(collect_empty["allowed"])
         self.assertIn("未记录可收取", collect_empty["reason"])
         self.assertFalse(convert_missing_amount["allowed"])
@@ -670,6 +690,56 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("收取保护", message)
         self.assertFalse(plan["allowed"])
         send_mock.assert_not_called()
+
+    async def test_manual_daily_sacrifice_marks_daily_cooldown_after_send(self):
+        now = 1_780_000_000.0
+        msg = SimpleNamespace(id=9305, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "banner_owner": "缘初子",
+                "banner_name": "血煞幡胚",
+                "next_daily_sacrifice_time": 0,
+            }
+            with patch.object(yinluo, "save_state"), patch.object(yinluo, "send_game_command", return_value=msg) as send_mock:
+                ok, message, plan = await yinluo.execute_yinluo_manual_action("献祭", now=now)
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertTrue(ok, message)
+        self.assertEqual(".每日献祭", plan["command"])
+        send_mock.assert_awaited_once()
+        self.assertEqual(yinluo.get_day_key(now), observed["last_daily_sacrifice_day"])
+        self.assertGreater(observed["next_daily_sacrifice_time"], now)
+        self.assertEqual("daily_sacrifice", observed["auto_last_action"])
+
+    async def test_scheduler_auto_daily_sacrifice_when_enabled_and_due(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "血煞幡胚",
+            "ready_slots": 0,
+            "next_daily_sacrifice_time": 0,
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "daily_sacrifice": True,
+                "refine": False,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": [],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".每日献祭", send_mock.await_args.args[0])
+        self.assertEqual("daily_sacrifice", observed["auto_last_action"])
+        self.assertEqual(yinluo.get_day_key(now), observed["last_daily_sacrifice_day"])
+        self.assertGreater(observed["next_daily_sacrifice_time"], now)
 
     async def test_scheduler_auto_refines_when_slot_stock_and_sha_are_known(self):
         now = 1_780_000_000.0
@@ -1132,7 +1202,45 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
         self.assertEqual(1300, observed["sha_current"])
         self.assertEqual(0, observed["next_convert_time"])
+        self.assertEqual(yinluo.get_day_key(now + 2), observed["last_daily_sacrifice_day"])
+        self.assertGreater(observed["next_daily_sacrifice_time"], now + 2)
         self.assertEqual("每日献祭", observed["last_action"])
+
+    def test_daily_sacrifice_uses_stable_event_key_and_original_day_hint(self):
+        now = 1_779_408_030.0
+        send_as_id = self._prepare_identity()
+        text = "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。"
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "banner_owner": "缘初子",
+                "sha_current": 800,
+                "sha_max": 15000,
+                "last_daily_sacrifice_day": yinluo.get_day_key(now - 180),
+            }
+            state_module.state["my_msg_ids"] = {8954050: now - 180}
+            context = {
+                "identity_id": send_as_id,
+                "chat_id": -1001680975844,
+                "msg_id": 8954051,
+                "reply_to_msg_id": 8954050,
+                "root_msg_id": 8954050,
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now, family="yinluo_daily_sacrifice", event_context=context))
+            observed = state_module.state["yinluo_observation"]
+            first_key = observed["last_daily_sacrifice_result_key"]
+            self.assertTrue(first_key.startswith("daily_sacrifice:ids:"))
+            self.assertEqual(yinluo.get_day_key(now - 180), observed["last_daily_sacrifice_day"])
+            self.assertEqual(1300, observed["sha_current"])
+
+            replay_context = dict(context)
+            replay_context["msg_id"] = 8954051
+            self.assertTrue(yinluo.apply_yinluo_passive(text, now=now + 60, family="yinluo_daily_sacrifice", event_context=replay_context))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual(first_key, observed["last_daily_sacrifice_result_key"])
+        self.assertEqual(1300, observed["sha_current"])
 
     def test_apply_convert_success_deducts_known_profile_xiuwei(self):
         now = 1_779_450_000.0
@@ -1264,6 +1372,86 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["changed"])
         self.assertEqual(1, snapshot["modules"]["yinluo"])
+
+    def test_passive_inbox_applies_yinluo_daily_sacrifice_from_reply_context(self):
+        send_as_id = self._prepare_identity(username="yinluo_daily")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8954050)
+
+        with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                real_text("yinluo.daily_sacrifice.success"),
+                now=1_779_450_000.0,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "yinluo_daily_sacrifice",
+                    "reply_to_msg_id": 8954049,
+                    "root_msg_id": 8954049,
+                },
+                event=event,
+                event_type="message",
+            ))
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            observed = state_module.state["yinluo_observation"]
+            self.assertEqual("每日献祭", observed["last_action"])
+            self.assertEqual(575, observed["last_sha_gain"])
+            self.assertEqual(75, observed["last_extra_sha_gain"])
+            self.assertEqual(0, observed["sha_current"])
+            self.assertEqual(yinluo.get_day_key(1_779_450_000.0), observed["last_daily_sacrifice_day"])
+            self.assertGreater(observed["next_daily_sacrifice_time"], 1_779_450_000.0)
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["changed"])
+        self.assertEqual(1, snapshot["modules"]["yinluo"])
+
+    def test_passive_inbox_daily_sacrifice_dedupes_by_message_identity(self):
+        send_as_id = self._prepare_identity(username="yinluo_daily_dedupe")
+        text = "你引动九幽煞气灌入幡中，阴罗幡发出一阵愉悦的嘶鸣！你的煞气池增加了 500 点。"
+        event = SimpleNamespace(chat_id=-1001680975844, id=8954052)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_407_900.0,
+                "banner_owner": "缘初子",
+                "sha_current": 800,
+                "sha_max": 15000,
+                "last_daily_sacrifice_day": yinluo.get_day_key(1_779_408_030.0 - 180),
+            }
+            state_module.state["my_msg_ids"] = {8954051: 1_779_408_030.0 - 180}
+
+        with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                text,
+                now=1_779_408_030.0,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "yinluo_daily_sacrifice",
+                    "reply_to_msg_id": 8954051,
+                    "root_msg_id": 8954051,
+                },
+                event=event,
+                event_type="edit",
+            ))
+            duplicate_event = SimpleNamespace(chat_id=-1001680975844, id=8954052)
+            handled_again = asyncio.run(passive_inbox.handle_passive_module_card(
+                text + "\n ",
+                now=1_779_408_090.0,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "yinluo_daily_sacrifice",
+                    "reply_to_msg_id": 8954051,
+                    "root_msg_id": 8954051,
+                },
+                event=duplicate_event,
+                event_type="edit",
+            ))
+
+        self.assertTrue(handled)
+        self.assertTrue(handled_again)
+        with state_module.use_identity(send_as_id):
+            observed = state_module.state["yinluo_observation"]
+            self.assertEqual(1300, observed["sha_current"])
+            self.assertEqual(yinluo.get_day_key(1_779_408_030.0 - 180), observed["last_daily_sacrifice_day"])
 
     def test_passive_inbox_routes_yinluo_banner_by_owner_name_without_reply_context(self):
         send_as_id = self._prepare_identity(username="yinluo_user")
@@ -1405,6 +1593,17 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("sent", message)
         execute_mock.assert_awaited_once_with("refine", "1 妖兽精魄", send_as_id=send_as_id)
 
+    async def test_ui_dispatches_daily_sacrifice_action(self):
+        from model import ui
+
+        send_as_id = self._prepare_identity(3305, sect_name="阴罗宗")
+        with patch.object(ui, "execute_yinluo_manual_action", new=AsyncMock(return_value=(True, "sent", {}))) as execute_mock:
+            ok, message = await ui.ui_execute_yinluo_action(send_as_id, "daily_sacrifice")
+
+        self.assertTrue(ok)
+        self.assertIn("sent", message)
+        execute_mock.assert_awaited_once_with("daily_sacrifice", "", send_as_id=send_as_id)
+
     def test_set_auto_config_same_value_does_not_save_observation(self):
         send_as_id = self._prepare_identity(3304, sect_name="阴罗宗")
         with state_module.use_identity(send_as_id):
@@ -1436,6 +1635,22 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(10000, ui_state["auto_config"]["convert_amount"])
             self.assertEqual(before, state_module.state["yinluo_observation"])
             save_mock.assert_not_called()
+
+    def test_ui_state_marks_unknown_sha_pool(self):
+        send_as_id = self._prepare_identity(3308, sect_name="阴罗宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_450_000.0,
+                "last_action": "每日献祭",
+                "last_result": "success",
+                "last_sha_gain": 575,
+                "last_extra_sha_gain": 75,
+            }
+            ui_state = yinluo.get_yinluo_ui_state(now=1_779_450_060.0)
+
+        self.assertFalse(ui_state["observed"]["sha_known"])
+        self.assertEqual(0, ui_state["observed"]["sha_current"])
+        self.assertEqual(0, ui_state["observed"]["sha_max"])
 
     def test_set_auto_config_same_value_normalizes_partial_observation(self):
         send_as_id = self._prepare_identity(3305, sect_name="阴罗宗")

@@ -87,9 +87,12 @@
       ? observed.auto_collect_pending.slots.join(',')
       : '';
     const calibrate = observed.auto_calibrate_reason ? '<span class="yinluo-warn">校准: ' + esc(observed.auto_calibrate_reason) + '</span>' : '';
+    const sacrifice = observed.daily_sacrifice_done ? '已献祭' : (observed.next_daily_sacrifice_text || '未记录');
+    const shaText = observed.sha_known ? (esc(observed.sha_current || 0) + '/' + esc(observed.sha_max || 0)) : '未知';
     return [
       '<div class="yinluo-observed">',
-      '<span>煞气 ' + esc(observed.sha_current || 0) + '/' + esc(observed.sha_max || 0) + '</span>',
+      '<span>煞气 ' + shaText + '</span>',
+      '<span>献祭 ' + esc(sacrifice) + '</span>',
       '<span>成槽 ' + esc(ready) + '</span>',
       '<span>空槽 ' + esc(empty) + '</span>',
       '<span>炼中 ' + esc(refining) + '</span>',
@@ -110,6 +113,7 @@
       '<div class="yinluo-section-label">自动策略</div>',
       '<div class="yinluo-auto-toggle-row">',
       renderAutoToggle('collect', '收取', config),
+      renderAutoToggle('daily_sacrifice', '献祭', config),
       renderAutoToggle('refine', '炼化', config),
       renderAutoToggle('blood_forest', '血洗', config),
       renderAutoToggle('demon_summon', '召魔', config),
@@ -125,6 +129,7 @@
       '<div class="yinluo-section-label">手动动作</div>',
       '<div class="yinluo-action-row yinluo-action-row-main">',
       '<button type="button" class="btn btn-secondary" data-yinluo-action="banner">查幡</button>',
+      '<button type="button" class="btn btn-secondary" data-yinluo-action="daily_sacrifice">献祭</button>',
       '<button type="button" class="btn btn-secondary" data-yinluo-action="blood_forest">血洗</button>',
       '<button type="button" class="btn btn-secondary" data-yinluo-action="demon_summon">召魔</button>',
       '</div>',
