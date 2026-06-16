@@ -1,6 +1,7 @@
 import math
 import random
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from .config import RE_HOURS, RE_MINUTES, RE_SECONDS, TZ_LOCAL
@@ -19,6 +20,20 @@ _CD_DATETIME_FORMATS = (
     "%Y-%m-%d %H:%M:%S UTC+8",
     "%Y-%m-%d %H:%M:%S %Z",
 )
+
+
+@dataclass(frozen=True)
+class CooldownDecision:
+    state: str
+    blocks: bool
+    now: float
+    window_sec: float
+    last_at: float | None = None
+    reason: str = ""
+
+    @property
+    def ready(self):
+        return not self.blocks
 
 
 def configure_timing(save_state_func):
@@ -93,18 +108,43 @@ def _parse_cd_last_at(raw_last_at):
 
 
 def cd_state(raw_last_at, now, window_sec):
+    return cd_decision(raw_last_at, now, window_sec).state
+
+
+def cd_decision(raw_last_at, now, window_sec):
     parse_state, last_at = _parse_cd_last_at(raw_last_at)
-    if parse_state != CD_STATE_READY:
-        return parse_state
     now_ts = now.timestamp() if isinstance(now, datetime) else float(now)
     window = max(0.0, float(window_sec or 0))
+    if parse_state != CD_STATE_READY:
+        return CooldownDecision(
+            state=parse_state,
+            blocks=parse_state == CD_STATE_UNPARSEABLE,
+            now=now_ts,
+            window_sec=window,
+            reason=parse_state,
+        )
     if last_at > now_ts or now_ts - last_at < window:
-        return CD_STATE_ON_CD
-    return CD_STATE_READY
+        reason = "future_timestamp" if last_at > now_ts else "within_window"
+        return CooldownDecision(
+            state=CD_STATE_ON_CD,
+            blocks=True,
+            now=now_ts,
+            window_sec=window,
+            last_at=last_at,
+            reason=reason,
+        )
+    return CooldownDecision(
+        state=CD_STATE_READY,
+        blocks=False,
+        now=now_ts,
+        window_sec=window,
+        last_at=last_at,
+        reason="off_cd",
+    )
 
 
 def cd_blocks(raw_last_at, now, window_sec):
-    return cd_state(raw_last_at, now, window_sec) in {CD_STATE_ON_CD, CD_STATE_UNPARSEABLE}
+    return cd_decision(raw_last_at, now, window_sec).blocks
 
 
 def fmt_time_after(seconds):
@@ -247,11 +287,13 @@ __all__ = [
     "CD_STATE_ON_CD",
     "CD_STATE_READY",
     "CD_STATE_UNPARSEABLE",
+    "CooldownDecision",
     "calc_next_checkin_time",
     "calc_next_daily_window_after_completion",
     "calc_next_daily_window_time",
     "calc_next_tower_time",
     "cd_blocks",
+    "cd_decision",
     "cd_state",
     "configure_timing",
     "fmt_abs_ts",

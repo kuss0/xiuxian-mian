@@ -58,7 +58,6 @@ class ModuleManifestTests(unittest.TestCase):
                 "真仙试锋",
                 "探寻裂缝",
                 "观星监控",
-                "灵树",
                 "法宝",
                 "温养器灵",
                 "器灵试炼",
@@ -89,6 +88,8 @@ class ModuleManifestTests(unittest.TestCase):
         )
 
     def test_reply_family_maps_to_source_module(self):
+        self.assertEqual("灵树", module_manifest.get_module_name_for_reply_family("tree_panel"))
+        self.assertTrue(module_manifest.is_reply_family_archived("tree_panel"))
         self.assertEqual("太一", module_manifest.get_module_name_for_reply_family("taiyi_yindao"))
         self.assertEqual("深度闭关", module_manifest.get_module_name_for_reply_family("deep_retreat"))
         self.assertEqual("储物袋", module_manifest.get_module_name_for_reply_family("storage_bag_buy"))
@@ -137,6 +138,29 @@ class ModuleManifestTests(unittest.TestCase):
 
         self.assertEqual([], missing)
 
+    def test_active_manifest_reply_families_are_runtime_command_routable_or_passive_only(self):
+        from model import runtime
+
+        passive_only_families = {
+            # These are real local-text observations that come from another
+            # command or a passive game broadcast, not from sending the family.
+            "tianxing_modifier",
+            "tianxing_retreat",
+            "yinluo_retreat",
+            "dungeon_join",
+        }
+        missing = sorted(
+            family
+            for manifest in module_manifest.iter_module_manifests(include_archived=False)
+            for family in tuple(manifest.reply_families or ())
+            if family not in runtime.REPLY_FAMILY_COMMANDS and family not in passive_only_families
+        )
+
+        self.assertEqual([], missing)
+        for family in passive_only_families:
+            self.assertTrue(module_manifest.get_module_name_for_reply_family(family), family)
+            self.assertNotIn(family, runtime.REPLY_FAMILY_COMMANDS)
+
     def test_workflow_log_names_are_manifested(self):
         workflow_names = set()
         for source_path in sorted((PROJECT_ROOT / "model" / "features").glob("*.py")):
@@ -175,9 +199,192 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_replay_module("hehuan"))
         self.assertEqual("天星宗", module_manifest.get_module_name_for_replay_module("tianxing"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_replay_module("yinluo"))
+        self.assertEqual("观星台", module_manifest.get_module_name_for_replay_module("stargazer"))
         self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_replay_module("explore_rift"))
         self.assertEqual("问道", module_manifest.get_module_name_for_replay_module("wendao"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_replay_module("formation"))
+        self.assertEqual("灵树", module_manifest.get_module_name_for_replay_module("灵树"))
+
+    def test_real_message_sample_module_can_use_manifest_name_without_replay_alias(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+        samples["tree.panel"] = {
+            "source": "unit",
+            "module": "灵树",
+            "family": "tree_panel",
+            "event_type": "message",
+            "text": "【灵树状态】 灵气充盈。",
+        }
+
+        result = module_manifest.validate_replay_sample_coverage(samples)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([], result["unknown_sample_modules"])
+        self.assertEqual([], result["unknown_sample_families"])
+
+    def test_module_admission_contract_accepts_current_manifest_and_strict_samples(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+        result = module_manifest.validate_module_admission_contract(
+            samples,
+            strict_modules=("太一", "自动副本", "储物袋", "阴罗宗", "观星台"),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([], result["missing_duplicate_guard"])
+        self.assertEqual([], result["last_resort_without_passive_first"])
+        self.assertEqual([], result["passive_without_observation"])
+        self.assertEqual([], result["strict_missing_replay_routes"])
+        self.assertEqual([], result["strict_missing_samples"])
+
+    def test_stargazer_replay_alias_satisfies_strict_admission(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+        for payload in samples.values():
+            if str(payload.get("family") or "").startswith("stargazer_"):
+                payload["module"] = "stargazer"
+
+        replay_result = module_manifest.validate_replay_sample_coverage(samples)
+        admission_result = module_manifest.validate_module_admission_contract(
+            samples,
+            strict_modules=("观星台",),
+        )
+
+        self.assertEqual("观星台", module_manifest.get_module_name_for_replay_module("stargazer"))
+        self.assertTrue(replay_result["ok"], replay_result)
+        self.assertEqual([], replay_result["unknown_sample_modules"])
+        self.assertTrue(admission_result["ok"], admission_result)
+        self.assertEqual([], admission_result["strict_missing_replay_routes"])
+        self.assertEqual([], admission_result["strict_missing_samples"])
+        self.assertEqual([], admission_result["strict_missing_sample_families"])
+
+    def test_module_admission_contract_reports_strict_sample_gap(self):
+        samples = {
+            "taiyi.yindao": {
+                "source": "unit",
+                "module": "taiyi",
+                "family": "taiyi_yindao",
+                "event_type": "message",
+                "text": "你引动【水之道】，获得了 100点神识！",
+            }
+        }
+
+        result = module_manifest.validate_module_admission_contract(
+            samples,
+            strict_modules=("太一", "阴罗宗", "不存在模块"),
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(["不存在模块"], result["strict_unknown_modules"])
+        self.assertEqual(["阴罗宗"], result["strict_missing_samples"])
+
+    def test_module_admission_contract_reports_family_sample_gap_without_failing(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        result = module_manifest.validate_module_admission_contract(
+            samples,
+            strict_modules=("合欢宗",),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([], result["strict_missing_samples"])
+        self.assertEqual(
+            ["合欢宗:hehuan_escape"],
+            result["strict_missing_sample_families"],
+        )
+
+    def test_module_contract_summary_covers_all_modules_without_runtime_coupling(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        summary = module_manifest.summarize_module_contracts(
+            samples,
+            strict_modules=("太一", "阴罗宗", "不存在模块"),
+        )
+        rows = {row["module"]: row for row in summary["modules"]}
+
+        self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
+        self.assertEqual([], [row["module"] for row in summary["modules"] if not row["observation_route"]])
+        self.assertEqual(["不存在模块"], summary["unknown_strict_modules"])
+        self.assertTrue(rows["太一"]["strict"])
+        self.assertTrue(rows["阴罗宗"]["strict"])
+        self.assertFalse(rows["灵树"]["strict"])
+        self.assertTrue(rows["灵树"]["archived"])
+        self.assertEqual("phase", rows["太一"]["duplicate_guard"])
+        self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, rows["阴罗宗"]["send_policy"])
+        self.assertEqual([], rows["太一"]["missing_sample_families"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["阴罗宗"]["readiness"])
+        self.assertIn("taiyi_yindao", rows["太一"]["covered_sample_families"])
+        self.assertGreater(summary["totals"]["covered_sample_families"], 0)
+
+    def test_module_readiness_backlog_classifies_existing_modules(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        summary = module_manifest.summarize_module_readiness(
+            samples,
+            strict_modules=("灵树", "天星宗", "深度闭关", "玄骨考校"),
+        )
+        rows = {row["module"]: row for row in summary["modules"]}
+
+        self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
+        self.assertEqual(34, summary["totals"]["active_modules"])
+        self.assertEqual(1, summary["totals"]["archived_modules"])
+        self.assertEqual(81, summary["totals"]["reply_families"])
+        self.assertEqual(4, summary["totals"]["archived_reply_families"])
+        self.assertEqual(80, summary["totals"]["covered_sample_families"])
+        self.assertEqual(1, summary["totals"]["missing_sample_families"])
+        self.assertEqual(30, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(1, summary["totals"]["sample_partial_modules"])
+        self.assertEqual(0, summary["totals"]["sample_missing_modules"])
+        self.assertEqual(3, summary["totals"]["contract_only_modules"])
+        self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["天星宗"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["深度闭关"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_CONTRACT_ONLY, rows["玄骨考校"]["readiness"])
+        self.assertEqual([], rows["灵树"]["missing_sample_families"])
+        self.assertTrue(rows["灵树"]["archived"])
+        self.assertEqual([], rows["天星宗"]["missing_sample_families"])
+        self.assertEqual(["hehuan_escape"], rows["合欢宗"]["missing_sample_families"])
+        self.assertTrue(rows["灵树"]["strict"])
+        self.assertTrue(rows["玄骨考校"]["strict"])
+
+    def test_report_only_feature_contracts_are_default_off_and_not_runtime_registered(self):
+        result = module_manifest.validate_report_only_feature_contracts()
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([], result["runtime_connected"])
+        self.assertEqual([], result["primary_api_inputs"])
+        contracts = {
+            contract.feature_key: contract
+            for contract in module_manifest.iter_report_only_feature_contracts()
+        }
+        self.assertEqual({"auto_repair", "search_node_api_fallback"}, set(contracts))
+        self.assertIs(module_manifest.get_report_only_feature_contract("一键修理"), contracts["auto_repair"])
+        self.assertIs(
+            module_manifest.get_report_only_feature_contract("search_node_api_fallback"),
+            contracts["search_node_api_fallback"],
+        )
+        self.assertIsNone(module_manifest.get_module_manifest("一键修理"))
+        self.assertEqual("太一", contracts["search_node_api_fallback"].parent_module)
+        for contract in contracts.values():
+            self.assertEqual(module_manifest.MODULE_STAGE_REPORT_ONLY, contract.stage)
+            self.assertFalse(contract.default_enabled)
+            self.assertFalse(contract.manifest_registered)
+            self.assertFalse(contract.scheduler_connected)
+            self.assertFalse(contract.ui_connected)
+            self.assertNotIn(module_manifest.INPUT_SOURCE_API_BACKUP, contract.primary_inputs)
+            self.assertEqual(module_manifest.API_POLICY_BACKUP_ONLY, contract.api_policy)
+
+    def test_module_admission_accepts_strict_report_only_contract_names(self):
+        result = module_manifest.validate_module_admission_contract(
+            strict_modules=("一键修理", "search_node_api_fallback"),
+        )
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual([], result["strict_unknown_modules"])
+        self.assertEqual(["search_node_api_fallback", "一键修理"], result["strict_report_only_modules"])
 
     def test_phaseful_modules_are_passive_first_last_resort_query(self):
         deep_retreat = module_manifest.get_module_manifest("深度闭关")
@@ -202,6 +409,9 @@ class ModuleManifestTests(unittest.TestCase):
         guanxing_monitor = module_manifest.get_behavior_spec("观星监控")
         tree = module_manifest.get_behavior_spec("灵树")
 
+        self.assertTrue(tree.archived)
+        self.assertNotIn("灵树", [spec.name for spec in module_manifest.execution_order()])
+        self.assertIn("灵树", [spec.name for spec in module_manifest.execution_order(include_archived=True)])
         self.assertTrue(deep_retreat.phaseful)
         self.assertTrue(yuanying.phaseful)
         self.assertEqual(module_manifest.PRIORITY_PHASEFUL, deep_retreat.priority)
@@ -212,7 +422,6 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual(module_manifest.PRIORITY_NORMAL, tree.priority)
         self.assertLess(deep_retreat.priority, explore_rift.priority)
         self.assertLess(explore_rift.priority, guanxing_monitor.priority)
-        self.assertLess(guanxing_monitor.priority, tree.priority)
 
 
 if __name__ == "__main__":

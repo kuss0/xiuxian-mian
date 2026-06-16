@@ -7,6 +7,22 @@ SEND_POLICY_PASSIVE_FIRST = "passive_first"
 SEND_POLICY_OBSERVE_THEN_SEND = "observe_then_send"
 ACTIVE_QUERY_FALLBACK_ONLY = "fallback_only"
 ACTIVE_QUERY_LAST_RESORT = "last_resort"
+MODULE_STAGE_REPORT_ONLY = "report_only"
+MODULE_STAGE_CONTRACTED = "contracted"
+MODULE_STAGE_SEND_CAPABLE = "send_capable"
+MODULE_STAGE_ARCHIVED = "archived"
+INPUT_SOURCE_LOCAL_TEXT = "local_text"
+INPUT_SOURCE_LOCAL_STATE = "local_state"
+INPUT_SOURCE_REPLY_CONTEXT = "reply_context"
+INPUT_SOURCE_EXISTING_SNAPSHOT = "existing_snapshot"
+INPUT_SOURCE_API_BACKUP = "api_backup"
+API_POLICY_NONE = "none"
+API_POLICY_BACKUP_ONLY = "backup_only"
+READINESS_SAMPLE_COMPLETE = "sample_complete"
+READINESS_SAMPLE_PARTIAL = "sample_partial"
+READINESS_SAMPLE_MISSING = "sample_missing"
+READINESS_CONTRACT_ONLY = "contract_only"
+READINESS_ARCHIVED = "archived"
 
 
 class BehaviorPriority:
@@ -33,6 +49,8 @@ class ModuleManifest:
     duplicate_guard: str = "runtime"
     replay_required: bool = True
     workflow_names: tuple = ()
+    archived: bool = False
+    archive_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -52,6 +70,8 @@ class BehaviorSpec:
     registry_index: int = 0
     action_specs: tuple = ()
     phaseful: bool = False
+    archived: bool = False
+    archive_reason: str = ""
 
     @classmethod
     def from_manifest(cls, manifest, registry_index=0):
@@ -82,21 +102,50 @@ class BehaviorSpec:
             workflow_names=tuple(manifest.workflow_names or ()),
             registry_index=registry_index,
             phaseful=phaseful,
+            archived=bool(manifest.archived),
+            archive_reason=manifest.archive_reason,
         )
 
 
+@dataclass(frozen=True)
+class ReportOnlyFeatureContract:
+    name: str
+    feature_key: str
+    module_path: str
+    decision_func: str
+    parent_module: str = ""
+    stage: str = MODULE_STAGE_REPORT_ONLY
+    primary_inputs: tuple = ()
+    backup_inputs: tuple = ()
+    output_commands: tuple = ()
+    api_policy: str = API_POLICY_BACKUP_ONLY
+    default_enabled: bool = False
+    manifest_registered: bool = False
+    scheduler_connected: bool = False
+    ui_connected: bool = False
+    notes: tuple = ()
+
+
 _MANIFESTS = (
-    ModuleManifest("灵树", MODULE_KEY_MAP["灵树"], reply_families=("tree_panel", "tree_pulse", "tree_guard", "tree_harvest"), replay_required=False, duplicate_guard="action_guard"),
+    ModuleManifest(
+        "灵树",
+        MODULE_KEY_MAP["灵树"],
+        reply_families=("tree_panel", "tree_pulse", "tree_guard", "tree_harvest"),
+        replay_required=False,
+        duplicate_guard="action_guard",
+        archived=True,
+        archive_reason="官方已停止旧灵树/云梦灵眼定脉玩法；落云宗新玩法另行设计，不复用旧状态机。",
+    ),
     ModuleManifest("法宝", MODULE_KEY_MAP["法宝"], reply_families=("pet",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("温养器灵", MODULE_KEY_MAP["温养器灵"], reply_families=("pet_warm",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("器灵试炼", MODULE_KEY_MAP["器灵试炼"], reply_families=("pet_trial",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("放养", MODULE_KEY_MAP["放养"], reply_families=("ranch",), replay_required=False, duplicate_guard="passive_result"),
     ModuleManifest("野外历练", MODULE_KEY_MAP["野外历练"], replay_modules=("wild_training",), reply_families=("wild_training",), duplicate_guard="reply_msg_id"),
-    ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], reply_families=("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), replay_required=False, duplicate_guard="phase"),
+    ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], replay_modules=("stargazer",), reply_families=("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), replay_required=False, duplicate_guard="phase"),
     ModuleManifest("观星监控", MODULE_KEY_MAP["观星监控"], send_policy=SEND_POLICY_PASSIVE_FIRST, replay_required=False, duplicate_guard="passive_broadcast"),
     ModuleManifest("观星", MODULE_KEY_MAP["观星"], reply_families=("guanxing_query", "guanxing_shift"), replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("周天星斗", MODULE_KEY_MAP["周天星斗"], replay_modules=("formation",), reply_families=("formation_start", "formation_assist"), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, replay_required=False, duplicate_guard="run_state"),
-    ModuleManifest("登天阶", MODULE_KEY_MAP["登天阶"], reply_families=("tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"), replay_required=False, duplicate_guard="reply_msg_id"),
+    ModuleManifest("登天阶", MODULE_KEY_MAP["登天阶"], replay_modules=("tianti",), reply_families=("tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"), replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("玄骨考校", MODULE_KEY_MAP["玄骨考校"], replay_required=False, duplicate_guard="prompt_claim"),
     ModuleManifest("极阴祖师", MODULE_KEY_MAP["极阴祖师"], replay_required=False, duplicate_guard="prompt_claim"),
     ModuleManifest("侍妾", MODULE_KEY_MAP["侍妾"], reply_families=("concubine_status", "concubine_greet", "concubine_gift", "concubine_dream", "concubine_fragment", "concubine_puzzle", "concubine_reacquire"), replay_required=False, duplicate_guard="phase", workflow_names=("concubine",)),
@@ -123,7 +172,43 @@ _MANIFESTS = (
     ModuleManifest("储物袋", "", replay_modules=("storage_bag",), reply_families=("storage_bag", "storage_bag_listing", "storage_bag_buy", "storage_bag_gift"), duplicate_guard="transfer_state", workflow_names=("storage_bag_transfer",)),
 )
 
+_REPORT_ONLY_FEATURE_CONTRACTS = (
+    ReportOnlyFeatureContract(
+        name="一键修理",
+        feature_key="auto_repair",
+        module_path="model.features.auto_repair",
+        decision_func="decide_auto_repair",
+        primary_inputs=(INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_EXISTING_SNAPSHOT),
+        backup_inputs=(INPUT_SOURCE_API_BACKUP,),
+        output_commands=(".一键修理",),
+        notes=(
+            "evaluates already available durability/material state only",
+            "not registered as a runtime module",
+        ),
+    ),
+    ReportOnlyFeatureContract(
+        name="搜寻节点备用门禁",
+        feature_key="search_node_api_fallback",
+        module_path="model.features.search_node",
+        decision_func="decide_search_node_api_fallback",
+        parent_module="太一",
+        primary_inputs=(INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_EXISTING_SNAPSHOT),
+        backup_inputs=(INPUT_SOURCE_API_BACKUP,),
+        output_commands=(".搜寻节点",),
+        notes=(
+            "Taiyi text-first state machine remains the owner",
+            "API snapshot is backup evidence only",
+        ),
+    ),
+)
+
 MODULE_MANIFESTS = {manifest.name: manifest for manifest in _MANIFESTS}
+REPORT_ONLY_FEATURE_CONTRACTS = {
+    contract.name: contract for contract in _REPORT_ONLY_FEATURE_CONTRACTS
+}
+REPORT_ONLY_FEATURE_CONTRACTS_BY_KEY = {
+    contract.feature_key: contract for contract in _REPORT_ONLY_FEATURE_CONTRACTS
+}
 _BEHAVIOR_SPECS = tuple(
     BehaviorSpec.from_manifest(manifest, registry_index=index)
     for index, manifest in enumerate(_MANIFESTS)
@@ -145,6 +230,14 @@ REPLAY_MODULE_TO_MODULE = {
     for replay_module in tuple(manifest.replay_modules or ())
 }
 
+_PASSIVE_OBSERVATION_DUPLICATE_GUARDS = {
+    "event_state",
+    "passive_broadcast",
+    "passive_observation",
+    "passive_result",
+    "prompt_claim",
+}
+
 
 def get_module_manifest(name):
     return MODULE_MANIFESTS.get(str(name or "").strip())
@@ -163,21 +256,49 @@ def get_module_name_for_workflow(workflow):
 
 
 def get_module_name_for_replay_module(replay_module):
-    return REPLAY_MODULE_TO_MODULE.get(str(replay_module or "").strip(), "")
+    module = str(replay_module or "").strip()
+    return REPLAY_MODULE_TO_MODULE.get(module, "") or (module if module in MODULE_MANIFESTS else "")
 
 
-def iter_module_manifests():
-    return tuple(_MANIFESTS)
+def is_module_archived(name):
+    manifest = get_module_manifest(name)
+    return bool(manifest and manifest.archived)
 
 
-def iter_behavior_specs():
-    return tuple(_BEHAVIOR_SPECS)
+def is_reply_family_archived(family):
+    module_name = get_module_name_for_reply_family(family)
+    return is_module_archived(module_name)
 
 
-def execution_order():
+def iter_module_manifests(include_archived=True):
+    if include_archived:
+        return tuple(_MANIFESTS)
+    return tuple(manifest for manifest in _MANIFESTS if not manifest.archived)
+
+
+def iter_archived_module_manifests():
+    return tuple(manifest for manifest in _MANIFESTS if manifest.archived)
+
+
+def iter_report_only_feature_contracts():
+    return tuple(_REPORT_ONLY_FEATURE_CONTRACTS)
+
+
+def get_report_only_feature_contract(name_or_key):
+    key = str(name_or_key or "").strip()
+    return REPORT_ONLY_FEATURE_CONTRACTS.get(key) or REPORT_ONLY_FEATURE_CONTRACTS_BY_KEY.get(key)
+
+
+def iter_behavior_specs(include_archived=True):
+    if include_archived:
+        return tuple(_BEHAVIOR_SPECS)
+    return tuple(spec for spec in _BEHAVIOR_SPECS if not spec.archived)
+
+
+def execution_order(include_archived=False):
     return tuple(
         sorted(
-            _BEHAVIOR_SPECS,
+            iter_behavior_specs(include_archived=include_archived),
             key=lambda spec: (spec.priority, spec.registry_index, spec.name),
         )
     )
@@ -196,7 +317,10 @@ def validate_module_manifest_coverage():
     duplicate_replay_modules = []
     seen_workflows = {}
     duplicate_workflows = []
+    archived_replay_required = []
     for manifest in _MANIFESTS:
+        if manifest.archived and manifest.replay_required:
+            archived_replay_required.append(manifest.name)
         for replay_module in tuple(manifest.replay_modules or ()):
             if replay_module in seen_replay_modules:
                 duplicate_replay_modules.append(replay_module)
@@ -210,12 +334,20 @@ def validate_module_manifest_coverage():
                 duplicate_workflows.append(workflow)
             seen_workflows[workflow] = manifest.name
     return {
-        "ok": not missing_modules and not invalid_state_keys and not duplicate_replay_modules and not duplicate_reply_families and not duplicate_workflows,
+        "ok": (
+            not missing_modules
+            and not invalid_state_keys
+            and not duplicate_replay_modules
+            and not duplicate_reply_families
+            and not duplicate_workflows
+            and not archived_replay_required
+        ),
         "missing_modules": missing_modules,
         "invalid_state_keys": invalid_state_keys,
         "duplicate_replay_modules": duplicate_replay_modules,
         "duplicate_reply_families": duplicate_reply_families,
         "duplicate_workflows": duplicate_workflows,
+        "archived_replay_required": archived_replay_required,
     }
 
 
@@ -256,6 +388,413 @@ def validate_behavior_spec_coverage():
         "missing_manifests": missing_manifests,
         "missing_specs": missing_specs,
         "mismatched_registry_indexes": mismatched_registry_indexes,
+    }
+
+
+def _sample_modules_and_families(samples):
+    sample_items = samples.values() if isinstance(samples, dict) else samples
+    modules = set()
+    families = set()
+    for payload in sample_items:
+        if isinstance(payload, dict):
+            module = str(payload.get("module") or "").strip()
+            family = str(payload.get("family") or "").strip()
+        else:
+            module = str(getattr(payload, "module", "") or "").strip()
+            family = str(getattr(payload, "family", "") or "").strip()
+        if module:
+            modules.add(module)
+        if family:
+            families.add(family)
+    return modules, families
+
+
+def _has_observation_route(manifest):
+    return bool(
+        tuple(manifest.reply_families or ())
+        or tuple(manifest.replay_modules or ())
+        or tuple(manifest.workflow_names or ())
+        or manifest.duplicate_guard in _PASSIVE_OBSERVATION_DUPLICATE_GUARDS
+    )
+
+
+def _report_only_contract_names_and_keys():
+    names = {contract.name for contract in _REPORT_ONLY_FEATURE_CONTRACTS}
+    keys = {contract.feature_key for contract in _REPORT_ONLY_FEATURE_CONTRACTS}
+    return names | keys
+
+
+def validate_report_only_feature_contracts():
+    duplicate_names = []
+    duplicate_keys = []
+    missing_fields = []
+    invalid_stage = []
+    runtime_connected = []
+    primary_api_inputs = []
+    backup_api_policy_mismatch = []
+    unknown_parent_modules = []
+    seen_names = set()
+    seen_keys = set()
+
+    for contract in _REPORT_ONLY_FEATURE_CONTRACTS:
+        if contract.name in seen_names:
+            duplicate_names.append(contract.name)
+        seen_names.add(contract.name)
+        if contract.feature_key in seen_keys:
+            duplicate_keys.append(contract.feature_key)
+        seen_keys.add(contract.feature_key)
+
+        for field_name in ("name", "feature_key", "module_path", "decision_func"):
+            if not str(getattr(contract, field_name, "") or "").strip():
+                missing_fields.append(f"{contract.name or contract.feature_key}:{field_name}")
+        if not tuple(contract.primary_inputs or ()):
+            missing_fields.append(f"{contract.name}:primary_inputs")
+        if contract.stage != MODULE_STAGE_REPORT_ONLY:
+            invalid_stage.append(contract.name)
+        if contract.default_enabled or contract.manifest_registered or contract.scheduler_connected or contract.ui_connected:
+            runtime_connected.append(contract.name)
+        if INPUT_SOURCE_API_BACKUP in tuple(contract.primary_inputs or ()):
+            primary_api_inputs.append(contract.name)
+        if INPUT_SOURCE_API_BACKUP in tuple(contract.backup_inputs or ()) and contract.api_policy != API_POLICY_BACKUP_ONLY:
+            backup_api_policy_mismatch.append(contract.name)
+        if contract.parent_module and contract.parent_module not in MODULE_MANIFESTS:
+            unknown_parent_modules.append(contract.name)
+
+    return {
+        "ok": (
+            not duplicate_names
+            and not duplicate_keys
+            and not missing_fields
+            and not invalid_stage
+            and not runtime_connected
+            and not primary_api_inputs
+            and not backup_api_policy_mismatch
+            and not unknown_parent_modules
+        ),
+        "duplicate_names": duplicate_names,
+        "duplicate_keys": duplicate_keys,
+        "missing_fields": missing_fields,
+        "invalid_stage": invalid_stage,
+        "runtime_connected": runtime_connected,
+        "primary_api_inputs": primary_api_inputs,
+        "backup_api_policy_mismatch": backup_api_policy_mismatch,
+        "unknown_parent_modules": unknown_parent_modules,
+    }
+
+
+def summarize_report_only_feature_contracts(strict_modules=()):
+    strict = {str(name or "").strip() for name in tuple(strict_modules or ()) if str(name or "").strip()}
+    rows = []
+    backup_api = 0
+    command_candidates = 0
+    for contract in _REPORT_ONLY_FEATURE_CONTRACTS:
+        is_strict = contract.name in strict or contract.feature_key in strict
+        has_backup_api = INPUT_SOURCE_API_BACKUP in tuple(contract.backup_inputs or ())
+        if has_backup_api:
+            backup_api += 1
+        if tuple(contract.output_commands or ()):
+            command_candidates += 1
+        rows.append(
+            {
+                "name": contract.name,
+                "feature_key": contract.feature_key,
+                "module_path": contract.module_path,
+                "decision_func": contract.decision_func,
+                "parent_module": contract.parent_module,
+                "stage": contract.stage,
+                "primary_inputs": list(contract.primary_inputs or ()),
+                "backup_inputs": list(contract.backup_inputs or ()),
+                "output_commands": list(contract.output_commands or ()),
+                "api_policy": contract.api_policy,
+                "default_enabled": bool(contract.default_enabled),
+                "manifest_registered": bool(contract.manifest_registered),
+                "scheduler_connected": bool(contract.scheduler_connected),
+                "ui_connected": bool(contract.ui_connected),
+                "notes": list(contract.notes or ()),
+                "strict": is_strict,
+            }
+        )
+
+    known = _report_only_contract_names_and_keys()
+    return {
+        "modules": rows,
+        "totals": {
+            "modules": len(rows),
+            "backup_api_modules": backup_api,
+            "command_candidate_modules": command_candidates,
+            "strict_modules": len(strict & known),
+        },
+        "unknown_strict_modules": sorted(strict - known),
+        "validation": validate_report_only_feature_contracts(),
+    }
+
+
+def _module_readiness(reply_families, covered, missing):
+    if not tuple(reply_families or ()):
+        return READINESS_CONTRACT_ONLY
+    if not missing:
+        return READINESS_SAMPLE_COMPLETE
+    if covered:
+        return READINESS_SAMPLE_PARTIAL
+    return READINESS_SAMPLE_MISSING
+
+
+def _module_next_action(readiness, missing):
+    if readiness == READINESS_ARCHIVED:
+        return "archived; keep legacy family mapping only, do not add samples or reconnect sends"
+    if readiness == READINESS_SAMPLE_COMPLETE:
+        return "keep replay tests in scope before parser or handler changes"
+    if readiness == READINESS_SAMPLE_PARTIAL:
+        return "add real-message samples for missing families: " + ", ".join(missing)
+    if readiness == READINESS_SAMPLE_MISSING:
+        return "add real-message samples before behavior changes"
+    return "confirm whether the module is prompt-claim/monitor-only or add reply families"
+
+
+def summarize_module_readiness(samples=None, strict_modules=()):
+    strict = {str(name or "").strip() for name in tuple(strict_modules or ()) if str(name or "").strip()}
+    _, sample_families = _sample_modules_and_families(samples) if samples is not None else (set(), set())
+    rows = []
+    totals = {
+        "modules": 0,
+        "active_modules": 0,
+        "archived_modules": 0,
+        "reply_family_modules": 0,
+        "sample_complete_modules": 0,
+        "sample_partial_modules": 0,
+        "sample_missing_modules": 0,
+        "contract_only_modules": 0,
+        "archived_reply_families": 0,
+        "archived_covered_sample_families": 0,
+        "covered_sample_families": 0,
+        "missing_sample_families": 0,
+        "reply_families": 0,
+        "strict_modules": 0,
+    }
+
+    for manifest in _MANIFESTS:
+        reply_families = tuple(manifest.reply_families or ())
+        covered = [family for family in reply_families if family in sample_families]
+        if manifest.archived:
+            missing = []
+            readiness = READINESS_ARCHIVED
+        else:
+            missing = [family for family in reply_families if family not in sample_families]
+            readiness = _module_readiness(reply_families, covered, missing)
+        strict_match = manifest.name in strict
+
+        totals["modules"] += 1
+        if manifest.archived:
+            totals["archived_modules"] += 1
+            totals["archived_reply_families"] += len(reply_families)
+            totals["archived_covered_sample_families"] += len(covered)
+        else:
+            totals["active_modules"] += 1
+            totals["reply_families"] += len(reply_families)
+            totals["covered_sample_families"] += len(covered)
+            totals["missing_sample_families"] += len(missing)
+            if reply_families:
+                totals["reply_family_modules"] += 1
+        if strict_match:
+            totals["strict_modules"] += 1
+        if readiness == READINESS_SAMPLE_COMPLETE:
+            totals["sample_complete_modules"] += 1
+        elif readiness == READINESS_SAMPLE_PARTIAL:
+            totals["sample_partial_modules"] += 1
+        elif readiness == READINESS_SAMPLE_MISSING:
+            totals["sample_missing_modules"] += 1
+        elif readiness == READINESS_ARCHIVED:
+            pass
+        else:
+            totals["contract_only_modules"] += 1
+
+        rows.append(
+            {
+                "module": manifest.name,
+                "readiness": readiness,
+                "reply_family_count": len(reply_families),
+                "covered_sample_count": len(covered),
+                "missing_sample_count": len(missing),
+                "reply_families": list(reply_families),
+                "covered_sample_families": covered,
+                "missing_sample_families": missing,
+                "send_policy": manifest.send_policy,
+                "active_query_policy": manifest.active_query_policy,
+                "duplicate_guard": manifest.duplicate_guard,
+                "archived": bool(manifest.archived),
+                "archive_reason": manifest.archive_reason,
+                "strict": strict_match,
+                "next_action": _module_next_action(readiness, missing),
+            }
+        )
+
+    return {
+        "modules": rows,
+        "totals": totals,
+        "unknown_strict_modules": sorted(strict - {manifest.name for manifest in _MANIFESTS}),
+    }
+
+
+def summarize_module_contracts(samples=None, strict_modules=()):
+    """Return a read-only module contract matrix for audits and reports."""
+    strict = {str(name or "").strip() for name in tuple(strict_modules or ()) if str(name or "").strip()}
+    sample_modules, sample_families = _sample_modules_and_families(samples) if samples is not None else (set(), set())
+    report_only_summary = summarize_report_only_feature_contracts(strict_modules)
+    readiness_summary = summarize_module_readiness(samples, strict_modules)
+    rows = []
+    total_families = 0
+    covered_families = 0
+    passive_first = 0
+    last_resort = 0
+    observation_routes = 0
+
+    for manifest in _MANIFESTS:
+        replay_modules = tuple(manifest.replay_modules or ())
+        reply_families = tuple(manifest.reply_families or ())
+        workflow_names = tuple(manifest.workflow_names or ())
+        covered = [family for family in reply_families if family in sample_families]
+        missing = [] if manifest.archived else [family for family in reply_families if family not in sample_families]
+        has_any_sample = any(module in sample_modules for module in replay_modules) or bool(covered)
+        has_observation_route = _has_observation_route(manifest)
+        readiness = READINESS_ARCHIVED if manifest.archived else _module_readiness(reply_families, covered, missing)
+
+        if not manifest.archived:
+            total_families += len(reply_families)
+            covered_families += len(covered)
+            if manifest.send_policy == SEND_POLICY_PASSIVE_FIRST:
+                passive_first += 1
+            if manifest.active_query_policy == ACTIVE_QUERY_LAST_RESORT:
+                last_resort += 1
+            if has_observation_route:
+                observation_routes += 1
+
+        rows.append(
+            {
+                "module": manifest.name,
+                "state_key": manifest.state_key,
+                "replay_modules": list(replay_modules),
+                "reply_families": list(reply_families),
+                "workflow_names": list(workflow_names),
+                "send_policy": manifest.send_policy,
+                "active_query_policy": manifest.active_query_policy,
+                "duplicate_guard": manifest.duplicate_guard,
+                "replay_required": bool(manifest.replay_required),
+                "phaseful": manifest.duplicate_guard == "phaseful",
+                "archived": bool(manifest.archived),
+                "archive_reason": manifest.archive_reason,
+                "observation_route": has_observation_route,
+                "has_any_sample": has_any_sample,
+                "covered_sample_families": covered,
+                "missing_sample_families": missing,
+                "readiness": readiness,
+                "next_action": _module_next_action(readiness, missing),
+                "strict": manifest.name in strict,
+            }
+        )
+
+    return {
+        "modules": rows,
+        "report_only": report_only_summary,
+        "readiness": readiness_summary,
+        "totals": {
+            "modules": len(rows),
+            "active_modules": len(tuple(iter_module_manifests(include_archived=False))),
+            "archived_modules": len(tuple(iter_archived_module_manifests())),
+            "reply_families": total_families,
+            "covered_sample_families": covered_families,
+            "passive_first_modules": passive_first,
+            "last_resort_modules": last_resort,
+            "observation_route_modules": observation_routes,
+            "strict_modules": len(strict & {manifest.name for manifest in _MANIFESTS}),
+            "strict_report_only_modules": report_only_summary["totals"]["strict_modules"],
+        },
+        "unknown_strict_modules": sorted(
+            strict - {manifest.name for manifest in _MANIFESTS} - _report_only_contract_names_and_keys()
+        ),
+    }
+
+
+def validate_module_admission_contract(samples=None, strict_modules=()):
+    """Validate the lightweight contract for adding or tightening automation modules.
+
+    This is intentionally weaker than a runtime registry migration. It blocks new
+    unobservable or untraceable modules without forcing every legacy module to grow
+    full replay coverage in one change.
+    """
+    strict = {str(name or "").strip() for name in tuple(strict_modules or ()) if str(name or "").strip()}
+    sample_modules, sample_families = _sample_modules_and_families(samples) if samples is not None else (set(), set())
+
+    missing_duplicate_guard = []
+    last_resort_without_passive_first = []
+    passive_without_observation = []
+    strict_unknown_modules = []
+    strict_archived_modules = []
+    strict_missing_replay_routes = []
+    strict_missing_samples = []
+    strict_missing_sample_families = []
+
+    known_modules = {manifest.name for manifest in _MANIFESTS}
+    known_contracts = known_modules | _report_only_contract_names_and_keys()
+    for name in sorted(strict - known_contracts):
+        strict_unknown_modules.append(name)
+    report_only_validation = validate_report_only_feature_contracts()
+
+    for manifest in _MANIFESTS:
+        if manifest.archived:
+            if manifest.name in strict:
+                strict_archived_modules.append(manifest.name)
+            continue
+        if not str(manifest.duplicate_guard or "").strip():
+            missing_duplicate_guard.append(manifest.name)
+        if (
+            manifest.active_query_policy == ACTIVE_QUERY_LAST_RESORT
+            and manifest.send_policy != SEND_POLICY_PASSIVE_FIRST
+        ):
+            last_resort_without_passive_first.append(manifest.name)
+        has_observation_route = _has_observation_route(manifest)
+        if manifest.send_policy == SEND_POLICY_PASSIVE_FIRST and not has_observation_route:
+            passive_without_observation.append(manifest.name)
+
+        if manifest.name not in strict:
+            continue
+        has_replay_route = bool(tuple(manifest.replay_modules or ()))
+        has_reply_route = bool(tuple(manifest.reply_families or ()))
+        if not has_replay_route or not has_reply_route:
+            strict_missing_replay_routes.append(manifest.name)
+        if samples is not None:
+            has_sample = any(module in sample_modules for module in tuple(manifest.replay_modules or ())) or any(
+                family in sample_families for family in tuple(manifest.reply_families or ())
+            )
+            if not has_sample:
+                strict_missing_samples.append(manifest.name)
+            for family in tuple(manifest.reply_families or ()):
+                if family not in sample_families:
+                    strict_missing_sample_families.append(f"{manifest.name}:{family}")
+
+    replay_validation = validate_replay_sample_coverage(samples) if samples is not None else None
+    replay_ok = True if replay_validation is None else replay_validation["ok"]
+    return {
+        "ok": (
+            replay_ok
+            and report_only_validation["ok"]
+            and not missing_duplicate_guard
+            and not last_resort_without_passive_first
+            and not passive_without_observation
+            and not strict_unknown_modules
+            and not strict_missing_replay_routes
+            and not strict_missing_samples
+        ),
+        "replay_validation": replay_validation,
+        "missing_duplicate_guard": missing_duplicate_guard,
+        "last_resort_without_passive_first": last_resort_without_passive_first,
+        "passive_without_observation": passive_without_observation,
+        "strict_unknown_modules": strict_unknown_modules,
+        "strict_archived_modules": strict_archived_modules,
+        "strict_missing_replay_routes": strict_missing_replay_routes,
+        "strict_missing_samples": strict_missing_samples,
+        "strict_missing_sample_families": strict_missing_sample_families,
+        "strict_report_only_modules": sorted(strict & _report_only_contract_names_and_keys()),
+        "report_only_validation": report_only_validation,
     }
 
 
@@ -300,6 +839,8 @@ def validate_replay_sample_coverage(samples):
 
     missing_required_modules = []
     for manifest in _MANIFESTS:
+        if manifest.archived:
+            continue
         if not manifest.replay_required:
             continue
         has_module_sample = any(replay_module in sample_module_names for replay_module in tuple(manifest.replay_modules or ()))
@@ -345,14 +886,19 @@ def summarize_replay_family_coverage(samples):
         if not families:
             continue
         covered = [family for family in families if family in sample_families]
-        missing = [family for family in families if family not in sample_families]
-        family_total += len(families)
-        covered_total += len(covered)
-        if missing:
-            all_missing.extend({"module": manifest.name, "family": family} for family in missing)
+        if manifest.archived:
+            missing = []
+        else:
+            missing = [family for family in families if family not in sample_families]
+            family_total += len(families)
+            covered_total += len(covered)
+            if missing:
+                all_missing.extend({"module": manifest.name, "family": family} for family in missing)
         modules.append(
             {
                 "module": manifest.name,
+                "archived": bool(manifest.archived),
+                "archive_reason": manifest.archive_reason,
                 "reply_families": list(families),
                 "covered_families": covered,
                 "missing_families": missing,
@@ -364,6 +910,8 @@ def summarize_replay_family_coverage(samples):
     return {
         "ok": not all_missing,
         "total_modules": len(modules),
+        "active_modules": len(tuple(iter_module_manifests(include_archived=False))),
+        "archived_modules": len(tuple(iter_archived_module_manifests())),
         "total_families": family_total,
         "covered_families": covered_total,
         "missing_families": all_missing,

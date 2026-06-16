@@ -109,6 +109,32 @@ def is_message_contract_gap_event(event):
     )
 
 
+def _routed_reply_resolution_key(event):
+    if not isinstance(event, dict):
+        return None
+    msg_id = _safe_int(event.get("source_message_id") or event.get("msg_id") or event.get("message_id"))
+    family = str(event.get("family") or "").strip()
+    identity_id = _safe_int(event.get("identity_id"))
+    if msg_id <= 0 or not family or identity_id <= 0:
+        return None
+    return identity_id, family, msg_id
+
+
+def _handled_routed_reply_keys(events):
+    handled = set()
+    for event in events:
+        if str(event.get("kind") or "") != "changed":
+            continue
+        key = _routed_reply_resolution_key(event)
+        if key:
+            handled.add(key)
+    return handled
+
+
+def _is_resolved_unhandled_routed_reply(event, handled_keys):
+    return is_unhandled_routed_reply_event(event) and _routed_reply_resolution_key(event) in handled_keys
+
+
 def _filter_contract_event(event, *, module="", family="", identity_id=0, reason=""):
     if not is_message_contract_gap_event(event):
         return False
@@ -128,7 +154,11 @@ def iter_message_contract_gaps(path=None, limit=100, *, module="", family="", id
     family = str(family or "").strip()
     reason = str(reason or "").strip()
     identity_id = _safe_int(identity_id)
-    for event in passive_event_ledger.iter_passive_events(path=path, limit=limit):
+    events = passive_event_ledger.iter_passive_events(path=path, limit=limit)
+    handled_keys = _handled_routed_reply_keys(events)
+    for event in events:
+        if _is_resolved_unhandled_routed_reply(event, handled_keys):
+            continue
         if _filter_contract_event(event, module=module, family=family, identity_id=identity_id, reason=reason):
             yield event
 
@@ -137,8 +167,12 @@ def iter_unhandled_routed_replies(path=None, limit=100, *, module="", family="",
     module = str(module or "").strip()
     family = str(family or "").strip()
     identity_id = _safe_int(identity_id)
-    for event in passive_event_ledger.iter_passive_events(path=path, limit=limit):
+    events = passive_event_ledger.iter_passive_events(path=path, limit=limit)
+    handled_keys = _handled_routed_reply_keys(events)
+    for event in events:
         if not is_unhandled_routed_reply_event(event):
+            continue
+        if _is_resolved_unhandled_routed_reply(event, handled_keys):
             continue
         if module and str(event.get("module") or "") != module:
             continue

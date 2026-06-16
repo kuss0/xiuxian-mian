@@ -20,6 +20,7 @@ PASSIVE_EVENT_DETAIL_LIMIT = 240
 PASSIVE_EVENT_RETENTION_DAYS = PASSIVE_EVENT_LEDGER_RETENTION_DAYS
 PASSIVE_EVENT_MAX_BYTES = max(0, int(PASSIVE_EVENT_LEDGER_MAX_MB or 0)) * 1024 * 1024
 PASSIVE_EVENT_CLEANUP_INTERVAL_SEC = LOG_RETENTION_CLEANUP_INTERVAL_SEC
+PASSIVE_EVENT_ITER_LIMIT_CAP = 10000
 
 _last_cleanup_at = 0.0
 
@@ -181,7 +182,7 @@ def append_passive_event(
 
 
 def iter_passive_events(path=None, limit=100):
-    safe_limit = max(1, min(int(limit or 100), 1000))
+    safe_limit = max(1, min(int(limit or 100), PASSIVE_EVENT_ITER_LIMIT_CAP))
     source_paths = [path] if path else _recent_ledger_paths()
     if not source_paths:
         source_paths = [get_passive_event_ledger_path()]
@@ -212,4 +213,5 @@ __all__ = [
     "append_passive_event",
     "get_passive_event_ledger_path",
     "iter_passive_events",
+    "PASSIVE_EVENT_ITER_LIMIT_CAP",
 ]

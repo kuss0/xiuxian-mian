@@ -172,6 +172,46 @@ class MessageContractTests(unittest.TestCase):
         self.assertEqual("concubine_voyage", payload["family"])
         self.assertIn("乱星海远航", payload["text"])
 
+    def test_unhandled_reply_resolved_by_later_passive_change_is_not_reported(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                passive_event_ledger.append_passive_event(
+                    kind="skipped",
+                    module="侍妾远航",
+                    identity_id=3504367852,
+                    reason="unhandled_routed_reply",
+                    family="concubine_voyage",
+                    chat_id=-1001680975844,
+                    msg_id=10140775,
+                    source_message_id=10140775,
+                    reply_to_msg_id=10140774,
+                    event_type="message",
+                    route_source="message:reply_context",
+                    matched_text="【乱星海远航·归】\n修为 +658",
+                    decision="handler_not_matched",
+                    now=1_781_077_200.0,
+                )
+                passive_event_ledger.append_passive_event(
+                    kind="changed",
+                    module="concubine",
+                    identity_id=3504367852,
+                    family="concubine_voyage",
+                    msg_id=10140775,
+                    source_message_id=10140775,
+                    reply_to_msg_id=10140774,
+                    event_type="message",
+                    route_source="message:reply_context",
+                    matched_text="【乱星海远航·归】\n修为 +658",
+                    decision="state_changed",
+                    now=1_781_077_201.0,
+                )
+                path = passive_event_ledger.get_passive_event_ledger_path(1_781_077_200.0)
+                unhandled = list(message_contract.iter_unhandled_routed_replies(path=path, limit=10))
+                gaps = list(message_contract.iter_message_contract_gaps(path=path, limit=10))
+
+        self.assertEqual([], unhandled)
+        self.assertEqual([], gaps)
+
     def test_report_tool_json_output_is_read_only_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
@@ -206,6 +246,228 @@ class MessageContractTests(unittest.TestCase):
         self.assertEqual(1, payload["summary"]["total"])
         self.assertEqual({"侍妾远航": 1}, payload["summary"]["by_module"])
         self.assertEqual("contract_gap.concubine_voyage.message.10140775", payload["suggestions"][0]["sample_id"])
+
+    def test_report_tool_limit_can_scan_more_than_legacy_cap(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "ledger.jsonl"
+            with path.open("w", encoding="utf-8") as fp:
+                for offset in range(1205):
+                    payload = {
+                        "ts": 1_781_077_200.0 + offset,
+                        "kind": "skipped",
+                        "module": "侍妾远航",
+                        "identity_id": 3504367852,
+                        "reason": "unhandled_routed_reply",
+                        "family": "concubine_voyage",
+                        "msg_id": 10140000 + offset,
+                        "message_id": 10140000 + offset,
+                        "reply_to_msg_id": 10130000 + offset,
+                        "event_type": "message",
+                        "route_source": "message:reply_context",
+                        "matched_text": "【乱星海远航·归】",
+                        "decision": "handler_not_matched",
+                    }
+                    fp.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(path),
+                    "--limit",
+                    "6000",
+                    "--json",
+                    "--latest",
+                    "1",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(6000, payload["limit"])
+        self.assertEqual(6000, payload["effective_limit"])
+        self.assertEqual(1205, payload["summary"]["total"])
+        self.assertEqual({"侍妾远航": 1205}, payload["summary"]["by_module"])
+
+    def test_report_tool_json_output_can_include_admission_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                path = passive_event_ledger.get_passive_event_ledger_path(1_781_077_200.0)
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    path,
+                    "--json",
+                    "--admission",
+                    "--strict-module",
+                    "太一",
+                    "--strict-module",
+                    "阴罗宗",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["admission"]["ok"], payload["admission"])
+        self.assertEqual([], payload["admission"]["strict_missing_samples"])
+        self.assertEqual([], payload["admission"]["passive_without_observation"])
+
+    def test_report_tool_json_output_exposes_strict_family_sample_gaps(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--json",
+                    "--admission",
+                    "--strict-module",
+                    "合欢宗",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["admission"]["ok"], payload["admission"])
+        self.assertEqual([], payload["admission"]["strict_missing_samples"])
+        self.assertEqual(
+            ["合欢宗:hehuan_escape"],
+            payload["admission"]["strict_missing_sample_families"],
+        )
+
+    def test_report_tool_json_output_can_include_module_contract_matrix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--json",
+                    "--contracts",
+                    "--strict-module",
+                    "合欢宗",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        contracts = payload["contracts"]
+        rows = {row["module"]: row for row in contracts["modules"]}
+        report_only = {row["feature_key"]: row for row in contracts["report_only"]["modules"]}
+        self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), contracts["totals"]["modules"])
+        self.assertTrue(rows["合欢宗"]["strict"])
+        self.assertFalse(report_only["auto_repair"]["scheduler_connected"])
+        self.assertEqual(module_manifest.API_POLICY_BACKUP_ONLY, report_only["auto_repair"]["api_policy"])
+        self.assertEqual("phase", rows["太一"]["duplicate_guard"])
+        self.assertEqual([], rows["太一"]["missing_sample_families"])
+        self.assertEqual(["hehuan_escape"], rows["合欢宗"]["missing_sample_families"])
+
+    def test_report_tool_text_output_can_include_strict_module_contracts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--contracts",
+                    "--strict-module",
+                    "合欢宗",
+                ])
+
+        self.assertEqual(0, code)
+        text = out.getvalue()
+        self.assertIn("模块合同:", text)
+        self.assertIn("- 合欢宗: send=", text)
+        self.assertIn("missing=hehuan_escape", text)
+
+    def test_report_tool_text_output_can_include_report_only_contracts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--contracts",
+                    "--strict-module",
+                    "一键修理",
+                ])
+
+        self.assertEqual(0, code)
+        text = out.getvalue()
+        self.assertIn("未接入模块合同: 2 report-only, 2 API-backup", text)
+        self.assertIn("- 一键修理: stage=report_only key=auto_repair api=backup_only", text)
+
+    def test_report_tool_json_output_can_include_module_readiness_backlog(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--json",
+                    "--readiness",
+                    "--strict-module",
+                    "灵树",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        readiness = payload["readiness"]
+        rows = {row["module"]: row for row in readiness["modules"]}
+        self.assertEqual(30, readiness["totals"]["sample_complete_modules"])
+        self.assertEqual(1, readiness["totals"]["sample_partial_modules"])
+        self.assertEqual(0, readiness["totals"]["sample_missing_modules"])
+        self.assertEqual(3, readiness["totals"]["contract_only_modules"])
+        self.assertEqual(1, readiness["totals"]["archived_modules"])
+        self.assertTrue(rows["灵树"]["strict"])
+        self.assertTrue(rows["灵树"]["archived"])
+        self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
+
+    def test_report_tool_text_output_can_include_module_readiness_backlog(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--readiness",
+                    "--strict-module",
+                    "天星宗",
+                ])
+
+        self.assertEqual(0, code)
+        text = out.getvalue()
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+        readiness = module_manifest.summarize_module_readiness(samples, strict_modules=("天星宗",))
+        totals = readiness["totals"]
+        expected = (
+            "模块就绪度: "
+            f"complete={totals['sample_complete_modules']}, "
+            f"partial={totals['sample_partial_modules']}, "
+            f"missing={totals['sample_missing_modules']}, "
+            f"contract-only={totals['contract_only_modules']}, "
+            f"archived={totals['archived_modules']}, "
+            f"families={totals['covered_sample_families']}/{totals['reply_families']}"
+        )
+        self.assertIn(expected, text)
+        self.assertIn("- 天星宗: sample_complete 9/9", text)
 
     def test_contract_gap_summary_resolves_module_from_family(self):
         event = {

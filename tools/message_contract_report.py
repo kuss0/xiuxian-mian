@@ -9,12 +9,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+
+os.environ.setdefault("XIUXIAN_TESTING", "1")
+os.environ.setdefault("API_ID", "12345")
+os.environ.setdefault("API_HASH", "00000000000000000000000000000000")
+os.environ.setdefault("LOG_GROUP_ID", "0")
+os.environ.setdefault("ADMIN_ID", "1")
+os.environ.setdefault("TG_PROXY_TYPE", "")
+os.environ.setdefault("TG_PROXY_HOST", "127.0.0.1:7890")
 
 from model import module_manifest  # noqa: E402
 from model.features import passive_event_ledger  # noqa: E402
@@ -58,12 +67,18 @@ def build_report(
     only_unhandled: bool = False,
     fixture_path: Path | None = None,
     include_coverage: bool = False,
+    include_admission: bool = False,
+    include_contracts: bool = False,
+    include_readiness: bool = False,
+    strict_modules: tuple = (),
 ):
+    requested_limit = max(1, int(limit or 1))
+    effective_limit = min(requested_limit, passive_event_ledger.PASSIVE_EVENT_ITER_LIMIT_CAP)
     source_path = str(ledger_path) if ledger_path else passive_event_ledger.get_passive_event_ledger_path()
     iter_func = iter_unhandled_routed_replies if only_unhandled else iter_message_contract_gaps
     iter_kwargs = {
         "path": str(ledger_path) if ledger_path else None,
-        "limit": limit,
+        "limit": requested_limit,
         "module": module,
         "family": family,
         "identity_id": identity_id,
@@ -82,16 +97,38 @@ def build_report(
     summary = unhandled_summary if only_unhandled else gap_summary
     fixture_samples = {}
     coverage = None
+    admission = None
+    contracts = None
+    readiness = None
     if include_coverage and fixture_path:
         fixture_samples = _load_fixture_payload(fixture_path)
         coverage = module_manifest.summarize_replay_family_coverage(fixture_samples)
+    if include_admission or include_contracts or include_readiness:
+        if fixture_path and not fixture_samples:
+            fixture_samples = _load_fixture_payload(fixture_path)
+    if include_admission:
+        admission = module_manifest.validate_module_admission_contract(
+            fixture_samples if fixture_path else None,
+            strict_modules=strict_modules,
+        )
+    if include_contracts:
+        contracts = module_manifest.summarize_module_contracts(
+            fixture_samples if fixture_path else None,
+            strict_modules=strict_modules,
+        )
+    if include_readiness:
+        readiness = module_manifest.summarize_module_readiness(
+            fixture_samples if fixture_path else None,
+            strict_modules=strict_modules,
+        )
     suggestions = []
     for event in summary["latest"]:
         key, payload = build_replay_sample_suggestion(event, source=f"{source_path}:{event.get('msg_id') or 'unknown'}")
         suggestions.append({"sample_id": key, "payload": payload})
     return {
         "ledger_path": source_path,
-        "limit": limit,
+        "limit": requested_limit,
+        "effective_limit": effective_limit,
         "filters": {
             "module": module,
             "family": family,
@@ -104,6 +141,9 @@ def build_report(
         "unhandled_summary": unhandled_summary,
         "suggestions": suggestions,
         "coverage": coverage,
+        "admission": admission,
+        "contracts": contracts,
+        "readiness": readiness,
     }
 
 
@@ -112,6 +152,7 @@ def format_report(report):
     lines = [
         "【消息契约报告】",
         f"ledger: {report['ledger_path']}",
+        f"limit: requested={report['limit']} effective={report.get('effective_limit', report['limit'])}",
         f"消息契约缺口: {report['gap_summary']['total']}",
         f"未处理 routed reply: {report['unhandled_summary']['total']}",
         _format_counter("按原因", report["gap_summary"].get("by_reason") or {}),
@@ -141,6 +182,100 @@ def format_report(report):
             missing_by_module.setdefault(item["module"], []).append(item["family"])
         for module_name, families in sorted(missing_by_module.items()):
             lines.append(f"- {module_name}: {', '.join(families)}")
+    readiness = report.get("readiness")
+    if readiness:
+        totals = readiness.get("totals") or {}
+        lines.append("")
+        lines.append(
+            "模块就绪度: "
+            f"complete={totals.get('sample_complete_modules', 0)}, "
+            f"partial={totals.get('sample_partial_modules', 0)}, "
+            f"missing={totals.get('sample_missing_modules', 0)}, "
+            f"contract-only={totals.get('contract_only_modules', 0)}, "
+            f"archived={totals.get('archived_modules', 0)}, "
+            f"families={totals.get('covered_sample_families', 0)}/{totals.get('reply_families', 0)}"
+        )
+        unknown_strict = readiness.get("unknown_strict_modules") or []
+        if unknown_strict:
+            lines.append(f"- unknown_strict_modules: {', '.join(unknown_strict)}")
+        strict_rows = [row for row in readiness.get("modules") or [] if row.get("strict")]
+        rows = strict_rows or [
+            row
+            for row in readiness.get("modules") or []
+            if row.get("readiness") != module_manifest.READINESS_SAMPLE_COMPLETE
+        ]
+        for row in rows:
+            missing = row.get("missing_sample_families") or []
+            missing_text = f" missing={','.join(missing)}" if missing else ""
+            archived_text = " archived" if row.get("archived") else ""
+            lines.append(
+                f"- {row['module']}: {row['readiness']} "
+                f"{row['covered_sample_count']}/{row['reply_family_count']}{missing_text}{archived_text}"
+            )
+    admission = report.get("admission")
+    if admission:
+        lines.append("")
+        lines.append(f"准入合同: {'OK' if admission['ok'] else 'FAIL'}")
+        for key in (
+            "missing_duplicate_guard",
+            "last_resort_without_passive_first",
+            "passive_without_observation",
+            "strict_unknown_modules",
+            "strict_archived_modules",
+            "strict_missing_replay_routes",
+            "strict_missing_samples",
+            "strict_missing_sample_families",
+        ):
+            values = admission.get(key) or []
+            if values:
+                lines.append(f"- {key}: {', '.join(values)}")
+    contracts = report.get("contracts")
+    if contracts:
+        totals = contracts.get("totals") or {}
+        lines.append("")
+        lines.append(
+            "模块合同: "
+            f"{totals.get('modules', 0)} modules, "
+            f"{totals.get('archived_modules', 0)} archived, "
+            f"{totals.get('covered_sample_families', 0)}/{totals.get('reply_families', 0)} sample families, "
+            f"{totals.get('passive_first_modules', 0)} passive-first, "
+            f"{totals.get('last_resort_modules', 0)} last-resort"
+        )
+        unknown_strict = contracts.get("unknown_strict_modules") or []
+        if unknown_strict:
+            lines.append(f"- unknown_strict_modules: {', '.join(unknown_strict)}")
+        strict_rows = [row for row in contracts.get("modules") or [] if row.get("strict")]
+        rows = strict_rows or (contracts.get("modules") or [])
+        for row in rows:
+            missing = row.get("missing_sample_families") or []
+            missing_text = f" missing={','.join(missing)}" if missing else ""
+            lines.append(
+                f"- {row['module']}: send={row['send_policy']} query={row['active_query_policy']} "
+                f"guard={row['duplicate_guard']}{missing_text}"
+            )
+        report_only = contracts.get("report_only") or {}
+        report_only_totals = report_only.get("totals") or {}
+        if report_only_totals:
+            lines.append(
+                "未接入模块合同: "
+                f"{report_only_totals.get('modules', 0)} report-only, "
+                f"{report_only_totals.get('backup_api_modules', 0)} API-backup"
+            )
+            validation = report_only.get("validation") or {}
+            if validation and not validation.get("ok", False):
+                for key, values in validation.items():
+                    if key == "ok" or not values:
+                        continue
+                    lines.append(f"- {key}: {', '.join(values)}")
+            report_only_rows = [row for row in report_only.get("modules") or [] if row.get("strict")]
+            if not strict_rows and not report_only_rows:
+                report_only_rows = report_only.get("modules") or []
+            for row in report_only_rows:
+                parent = f" parent={row['parent_module']}" if row.get("parent_module") else ""
+                lines.append(
+                    f"- {row['name']}: stage={row['stage']} key={row['feature_key']} "
+                    f"api={row['api_policy']}{parent} scheduler={row['scheduler_connected']} ui={row['ui_connected']}"
+                )
     return "\n".join(lines)
 
 
@@ -156,6 +291,10 @@ def parse_args(argv):
     parser.add_argument("--only-unhandled", action="store_true", help="只看 handler_not_matched 的 routed reply")
     parser.add_argument("--fixture-path", default=str(DEFAULT_FIXTURE_PATH), help="真实文案 fixture 路径")
     parser.add_argument("--coverage", action="store_true", help="附带真实样本 reply family 覆盖报告")
+    parser.add_argument("--admission", action="store_true", help="附带新模块准入合同检查")
+    parser.add_argument("--contracts", action="store_true", help="附带所有模块的合约矩阵")
+    parser.add_argument("--readiness", action="store_true", help="附带现有模块真实文案就绪度看板")
+    parser.add_argument("--strict-module", action="append", default=[], help="准入合同中需要真实样本硬校验的模块，可重复")
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     return parser.parse_args(argv)
 
@@ -165,7 +304,7 @@ def main(argv=None):
     ledger_path = Path(args.ledger_path).expanduser().resolve() if args.ledger_path else None
     fixture_path = Path(args.fixture_path).expanduser().resolve() if args.fixture_path else None
     # Validate fixture shape when coverage is requested, so bad fixture metadata fails clearly.
-    if args.coverage and fixture_path:
+    if (args.coverage or args.admission or args.contracts or args.readiness) and fixture_path:
         load_real_message_samples(fixture_path)
     report = build_report(
         ledger_path=ledger_path,
@@ -178,6 +317,10 @@ def main(argv=None):
         only_unhandled=bool(args.only_unhandled),
         fixture_path=fixture_path,
         include_coverage=bool(args.coverage),
+        include_admission=bool(args.admission),
+        include_contracts=bool(args.contracts),
+        include_readiness=bool(args.readiness),
+        strict_modules=tuple(args.strict_module or ()),
     )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))

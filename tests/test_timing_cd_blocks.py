@@ -9,6 +9,7 @@ from model.timing import (
     CD_STATE_READY,
     CD_STATE_UNPARSEABLE,
     cd_blocks,
+    cd_decision,
     cd_state,
 )
 
@@ -32,6 +33,28 @@ def test_cd_blocks_numeric_timestamp_matrix():
     assert cd_blocks(str(now - 3599), now, 3600) is True
     assert cd_state(now - 3600, now, 3600) == CD_STATE_READY
     assert cd_blocks(now - 3601, now, 3600) is False
+
+
+def test_cd_decision_exposes_fail_closed_reason():
+    now = _ts("2026-06-14 12:00:00")
+
+    dirty = cd_decision("冷却中", now, 3600)
+    assert dirty.state == CD_STATE_UNPARSEABLE
+    assert dirty.blocks is True
+    assert dirty.ready is False
+    assert dirty.reason == CD_STATE_UNPARSEABLE
+    assert dirty.last_at is None
+
+    active = cd_decision(now - 30, now, 3600)
+    assert active.state == CD_STATE_ON_CD
+    assert active.blocks is True
+    assert active.reason == "within_window"
+    assert active.last_at == now - 30
+
+    ready = cd_decision(None, now, 3600)
+    assert ready.state == CD_STATE_NO_RECORD
+    assert ready.blocks is False
+    assert ready.ready is True
 
 
 def test_cd_blocks_future_timestamp_fails_closed_as_on_cd():

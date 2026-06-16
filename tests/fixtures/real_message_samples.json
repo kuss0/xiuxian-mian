@@ -307,6 +307,398 @@
     "event_type": "message",
     "text": "【凌霄宫 任务板】\n\n- 探查魔功冷却 (ID: 1193)\n  - 描述: 阴罗宗的夺舍神通令人闻风丧胆，你知道施展一次.夺舍需要冷却多久吗？使用.提交任务 <答案>，例如.提交任务 1小时。\n  - 要求: 特殊条件\n  - 报酬: 25 贡献点\n\n使用 .提交任务 ... 来完成任务。"
   },
+  "checkin.success.contribution": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:85",
+    "module": "点卯",
+    "family": "checkin",
+    "event_type": "message",
+    "text": "点卯成功！你获得了 50 点宗门贡献。\n你已连续点卯 9 天。"
+  },
+  "concubine.dream.xutian_miss": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:32",
+    "module": "侍妾",
+    "family": "concubine_dream",
+    "event_type": "message",
+    "text": "【入梦寻图】\n本次梦兆锁定：【虚天残图】 线路。\n你与侍妾【冰魄仙子】共入迷梦，终只见海雾翻腾，未觅得【虚天残图】碎片。\n另一条残图线路仍可能在后续 .入梦寻图 中显化。\n本次掉落率：42%（进度衰减 -0%，当前 虚天残图 0/4）。"
+  },
+  "concubine.greet.affinity": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:8",
+    "module": "侍妾",
+    "family": "concubine_greet",
+    "event_type": "message",
+    "text": "侍妾【温天心】向你微微颔首，你们的情缘增加了 30 点。"
+  },
+  "concubine.heart.needs_reply": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:59",
+    "module": "共历心劫",
+    "family": "concubine_heart",
+    "event_type": "message",
+    "text": "请回复一条包含侍妾/道侣内容的消息，再使用 .共历心劫。"
+  },
+  "concubine.reacquire.sect_assigned": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:228",
+    "module": "侍妾",
+    "family": "concubine_reacquire",
+    "event_type": "message",
+    "text": "你乃星宫弟子，宗门自有道心侍妾为你指派，无需于凡尘寻觅。"
+  },
+  "concubine.status.daoxin": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:30",
+    "module": "侍妾",
+    "family": "concubine_status",
+    "event_type": "message",
+    "text": "你的道心侍妾: 【温天心】 (状态: 随行中)\n\n情缘值: 60\n已解锁神通:\n - 【红袖添香】: 闭关失败时，修为惩罚降低30%。\n\n【掩月心契】\n- 当前誓约: 无\n命令: .立誓 护道/守秘/共修、.毁誓\n\n【第二期机缘】\n- 天机代卜链: 无\n- 坠魔谷护持: 无\n- 入梦寻图冷却: 可施展\n- 共历心劫冷却: 可施展\n- 天机代卜冷却: 可施展\n- 梦图拼片: 虚天 0/4 | 苍坤 0/4\n命令: .入梦寻图、.残图、.拼图 虚天/苍坤\n\n远航状态: 闲置\n命令: .远航侍妾 状态/出海/探索/冒险/归航"
+  },
+  "concubine.tianji.fragment_route": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:66",
+    "module": "天机代卜",
+    "family": "concubine_tianji",
+    "event_type": "message",
+    "text": "【天机代卜链】\n侍妾【若兰】焚香推演，为你接引一缕天机。\n得卦【残图引路】：下一次 .入梦寻图 的残图片段掉率大幅提升。\n本次消耗：180修为。"
+  },
+  "concubine.voyage.return_adventure": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:46",
+    "module": "concubine_voyage",
+    "family": "concubine_voyage",
+    "event_type": "message",
+    "text": "【乱星海远航·归】\n侍妾【绾绾】已自 冒险 航线归来，向你呈上收获：\n- 修为 +820\n- 灵石 +265\n- 阴魂丝 x3\n- 养魂木 x2\n- 侍妾额外为你蓄灵 10 点\n此行顺遂，侍妾对你更添信重，情缘增加 7 点。"
+  },
+  "divination.start.basic": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:118",
+    "module": "divination",
+    "family": "divination",
+    "event_type": "message",
+    "text": "你消耗了 10 点修为，开始转动天机罗盘... (今日第 1 次)"
+  },
+  "pet.touch.success": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:11",
+    "module": "法宝",
+    "family": "pet",
+    "event_type": "message",
+    "text": "“别摸啦，痒！” 鸣雷青娥 (飒烈) 傲娇地闪烁了一下。\n(默契 +4, 经验 +15)"
+  },
+  "second_soul.status.training": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:208",
+    "module": "第二元神",
+    "family": "second_soul_status",
+    "event_type": "message",
+    "text": "【你的第二元神：金之元神】\n\n等级: 34 级\n经验: 3094 / 17000\n战力: 790286\n状态: 修炼中 (剩余: 12小时59分钟)\n五子同心魔: 5/5 | 调度 修炼 | 同心 100 | 魔染 40"
+  },
+  "sect_teach.success": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:103",
+    "module": "宗门传功",
+    "family": "sect_teach",
+    "event_type": "message",
+    "text": "传功玉简已记录！你为宗门贡献了心得，获得了 30 点贡献。今日已传功 1/3 次。"
+  },
+  "small_world.query.panel": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:181",
+    "module": "small_world",
+    "family": "small_world_query",
+    "event_type": "message",
+    "text": "【抱朴的小世界】\n\n⛩️ 神庙: Lv.3【万民祠庭】\n👥 人口: 190000 人\n🏙️ 承载上限: 190000 人\n🙏 信仰: 92 / 100\n⚖️ 稳定: 100 / 100\n☁️ 待收香火: 2103.34\n🏺 香火库存: 20785\n🔥 预计产出: 340.86 香火/小时\n🛡️ 护界禁制: 未开启\n🧠 神识强度: 2425\n\n暂无祈愿，凡间风调雨顺。\n\n下一阶【诸城香殿】消耗：香火x45000、灵石x80000、空间之核x1。"
+  },
+  "stargazer.collect.empty": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:1",
+    "module": "观星台",
+    "family": "stargazer_collect",
+    "event_type": "message",
+    "text": "你的观星台上没有已凝聚成形的星辰精华可供收集。"
+  },
+  "stargazer.guide.success": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:9",
+    "module": "观星台",
+    "family": "stargazer_guide",
+    "event_type": "message",
+    "text": "牵引成功！\n你消耗了 640 点修为，成功在 1, 2, 3, 4, 5, 6, 7, 8 号引星盘上牵引了【庚金星】之力！"
+  },
+  "stargazer.panel.empty": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:5",
+    "module": "观星台",
+    "family": "stargazer_panel",
+    "event_type": "message",
+    "text": "【星宫 · 观星台】 (引星盘总数: 8座)\n\n1号引星盘: 空闲\n2号引星盘: 空闲\n3号引星盘: 空闲\n4号引星盘: 空闲\n5号引星盘: 空闲\n6号引星盘: 空闲\n7号引星盘: 空闲\n8号引星盘: 空闲\n\n使用.牵引星辰 <引星盘> <星辰>来凝聚资源。"
+  },
+  "stargazer.soothe.empty": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:20",
+    "module": "观星台",
+    "family": "stargazer_soothe",
+    "event_type": "message",
+    "text": "你的观星台上没有需要安抚的星辰。"
+  },
+  "tianti.climb.success": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:61",
+    "module": "登天阶",
+    "family": "tianti_climb",
+    "event_type": "message",
+    "text": "【凌霄云阶】\n你消耗了 612 点修为，踏上了第 11 阶云阶。\n你踏入云海深处，偶得一缕天外机缘，袖中顿时多了几样灵材。\n本次获得 217 点修为、106 点宗门贡献。\n当前云阶进度: 11 / 12，罡风淬体: 12 / 12。\n额外收获: 【百年铁木】x2"
+  },
+  "tianti.status.panel": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:3",
+    "module": "登天阶",
+    "family": "tianti_status",
+    "event_type": "message",
+    "text": "【凌霄云阶】\n当前进度: 10 / 12 阶\n已完成周天: 21 轮\n罡风淬体: 12 / 12 层\n下次目标: 第 11 阶\n下轮奖阶: 天门留痕\n登阶冷却: 37分钟43秒\n预计消耗: 612 点修为\n当前成功率: 67%\n\n问心状态: 今日尚未问心。可使用 .问心台 获取登阶加持。\n\n周天奖阶说明: 高轮次周天会稳定回馈高阶主材，并附带一份额外战备资源，灵眼之树仍属低概率机缘。\n核心奖池: 低概率灵眼之树/火凤之翎 / 三级妖丹 / 二级妖丹 / 百年铁木 / 星纹钢 / 天雷竹。"
+  },
+  "tianti.wenxin.success": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:2",
+    "module": "登天阶",
+    "family": "tianti_wenxin",
+    "event_type": "message",
+    "text": "【问心台回响】\n你于问心台前静坐良久，最终凝出一道【澄明】之印。\n下次登天阶时，成功率显著提升。\n\n你因此获得了 20 点宗门贡献。"
+  },
+  "tianxing.set_star.tanlang": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:21",
+    "module": "tianxing",
+    "family": "tianxing_set_star",
+    "event_type": "message",
+    "text": "你将今日命轨定在 【贪狼】。\n主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。"
+  },
+  "tower.start.basic": {
+    "source": "data/state/passive_event_ledger/2026-06-15.jsonl:13",
+    "module": "闯塔",
+    "family": "tower",
+    "event_type": "message",
+    "text": "【琉璃问心塔】\n今日塔相：镜花水月（幻象交织，机缘与险境并存。）\n你的闯塔心境：探奇寻机\n你深吸一口气，踏入了古塔的第 1 层。塔内威压如山，前方的守卫缓缓凝聚成形！"
+  },
+  "concubine.fragment.scroll": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:3741",
+    "module": "侍妾",
+    "family": "concubine_fragment",
+    "event_type": "message",
+    "text": "侍妾【咸鱼】（随行中）的残图卷轴如下：\n\n【虚天残图卷】\n拼片进度：4/4\n已收集：北阙残纹、南渊残纹、东离残纹、西极残纹\n缺失残纹：无\n重复藏本：无\n\n【苍坤残图卷】\n拼片进度：2/4\n已收集：慕兰残纹、禁门残纹\n缺失残纹：玉匣残纹、太妙残纹\n重复藏本：禁门残纹x2\n\n命令：.入梦寻图、.拼图"
+  },
+  "concubine.gift.lingshi": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1667",
+    "module": "侍妾",
+    "family": "concubine_gift",
+    "event_type": "message",
+    "text": "你将【灵石】x250 赠予了侍妾【银月】，你们的情缘增加了 250 点！"
+  },
+  "concubine.puzzle.xutian_success": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:551",
+    "module": "侍妾",
+    "family": "concubine_puzzle",
+    "event_type": "message",
+    "text": "【虚天残图·拼合成功】\n侍妾【冰凤】为你拼齐残图，定位出虚天殿外层门户。\n你获得：虚天残图 x1、修为 +621。\n此乃高价值副本机缘，可据此开启一次虚天殿征程。"
+  },
+  "divination.exchange.kunwu_pass": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-14.jsonl:1093",
+    "module": "divination",
+    "family": "divination_exchange",
+    "event_type": "message",
+    "text": "换取成功！\n你已成功献上祭品，获得了天道认可，【昆吾通行令】已放入你的储物袋！"
+  },
+  "explore_rift.success.tianxing": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:564",
+    "module": "explore_rift",
+    "family": "explore_rift",
+    "event_type": "edit",
+    "text": "【探寻成功】\n命盘【贪狼】照命，主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n【天星偏转】 珍稀显化上扬\n你的元婴满载而归，为你带来了：【法则碎片·木】, 【法则碎片·雷】, 【法则碎片·土】！"
+  },
+  "explore_rift.failure.storm": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-15.log:51979",
+    "module": "explore_rift",
+    "family": "explore_rift",
+    "event_type": "edit",
+    "text": "【遭遇风暴】\n空间裂缝中风暴肆虐，你的元婴受创，被迫逃回！\n你元气大伤，修为倒退了 33455 点！"
+  },
+  "explore_rift.failure.beast_defeat": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-15.log:52360",
+    "module": "explore_rift",
+    "family": "explore_rift",
+    "event_type": "edit",
+    "text": "【不敌败退】\n时空异兽神通诡异，你最终不敌败退，元婴险些崩溃！\n你身受重创，修为倒退了 62121 点！"
+  },
+  "explore_rift.beast_victory.space_core": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-15.log:34611",
+    "module": "explore_rift",
+    "family": "explore_rift",
+    "event_type": "edit",
+    "text": "【激战得胜】\n经过一番苦战，你成功斩杀了时空异兽！\n你从其残骸中，获得了【法则碎片·空间】x1、【四级妖丹】x5，以及一件至宝：【空间之核】！\n\n📜 【天机显化】\n在异兽消散的虚空中，一张散发着七色神火气息的古朴卷轴缓缓飘落——正是传说中的【七焰扇图纸】！"
+  },
+  "pet.trial.meditation": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1853",
+    "module": "器灵试炼",
+    "family": "pet_trial",
+    "event_type": "message",
+    "text": "【器灵试炼·静修】\n你与器灵于灵台对坐，以星辉淬炼灵识。\n试炼结果：稳步精进。\n\n- 试炼消耗：灵石x1200、养魂木x0\n- 默契变化：+13\n- 经验变化：+28\n- 当前共鸣：同调\n- 当前总加成：+15%\n\n下次试炼冷却：8小时。"
+  },
+  "pet.warm.breakthrough": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1717",
+    "module": "温养器灵",
+    "family": "pet_warm",
+    "event_type": "message",
+    "text": "【温养器灵】\n你以灵石淬洗法宝灵窍，又焚化养魂木为引，细细温养 【青竹蜂云剑（神雷版）】。\n器灵 雷竹 灵光大振，显得神完气足。\n\n- 消耗：灵石x3000、养魂木x3\n- 默契提升：+30\n- 经验提升：+59\n- 当前共鸣：灵契\n- 当前总加成：+28%\n✨ 器灵突破：雷竹 已晋升至 9 级。"
+  },
+  "ranch.release.group": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1494",
+    "module": "放养",
+    "family": "ranch",
+    "event_type": "message",
+    "text": "【万兽奔腾】\n你打开灵兽袋，施展御兽群控之术！\n幻光鲤、铁甲龟、幻光鲤 (之贰)、血玉蜘蛛、石臂猿 等10只灵兽 欢快地冲入了万兽谷！\n\n它们将在 4 小时后自动归来，期待满载而归！\n也可用 .灵兽休息 <灵兽名> 手动召回单只灵兽。"
+  },
+  "replica.join.cangkun": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:4855",
+    "module": "join_dungeon",
+    "family": "replica_join",
+    "event_type": "message",
+    "text": "@myios17 已加入苍坤上人洞府队伍！\n当前队伍 (2/5):\n- @boxboxji (御山)\n- @myios17 (灵医)"
+  },
+  "second_soul.choice.demonic": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-14.jsonl:13133",
+    "module": "第二元神",
+    "family": "second_soul_choice",
+    "event_type": "message",
+    "text": "*元婴离体，灵气紊乱，欲夺舍重生*"
+  },
+  "second_soul.train.busy": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:447",
+    "module": "第二元神",
+    "family": "second_soul_train",
+    "event_type": "message",
+    "text": "你的第二元神正在(修炼中)，无法分心修炼。"
+  },
+  "small_world.harvest.incense": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:8965",
+    "module": "small_world",
+    "family": "small_world_harvest",
+    "event_type": "message",
+    "text": "你大手一挥，将凡间供奉的 6654 点香火尽数收入紫府。\n当前香火库存: 49730"
+  },
+  "small_world.manifest.thunder": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1999",
+    "module": "small_world",
+    "family": "small_world_manifest",
+    "event_type": "message",
+    "text": "✅ 显灵成功！\n一道神雷从天而降，将妖兽劈为飞灰！凡人敬畏你的神威！\n(信仰 +8, 稳定 +5, 人口 +0)\n下一次凡人祈愿感应需等待 360 分钟。"
+  },
+  "small_world.preach.success": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:5048",
+    "module": "small_world",
+    "family": "small_world_preach",
+    "event_type": "message",
+    "text": "【神音浩荡】\n你消耗 6000 点修为，在天穹之上显化法相，传颂大道！\n凡人狂热膜拜，信仰提升至 100，稳定提升至 100！"
+  },
+  "small_world.refine.success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-14.log:50238",
+    "module": "small_world",
+    "family": "small_world_refine",
+    "event_type": "message",
+    "text": "【神识淬炼】\n你燃烧了 7550 点香火，以此愿力淬炼神魂...\n你的神识强度增加了 755 点！\n当前神识强度：4230。"
+  },
+  "storage_bag.panel.zedwang": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-14.log:49723",
+    "module": "storage_bag",
+    "family": "storage_bag",
+    "event_type": "message",
+    "text": "@zedwang125 的储物袋\n\n法宝/丹药/杂物:\n- 神行符 x 1\n- 金刚符 x 1\n- 玄铁剑 x 1 (耐久 100/100)\n- 凝血草种子 x 5\n- 法则碎片·空间 x 3\n- 乌龙幡 x 1 (耐久 100/100)\n- 凝神露丹方 x 2\n- 金蚨子母刃 x 1 (耐久 100/100)\n- 净髓露丹方 x 2\n- 禁地药篓 x 1\n- 增元丹丹方 x 4\n- 玄牡化婴·灵傀 x 1 (耐久 100/100)\n- 玄铁剑图纸 x 6\n- 九曲灵参丹 x 1\n- 真仙试锋 x 1\n- 金蚨子母刃图纸 x 1\n\n材料:\n- 灵石 x 2195\n- 金精矿 x 33\n- 三级妖丹 x 36\n- 凝血草 x 319\n- 二级妖丹 x 24\n- 赤精果 x 17\n- 玉髓芝 x 14\n- 百年铁木 x 108\n- 血线草 x 14\n- 一阶妖丹 x 26\n- 天雷竹 x 66\n- 阴魂丝 x 17\n- 养魂木 x 22\n- 阴凝之晶 x 1"
+  },
+  "storage_bag.gift.success": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-14.jsonl:2077",
+    "module": "storage_bag",
+    "family": "storage_bag_gift",
+    "event_type": "message",
+    "text": "【赠送成功】\n道友 @WalterWA2000 向 @boxboxji 赠送了 【苍坤残图】x3。\n并额外支付了 30 灵石作为因果税 (基础税率 10%)。"
+  },
+  "tianti.gangfeng.success": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1786",
+    "module": "登天阶",
+    "family": "tianti_gangfeng",
+    "event_type": "message",
+    "text": "【九天罡风】\n你强引九天罡风贯体，消耗了 260 点修为。\n【罡风淬体】提升至 12 / 12 层，并凝得一道【澄明】之印。\n下一次登天阶的成功率将显著提高。"
+  },
+  "world_boss.qingyuanzi.counter": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:8420",
+    "module": "world_boss",
+    "family": "world_boss",
+    "event_type": "message",
+    "text": "【讨伐青元子】\n你镇住阴魂回潮，魔压 -3。\n【青元反击·阴罗本幡·万魂扑卷】｜魔压 +1｜阵势 -2｜你被真仙余威震伤，修为 -3200。\n当前：[██████████████████] 100% ｜ 幡魂 9 ｜ 魔压 21/100 ｜ 阵势 95/120"
+  },
+  "yinluo.collect.success": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:3453",
+    "module": "yinluo",
+    "family": "yinluo_collect",
+    "event_type": "message",
+    "text": "收取成功！\n你从 1 个炼化槽中获得了: 【四级妖丹】x1！\n阴罗幡吞纳残魄，幡魂谱系精进: 凶兽戾魄+1。"
+  },
+  "yinluo.curse.not_member": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:7426",
+    "module": "yinluo",
+    "family": "yinluo_curse",
+    "event_type": "message",
+    "text": "你并非阴罗宗弟子，不懂此等恶毒咒术。"
+  },
+  "yinluo.refine.start": {
+    "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:1526",
+    "module": "yinluo",
+    "family": "yinluo_refine",
+    "event_type": "message",
+    "text": "一缕【凶兽戾魄】被强行打入3号炼化槽，在煞气的包裹下发出阵阵哀嚎，炼化已开始。"
+  },
+  "guanxing.query.panel": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-11.log:4",
+    "module": "观星",
+    "family": "guanxing_query",
+    "event_type": "message",
+    "text": "【星盘显化】\n@miao7xiuxian 闭目凝神，推演天机...星盘之上，天机已然显现！\n\n下一次天道演化将是: 【Good - 星辰异象】\n当前天命所归: @神楽坂 宝蓝\n\n你有 5分钟 时间，可以尝试回复此消息并使用 .改换星移 @新目标 来扭转此人天命！"
+  },
+  "guanxing.shift.success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-11.log:17",
+    "module": "观星",
+    "family": "guanxing_shift",
+    "event_type": "message",
+    "text": "【天机异动】\n星盘光芒大作！【星宫】弟子 @miao4xiuxian 强行施展【改换星移】之术，竟成功扭转了天机！\n\n原本将降临于 @stonesssio 身上的【Good - 星辰异象】，现已改道，将由 @神楽坂 宝蓝 承受！"
+  },
+  "hehuan.contract.not_member": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-02.log:4772",
+    "module": "hehuan",
+    "family": "hehuan_contract",
+    "event_type": "message",
+    "text": "你并非合欢宗弟子，无法与人缔结同参契印。"
+  },
+  "nanlong.result.trade": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-12.log:367",
+    "module": "南陇侯",
+    "family": "nanlong",
+    "event_type": "message",
+    "text": "【天机异闻·南陇侯的交易】\n道友 @nan 经过深思熟虑，选择将侍妾【洛神】与南陇侯交换！\n作为回报，南陇侯赐予了其一件至宝：【九曲灵参丹丹方】！"
+  },
+  "small_world.relief.success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-14.log:3127",
+    "module": "small_world",
+    "family": "small_world_relief",
+    "event_type": "message",
+    "text": "【天降甘霖】\n你消耗了 1000 灵石，化作无边甘霖滋润凡间！\n凡人感念神恩，人口恢复了 1278 人，信仰提升至 72，稳定提升至 100！"
+  },
+  "taiyi.node_search.success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-06.log:14455",
+    "module": "taiyi",
+    "family": "taiyi_node_search",
+    "event_type": "edit",
+    "text": "【天机垂青】\n远处传来沉闷的雷鸣，银色的电弧在漆黑的虚空中跳跃...\n你在乱流中发现了一丝异样的波动...定睛一看，竟是一处雷霆密布的空间风暴中心！\n\n你小心翼翼地用神识包裹住这处节点，将其封印带回！\n获得：【空间节点·雷暴】 x1\n*(此节点极不稳定，请尽快使用 .定星 空间节点·雷暴 配合特定材料将其稳固，否则无法使用)*"
+  },
+  "taiyi.node_define.success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-06.log:14601",
+    "module": "taiyi",
+    "family": "taiyi_node_define",
+    "event_type": "message",
+    "text": "【定星成功】\n狂暴的空间之力逐渐平息，化作一道稳定的银色光门烙印在你的玉简之上！\n你获得了 【逆灵通道坐标】！\n顺手收拢了散逸的【虚空尘埃】x4。\n\n水魔·悟玄替你校准了星位脉络，旁门定星更稳。\n火魔·焚战替你灼去节点中的暴戾余波。\n金魔·裂兵顺着裂隙剥下了一枚【法则碎片·空间】。\n*(备齐五行法则源晶、虚灵丹与逆灵通道坐标后，可尝试 .飞升灵界)*"
+  },
+  "tianxing.retreat.success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-15.log:10866",
+    "module": "tianxing",
+    "family": "tianxing_retreat",
+    "event_type": "message",
+    "text": "【闭关成功】\n掩月心契·共修: 神念共鸣，本次闭关收益提升。\n命盘【贪狼】照命，主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n你福至心灵，成功炼化灵气，基础修为增加了 570 点。\n因【天星宗】灵脉加持，你额外获得了 239 点修为！\n星力加持: 阵法之力使你的收益额外提升了 169 点！\n本次闭关，你的修为最终增加了 978 点。\n\n当前境界: 元婴初期\n当前修为: 351449 / 500000\n\n你感到一阵疲惫，需要打坐调息 11 分钟方可再次闭关。\n*(因 【侍妾护持】+10%，本次奇遇几率提升至 15%)*"
+  },
+  "wendao.result.basic": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-11.log:309",
+    "module": "wendao",
+    "family": "wendao",
+    "event_type": "edit",
+    "text": "【问道得宝】\n长老对你的勤勉颇为赞许，赐下诸多宝物！你获得了：\n- 修为增加了 1312 点\n- 【一阶妖丹】x8\n- 灵石x147\n- 二级妖丹x2"
+  },
   "formation.invite.external_star_palace": {
     "source": "data/messages/2026-04-14.log:7897745",
     "module": "formation",
