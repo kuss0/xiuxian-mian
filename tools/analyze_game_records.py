@@ -424,7 +424,7 @@ def analyze_jsonl_logs(
     analysis = Analysis()
     files = iter_log_files(messages_dir, since=since, until=until, include_replica=include_replica)
     for log_file in files:
-        with log_file.open("r", encoding="utf-8") as handle:
+        with log_file.open("r", encoding="utf-8", errors="replace") as handle:
             for line_no, raw_line in enumerate(handle, 1):
                 analysis.scanned_lines += 1
                 analysis.source_files[log_file.name] += 1

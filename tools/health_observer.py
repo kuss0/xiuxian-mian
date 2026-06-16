@@ -249,7 +249,7 @@ def read_recent_message_events(log_file: Path, max_lines: int = 10000) -> list[d
         return []
     rows: list[dict[str, object]] = []
     try:
-        with log_file.open("r", encoding="utf-8") as handle:
+        with log_file.open("r", encoding="utf-8", errors="replace") as handle:
             for line in deque(handle, maxlen=max_lines):
                 try:
                     payload = json.loads(line)

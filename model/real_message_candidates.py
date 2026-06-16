@@ -79,7 +79,7 @@ def iter_candidate_records(paths):
         if not path.exists() or not path.is_file():
             continue
         if path.suffix == ".jsonl":
-            with path.open("r", encoding="utf-8") as fp:
+            with path.open("r", encoding="utf-8", errors="replace") as fp:
                 for line_no, line in enumerate(fp, 1):
                     text = line.strip()
                     if not text:

@@ -221,7 +221,7 @@ def iter_workflow_events(workflow, path=None, limit=100):
     source_path = path or get_workflow_log_path(workflow)
     safe_limit = max(1, min(int(limit or 100), 1000))
     try:
-        with open(source_path, "r", encoding="utf-8") as fp:
+        with open(source_path, "r", encoding="utf-8", errors="replace") as fp:
             lines = fp.readlines()[-safe_limit:]
     except OSError:
         return []

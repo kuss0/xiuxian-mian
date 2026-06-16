@@ -5974,7 +5974,7 @@ def _iter_replica_message_log_entries_between(start_ts, end_ts, chat_id=0):
             continue
         seen_paths.add(log_file)
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     try:
                         entry = json.loads(line)
@@ -6005,7 +6005,7 @@ def _iter_game_message_log_entries_between(start_ts, end_ts, chat_id=0):
             continue
         seen_paths.add(log_file)
         try:
-            with open(log_file, "r", encoding="utf-8") as f:
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
                     try:
                         entry = json.loads(line)

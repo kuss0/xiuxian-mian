@@ -317,6 +317,27 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(9002, record["pending_query_msg_id"])
         self.assertEqual("waiting_intermediate", record["phase"])
 
+    def test_message_log_preread_tolerates_invalid_utf8_bytes(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1_800_000_000.0
+        day = divination.datetime.fromtimestamp(float(now), divination.TZ_LOCAL).strftime("%Y-%m-%d")
+        rows = [
+            {"event_type": "sent", "message_id": 7401, "sender_id": identity_id, "text": ".卜筮问天"},
+            {"event_type": "message", "message_id": 7402, "sender_id": 8888, "reply_to_msg_id": 7401, "text": "天机罗盘开始转动……今日第 5 次"},
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / f"{day}.log"
+            log_path.write_bytes(
+                b"\xe5\n"
+                + b"\n".join(json.dumps(row, ensure_ascii=False).encode("utf-8") for row in rows)
+                + b"\n"
+            )
+            with patch("model.features.divination.MESSAGES_DIR", tmpdir):
+                observed_count = divination._recover_identity_daily_count_from_message_log(identity_id, now)
+
+        self.assertEqual(5, observed_count)
+
     def test_scheduler_forces_preread_again_when_initial_start_becomes_due(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         now = 1_800_000_000.0

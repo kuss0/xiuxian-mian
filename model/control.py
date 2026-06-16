@@ -2564,7 +2564,7 @@ def _iter_message_log_entries_between(start_ts, end_ts):
         log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
         if log_path.exists():
             try:
-                with log_path.open("r", encoding="utf-8") as f:
+                with log_path.open("r", encoding="utf-8", errors="replace") as f:
                     for line in f:
                         try:
                             yield json.loads(line)

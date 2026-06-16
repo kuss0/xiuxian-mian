@@ -724,7 +724,7 @@ def _find_message_log_entry_by_msg_id(msg_id, *, chat_id=0, limit_files=3):
     for name in _message_log_names(limit_files):
         path = os.path.join(MESSAGES_DIR, name)
         try:
-            with open(path, "r", encoding="utf-8") as fp:
+            with open(path, "r", encoding="utf-8", errors="replace") as fp:
                 for raw_line in fp:
                     if needle not in raw_line:
                         continue

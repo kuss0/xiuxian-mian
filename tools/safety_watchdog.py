@@ -202,7 +202,7 @@ def read_recent_log_lines(log_file: Path, max_lines: int) -> list[dict]:
     if not log_file.exists():
         return []
     rows: list[dict] = []
-    with log_file.open("r", encoding="utf-8") as handle:
+    with log_file.open("r", encoding="utf-8", errors="replace") as handle:
         for line in deque(handle, maxlen=max_lines):
             try:
                 payload = json.loads(line)

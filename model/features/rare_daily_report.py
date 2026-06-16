@@ -309,7 +309,7 @@ def _iter_daily_log_entries(day, messages_dir=None):
     for path in paths:
         if not os.path.exists(path):
             continue
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 seq += 1
                 try:

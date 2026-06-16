@@ -189,7 +189,7 @@ def iter_passive_events(path=None, limit=100):
     lines = []
     for source_path in source_paths:
         try:
-            with open(source_path, "r", encoding="utf-8") as fp:
+            with open(source_path, "r", encoding="utf-8", errors="replace") as fp:
                 lines.extend(fp.readlines())
                 if len(lines) > safe_limit:
                     lines = lines[-safe_limit:]

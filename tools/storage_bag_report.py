@@ -343,7 +343,7 @@ def read_latest_snapshots(
     stats = ParseStats()
     snapshots: dict[str, BagSnapshot] = {}
     for log_file in iter_log_files(messages_dir, since=since, until=until):
-        with log_file.open("r", encoding="utf-8") as f:
+        with log_file.open("r", encoding="utf-8", errors="replace") as f:
             for line_no, raw_line in enumerate(f, 1):
                 stats.scanned_lines += 1
                 try:

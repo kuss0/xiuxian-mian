@@ -104,6 +104,17 @@ class SafetyWatchdogTests(unittest.TestCase):
         self.assertEqual(1, len(filtered))
         self.assertEqual("", safety_watchdog.find_send_breach(filtered, now, self._config()))
 
+    def test_read_recent_log_lines_tolerates_invalid_utf8_bytes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = safety_watchdog.Path(tmpdir) / "2026-06-16.log"
+            payload = {"ts": "2026-06-16 23:30:00", "event_type": "sent", "sender_id": 301299112, "text": ".小世界"}
+            log_path.write_bytes(b"\xe5\n" + safety_watchdog.json.dumps(payload).encode("utf-8") + b"\n")
+
+            rows = safety_watchdog.read_recent_log_lines(log_path, 10)
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(".小世界", rows[0]["text"])
+
     def test_dungeon_join_repeat_is_not_same_command_fuse(self):
         now = time.time()
         sender_id = 8659059191

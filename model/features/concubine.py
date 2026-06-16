@@ -1239,7 +1239,7 @@ def _iter_message_log_entries_between(start_ts, end_ts):
         log_file = os.path.join(MESSAGES_DIR, f"{day.isoformat()}.log")
         if os.path.exists(log_file):
             try:
-                with open(log_file, "r", encoding="utf-8") as handle:
+                with open(log_file, "r", encoding="utf-8", errors="replace") as handle:
                     for line in handle:
                         try:
                             yield json.loads(line)
@@ -1666,7 +1666,7 @@ def _read_recent_message_log_candidates(now, phase):
     start = float(now) - CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC
     candidates = []
     try:
-        with open(log_file, "r", encoding="utf-8") as handle:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as handle:
             lines = handle.readlines()[-CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES:]
     except OSError:
         return []

@@ -389,7 +389,7 @@ def _recover_daily_count_from_message_log(record, now):
         if not os.path.exists(path):
             continue
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
                 lines = deque(handle, maxlen=2000)
         except OSError:
             continue
@@ -428,7 +428,7 @@ def _recover_identity_daily_count_from_message_log(identity_id, now):
         if not os.path.exists(path):
             continue
         try:
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
                 lines = deque(handle, maxlen=5000)
         except OSError:
             continue
