@@ -38,6 +38,7 @@ YINLUO_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
 YINLUO_AUTO_CHAIN_STEP_SEC = 2 * 60
 YINLUO_AUTO_CALIBRATE_RETRY_SEC = 10 * 60
 YINLUO_AUTO_COLLECT_CONFIRM_TIMEOUT_SEC = 5 * 60
+YINLUO_AUTO_REFINE_CONFIRM_TIMEOUT_SEC = 10 * 60
 YINLUO_REFINING_DUE_RECHECK_SEC = 10 * 60
 YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC = 8 * 3600
 YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC = 4 * 3600
@@ -453,7 +454,7 @@ def _yinluo_result_day_key(now, event_context=None):
     return get_day_key(now)
 
 
-def _restore_auto_refine_pending(observed):
+def _restore_auto_refine_pending(observed, reason="囚禁魂魄失败，需查幡校准。"):
     pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
     if not pending:
         return observed
@@ -466,7 +467,7 @@ def _restore_auto_refine_pending(observed):
     if isinstance(pending.get("pre_soul_stocks"), dict):
         observed["soul_stocks"] = copy.deepcopy(pending.get("pre_soul_stocks") or {})
     observed["auto_refine_pending"] = {}
-    observed["auto_calibrate_reason"] = "囚禁魂魄失败，需查幡校准。"
+    observed["auto_calibrate_reason"] = str(reason or "囚禁魂魄失败，需查幡校准。")
     return observed
 
 
@@ -1475,6 +1476,19 @@ def _mark_refine_slot_sent(observed, command, sent_at=0):
     return observed
 
 
+def _has_refine_pending(observed):
+    pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
+    return _safe_int(pending.get("slot")) > 0 and str(pending.get("target") or "").strip()
+
+
+def _refine_pending_expired(observed, now):
+    pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
+    if not _has_refine_pending(observed):
+        return False
+    sent_at = _safe_float(pending.get("sent_at"), 0)
+    return sent_at <= 0 or float(now) - sent_at >= YINLUO_AUTO_REFINE_CONFIRM_TIMEOUT_SEC
+
+
 def _has_recent_observation(observed, now):
     last_observed_at = float(observed.get("last_observed_at", 0) or 0)
     return last_observed_at > 0 and now - last_observed_at <= YINLUO_OBSERVATION_STALE_SEC
@@ -1584,6 +1598,8 @@ def _has_yinluo_due_followup(observed, now):
     if str(observed.get("auto_calibrate_reason") or "").strip():
         return True
     if _has_collect_pending(observed):
+        return True
+    if _has_refine_pending(observed):
         return True
     if _auto_action_enabled(observed, "collect") and int(observed.get("ready_slots", 0) or 0) > 0:
         return True
@@ -1777,6 +1793,20 @@ async def run_yinluo_scheduler(now):
             f"{pending_action}上一轮仍在结算中，暂停自动发送。",
         )
         return
+
+    if _has_refine_pending(observed):
+        if not _refine_pending_expired(observed, now):
+            _set_yinluo_auto_wait(
+                observed,
+                now,
+                "refine_pending",
+                now + YINLUO_AUTO_CHAIN_STEP_SEC,
+                "囚禁魂魄已发送，等待真实回复确认。",
+            )
+            return
+        observed = _restore_auto_refine_pending(observed, "囚禁魂魄等待回复超时，需查幡校准。")
+        state["yinluo_observation"] = observed
+        save_state()
 
     if _has_collect_pending(observed):
         if not _collect_pending_expired(observed, now):
