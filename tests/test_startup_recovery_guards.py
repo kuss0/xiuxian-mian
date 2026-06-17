@@ -297,6 +297,59 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["next_tianti_status_time"])
             self.assertEqual(now - 1, state_module.state["next_tianti_gangfeng_time"])
 
+    def test_tianti_recovery_keeps_skip_reason_for_empty_daily_marker(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_gangfeng_enabled"] = True
+            state_module.state["tianti_last_wenxin_day"] = ""
+            state_module.state["tianti_wenxin_last_trigger_key"] = ""
+            state_module.state["tianti_last_skip_reason"] = "wait_final_stage"
+            state_module.state["tianti_theoretical_max_stage"] = 12
+            state_module.state["tianti_wenxin_trigger_stage"] = 11
+            state_module.state["next_tianti_climb_time"] = now + 3600
+            state_module.state["next_tianti_gangfeng_time"] = now + 7200
+            state_module.state["tianti_progress_current"] = 8
+            state_module.state["tianti_cycle_count"] = 39
+            state_module.state["tianti_gangfeng_level"] = 12
+            state_module.state["tianti_cooldown_text"] = "1小时"
+
+        control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("wait_final_stage", state_module.state["tianti_last_skip_reason"])
+            self.assertEqual(12, state_module.state["tianti_theoretical_max_stage"])
+            self.assertEqual(11, state_module.state["tianti_wenxin_trigger_stage"])
+
+    def test_tianti_recovery_clears_stale_daily_marker(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tianti_enabled"] = True
+            state_module.state["tianti_wenxin_enabled"] = True
+            state_module.state["tianti_last_wenxin_day"] = "2023-11-13"
+            state_module.state["tianti_wenxin_last_trigger_key"] = "2023-11-13|11|12|bucket=1|final_stage"
+            state_module.state["tianti_gangfeng_last_trigger_key"] = "2023-11-13|stage=11|bucket=1"
+            state_module.state["tianti_last_skip_reason"] = "trigger_key_hit"
+            state_module.state["tianti_theoretical_max_stage"] = 12
+            state_module.state["tianti_wenxin_trigger_stage"] = 11
+            state_module.state["next_tianti_wenxin_time"] = now + 3600
+
+        control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("", state_module.state["tianti_last_wenxin_day"])
+            self.assertEqual("", state_module.state["tianti_wenxin_last_trigger_key"])
+            self.assertEqual("", state_module.state["tianti_gangfeng_last_trigger_key"])
+            self.assertEqual("", state_module.state["tianti_last_skip_reason"])
+            self.assertEqual(0, state_module.state["tianti_theoretical_max_stage"])
+            self.assertEqual(0, state_module.state["tianti_wenxin_trigger_stage"])
+            self.assertEqual(0, state_module.state["next_tianti_wenxin_time"])
+
     def test_tree_recovery_does_not_query_status_for_normal_due_timer(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

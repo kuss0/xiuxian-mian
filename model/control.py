@@ -362,6 +362,14 @@ def _has_fresh_tianti_recovery_status(now):
     return seen_at > 0 and float(now or 0) - seen_at <= TIANTI_RECOVERY_STATUS_FRESH_SEC
 
 
+def _has_stale_tianti_daily_marker(today_key):
+    last_wenxin_day = str(state.get("tianti_last_wenxin_day") or "")
+    trigger_key = str(state.get("tianti_wenxin_last_trigger_key") or "")
+    if last_wenxin_day and last_wenxin_day != today_key:
+        return True
+    return bool(trigger_key and not trigger_key.startswith(f"{today_key}|"))
+
+
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
         return now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC)
@@ -799,7 +807,7 @@ def _manual_disable_tianti_module_state():
 def _manual_enable_tianti_module_state(now):
     state["tianti_enabled"] = True
     today_key = get_day_key(now)
-    if str(state.get("tianti_last_wenxin_day") or "") != today_key:
+    if _has_stale_tianti_daily_marker(today_key):
         state["tianti_last_wenxin_day"] = ""
         state["tianti_wenxin_last_trigger_key"] = ""
         state["tianti_gangfeng_last_trigger_key"] = ""
@@ -2819,7 +2827,7 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:
             today_key = get_day_key(now)
-            if str(state.get("tianti_last_wenxin_day") or "") != today_key:
+            if _has_stale_tianti_daily_marker(today_key):
                 state["tianti_last_wenxin_day"] = ""
                 state["tianti_wenxin_last_trigger_key"] = ""
                 state["tianti_gangfeng_last_trigger_key"] = ""
