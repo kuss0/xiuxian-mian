@@ -57,7 +57,9 @@ const PASSIVE_INBOX_LABELS = {
   unresolved_identity: '身份未归因',
   unknown: '未知',
   wild_training: '野外历练',
-  yinluo_refine: '阴罗炼化'
+  yinluo_collect: '阴罗收取',
+  yinluo_refine: '阴罗炼化',
+  yinluo_soothe: '阴罗安抚'
 };
 
 function passiveInboxLabel(value) {

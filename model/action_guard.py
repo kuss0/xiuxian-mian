@@ -46,6 +46,7 @@ from .config import (
     CMD_YINLUO_DEMON_SUMMON,
     CMD_YINLUO_POSSESS,
     CMD_YINLUO_REFINE,
+    CMD_YINLUO_SOOTHE,
     CMD_YINDAO,
     CMD_YUANYING,
 )
@@ -327,6 +328,13 @@ ACTION_SPECS = {
         "max_attempts": 1,
         "ttl_sec": 30 * 60,
     },
+    "yinluo_soothe": {
+        "commands": (CMD_YINLUO_SOOTHE,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "安抚幡灵",
+        "max_attempts": 1,
+        "ttl_sec": 30 * 60,
+    },
     "yinluo_blood_forest": {
         "commands": (CMD_YINLUO_BLOOD_FOREST,),
         "kind": ACTION_KIND_HIGH_RISK,
@@ -398,6 +406,7 @@ FAMILY_TO_ACTION_KEYS = {
     "yinluo_convert": ("yinluo_convert",),
     "yinluo_collect": ("yinluo_collect",),
     "yinluo_refine": ("yinluo_refine",),
+    "yinluo_soothe": ("yinluo_soothe",),
     "yinluo_blood_forest": ("yinluo_blood_forest",),
     "yinluo_curse": ("yinluo_curse",),
     "yinluo_possess": ("yinluo_possess",),

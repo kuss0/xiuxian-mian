@@ -66,8 +66,49 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual([1], parsed["ready_slot_numbers"])
         self.assertEqual([2, 3, 4, 5, 6, 7, 8, 9], parsed["empty_slot_numbers"])
         self.assertEqual(4, parsed["soul_stocks"]["妖兽精魄"])
+        self.assertEqual(0, parsed["soul_lineage"]["妖兽精魄"])
+        self.assertEqual("+0%", parsed["banner_traits"]["斗法拘魂"])
         self.assertNotIn("妖兽精魄 · 血煞幡", parsed["soul_stocks"])
         self.assertNotIn("凶兽戾魄 · 灭法幡", parsed["soul_stocks"])
+
+    def test_banner_parses_exhausted_slots_and_live_lineage_traits(self):
+        parsed = yinluo.parse_yinluo_text(
+            "【缘初子的阴罗幡】\n"
+            "本命魔兵: 灭法幡\n"
+            "幡体等阶: 三阶下品\n"
+            "煞气池: 1060 / 15000 (7%)\n"
+            "幡威状态: 幡息沉潜\n"
+            "主魂流派: 灭法幡\n"
+            "幡魂总炼化: 10 缕\n"
+            "武器战力加成: +4% (幡阶 3% / 主魂 1% / 煞涌 0%)\n"
+            "\n"
+            "幡魂谱系:\n"
+            " - 怨魂 · 摄魂幡: 0 缕\n"
+            " - 修士残魂 · 噬灵幡: 0 缕\n"
+            " - 妖兽精魄 · 血煞幡: 1 缕\n"
+            " - 凶兽戾魄 · 灭法幡: 9 缕 ★\n"
+            "\n"
+            "当前特性:\n"
+            " - 斗法拘魂: +10%\n"
+            " - 召魔镇压: +10%\n"
+            "\n"
+            "魂魄储备:\n"
+            " - 妖兽精魄: 40 缕\n"
+            "\n"
+            "炼化槽:\n"
+            "1号槽: [精华已成] - 凶兽戾魄\n"
+            "2号槽: [精华已成] - 妖兽精魄\n"
+            "3号槽: [魂力枯竭] ❗\n"
+            "4号槽: [空闲]\n",
+            now=1_781_704_200.0,
+            family="yinluo_banner",
+        )
+
+        self.assertEqual([1, 2], parsed["ready_slot_numbers"])
+        self.assertEqual([3], parsed["exhausted_slot_numbers"])
+        self.assertEqual([4], parsed["empty_slot_numbers"])
+        self.assertEqual(9, parsed["soul_lineage"]["凶兽戾魄"])
+        self.assertEqual("+10%", parsed["banner_traits"]["召魔镇压"])
 
     def test_banner_zero_second_refining_slot_schedules_recheck_not_collect(self):
         now = 1_781_443_187.0
@@ -110,6 +151,7 @@ class YinluoParserTests(unittest.TestCase):
         failed = yinluo.parse_yinluo_text(real_text("yinluo.demon_summon.failed_backlash"), now=now)
         daily_sacrifice = yinluo.parse_yinluo_text(real_text("yinluo.daily_sacrifice.success"), now=1_779_450_000.0)
         daily_cooldown = yinluo.parse_yinluo_text(real_text("yinluo.daily_sacrifice.cooldown"), now=1_779_450_000.0)
+        soothe = yinluo.parse_yinluo_text("安抚成功！\n你消耗了 50 点修为，成功安抚了 1 个炼化槽。", now=1_779_450_000.0)
         convert = yinluo.parse_yinluo_text("【转化成功】\n你成功将 10000 点修为炼化，煞气池增加了 2000 点！", now=1_779_450_000.0)
         retreat = yinluo.parse_yinluo_text(real_text("yinluo.retreat.success_bonus"), now=1_779_450_000.0)
 
@@ -134,6 +176,10 @@ class YinluoParserTests(unittest.TestCase):
         self.assertEqual("每日献祭", daily_cooldown["action"])
         self.assertEqual("cooldown", daily_cooldown["result"])
         self.assertGreater(daily_cooldown["next_daily_sacrifice_time"], 1_779_450_000.0)
+        self.assertEqual("安抚幡灵", soothe["action"])
+        self.assertEqual("success", soothe["result"])
+        self.assertEqual(50, soothe["last_soothe_cost"])
+        self.assertEqual(1, soothe["last_soothe_count"])
         self.assertEqual("化功为煞", convert["action"])
         self.assertEqual(10000, convert["last_convert_amount"])
         self.assertEqual(2000, convert["last_sha_gain"])
@@ -877,6 +923,76 @@ class YinluoSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".囚禁魂魄 4 凶兽戾魄", send_mock.await_args.args[0])
         self.assertEqual(4, observed["auto_refine_pending"]["slot"])
+
+    async def test_scheduler_auto_soothes_lowest_exhausted_slot(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "灭法幡",
+            "ready_slots": 0,
+            "exhausted_slot_numbers": [5, 3],
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_config": {
+                "collect": True,
+                "refine": True,
+                "soothe": True,
+                "blood_forest": False,
+                "demon_summon": False,
+                "convert": False,
+                "refine_targets": ["凶兽戾魄"],
+            },
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".安抚幡灵 3", send_mock.await_args.args[0])
+        self.assertEqual("soothe", observed["auto_last_action"])
+        self.assertEqual({"slot": 3, "sent_at": now}, observed["auto_soothe_pending"])
+        self.assertEqual([5], observed["exhausted_slot_numbers"])
+
+    async def test_scheduler_waits_for_soothe_reply_before_repeat(self):
+        now = 1_780_000_000.0
+        send_mock, observed = await self._run_with_observation({
+            "last_observed_at": now - 60,
+            "banner_owner": "缘初子",
+            "banner_name": "灭法幡",
+            "ready_slots": 0,
+            "exhausted_slot_numbers": [5],
+            "auto_soothe_pending": {"slot": 3, "sent_at": now - 30},
+            "next_blood_forest_time": now + 3600,
+            "next_demon_summon_time": now + 3600,
+            "auto_next_time": now - 1,
+        }, now=now)
+
+        send_mock.assert_not_called()
+        self.assertEqual("soothe_pending", observed["auto_last_action"])
+        self.assertIn("等待真实回复", observed["auto_last_error"])
+        self.assertEqual(3, observed["auto_soothe_pending"]["slot"])
+
+    def test_soothe_success_clears_pending_and_requests_banner_calibration(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 60,
+                "banner_owner": "缘初子",
+                "banner_name": "灭法幡",
+                "exhausted_slot_numbers": [3],
+                "auto_soothe_pending": {"slot": 3, "sent_at": now - 10},
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(
+                "安抚成功！\n你消耗了 50 点修为，成功安抚了 1 个炼化槽。",
+                now=now,
+            ))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual("安抚幡灵", observed["last_action"])
+        self.assertEqual({}, observed["auto_soothe_pending"])
+        self.assertEqual([], observed["exhausted_slot_numbers"])
+        self.assertIn(3, observed["refining_slot_numbers"])
+        self.assertIn("查幡确认", observed["auto_calibrate_reason"])
 
     async def test_scheduler_does_not_auto_refine_without_selected_targets(self):
         now = 1_780_000_000.0
@@ -1818,6 +1934,35 @@ class YinluoUiActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(ui_state["observed"]["sha_known"])
         self.assertEqual(0, ui_state["observed"]["sha_current"])
         self.assertEqual(0, ui_state["observed"]["sha_max"])
+
+    def test_ui_state_exposes_yinluo_banner_details_and_blocked_slots(self):
+        send_as_id = self._prepare_identity(3309, sect_name="阴罗宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_450_000.0,
+                "banner_name": "灭法幡",
+                "banner_rank": "三阶下品",
+                "banner_status": "幡息沉潜",
+                "battle_bonus_percent": 5,
+                "ready_slot_numbers": [3],
+                "collect_blocked_ready_slot_numbers": [2, 4],
+                "refining_slot_numbers": [6],
+                "empty_slot_numbers": [1, 7],
+                "exhausted_slot_numbers": [5],
+                "soul_lineage": {"凶兽戾魄": 10},
+                "banner_traits": {"斗法拘魂": "+10%"},
+                "soul_stocks": {"妖兽精魄": 40},
+            }
+            ui_state = yinluo.get_yinluo_ui_state(now=1_779_450_060.0)
+
+        observed = ui_state["observed"]
+        self.assertEqual("灭法幡", observed["banner_name"])
+        self.assertEqual("三阶下品", observed["banner_rank"])
+        self.assertEqual(5, observed["battle_bonus_percent"])
+        self.assertEqual([2, 4], observed["collect_blocked_ready_slot_numbers"])
+        self.assertEqual([5], observed["exhausted_slot_numbers"])
+        self.assertEqual(10, observed["soul_lineage"]["凶兽戾魄"])
+        self.assertEqual("+10%", observed["banner_traits"]["斗法拘魂"])
 
     def test_set_auto_config_same_value_normalizes_partial_observation(self):
         send_as_id = self._prepare_identity(3305, sect_name="阴罗宗")

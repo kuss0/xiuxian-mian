@@ -12,6 +12,7 @@ from ..config import (
     CMD_YINLUO_DAILY_SACRIFICE,
     CMD_YINLUO_DEMON_SUMMON,
     CMD_YINLUO_REFINE,
+    CMD_YINLUO_SOOTHE,
     TZ_LOCAL,
 )
 from ..persistence import save_state
@@ -39,6 +40,7 @@ YINLUO_AUTO_CHAIN_STEP_SEC = 2 * 60
 YINLUO_AUTO_CALIBRATE_RETRY_SEC = 10 * 60
 YINLUO_AUTO_COLLECT_CONFIRM_TIMEOUT_SEC = 5 * 60
 YINLUO_AUTO_REFINE_CONFIRM_TIMEOUT_SEC = 10 * 60
+YINLUO_AUTO_SOOTHE_CONFIRM_TIMEOUT_SEC = 5 * 60
 YINLUO_REFINING_DUE_RECHECK_SEC = 10 * 60
 YINLUO_DEMON_SUMMON_OBSERVED_CD_SEC = 8 * 3600
 YINLUO_BLOOD_FOREST_OBSERVED_CD_SEC = 4 * 3600
@@ -46,6 +48,7 @@ YINLUO_DEMON_SUMMON_MIN_REALM = "结丹初期"
 YINLUO_CONVERT_OBSERVED_CD_SEC = 60 * 60
 YINLUO_CONVERT_MIN_AMOUNT = 1000
 YINLUO_CONVERT_MAX_AMOUNT = 50000
+YINLUO_SOOTHE_XIUWEI_COST = 50
 YINLUO_PHASEFUL_RISK_RETRY_SEC = 2 * 60
 
 RE_BANNER_TITLE = re.compile(r"【(?P<owner>[^】]+)的阴罗幡】")
@@ -59,6 +62,8 @@ RE_COLLECT_SLOT = re.compile(r"你从\s*(?P<count>\d+)\s*个炼化槽中获得�
 RE_COLLECT_SOUL_GAIN = re.compile(r"幡魂谱系精进[:：]\s*(?P<name>[^+。]+)\+(?P<count>\d+)")
 RE_SLOT_LINE = re.compile(r"^\s*(?P<slot>\d+)号槽[:：]\s*\[(?P<status>[^\]]+)\]")
 RE_READY_SLOT_DETAIL = re.compile(r"^\s*(?P<slot>\d+)号槽[:：]\s*\[精华已成\]\s*-\s*(?P<target>.+?)\s*$")
+RE_SOUL_LINEAGE = re.compile(r"^\s*-\s*(?P<name>[^·]+)\s*·\s*(?P<path>[^:：]+)[:：]\s*(?P<count>\d+)\s*缕")
+RE_BANNER_TRAIT = re.compile(r"^\s*-\s*(?P<name>[^:：]+)[:：]\s*(?P<value>[+\-]?\d+%)")
 RE_BLOOD_SOUL_GAIN = re.compile(r"成功捕获了\s*(?P<count>\d+)\s*缕【(?P<name>[^】]+)】")
 RE_BLOOD_EXTRA_ITEM = re.compile(r"额外发现了\s*【(?P<name>[^】]+)】x(?P<count>\d+)")
 RE_BLOOD_EXTRA_SOUL = re.compile(r"额外拘来\s*(?P<count>\d+)\s*缕【(?P<name>[^】]+)】")
@@ -70,12 +75,13 @@ RE_REFINE_SUCCESS = re.compile(r"一缕【(?P<name>[^】]+)】被强行打入(?P
 RE_REFINE_SHA_SHORTAGE = re.compile(r"炼化需要消耗\s*(?P<cost>\d+)\s*点煞气")
 RE_REFINE_MISSING_SOUL = re.compile(r"魂魄袋中没有【(?P<name>[^】]+)】")
 RE_REFINE_SLOT_BUSY = re.compile(r"炼化槽正在运转中.*无法囚禁新的魂魄")
+RE_SOOTHE_SUCCESS = re.compile(r"消耗了\s*(?P<cost>\d+)\s*点修为.*成功安抚了\s*(?P<count>\d+)\s*个炼化槽")
 RE_REFINING_SLOT_DETAIL = re.compile(
     r"^\s*(?P<slot>\d+)号槽[:：]\s*\[炼化中\]\s*-\s*(?P<target>[^()]+?)(?:\s*\(剩余[:：]\s*(?P<remaining>[^)]+)\))?\s*$"
 )
 
 YINLUO_AUTO_REFINE_TARGETS = ()
-YINLUO_AUTO_ACTION_KEYS = ("collect", "daily_sacrifice", "refine", "blood_forest", "demon_summon", "convert")
+YINLUO_AUTO_ACTION_KEYS = ("collect", "daily_sacrifice", "refine", "soothe", "blood_forest", "demon_summon", "convert")
 
 
 def _default_yinluo_auto_config():
@@ -83,6 +89,7 @@ def _default_yinluo_auto_config():
         "collect": True,
         "daily_sacrifice": False,
         "refine": True,
+        "soothe": True,
         "blood_forest": True,
         "demon_summon": True,
         "convert": False,
@@ -114,12 +121,15 @@ def _default_yinluo_observation():
         "main_soul_path": "",
         "soul_total": 0,
         "battle_bonus_percent": 0,
+        "soul_lineage": {},
+        "banner_traits": {},
         "soul_stocks": {},
         "ready_slots": 0,
         "ready_slot_numbers": [],
         "ready_slots_detail": [],
         "collect_blocked_slots": {},
         "collect_blocked_ready_slot_numbers": [],
+        "exhausted_slot_numbers": [],
         "refining_slots": 0,
         "refining_slot_numbers": [],
         "refining_slots_detail": [],
@@ -130,6 +140,8 @@ def _default_yinluo_observation():
         "last_extra_soul_name": "",
         "last_refine_slot": 0,
         "last_refine_cost": 0,
+        "last_soothe_count": 0,
+        "last_soothe_cost": 0,
         "last_convert_amount": 0,
         "last_collect_count": 0,
         "last_soul_gain": 0,
@@ -146,6 +158,7 @@ def _default_yinluo_observation():
         "auto_calibrate_reason": "",
         "auto_collect_pending": {},
         "auto_refine_pending": {},
+        "auto_soothe_pending": {},
         "auto_config": _default_yinluo_auto_config(),
         "recent": [],
     }
@@ -164,6 +177,25 @@ def normalize_yinluo_observation(value=None):
             continue
         cleaned_stocks[stock_name] = max(0, _safe_int(count))
     observed["soul_stocks"] = cleaned_stocks
+    if not isinstance(observed.get("soul_lineage"), dict):
+        observed["soul_lineage"] = {}
+    cleaned_lineage = {}
+    for name, count in observed.get("soul_lineage", {}).items():
+        lineage_name = str(name or "").strip()
+        if not lineage_name:
+            continue
+        cleaned_lineage[lineage_name] = max(0, _safe_int(count))
+    observed["soul_lineage"] = cleaned_lineage
+    if not isinstance(observed.get("banner_traits"), dict):
+        observed["banner_traits"] = {}
+    cleaned_traits = {}
+    for name, value in observed.get("banner_traits", {}).items():
+        trait_name = str(name or "").strip()
+        trait_value = str(value or "").strip()
+        if not trait_name or not trait_value:
+            continue
+        cleaned_traits[trait_name] = trait_value
+    observed["banner_traits"] = cleaned_traits
     observed["auto_config"] = normalize_yinluo_auto_config(observed.get("auto_config"))
     collect_pending = observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}
     collect_slots = []
@@ -180,7 +212,16 @@ def normalize_yinluo_observation(value=None):
         observed["auto_collect_pending"] = {}
     if not isinstance(observed.get("auto_refine_pending"), dict):
         observed["auto_refine_pending"] = {}
-    for key in ("ready_slot_numbers", "collect_blocked_ready_slot_numbers", "empty_slot_numbers", "refining_slot_numbers"):
+    soothe_pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
+    soothe_slot = _safe_int(soothe_pending.get("slot"))
+    if 1 <= soothe_slot <= 99:
+        observed["auto_soothe_pending"] = {
+            "slot": soothe_slot,
+            "sent_at": float(soothe_pending.get("sent_at", 0) or 0),
+        }
+    else:
+        observed["auto_soothe_pending"] = {}
+    for key in ("ready_slot_numbers", "collect_blocked_ready_slot_numbers", "empty_slot_numbers", "refining_slot_numbers", "exhausted_slot_numbers"):
         if not isinstance(observed.get(key), list):
             observed[key] = []
         slot_numbers = []
@@ -228,7 +269,7 @@ def normalize_yinluo_observation(value=None):
         except (TypeError, ValueError):
             observed[key] = 0
     observed["last_daily_sacrifice_day"] = str(observed.get("last_daily_sacrifice_day") or "").strip()
-    for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain"):
+    for key in ("sha_current", "sha_max", "sha_percent", "soul_total", "battle_bonus_percent", "ready_slots", "refining_slots", "empty_slots", "last_refine_slot", "last_refine_cost", "last_soothe_count", "last_soothe_cost", "last_convert_amount", "last_collect_count", "last_soul_gain", "last_extra_soul_gain", "last_sha_gain", "last_extra_sha_gain", "last_backlash_loss", "last_bonus_gain"):
         try:
             observed[key] = int(observed.get(key, 0) or 0)
         except (TypeError, ValueError):
@@ -487,6 +528,9 @@ def _parse_non_member(raw_text):
     elif "阴罗幡" in raw_text:
         action = "阴罗幡"
         error = "无法催动阴罗幡"
+    elif "幡灵" in raw_text:
+        action = "安抚幡灵"
+        error = "无法安抚幡灵"
     elif "转化魔功" in raw_text:
         action = "化功为煞"
         error = "不懂此等转化魔功"
@@ -526,6 +570,8 @@ def looks_like_yinluo_text(text):
     if "你引动九幽煞气灌入幡中" in raw_text or ("【转化成功】" in raw_text and "煞气池增加" in raw_text):
         return True
     if "今日已献祭" in raw_text and "幡灵已饱" in raw_text:
+        return True
+    if "安抚" in raw_text and "幡灵" in raw_text:
         return True
     if "你开始运转魔功" in raw_text and "煞气" in raw_text:
         return True
@@ -573,21 +619,42 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "summary": "阴罗幡状态",
             "last_error": "",
             "banner_owner": title_match.group("owner").strip(),
+            "soul_lineage": {},
+            "banner_traits": {},
             "soul_stocks": {},
             "ready_slot_numbers": [],
             "ready_slots_detail": [],
             "empty_slot_numbers": [],
+            "exhausted_slot_numbers": [],
             "refining_slot_numbers": [],
             "refining_slots_detail": [],
         }
         in_soul_stock_section = False
+        in_lineage_section = False
+        in_trait_section = False
         for line in raw_text.splitlines():
             stripped = line.strip()
             if stripped.startswith("魂魄储备"):
                 in_soul_stock_section = True
+                in_lineage_section = False
+                in_trait_section = False
+                continue
+            if stripped.startswith("幡魂谱系"):
+                in_lineage_section = True
+                in_soul_stock_section = False
+                in_trait_section = False
+                continue
+            if stripped.startswith("当前特性"):
+                in_trait_section = True
+                in_soul_stock_section = False
+                in_lineage_section = False
                 continue
             if in_soul_stock_section and stripped and not stripped.startswith("-"):
                 in_soul_stock_section = False
+            if in_lineage_section and stripped and not stripped.startswith("-"):
+                in_lineage_section = False
+            if in_trait_section and stripped and not stripped.startswith("-"):
+                in_trait_section = False
             if stripped.startswith("本命魔兵"):
                 parsed["banner_name"] = stripped.split(":", 1)[-1].strip() if ":" in stripped else stripped.split("：", 1)[-1].strip()
             elif stripped.startswith("幡体等阶"):
@@ -600,6 +667,14 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
                 stock_match = RE_SOUL_STOCK.match(stripped)
                 if stock_match:
                     parsed["soul_stocks"][stock_match.group("name").strip()] = int(stock_match.group("count") or 0)
+            elif in_lineage_section:
+                lineage_match = RE_SOUL_LINEAGE.match(stripped)
+                if lineage_match:
+                    parsed["soul_lineage"][lineage_match.group("name").strip()] = int(lineage_match.group("count") or 0)
+            elif in_trait_section:
+                trait_match = RE_BANNER_TRAIT.match(stripped)
+                if trait_match:
+                    parsed["banner_traits"][trait_match.group("name").strip()] = trait_match.group("value").strip()
             slot_match = RE_SLOT_LINE.match(stripped)
             if slot_match:
                 slot_no = int(slot_match.group("slot") or 0)
@@ -614,6 +689,8 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
                         })
                 elif "空闲" in slot_status:
                     parsed["empty_slot_numbers"].append(slot_no)
+                elif "魂力枯竭" in slot_status:
+                    parsed["exhausted_slot_numbers"].append(slot_no)
                 elif "炼化中" in slot_status:
                     parsed["refining_slot_numbers"].append(slot_no)
                     detail_match = RE_REFINING_SLOT_DETAIL.match(stripped)
@@ -785,6 +862,17 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "last_error": "今日已献祭",
             "next_daily_sacrifice_time": _next_daily_sacrifice_time(now),
             "last_daily_sacrifice_day": result_day,
+        }
+
+    if "安抚成功" in raw_text and "成功安抚" in raw_text and "炼化槽" in raw_text:
+        match = RE_SOOTHE_SUCCESS.search(raw_text)
+        return {
+            "action": "安抚幡灵",
+            "result": "success",
+            "summary": "安抚幡灵成功",
+            "last_error": "",
+            "last_soothe_cost": int(match.group("cost") or 0) if match else YINLUO_SOOTHE_XIUWEI_COST,
+            "last_soothe_count": int(match.group("count") or 0) if match else 1,
         }
 
     if "【转化成功】" in raw_text and "煞气池增加" in raw_text:
@@ -983,6 +1071,8 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
         "main_soul_path",
         "soul_total",
         "battle_bonus_percent",
+        "soul_lineage",
+        "banner_traits",
         "soul_stocks",
         "ready_slots",
         "ready_slot_numbers",
@@ -992,11 +1082,14 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
         "refining_slots_detail",
         "empty_slots",
         "empty_slot_numbers",
+        "exhausted_slot_numbers",
         "last_resource",
         "last_soul_name",
         "last_extra_soul_name",
         "last_refine_slot",
         "last_refine_cost",
+        "last_soothe_count",
+        "last_soothe_cost",
         "last_convert_amount",
         "last_collect_count",
         "last_soul_gain",
@@ -1070,6 +1163,16 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
             observed = _adjust_soul_stock(observed, resource, -1)
         observed["auto_refine_pending"] = {}
         observed["auto_calibrate_reason"] = ""
+    if parsed.get("action") == "安抚幡灵" and parsed.get("result") == "success":
+        pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
+        slot_no = _safe_int(pending.get("slot"))
+        if 1 <= slot_no <= 99:
+            observed = _remove_slot_number(observed, "exhausted_slot_numbers", slot_no)
+            observed = _append_slot_number(observed, "refining_slot_numbers", slot_no)
+            observed["refining_slots"] = len(observed.get("refining_slot_numbers") or [])
+        observed["auto_soothe_pending"] = {}
+        observed["auto_calibrate_reason"] = "安抚幡灵成功，先查幡确认槽位状态。"
+        _deduct_profile_xiuwei(parsed.get("last_soothe_cost", YINLUO_SOOTHE_XIUWEI_COST))
     if parsed.get("action") == "收取精华" and parsed.get("result") == "success":
         collect_count = max(1, int(parsed.get("last_collect_count", 0) or 0))
         observed, released_slots = _consume_collect_pending(observed, collect_count)
@@ -1113,7 +1216,7 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     elif any(float(observed.get(key, 0) or 0) > now for key in ("next_blood_forest_time", "next_demon_summon_time")):
         observed["auto_next_time"] = _yinluo_next_after_action(observed, now)
-    elif observed.get("last_action") in {"阴罗幡", "召唤魔影", "血洗山林", "收取精华", "囚禁魂魄", "每日献祭"}:
+    elif observed.get("last_action") in {"阴罗幡", "召唤魔影", "血洗山林", "收取精华", "囚禁魂魄", "安抚幡灵", "每日献祭"}:
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     else:
         observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), now + YINLUO_AUTO_STATUS_BACKOFF_SEC)
@@ -1156,6 +1259,9 @@ def _normalize_manual_action(action):
         "炼化": "refine",
         "囚禁": "refine",
         "囚禁魂魄": "refine",
+        "soothe": "soothe",
+        "安抚": "soothe",
+        "安抚幡灵": "soothe",
         "convert": "convert",
         "化煞": "convert",
         "化功": "convert",
@@ -1492,6 +1598,47 @@ def _mark_refine_slot_sent(observed, command, sent_at=0):
     return observed
 
 
+def _build_soothe_command(observed, arg="", now=None):
+    observed = normalize_yinluo_observation(observed)
+    slot_no = _parse_slot_arg(arg)
+    exhausted_slots = list(observed.get("exhausted_slot_numbers") or [])
+    if slot_no <= 0:
+        slot_no = min(exhausted_slots) if exhausted_slots else 0
+    if not (1 <= slot_no <= 99):
+        return "", "安抚幡灵必须指定枯竭槽位，或先查幡记录枯竭槽。"
+    if exhausted_slots and slot_no not in exhausted_slots:
+        return "", f"{slot_no}号槽未记录为魂力枯竭，不发送安抚幡灵。"
+    current = _known_profile_xiuwei_current()
+    if current > 0 and current < YINLUO_SOOTHE_XIUWEI_COST:
+        return "", f"当前修为 {current}，不足以安抚幡灵 {YINLUO_SOOTHE_XIUWEI_COST} 点。"
+    return f"{CMD_YINLUO_SOOTHE} {slot_no}", ""
+
+
+def _mark_soothe_slot_sent(observed, command, sent_at=0):
+    observed = normalize_yinluo_observation(observed)
+    slot_no = _parse_slot_arg(str(command or "").replace(CMD_YINLUO_SOOTHE, "", 1))
+    if slot_no > 0:
+        observed["auto_soothe_pending"] = {
+            "slot": slot_no,
+            "sent_at": float(sent_at or time.time()),
+        }
+        observed = _remove_slot_number(observed, "exhausted_slot_numbers", slot_no)
+    return observed
+
+
+def _has_soothe_pending(observed):
+    pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
+    return _safe_int(pending.get("slot")) > 0
+
+
+def _soothe_pending_expired(observed, now):
+    pending = observed.get("auto_soothe_pending") if isinstance(observed.get("auto_soothe_pending"), dict) else {}
+    if not _has_soothe_pending(observed):
+        return False
+    sent_at = _safe_float(pending.get("sent_at"), 0)
+    return sent_at <= 0 or float(now) - sent_at >= YINLUO_AUTO_SOOTHE_CONFIRM_TIMEOUT_SEC
+
+
 def _has_refine_pending(observed):
     pending = observed.get("auto_refine_pending") if isinstance(observed.get("auto_refine_pending"), dict) else {}
     return _safe_int(pending.get("slot")) > 0 and str(pending.get("target") or "").strip()
@@ -1617,9 +1764,13 @@ def _has_yinluo_due_followup(observed, now):
         return True
     if _has_refine_pending(observed):
         return True
+    if _has_soothe_pending(observed):
+        return True
     if _auto_action_enabled(observed, "collect") and int(observed.get("ready_slots", 0) or 0) > 0:
         return True
     if _auto_action_enabled(observed, "collect") and _has_due_refining_finish(observed, now):
+        return True
+    if _auto_action_enabled(observed, "soothe") and list(observed.get("exhausted_slot_numbers") or []):
         return True
     if _auto_action_enabled(observed, "refine"):
         auto_refine_arg, _reason = _build_auto_refine_arg(observed, now=now)
@@ -1726,6 +1877,17 @@ def build_yinluo_manual_plan(action="banner", arg="", now=None):
             return _manual_block(action, reason, CMD_YINLUO_COLLECT, "yinluo_collect")
         return _manual_allow(action, command, "yinluo_collect", now)
 
+    if action == "soothe":
+        phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_SOOTHE, "yinluo_soothe", now)
+        if phaseful_block:
+            return phaseful_block
+        if _has_soothe_pending(observed):
+            return _manual_block(action, "安抚幡灵上一轮正在等待真实回复，不并行发送。", CMD_YINLUO_SOOTHE, "yinluo_soothe")
+        command, reason = _build_soothe_command(observed, arg, now=now)
+        if not command:
+            return _manual_block(action, reason, CMD_YINLUO_SOOTHE, "yinluo_soothe")
+        return _manual_allow(action, command, "yinluo_soothe", now)
+
     if action == "convert":
         phaseful_block = _phaseful_risk_block(action, CMD_YINLUO_CONVERT, "yinluo_convert", now)
         if phaseful_block:
@@ -1824,6 +1986,21 @@ async def run_yinluo_scheduler(now):
         state["yinluo_observation"] = observed
         save_state()
 
+    if _has_soothe_pending(observed):
+        if not _soothe_pending_expired(observed, now):
+            _set_yinluo_auto_wait(
+                observed,
+                now,
+                "soothe_pending",
+                now + YINLUO_AUTO_CHAIN_STEP_SEC,
+                "安抚幡灵已发送，等待真实回复确认。",
+            )
+            return
+        observed["auto_soothe_pending"] = {}
+        observed["auto_calibrate_reason"] = "安抚幡灵等待回复超时，需查幡校准。"
+        state["yinluo_observation"] = observed
+        save_state()
+
     if _has_collect_pending(observed):
         if not _collect_pending_expired(observed, now):
             _set_yinluo_auto_wait(
@@ -1851,6 +2028,8 @@ async def run_yinluo_scheduler(now):
         observed["auto_calibrate_reason"] = "炼化槽预计到期，先查幡确认精华已成。"
         state["yinluo_observation"] = observed
         plan = build_yinluo_manual_plan("banner", now=now)
+    elif _auto_action_enabled(observed, "soothe") and list(observed.get("exhausted_slot_numbers") or []):
+        plan = build_yinluo_manual_plan("soothe", now=now)
     elif not _has_banner_hint(observed):
         plan = build_yinluo_manual_plan("banner", now=now)
     else:
@@ -1921,6 +2100,9 @@ async def run_yinluo_scheduler(now):
     elif action == "refine":
         observed = _mark_refine_slot_sent(observed, plan.get("command") or "", sent_at)
         observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
+    elif action == "soothe":
+        observed = _mark_soothe_slot_sent(observed, plan.get("command") or "", sent_at)
+        observed["auto_next_time"] = sent_at + YINLUO_AUTO_CHAIN_STEP_SEC
     elif action == "convert":
         observed["next_convert_time"] = max(
             float(observed.get("next_convert_time", 0) or 0),
@@ -1968,6 +2150,9 @@ def _mark_yinluo_sent_plan(plan, sent_at):
         observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
     elif action == "refine":
         observed = _mark_refine_slot_sent(observed, command, sent_at)
+        observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
+    elif action == "soothe":
+        observed = _mark_soothe_slot_sent(observed, command, sent_at)
         observed["auto_next_time"] = max(float(observed.get("auto_next_time", 0) or 0), float(sent_at) + YINLUO_AUTO_CHAIN_STEP_SEC)
     elif action == "convert":
         observed["next_convert_time"] = max(
@@ -2054,10 +2239,18 @@ def get_yinluo_ui_state(now=None):
             "sha_current": sha_current,
             "sha_max": sha_max,
             "sha_known": sha_known,
+            "banner_name": str(observed.get("banner_name") or ""),
+            "banner_rank": str(observed.get("banner_rank") or ""),
+            "banner_status": str(observed.get("banner_status") or ""),
+            "battle_bonus_percent": int(observed.get("battle_bonus_percent", 0) or 0),
             "ready_slot_numbers": list(observed.get("ready_slot_numbers") or []),
+            "collect_blocked_ready_slot_numbers": list(observed.get("collect_blocked_ready_slot_numbers") or []),
             "empty_slot_numbers": list(observed.get("empty_slot_numbers") or []),
             "refining_slot_numbers": list(observed.get("refining_slot_numbers") or []),
+            "exhausted_slot_numbers": list(observed.get("exhausted_slot_numbers") or []),
             "soul_stocks": copy.deepcopy(observed.get("soul_stocks") if isinstance(observed.get("soul_stocks"), dict) else {}),
+            "soul_lineage": copy.deepcopy(observed.get("soul_lineage") if isinstance(observed.get("soul_lineage"), dict) else {}),
+            "banner_traits": copy.deepcopy(observed.get("banner_traits") if isinstance(observed.get("banner_traits"), dict) else {}),
             "auto_collect_pending": copy.deepcopy(observed.get("auto_collect_pending") if isinstance(observed.get("auto_collect_pending"), dict) else {}),
             "auto_calibrate_reason": str(observed.get("auto_calibrate_reason") or ""),
         },
@@ -2100,12 +2293,29 @@ def _format_soul_stocks(stocks):
     return "、".join(f"{name}:{count}" for name, count in stocks.items())
 
 
+def _format_soul_lineage(lineage):
+    if not isinstance(lineage, dict) or not lineage:
+        return "未记录"
+    return "、".join(f"{name}:{count}" for name, count in lineage.items())
+
+
+def _format_banner_traits(traits):
+    if not isinstance(traits, dict) or not traits:
+        return "未记录"
+    return "、".join(f"{name}:{value}" for name, value in traits.items())
+
+
 def _format_ready_slots(observed):
     ready_slots = int(observed.get("ready_slots", 0) or 0)
     ready_slot_numbers = list(observed.get("ready_slot_numbers") or [])
     if ready_slot_numbers:
         return f"{ready_slots}（{','.join(str(slot) for slot in ready_slot_numbers)}号）"
     return str(ready_slots)
+
+
+def _format_slot_numbers(values):
+    numbers = [str(_safe_int(value)) for value in (values or []) if _safe_int(value) > 0]
+    return "、".join(numbers) + "号" if numbers else "无"
 
 
 def get_yinluo_status_text():
@@ -2121,6 +2331,7 @@ def get_yinluo_status_text():
     enabled_actions = [label for key, label in (
         ("collect", "收取"),
         ("refine", "炼化"),
+        ("soothe", "安抚"),
         ("blood_forest", "血洗"),
         ("demon_summon", "召魔"),
         ("convert", "化煞"),
@@ -2128,12 +2339,14 @@ def get_yinluo_status_text():
     lines = [
         "🌑 阴罗宗",
         f"- 模块：{'开启' if state.get('yinluo_enabled') else '关闭'}（被动观察，手动动作受控发送）",
-        "- 已收录：阴罗幡、收取精华、囚禁魂魄自动/手动、每日献祭成功/已献祭、召唤魔影成功/失败/冷却、血洗山林中间态/成功/冷却、闭关灵脉加成、非弟子失败",
+        "- 已收录：阴罗幡、收取精华、囚禁魂魄自动/手动、安抚幡灵、每日献祭成功/已献祭、召唤魔影成功/失败/冷却、血洗山林中间态/成功/冷却、闭关灵脉加成、非弟子失败",
         f"- 自动动作：{('、'.join(enabled_actions) if enabled_actions else '全关')}｜炼化序：{'、'.join(auto_config.get('refine_targets') or [])}｜化煞量：{auto_config.get('convert_amount') or 0}",
         f"- 最近动作：{observed.get('last_action') or '未记录'} / {observed.get('last_result') or '未记录'}",
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
         f"- 阴罗幡：{observed.get('banner_owner') or '未记录'}｜{observed.get('banner_name') or '-'}｜{observed.get('banner_rank') or '-'}｜{observed.get('banner_status') or '-'}",
         f"- 煞气池：{observed.get('sha_current', 0)} / {observed.get('sha_max', 0)}（{observed.get('sha_percent', 0)}%）｜战力+{observed.get('battle_bonus_percent', 0)}%",
+        f"- 幡魂谱系：{_format_soul_lineage(observed.get('soul_lineage'))}",
+        f"- 当前特性：{_format_banner_traits(observed.get('banner_traits'))}",
         f"- 魂魄储备：{_format_soul_stocks(observed.get('soul_stocks'))}",
         f"- 炼化槽：精华 {_format_ready_slots(observed)}｜炼化 {observed.get('refining_slots', 0)}｜空闲 {observed.get('empty_slots', 0)}",
         f"- 每日献祭：{'今日已记录' if daily_done else '今日未记录'}｜{fmt_abs_ts(observed.get('next_daily_sacrifice_time', 0))}（{fmt_remaining(observed.get('next_daily_sacrifice_time', 0))}）",
@@ -2160,6 +2373,12 @@ def get_yinluo_status_text():
         lines.append(f"- 自动异常：{observed.get('auto_last_error')}")
     if observed.get("auto_calibrate_reason"):
         lines.append(f"- 校准：{observed.get('auto_calibrate_reason')}")
+    blocked_ready_slots = list(observed.get("collect_blocked_ready_slot_numbers") or [])
+    if blocked_ready_slots:
+        lines.append(f"- 保护精华槽：{_format_slot_numbers(blocked_ready_slots)}")
+    exhausted_slots = list(observed.get("exhausted_slot_numbers") or [])
+    if exhausted_slots:
+        lines.append(f"- 枯竭槽位：{_format_slot_numbers(exhausted_slots)}")
     if _has_collect_pending(observed):
         slots = ",".join(str(slot) for slot in (observed.get("auto_collect_pending") or {}).get("slots", []))
         lines.append(f"- 待确认收取：{slots or '未知'}号槽")

@@ -77,11 +77,21 @@
   function renderObservedSummary(identity) {
     const observed = getYinluoState(identity).observed || {};
     const ready = Array.isArray(observed.ready_slot_numbers) && observed.ready_slot_numbers.length ? observed.ready_slot_numbers.join(',') : '-';
+    const blockedReady = Array.isArray(observed.collect_blocked_ready_slot_numbers) && observed.collect_blocked_ready_slot_numbers.length ? observed.collect_blocked_ready_slot_numbers.join(',') : '';
     const empty = Array.isArray(observed.empty_slot_numbers) && observed.empty_slot_numbers.length ? observed.empty_slot_numbers.join(',') : '-';
     const refining = Array.isArray(observed.refining_slot_numbers) && observed.refining_slot_numbers.length ? observed.refining_slot_numbers.join(',') : '-';
+    const exhausted = Array.isArray(observed.exhausted_slot_numbers) && observed.exhausted_slot_numbers.length ? observed.exhausted_slot_numbers.join(',') : '';
     const stocks = observed.soul_stocks || {};
     const stockText = Object.keys(stocks).length
       ? Object.keys(stocks).map(function (name) { return name + ':' + stocks[name]; }).join(' ')
+      : '未记录';
+    const lineage = observed.soul_lineage || {};
+    const lineageText = Object.keys(lineage).length
+      ? Object.keys(lineage).map(function (name) { return name + ':' + lineage[name]; }).join(' ')
+      : '未记录';
+    const traits = observed.banner_traits || {};
+    const traitText = Object.keys(traits).length
+      ? Object.keys(traits).map(function (name) { return name + ':' + traits[name]; }).join(' ')
       : '未记录';
     const pending = observed.auto_collect_pending && Array.isArray(observed.auto_collect_pending.slots)
       ? observed.auto_collect_pending.slots.join(',')
@@ -91,11 +101,17 @@
     const shaText = observed.sha_known ? (esc(observed.sha_current || 0) + '/' + esc(observed.sha_max || 0)) : '未知';
     return [
       '<div class="yinluo-observed">',
+      '<span>幡体 ' + esc(observed.banner_name || '-') + '｜' + esc(observed.banner_rank || '-') + '</span>',
       '<span>煞气 ' + shaText + '</span>',
+      '<span>战力 +' + esc(observed.battle_bonus_percent || 0) + '%</span>',
       '<span>献祭 ' + esc(sacrifice) + '</span>',
       '<span>成槽 ' + esc(ready) + '</span>',
+      blockedReady ? '<span class="yinluo-warn">保护 ' + esc(blockedReady) + '</span>' : '',
       '<span>空槽 ' + esc(empty) + '</span>',
       '<span>炼中 ' + esc(refining) + '</span>',
+      exhausted ? '<span class="yinluo-warn">枯竭 ' + esc(exhausted) + '</span>' : '',
+      '<span>谱系 ' + esc(lineageText) + '</span>',
+      '<span>特性 ' + esc(traitText) + '</span>',
       '<span>魂魄 ' + esc(stockText) + '</span>',
       pending ? '<span class="yinluo-warn">待收 ' + esc(pending) + '</span>' : '',
       calibrate,
@@ -115,6 +131,7 @@
       renderAutoToggle('collect', '收取', config),
       renderAutoToggle('daily_sacrifice', '献祭', config),
       renderAutoToggle('refine', '炼化', config),
+      renderAutoToggle('soothe', '安抚', config),
       renderAutoToggle('blood_forest', '血洗', config),
       renderAutoToggle('demon_summon', '召魔', config),
       renderAutoToggle('convert', '化煞', config),
@@ -136,6 +153,7 @@
       '<div class="yinluo-action-row">',
       '<label class="yinluo-field"><span>槽位</span><input class="text-input yinluo-slot-input" type="number" min="1" max="99" step="1" inputmode="numeric" value="' + esc(yinluoDraft.collect_slot) + '" data-yinluo-draft="collect_slot" /></label>',
       '<button type="button" class="btn btn-secondary" data-yinluo-action="collect">收取</button>',
+      '<button type="button" class="btn btn-secondary" data-yinluo-action="soothe">安抚</button>',
       '</div>',
       '<div class="yinluo-action-row yinluo-action-row-combo">',
       '<label class="yinluo-field"><span>槽位</span><input class="text-input yinluo-slot-input" type="number" min="1" max="99" step="1" inputmode="numeric" value="' + esc(yinluoDraft.refine_slot) + '" data-yinluo-draft="refine_slot" /></label>',
@@ -175,6 +193,9 @@
     if (action === 'collect') {
       return String(yinluoDraft.collect_slot || '').trim();
     }
+    if (action === 'soothe') {
+      return String(yinluoDraft.collect_slot || '').trim();
+    }
     if (action === 'convert') {
       return String(yinluoDraft.convert_amount || '').trim();
     }
@@ -190,6 +211,7 @@
     const config = Object.assign({
       collect: true,
       refine: true,
+      soothe: true,
       blood_forest: true,
       demon_summon: true,
       convert: false,
