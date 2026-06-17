@@ -497,6 +497,22 @@ def _identity_from_reply_context(reply_context):
     return identity_id if identity_id > 0 else None
 
 
+def _identity_from_reply_sender_id(sender_id):
+    sender_id = _event_int(sender_id)
+    if sender_id == 0:
+        return None
+    candidates = [sender_id]
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            candidates.append(_event_int(sender_abs[3:]))
+    identity_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    for candidate in candidates:
+        if int(candidate or 0) in identity_ids:
+            return int(candidate)
+    return None
+
+
 def _context_msg_id(reply_context, key):
     try:
         return int((reply_context or {}).get(key) or 0)
@@ -1320,6 +1336,10 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
     target_route_source = context_route_source if target_id is not None else ""
     source_message_id = observed_msg_id
     reply_to_sender_id = _event_int((reply_context or {}).get("reply_to_sender_id", 0))
+    if target_id is None:
+        target_id = _identity_from_reply_sender_id(reply_to_sender_id)
+        if target_id is not None:
+            target_route_source = _route_source(event_type, "reply_sender")
 
     storage_changed, storage_identity_id = _apply_storage_bag_passive(raw_text, now)
     if storage_changed:

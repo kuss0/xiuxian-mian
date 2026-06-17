@@ -126,7 +126,8 @@ CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC = 5
 CONCUBINE_TIANJI_LOG_GUARD_LOOKBACK_SEC = CONCUBINE_TIANJI_CD_SEC + 2 * CONCUBINE_PHASE_TIMEOUT_SEC
 CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
 CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
-CONCUBINE_HEART_PANEL_MAX_AGE_SEC = 10 * 60
+CONCUBINE_PANEL_REUSE_MAX_AGE_SEC = 10 * 60
+CONCUBINE_HEART_PANEL_MAX_AGE_SEC = CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
 CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 3
 CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT = 1
 CONCUBINE_HEART_GLOBAL_START_GAP_SEC = 5 * 60
@@ -946,6 +947,16 @@ def _is_gift_recovery_due(now):
     if str(state.get("concubine_gift_attempt_day") or "") == today:
         return False
     return True
+
+
+def _can_use_cached_panel_for_gift_recovery(now):
+    if not _is_gift_recovery_eligible(now):
+        return False
+    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+    if panel_msg_id <= 0 or panel_seen_at <= 0:
+        return False
+    return panel_seen_at >= float(now or 0) - CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
 
 
 def _can_continue_gift_recovery(now):
@@ -2995,6 +3006,11 @@ async def _send_gift_status_command(now):
     if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
         save_state()
         return False
+    if _can_use_cached_panel_for_gift_recovery(now):
+        state["concubine_gift_attempt_day"] = _local_day_key(now)
+        state["concubine_gift_status_msg_id"] = 0
+        state["concubine_gift_last_error"] = ""
+        return await _send_gift_bag_command(now)
     msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:

@@ -690,6 +690,45 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(501, state_module.state["concubine_gift_status_msg_id"])
         self.assertEqual(concubine._local_day_key(now), state_module.state["concubine_gift_attempt_day"])
 
+    async def test_scheduler_uses_fresh_cached_panel_for_gift_recovery(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        today = concubine._local_day_key(now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_greet_day"] = today
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_snapshot_at"] = now - 60
+
+        sent_msg = SimpleNamespace(id=601, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(concubine.CMD_STORAGE_BAG, track=False)
+        self.assertEqual("gift_bag_pending", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_gift_status_msg_id"])
+        self.assertEqual(601, state_module.state["concubine_gift_bag_msg_id"])
+        self.assertEqual(today, state_module.state["concubine_gift_attempt_day"])
+
+    async def test_scheduler_refreshes_status_for_gift_recovery_when_cached_panel_is_stale(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_greet_day"] = concubine._local_day_key(now)
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_snapshot_at"] = now - concubine.CONCUBINE_PANEL_REUSE_MAX_AGE_SEC - 1
+
+        sent_msg = SimpleNamespace(id=501, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("gift_status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(501, state_module.state["concubine_gift_status_msg_id"])
+
     async def test_gift_attempt_day_blocks_duplicate_recovery_chain_start(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)

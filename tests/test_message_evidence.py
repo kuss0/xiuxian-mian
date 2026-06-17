@@ -186,6 +186,84 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
         self.assertEqual([], snapshot["recent"])
 
+    def test_reply_sender_identity_routes_passive_concubine_panel(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 3800619925
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="growrdick", label="丁丁", daohao="随缘子")
+            event = SimpleNamespace(chat_id=-1001680975844, id=9512607)
+            text = (
+                "你的道心侍妾: 【紫灵】 (状态: 随行中)\n\n"
+                "情缘值: 479\n"
+                "【第二期机缘】\n"
+                "- 入梦寻图冷却: 可施展\n"
+                "- 共历心劫冷却: 可施展\n"
+                "- 天机代卜冷却: 可施展\n"
+                "命令: .入梦寻图、.残图、.拼图、.共历心劫、.坠魔心劫、.天机代卜"
+            )
+
+            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    text,
+                    now=1_779_978_314.0,
+                    reply_context={
+                        "family": "concubine_status",
+                        "reply_to_msg_id": 9512606,
+                        "root_msg_id": 9512606,
+                        "reply_to_sender_id": -1003800619925,
+                    },
+                    event=event,
+                    event_type="message",
+                ))
+
+            self.assertTrue(handled)
+            with state_module.use_identity(identity_id):
+                self.assertEqual("紫灵", state_module.state["concubine_name"])
+                self.assertEqual(479, state_module.state["concubine_affinity"])
+                self.assertEqual(9512607, state_module.state["concubine_last_panel_msg_id"])
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(1, snapshot["changed"])
+            self.assertEqual(identity_id, snapshot["recent"][-1]["identity_id"])
+            self.assertEqual("message:reply_sender", snapshot["recent"][-1]["route_source"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_external_reply_sender_still_skips_without_identity(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(3800619925)
+            event = SimpleNamespace(chat_id=-1001680975844, id=9512608)
+
+            with patch.object(passive_inbox, "_save_passive_stats"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    "你的道心侍妾: 【外部】 (状态: 随行中)\n\n情缘值: 479",
+                    now=1_779_978_314.0,
+                    reply_context={
+                        "family": "concubine_status",
+                        "reply_to_msg_id": 9512606,
+                        "root_msg_id": 9512606,
+                        "reply_to_sender_id": -1003356857743,
+                    },
+                    event=event,
+                    event_type="message",
+                ))
+
+            self.assertFalse(handled)
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(1, snapshot["skipped"])
+            self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
     def test_duplicate_same_message_text_is_ignored(self):
         event = SimpleNamespace(chat_id=-1001680975844, id=9512505)
         text = "【琉璃问心塔】\n你深吸一口气，踏入了古塔的第 1 层。"
