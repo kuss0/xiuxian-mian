@@ -93,6 +93,51 @@ function renderPassiveInboxChips(entries, emptyText) {
   }).join('');
 }
 
+function passiveInboxExcerpt(value, limit) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const max = Number(limit || 0) || 72;
+  if (!text) return '';
+  if (text.length <= max) return text;
+  return text.slice(0, Math.max(1, max - 1)).trimEnd() + '…';
+}
+
+function passiveInboxMetaChips(item, options) {
+  const opts = options || {};
+  const chips = [];
+  if (item.identity_id) chips.push({ label: '身份', value: item.identity_id });
+  if (item.family) chips.push({ label: '链路', value: passiveInboxLabel(item.family) });
+  if (opts.includeReason && item.reason) chips.push({ label: '原因', value: passiveInboxLabel(item.reason) });
+  if (item.decision) chips.push({ label: '判定', value: passiveInboxLabel(item.decision) });
+  if (item.msg_id) chips.push({ label: '消息', value: item.msg_id });
+  if (item.reply_to_msg_id) chips.push({ label: '回复', value: item.reply_to_msg_id });
+  return chips;
+}
+
+function renderPassiveInboxEventCard(item, options) {
+  const opts = options || {};
+  const title = opts.title || '';
+  const titleClass = opts.titleClass || '';
+  const subject = passiveInboxLabel(item.module || item.family || item.reason || 'unknown');
+  const metaChips = passiveInboxMetaChips(item, { includeReason: !!opts.includeReason });
+  const excerpt = passiveInboxExcerpt(item.matched_text || item.summary || '', opts.excerptLimit || 84);
+  const excerptPrefix = item.matched_text ? '命中' : (item.summary ? '摘要' : '');
+  return '<div class="passive-readable-event passive-readable-event-stack">'
+    + '<div class="passive-readable-event-head">'
+    + '<span>' + escapeHtml(formatPassiveInboxTs(item.ts)) + '</span>'
+    + '<strong class="' + escapeHtml(titleClass) + '">' + escapeHtml(title) + '</strong>'
+    + '<span class="passive-readable-subject">' + escapeHtml(subject) + '</span>'
+    + '</div>'
+    + (metaChips.length
+      ? '<div class="passive-readable-event-meta">' + metaChips.map(function(chip) {
+        return '<span class="passive-readable-meta-chip"><em>' + escapeHtml(chip.label) + '</em>' + escapeHtml(chip.value) + '</span>';
+      }).join('') + '</div>'
+      : '')
+    + (excerpt
+      ? '<div class="passive-readable-event-excerpt">' + (excerptPrefix ? '<em>' + escapeHtml(excerptPrefix) + '：</em>' : '') + escapeHtml(excerpt) + '</div>'
+      : '')
+    + '</div>';
+}
+
 function renderPassiveInboxAttention(inbox) {
   const attentionByReason = inbox.attention_by_reason || {};
   const attentionByClass = inbox.attention_by_class || {};
@@ -121,23 +166,12 @@ function renderPassiveInboxRecent(inbox) {
   if (!recent.length) return '<div class="queue-empty">暂无最近更新。</div>';
   return recent.map(function(item) {
     const changed = item.kind === 'changed';
-    const title = changed ? '已更新' : '已跳过';
-    const subject = passiveInboxLabel(item.module || item.reason || 'unknown');
-    const identity = item.identity_id ? ' ｜ ' + item.identity_id : '';
-    const detail = [];
-    if (item.identity_id) detail.push(item.identity_id);
-    if (item.family) detail.push('family=' + passiveInboxLabel(item.family));
-    if (item.decision) detail.push('decision=' + passiveInboxLabel(item.decision));
-    if (item.msg_id) detail.push('msg=' + item.msg_id);
-    if (item.reply_to_msg_id) detail.push('reply=' + item.reply_to_msg_id);
-    if (item.summary) detail.push(passiveInboxLabel(item.summary));
-    if (item.matched_text) detail.push('hit=' + item.matched_text);
-    const summary = detail.length ? ' ｜ ' + detail.join(' ｜ ') : '';
-    return '<div class="passive-readable-event">'
-      + '<span>' + escapeHtml(formatPassiveInboxTs(item.ts)) + '</span>'
-      + '<strong class="' + (changed ? 'passive-readable-good' : 'passive-readable-warn') + '">' + escapeHtml(title) + '</strong>'
-      + '<span>' + escapeHtml(subject + identity + summary) + '</span>'
-      + '</div>';
+    return renderPassiveInboxEventCard(item, {
+      title: changed ? '已更新' : '已跳过',
+      titleClass: changed ? 'passive-readable-good' : 'passive-readable-warn',
+      includeReason: !changed,
+      excerptLimit: 80
+    });
   }).join('');
 }
 
@@ -145,22 +179,52 @@ function renderPassiveInboxAttentionRecent(inbox) {
   const recent = Array.isArray(inbox.attention_recent) ? inbox.attention_recent.slice(-8).reverse() : [];
   if (!recent.length) return '<div class="queue-empty">暂无未收口缺口。</div>';
   return recent.map(function(item) {
-    const subject = passiveInboxLabel(item.module || item.family || item.reason || 'unknown');
-    const detail = [];
-    if (item.identity_id) detail.push(item.identity_id);
-    if (item.family) detail.push('family=' + passiveInboxLabel(item.family));
-    if (item.reason) detail.push('reason=' + passiveInboxLabel(item.reason));
-    if (item.decision) detail.push('decision=' + passiveInboxLabel(item.decision));
-    if (item.msg_id) detail.push('msg=' + item.msg_id);
-    if (item.reply_to_msg_id) detail.push('reply=' + item.reply_to_msg_id);
-    if (item.matched_text) detail.push('hit=' + item.matched_text);
-    const summary = detail.length ? ' ｜ ' + detail.join(' ｜ ') : '';
-    return '<div class="passive-readable-event">'
-      + '<span>' + escapeHtml(formatPassiveInboxTs(item.ts)) + '</span>'
-      + '<strong class="passive-readable-warn">待处理</strong>'
-      + '<span>' + escapeHtml(subject + summary) + '</span>'
-      + '</div>';
+    return renderPassiveInboxEventCard(item, {
+      title: '待处理',
+      titleClass: 'passive-readable-warn',
+      includeReason: true,
+      excerptLimit: 92
+    });
   }).join('');
+}
+
+function renderPassiveInboxPanel() {
+  const panel = document.getElementById('passive-inbox-panel');
+  if (!panel) return;
+  const inbox = getPassiveInboxSnapshot();
+  const total = Number(inbox.total || 0);
+  const changed = Number(inbox.changed || 0);
+  const attention = Number(inbox.attention_total || 0);
+  panel.innerHTML = ''
+    + '<div class="passive-head">'
+    + '<div><h2>消息盒子</h2><div class="meta">只读监听，不主动发送指令</div></div>'
+    + '<button type="button" class="btn btn-secondary btn-compact" data-open-passive-inbox="1">展开</button>'
+    + '</div>'
+    + '<div class="passive-readable-grid passive-readable-grid-compact">'
+    + '<div class="passive-readable-stat"><strong>' + escapeHtml(changed) + '</strong><span>被动更新</span></div>'
+    + '<div class="passive-readable-stat"><strong>' + escapeHtml(attention) + '</strong><span>需要关注</span></div>'
+    + '<div class="passive-readable-stat"><strong>' + escapeHtml(total) + '</strong><span>相关消息</span></div>'
+    + '</div>'
+    + '<div class="passive-columns">'
+    + '<div><div class="queue-section-title">最近更新模块</div><div class="passive-readable-chips">' + renderPassiveInboxChips(passiveInboxEntries(inbox.modules || {}), '还没有被动更新') + '</div></div>'
+    + '<div><div class="queue-section-title">待关注原因</div><div class="passive-readable-chips">' + renderPassiveInboxChips(passiveInboxEntries(inbox.attention_by_reason || {}), '暂无关注项') + '</div></div>'
+    + '</div>'
+    + '<div class="passive-readable-section">'
+    + '<div class="queue-section-title">需要关注</div>'
+    + renderPassiveInboxAttention(inbox)
+    + '</div>'
+    + '<div class="passive-readable-section">'
+    + '<div class="queue-section-title">当前缺口</div>'
+    + '<div class="passive-readable-events">' + renderPassiveInboxAttentionRecent({
+      attention_recent: Array.isArray(inbox.attention_recent) ? inbox.attention_recent.slice(-4) : []
+    }) + '</div>'
+    + '</div>'
+    + '<div class="passive-readable-section">'
+    + '<div class="queue-section-title">最近事件</div>'
+    + '<div class="passive-readable-events">' + renderPassiveInboxRecent({
+      recent: Array.isArray(inbox.recent) ? inbox.recent.slice(-6) : []
+    }) + '</div>'
+    + '</div>';
 }
 
 function renderPassiveInboxModal() {
@@ -214,3 +278,18 @@ document.addEventListener('click', function(event) {
     closePassiveInboxModal();
   }
 });
+
+window.renderPassiveInboxPanel = renderPassiveInboxPanel;
+
+if (typeof window.renderAll === 'function' && !window.renderAll._passiveInboxPanelWrapped) {
+  const originalRenderAll = window.renderAll;
+  const wrappedRenderAll = function() {
+    const result = originalRenderAll.apply(this, arguments);
+    renderPassiveInboxPanel();
+    return result;
+  };
+  wrappedRenderAll._passiveInboxPanelWrapped = true;
+  window.renderAll = wrappedRenderAll;
+}
+
+renderPassiveInboxPanel();
