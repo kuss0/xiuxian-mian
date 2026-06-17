@@ -6,21 +6,30 @@ function getPassiveInboxSnapshot() {
 const PASSIVE_INBOX_LABELS = {
   checkin: '点卯',
   concubine: '侍妾',
+  concubine_voyage: '侍妾远航',
   concubine_heart: '共历心劫',
   concubine_tianji: '天机代卜',
   deep_retreat: '深度闭关',
   deep_retreat_summary_ambiguous: '深闭总结多身份',
   deep_retreat_summary_no_match: '深闭总结未匹配',
+  external_identity_no_match: '外部身份不匹配',
+  external_observation: '外部观察',
+  external_owner_no_match: '外部归属不匹配',
+  handler_gap: 'handler 未收口',
+  handler_not_matched: 'handler 未匹配',
   no_change: '状态未变化',
   no_identity: '无法确认身份',
   no_reply_context: '缺少回复上下文',
+  other: '其他缺口',
   passive: '被动消息',
   pet: '抚摸法宝',
   pet_trial: '器灵试炼',
   pet_warm: '温养器灵',
+  reply_context_no_identity: '回复上下文无身份',
   second_soul: '第二元神',
   sect_teach: '宗门传功',
   small_world: '小世界',
+  small_world_harvest: '小世界收香火',
   stargazer_collect: '观星收集',
   stargazer_guide: '观星牵引',
   stargazer_panel: '观星台',
@@ -44,8 +53,11 @@ const PASSIVE_INBOX_LABELS = {
   tree_guard: '协同守山',
   tree_harvest: '采摘灵果',
   tree_panel: '灵树状态',
+  unhandled_routed_reply: '回包未收口',
+  unresolved_identity: '身份未归因',
   unknown: '未知',
-  wild_training: '野外历练'
+  wild_training: '野外历练',
+  yinluo_refine: '阴罗炼化'
 };
 
 function passiveInboxLabel(value) {
@@ -129,6 +141,28 @@ function renderPassiveInboxRecent(inbox) {
   }).join('');
 }
 
+function renderPassiveInboxAttentionRecent(inbox) {
+  const recent = Array.isArray(inbox.attention_recent) ? inbox.attention_recent.slice(-8).reverse() : [];
+  if (!recent.length) return '<div class="queue-empty">暂无未收口缺口。</div>';
+  return recent.map(function(item) {
+    const subject = passiveInboxLabel(item.module || item.family || item.reason || 'unknown');
+    const detail = [];
+    if (item.identity_id) detail.push(item.identity_id);
+    if (item.family) detail.push('family=' + passiveInboxLabel(item.family));
+    if (item.reason) detail.push('reason=' + passiveInboxLabel(item.reason));
+    if (item.decision) detail.push('decision=' + passiveInboxLabel(item.decision));
+    if (item.msg_id) detail.push('msg=' + item.msg_id);
+    if (item.reply_to_msg_id) detail.push('reply=' + item.reply_to_msg_id);
+    if (item.matched_text) detail.push('hit=' + item.matched_text);
+    const summary = detail.length ? ' ｜ ' + detail.join(' ｜ ') : '';
+    return '<div class="passive-readable-event">'
+      + '<span>' + escapeHtml(formatPassiveInboxTs(item.ts)) + '</span>'
+      + '<strong class="passive-readable-warn">待处理</strong>'
+      + '<span>' + escapeHtml(subject + summary) + '</span>'
+      + '</div>';
+  }).join('');
+}
+
 function renderPassiveInboxModal() {
   const body = document.getElementById('passive-inbox-modal-body');
   if (!body) return;
@@ -149,6 +183,10 @@ function renderPassiveInboxModal() {
     + '<div class="passive-readable-section">'
     + '<div class="queue-section-title">需要关注</div>'
     + renderPassiveInboxAttention(inbox)
+    + '</div>'
+    + '<div class="passive-readable-section">'
+    + '<div class="queue-section-title">当前缺口</div>'
+    + '<div class="passive-readable-events">' + renderPassiveInboxAttentionRecent(inbox) + '</div>'
     + '</div>'
     + '<div class="passive-readable-section">'
     + '<div class="queue-section-title">最近事件</div>'
