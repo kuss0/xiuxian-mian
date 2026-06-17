@@ -99,6 +99,7 @@ def _empty_contract_gap_summary():
         "total": 0,
         "needs_attention_total": 0,
         "external_observation_total": 0,
+        "weak_owner_hint_total": 0,
         "by_class": {},
         "by_reason": {},
         "by_module": {},
@@ -336,6 +337,7 @@ def get_passive_inbox_snapshot():
         "recent": list(_passive_stats.get("recent") or []),
         "attention_total": int(contract_gap_summary.get("needs_attention_total", 0) or 0),
         "attention_external_observation_total": int(contract_gap_summary.get("external_observation_total", 0) or 0),
+        "attention_weak_owner_hint_total": int(contract_gap_summary.get("weak_owner_hint_total", 0) or 0),
         "attention_by_class": dict(contract_gap_summary.get("by_class") or {}),
         "attention_by_reason": dict(contract_gap_summary.get("by_reason") or {}),
         "attention_by_module": dict(contract_gap_summary.get("by_module") or {}),
@@ -723,10 +725,12 @@ def _has_passive_owner_hint(raw_text):
     return bool(small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text) or yinluo_mod.RE_BANNER_TITLE.search(raw_text))
 
 
-def _missing_identity_reason(raw_text, family):
+def _missing_identity_reason(raw_text, family, reply_to_sender_id=0):
     if _has_passive_owner_hint(raw_text):
         return "external_owner_no_match"
     if _extract_at_mentions(raw_text):
+        return "external_identity_no_match"
+    if _event_int(reply_to_sender_id) and _identity_from_reply_sender_id(reply_to_sender_id) is None:
         return "external_identity_no_match"
     return "reply_context_no_identity" if str(family or "").strip() else "no_reply_context"
 
@@ -1402,7 +1406,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
 
     if target_id is None:
         if _looks_like_supported_passive(raw_text, family):
-            missing_reason = _missing_identity_reason(raw_text, family)
+            missing_reason = _missing_identity_reason(raw_text, family, reply_to_sender_id=reply_to_sender_id)
             if family:
                 _record_passive_event(
                     "skipped",

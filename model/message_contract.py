@@ -4,6 +4,7 @@ from datetime import datetime
 
 from .features import passive_event_ledger, passive_inbox
 from .module_manifest import get_module_manifest, get_module_name_for_reply_family
+from .state import get_identity_ids
 from .verified_event import VerifiedGameEvent, from_telegram_event
 
 
@@ -20,6 +21,7 @@ MESSAGE_CONTRACT_GAP_REASONS = frozenset(
 MESSAGE_CONTRACT_CLASS_HANDLER_GAP = "handler_gap"
 MESSAGE_CONTRACT_CLASS_UNRESOLVED_IDENTITY = "unresolved_identity"
 MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION = "external_observation"
+MESSAGE_CONTRACT_CLASS_WEAK_OWNER_HINT = "weak_owner_hint"
 MESSAGE_CONTRACT_CLASS_OTHER = "other"
 MESSAGE_CONTRACT_EXTERNAL_REASONS = frozenset(
     {
@@ -51,6 +53,35 @@ def _compact_excerpt(text, limit=120):
     if len(compact) <= limit:
         return compact
     return compact[:limit].rstrip()
+
+
+def _reply_sender_maps_to_identity(sender_id):
+    sender_id = _safe_int(sender_id)
+    if sender_id == 0:
+        return False
+    candidates = [sender_id]
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            candidates.append(_safe_int(sender_abs[3:]))
+    try:
+        identity_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    except Exception:
+        identity_ids = set()
+    return any(int(candidate or 0) in identity_ids for candidate in candidates)
+
+
+def _has_external_reply_sender_evidence(event):
+    sender_id = _safe_int((event or {}).get("reply_to_sender_id"))
+    return sender_id != 0 and not _reply_sender_maps_to_identity(sender_id)
+
+
+def _is_weak_owner_hint_gap(event):
+    return (
+        str((event or {}).get("reason") or "") == "no_reply_context"
+        and not str((event or {}).get("family") or "").strip()
+        and bool(_clean_text((event or {}).get("matched_text")))
+    )
 
 
 def replay_module_for_family(family):
@@ -133,6 +164,10 @@ def classify_message_contract_gap(event):
         return MESSAGE_CONTRACT_CLASS_HANDLER_GAP
     if reason in MESSAGE_CONTRACT_EXTERNAL_REASONS:
         return MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION
+    if reason in MESSAGE_CONTRACT_UNRESOLVED_IDENTITY_REASONS and _has_external_reply_sender_evidence(event):
+        return MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION
+    if _is_weak_owner_hint_gap(event):
+        return MESSAGE_CONTRACT_CLASS_WEAK_OWNER_HINT
     if reason in MESSAGE_CONTRACT_UNRESOLVED_IDENTITY_REASONS:
         return MESSAGE_CONTRACT_CLASS_UNRESOLVED_IDENTITY
     return MESSAGE_CONTRACT_CLASS_OTHER
@@ -233,11 +268,13 @@ def summarize_message_contract_gaps(events, *, latest_limit=8):
     by_family = Counter(str(event.get("family") or "unknown") for event in items)
     latest = sorted(items, key=lambda item: (_safe_int(item.get("ts")), _safe_int(item.get("msg_id"))))[-max(1, int(latest_limit or 1)):]
     external_observation_total = int(by_class.get(MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION, 0) or 0)
-    needs_attention_total = len(items) - external_observation_total
+    weak_owner_hint_total = int(by_class.get(MESSAGE_CONTRACT_CLASS_WEAK_OWNER_HINT, 0) or 0)
+    needs_attention_total = len(items) - external_observation_total - weak_owner_hint_total
     return {
         "total": len(items),
         "needs_attention_total": needs_attention_total,
         "external_observation_total": external_observation_total,
+        "weak_owner_hint_total": weak_owner_hint_total,
         "by_class": dict(sorted(by_class.items(), key=lambda pair: (-pair[1], pair[0]))),
         "by_reason": dict(sorted(by_reason.items(), key=lambda pair: (-pair[1], pair[0]))),
         "by_module": dict(sorted(by_module.items(), key=lambda pair: (-pair[1], pair[0]))),
@@ -324,7 +361,11 @@ def get_message_contract_status_text(limit=500, latest=5, *, module="", family="
         "- 日志群只提醒：带 sample/msg/reply 回 Codex 补规则；不做确认、不写状态。",
         f"- 扫描：最近 {safe_limit} 行 ledger",
         f"- 契约缺口：{summary['total']}",
-        f"- 待修/待归因：{summary.get('needs_attention_total', summary['total'])}；外部观察：{summary.get('external_observation_total', 0)}",
+        (
+            f"- 待修/待归因：{summary.get('needs_attention_total', summary['total'])}；"
+            f"外部观察：{summary.get('external_observation_total', 0)}；"
+            f"弱归属：{summary.get('weak_owner_hint_total', 0)}"
+        ),
         f"- 未匹配 handler：{unhandled['total']}",
         f"- 按分类：{_format_counter(summary.get('by_class') or {})}",
         f"- 按原因：{_format_counter(summary.get('by_reason') or {})}",

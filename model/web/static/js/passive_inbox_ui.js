@@ -55,6 +55,7 @@ const PASSIVE_INBOX_LABELS = {
   tree_panel: '灵树状态',
   unhandled_routed_reply: '回包未收口',
   unresolved_identity: '身份未归因',
+  weak_owner_hint: '弱归属线索',
   unknown: '未知',
   wild_training: '野外历练',
   yinluo_collect: '阴罗收取',

@@ -564,6 +564,41 @@ class MessageContractTests(unittest.TestCase):
             message_contract.classify_message_contract_gap(events[1]),
         )
 
+    def test_contract_gap_summary_treats_external_sender_as_observation(self):
+        event = {
+            "kind": "skipped",
+            "reason": "reply_context_no_identity",
+            "family": "concubine_status",
+            "msg_id": 10146050,
+            "reply_to_sender_id": -1003356857743,
+            "matched_text": "你的道心侍妾: 【紫灵】 (状态: 随行中)",
+            "decision": "skip_missing_identity",
+        }
+
+        summary = message_contract.summarize_message_contract_gaps([event])
+
+        self.assertEqual(1, summary["total"])
+        self.assertEqual(0, summary["needs_attention_total"])
+        self.assertEqual(1, summary["external_observation_total"])
+        self.assertEqual({"external_observation": 1}, summary["by_class"])
+
+    def test_contract_gap_summary_treats_ownerless_no_context_as_weak_hint(self):
+        event = {
+            "kind": "skipped",
+            "reason": "no_reply_context",
+            "family": "",
+            "msg_id": 10146051,
+            "matched_text": "【闭关成功】\n你福至心灵，成功炼化灵气。",
+            "decision": "skip_missing_identity",
+        }
+
+        summary = message_contract.summarize_message_contract_gaps([event])
+
+        self.assertEqual(1, summary["total"])
+        self.assertEqual(0, summary["needs_attention_total"])
+        self.assertEqual(1, summary["weak_owner_hint_total"])
+        self.assertEqual({"weak_owner_hint": 1}, summary["by_class"])
+
     def test_status_text_is_log_group_reminder_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
@@ -587,7 +622,7 @@ class MessageContractTests(unittest.TestCase):
         self.assertIn("回 Codex 补规则", text)
         self.assertIn("不做确认", text)
         self.assertIn("契约缺口：1", text)
-        self.assertIn("待修/待归因：1；外部观察：0", text)
+        self.assertIn("待修/待归因：1；外部观察：0；弱归属：0", text)
         self.assertIn("未匹配 handler：0", text)
         self.assertIn("按分类：unresolved_identity:1", text)
         self.assertIn("reply_context_no_identity:1", text)

@@ -259,7 +259,7 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
             self.assertFalse(handled)
             snapshot = passive_inbox.get_passive_inbox_snapshot()
             self.assertEqual(1, snapshot["skipped"])
-            self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
+            self.assertEqual(1, snapshot["skip_reasons"]["external_identity_no_match"])
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
