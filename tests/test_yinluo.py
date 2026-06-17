@@ -1393,6 +1393,50 @@ class YinluoPassiveInboxTests(unittest.TestCase):
         self.assertEqual({}, observed["auto_collect_pending"])
         self.assertIn("收取精华空结果", observed["auto_calibrate_reason"])
 
+    def test_apply_refine_slot_busy_restores_pending_and_requires_calibration(self):
+        now = 1_779_450_000.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": now - 30,
+                "banner_owner": "缘初子",
+                "sha_current": 300,
+                "sha_max": 15000,
+                "sha_percent": 2,
+                "soul_stocks": {"凶兽戾魄": 0},
+                "empty_slots": 0,
+                "empty_slot_numbers": [],
+                "refining_slots": 1,
+                "refining_slot_numbers": [3],
+                "auto_refine_pending": {
+                    "slot": 3,
+                    "target": "凶兽戾魄",
+                    "sent_at": now - 10,
+                    "pre_empty_slot_numbers": [3],
+                    "pre_refining_slot_numbers": [],
+                    "pre_empty_slots": 1,
+                    "pre_refining_slots": 0,
+                    "pre_sha_current": 500,
+                    "pre_sha_percent": 3,
+                    "pre_soul_stocks": {"凶兽戾魄": 1},
+                },
+            }
+            self.assertTrue(yinluo.apply_yinluo_passive(
+                "此炼化槽正在运转中，无法囚禁新的魂魄。",
+                now=now,
+                family="yinluo_refine",
+            ))
+            observed = state_module.state["yinluo_observation"]
+
+        self.assertEqual("slot_busy", observed["last_result"])
+        self.assertEqual(500, observed["sha_current"])
+        self.assertEqual(1, observed["soul_stocks"]["凶兽戾魄"])
+        self.assertEqual([3], observed["empty_slot_numbers"])
+        self.assertEqual([], observed["refining_slot_numbers"])
+        self.assertEqual({}, observed["auto_refine_pending"])
+        self.assertIn("炼化槽正在运转中", observed["auto_calibrate_reason"])
+
     def test_apply_zero_second_banner_keeps_short_recheck_timer(self):
         now = 1_781_443_187.0
         send_as_id = self._prepare_identity()
@@ -1443,6 +1487,55 @@ class YinluoPassiveInboxTests(unittest.TestCase):
             self.assertEqual("阴罗幡", observed["last_action"])
             self.assertEqual(269465, observed["sha_current"])
             self.assertEqual(1, observed["ready_slots"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["changed"])
+        self.assertEqual(1, snapshot["modules"]["yinluo"])
+
+    def test_passive_inbox_applies_yinluo_refine_slot_busy_from_reply_context(self):
+        send_as_id = self._prepare_identity()
+        event = SimpleNamespace(chat_id=-1001680975844, id=8954053)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yinluo_observation"] = {
+                "last_observed_at": 1_779_450_000.0 - 30,
+                "banner_owner": "缘初子",
+                "empty_slot_numbers": [],
+                "refining_slot_numbers": [3],
+                "auto_refine_pending": {
+                    "slot": 3,
+                    "target": "凶兽戾魄",
+                    "sent_at": 1_779_450_000.0 - 10,
+                    "pre_empty_slot_numbers": [3],
+                    "pre_refining_slot_numbers": [],
+                    "pre_empty_slots": 1,
+                    "pre_refining_slots": 0,
+                    "pre_sha_current": 500,
+                    "pre_sha_percent": 3,
+                    "pre_soul_stocks": {"凶兽戾魄": 1},
+                },
+            }
+
+        with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+            handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                "此炼化槽正在运转中，无法囚禁新的魂魄。",
+                now=1_779_450_000.0,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "yinluo_refine",
+                    "reply_to_msg_id": 8954052,
+                    "root_msg_id": 8954052,
+                },
+                event=event,
+                event_type="message",
+            ))
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            observed = state_module.state["yinluo_observation"]
+            self.assertEqual("slot_busy", observed["last_result"])
+            self.assertEqual([3], observed["empty_slot_numbers"])
+            self.assertEqual([], observed["refining_slot_numbers"])
+            self.assertIn("炼化槽正在运转中", observed["auto_calibrate_reason"])
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["changed"])
         self.assertEqual(1, snapshot["modules"]["yinluo"])

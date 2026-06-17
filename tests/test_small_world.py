@@ -1598,6 +1598,53 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(now + 12345, state_module.state["next_small_world_time"])
 
+    async def test_passive_small_world_harvest_reply_updates_stock_without_followup(self):
+        send_as_id = 8659059402
+        now = 7085.0
+        state_module.ensure_identity_registered(send_as_id)
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955063)
+        text = "你大手一挥，将凡间供奉的 3855 点香火尽数收入紫府。\n当前香火库存: 20326"
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = False
+            state_module.state["small_world_phase"] = "harvest_sent"
+            state_module.state["small_world_harvest_msg_id"] = 8808
+            state_module.state["small_world_pending_incense"] = 3855
+            state_module.state["small_world_incense_stock"] = 16471
+            state_module.state["next_small_world_time"] = now + 99
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "_send_query", new=AsyncMock()) as query_mock,
+            patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "family": "small_world_harvest",
+                    "reply_to_msg_id": 8808,
+                    "root_msg_id": 8808,
+                },
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        query_mock.assert_not_awaited()
+        refine_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_harvest_msg_id"])
+            self.assertEqual(0, state_module.state["small_world_pending_incense"])
+            self.assertEqual(20326, state_module.state["small_world_incense_stock"])
+            self.assertEqual("", state_module.state["small_world_last_error"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["modules"]["small_world"])
+
     async def test_passive_small_world_no_wait_due_panel_schedules_next_cycle(self):
         send_as_id = 8659059401
         now = 7090.0

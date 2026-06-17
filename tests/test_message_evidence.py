@@ -14,7 +14,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import action_guard, runtime
+from model import action_guard, message_contract, runtime
 from model import state as state_module
 from model.features import passive_event_ledger, passive_inbox, workflow_log
 from model.verified_event import from_telegram_event
@@ -328,6 +328,50 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual("waiting_yindao", payload["state_before"])
         self.assertEqual("idle", payload["state_after"])
         self.assertIn("matched_text_hash", payload)
+
+    def test_changed_event_resolves_prior_unhandled_routed_reply(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                passive_event_ledger.append_passive_event(
+                    kind="skipped",
+                    module="小世界",
+                    identity_id=8659059191,
+                    reason=message_contract.UNHANDLED_ROUTED_REPLY_REASON,
+                    summary="small_world_harvest",
+                    family="small_world_harvest",
+                    msg_id=10480363,
+                    reply_to_msg_id=10480362,
+                    root_msg_id=10480362,
+                    event_type="message",
+                    route_source="message:reply_context",
+                    matched_text="你大手一挥，将凡间供奉的 3855 点香火尽数收入紫府。\n当前香火库存: 20326",
+                    decision=message_contract.UNHANDLED_ROUTED_REPLY_DECISION,
+                    source_message_id=10480363,
+                    now=1_781_637_921.0,
+                )
+                passive_event_ledger.append_passive_event(
+                    kind="changed",
+                    module="small_world",
+                    identity_id=8659059191,
+                    summary="small_world_harvest",
+                    family="small_world_harvest",
+                    msg_id=10480363,
+                    reply_to_msg_id=10480362,
+                    root_msg_id=10480362,
+                    event_type="message",
+                    route_source="message:reply_context",
+                    matched_text="你大手一挥，将凡间供奉的 3855 点香火尽数收入紫府。\n当前香火库存: 20326",
+                    decision="state_changed",
+                    source_message_id=10480363,
+                    now=1_781_637_922.0,
+                )
+                path = passive_event_ledger.get_passive_event_ledger_path(1_781_637_921.0)
+
+                unhandled = list(message_contract.iter_unhandled_routed_replies(path=path, limit=10))
+                gaps = list(message_contract.iter_message_contract_gaps(path=path, limit=10))
+
+        self.assertEqual([], unhandled)
+        self.assertEqual([], gaps)
 
     def test_passive_event_ledger_uses_test_state_dir_from_env(self):
         with tempfile.TemporaryDirectory() as tmpdir:

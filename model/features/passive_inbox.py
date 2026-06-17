@@ -809,7 +809,29 @@ def _has_active_small_world_phase():
 
 
 async def _apply_small_world_passive(text, now, family="", reply_context=None):
-    panel = small_world_mod._parse_small_world_panel(text)
+    raw_text = str(text or "")
+    family = str(family or "").strip()
+    if _routed_reply_already_handled(reply_context) and family.startswith("small_world_"):
+        return False
+
+    if family == "small_world_harvest":
+        stock_match = small_world_mod.RE_HARVEST_STOCK.search(raw_text)
+        if stock_match:
+            state["small_world_incense_stock"] = int(stock_match.group(1))
+            state["small_world_pending_incense"] = 0
+            state["small_world_last_error"] = ""
+            if str(state.get("small_world_phase") or "") in {"harvest_sent", "harvest_pending", "harvest_before_manifest_sent"}:
+                small_world_mod._clear_chain_pending()
+            return True
+        shortage_match = small_world_mod.RE_STOCK_SHORTAGE.search(raw_text)
+        if shortage_match:
+            state["small_world_incense_stock"] = int(shortage_match.group(1))
+            state["small_world_last_error"] = "收割香火库存不足"
+            if str(state.get("small_world_phase") or "") in {"harvest_sent", "harvest_pending", "harvest_before_manifest_sent"}:
+                small_world_mod._clear_chain_pending()
+            return True
+
+    panel = small_world_mod._parse_small_world_panel(raw_text)
     if not panel or panel.get("realm_blocked"):
         return False
 
@@ -1186,6 +1208,7 @@ def _looks_like_supported_passive(text, family):
         or family.startswith("hehuan_")
         or family.startswith("tianxing_")
         or family.startswith("yinluo_")
+        or family.startswith("small_world_")
         or family.startswith("stargazer_")
         or family in {
             "pet",
@@ -1369,7 +1392,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append(family)
             changed = module_changed or changed
-        if small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text):
+        if family.startswith("small_world_") or small_world_mod.RE_SMALL_WORLD_PANEL.search(raw_text):
             module_changed = await _apply_small_world_passive(raw_text, now, family, reply_context)
             if module_changed:
                 changed_modules.append("small_world")

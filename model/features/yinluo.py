@@ -69,6 +69,7 @@ RE_CONVERT_LIMIT = re.compile(r"每次转化的修为需在\s*(?P<min>\d+)\s*至
 RE_REFINE_SUCCESS = re.compile(r"一缕【(?P<name>[^】]+)】被强行打入(?P<slot>\d+)号炼化槽")
 RE_REFINE_SHA_SHORTAGE = re.compile(r"炼化需要消耗\s*(?P<cost>\d+)\s*点煞气")
 RE_REFINE_MISSING_SOUL = re.compile(r"魂魄袋中没有【(?P<name>[^】]+)】")
+RE_REFINE_SLOT_BUSY = re.compile(r"炼化槽正在运转中.*无法囚禁新的魂魄")
 RE_REFINING_SLOT_DETAIL = re.compile(
     r"^\s*(?P<slot>\d+)号槽[:：]\s*\[炼化中\]\s*-\s*(?P<target>[^()]+?)(?:\s*\(剩余[:：]\s*(?P<remaining>[^)]+)\))?\s*$"
 )
@@ -536,6 +537,8 @@ def looks_like_yinluo_text(text):
         return True
     if "魂魄袋中没有" in raw_text:
         return True
+    if "炼化槽正在运转中" in raw_text and "无法囚禁新的魂魄" in raw_text:
+        return True
     if "被强行打入" in raw_text and "号炼化槽" in raw_text and "炼化已开始" in raw_text:
         return True
     if "收取成功！" in raw_text and "炼化槽" in raw_text and "获得了" in raw_text:
@@ -852,6 +855,14 @@ def parse_yinluo_text(text, now=None, family="", event_context=None):
             "last_resource": resource,
         }
 
+    if RE_REFINE_SLOT_BUSY.search(raw_text):
+        return {
+            "action": "囚禁魂魄",
+            "result": "slot_busy",
+            "summary": "囚禁魂魄失败：炼化槽正在运转中",
+            "last_error": "炼化槽正在运转中，需查幡校准",
+        }
+
     if "收取成功！" in raw_text and "炼化槽" in raw_text and "获得了" in raw_text:
         collect_match = RE_COLLECT_SLOT.search(raw_text)
         soul_gain_match = RE_COLLECT_SOUL_GAIN.search(raw_text)
@@ -1027,6 +1038,11 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
             observed["last_daily_sacrifice_result_key"] = daily_sacrifice_result_key
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}:
         observed = _restore_auto_refine_pending(observed)
+    if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "slot_busy":
+        reason = parsed.get("last_error") or "炼化槽正在运转中，需查幡校准"
+        observed = _restore_auto_refine_pending(observed, reason)
+        observed["auto_refine_pending"] = {}
+        observed["auto_calibrate_reason"] = reason
     if parsed.get("action") == "囚禁魂魄" and parsed.get("result") == "success":
         slot_no = int(parsed.get("last_refine_slot", 0) or 0)
         refine_already_accounted = (
@@ -1086,7 +1102,7 @@ def apply_yinluo_passive(text, now=None, family="", event_context=None):
         observed = _adjust_soul_stock(observed, parsed.get("last_soul_name"), parsed.get("last_soul_gain"))
         observed = _adjust_soul_stock(observed, parsed.get("last_extra_soul_name"), parsed.get("last_extra_soul_gain"))
     if (
-        parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul"}
+        parsed.get("action") == "囚禁魂魄" and parsed.get("result") in {"sha_shortage", "missing_soul", "slot_busy"}
     ) or (
         parsed.get("action") == "收取精华" and parsed.get("result") == "empty"
     ):
