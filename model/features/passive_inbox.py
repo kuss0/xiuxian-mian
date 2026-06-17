@@ -29,6 +29,7 @@ from .passive_event_ledger import append_passive_event
 
 
 PASSIVE_INBOX_RECENT_LIMIT = 20
+PASSIVE_INBOX_CONTRACT_GAP_SCAN_LIMIT = 500
 PASSIVE_INBOX_STATS_FILE = os.path.join(STATE_DIR, "passive_inbox_stats.json")
 PASSIVE_INBOX_RECENT_FIELD_LIMIT = 120
 PASSIVE_INBOX_NOISY_SKIP_REASONS = {
@@ -91,6 +92,32 @@ def _save_passive_stats():
 
 
 _load_passive_stats()
+
+
+def _empty_contract_gap_summary():
+    return {
+        "total": 0,
+        "needs_attention_total": 0,
+        "external_observation_total": 0,
+        "by_class": {},
+        "by_reason": {},
+        "by_module": {},
+        "by_family": {},
+        "latest": [],
+    }
+
+
+def _build_contract_gap_summary(limit=PASSIVE_INBOX_CONTRACT_GAP_SCAN_LIMIT, latest_limit=PASSIVE_INBOX_RECENT_LIMIT):
+    try:
+        from ..message_contract import iter_message_contract_gaps, summarize_message_contract_gaps
+    except Exception:
+        return _empty_contract_gap_summary()
+    try:
+        events = list(iter_message_contract_gaps(limit=limit))
+        summary = summarize_message_contract_gaps(events, latest_limit=latest_limit)
+    except Exception:
+        return _empty_contract_gap_summary()
+    return summary
 
 
 def _bump_counter(bucket, key, amount=1):
@@ -299,6 +326,7 @@ def record_passive_inbox_event(
 
 
 def get_passive_inbox_snapshot():
+    contract_gap_summary = _build_contract_gap_summary()
     return {
         "total": int(_passive_stats.get("total", 0) or 0),
         "changed": int(_passive_stats.get("changed", 0) or 0),
@@ -306,6 +334,14 @@ def get_passive_inbox_snapshot():
         "modules": dict(_passive_stats.get("modules") or {}),
         "skip_reasons": dict(_passive_stats.get("skip_reasons") or {}),
         "recent": list(_passive_stats.get("recent") or []),
+        "attention_total": int(contract_gap_summary.get("needs_attention_total", 0) or 0),
+        "attention_external_observation_total": int(contract_gap_summary.get("external_observation_total", 0) or 0),
+        "attention_by_class": dict(contract_gap_summary.get("by_class") or {}),
+        "attention_by_reason": dict(contract_gap_summary.get("by_reason") or {}),
+        "attention_by_module": dict(contract_gap_summary.get("by_module") or {}),
+        "attention_by_family": dict(contract_gap_summary.get("by_family") or {}),
+        "attention_recent": list(contract_gap_summary.get("latest") or []),
+        "contract_gap_summary": contract_gap_summary,
     }
 
 
@@ -347,9 +383,13 @@ def get_passive_inbox_status_text():
         f"- 总处理：{snapshot['total']}",
         f"- 成功更新：{snapshot['changed']}",
         f"- 跳过：{snapshot['skipped']}",
+        f"- 待关注：{snapshot.get('attention_total', 0)}",
         f"- 命中模块：{format_map(snapshot.get('modules') or {})}",
         f"- 跳过原因：{format_map(snapshot.get('skip_reasons') or {})}",
     ]
+    attention = snapshot.get("contract_gap_summary") or {}
+    if attention:
+        lines.append(f"- 关注分类：{format_map(attention.get('by_class') or {})}")
     recent = snapshot.get("recent") or []
     if recent:
         lines.append("- 最近事件：")

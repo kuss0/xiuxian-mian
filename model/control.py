@@ -2273,8 +2273,10 @@ def _format_runtime_health_text():
         f"游戏 pending: {pending_total}",
         f"游戏发送队列: {len(queue_items)}",
         f"低优先级日志待汇总: {low_total} 条 / {low_kind_count} 类",
-        f"消息盒子: total={inbox.get('total', 0)} changed={inbox.get('changed', 0)} skipped={inbox.get('skipped', 0)}",
+        f"消息盒子: total={inbox.get('total', 0)} changed={inbox.get('changed', 0)} skipped={inbox.get('skipped', 0)} attention={inbox.get('attention_total', 0)}",
         f"命中模块: {_format_runtime_counter_map(inbox.get('modules') or {})}",
+        f"待关注分类: {_format_runtime_counter_map(inbox.get('attention_by_class') or {})}",
+        f"待关注原因: {_format_runtime_counter_map(inbox.get('attention_by_reason') or {})}",
         f"跳过原因: {_format_runtime_counter_map(inbox.get('skip_reasons') or {})}",
     ]
 

@@ -373,6 +373,53 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual([], unhandled)
         self.assertEqual([], gaps)
 
+    def test_passive_inbox_snapshot_attention_excludes_resolved_unhandled_reply(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with (
+                patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir),
+                patch.object(passive_inbox, "_save_passive_stats"),
+            ):
+                ok = passive_inbox.record_passive_inbox_event(
+                    "skipped",
+                    module="侍妾远航",
+                    identity_id=3504367852,
+                    reason=message_contract.UNHANDLED_ROUTED_REPLY_REASON,
+                    summary="concubine_voyage",
+                    family="concubine_voyage",
+                    msg_id=10140775,
+                    source_message_id=10140775,
+                    reply_to_msg_id=10140774,
+                    event_type="message",
+                    route_source="message:reply_context",
+                    matched_text="【乱星海远航·归】\n修为 +658",
+                    decision=message_contract.UNHANDLED_ROUTED_REPLY_DECISION,
+                )
+                self.assertTrue(ok)
+                ok = passive_inbox.record_passive_inbox_event(
+                    "changed",
+                    module="concubine",
+                    identity_id=3504367852,
+                    summary="concubine_voyage",
+                    family="concubine_voyage",
+                    msg_id=10140775,
+                    source_message_id=10140775,
+                    reply_to_msg_id=10140774,
+                    event_type="message",
+                    route_source="message:reply_context",
+                    matched_text="【乱星海远航·归】\n修为 +658",
+                    decision="state_changed",
+                )
+                self.assertTrue(ok)
+
+                snapshot = passive_inbox.get_passive_inbox_snapshot()
+
+        self.assertEqual(2, snapshot["total"])
+        self.assertEqual(1, snapshot["changed"])
+        self.assertEqual(1, snapshot["skipped"])
+        self.assertEqual(0, snapshot["attention_total"])
+        self.assertEqual({}, snapshot["attention_by_class"])
+        self.assertEqual({}, snapshot["attention_by_reason"])
+
     def test_passive_event_ledger_uses_test_state_dir_from_env(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with (

@@ -82,20 +82,21 @@ function renderPassiveInboxChips(entries, emptyText) {
 }
 
 function renderPassiveInboxAttention(inbox) {
-  const skips = passiveInboxEntries(inbox.skip_reasons || {});
-  const noIdentity = Number((inbox.skip_reasons || {}).no_identity || 0);
-  const noChange = Number((inbox.skip_reasons || {}).no_change || 0);
-  const skipped = Number(inbox.skipped || 0);
-  if (!skipped) {
+  const attentionByReason = inbox.attention_by_reason || {};
+  const attentionByClass = inbox.attention_by_class || {};
+  const reasons = passiveInboxEntries(attentionByReason);
+  const attention = Number(inbox.attention_total || 0);
+  const unresolvedIdentity = Number(attentionByClass.unresolved_identity || 0);
+  const handlerGap = Number(attentionByClass.handler_gap || 0);
+  const other = Number(attentionByClass.other || 0);
+  if (!attention) {
     return '<div class="passive-readable-ok">暂无需要关注的异常。</div>';
   }
   const lines = [];
-  if (noIdentity > 0) lines.push('有 ' + noIdentity + ' 条相关消息没能确认属于哪个身份。');
-  const noReplyContext = Number((inbox.skip_reasons || {}).no_reply_context || 0);
-  if (noReplyContext > 0) lines.push('有 ' + noReplyContext + ' 条相关消息缺少回复上下文，已从最近事件降噪。');
-  if (noChange > 0) lines.push('有 ' + noChange + ' 条消息已识别，但没有带来状态变化。');
-  const other = skips.filter(function(pair) { return pair[0] !== 'no_identity' && pair[0] !== 'no_reply_context' && pair[0] !== 'no_change'; });
-  other.forEach(function(pair) {
+  if (handlerGap > 0) lines.push('有 ' + handlerGap + ' 条 routed reply 命中 family 但还没被对应模块收口。');
+  if (unresolvedIdentity > 0) lines.push('有 ' + unresolvedIdentity + ' 条相关消息没能确认属于哪个身份。');
+  if (other > 0) lines.push('还有 ' + other + ' 条其他待归因缺口。');
+  reasons.forEach(function(pair) {
     lines.push(passiveInboxLabel(pair[0]) + '：' + pair[1] + ' 条');
   });
   return '<ul class="passive-readable-list">' + lines.map(function(line) {
@@ -134,11 +135,11 @@ function renderPassiveInboxModal() {
   const inbox = getPassiveInboxSnapshot();
   const total = Number(inbox.total || 0);
   const changed = Number(inbox.changed || 0);
-  const skipped = Number(inbox.skipped || 0);
+  const attention = Number(inbox.attention_total || 0);
   body.innerHTML = ''
     + '<div class="passive-readable-grid">'
     + '<div class="passive-readable-stat"><strong>' + escapeHtml(changed) + '</strong><span>被动更新</span></div>'
-    + '<div class="passive-readable-stat"><strong>' + escapeHtml(skipped) + '</strong><span>需要关注</span></div>'
+    + '<div class="passive-readable-stat"><strong>' + escapeHtml(attention) + '</strong><span>需要关注</span></div>'
     + '<div class="passive-readable-stat"><strong>' + escapeHtml(total) + '</strong><span>相关消息</span></div>'
     + '</div>'
     + '<div class="passive-readable-section">'

@@ -571,6 +571,9 @@ class LogGroupDisplayTests(unittest.TestCase):
             "total": 3,
             "changed": 2,
             "skipped": 1,
+            "attention_total": 1,
+            "attention_by_class": {"handler_gap": 1},
+            "attention_by_reason": {"unhandled_routed_reply": 1},
             "modules": {"small_world": 2},
             "skip_reasons": {"no_identity": 1},
             "recent": [
@@ -605,7 +608,9 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("小世界=calibration_wait", text)
         self.assertIn("野外历练", text)
         self.assertNotIn("旧太一错误不应展示", text)
-        self.assertIn("消息盒子: total=3 changed=2 skipped=1", text)
+        self.assertIn("消息盒子: total=3 changed=2 skipped=1 attention=1", text)
+        self.assertIn("待关注分类: handler_gap:1", text)
+        self.assertIn("待关注原因: unhandled_routed_reply:1", text)
         self.assertIn("msg=99", text)
 
     def test_auto_dungeon_status_text_is_not_unknown(self):
