@@ -18,8 +18,14 @@ def _write_jsonl(path, rows):
             fp.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
+def _write_fixture(path, rows=None):
+    path.write_text(json.dumps(rows or {}, ensure_ascii=False), encoding="utf-8")
+
+
 def test_candidate_report_suggests_missing_family_samples(tmp_path):
     source = tmp_path / "passive.jsonl"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture)
     _write_jsonl(
         source,
         [
@@ -32,7 +38,7 @@ def test_candidate_report_suggests_missing_family_samples(tmp_path):
         ],
     )
 
-    report = build_candidate_sample_suggestions([source], fixture_path=FIXTURE_PATH)
+    report = build_candidate_sample_suggestions([source], fixture_path=fixture)
 
     assert report["total"] == 1
     assert report["by_family"] == {"hehuan_escape": 1}
@@ -73,29 +79,44 @@ def test_candidate_report_skips_archived_family_by_default(tmp_path):
 
 def test_candidate_report_skips_covered_family_unless_requested(tmp_path):
     source = tmp_path / "passive.jsonl"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(
+        fixture,
+        {
+            "hehuan.escape.covered": {
+                "source": "unit",
+                "module": "hehuan",
+                "family": "hehuan_escape",
+                "event_type": "message",
+                "text": "你咬破舌尖，强行挣脱心印束缚。",
+            }
+        },
+    )
     _write_jsonl(
         source,
         [
             {
-                "family": "taiyi_yindao",
+                "family": "hehuan_escape",
                 "event_type": "message",
                 "msg_id": 1002,
-                "matched_text": "你引动【火之道】，获得了 100点神识！",
+                "matched_text": "你咬破舌尖，强行挣脱心印束缚。",
             }
         ],
     )
 
-    default_report = build_candidate_sample_suggestions([source], fixture_path=FIXTURE_PATH)
-    include_report = build_candidate_sample_suggestions([source], fixture_path=FIXTURE_PATH, include_covered=True)
+    default_report = build_candidate_sample_suggestions([source], fixture_path=fixture)
+    include_report = build_candidate_sample_suggestions([source], fixture_path=fixture, include_covered=True)
 
     assert default_report["total"] == 0
     assert default_report["skipped"]["covered_family"] == 1
     assert include_report["total"] == 1
-    assert include_report["suggestions"][0]["payload"]["module"] == "taiyi"
+    assert include_report["suggestions"][0]["payload"]["module"] == "hehuan"
 
 
 def test_candidate_report_is_conservative_without_family_or_known_mapping(tmp_path):
     source = tmp_path / "passive.jsonl"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture)
     _write_jsonl(
         source,
         [
@@ -105,7 +126,7 @@ def test_candidate_report_is_conservative_without_family_or_known_mapping(tmp_pa
         ],
     )
 
-    report = build_candidate_sample_suggestions([source], fixture_path=FIXTURE_PATH)
+    report = build_candidate_sample_suggestions([source], fixture_path=fixture)
 
     assert report["total"] == 0
     assert report["skipped"]["no_family"] == 1
@@ -115,6 +136,8 @@ def test_candidate_report_is_conservative_without_family_or_known_mapping(tmp_pa
 
 def test_candidate_report_can_filter_by_module(tmp_path):
     source = tmp_path / "passive.jsonl"
+    fixture = tmp_path / "fixture.json"
+    _write_fixture(fixture)
     _write_jsonl(
         source,
         [
@@ -123,7 +146,7 @@ def test_candidate_report_can_filter_by_module(tmp_path):
         ],
     )
 
-    report = build_candidate_sample_suggestions([source], fixture_path=FIXTURE_PATH, module="合欢宗")
+    report = build_candidate_sample_suggestions([source], fixture_path=fixture, module="合欢宗")
 
     assert report["total"] == 1
     assert report["suggestions"][0]["payload"]["family"] == "hehuan_escape"
@@ -144,6 +167,7 @@ def test_candidate_cli_outputs_fixture_suggestions(tmp_path):
             str(source),
             "--fixture-path",
             str(FIXTURE_PATH),
+            "--include-covered",
             "--family",
             "hehuan_escape",
         ])

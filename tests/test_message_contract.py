@@ -407,6 +407,97 @@ class MessageContractTests(unittest.TestCase):
         self.assertIn("未接入模块合同: 2 report-only, 2 API-backup", text)
         self.assertIn("- 一键修理: stage=report_only key=auto_repair api=backup_only", text)
 
+    def test_rust_alignment_candidates_are_default_off_and_read_only(self):
+        result = module_manifest.validate_rust_alignment_candidates()
+
+        self.assertTrue(result["ok"], result)
+        candidates = {
+            candidate.feature_key: candidate
+            for candidate in module_manifest.iter_rust_alignment_candidates()
+        }
+        self.assertEqual(
+            {
+                "local_status_views",
+                "storage_bag_local_find",
+                "inventory_transfer_planner",
+                "local_getdata_snapshot",
+                "spent_status_explicit_fetch",
+                "replica_external_upload_query",
+                "whois_peer_lookup",
+                "miniapp_init_data",
+                "inline_click_diagnostic",
+                "operator_control_commands",
+            },
+            set(candidates),
+        )
+        self.assertTrue(candidates["local_status_views"].recommended_default_path)
+        self.assertEqual(
+            module_manifest.RUST_FEATURE_READ_ONLY_QUERY,
+            candidates["storage_bag_local_find"].category,
+        )
+        self.assertEqual(
+            module_manifest.API_POLICY_BACKUP_ONLY,
+            candidates["spent_status_explicit_fetch"].api_policy,
+        )
+        self.assertFalse(candidates["whois_peer_lookup"].default_enabled)
+        self.assertEqual(
+            module_manifest.RUST_FEATURE_ACTIVE_ACTION,
+            candidates["inventory_transfer_planner"].category,
+        )
+        self.assertFalse(candidates["inline_click_diagnostic"].scheduler_connected)
+        self.assertEqual(
+            (module_manifest.INPUT_SOURCE_OPERATOR_RPC,),
+            candidates["whois_peer_lookup"].primary_inputs,
+        )
+
+    def test_module_contract_summary_includes_rust_alignment_candidates(self):
+        fixture_path = PROJECT_ROOT / "tests" / "fixtures" / "real_message_samples.json"
+        samples = json.loads(fixture_path.read_text(encoding="utf-8"))
+
+        summary = module_manifest.summarize_module_contracts(
+            samples,
+            strict_modules=("太一", "阴罗宗", "一键修理", "local_status_views"),
+        )
+        rows = {row["feature_key"]: row for row in summary["rust_alignment"]["candidates"]}
+
+        self.assertEqual(10, summary["rust_alignment"]["totals"]["candidates"])
+        self.assertEqual(2, summary["rust_alignment"]["totals"]["backup_api_candidates"])
+        self.assertEqual([], summary["rust_alignment"]["unknown_strict_candidates"])
+        self.assertTrue(rows["local_status_views"]["recommended_default_path"])
+        self.assertEqual(
+            module_manifest.RUST_FEATURE_READ_ONLY_QUERY,
+            rows["storage_bag_local_find"]["category"],
+        )
+        self.assertEqual(
+            module_manifest.RUST_FEATURE_ACTIVE_ACTION,
+            rows["inventory_transfer_planner"]["category"],
+        )
+        self.assertEqual(
+            module_manifest.API_POLICY_BACKUP_ONLY,
+            rows["spent_status_explicit_fetch"]["api_policy"],
+        )
+
+    def test_report_tool_text_output_can_include_rust_alignment_candidates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--contracts",
+                    "--strict-module",
+                    "local_status_views",
+                ])
+
+        self.assertEqual(0, code)
+        text = out.getvalue()
+        self.assertIn("Rust 对照候选: 10 candidates", text)
+        self.assertIn("- 本地状态多视图: cmd=status root|sect|dongfu|companion|dungeon|smallworld", text)
+        self.assertIn("category=read_only_query", text)
+
     def test_report_tool_json_output_can_include_module_readiness_backlog(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             ledger_path = Path(tmpdir) / "ledger.jsonl"

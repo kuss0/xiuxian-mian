@@ -131,7 +131,8 @@ def build_candidate_sample_suggestions(
 ):
     requested_module = str(module or "").strip()
     requested_family = str(family or "").strip()
-    wanted_missing = missing_families_from_fixture(fixture_path) if fixture_path and not include_covered else set()
+    filter_covered = bool(fixture_path) and not include_covered
+    wanted_missing = missing_families_from_fixture(fixture_path) if filter_covered else set()
     suggestions = []
     seen = set()
     skipped = {
@@ -164,7 +165,7 @@ def build_candidate_sample_suggestions(
         if requested_module and module_name != requested_module:
             skipped["module_filtered"] += 1
             continue
-        if wanted_missing and candidate_family not in wanted_missing:
+        if filter_covered and candidate_family not in wanted_missing:
             skipped["covered_family"] += 1
             continue
         text = _record_text(record)

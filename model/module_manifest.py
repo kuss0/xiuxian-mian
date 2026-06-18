@@ -16,6 +16,8 @@ INPUT_SOURCE_LOCAL_STATE = "local_state"
 INPUT_SOURCE_REPLY_CONTEXT = "reply_context"
 INPUT_SOURCE_EXISTING_SNAPSHOT = "existing_snapshot"
 INPUT_SOURCE_API_BACKUP = "api_backup"
+INPUT_SOURCE_OPERATOR_RPC = "operator_rpc"
+INPUT_SOURCE_EXTERNAL_SERVICE = "external_service"
 API_POLICY_NONE = "none"
 API_POLICY_BACKUP_ONLY = "backup_only"
 READINESS_SAMPLE_COMPLETE = "sample_complete"
@@ -23,6 +25,12 @@ READINESS_SAMPLE_PARTIAL = "sample_partial"
 READINESS_SAMPLE_MISSING = "sample_missing"
 READINESS_CONTRACT_ONLY = "contract_only"
 READINESS_ARCHIVED = "archived"
+RUST_FEATURE_READ_ONLY_QUERY = "read_only_query"
+RUST_FEATURE_REPORT_OUTPUT = "report_output"
+RUST_FEATURE_OPERATOR_TOOL = "operator_tool"
+RUST_FEATURE_ACTIVE_ACTION = "active_action"
+RUST_FEATURE_CONTROL_PLANE = "control_plane"
+RUST_FEATURE_EXTERNAL_REPORT = "external_report"
 
 
 class BehaviorPriority:
@@ -126,6 +134,24 @@ class ReportOnlyFeatureContract:
     notes: tuple = ()
 
 
+@dataclass(frozen=True)
+class RustAlignmentCandidate:
+    name: str
+    feature_key: str
+    rust_command: str
+    category: str
+    stage: str = MODULE_STAGE_REPORT_ONLY
+    target_surface: str = ""
+    primary_inputs: tuple = ()
+    backup_inputs: tuple = ()
+    api_policy: str = API_POLICY_NONE
+    default_enabled: bool = False
+    scheduler_connected: bool = False
+    ui_connected: bool = False
+    recommended_default_path: bool = False
+    notes: tuple = ()
+
+
 _MANIFESTS = (
     ModuleManifest(
         "灵树",
@@ -202,12 +228,148 @@ _REPORT_ONLY_FEATURE_CONTRACTS = (
     ),
 )
 
+_RUST_ALIGNMENT_CANDIDATES = (
+    RustAlignmentCandidate(
+        name="本地状态多视图",
+        feature_key="local_status_views",
+        rust_command="status root|sect|dongfu|companion|dungeon|smallworld",
+        category=RUST_FEATURE_READ_ONLY_QUERY,
+        target_surface="只读状态报告/miniweb 汇总",
+        primary_inputs=(INPUT_SOURCE_LOCAL_TEXT, INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_EXISTING_SNAPSHOT),
+        recommended_default_path=True,
+        notes=(
+            "absorb the multi-view report shape without active fetch",
+            "missing fields must render as unknown/no snapshot instead of querying live",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="储物袋本地盘点",
+        feature_key="storage_bag_local_find",
+        rust_command="inventory list|find",
+        category=RUST_FEATURE_READ_ONLY_QUERY,
+        target_surface="储物袋只读盘点/物资统计",
+        primary_inputs=(INPUT_SOURCE_LOCAL_TEXT, INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_EXISTING_SNAPSHOT),
+        backup_inputs=(INPUT_SOURCE_API_BACKUP,),
+        api_policy=API_POLICY_BACKUP_ONLY,
+        recommended_default_path=True,
+        notes=(
+            "query local text/cache first",
+            "API means already available manual UI/API cache only, never default live polling",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="跨身份物资调度",
+        feature_key="inventory_transfer_planner",
+        rust_command="inventory give|transfer|advance-transfer",
+        category=RUST_FEATURE_ACTIVE_ACTION,
+        target_surface="物资调度/交易规划",
+        primary_inputs=(INPUT_SOURCE_LOCAL_TEXT, INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_EXISTING_SNAPSHOT),
+        notes=(
+            "planner output is a command plan, not a pure query",
+            "must stay explicit and user-driven; do not treat as a passive read surface",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="原始快照出口",
+        feature_key="local_getdata_snapshot",
+        rust_command="getdata <target>",
+        category=RUST_FEATURE_READ_ONLY_QUERY,
+        target_surface="只读诊断报告",
+        primary_inputs=(INPUT_SOURCE_EXISTING_SNAPSHOT,),
+        recommended_default_path=True,
+        notes=(
+            "operator-visible raw local snapshot for parser disputes",
+            "does not refresh or mutate snapshot state",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="氪金合计显式补抓",
+        feature_key="spent_status_explicit_fetch",
+        rust_command="status spent [target] [--simple] [--fetch]",
+        category=RUST_FEATURE_READ_ONLY_QUERY,
+        target_surface="只读统计报告",
+        primary_inputs=(INPUT_SOURCE_EXISTING_SNAPSHOT,),
+        backup_inputs=(INPUT_SOURCE_API_BACKUP,),
+        api_policy=API_POLICY_BACKUP_ONLY,
+        notes=(
+            "local snapshot total is safe",
+            "fetch-like behavior must stay explicit operator action, not a default path",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="副本外部上报",
+        feature_key="replica_external_upload_query",
+        rust_command="dungeon upload-query",
+        category=RUST_FEATURE_EXTERNAL_REPORT,
+        target_surface="外部聚合服务/日志群按钮候选",
+        primary_inputs=(INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_EXISTING_SNAPSHOT, INPUT_SOURCE_EXTERNAL_SERVICE),
+        notes=(
+            "not a local query surface",
+            "only consider after local replica reports and privacy boundaries are explicit",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="TG 身份互查",
+        feature_key="whois_peer_lookup",
+        rust_command="whois <id|@username>",
+        category=RUST_FEATURE_OPERATOR_TOOL,
+        target_surface="运维诊断",
+        primary_inputs=(INPUT_SOURCE_OPERATOR_RPC,),
+        notes=(
+            "online Telegram RPC, useful for sender allowlist audits",
+            "not part of game automation or local text-first module flow",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="小程序初始化诊断",
+        feature_key="miniapp_init_data",
+        rust_command="miniapp <link|@bot|bot>",
+        category=RUST_FEATURE_OPERATOR_TOOL,
+        target_surface="运维诊断",
+        primary_inputs=(INPUT_SOURCE_OPERATOR_RPC,),
+        notes=(
+            "manual-only tool for webview/init-data diagnostics",
+            "must not become a scheduler input",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="按钮点击诊断",
+        feature_key="inline_click_diagnostic",
+        rust_command="click <msg_id> (--text <s>|--rc <row> <col>)",
+        category=RUST_FEATURE_ACTIVE_ACTION,
+        target_surface="运维手动动作",
+        primary_inputs=(INPUT_SOURCE_REPLY_CONTEXT, INPUT_SOURCE_OPERATOR_RPC),
+        notes=(
+            "active Telegram callback action",
+            "keep manual/operator-only unless a module has explicit button contract tests",
+        ),
+    ),
+    RustAlignmentCandidate(
+        name="控制面命令组",
+        feature_key="operator_control_commands",
+        rust_command="delay|pacer|reload|sendby|startup|tglog|quizbank",
+        category=RUST_FEATURE_CONTROL_PLANE,
+        target_surface="运维控制面",
+        primary_inputs=(INPUT_SOURCE_LOCAL_STATE, INPUT_SOURCE_OPERATOR_RPC),
+        notes=(
+            "useful as organization reference for command registry",
+            "not a candidate for default game automation",
+        ),
+    ),
+)
+
 MODULE_MANIFESTS = {manifest.name: manifest for manifest in _MANIFESTS}
 REPORT_ONLY_FEATURE_CONTRACTS = {
     contract.name: contract for contract in _REPORT_ONLY_FEATURE_CONTRACTS
 }
 REPORT_ONLY_FEATURE_CONTRACTS_BY_KEY = {
     contract.feature_key: contract for contract in _REPORT_ONLY_FEATURE_CONTRACTS
+}
+RUST_ALIGNMENT_CANDIDATES = {
+    candidate.name: candidate for candidate in _RUST_ALIGNMENT_CANDIDATES
+}
+RUST_ALIGNMENT_CANDIDATES_BY_KEY = {
+    candidate.feature_key: candidate for candidate in _RUST_ALIGNMENT_CANDIDATES
 }
 _BEHAVIOR_SPECS = tuple(
     BehaviorSpec.from_manifest(manifest, registry_index=index)
@@ -287,6 +449,15 @@ def iter_report_only_feature_contracts():
 def get_report_only_feature_contract(name_or_key):
     key = str(name_or_key or "").strip()
     return REPORT_ONLY_FEATURE_CONTRACTS.get(key) or REPORT_ONLY_FEATURE_CONTRACTS_BY_KEY.get(key)
+
+
+def iter_rust_alignment_candidates():
+    return tuple(_RUST_ALIGNMENT_CANDIDATES)
+
+
+def get_rust_alignment_candidate(name_or_key):
+    key = str(name_or_key or "").strip()
+    return RUST_ALIGNMENT_CANDIDATES.get(key) or RUST_ALIGNMENT_CANDIDATES_BY_KEY.get(key)
 
 
 def iter_behavior_specs(include_archived=True):
@@ -424,6 +595,12 @@ def _report_only_contract_names_and_keys():
     return names | keys
 
 
+def _rust_alignment_candidate_names_and_keys():
+    names = {candidate.name for candidate in _RUST_ALIGNMENT_CANDIDATES}
+    keys = {candidate.feature_key for candidate in _RUST_ALIGNMENT_CANDIDATES}
+    return names | keys
+
+
 def validate_report_only_feature_contracts():
     duplicate_names = []
     duplicate_keys = []
@@ -479,6 +656,134 @@ def validate_report_only_feature_contracts():
         "primary_api_inputs": primary_api_inputs,
         "backup_api_policy_mismatch": backup_api_policy_mismatch,
         "unknown_parent_modules": unknown_parent_modules,
+    }
+
+
+def validate_rust_alignment_candidates(known_external=()):
+    duplicate_names = []
+    duplicate_keys = []
+    missing_fields = []
+    invalid_stage = []
+    runtime_connected = []
+    primary_api_inputs = []
+    backup_api_policy_mismatch = []
+    recommended_non_readonly = []
+    recommended_operator_inputs = []
+    seen_names = set()
+    seen_keys = set()
+
+    allowed_categories = {
+        RUST_FEATURE_READ_ONLY_QUERY,
+        RUST_FEATURE_REPORT_OUTPUT,
+        RUST_FEATURE_OPERATOR_TOOL,
+        RUST_FEATURE_ACTIVE_ACTION,
+        RUST_FEATURE_CONTROL_PLANE,
+        RUST_FEATURE_EXTERNAL_REPORT,
+    }
+    default_path_categories = {
+        RUST_FEATURE_READ_ONLY_QUERY,
+        RUST_FEATURE_REPORT_OUTPUT,
+    }
+
+    for candidate in _RUST_ALIGNMENT_CANDIDATES:
+        if candidate.name in seen_names:
+            duplicate_names.append(candidate.name)
+        seen_names.add(candidate.name)
+        if candidate.feature_key in seen_keys:
+            duplicate_keys.append(candidate.feature_key)
+        seen_keys.add(candidate.feature_key)
+
+        for field_name in ("name", "feature_key", "rust_command", "category", "target_surface"):
+            if not str(getattr(candidate, field_name, "") or "").strip():
+                missing_fields.append(f"{candidate.name or candidate.feature_key}:{field_name}")
+        if candidate.category not in allowed_categories:
+            missing_fields.append(f"{candidate.name}:category")
+        if candidate.stage != MODULE_STAGE_REPORT_ONLY:
+            invalid_stage.append(candidate.name)
+        if candidate.default_enabled or candidate.scheduler_connected or candidate.ui_connected:
+            runtime_connected.append(candidate.name)
+        if INPUT_SOURCE_API_BACKUP in tuple(candidate.primary_inputs or ()):
+            primary_api_inputs.append(candidate.name)
+        if INPUT_SOURCE_API_BACKUP in tuple(candidate.backup_inputs or ()) and candidate.api_policy != API_POLICY_BACKUP_ONLY:
+            backup_api_policy_mismatch.append(candidate.name)
+        if candidate.recommended_default_path and candidate.category not in default_path_categories:
+            recommended_non_readonly.append(candidate.name)
+        if candidate.recommended_default_path and INPUT_SOURCE_OPERATOR_RPC in tuple(candidate.primary_inputs or ()):
+            recommended_operator_inputs.append(candidate.name)
+
+    return {
+        "ok": (
+            not duplicate_names
+            and not duplicate_keys
+            and not missing_fields
+            and not invalid_stage
+            and not runtime_connected
+            and not primary_api_inputs
+            and not backup_api_policy_mismatch
+            and not recommended_non_readonly
+            and not recommended_operator_inputs
+        ),
+        "duplicate_names": duplicate_names,
+        "duplicate_keys": duplicate_keys,
+        "missing_fields": missing_fields,
+        "invalid_stage": invalid_stage,
+        "runtime_connected": runtime_connected,
+        "primary_api_inputs": primary_api_inputs,
+        "backup_api_policy_mismatch": backup_api_policy_mismatch,
+        "recommended_non_readonly": recommended_non_readonly,
+        "recommended_operator_inputs": recommended_operator_inputs,
+    }
+
+
+def summarize_rust_alignment_candidates(strict_modules=(), known_external=()):
+    strict = {str(name or "").strip() for name in tuple(strict_modules or ()) if str(name or "").strip()}
+    external = {str(name or "").strip() for name in tuple(known_external or ()) if str(name or "").strip()}
+    rows = []
+    by_category = {}
+    recommended = 0
+    backup_api = 0
+    operator_or_active = 0
+    for candidate in _RUST_ALIGNMENT_CANDIDATES:
+        by_category[candidate.category] = by_category.get(candidate.category, 0) + 1
+        if candidate.recommended_default_path:
+            recommended += 1
+        if INPUT_SOURCE_API_BACKUP in tuple(candidate.backup_inputs or ()):
+            backup_api += 1
+        if candidate.category in {RUST_FEATURE_OPERATOR_TOOL, RUST_FEATURE_ACTIVE_ACTION, RUST_FEATURE_CONTROL_PLANE}:
+            operator_or_active += 1
+        rows.append(
+            {
+                "name": candidate.name,
+                "feature_key": candidate.feature_key,
+                "rust_command": candidate.rust_command,
+                "category": candidate.category,
+                "stage": candidate.stage,
+                "target_surface": candidate.target_surface,
+                "primary_inputs": list(candidate.primary_inputs or ()),
+                "backup_inputs": list(candidate.backup_inputs or ()),
+                "api_policy": candidate.api_policy,
+                "default_enabled": bool(candidate.default_enabled),
+                "scheduler_connected": bool(candidate.scheduler_connected),
+                "ui_connected": bool(candidate.ui_connected),
+                "recommended_default_path": bool(candidate.recommended_default_path),
+                "notes": list(candidate.notes or ()),
+                "strict": candidate.name in strict or candidate.feature_key in strict,
+            }
+        )
+
+    known = _rust_alignment_candidate_names_and_keys()
+    return {
+        "candidates": rows,
+        "totals": {
+            "candidates": len(rows),
+            "recommended_default_path": recommended,
+            "backup_api_candidates": backup_api,
+            "operator_or_active_candidates": operator_or_active,
+            "categories": by_category,
+            "strict_candidates": len(strict & known),
+        },
+        "unknown_strict_candidates": sorted(strict - known - external),
+        "validation": validate_rust_alignment_candidates(known_external=external),
     }
 
 
@@ -640,6 +945,10 @@ def summarize_module_contracts(samples=None, strict_modules=()):
     strict = {str(name or "").strip() for name in tuple(strict_modules or ()) if str(name or "").strip()}
     sample_modules, sample_families = _sample_modules_and_families(samples) if samples is not None else (set(), set())
     report_only_summary = summarize_report_only_feature_contracts(strict_modules)
+    rust_alignment_summary = summarize_rust_alignment_candidates(
+        strict_modules,
+        known_external={manifest.name for manifest in _MANIFESTS} | _report_only_contract_names_and_keys(),
+    )
     readiness_summary = summarize_module_readiness(samples, strict_modules)
     rows = []
     total_families = 0
@@ -695,6 +1004,7 @@ def summarize_module_contracts(samples=None, strict_modules=()):
     return {
         "modules": rows,
         "report_only": report_only_summary,
+        "rust_alignment": rust_alignment_summary,
         "readiness": readiness_summary,
         "totals": {
             "modules": len(rows),
@@ -707,9 +1017,13 @@ def summarize_module_contracts(samples=None, strict_modules=()):
             "observation_route_modules": observation_routes,
             "strict_modules": len(strict & {manifest.name for manifest in _MANIFESTS}),
             "strict_report_only_modules": report_only_summary["totals"]["strict_modules"],
+            "strict_rust_alignment_candidates": rust_alignment_summary["totals"]["strict_candidates"],
         },
         "unknown_strict_modules": sorted(
-            strict - {manifest.name for manifest in _MANIFESTS} - _report_only_contract_names_and_keys()
+            strict
+            - {manifest.name for manifest in _MANIFESTS}
+            - _report_only_contract_names_and_keys()
+            - _rust_alignment_candidate_names_and_keys()
         ),
     }
 
@@ -734,10 +1048,11 @@ def validate_module_admission_contract(samples=None, strict_modules=()):
     strict_missing_sample_families = []
 
     known_modules = {manifest.name for manifest in _MANIFESTS}
-    known_contracts = known_modules | _report_only_contract_names_and_keys()
+    known_contracts = known_modules | _report_only_contract_names_and_keys() | _rust_alignment_candidate_names_and_keys()
     for name in sorted(strict - known_contracts):
         strict_unknown_modules.append(name)
     report_only_validation = validate_report_only_feature_contracts()
+    rust_alignment_validation = validate_rust_alignment_candidates()
 
     for manifest in _MANIFESTS:
         if manifest.archived:
@@ -777,6 +1092,7 @@ def validate_module_admission_contract(samples=None, strict_modules=()):
         "ok": (
             replay_ok
             and report_only_validation["ok"]
+            and rust_alignment_validation["ok"]
             and not missing_duplicate_guard
             and not last_resort_without_passive_first
             and not passive_without_observation
@@ -794,7 +1110,9 @@ def validate_module_admission_contract(samples=None, strict_modules=()):
         "strict_missing_samples": strict_missing_samples,
         "strict_missing_sample_families": strict_missing_sample_families,
         "strict_report_only_modules": sorted(strict & _report_only_contract_names_and_keys()),
+        "strict_rust_alignment_candidates": sorted(strict & _rust_alignment_candidate_names_and_keys()),
         "report_only_validation": report_only_validation,
+        "rust_alignment_validation": rust_alignment_validation,
     }
 
 

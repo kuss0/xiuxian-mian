@@ -279,6 +279,27 @@ def format_report(report):
                     f"- {row['name']}: stage={row['stage']} key={row['feature_key']} "
                     f"api={row['api_policy']}{parent} scheduler={row['scheduler_connected']} ui={row['ui_connected']}"
                 )
+        rust_alignment = contracts.get("rust_alignment") or {}
+        rust_alignment_totals = rust_alignment.get("totals") or {}
+        if rust_alignment_totals:
+            lines.append("")
+            lines.append(
+                "Rust 对照候选: "
+                f"{rust_alignment_totals.get('candidates', 0)} candidates, "
+                f"{rust_alignment_totals.get('recommended_default_path', 0)} recommended-default, "
+                f"{rust_alignment_totals.get('backup_api_candidates', 0)} API-backup"
+            )
+            unknown_strict = rust_alignment.get("unknown_strict_candidates") or []
+            if unknown_strict:
+                lines.append(f"- unknown_strict_candidates: {', '.join(unknown_strict)}")
+            strict_rows = [row for row in rust_alignment.get("candidates") or [] if row.get("strict")]
+            rows = strict_rows or (rust_alignment.get("candidates") or [])
+            for row in rows:
+                backup = f" backup={','.join(row['backup_inputs'])}" if row.get("backup_inputs") else ""
+                lines.append(
+                    f"- {row['name']}: cmd={row['rust_command']} category={row['category']} "
+                    f"api={row['api_policy']}{backup}"
+                )
     return "\n".join(lines)
 
 
