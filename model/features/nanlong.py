@@ -4,6 +4,8 @@ import re
 import time
 
 from ..config import (
+    CMD_CONCUBINE_PLACE,
+    CMD_CONCUBINE_RECALL,
     CMD_NANLONG_EXCHANGE_FABAO,
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
@@ -45,6 +47,16 @@ NANLONG_SUCCESS_KEYWORDS = ("【天机异闻·魔君之怒】", "【天机异闻
 NANLONG_CONFIRM_RETRY_DELAY_SEC = 60
 NANLONG_CONFIRM_RETRY_LIMIT = 1
 NANLONG_CONFIRM_CHOICES = {NANLONG_CHOICE_EXCHANGE_FABAO, NANLONG_CHOICE_EXCHANGE_GONGFA}
+NANLONG_PROTECT_PLACE_PENDING = "place_pending"
+NANLONG_PROTECT_EXCHANGE_PENDING = "exchange_pending"
+NANLONG_PROTECT_RECALL_PENDING = "recall_pending"
+NANLONG_PROTECT_PHASES = {
+    NANLONG_PROTECT_PLACE_PENDING,
+    NANLONG_PROTECT_EXCHANGE_PENDING,
+    NANLONG_PROTECT_RECALL_PENDING,
+}
+NANLONG_PLACE_FAILURE_KEYWORDS = ("无法安置", "不能安置", "暂无道侣", "没有道侣", "尚无道侣", "未拥有洞府", "尚未开辟洞府")
+NANLONG_RECALL_FAILURE_KEYWORDS = ("无法召回", "无需召回", "藏娇阁中暂无", "尚无红颜")
 
 
 def _normalize_text(text):
@@ -170,6 +182,62 @@ def _is_nanlong_success_reply(text):
     return any(keyword in str(text or "") for keyword in NANLONG_SUCCESS_KEYWORDS)
 
 
+def _is_nanlong_trade_success_reply(text):
+    return "【天机异闻·南陇侯的交易】" in str(text or "")
+
+
+def _is_concubine_place_success(text):
+    raw_text = str(text or "")
+    return "藏娇阁" in raw_text and "安置" in raw_text and ("已将" in raw_text or "已经" in raw_text)
+
+
+def _is_concubine_place_failure(text):
+    raw_text = str(text or "")
+    return any(keyword in raw_text for keyword in NANLONG_PLACE_FAILURE_KEYWORDS)
+
+
+def _is_concubine_recall_success(text):
+    raw_text = str(text or "")
+    return "藏娇阁" in raw_text and "召回" in raw_text and ("已将" in raw_text or "已经" in raw_text)
+
+
+def _is_concubine_recall_failure(text):
+    raw_text = str(text or "")
+    return any(keyword in raw_text for keyword in NANLONG_RECALL_FAILURE_KEYWORDS)
+
+
+def _get_nanlong_protect_phase():
+    phase = str(state.get("nanlong_protect_phase") or "").strip()
+    return phase if phase in NANLONG_PROTECT_PHASES else ""
+
+
+def _reply_to_msg_id(reply_to):
+    try:
+        return int(getattr(reply_to, "id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _is_reply_to_nanlong_last_msg(reply_to):
+    expected_msg_id, valid = _parse_nanlong_pending_int(state.get("nanlong_last_msg_id", 0))
+    return valid and expected_msg_id > 0 and _reply_to_msg_id(reply_to) == expected_msg_id
+
+
+def _nanlong_exchange_requires_protection(choice):
+    return normalize_nanlong_choice(choice) in NANLONG_CONFIRM_CHOICES
+
+
+def is_nanlong_protected_trade_active(now=None):
+    if not state.get("nanlong_enabled"):
+        return False
+    if now is None:
+        now = time.time()
+    if not _has_active_nanlong_pending(now):
+        return False
+    phase = _get_nanlong_protect_phase()
+    return phase in {NANLONG_PROTECT_PLACE_PENDING, NANLONG_PROTECT_EXCHANGE_PENDING, NANLONG_PROTECT_RECALL_PENDING}
+
+
 def _has_active_nanlong_pending(now):
     reply_to_msg_id, deadline, _reply_due_at, pending_valid = _get_nanlong_pending_state()
     if not pending_valid:
@@ -199,6 +267,9 @@ def _set_nanlong_pending(reply_to_msg_id, deadline_at, now):
     state["nanlong_last_msg_id"] = 0
     state["nanlong_retry_count"] = 0
     state["nanlong_last_command"] = ""
+    state["nanlong_protect_phase"] = ""
+    state["nanlong_place_msg_id"] = 0
+    state["nanlong_recall_msg_id"] = 0
     state["nanlong_last_error"] = ""
     _schedule_nanlong_reply_due(now)
 
@@ -212,6 +283,14 @@ async def _send_nanlong_command(command, reply_to_msg_id):
     return await send_game_command(command, track=False, reply_to=reply_to_msg_id)
 
 
+async def _send_nanlong_place_command():
+    return await send_game_command(CMD_CONCUBINE_PLACE, track=False)
+
+
+async def _send_nanlong_recall_command():
+    return await send_game_command(CMD_CONCUBINE_RECALL, track=False)
+
+
 async def _maybe_audit_nanlong_prompt_override(previous_reply_to, previous_deadline, now, new_reply_to):
     if previous_reply_to > 0 and previous_reply_to != new_reply_to and previous_deadline > now:
         await send_audit_log(f"🤝 南陇侯新抉择覆盖旧消息：{previous_reply_to}->{new_reply_to}")
@@ -222,12 +301,113 @@ async def _finalize_nanlong_success(audit_text):
     clear_nanlong_state(persist=True)
 
 
+def _set_nanlong_waiting_for_place(sent_msg):
+    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time())
+    msg_id = int(getattr(sent_msg, "id", 0) or 0)
+    state["nanlong_protect_phase"] = NANLONG_PROTECT_PLACE_PENDING
+    state["nanlong_place_msg_id"] = msg_id
+    state["nanlong_last_msg_id"] = msg_id
+    state["nanlong_last_command"] = CMD_CONCUBINE_PLACE
+    state["nanlong_retry_count"] = 0
+    state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
+    state["nanlong_last_error"] = "等待侍妾安置确认"
+    return sent_at
+
+
+def _set_nanlong_waiting_for_exchange(sent_msg, command, *, retry_count=0, protected=False):
+    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time())
+    state["nanlong_protect_phase"] = NANLONG_PROTECT_EXCHANGE_PENDING if protected and command in {CMD_NANLONG_EXCHANGE_FABAO, CMD_NANLONG_EXCHANGE_GONGFA} else ""
+    state["nanlong_last_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
+    state["nanlong_last_command"] = command
+    state["nanlong_retry_count"] = max(0, int(retry_count or 0))
+    state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
+    state["nanlong_last_error"] = "等待南陇侯交易结果"
+    return sent_at
+
+
+def _set_nanlong_waiting_for_recall(sent_msg, *, retry_count=0):
+    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time())
+    msg_id = int(getattr(sent_msg, "id", 0) or 0)
+    state["nanlong_protect_phase"] = NANLONG_PROTECT_RECALL_PENDING
+    state["nanlong_recall_msg_id"] = msg_id
+    state["nanlong_last_msg_id"] = msg_id
+    state["nanlong_last_command"] = CMD_CONCUBINE_RECALL
+    state["nanlong_retry_count"] = max(0, int(retry_count or 0))
+    state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
+    state["nanlong_last_error"] = "等待侍妾召回确认"
+    return sent_at
+
+
+async def _send_nanlong_exchange_after_place(now):
+    reply_to_msg_id, next_nanlong_time, _reply_due_at, pending_valid = _get_nanlong_pending_state()
+    if not pending_valid or reply_to_msg_id <= 0 or next_nanlong_time <= now:
+        state["nanlong_last_error"] = "南陇侯安置后原提示已失效"
+        await send_audit_log("⚠️ 南陇侯安置成功，但原抉择提示已失效，停止自动交换。")
+        clear_nanlong_state(persist=True, keep_last_error=True)
+        return False
+
+    choice = normalize_nanlong_choice(get_nanlong_choice())
+    command = get_nanlong_choice_command(choice)
+    sent_msg = await _send_nanlong_command(command, reply_to_msg_id)
+    if not sent_msg:
+        state["nanlong_last_error"] = "南陇侯安置后交换发送失败"
+        _schedule_nanlong_reply_due(now)
+        save_state()
+        await send_audit_log("❌ 南陇侯安置成功，但交换发送失败，待处理已保留。")
+        return False
+    _set_nanlong_waiting_for_exchange(sent_msg, command, protected=True)
+    save_state()
+    return True
+
+
+async def _send_nanlong_exchange_command(command, reply_to_msg_id, now, *, retry_count=0, audit_retry=False, protected=False):
+    sent_msg = await _send_nanlong_command(command, reply_to_msg_id)
+    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
+    if not sent_msg:
+        state["nanlong_last_error"] = "南陇侯自动回复发送失败"
+        _schedule_nanlong_reply_due(sent_at)
+        save_state()
+        await send_audit_log("❌ 南陇侯自动回复失败，待处理已保留。")
+        return False
+    _set_nanlong_waiting_for_exchange(sent_msg, command, retry_count=retry_count, protected=protected)
+    save_state()
+    if audit_retry:
+        await send_audit_log(f"🤝 南陇侯自动选择重发 {retry_count}/{NANLONG_CONFIRM_RETRY_LIMIT}：{command}，等待确认")
+    return True
+
+
+async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
+    sent_msg = await _send_nanlong_recall_command()
+    if not sent_msg:
+        state["nanlong_last_error"] = "南陇侯交易已确认但召回发送失败"
+        _schedule_nanlong_reply_due(now)
+        save_state()
+        await send_audit_log("⚠️ 南陇侯交易已确认，但侍妾召回发送失败，待处理已保留。")
+        return False
+    _set_nanlong_waiting_for_recall(sent_msg, retry_count=retry_count)
+    save_state()
+    if retry_count:
+        await send_audit_log(f"🤝 南陇侯侍妾召回重发 {retry_count}/{NANLONG_CONFIRM_RETRY_LIMIT}，等待确认。")
+    else:
+        await send_audit_log("🤝 南陇侯交易结果已确认，已发送侍妾召回。")
+    return True
+
+
+async def _handle_nanlong_trade_confirmed(text, now, audit_text):
+    if _get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING and _is_nanlong_trade_success_reply(text):
+        return await _send_nanlong_recall_after_trade(now)
+    await _finalize_nanlong_success(audit_text)
+    return True
+
+
 def get_nanlong_status_text():
     choice = normalize_nanlong_choice(get_nanlong_choice())
     reply_to_msg_id, deadline, reply_due_at, _pending_valid = _get_nanlong_pending_state()
+    phase = _get_nanlong_protect_phase() or "无"
     lines = [
         "🤝 南陇侯",
         f"- 当前选择：{get_nanlong_choice_label(choice)}",
+        f"- 洞府保护阶段：{phase}",
         f"- 待回复消息ID：{reply_to_msg_id or '无'}",
         f"- 计划回复时间：{fmt_abs_ts(reply_due_at)}（{fmt_remaining(reply_due_at)}）",
         f"- 截止时间：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
@@ -243,6 +423,9 @@ def clear_nanlong_state(*, persist=False, keep_last_error=False):
     state["nanlong_last_msg_id"] = 0
     state["nanlong_retry_count"] = 0
     state["nanlong_last_command"] = ""
+    state["nanlong_protect_phase"] = ""
+    state["nanlong_place_msg_id"] = 0
+    state["nanlong_recall_msg_id"] = 0
     if not keep_last_error:
         state["nanlong_last_error"] = ""
     if persist:
@@ -313,34 +496,72 @@ async def run_nanlong_scheduler(now):
     choice = normalize_nanlong_choice(get_nanlong_choice())
     command = get_nanlong_choice_command(choice)
     requires_confirmation = choice in NANLONG_CONFIRM_CHOICES
+    phase = _get_nanlong_protect_phase()
+
+    if phase == NANLONG_PROTECT_PLACE_PENDING:
+        state["nanlong_protect_phase"] = ""
+        state["nanlong_place_msg_id"] = 0
+        state["nanlong_last_msg_id"] = 0
+        state["nanlong_retry_count"] = 0
+        await send_audit_log("⚠️ 南陇侯侍妾安置未确认，降级直接回复南陇侯。")
+        await _send_nanlong_exchange_command(command, reply_to_msg_id, now, protected=False)
+        return
+
+    if phase == NANLONG_PROTECT_RECALL_PENDING:
+        retry_count = int(state.get("nanlong_retry_count", 0) or 0)
+        if retry_count >= NANLONG_CONFIRM_RETRY_LIMIT:
+            state["nanlong_last_error"] = "南陇侯交易完成但侍妾召回未确认"
+            await send_audit_log("⚠️ 南陇侯交易完成但侍妾召回未确认，已停止自动处理，请人工核对。")
+            clear_nanlong_state(persist=True, keep_last_error=True)
+            return
+        await _send_nanlong_recall_after_trade(now, retry_count=retry_count + 1)
+        return
+
     is_confirmation_retry = bool(state.get("nanlong_last_msg_id"))
     if requires_confirmation and is_confirmation_retry and int(state.get("nanlong_retry_count", 0) or 0) >= NANLONG_CONFIRM_RETRY_LIMIT:
         state["nanlong_last_error"] = "南陇侯交易结果未确认"
+        if phase == NANLONG_PROTECT_EXCHANGE_PENDING:
+            await send_audit_log("⚠️ 南陇侯交易结果未确认，先尝试召回洞府侍妾后停止。")
+            await _send_nanlong_recall_after_trade(now)
+            return
         await send_audit_log(f"⚠️ 南陇侯自动回复重发 {NANLONG_CONFIRM_RETRY_LIMIT} 次仍未确认，已停止。")
         clear_nanlong_state(persist=True, keep_last_error=True)
         return
-    sent_msg = await _send_nanlong_command(command, reply_to_msg_id)
-    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
-    if not sent_msg:
-        state["nanlong_last_error"] = "南陇侯自动回复发送失败"
-        _schedule_nanlong_reply_due(sent_at)
+
+    if requires_confirmation and not is_confirmation_retry and _nanlong_exchange_requires_protection(choice):
+        sent_msg = await _send_nanlong_place_command()
+        sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
+        if not sent_msg:
+            state["nanlong_last_error"] = "南陇侯侍妾安置发送失败"
+            _schedule_nanlong_reply_due(sent_at)
+            save_state()
+            await send_audit_log("❌ 南陇侯侍妾安置发送失败，待处理已保留。")
+            return
+        _set_nanlong_waiting_for_place(sent_msg)
         save_state()
-        await send_audit_log("❌ 南陇侯自动回复失败，待处理已保留。")
         return
 
     if not requires_confirmation:
+        sent_msg = await _send_nanlong_command(command, reply_to_msg_id)
+        sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
+        if not sent_msg:
+            state["nanlong_last_error"] = "南陇侯自动回复发送失败"
+            _schedule_nanlong_reply_due(sent_at)
+            save_state()
+            await send_audit_log("❌ 南陇侯自动回复失败，待处理已保留。")
+            return
         await _finalize_nanlong_success(f"🤝 南陇侯自动选择：{get_nanlong_choice_label(choice)}")
         return
 
-    state["nanlong_last_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
-    state["nanlong_last_command"] = command
-    if is_confirmation_retry:
-        state["nanlong_retry_count"] = int(state.get("nanlong_retry_count", 0) or 0) + 1
-    state["nanlong_reply_due_at"] = sent_at + NANLONG_CONFIRM_RETRY_DELAY_SEC
-    state["nanlong_last_error"] = "等待南陇侯交易结果"
-    save_state()
-    if is_confirmation_retry:
-        await send_audit_log(f"🤝 南陇侯自动选择重发 {state['nanlong_retry_count']}/{NANLONG_CONFIRM_RETRY_LIMIT}：{get_nanlong_choice_label(choice)}，等待确认")
+    retry_count = int(state.get("nanlong_retry_count", 0) or 0) + 1 if is_confirmation_retry else 0
+    await _send_nanlong_exchange_command(
+        command,
+        reply_to_msg_id,
+        now,
+        retry_count=retry_count,
+        audit_retry=is_confirmation_retry,
+        protected=phase == NANLONG_PROTECT_EXCHANGE_PENDING,
+    )
 
 
 async def handle_nanlong_reply(text, now, reply_to, matched_family=None):
@@ -350,10 +571,38 @@ async def handle_nanlong_reply(text, now, reply_to, matched_family=None):
         return False
     if not state.get("nanlong_last_msg_id"):
         return False
+    if not _is_reply_to_nanlong_last_msg(reply_to):
+        return False
+    phase = _get_nanlong_protect_phase()
+    if phase == NANLONG_PROTECT_PLACE_PENDING:
+        if _is_concubine_place_success(text):
+            await _send_nanlong_exchange_after_place(now)
+            return True
+        if _is_concubine_place_failure(text):
+            state["nanlong_protect_phase"] = ""
+            state["nanlong_place_msg_id"] = 0
+            state["nanlong_last_msg_id"] = 0
+            state["nanlong_retry_count"] = 0
+            state["nanlong_last_error"] = "侍妾安置失败，降级直接交换"
+            save_state()
+            await send_audit_log("⚠️ 南陇侯侍妾安置失败，降级直接回复南陇侯。")
+            await _send_nanlong_exchange_command(get_nanlong_choice_command(get_nanlong_choice()), state.get("nanlong_reply_to_msg_id", 0), now)
+            return True
+        return True
+    if phase == NANLONG_PROTECT_RECALL_PENDING:
+        if _is_concubine_recall_success(text):
+            await _finalize_nanlong_success("🤝 南陇侯交易完成，侍妾已召回")
+            return True
+        if _is_concubine_recall_failure(text):
+            state["nanlong_last_error"] = "南陇侯交易完成但侍妾召回失败"
+            await send_audit_log("⚠️ 南陇侯交易完成但侍妾召回失败，请人工核对。")
+            clear_nanlong_state(persist=True, keep_last_error=True)
+            return True
+        return True
     if not _is_nanlong_success_reply(text):
         return True
 
-    await _finalize_nanlong_success("🤝 南陇侯交易结果已确认")
+    await _handle_nanlong_trade_confirmed(text, now, "🤝 南陇侯交易结果已确认")
     return True
 
 
@@ -368,7 +617,7 @@ async def handle_nanlong_result_broadcast(text, now, event):
     if identity_id is None or identity_id != get_current_identity_id():
         return False
 
-    await _finalize_nanlong_success("🤝 南陇侯交易结果已确认")
+    await _handle_nanlong_trade_confirmed(text, now, "🤝 南陇侯交易结果已确认")
     return True
 
 
@@ -384,6 +633,7 @@ __all__ = [
     "handle_nanlong_prompt",
     "handle_nanlong_reply",
     "handle_nanlong_result_broadcast",
+    "is_nanlong_protected_trade_active",
     "normalize_nanlong_choice",
     "resolve_nanlong_choice",
     "run_nanlong_scheduler",

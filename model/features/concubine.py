@@ -4547,6 +4547,14 @@ async def handle_concubine_loss_broadcast(text, now, event):
 
     matched = RE_LOST_PARTNER_NAME.search(raw_text)
     partner_name = matched.group("name") if matched else (state.get("concubine_name") or "")
+    if "选择将侍妾" in raw_text:
+        from .nanlong import is_nanlong_protected_trade_active
+
+        if is_nanlong_protected_trade_active(now):
+            state["concubine_last_error"] = ""
+            save_state()
+            await send_audit_log("🌸 南陇侯洞府安置交易已确认，侍妾丢失判定已跳过，等待召回。", scope="identity")
+            return True
     _mark_no_partner(now, f"南陇侯导致侍妾失去: {partner_name or '未知'}", allow_reacquire=bool(state.get("concubine_enabled")))
     save_state()
     if state.get("concubine_auto_reacquire"):

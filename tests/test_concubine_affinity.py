@@ -3285,6 +3285,56 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["concubine_heart_msg_id"])
         self.assertEqual("共历心劫需要回复侍妾面板，已改为状态校准", state_module.state["concubine_heart_last_error"])
 
+    async def test_nanlong_protected_trade_broadcast_does_not_mark_no_partner(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        text = (
+            "【天机异闻·南陇侯的交易】\n"
+            "道友 @xinggong 经过深思熟虑，选择将侍妾【凌玉灵】与南陇侯交换！\n"
+            "作为回报，南陇侯赐予了其一件至宝：【元磁山核·甲】！"
+        )
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["nanlong_enabled"] = True
+            identity_state["nanlong_reply_to_msg_id"] = 22027
+            identity_state["next_nanlong_time"] = now + 60
+            identity_state["nanlong_protect_phase"] = "recall_pending"
+            identity_state["nanlong_last_msg_id"] = 9903
+
+            with (
+                patch.object(concubine, "save_state") as save_mock,
+                patch.object(concubine, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                handled = await concubine.handle_concubine_loss_broadcast(text, now, SimpleNamespace(id=8810))
+
+            self.assertTrue(handled)
+            save_mock.assert_called_once()
+            audit_mock.assert_awaited_once()
+            self.assertEqual("available", identity_state["concubine_availability"])
+            self.assertEqual("idle", identity_state["concubine_phase"])
+            self.assertEqual("凌玉灵", identity_state["concubine_name"])
+
+    async def test_nanlong_unprotected_trade_broadcast_marks_no_partner(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        text = (
+            "【天机异闻·南陇侯的交易】\n"
+            "道友 @xinggong 经过深思熟虑，选择将侍妾【凌玉灵】与南陇侯交换！"
+        )
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            with (
+                patch.object(concubine, "save_state") as save_mock,
+                patch.object(concubine, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                handled = await concubine.handle_concubine_loss_broadcast(text, now, SimpleNamespace(id=8810))
+
+            self.assertTrue(handled)
+            save_mock.assert_called_once()
+            audit_mock.assert_awaited_once()
+            self.assertEqual("no_partner", identity_state["concubine_availability"])
+            self.assertEqual("no_partner", identity_state["concubine_phase"])
+
 
 if __name__ == "__main__":
     unittest.main()

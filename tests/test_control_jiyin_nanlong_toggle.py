@@ -42,6 +42,9 @@ class ControlJiyinNanlongToggleTests(unittest.TestCase):
         state_module.state["nanlong_last_msg_id"] = 22029
         state_module.state["nanlong_retry_count"] = 2
         state_module.state["nanlong_last_command"] = ".交换法宝"
+        state_module.state["nanlong_protect_phase"] = "recall_pending"
+        state_module.state["nanlong_place_msg_id"] = 22030
+        state_module.state["nanlong_recall_msg_id"] = 22031
         state_module.state["nanlong_last_error"] = "旧南陇侯错误"
 
     def _snapshot_jiyin(self):
@@ -59,6 +62,9 @@ class ControlJiyinNanlongToggleTests(unittest.TestCase):
             "nanlong_last_msg_id": state_module.state["nanlong_last_msg_id"],
             "nanlong_retry_count": state_module.state["nanlong_retry_count"],
             "nanlong_last_command": state_module.state["nanlong_last_command"],
+            "nanlong_protect_phase": state_module.state["nanlong_protect_phase"],
+            "nanlong_place_msg_id": state_module.state["nanlong_place_msg_id"],
+            "nanlong_recall_msg_id": state_module.state["nanlong_recall_msg_id"],
             "nanlong_last_error": state_module.state["nanlong_last_error"],
         }
 
@@ -176,6 +182,9 @@ class ControlJiyinNanlongToggleTests(unittest.TestCase):
                     self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
                     self.assertEqual(0, state_module.state["nanlong_retry_count"])
                     self.assertEqual("", state_module.state["nanlong_last_command"])
+                    self.assertEqual("", state_module.state["nanlong_protect_phase"])
+                    self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
+                    self.assertEqual(0, state_module.state["nanlong_recall_msg_id"])
                     self.assertEqual("", state_module.state["nanlong_last_error"])
 
     def test_manual_enable_clean_future_time_keeps_pending_semantics(self):
