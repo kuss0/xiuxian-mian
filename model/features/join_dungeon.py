@@ -226,20 +226,8 @@ def record_game_group_message(event, *, now=None, event_type="message"):
     _inbox.append(item)
     _by_msg_id[msg_id] = item
     dungeon_id = _parse_dungeon_id(item["text"])
-    if dungeon_id and item["sender_is_game_bot"]:
-        _record_dungeon_workflow_event(
-            "announcement_seen",
-            status="observed",
-            dungeon_id=dungeon_id,
-            dungeon_kind=_infer_dungeon_kind(item["text"]),
-            chat_id=item["chat_id"],
-            msg_id=msg_id,
-            reply_to_msg_id=item["reply_to_msg_id"],
-            text=item["text"],
-            decision="passive_announcement_recorded",
-            now=now,
-        )
-        console_log(f"🧩 副本公告入箱：ID={dungeon_id} msg_id={msg_id}", scope="global", limit=160)
+    if dungeon_id and item["sender_is_game_bot"] and _is_visible_dungeon_inbox_item(item):
+        _mark_dungeon_inbox_item_logged(item, now)
 
 
 def _parse_dungeon_id(text):
@@ -329,6 +317,56 @@ def _identity_id_by_username(username):
         if username in _identity_usernames(identity_id):
             return int(identity_id)
     return 0
+
+
+def _is_local_identity_sender(sender_id):
+    try:
+        sender_id = int(sender_id or 0)
+    except (TypeError, ValueError):
+        sender_id = 0
+    if sender_id <= 0:
+        return False
+    local_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    return sender_id in local_ids and bool(get_identity_enabled(sender_id))
+
+
+def _is_visible_dungeon_inbox_item(item):
+    item = item if isinstance(item, dict) else {}
+    if item.get("actionable"):
+        return True
+    parent_msg_id = int(item.get("reply_to_msg_id", 0) or 0)
+    parent = _by_msg_id.get(parent_msg_id) if parent_msg_id > 0 else None
+    if parent and _is_local_identity_sender((parent or {}).get("sender_id")):
+        return True
+    for username in _extract_usernames(item.get("text") or "")[:2]:
+        identity_id = _identity_id_by_username(username)
+        if identity_id > 0 and get_identity_enabled(identity_id):
+            return True
+    return False
+
+
+def _mark_dungeon_inbox_item_logged(item, now):
+    item = item if isinstance(item, dict) else {}
+    if item.get("announcement_logged"):
+        return False
+    dungeon_id = _parse_dungeon_id(item.get("text") or "")
+    if not dungeon_id or not item.get("sender_is_game_bot"):
+        return False
+    _record_dungeon_workflow_event(
+        "announcement_seen",
+        status="observed",
+        dungeon_id=dungeon_id,
+        dungeon_kind=_infer_dungeon_kind(item.get("text") or ""),
+        chat_id=int(item.get("chat_id", 0) or 0),
+        msg_id=int(item.get("msg_id", 0) or 0),
+        reply_to_msg_id=int(item.get("reply_to_msg_id", 0) or 0),
+        text=item.get("text") or "",
+        decision="passive_announcement_recorded",
+        now=now,
+    )
+    item["announcement_logged"] = True
+    console_log(f"🧩 副本公告入箱：ID={dungeon_id} msg_id={int(item.get('msg_id', 0) or 0)}", scope="global", limit=160)
+    return True
 
 
 def _normalize_run_record(record):
@@ -683,6 +721,8 @@ def _is_success_progress_text(text):
         return True
     if "【战利品结算" in raw:
         return True
+    if "【坠魔谷·封魔成功】" in raw or "【坠魔谷·封魔失败】" in raw:
+        return True
     if "【后殿冲关止步】" in raw and "结算所得早已锁定" in raw:
         return True
     return False
@@ -691,6 +731,8 @@ def _is_success_progress_text(text):
 def _is_terminal_settlement_text(text):
     raw = str(text or "")
     if "【战利品结算" in raw:
+        return True
+    if "【坠魔谷·封魔成功】" in raw or "【坠魔谷·封魔失败】" in raw:
         return True
     if "【后殿冲关止步】" in raw and "结算所得早已锁定" in raw:
         return True
@@ -1001,6 +1043,10 @@ def _allow_join(identity_id, dungeon_id, now):
 
 def _reserve_join(identity_id, dungeon_id, now, *, dungeon_kind="", command="", chat_id=0, source_message_id=0):
     _join_keys[(int(identity_id), str(dungeon_id))] = {"at": float(now or 0), "status": "inflight"}
+    source_item = _by_msg_id.get(int(source_message_id or 0))
+    if isinstance(source_item, dict):
+        source_item["actionable"] = True
+        _mark_dungeon_inbox_item_logged(source_item, now)
     _record_dungeon_workflow_event(
         "join_reserved",
         status="inflight",
@@ -1361,6 +1407,8 @@ def get_dungeon_join_inbox_snapshot(limit=20):
         text = (item or {}).get("text") or ""
         dungeon_id = _parse_dungeon_id(text)
         if not dungeon_id:
+            continue
+        if not _is_visible_dungeon_inbox_item(item):
             continue
         dungeon_kind = _infer_dungeon_kind(text)
         kind_meta = DUNGEON_KIND_META.get(dungeon_kind) or DUNGEON_KIND_META[DUNGEON_KIND_VIRTUAL_HALL]

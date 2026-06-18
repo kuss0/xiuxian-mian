@@ -1641,9 +1641,31 @@ def _format_replica_settlement_excerpt(text, *, html=False, max_lines=12, max_ch
     return escape(excerpt) if html else excerpt
 
 
+def _has_replica_progress_notice_context(replica_kind, now, *, usernames=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return False
+    if _get_latest_lightweight_room_for_kind(replica_kind, now=now):
+        return True
+    normalized_usernames = _normalize_replica_username_list(usernames or [])
+    if normalized_usernames and _get_active_replica_team_identity_ids_for_usernames(
+        normalized_usernames,
+        now,
+        replica_kind=replica_kind,
+    ):
+        return True
+    return bool(_get_active_replica_identity_ids(now, replica_kind=replica_kind))
+
+
 async def _send_zhuimo_progress_notice(event, text, now):
     raw_text = str(text or "")
     if not _is_zhuimo_progress_text(raw_text) or _parse_replica_settlement_kind(raw_text):
+        return False
+    if not _has_replica_progress_notice_context(
+        _REPLICA_KIND_ZHUIMO,
+        now,
+        usernames=_extract_replica_usernames(raw_text),
+    ):
         return False
     notice_key = "zhuimo-progress:" + hashlib.sha1(raw_text.encode("utf-8", errors="ignore")).hexdigest()[:16]
     if not _mark_xutian_decision_notice_once(notice_key, now):

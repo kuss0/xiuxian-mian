@@ -2767,6 +2767,28 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("魔染 34", notice_text)
         self.assertNotIn(ack_key, state_module.get_replica_run_state().get("zhuimo_progress_acks", {}))
 
+    def test_zhuimo_progress_without_local_context_is_not_reported(self):
+        now = time.time()
+        progress_text = (
+            "【第 7 回合】\n"
+            "古魔施展了 裂隙震荡：士气 -5，魔染 +1，封印稳定度 -6\n"
+            "> 你们补全封印阵纹，封印 +4。\n"
+            "> 残识血量：0/149019124258 | 魔染：25 | 封印：88/100 | 士气：81"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(id=10565649, chat_id=-100123, raw_text=progress_text),
+                    now,
+                )
+                return handled, notice_mock.await_count
+
+        handled, notice_count = asyncio.run(run_test())
+
+        self.assertFalse(handled)
+        self.assertEqual(0, notice_count)
+
     def test_luoyun_first_stage_marks_entered_and_sends_decision_buttons(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", realm="结丹后期", sect_name="落云宗")
         member_id = self._register_replica_identity(991202, "growrdick")
