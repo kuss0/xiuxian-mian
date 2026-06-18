@@ -128,7 +128,8 @@ CONCUBINE_TIMEOUT_CANDIDATE_LOOKBACK_SEC = 2 * 60
 CONCUBINE_TIMEOUT_CANDIDATE_MAX_LINES = 1200
 CONCUBINE_PANEL_REUSE_MAX_AGE_SEC = 10 * 60
 CONCUBINE_HEART_PANEL_MAX_AGE_SEC = CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
-CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 3
+CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 30
+CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC = 120
 CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT = 1
 CONCUBINE_HEART_GLOBAL_START_GAP_SEC = 5 * 60
 CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC = 60
@@ -258,10 +259,23 @@ def _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at):
 def _wait_for_existing_heart_choice(now):
     sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
     _set_phase("heart_choice_reply_pending")
-    retry_count = int(state.get("concubine_heart_choice_retry_count", 0) or 0)
-    ack_timeout = CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC if retry_count < CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT else 45
+    ack_timeout = _heart_choice_reply_timeout_sec()
     state["next_concubine_time"] = max(float(now) + ack_timeout, sent_at + ack_timeout)
     return state["next_concubine_time"]
+
+
+def _heart_choice_reply_timeout_sec():
+    retry_count = int(state.get("concubine_heart_choice_retry_count", 0) or 0)
+    if retry_count >= CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT:
+        return CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
+    return CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
+
+
+def _heart_choice_reply_wait_until():
+    sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
+    if sent_at <= 0:
+        return 0.0
+    return sent_at + _heart_choice_reply_timeout_sec()
 
 
 def _close_heart_action_guard(now, reason):
@@ -3519,7 +3533,7 @@ async def _send_heart_choice(now):
         return False
     _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
     _set_phase("heart_choice_reply_pending")
-    state["next_concubine_time"] = sent_at + 45
+    state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
     _record_concubine_event(
         "心劫抉择已发送",
         kind="changed",
@@ -3554,7 +3568,7 @@ async def _retry_heart_choice_once(now):
     state["concubine_heart_choice_retry_count"] = retry_count + 1
     state["concubine_heart_choice_sent_at"] = sent_at
     _set_phase("heart_choice_reply_pending")
-    state["next_concubine_time"] = sent_at + 45
+    state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
     if not msg:
         state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 补发失败，等待回合推进"
         _record_concubine_event(
@@ -4647,8 +4661,13 @@ async def _run_concubine_scheduler(now):
     if phase == "heart_choice_reply_pending":
         pending_until = float(state.get("next_concubine_time", 0) or 0)
         if pending_until > now:
+            state["next_concubine_time"] = pending_until
             return
         if await _recover_concubine_pending_from_message_log(now, phase):
+            return
+        pending_until = _heart_choice_reply_wait_until()
+        if pending_until > now:
+            state["next_concubine_time"] = pending_until
             return
         if await _retry_heart_choice_once(now):
             return

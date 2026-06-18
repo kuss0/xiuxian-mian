@@ -2162,7 +2162,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sent)
         mock_send.assert_not_awaited()
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
-        self.assertEqual(now + 3, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 30, state_module.state["next_concubine_time"])
         self.assertIn("已发送 .稳", state_module.state["concubine_heart_last_error"])
         self.assertTrue(any(
             event.get("workflow") == "concubine"
@@ -2213,9 +2213,58 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, state_module.state["concubine_heart_choice_round"])
         self.assertEqual(now + 9, state_module.state["next_concubine_time"])
 
-    async def test_heart_choice_timeout_ignores_original_prompt_and_retries_once(self):
+    async def test_heart_choice_short_wait_does_not_retry_same_round(self):
         now = 1_700_000_900.0
         sent_at = now - 4
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387530
+        first_prompt_text = (
+            "【坠魔心劫·第一轮】\n"
+            "你与侍妾【凌玉灵】步入幻境，前方魔念化形拦路。\n"
+            "请回复本消息 .稳 / .狠 / .骗 进行抉择（共3轮）。"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 9387528
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 1
+            identity_state["concubine_heart_choice_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_choice_round"] = 1
+            identity_state["concubine_heart_choice_sent_at"] = sent_at
+            identity_state["next_concubine_time"] = now - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(
+                tmpdir,
+                [
+                    {
+                        "ts": self._log_ts(now - 10),
+                        "event_type": "message",
+                        "message_id": prompt_msg_id,
+                        "reply_to_msg_id": 9387528,
+                        "text": first_prompt_text,
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_audit_log", new=AsyncMock()) as mock_audit, \
+                 patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+                await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_awaited()
+        mock_audit.assert_not_awaited()
+        self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_heart_choice_retry_count"])
+        self.assertEqual(sent_at, state_module.state["concubine_heart_choice_sent_at"])
+        self.assertEqual(sent_at + 30, state_module.state["next_concubine_time"])
+
+    async def test_heart_choice_timeout_ignores_original_prompt_and_retries_once(self):
+        now = 1_700_000_900.0
+        sent_at = now - 31
         send_as_id = self._prepare_identity()
         prompt_msg_id = 9387530
         retry_msg = SimpleNamespace(id=9387538, sent_at=now)
@@ -2269,11 +2318,43 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
         self.assertEqual(1, state_module.state["concubine_heart_choice_retry_count"])
         self.assertEqual(now, state_module.state["concubine_heart_choice_sent_at"])
-        self.assertEqual(now + 45, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 120, state_module.state["next_concubine_time"])
+
+    async def test_heart_choice_after_retry_waits_wider_window_before_closing(self):
+        now = 1_700_000_900.0
+        sent_at = now - 31
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387530
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 9387528
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 1
+            identity_state["concubine_heart_choice_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_choice_round"] = 1
+            identity_state["concubine_heart_choice_sent_at"] = sent_at
+            identity_state["concubine_heart_choice_retry_count"] = 1
+            identity_state["next_concubine_time"] = now - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_audit_log", new=AsyncMock()) as mock_audit, \
+                 patch.object(concubine, "_recover_concubine_pending_from_message_log", new=AsyncMock(return_value=False)), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+                await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_awaited()
+        mock_audit.assert_not_awaited()
+        self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
+        self.assertEqual(1, state_module.state["concubine_heart_choice_retry_count"])
+        self.assertEqual(sent_at + 120, state_module.state["next_concubine_time"])
 
     async def test_heart_choice_timeout_closes_guard_and_uses_long_cooldown(self):
         now = 1_700_000_900.0
-        sent_at = now - 60
+        sent_at = now - 121
         send_as_id = self._prepare_identity()
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["concubine_heart_enabled"] = True

@@ -50,6 +50,8 @@ WORLD_BOSS_PROGRESS_LOG_GAP_SEC = 5 * 60
 WORLD_BOSS_FALLBACK_START_MINUTE = 13 * 60 + 25
 WORLD_BOSS_FALLBACK_END_MINUTE = 14 * 60 + 10
 WORLD_BOSS_PENDING_MAX_RETRY = 2
+WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN = 35
+WORLD_BOSS_PHASE_TWO_GUARD_MOYA_LIMIT = 95
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {f"{CMD_WORLD_BOSS_STATUS} 查看战况"}
@@ -508,11 +510,35 @@ def _strong_attack_allowed(run_state):
     return 0 <= moya <= 70 and zhen >= 75
 
 
+def _phase_two_guard_target(run_state, summary):
+    phase = str(run_state.get("phase") or "")
+    if "第二阶段" not in phase:
+        return 0
+    zhen = _coerce_int(run_state.get("zhen"), -1)
+    moya = _coerce_int(run_state.get("moya"), -1)
+    if zhen < 0 or moya < 0:
+        return 0
+    if zhen > WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN:
+        return 0
+    if moya >= WORLD_BOSS_PHASE_TWO_GUARD_MOYA_LIMIT:
+        return 0
+    if moya >= 90:
+        return 1
+    if moya >= 85:
+        return 2
+    return max(2, min(4, max(1, summary["镇魂"] // 3)))
+
+
 def _choose_maintenance_action(run_state):
     phase = str(run_state.get("phase") or "")
     moya = _coerce_int(run_state.get("moya"), -1)
     zhen = _coerce_int(run_state.get("zhen"), -1)
     summary = _normalize_summary(run_state.get("summary"))
+    phase_two_guard_target = _phase_two_guard_target(run_state, summary)
+    if phase_two_guard_target > 0 and summary["护阵"] < phase_two_guard_target:
+        return "护阵"
+    if "第二阶段" in phase and zhen <= WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN:
+        return "镇魂"
     if moya >= 65:
         return "镇魂"
     if "第二阶段" in phase and moya >= 55:
