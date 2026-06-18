@@ -22,6 +22,7 @@ from ..state import (
     get_identity_ids,
     get_nanlong_choice,
     get_send_as_tags,
+    get_tianjige_dao_path_records,
     set_nanlong_choice,
     state,
 )
@@ -57,6 +58,9 @@ NANLONG_PROTECT_PHASES = {
 }
 NANLONG_PLACE_FAILURE_KEYWORDS = ("无法安置", "不能安置", "暂无道侣", "没有道侣", "尚无道侣", "未拥有洞府", "尚未开辟洞府")
 NANLONG_RECALL_FAILURE_KEYWORDS = ("无法召回", "无需召回", "藏娇阁中暂无", "尚无红颜")
+NANLONG_CAVE_STATUS_AVAILABLE = "available"
+NANLONG_CAVE_STATUS_EMPTY = "empty"
+NANLONG_CAVE_STATUS_UNKNOWN = "unknown"
 
 
 def _normalize_text(text):
@@ -178,6 +182,14 @@ def _get_nanlong_pending_state():
     )
 
 
+def _has_nanlong_inflight_state():
+    for key in ("nanlong_last_msg_id", "nanlong_place_msg_id", "nanlong_recall_msg_id"):
+        value, valid = _parse_nanlong_pending_int(state.get(key, 0))
+        if valid and value > 0:
+            return True
+    return bool(_get_nanlong_protect_phase())
+
+
 def _is_nanlong_success_reply(text):
     return any(keyword in str(text or "") for keyword in NANLONG_SUCCESS_KEYWORDS)
 
@@ -225,6 +237,36 @@ def _is_reply_to_nanlong_last_msg(reply_to):
 
 def _nanlong_exchange_requires_protection(choice):
     return normalize_nanlong_choice(choice) in NANLONG_CONFIRM_CHOICES
+
+
+def _get_nanlong_cave_status(send_as_id=None):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError, OverflowError):
+        identity_id = 0
+    if identity_id <= 0:
+        return NANLONG_CAVE_STATUS_UNKNOWN
+
+    records = get_tianjige_dao_path_records()
+    if not isinstance(records, dict):
+        return NANLONG_CAVE_STATUS_UNKNOWN
+    record = records.get(str(identity_id)) or records.get(identity_id)
+    if not isinstance(record, dict):
+        return NANLONG_CAVE_STATUS_UNKNOWN
+    cave = record.get("cave")
+    if isinstance(cave, dict):
+        return NANLONG_CAVE_STATUS_AVAILABLE if cave else NANLONG_CAVE_STATUS_EMPTY
+    return NANLONG_CAVE_STATUS_UNKNOWN
+
+
+def _get_nanlong_cave_status_label(cave_status):
+    if cave_status == NANLONG_CAVE_STATUS_EMPTY:
+        return "本地洞府为空"
+    if cave_status == NANLONG_CAVE_STATUS_UNKNOWN:
+        return "未读到本地洞府缓存"
+    return "本地洞府可用"
 
 
 def is_nanlong_protected_trade_active(now=None):
@@ -484,6 +526,9 @@ async def run_nanlong_scheduler(now):
     if not pending_valid:
         return
     if reply_to_msg_id <= 0 or next_nanlong_time <= 0:
+        if _has_nanlong_inflight_state():
+            state["nanlong_last_error"] = "南陇侯待处理状态不完整，已清理"
+            clear_nanlong_state(persist=True, keep_last_error=True)
         return
     if now >= next_nanlong_time:
         state["nanlong_last_error"] = "南陇侯提示已超时"
@@ -529,6 +574,11 @@ async def run_nanlong_scheduler(now):
         return
 
     if requires_confirmation and not is_confirmation_retry and _nanlong_exchange_requires_protection(choice):
+        cave_status = _get_nanlong_cave_status()
+        if cave_status != NANLONG_CAVE_STATUS_AVAILABLE:
+            await send_audit_log(f"🤝 南陇侯{_get_nanlong_cave_status_label(cave_status)}，跳过安置，直接交易后交由侍妾补领链路处理。")
+            await _send_nanlong_exchange_command(command, reply_to_msg_id, now, protected=False)
+            return
         sent_msg = await _send_nanlong_place_command()
         sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
         if not sent_msg:

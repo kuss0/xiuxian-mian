@@ -40,6 +40,16 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["nanlong_reply_due_at"] = now - 1
         return identity_id
 
+    def _set_local_cave_record(self, identity_id, cave):
+        state_module.set_tianjige_dao_path_records({
+            str(identity_id): {
+                "identity_id": int(identity_id),
+                "cave": cave,
+                "raw_keys": ["dongfu"],
+                "updated_at_text": "2026-06-17 02:49:29 UTC+8",
+            }
+        })
+
     async def test_scheduler_blocks_dirty_pending_fields_without_sending_or_saving(self):
         now = 1_700_000_000.0
         dirty_cases = (
@@ -129,6 +139,37 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["nanlong_reply_due_at"])
             self.assertEqual("南陇侯提示已超时", state_module.state["nanlong_last_error"])
 
+    async def test_scheduler_clears_stale_protect_phase_without_active_prompt(self):
+        now = 1_700_000_000.0
+        identity_id = self._prepare_pending(991305, now=now)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["nanlong_reply_to_msg_id"] = 0
+            state_module.state["next_nanlong_time"] = 0
+            state_module.state["nanlong_protect_phase"] = "place_pending"
+            state_module.state["nanlong_place_msg_id"] = 9901
+            state_module.state["nanlong_last_msg_id"] = 9901
+            state_module.state["nanlong_last_command"] = ".安置侍妾"
+            state_module.state["nanlong_last_error"] = "等待侍妾安置确认"
+
+            with (
+                patch.object(nanlong, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(nanlong, "save_state") as save_mock,
+            ):
+                await nanlong.run_nanlong_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_not_awaited()
+            save_mock.assert_called_once()
+            self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["next_nanlong_time"])
+            self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
+            self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
+            self.assertEqual("", state_module.state["nanlong_last_command"])
+            self.assertEqual("", state_module.state["nanlong_protect_phase"])
+            self.assertEqual("南陇侯待处理状态不完整，已清理", state_module.state["nanlong_last_error"])
+
     async def test_prompt_delay_retry_and_broadcast_confirmation_flow(self):
         now = 1_700_000_000.0
         identity_id = 991299
@@ -148,6 +189,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             enabled=True,
             nanlong_choice=nanlong.NANLONG_CHOICE_EXCHANGE_FABAO,
         )
+        self._set_local_cave_record(identity_id, {"jingshi_level": 1})
 
         with state_module.use_identity(identity_id):
             state_module.state["nanlong_enabled"] = True
@@ -265,6 +307,70 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
             self.assertEqual("", state_module.state["nanlong_protect_phase"])
             self.assertEqual("", state_module.state["nanlong_last_error"])
+
+    async def test_scheduler_direct_exchange_when_local_cave_is_empty(self):
+        now = 1_700_000_000.0
+        identity_id = self._prepare_pending(991303, now=now)
+        state_module.update_send_as_profile(
+            identity_id,
+            username="nanlongnocave",
+            enabled=True,
+            nanlong_choice=nanlong.NANLONG_CHOICE_EXCHANGE_GONGFA,
+        )
+        self._set_local_cave_record(identity_id, {})
+
+        with state_module.use_identity(identity_id):
+            async def fake_send(command, **kwargs):
+                return SimpleNamespace(id=9902, sent_at=now)
+
+            with (
+                patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=fake_send)) as send_mock,
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(nanlong, "save_state") as save_mock,
+            ):
+                await nanlong.run_nanlong_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".交换 功法", track=False, reply_to=22027)
+            audit_mock.assert_awaited_once()
+            self.assertIn("本地洞府为空", audit_mock.await_args.args[0])
+            save_mock.assert_called_once()
+            self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
+            self.assertEqual(9902, state_module.state["nanlong_last_msg_id"])
+            self.assertEqual(".交换 功法", state_module.state["nanlong_last_command"])
+            self.assertEqual("", state_module.state["nanlong_protect_phase"])
+            self.assertEqual("等待南陇侯交易结果", state_module.state["nanlong_last_error"])
+
+    async def test_scheduler_direct_exchange_when_local_cave_record_missing(self):
+        now = 1_700_000_000.0
+        identity_id = self._prepare_pending(991304, now=now)
+        state_module.update_send_as_profile(
+            identity_id,
+            username="nanlongunknowncave",
+            enabled=True,
+            nanlong_choice=nanlong.NANLONG_CHOICE_EXCHANGE_FABAO,
+        )
+        state_module.set_tianjige_dao_path_records({})
+
+        with state_module.use_identity(identity_id):
+            async def fake_send(command, **kwargs):
+                return SimpleNamespace(id=9902, sent_at=now)
+
+            with (
+                patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=fake_send)) as send_mock,
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(nanlong, "save_state") as save_mock,
+            ):
+                await nanlong.run_nanlong_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027)
+            audit_mock.assert_awaited_once()
+            self.assertIn("未读到本地洞府缓存", audit_mock.await_args.args[0])
+            save_mock.assert_called_once()
+            self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
+            self.assertEqual(9902, state_module.state["nanlong_last_msg_id"])
+            self.assertEqual(".交换 法宝", state_module.state["nanlong_last_command"])
+            self.assertEqual("", state_module.state["nanlong_protect_phase"])
+            self.assertEqual("等待南陇侯交易结果", state_module.state["nanlong_last_error"])
 
     async def test_place_timeout_degrades_to_direct_exchange_without_protection(self):
         now = 1_700_000_000.0
