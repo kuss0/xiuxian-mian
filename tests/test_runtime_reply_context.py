@@ -114,3 +114,29 @@ class RuntimeReplyContextTests(unittest.TestCase):
         self.assertEqual("concubine_voyage", context["family"])
         self.assertEqual("reply_chain_tracker", context["matched_via"])
         self.assertEqual("", context["source"])
+
+    def test_manual_echo_does_not_overwrite_script_reply_tracker(self):
+        identity_id = self._register_identity(991201)
+
+        tracked = runtime.track_reply_chain_message(
+            7001,
+            identity_id,
+            "divination",
+            root_msg_id=7001,
+            source="",
+        )
+        echoed = runtime.track_reply_chain_message(
+            7001,
+            identity_id,
+            "divination",
+            root_msg_id=7001,
+            source="manual_game_command",
+        )
+        context = runtime.get_reply_context(reply_to_msg_id=7001)
+
+        self.assertTrue(tracked)
+        self.assertTrue(echoed)
+        self.assertEqual("", runtime._reply_chain_tracker[7001]["source"])
+        self.assertEqual(identity_id, context["send_as_id"])
+        self.assertEqual("divination", context["family"])
+        self.assertEqual("", context["source"])

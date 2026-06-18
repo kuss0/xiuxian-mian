@@ -58,7 +58,7 @@ DIVINATION_PHASES = {
     DIVINATION_PHASE_DONE_TODAY,
     DIVINATION_PHASE_BLOCKED,
 }
-DIVINATION_LISTING_ITEM_CANDIDATES = ("灵石", "下品灵石", "杂草")
+DIVINATION_LISTING_ITEM_CANDIDATES = ("凝血草", "灵石", "下品灵石", "杂草")
 DIVINATION_AUTO_EXCHANGE_TARGETS = ("昆吾通行令",)
 DIVINATION_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(PROJECT_ROOT_DIR, "data", "storage_bag_item_rules.json")
 DIVINATION_PENDING_STATUS_LABELS = {
@@ -641,6 +641,28 @@ def _divination_api_refresh_identity_ids(target_identity_id, *, include_sources=
     return sorted(identity_id for identity_id in ids if identity_id > 0)
 
 
+def _local_cached_identity_ids(target_identity_id, *, include_sources=True):
+    records = get_storage_bag_records() or {}
+    result = set()
+    for identity_id in _divination_api_refresh_identity_ids(target_identity_id, include_sources=include_sources):
+        record = records.get(str(int(identity_id or 0))) if isinstance(records, dict) else None
+        if not isinstance(record, dict):
+            continue
+        if _storage_items(identity_id):
+            result.add(int(identity_id))
+    return result
+
+
+def _can_start_resource_transfer_from_cache(identity_id, costs, refreshed_identity_ids):
+    refreshed_identity_ids = set(refreshed_identity_ids or set())
+    if int(identity_id or 0) not in refreshed_identity_ids:
+        return False
+    tasks, still_missing = _build_transfer_tasks(identity_id, costs, refreshed_identity_ids=refreshed_identity_ids)
+    if still_missing or not tasks:
+        return False
+    return bool(_choose_listing_item(identity_id, costs, refreshed_identity_ids=refreshed_identity_ids))
+
+
 def _storage_items(identity_id, refreshed_identity_ids=None):
     if refreshed_identity_ids is not None and int(identity_id or 0) not in refreshed_identity_ids:
         return {}
@@ -1158,6 +1180,20 @@ async def handle_divination_reply(text, now, event=None, reply_to=None, matched_
     records[key] = dict(pending)
     _set_pending_records(records)
 
+    cached_identity_ids = _local_cached_identity_ids(identity_id, include_sources=True)
+    if identity_id in cached_identity_ids:
+        if _has_costs(identity_id, pending["costs"], refreshed_identity_ids=cached_identity_ids):
+            await _send_exchange(
+                pending,
+                now,
+                reason="本地储物袋缓存确认本号库存足够",
+                refreshed_identity_ids=cached_identity_ids,
+            )
+            _record_pending(pending)
+            return True
+        if _can_start_resource_transfer_from_cache(identity_id, pending["costs"], cached_identity_ids):
+            return await _start_resource_transfer(pending, now, refreshed_identity_ids=cached_identity_ids)
+
     refreshed_identity_ids = await _refresh_divination_assets_from_api(pending, now, include_sources=True)
     if not refreshed_identity_ids:
         return True
@@ -1257,11 +1293,17 @@ async def _run_divination_exchange_scheduler(now):
             records[key] = dict(pending)
             changed = True
             continue
-        if target_identity_id > 0 and _has_costs(target_identity_id, costs):
+        cached_target_ids = _local_cached_identity_ids(target_identity_id, include_sources=False)
+        if (
+            target_identity_id > 0
+            and target_identity_id in cached_target_ids
+            and _has_costs(target_identity_id, costs, refreshed_identity_ids=cached_target_ids)
+        ):
             await _send_exchange(
                 pending,
                 now,
-                reason=f"天机阁API确认库存已满足，剩余 {fmt_remaining(expires_at)}",
+                reason=f"本地储物袋缓存确认库存已满足，剩余 {fmt_remaining(expires_at)}",
+                refreshed_identity_ids=cached_target_ids,
                 fail_on_shortage=False,
             )
             records[key] = dict(pending)
@@ -1276,7 +1318,20 @@ async def _run_divination_exchange_scheduler(now):
         if bool(batch.get("running")):
             continue
         if batch_status == "done":
-            await _send_exchange(pending, now, reason=f"资源转移完成，剩余 {fmt_remaining(expires_at)}")
+            cached_target_ids = _local_cached_identity_ids(target_identity_id, include_sources=False)
+            if (
+                target_identity_id > 0
+                and target_identity_id in cached_target_ids
+                and _has_costs(target_identity_id, costs, refreshed_identity_ids=cached_target_ids)
+            ):
+                await _send_exchange(
+                    pending,
+                    now,
+                    reason=f"资源转移完成，本地储物袋缓存确认库存已满足，剩余 {fmt_remaining(expires_at)}",
+                    refreshed_identity_ids=cached_target_ids,
+                )
+            else:
+                await _send_exchange(pending, now, reason=f"资源转移完成，剩余 {fmt_remaining(expires_at)}")
             records[key] = dict(pending)
             changed = True
         elif batch_status == "failed":

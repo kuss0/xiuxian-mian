@@ -1194,6 +1194,14 @@ def track_reply_chain_message(msg_id, send_as_id, family, *, root_msg_id=None, s
     if msg_id <= 0 or send_as_id <= 0 or not family:
         return False
     _gc_reply_chain_tracker()
+    existing = _reply_chain_tracker.get(msg_id)
+    if (
+        source == "manual_game_command"
+        and isinstance(existing, dict)
+        and int(existing.get("send_as_id", 0) or 0) == send_as_id
+        and str(existing.get("source") or "").strip() != "manual_game_command"
+    ):
+        return True
     _reply_chain_tracker[msg_id] = {
         "send_as_id": send_as_id,
         "family": family,

@@ -986,15 +986,14 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(identity_id, send_args.kwargs["send_as_id"])
         self.assertEqual(7001, send_args.kwargs["reply_to"])
         self.assertEqual("medium", result_audit.kwargs["priority"])
-        self.api_refresh_mock.assert_awaited()
-        self.assertIn(identity_id, self.api_refresh_mock.await_args.kwargs["identity_ids"])
+        self.api_refresh_mock.assert_not_awaited()
         pending = next(iter(state_module.get_divination_pending_exchanges().values()))
         self.assertEqual("exchange_sent", pending["status"])
         self.assertGreaterEqual(self.save_state_mock.call_count, 1)
 
-    def test_api_refresh_failure_blocks_auto_exchange_and_transfer(self):
+    def test_api_refresh_failure_blocks_when_local_cache_cannot_decide(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
-        state_module.set_storage_bag_records({str(identity_id): {"items": {"灵石": 10}, "sections": {}}})
+        state_module.set_storage_bag_records({})
         event = SimpleNamespace(id=7001, chat_id=-100123)
         self.api_refresh_mock.side_effect = RuntimeError("api down")
 
@@ -1150,7 +1149,7 @@ class DivinationTests(unittest.TestCase):
         target_id = self._register_identity(991201, "target", divination_enabled=True)
         source_id = self._register_identity(991202, "source", divination_enabled=False)
         state_module.set_storage_bag_records({
-            str(target_id): {"items": {"杂草": 1}, "sections": {}},
+            str(target_id): {"items": {"凝血草": 1, "杂草": 1}, "sections": {}},
             str(source_id): {"items": {"灵石": 10}, "sections": {}},
         })
         event = SimpleNamespace(id=7001, chat_id=-100123)
@@ -1173,8 +1172,9 @@ class DivinationTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(([{"source_identity_id": source_id, "items": [{"item_name": "灵石", "quantity": 10, "method": "basic"}]}],), transfer_args.args)
         self.assertEqual(target_id, transfer_args.kwargs["target_identity_id"])
-        self.assertEqual("杂草", transfer_args.kwargs["listing_item"])
+        self.assertEqual("凝血草", transfer_args.kwargs["listing_item"])
         self.assertTrue(transfer_args.kwargs["stop_on_error"])
+        self.api_refresh_mock.assert_not_awaited()
         pending = next(iter(state_module.get_divination_pending_exchanges().values()))
         self.assertEqual("transfer_running", pending["status"])
         self.assertEqual("batch-1", pending["batch_id"])
