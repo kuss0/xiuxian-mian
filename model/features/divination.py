@@ -58,7 +58,17 @@ DIVINATION_PHASES = {
     DIVINATION_PHASE_DONE_TODAY,
     DIVINATION_PHASE_BLOCKED,
 }
-DIVINATION_LISTING_ITEM_CANDIDATES = ("凝血草", "灵石", "下品灵石", "杂草")
+DIVINATION_LISTING_ITEM_CANDIDATES = (
+    "凝血草",
+    "一阶妖丹",
+    "二级妖丹",
+    "三级妖丹",
+    "天雷竹",
+    "清灵草",
+    "四级妖丹",
+    "凝血草种子",
+)
+DIVINATION_FORBIDDEN_LISTING_ITEM_KEYWORDS = ("灵石",)
 DIVINATION_AUTO_EXCHANGE_TARGETS = ("昆吾通行令",)
 DIVINATION_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(PROJECT_ROOT_DIR, "data", "storage_bag_item_rules.json")
 DIVINATION_PENDING_STATUS_LABELS = {
@@ -724,6 +734,19 @@ def _is_transfer_blocked_item(item_name):
     return _storage_bag_transfer_method(item_name) == "blocked"
 
 
+def _is_divination_listing_item_allowed(item_name, cost_names):
+    item_name = str(item_name or "").strip()
+    if not item_name:
+        return False
+    if item_name in cost_names:
+        return False
+    if any(keyword in item_name for keyword in DIVINATION_FORBIDDEN_LISTING_ITEM_KEYWORDS):
+        return False
+    if item_name in DIVINATION_LISTING_ITEM_CANDIDATES:
+        return True
+    return False
+
+
 def _is_protected_transfer_source(identity_id):
     profile = get_send_as_profile(identity_id)
     candidates = []
@@ -795,11 +818,11 @@ def _choose_listing_item(target_identity_id, costs, refreshed_identity_ids=None)
     items = _storage_items(target_identity_id, refreshed_identity_ids=refreshed_identity_ids)
     cost_names = {str(item or "").strip() for item in (costs or {}).keys()}
     for item_name in DIVINATION_LISTING_ITEM_CANDIDATES:
-        if item_name not in cost_names and not _is_transfer_blocked_item(item_name) and int(items.get(item_name) or 0) > 0:
+        if _is_divination_listing_item_allowed(item_name, cost_names) and int(items.get(item_name) or 0) > 0:
             return item_name
     for item_name, count in items.items():
         item_name = str(item_name or "").strip()
-        if not item_name or item_name in cost_names or _is_transfer_blocked_item(item_name):
+        if not _is_divination_listing_item_allowed(item_name, cost_names):
             continue
         try:
             if int(count or 0) > 0:
@@ -1079,6 +1102,8 @@ async def _start_resource_transfer(pending, now, *, refreshed_identity_ids=None)
         tasks,
         target_identity_id=identity_id,
         listing_item=listing_item,
+        listing_count=1,
+        listing_syntax="compact",
         stop_on_error=True,
     )
     if not ok:
@@ -1095,6 +1120,8 @@ async def _start_resource_transfer(pending, now, *, refreshed_identity_ids=None)
     pending["status"] = "transfer_running"
     pending["batch_id"] = str((snapshot or {}).get("batch", {}).get("batch_id") or (snapshot or {}).get("batch_id") or "")
     pending["listing_item"] = listing_item
+    pending["listing_count"] = 1
+    pending["listing_syntax"] = "compact"
     pending["missing_costs"] = dict(requested_missing)
     pending["last_error"] = ""
     _record_pending(pending)

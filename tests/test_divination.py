@@ -1173,13 +1173,107 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(([{"source_identity_id": source_id, "items": [{"item_name": "灵石", "quantity": 10, "method": "basic"}]}],), transfer_args.args)
         self.assertEqual(target_id, transfer_args.kwargs["target_identity_id"])
         self.assertEqual("凝血草", transfer_args.kwargs["listing_item"])
+        self.assertEqual(1, transfer_args.kwargs["listing_count"])
+        self.assertEqual("compact", transfer_args.kwargs["listing_syntax"])
         self.assertTrue(transfer_args.kwargs["stop_on_error"])
         self.api_refresh_mock.assert_not_awaited()
         pending = next(iter(state_module.get_divination_pending_exchanges().values()))
         self.assertEqual("transfer_running", pending["status"])
         self.assertEqual("batch-1", pending["batch_id"])
+        self.assertEqual(1, pending["listing_count"])
+        self.assertEqual("compact", pending["listing_syntax"])
         self.assertEqual({"灵石": 10}, pending["missing_costs"])
         self.assertIn("缺 灵石x10", audit_args.args[0])
+
+    def test_missing_storage_uses_seed_or_monster_core_marker_not_lingshi(self):
+        target_id = self._register_identity(991201, "target", divination_enabled=True)
+        source_id = self._register_identity(991202, "source", divination_enabled=False)
+        state_module.set_storage_bag_records({
+            str(target_id): {"items": {"凝血草种子": 1, "灵石": 99}, "sections": {}},
+            str(source_id): {"items": {"三级妖丹": 4, "养魂木": 1}, "sections": {}},
+        })
+        event = SimpleNamespace(id=9955440, chat_id=-1001680975844)
+
+        async def run_test():
+            with patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.features.divination.start_storage_bag_transfer_batch", new=AsyncMock(return_value=(True, "", {"batch": {"batch_id": "batch-1"}}))) as transfer_mock, \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                handled = await divination.handle_divination_reply(
+                    REAL_TREASURE_TEXT,
+                    1000.0,
+                    event=event,
+                    matched_family="divination",
+                    reply_context={"send_as_id": target_id},
+                )
+                send_mock.assert_not_awaited()
+                return handled, transfer_mock.await_args
+
+        handled, transfer_args = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual("凝血草种子", transfer_args.kwargs["listing_item"])
+        self.assertEqual("compact", transfer_args.kwargs["listing_syntax"])
+        self.assertEqual([
+            {"source_identity_id": source_id, "items": [
+                {"item_name": "三级妖丹", "quantity": 4, "method": "basic"},
+                {"item_name": "养魂木", "quantity": 1, "method": "basic"},
+            ]}
+        ], transfer_args.args[0])
+
+    def test_missing_storage_uses_monster_core_marker_when_available(self):
+        target_id = self._register_identity(991201, "target", divination_enabled=True)
+        source_id = self._register_identity(991202, "source", divination_enabled=False)
+        state_module.set_storage_bag_records({
+            str(target_id): {"items": {"二级妖丹": 1}, "sections": {}},
+            str(source_id): {"items": {"灵石": 10}, "sections": {}},
+        })
+        event = SimpleNamespace(id=7001, chat_id=-100123)
+
+        async def run_test():
+            with patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.features.divination.start_storage_bag_transfer_batch", new=AsyncMock(return_value=(True, "", {"batch": {"batch_id": "batch-1"}}))) as transfer_mock, \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                handled = await divination.handle_divination_reply(
+                    TREASURE_TEXT,
+                    1000.0,
+                    event=event,
+                    matched_family="divination",
+                    reply_context={"send_as_id": target_id},
+                )
+                send_mock.assert_not_awaited()
+                return handled, transfer_mock.await_args
+
+        handled, transfer_args = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual("二级妖丹", transfer_args.kwargs["listing_item"])
+
+    def test_missing_storage_does_not_use_lingshi_as_listing_marker(self):
+        target_id = self._register_identity(991201, "target", divination_enabled=True)
+        source_id = self._register_identity(991202, "source", divination_enabled=False)
+        state_module.set_storage_bag_records({
+            str(target_id): {"items": {"灵石": 99}, "sections": {}},
+            str(source_id): {"items": {"三级妖丹": 4, "养魂木": 1}, "sections": {}},
+        })
+        event = SimpleNamespace(id=9955440, chat_id=-1001680975844)
+
+        async def run_test():
+            with patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.features.divination.start_storage_bag_transfer_batch", new=AsyncMock()) as transfer_mock, \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                handled = await divination.handle_divination_reply(
+                    REAL_TREASURE_TEXT,
+                    1000.0,
+                    event=event,
+                    matched_family="divination",
+                    reply_context={"send_as_id": target_id},
+                )
+                send_mock.assert_not_awaited()
+                transfer_mock.assert_not_awaited()
+                return handled
+
+        self.assertTrue(asyncio.run(run_test()))
+        pending = next(iter(state_module.get_divination_pending_exchanges().values()))
+        self.assertEqual("manual_required", pending["status"])
+        self.assertEqual("目标身份缺少可上架标记物", pending["last_error"])
 
     def test_missing_storage_skips_protected_transfer_source(self):
         target_id = self._register_identity(991201, "target", divination_enabled=True)
@@ -1274,7 +1368,7 @@ class DivinationTests(unittest.TestCase):
         source_id = self._register_identity(991202, "source", divination_enabled=False)
         state_module.set_storage_bag_item_rules({"灵石": {"method": "gift", "tags": ["货币"]}})
         state_module.set_storage_bag_records({
-            str(target_id): {"items": {"杂草": 1}, "sections": {}},
+            str(target_id): {"items": {"凝血草": 1}, "sections": {}},
             str(source_id): {"items": {"灵石": 10}, "sections": {}},
         })
         event = SimpleNamespace(id=7001, chat_id=-100123)
