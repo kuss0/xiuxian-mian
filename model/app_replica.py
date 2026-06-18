@@ -235,6 +235,9 @@ _REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC = {
 }
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_TTL_SEC = 5 * 60
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_MAX = 300
+_ZHUIMO_PROGRESS_ACK_DELAY_SEC = 35.0
+_ZHUIMO_PROGRESS_ACK_TTL_SEC = 10 * 60
+_ZHUIMO_PROGRESS_ACK_MAX = 100
 _KUNWU_AUTO_CHOICE_RETRY_DELAY_SEC = 3.0
 _KUNWU_AUTO_CHOICE_TTL_SEC = 30 * 60
 _KUNWU_AUTO_CHOICE_MAX = 200
@@ -607,6 +610,7 @@ def _game_command_action_button(
     exclusive_key="",
     stage_guard_scope="",
     stage_guard_key="",
+    progress_ack=None,
 ):
     payload = {
         "command": str(command or "").strip(),
@@ -619,6 +623,8 @@ def _game_command_action_button(
     if stage_guard_scope and stage_guard_key:
         payload["stage_guard_scope"] = stage_guard_scope
         payload["stage_guard_key"] = stage_guard_key
+    if isinstance(progress_ack, dict) and progress_ack:
+        payload["progress_ack"] = dict(progress_ack)
     return _replica_action_button(
         text,
         "game_command",
@@ -739,6 +745,194 @@ def _is_cangkun_stage_guard_current(scope, stage_key, now=None):
         return True
     current_key = str(item.get("stage_key") or "").strip()
     return not current_key or current_key == stage_key
+
+
+def _cleanup_zhuimo_progress_ack_records(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("zhuimo_progress_acks")
+    if not isinstance(records, dict):
+        records = {}
+    changed = False
+    for key, item in list(records.items()):
+        if not isinstance(item, dict):
+            records.pop(key, None)
+            changed = True
+            continue
+        expires_at = float(item.get("expires_at") or 0)
+        if expires_at > 0 and now >= expires_at:
+            records.pop(key, None)
+            changed = True
+    if len(records) > _ZHUIMO_PROGRESS_ACK_MAX:
+        keep = {
+            key
+            for key, _item in sorted(
+                records.items(),
+                key=lambda item: float((item[1] or {}).get("sent_at") or 0),
+                reverse=True,
+            )[:_ZHUIMO_PROGRESS_ACK_MAX]
+        }
+        for key in list(records):
+            if key not in keep:
+                records.pop(key, None)
+                changed = True
+    run_state["zhuimo_progress_acks"] = records
+    if changed:
+        _save_replica_run_state_dict(run_state)
+    return records
+
+
+def _make_zhuimo_progress_ack_key(stage_scope, stage_key, identity_id, sent_msg_id):
+    raw = f"{stage_scope}:{stage_key}:{int(identity_id or 0)}:{int(sent_msg_id or 0)}"
+    return hashlib.blake2s(raw.encode("utf-8", "ignore"), digest_size=10).hexdigest()
+
+
+def _mark_zhuimo_progress_ack_pending(progress_ack, payload, msg, actor_id=0, now=None):
+    progress_ack = progress_ack if isinstance(progress_ack, dict) else {}
+    payload = payload if isinstance(payload, dict) else {}
+    if str(progress_ack.get("kind") or "").strip() != _REPLICA_KIND_ZHUIMO:
+        return ""
+    now = float(now or time.time())
+    stage_scope = str(progress_ack.get("stage_scope") or payload.get("stage_guard_scope") or "").strip()
+    stage_key = str(progress_ack.get("stage_key") or payload.get("stage_guard_key") or "").strip()
+    command = str(payload.get("command") or "").strip()
+    identity_id = int(payload.get("identity_id") or 0)
+    sent_msg_id = int(getattr(msg, "id", 0) or 0)
+    if not stage_scope or not stage_key or not command or identity_id <= 0 or sent_msg_id <= 0:
+        return ""
+    key = _make_zhuimo_progress_ack_key(stage_scope, stage_key, identity_id, sent_msg_id)
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_zhuimo_progress_ack_records(now)
+    records[key] = {
+        "kind": _REPLICA_KIND_ZHUIMO,
+        "stage_scope": stage_scope,
+        "stage_key": stage_key,
+        "stage": str(progress_ack.get("stage") or "").strip(),
+        "stage_title": str(progress_ack.get("stage_title") or progress_ack.get("title") or "").strip(),
+        "expected": str(progress_ack.get("expected") or "").strip(),
+        "command": command,
+        "identity_id": identity_id,
+        "actor_id": int(actor_id or 0),
+        "sent_msg_id": sent_msg_id,
+        "source_msg_id": int(payload.get("source_msg_id") or 0),
+        "room_id": str(progress_ack.get("room_id") or "").strip(),
+        "leader_username": _normalize_replica_username(progress_ack.get("leader_username") or ""),
+        "sent_at": now,
+        "expires_at": now + _ZHUIMO_PROGRESS_ACK_TTL_SEC,
+        "alerted_at": 0,
+    }
+    run_state["zhuimo_progress_acks"] = records
+    _save_replica_run_state_dict(run_state)
+    return key
+
+
+def _clear_zhuimo_progress_acks_for_scope(stage_scope, now=None):
+    stage_scope = str(stage_scope or "").strip()
+    if not stage_scope:
+        return 0
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_zhuimo_progress_ack_records(now)
+    cleared = 0
+    for key, item in list(records.items()):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("stage_scope") or "").strip() != stage_scope:
+            continue
+        records.pop(key, None)
+        cleared += 1
+    if cleared:
+        run_state["zhuimo_progress_acks"] = records
+        _save_replica_run_state_dict(run_state)
+    return cleared
+
+
+def _is_zhuimo_progress_text(text):
+    raw_text = str(text or "")
+    if "【坠魔谷·封魔成功】" in raw_text or "【坠魔谷·封魔失败】" in raw_text:
+        return True
+    if "【第二幕结果】" in raw_text and ("魔染" in raw_text or "封印" in raw_text or "古魔" in raw_text):
+        return True
+    if "【第三幕·古魔祭坛】" in raw_text and "古魔残识" in raw_text:
+        return True
+    if re.search(r"【第\s*\d+\s*回合】", raw_text) and ("魔染" in raw_text or "封印" in raw_text or "残识血量" in raw_text):
+        return True
+    if "【第一幕结果】" in raw_text and "【第二幕" in raw_text and ".坠魔抉择" in raw_text:
+        return True
+    return False
+
+
+async def _send_zhuimo_progress_ack_timeout_notice(key, now=None):
+    key = str(key or "").strip()
+    if not key:
+        return False
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_zhuimo_progress_ack_records(now)
+    item = records.get(key)
+    if not isinstance(item, dict):
+        return False
+    if float(item.get("alerted_at") or 0) > 0:
+        return False
+    stage_scope = str(item.get("stage_scope") or "").strip()
+    stage_key = str(item.get("stage_key") or "").strip()
+    if stage_scope and stage_key and not _is_cangkun_stage_guard_current(stage_scope, stage_key, now=now):
+        records.pop(key, None)
+        run_state["zhuimo_progress_acks"] = records
+        _save_replica_run_state_dict(run_state)
+        return False
+    sent_at = float(item.get("sent_at") or 0)
+    if sent_at > 0 and now - sent_at < max(1.0, _ZHUIMO_PROGRESS_ACK_DELAY_SEC - 1.0):
+        return False
+    item["alerted_at"] = now
+    item["expires_at"] = now + _ZHUIMO_PROGRESS_ACK_TTL_SEC
+    records[key] = item
+    run_state["zhuimo_progress_acks"] = records
+    _save_replica_run_state_dict(run_state)
+    command = str(item.get("command") or "").strip()
+    stage_title = str(item.get("stage_title") or "坠魔抉择").strip()
+    expected = str(item.get("expected") or "下一幕/结算进度").strip()
+    room_id = str(item.get("room_id") or "").strip()
+    leader_username = _normalize_replica_username(item.get("leader_username") or "")
+    detail_parts = []
+    if room_id:
+        detail_parts.append(f"房间 {escape(room_id)}")
+    if leader_username:
+        detail_parts.append(f"队长 {mono(leader_username)}")
+    detail_text = "｜".join(detail_parts)
+    notice_text = (
+        f"⚠️ 坠魔谷进度回执缺失：{escape(stage_title)}\n"
+        + (f"{detail_text}\n" if detail_text else "")
+        + f"已发送 {mono(command)}，{int(_ZHUIMO_PROGRESS_ACK_DELAY_SEC)} 秒内未在本地消息流看到{escape(expected)}。\n"
+        + "不要重复发送同一阶段命令；重复点击/手发可能被游戏当成下一幕选项。\n"
+        + "请先去游戏群确认原命令回复，等待下一条坠魔文案进入日志群后再继续。"
+    )
+    return await _send_replica_kind_notice(_REPLICA_KIND_ZHUIMO, notice_text, now, html=True)
+
+
+async def _run_zhuimo_progress_ack_timeout(key, delay_sec=None):
+    delay_sec = _ZHUIMO_PROGRESS_ACK_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    return await _send_zhuimo_progress_ack_timeout_notice(key, now=time.time())
+
+
+def _schedule_zhuimo_progress_ack_timeout(key):
+    key = str(key or "").strip()
+    if not key:
+        return False
+    _fire_and_forget(_run_zhuimo_progress_ack_timeout(key))
+    return True
+
+
+def _maybe_track_replica_game_command_progress(payload, msg, actor_id=0):
+    payload = payload if isinstance(payload, dict) else {}
+    progress_ack = payload.get("progress_ack") if isinstance(payload.get("progress_ack"), dict) else {}
+    if str(progress_ack.get("kind") or "").strip() != _REPLICA_KIND_ZHUIMO:
+        return ""
+    key = _mark_zhuimo_progress_ack_pending(progress_ack, payload, msg, actor_id=actor_id)
+    if key:
+        _schedule_zhuimo_progress_ack_timeout(key)
+    return key
 
 
 def _cleanup_lightweight_fast_retry_records(now=None):
@@ -1018,6 +1212,17 @@ def _make_cangkun_decision_notice_key(event, text, stage_info, leader_username="
     commands_digest = hashlib.sha1(commands_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
     scope = _make_cangkun_decision_scope(event, text, leader_username=leader_username, now=now)
     return f"cangkun:{scope}:{audience}:{stage}:{commands_digest}"
+
+
+def _make_zhuimo_decision_scope(event, text, leader_username="", now=None):
+    leader_username = _normalize_replica_username(leader_username) or _parse_replica_leader_username(text)
+    room_id = _get_latest_replica_room_id(_REPLICA_KIND_ZHUIMO, now=now, leader_username=leader_username)
+    if room_id:
+        return f"room:{room_id}"
+    elif leader_username:
+        return f"leader:{leader_username}"
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    return f"chat:{chat_id}"
 
 
 def _build_xutian_decision_buttons(stage_info, leader_identity_id, event, text, now=None):
@@ -1358,6 +1563,7 @@ def _is_replica_settlement_text(text):
     return (
         "【战利品结算" in raw_text
         or "【坠魔谷·封魔成功】" in raw_text
+        or "【坠魔谷·封魔失败】" in raw_text
         or "【登顶昆吾山】" in raw_text
         or ("【后殿冲关止步】" in raw_text and "结算所得早已锁定" in raw_text)
         or any(keyword in raw_text for keyword in ("挑战成功", "通关成功", "试炼成功", "探索完成"))
@@ -1367,7 +1573,7 @@ def _is_replica_settlement_text(text):
 
 def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
-    if "【坠魔谷·封魔成功】" in raw_text:
+    if "【坠魔谷·封魔成功】" in raw_text or "【坠魔谷·封魔失败】" in raw_text:
         return _REPLICA_KIND_ZHUIMO
     if "【登顶昆吾山】" in raw_text:
         return _REPLICA_KIND_KUNWU
@@ -1401,12 +1607,20 @@ def _get_replica_settlement_title(replica_kind, text):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return _get_cangkun_settlement_title(text)
     raw_text = str(text or "")
-    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|登顶昆吾山)[^】]*)】", raw_text)
+    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|登顶昆吾山)[^】]*)】", raw_text)
     if match:
         title = match.group(1).strip()
         title = re.sub(r"^(?:虚天殿|坠魔谷|黄龙山大战?|昆吾山)[·\s]*", "", title).strip()
         return title or "已结算"
     return "已结算"
+
+
+def _get_zhuimo_progress_title(text):
+    raw_text = str(text or "")
+    match = re.search(r"【([^】]+)】", raw_text)
+    if match:
+        return match.group(1).strip()
+    return "进度"
 
 
 def _format_replica_settlement_excerpt(text, *, html=False, max_lines=12, max_chars=900):
@@ -1425,6 +1639,34 @@ def _format_replica_settlement_excerpt(text, *, html=False, max_lines=12, max_ch
     if len(excerpt) > max_chars:
         excerpt = excerpt[:max_chars].rstrip() + "..."
     return escape(excerpt) if html else excerpt
+
+
+async def _send_zhuimo_progress_notice(event, text, now):
+    raw_text = str(text or "")
+    if not _is_zhuimo_progress_text(raw_text) or _parse_replica_settlement_kind(raw_text):
+        return False
+    notice_key = "zhuimo-progress:" + hashlib.sha1(raw_text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+    if not _mark_xutian_decision_notice_once(notice_key, now):
+        return False
+    title = _get_zhuimo_progress_title(raw_text)
+    excerpt = _format_replica_settlement_excerpt(raw_text, html=True, max_lines=10, max_chars=800)
+    notice_text = (
+        f"坠魔谷进度：{escape(title)}"
+        + (f"\n\n{excerpt}" if excerpt else "")
+    )
+    if await _send_replica_kind_notice(_REPLICA_KIND_ZHUIMO, notice_text, now, html=True):
+        return True
+    leader_username = _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
+    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    if leader_identity_id <= 0:
+        return False
+    return await send_audit_log(
+        notice_text,
+        scope="identity",
+        send_as_id=leader_identity_id,
+        priority="medium",
+        limit=700,
+    )
 
 
 def _make_replica_settlement_notice_key(event, text, replica_kind, room_id=""):
@@ -1838,12 +2080,18 @@ def _build_luoyun_decision_buttons(stage_info, leader_identity_id, event, text, 
     return _chunk_replica_buttons(buttons, cols=3)
 
 
-def _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, now=None):
+def _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, now=None, source_key="", stage_scope="", leader_username=""):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     leader_identity_id = int(leader_identity_id or 0)
     if leader_identity_id <= 0:
         return []
-    source_key = _make_xutian_decision_notice_key(event, text, f"zhuimo:{stage_info.get('stage')}", now=now)
+    source_key = str(source_key or "").strip() or _make_xutian_decision_notice_key(event, text, f"zhuimo:{stage_info.get('stage')}", now=now)
+    stage_scope = str(stage_scope or "").strip()
+    leader_username = _normalize_replica_username(leader_username)
+    room_id = ""
+    if stage_scope.startswith("zhuimo:room:"):
+        room_id = stage_scope.rsplit(":", 1)[-1].strip()
+    expected = "第一幕结果/第二幕按钮" if str(stage_info.get("stage") or "") == "first" else "第二幕结果/封魔结算"
     source_msg_id = int(getattr(event, "id", 0) or 0)
     buttons = []
     for label, command in stage_info.get("commands") or ():
@@ -1854,6 +2102,18 @@ def _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, 
             source_msg_id=source_msg_id,
             token_key=f"zhuimo:{source_key}:{leader_identity_id}:{command}",
             exclusive_key=f"zhuimo:{source_key}",
+            stage_guard_scope=stage_scope,
+            stage_guard_key=source_key,
+            progress_ack={
+                "kind": _REPLICA_KIND_ZHUIMO,
+                "stage_scope": stage_scope,
+                "stage_key": source_key,
+                "stage": str(stage_info.get("stage") or "").strip(),
+                "stage_title": str(stage_info.get("title") or "").strip(),
+                "expected": expected,
+                "room_id": room_id,
+                "leader_username": leader_username,
+            },
         )
         if button:
             buttons.append(button)
@@ -1880,7 +2140,23 @@ async def _maybe_send_zhuimo_decision_notice(event, text, now):
     notice_key = _make_xutian_decision_notice_key(event, text, f"zhuimo:{stage_info.get('stage')}", now=now)
     if not _mark_xutian_decision_notice_once(notice_key, now):
         return False
-    buttons = _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, now=now)
+    stage_scope = "zhuimo:" + _make_zhuimo_decision_scope(
+        event,
+        text,
+        leader_username=leader_username,
+        now=now,
+    )
+    _set_cangkun_stage_guard_current(stage_scope, notice_key, now)
+    buttons = _build_zhuimo_decision_buttons(
+        stage_info,
+        leader_identity_id,
+        event,
+        text,
+        now=now,
+        source_key=notice_key,
+        stage_scope=stage_scope,
+        leader_username=leader_username,
+    )
     if not buttons:
         return False
     commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
@@ -2187,6 +2463,8 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
                 chain_id=f"replica_button:{identity_id}",
             ),
         )
+        if msg:
+            _maybe_track_replica_game_command_progress(payload, msg, actor_id=actor_id)
         if msg and exclusive_key:
             _mark_replica_button_exclusive_group_executed(exclusive_key, actor_id=actor_id, command=command)
         return bool(msg), f"已发送：{command}" if msg else f"发送失败：{command}"
@@ -7841,6 +8119,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     xutian_decision_stage = _get_xutian_decision_stage(text)
     cangkun_decision_stage = _get_cangkun_decision_stage(text)
     zhuimo_decision_stage = _get_zhuimo_decision_stage(text)
+    zhuimo_progress_text = _is_zhuimo_progress_text(text)
     kunwu_decision_stage = _get_kunwu_decision_stage(text)
     luoyun_decision_stage = _get_luoyun_decision_stage(text)
     replica_settlement_kind = _parse_replica_settlement_kind(text)
@@ -7850,6 +8129,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         not xutian_decision_stage
         and not cangkun_decision_stage
         and not zhuimo_decision_stage
+        and not zhuimo_progress_text
         and not kunwu_decision_stage
         and not luoyun_decision_stage
         and not replica_settlement_kind
@@ -7863,6 +8143,15 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     if _has_runtime_message_consumed(event, consumed_family):
         return False
     _mark_runtime_message_consumed(event, consumed_family)
+    if zhuimo_progress_text or replica_settlement_kind == _REPLICA_KIND_ZHUIMO:
+        leader_username = _parse_replica_leader_username(text) or _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
+        stage_scope = "zhuimo:" + _make_zhuimo_decision_scope(
+            event,
+            text,
+            leader_username=leader_username,
+            now=now,
+        )
+        _clear_zhuimo_progress_acks_for_scope(stage_scope, now=now)
     xutian_notice_sent = False
     if xutian_decision_stage:
         parsed_leader_username = _parse_replica_leader_username(text)
@@ -7909,6 +8198,9 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             usernames=_extract_replica_usernames(text),
         )
         zhuimo_notice_sent = bool(await _maybe_send_zhuimo_decision_notice(event, text, now))
+    zhuimo_progress_notice_sent = False
+    if zhuimo_progress_text and not zhuimo_decision_stage and replica_settlement_kind != _REPLICA_KIND_ZHUIMO:
+        zhuimo_progress_notice_sent = bool(await _send_zhuimo_progress_notice(event, text, now))
     kunwu_notice_sent = False
     if kunwu_decision_stage:
         parsed_leader_username = _parse_replica_leader_username(text)
@@ -8042,7 +8334,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         if identity_ids:
             _mark_replica_failure_pending(identity_ids, now, replica_kind=replica_kind)
             return True
-    return bool(xutian_notice_sent or cangkun_notice_sent or zhuimo_notice_sent or kunwu_notice_sent or luoyun_notice_sent)
+    return bool(xutian_notice_sent or cangkun_notice_sent or zhuimo_notice_sent or zhuimo_progress_notice_sent or kunwu_notice_sent or luoyun_notice_sent)
 
 
 def _parse_virtual_hall_open_failure(text):

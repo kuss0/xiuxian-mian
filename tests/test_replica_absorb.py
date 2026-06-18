@@ -2528,6 +2528,245 @@ class ReplicaAbsorbTests(unittest.TestCase):
         ]
         self.assertEqual({".坠魔抉择 1", ".坠魔抉择 2"}, {payload["command"] for payload in payloads})
 
+    def test_zhuimo_old_stage_button_is_blocked_after_stage_advances(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        self._prepare_replica_group([leader_id])
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "95",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "opened_at": now - 60,
+            "entered_at": now - 30,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        first_text = (
+            "【坠魔谷·第一幕：裂隙外谷】\n"
+            "路径1 · 破煞突进：强行冲阵。\n"
+            "路径2 · 稳守阵眼：以阵法缓进。\n"
+            "路径3 · 潜行搜魂：避开主裂隙。\n"
+            "使用 .坠魔抉择 路径1/路径2/路径3 继续。"
+        )
+        second_text = (
+            "【第一幕结果】\n"
+            "你们先稳固阵眼，再层层推进，魔气回卷被有效压制。\n\n"
+            "【第二幕：心魔镜域】\n"
+            "1 · 斩念守心：集体压制心魔杂念。\n"
+            "2 · 纵魔借力：短暂引魔入体换取爆发。\n"
+            "使用 .坠魔抉择 1 或 .坠魔抉择 2。"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                await app_replica._handle_replica_progress_event(SimpleNamespace(id=8806, chat_id=-100123, raw_text=first_text), now + 1)
+                first_buttons = notice_mock.await_args.kwargs["buttons"]
+                old_button = next(
+                    button
+                    for row in first_buttons
+                    for button in row
+                    if button.get("text") == "路径2 稳守"
+                )
+                await app_replica._handle_replica_progress_event(SimpleNamespace(id=8807, chat_id=-100123, raw_text=second_text), now + 2)
+            _token, old_action = app_replica._get_replica_button_action(old_button["callback_data"])
+            with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=901))) as send_mock:
+                ok, message = await app_replica._execute_replica_button_action(old_action, actor_id=123456)
+                return ok, message, send_mock.await_args_list
+
+        ok, message, send_calls = asyncio.run(run_test())
+        self.assertTrue(ok)
+        self.assertIn("阶段已过期", message)
+        self.assertEqual([], send_calls)
+
+    def test_zhuimo_button_tracks_missing_progress_ack_without_resending(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        self._prepare_replica_group([leader_id])
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "105",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "opened_at": now - 60,
+            "entered_at": now - 30,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        first_text = (
+            "【坠魔谷·第一幕：裂隙外谷】\n"
+            "路径1 · 破煞突进：强行冲阵。\n"
+            "路径2 · 稳守阵眼：以阵法缓进。\n"
+            "路径3 · 潜行搜魂：避开主裂隙。\n"
+            "使用 .坠魔抉择 路径1/路径2/路径3 继续。"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
+                    patch("model.app_replica._schedule_zhuimo_progress_ack_timeout", return_value=True) as schedule_mock:
+                await app_replica._handle_replica_progress_event(SimpleNamespace(id=8806, chat_id=-100123, raw_text=first_text), now + 1)
+                first_buttons = notice_mock.await_args.kwargs["buttons"]
+                button = next(
+                    button
+                    for row in first_buttons
+                    for button in row
+                    if button.get("text") == "路径2 稳守"
+                )
+                _token, action = app_replica._get_replica_button_action(button["callback_data"])
+                self.assertEqual(app_replica._REPLICA_KIND_ZHUIMO, action["payload"]["progress_ack"]["kind"])
+                with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9901))) as send_mock:
+                    ok, message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                    send_mock.assert_awaited_once()
+                schedule_mock.assert_called_once()
+                ack_key = schedule_mock.call_args.args[0]
+                with patch("model.app_replica._send_replica_kind_notice", new=AsyncMock(return_value=True)) as ack_notice_mock, \
+                        patch("model.app_replica.send_game_command", new=AsyncMock()) as timeout_send_mock:
+                    alerted = await app_replica._send_zhuimo_progress_ack_timeout_notice(
+                        ack_key,
+                        now=now + app_replica._ZHUIMO_PROGRESS_ACK_DELAY_SEC + 5,
+                    )
+                    timeout_send_mock.assert_not_awaited()
+                return ok, message, alerted, ack_notice_mock.await_args.args[1], state_module.get_replica_run_state()["zhuimo_progress_acks"][ack_key]
+
+        ok, message, alerted, notice_text, ack_item = asyncio.run(run_test())
+
+        self.assertTrue(ok)
+        self.assertIn("已发送：.坠魔抉择 路径2", message)
+        self.assertTrue(alerted)
+        self.assertIn("坠魔谷进度回执缺失", notice_text)
+        self.assertIn("不要重复发送同一阶段命令", notice_text)
+        self.assertEqual(".坠魔抉择 路径2", ack_item["command"])
+        self.assertGreater(ack_item["alerted_at"], 0)
+
+    def test_zhuimo_progress_ack_clears_when_second_stage_arrives(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        self._prepare_replica_group([leader_id])
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "105",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "opened_at": now - 60,
+            "entered_at": now - 30,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        stage_scope = "zhuimo:room:105"
+        ack_key = app_replica._mark_zhuimo_progress_ack_pending(
+            {
+                "kind": app_replica._REPLICA_KIND_ZHUIMO,
+                "stage_scope": stage_scope,
+                "stage_key": "decision:zhuimo:room:105:first",
+                "stage": "first",
+                "stage_title": "第一幕：裂隙外谷",
+                "expected": "第一幕结果/第二幕按钮",
+                "room_id": "105",
+                "leader_username": "@WalterWA2000",
+            },
+            {
+                "command": ".坠魔抉择 路径2",
+                "identity_id": leader_id,
+                "stage_guard_scope": stage_scope,
+                "stage_guard_key": "decision:zhuimo:room:105:first",
+                "source_msg_id": 8806,
+            },
+            SimpleNamespace(id=9901),
+            actor_id=123456,
+            now=now,
+        )
+        self.assertTrue(ack_key)
+        second_text = (
+            "【第一幕结果】\n"
+            "你们先稳固阵眼，再层层推进，魔气回卷被有效压制。\n\n"
+            "【第二幕：心魔镜域】\n"
+            "1 · 斩念守心：集体压制心魔杂念。\n"
+            "2 · 纵魔借力：短暂引魔入体换取爆发。\n"
+            "使用 .坠魔抉择 1 或 .坠魔抉择 2。"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)):
+                return await app_replica._handle_replica_progress_event(SimpleNamespace(id=8807, chat_id=-100123, raw_text=second_text), now + 2)
+
+        handled = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertNotIn(ack_key, state_module.get_replica_run_state().get("zhuimo_progress_acks", {}))
+
+    def test_zhuimo_late_second_result_reports_progress_and_clears_ack(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        self._prepare_replica_group([leader_id])
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "105",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "opened_at": now - 120,
+            "entered_at": now - 90,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        stage_scope = "zhuimo:room:105"
+        ack_key = app_replica._mark_zhuimo_progress_ack_pending(
+            {
+                "kind": app_replica._REPLICA_KIND_ZHUIMO,
+                "stage_scope": stage_scope,
+                "stage_key": "decision:zhuimo:room:105:first",
+                "stage": "first",
+                "stage_title": "第一幕：裂隙外谷",
+                "expected": "第一幕结果/第二幕按钮",
+                "room_id": "105",
+                "leader_username": "@WalterWA2000",
+            },
+            {
+                "command": ".坠魔抉择 路径2",
+                "identity_id": leader_id,
+                "stage_guard_scope": stage_scope,
+                "stage_guard_key": "decision:zhuimo:room:105:first",
+                "source_msg_id": 8806,
+            },
+            SimpleNamespace(id=9901),
+            actor_id=123456,
+            now=now,
+        )
+        self.assertTrue(ack_key)
+        progress_text = (
+            "【第二幕结果】\n"
+            "你们逆转功法借用魔气，战力暴涨，但识海边缘已出现坠魔裂痕。\n\n"
+            "当前状态：魔染 34 / 封印 66 / 士气 114\n"
+            "你们冲入祭坛核心，准备与古魔残识决战！"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(id=10543532, chat_id=-100123, raw_text=progress_text),
+                    now + 79,
+                )
+                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1]
+
+        handled, notice_item, notice_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(-100777, notice_item["replica_chat_id"])
+        self.assertIn("坠魔谷进度：第二幕结果", notice_text)
+        self.assertIn("魔染 34", notice_text)
+        self.assertNotIn(ack_key, state_module.get_replica_run_state().get("zhuimo_progress_acks", {}))
+
     def test_luoyun_first_stage_marks_entered_and_sends_decision_buttons(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", realm="结丹后期", sect_name="落云宗")
         member_id = self._register_replica_identity(991202, "growrdick")
@@ -3274,6 +3513,55 @@ class ReplicaAbsorbTests(unittest.TestCase):
             self.assertEqual("", state_item["room_id"])
             self.assertEqual("95", state_item["last_completed_room_id"])
             self.assertEqual(now + 180 + app_replica.REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC, state_item["cooldown_until"])
+
+    def test_zhuimo_failure_settlement_reports_to_lightweight_group(self):
+        leader_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军")
+        first_id = self._register_replica_identity(991202, "growrdick", professions="御山")
+        second_id = self._register_replica_identity(991203, "myios17", professions="灵医")
+        third_id = self._register_replica_identity(991204, "xuruode1", professions="影刃")
+        fourth_id = self._register_replica_identity(991205, "jfdffdddd", professions="咒师")
+        state_module.set_replica_participant_identity_ids([leader_id, first_id, second_id, third_id, fourth_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "105",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@WalterWA2000",
+            "join_requested_usernames": ["@growrdick", "@myios17", "@xuruode1", "@jfdffdddd"],
+            "opened_at": now,
+            "entered_at": now + 10,
+            "updated_at": now + 10,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(
+                        id=9983306,
+                        raw_text=(
+                            "【坠魔谷·封魔失败】\n"
+                            "虽击碎古魔残识，却未完成封印，魔潮二次爆发。\n\n"
+                            "虽未能封魔，众人仍从死斗中有所感悟：每人获得 2000修为、120贡献。\n"
+                            "最终魔染值：44 | 封印进度：79"
+                        ),
+                    ),
+                    now + 180,
+                )
+                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1]
+
+        handled, notice_item, notice_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(-100777, notice_item["replica_chat_id"])
+        self.assertIn("坠魔谷结算：封魔失败", notice_text)
+        self.assertIn("已清理轻量房间记录", notice_text)
+        self.assertIn("已记录 5 个身份 CD", notice_text)
+        self.assertIn("最终魔染值：44", notice_text)
+        self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=now + 181))
 
     def test_virtual_hall_duoding_settlement_does_not_clear_active_cangkun_room(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
