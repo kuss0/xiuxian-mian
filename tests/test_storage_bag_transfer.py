@@ -221,6 +221,38 @@ class StorageBagTransferTests(unittest.TestCase):
             {"identity_id": self.source_id, "command": ".赠送 木髓*2", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
+    def test_known_non_listing_items_use_gift_rules_from_base_file(self):
+        state_module.set_storage_bag_item_rules({})
+        state_module.set_storage_bag_records({
+            str(self.source_id): {
+                "updated_at": 1000,
+                "items": {
+                    "苍坤残图": 1,
+                    "苍坤路线残图": 1,
+                    "碧鸠毒囊": 1,
+                    "残缺阴环": 1,
+                },
+            },
+            str(self.target_id): {"updated_at": 1000, "items": {"灵石": 100}},
+        })
+
+        snapshot = ui.get_storage_bag_snapshot()
+
+        for item_name in ("苍坤残图", "苍坤路线残图", "碧鸠毒囊", "残缺阴环"):
+            self.assertEqual("gift", snapshot["item_rules"][item_name]["method"], item_name)
+
+        ok, message, preview = ui.ui_preview_storage_bag_transfer({
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+            "items": [{"item_name": "苍坤残图", "quantity": 1}],
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual([
+            {"identity_id": self.target_id, "command": "转移标记 <本次转移ID>", "note": "目标身份先发送一条可回复的标记消息"},
+            {"identity_id": self.source_id, "command": ".赠送 苍坤残图*1", "note": "来源身份回复目标身份标记消息发送"},
+        ], preview["commands"])
+
     def test_batch_transfer_preview_defaults_to_all_non_protected_sources(self):
         other_id = 1003
         protected_id = 1004
