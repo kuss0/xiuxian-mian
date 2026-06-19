@@ -613,6 +613,58 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("guarded retry too dense", breach)
 
+    def test_marked_divination_exchange_after_query_does_not_global_fuse(self):
+        now = time.time()
+        sender_id = 3504367852
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(
+                now - 10,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:2026-06-20:2:try2",
+                message_id=10616546,
+            ),
+            _event(
+                now,
+                sender_id,
+                ".换取",
+                reply_to_msg_id=10616549,
+                family="divination_exchange",
+                source_module="卜筮问天",
+                priority="urgent_reactive",
+                op_id="divination_exchange:-1001680975844:10616549",
+                chain_id="divination:-1001680975844:10616549",
+                message_id=10616552,
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_unmarked_divination_exchange_after_query_still_global_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(
+                now - 10,
+                sender_id,
+                ".卜筮问天",
+                source_module="卜筮问天",
+                priority="normal",
+                op_id=f"divination_query:{sender_id}:2026-06-20:2:try2",
+            ),
+            _event(now, sender_id, ".换取"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("global lock breach", breach)
+
     def test_tower_retry_without_intent_metadata_still_fuses(self):
         now = time.time()
         sender_id = 3504367852

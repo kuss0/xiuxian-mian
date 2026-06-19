@@ -111,7 +111,10 @@ PHASEFUL_CHAIN_MARKERS = {"deep_retreat", "yuanying", "深度闭关", "元婴"}
 PHASEFUL_CHAIN_MIN_GAP_SEC = 20
 PHASEFUL_CHAIN_MAX_GAP_SEC = 5 * 60
 DIVINATION_QUERY_COMMAND = ".卜筮问天"
+DIVINATION_EXCHANGE_COMMAND = ".换取"
 DIVINATION_SOURCE_MODULE = "卜筮问天"
+DIVINATION_EXCHANGE_FAMILY = "divination_exchange"
+DIVINATION_EXCHANGE_OP_PREFIX = "divination_exchange:"
 DIVINATION_DAILY_QUERY_MIN_GAP_SEC = 55
 DIVINATION_DAILY_QUERY_MAX_ATTEMPTS_45M = 20
 WORLD_BOSS_SOURCE_MODULE = "真仙试锋"
@@ -301,6 +304,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_marked_heart_choice_event(cur)
         or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
         or is_safe_heart_global_gap_pair(prev, cur)
+        or is_safe_divination_exchange_global_gap_pair(prev, cur)
     )
 
 
@@ -708,6 +712,24 @@ def is_safe_divination_daily_query_chain(items: list[dict], text: str) -> bool:
         previous_target = target_count
         previous_try = try_no
     return True
+
+
+def is_safe_divination_exchange_global_gap_pair(prev: dict, cur: dict) -> bool:
+    if command_key(str(prev.get("text") or "")) != DIVINATION_QUERY_COMMAND:
+        return False
+    if command_key(str(cur.get("text") or "")) != DIVINATION_EXCHANGE_COMMAND:
+        return False
+    if int(prev.get("sender_id", 0) or 0) != int(cur.get("sender_id", 0) or 0):
+        return False
+    if str(prev.get("source_module") or "").strip() != DIVINATION_SOURCE_MODULE:
+        return False
+    if str(cur.get("source_module") or "").strip() != DIVINATION_SOURCE_MODULE:
+        return False
+    if str(cur.get("family") or "").strip() != DIVINATION_EXCHANGE_FAMILY:
+        return False
+    if str(cur.get("priority") or "").strip().lower() != "urgent_reactive":
+        return False
+    return str(cur.get("op_id") or "").strip().startswith(DIVINATION_EXCHANGE_OP_PREFIX)
 
 
 def is_small_world_tool_command(text: str) -> bool:
