@@ -1266,6 +1266,50 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("开坠 @firstleader", button_texts)
         self.assertIn("开坠 @secondleader", button_texts)
 
+    def test_log_group_cangkun_query_previews_multi_team_capacity(self):
+        first_leader_id = self._register_replica_identity(991201, "firstleader", professions="破军")
+        second_leader_id = self._register_replica_identity(991202, "secondleader", professions="破军")
+        first_sense_id = self._register_replica_identity(991203, "firstsense", professions="御山", sect_name="太一门")
+        second_sense_id = self._register_replica_identity(991204, "secondsense", professions="御山", sect_name="太一门")
+        first_healer_id = self._register_replica_identity(991205, "firsthealer", professions="灵医")
+        second_healer_id = self._register_replica_identity(991206, "secondhealer", professions="灵医")
+        first_blade_id = self._register_replica_identity(991207, "firstblade", professions="影刃")
+        second_blade_id = self._register_replica_identity(991208, "secondblade", professions="影刃")
+        first_curse_id = self._register_replica_identity(991209, "firstcurse", professions="咒师")
+        second_curse_id = self._register_replica_identity(991210, "secondcurse", professions="咒师")
+        self._prepare_replica_group([
+            first_leader_id,
+            second_leader_id,
+            first_sense_id,
+            second_sense_id,
+            first_healer_id,
+            second_healer_id,
+            first_blade_id,
+            second_blade_id,
+            first_curse_id,
+            second_curse_id,
+        ])
+        state_module.set_storage_bag_records({
+            str(first_leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+            str(second_leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+        })
+        state_module.set_tianjige_dao_path_records({
+            str(first_sense_id): {"spiritual_sense": 1300},
+            str(second_sense_id): {"spiritual_sense": 1200},
+        })
+
+        panel = app_replica.build_log_group_replica_panel(".查询苍")
+
+        text = panel.get("text") or ""
+        button_texts = self._button_texts(panel.get("buttons"))
+        self.assertIn("苍坤洞府可开：2", text)
+        self.assertIn("苍坤多队预览：可组 2 队", text)
+        self.assertIn("队长 @firstleader｜神识 @firstsense 1300", text)
+        self.assertIn("队长 @secondleader｜神识 @secondsense 1200", text)
+        self.assertIn("策略：每队优先只放 1 个神识过千号", text)
+        self.assertIn("开苍 @firstleader", button_texts)
+        self.assertIn("开苍 @secondleader", button_texts)
+
     def test_log_group_summary_query_button_refreshes_specific_panel(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         self._prepare_replica_group([leader_id])
@@ -1700,6 +1744,112 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("无需DPS标识", section)
         self.assertIn("默认路线 .苍坤抉择 1 / 3 / 2", section)
         self.assertNotIn("DPS：", section)
+
+    def test_cangkun_multi_team_plan_spreads_high_sense_anchors(self):
+        first_leader_id = self._register_replica_identity(991201, "firstleader", professions="破军", realm="结丹初期")
+        second_leader_id = self._register_replica_identity(991202, "secondleader", professions="破军", realm="结丹初期")
+        first_sense_id = self._register_replica_identity(991203, "firstsense", professions="御山", realm="结丹初期", sect_name="太一门")
+        second_sense_id = self._register_replica_identity(991204, "secondsense", professions="御山", realm="结丹初期", sect_name="太一门")
+        spare_sense_id = self._register_replica_identity(991205, "sparesense", professions="御山", realm="结丹初期", sect_name="太一门")
+        first_healer_id = self._register_replica_identity(991206, "firsthealer", professions="灵医", realm="结丹初期")
+        second_healer_id = self._register_replica_identity(991207, "secondhealer", professions="灵医", realm="结丹初期")
+        first_blade_id = self._register_replica_identity(991208, "firstblade", professions="影刃", realm="结丹初期")
+        second_blade_id = self._register_replica_identity(991209, "secondblade", professions="影刃", realm="结丹初期")
+        first_curse_id = self._register_replica_identity(991210, "firstcurse", professions="咒师", realm="结丹初期")
+        second_curse_id = self._register_replica_identity(991211, "secondcurse", professions="咒师", realm="结丹初期")
+        state_module.set_replica_participant_identity_ids([
+            first_leader_id,
+            second_leader_id,
+            first_sense_id,
+            second_sense_id,
+            spare_sense_id,
+            first_healer_id,
+            second_healer_id,
+            first_blade_id,
+            second_blade_id,
+            first_curse_id,
+            second_curse_id,
+        ])
+        state_module.set_storage_bag_records({
+            str(first_leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+            str(second_leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+        })
+        state_module.set_tianjige_dao_path_records({
+            str(first_sense_id): {"spiritual_sense": 1300},
+            str(second_sense_id): {"spiritual_sense": 1200},
+            str(spare_sense_id): {"spiritual_sense": 1100},
+        })
+
+        plan = app_replica.build_cangkun_multi_team_plan()
+        teams = plan.get("teams") or []
+        join_command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_CANGKUN,
+            first_leader_id,
+        )
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_CANGKUN,
+            first_leader_id,
+        )
+
+        self.assertEqual(2, len(teams))
+        self.assertEqual(2, plan.get("upper_bound"))
+        sense_usernames = [team.get("sense_username") for team in teams]
+        self.assertIn("@firstsense", sense_usernames)
+        self.assertIn("@secondsense", sense_usernames)
+        for team in teams:
+            team_sense_count = sum(
+                1
+                for identity_id in team.get("identity_ids") or []
+                if app_replica._has_cangkun_required_spiritual_sense(identity_id)
+            )
+            self.assertEqual(1, team_sense_count)
+        self.assertIn("@firstsense", join_command)
+        self.assertNotIn("@secondsense", join_command)
+        self.assertNotIn("@sparesense", join_command)
+        self.assertIn("推荐配置：苍坤洞府｜多队规划（开房 @firstleader）", section)
+        self.assertIn("规划：已按多队拆分保留其他神识号", section)
+
+    def test_cangkun_multi_team_plan_reports_role_bottleneck(self):
+        opener_ids = [
+            self._register_replica_identity(991201, "firstleader", professions="破军", realm="结丹初期"),
+            self._register_replica_identity(991202, "secondleader", professions="破军", realm="结丹初期"),
+            self._register_replica_identity(991203, "thirdleader", professions="破军", realm="结丹初期"),
+            self._register_replica_identity(991204, "fourthleader", professions="破军", realm="结丹初期"),
+        ]
+        sense_ids = [
+            self._register_replica_identity(991205, "firstsense", professions="御山", realm="结丹初期", sect_name="太一门"),
+            self._register_replica_identity(991206, "secondsense", professions="御山", realm="结丹初期", sect_name="太一门"),
+            self._register_replica_identity(991207, "thirdsense", professions="御山", realm="结丹初期", sect_name="太一门"),
+            self._register_replica_identity(991208, "fourthsense", professions="御山", realm="结丹初期", sect_name="太一门"),
+        ]
+        filler_ids = [
+            self._register_replica_identity(991209, "firsthealer", professions="灵医", realm="结丹初期"),
+            self._register_replica_identity(991210, "secondhealer", professions="灵医", realm="结丹初期"),
+            self._register_replica_identity(991211, "firstblade", professions="影刃", realm="结丹初期"),
+            self._register_replica_identity(991212, "secondblade", professions="影刃", realm="结丹初期"),
+            self._register_replica_identity(991213, "firstcurse", professions="咒师", realm="结丹初期"),
+            self._register_replica_identity(991214, "secondcurse", professions="咒师", realm="结丹初期"),
+            self._register_replica_identity(991215, "thirdhealer", professions="灵医|咒师", realm="结丹初期"),
+            self._register_replica_identity(991216, "fourthhealer", professions="灵医|咒师", realm="结丹初期"),
+        ]
+        state_module.set_replica_participant_identity_ids(opener_ids + sense_ids + filler_ids)
+        state_module.set_storage_bag_records({
+            str(identity_id): {"items": {"苍坤残图": 1}, "sections": {}}
+            for identity_id in opener_ids
+        })
+        state_module.set_tianjige_dao_path_records({
+            str(identity_id): {"spiritual_sense": 1200 + index}
+            for index, identity_id in enumerate(sense_ids)
+        })
+
+        plan = app_replica.build_cangkun_multi_team_plan()
+        preview = app_replica._format_cangkun_multi_team_preview(plan)
+
+        self.assertEqual(4, plan.get("opener_count"))
+        self.assertEqual(4, plan.get("sense_ok_count"))
+        self.assertEqual(2, plan.get("upper_bound"))
+        self.assertEqual(2, len(plan.get("teams") or []))
+        self.assertIn("苍坤多队预览：可组 2 队｜可开4｜神识4｜理论上限2", preview)
 
     def test_cangkun_recommendation_treats_missing_sense_snapshot_as_unknown(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")

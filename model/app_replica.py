@@ -7,6 +7,7 @@ import time
 import traceback
 from datetime import datetime, timedelta
 from html import escape, unescape
+from itertools import combinations
 from types import SimpleNamespace
 
 from .app_message_log import (
@@ -294,6 +295,8 @@ _CANGKUN_SENSE_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_CANGKUN_SENSE_MIN_REALM
 _CANGKUN_ROOT_GRADE_PRIORITY = ("天", "异", "真", "伪")
 _CANGKUN_PREFERRED_SECT = "太一门"
 _CANGKUN_BACKUP_EXCLUDED_USERNAMES = ("@walterwa2000",)
+_CANGKUN_PLAN_OPTIONS_PER_LEADER = 300
+_CANGKUN_PLAN_PREVIEW_MAX_TEAMS = 3
 _ZHUIMO_REQUIRED_PROFESSIONS = ("破军", "御山", "灵医", "影刃", "咒师")
 _ZHUIMO_HEART_AFFINITY_THRESHOLD = 120
 _ZHUIMO_PREFERRED_USER_MARKERS = ("jfdffdddd", "吧唧")
@@ -4414,6 +4417,276 @@ def _format_cangkun_profession_coverage(identity_ids, *, leader_identity_id=0):
     return covered_text, missing_text
 
 
+def _get_cangkun_identity_roles(identity_id):
+    return tuple(
+        role
+        for role in _CANGKUN_REQUIRED_PROFESSIONS
+        if role in _get_replica_profile_professions(identity_id)
+    )
+
+
+def _get_cangkun_available_identity_records(now=None):
+    now = float(now or time.time())
+    records = _cleanup_replica_run_state(now)
+    rows = []
+    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or not _is_cangkun_realm_available(identity_id):
+            continue
+        status_text = _get_replica_identity_kind_status(identity_id, _REPLICA_KIND_CANGKUN, now, records=records)
+        if status_text != "可":
+            continue
+        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        if not username:
+            continue
+        rows.append({
+            "identity_id": identity_id,
+            "username": username,
+            "ticket_count": _get_replica_ticket_kind_count(identity_id, _REPLICA_KIND_CANGKUN),
+            "roles": _get_cangkun_identity_roles(identity_id),
+            "sense": _get_identity_cangkun_spiritual_sense_snapshot(identity_id),
+        })
+    return rows
+
+
+def _cangkun_record_username(record):
+    return _normalize_replica_username((record or {}).get("username") or "")
+
+
+def _cangkun_record_sense_status(record):
+    sense = (record or {}).get("sense")
+    sense = sense if isinstance(sense, dict) else {}
+    return str(sense.get("status") or "")
+
+
+def _cangkun_record_sense_value(record):
+    sense = (record or {}).get("sense")
+    sense = sense if isinstance(sense, dict) else {}
+    try:
+        return int(sense.get("value") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cangkun_record_sense_reason(record):
+    sense = (record or {}).get("sense")
+    sense = sense if isinstance(sense, dict) else {}
+    return str(sense.get("candidate_reason") or "").strip()
+
+
+def _cangkun_team_identity_ids(team):
+    team = team if isinstance(team, dict) else {}
+    return _normalize_replica_identity_ids(team.get("identity_ids") or [])
+
+
+def _cangkun_team_join_identity_ids(team):
+    team = team if isinstance(team, dict) else {}
+    leader_identity_id = int(team.get("leader_identity_id") or 0)
+    return [
+        identity_id
+        for identity_id in _cangkun_team_identity_ids(team)
+        if identity_id != leader_identity_id
+    ]
+
+
+def _cangkun_join_command_from_team(team):
+    usernames = [
+        _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        for identity_id in _cangkun_team_join_identity_ids(team)
+    ]
+    usernames = [username for username in usernames if username]
+    return ".加入副本 " + " ".join(usernames) if usernames else ""
+
+
+def _cangkun_team_covered_roles(identity_ids):
+    covered = set()
+    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
+        covered.update(_get_cangkun_identity_roles(identity_id))
+    return covered
+
+
+def _cangkun_team_missing_roles(identity_ids):
+    covered = _cangkun_team_covered_roles(identity_ids)
+    return [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered]
+
+
+def _cangkun_team_has_required_sense(identity_ids):
+    return any(_has_cangkun_required_spiritual_sense(identity_id) for identity_id in _normalize_replica_identity_ids(identity_ids or []))
+
+
+def _cangkun_team_option_key(identity_ids, record_by_id):
+    identity_ids = _normalize_replica_identity_ids(identity_ids)
+    records = [record_by_id.get(identity_id) or {} for identity_id in identity_ids]
+    extra_sense_count = max(0, sum(1 for record in records if _cangkun_record_sense_status(record) == "ok") - 1)
+    non_leader_ticket_count = sum(1 for record in records if int(record.get("ticket_count") or 0) > 0)
+    names = " ".join(sorted(_cangkun_record_username(record) for record in records))
+    return (
+        0 if len(identity_ids) == 5 else 1,
+        extra_sense_count,
+        non_leader_ticket_count,
+        names,
+    )
+
+
+def _cangkun_plan_sort_key(team):
+    team = team if isinstance(team, dict) else {}
+    leader_username = _normalize_replica_username(team.get("leader_username") or "")
+    sense_value = int(team.get("sense_value") or 0)
+    ticket_count = int(team.get("leader_ticket_count") or 0)
+    return (-ticket_count, leader_username, -sense_value)
+
+
+def build_cangkun_multi_team_plan(now=None, *, max_teams=None):
+    now = float(now or time.time())
+    rows = _get_cangkun_available_identity_records(now=now)
+    record_by_id = {int(row.get("identity_id") or 0): row for row in rows if int(row.get("identity_id") or 0) > 0}
+    openers = [
+        row
+        for row in rows
+        if int(row.get("ticket_count") or 0) > 0
+    ]
+    sense_ok_ids = {
+        int(row.get("identity_id") or 0)
+        for row in rows
+        if _cangkun_record_sense_status(row) == "ok"
+    }
+    role_counts = {
+        role: sum(1 for row in rows if role in (row.get("roles") or ()))
+        for role in _CANGKUN_REQUIRED_PROFESSIONS
+    }
+    upper_bound = min(
+        len(openers),
+        len(sense_ok_ids),
+        len(rows) // 5,
+        *(role_counts.get(role, 0) for role in _CANGKUN_REQUIRED_PROFESSIONS),
+    ) if rows else 0
+    if max_teams is not None:
+        upper_bound = min(upper_bound, max(0, int(max_teams or 0)))
+    if upper_bound <= 0:
+        return {
+            "teams": [],
+            "upper_bound": 0,
+            "opener_count": len(openers),
+            "sense_ok_count": len(sense_ok_ids),
+            "available_count": len(rows),
+            "role_counts": role_counts,
+        }
+
+    all_ids = [
+        int(row.get("identity_id") or 0)
+        for row in sorted(
+            rows,
+            key=lambda item: (
+                0 if _cangkun_record_sense_status(item) != "ok" else 1,
+                0 if int(item.get("ticket_count") or 0) <= 0 else 1,
+                len(item.get("roles") or ()),
+                _cangkun_record_username(item),
+            ),
+        )
+    ]
+    team_options = []
+    for opener in sorted(openers, key=lambda item: (-int(item.get("ticket_count") or 0), _cangkun_record_username(item))):
+        opener_id = int(opener.get("identity_id") or 0)
+        other_ids = [identity_id for identity_id in all_ids if identity_id != opener_id]
+        options = []
+        for size in range(1, 6):
+            if size == 1:
+                combos = [()]
+            else:
+                combos = combinations(other_ids, size - 1)
+            for combo in combos:
+                identity_ids = _normalize_replica_identity_ids((opener_id,) + tuple(combo))
+                if len(identity_ids) != size:
+                    continue
+                if not _cangkun_team_has_required_sense(identity_ids):
+                    continue
+                if _cangkun_team_missing_roles(identity_ids):
+                    continue
+                options.append(tuple(sorted(identity_ids, key=lambda identity_id: _cangkun_record_username(record_by_id.get(identity_id)))))
+        options = sorted(set(options), key=lambda identity_ids: _cangkun_team_option_key(identity_ids, record_by_id))
+        team_options.append((opener_id, options[:_CANGKUN_PLAN_OPTIONS_PER_LEADER]))
+
+    best = []
+    best_key = ()
+
+    def chosen_key(chosen):
+        flattened_names = []
+        extra_sense = 0
+        ticket_waste = 0
+        for identity_ids in chosen:
+            team_records = [record_by_id.get(identity_id) or {} for identity_id in identity_ids]
+            extra_sense += max(0, sum(1 for record in team_records if _cangkun_record_sense_status(record) == "ok") - 1)
+            ticket_waste += sum(1 for record in team_records if int(record.get("ticket_count") or 0) > 0) - 1
+            flattened_names.append(" ".join(sorted(_cangkun_record_username(record) for record in team_records)))
+        return (-len(chosen), extra_sense, ticket_waste, "|".join(sorted(flattened_names)))
+
+    def search(index, used_ids, chosen):
+        nonlocal best, best_key
+        if len(chosen) + (len(team_options) - index) < len(best):
+            return
+        if max_teams is not None and len(chosen) >= max_teams:
+            current_key = chosen_key(chosen)
+            if not best or current_key < best_key:
+                best = list(chosen)
+                best_key = current_key
+            return
+        if index >= len(team_options):
+            current_key = chosen_key(chosen)
+            if not best or current_key < best_key:
+                best = list(chosen)
+                best_key = current_key
+            return
+        search(index + 1, used_ids, chosen)
+        _opener_id, options = team_options[index]
+        for identity_ids in options:
+            if any(identity_id in used_ids for identity_id in identity_ids):
+                continue
+            chosen.append(identity_ids)
+            search(index + 1, used_ids | set(identity_ids), chosen)
+            chosen.pop()
+
+    search(0, set(), [])
+    teams = []
+    for identity_ids in best:
+        leader_candidates = [identity_id for identity_id in identity_ids if int((record_by_id.get(identity_id) or {}).get("ticket_count") or 0) > 0]
+        leader_identity_id = sorted(leader_candidates, key=lambda identity_id: (-int((record_by_id.get(identity_id) or {}).get("ticket_count") or 0), _cangkun_record_username(record_by_id.get(identity_id))))[0]
+        sense_snapshot = _get_cangkun_team_spiritual_sense_snapshot(identity_ids)
+        sense_identity_id = int(sense_snapshot.get("identity_id") or 0)
+        team = {
+            "leader_identity_id": leader_identity_id,
+            "leader_username": _cangkun_record_username(record_by_id.get(leader_identity_id)),
+            "leader_ticket_count": int((record_by_id.get(leader_identity_id) or {}).get("ticket_count") or 0),
+            "identity_ids": list(identity_ids),
+            "join_ids": [identity_id for identity_id in identity_ids if identity_id != leader_identity_id],
+            "sense_identity_id": sense_identity_id,
+            "sense_username": _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or "") if sense_identity_id else "",
+            "sense_value": int(sense_snapshot.get("value") or 0),
+            "sense_status": str(sense_snapshot.get("status") or ""),
+            "missing": _cangkun_team_missing_roles(identity_ids),
+        }
+        teams.append(team)
+    teams = sorted(teams, key=_cangkun_plan_sort_key)
+    return {
+        "teams": teams,
+        "upper_bound": upper_bound,
+        "opener_count": len(openers),
+        "sense_ok_count": len(sense_ok_ids),
+        "available_count": len(rows),
+        "role_counts": role_counts,
+    }
+
+
+def _find_cangkun_planned_team_for_leader(leader_identity_id, now=None):
+    leader_identity_id = int(leader_identity_id or 0)
+    if leader_identity_id <= 0:
+        return {}
+    plan = build_cangkun_multi_team_plan(now=now)
+    for team in plan.get("teams") or []:
+        if int((team or {}).get("leader_identity_id") or 0) == leader_identity_id:
+            return team
+    return {}
+
+
 def _format_cangkun_realm_requirement(identity_id):
     realm = _get_cangkun_realm(identity_id) or "未知"
     return f"苍坤要求{_CANGKUN_MIN_REALM}及以上，当前境界：{realm}"
@@ -4454,6 +4727,10 @@ def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, lim
         return []
     if replica_kind == _REPLICA_KIND_CANGKUN:
         candidates = [identity_id for identity_id in candidates if _is_cangkun_realm_available(identity_id)]
+        planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id, now=now)
+        planned_join_ids = _cangkun_team_join_identity_ids(planned_team)
+        if planned_join_ids:
+            return planned_join_ids[:limit]
         assignments = _best_cangkun_profession_assignment(
             ([leader_identity_id] if leader_identity_id else []) + candidates,
             leader_identity_id=leader_identity_id,
@@ -4513,6 +4790,11 @@ def _get_lightweight_profession_recommendation_join_command(replica_kind, leader
     leader_identity_id = int(leader_identity_id or 0)
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return _get_zhuimo_join_command(leader_identity_id)
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id)
+        planned_command = _cangkun_join_command_from_team(planned_team)
+        if planned_command:
+            return planned_command
     team_ids = _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
     usernames = [
         _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
@@ -4622,6 +4904,57 @@ def _format_cangkun_backup_recommendation_lines(leader_identity_id, primary_team
         f"备选加入（不带 {excluded_display}，可复制）：{backup_display}",
         f"备选校验：{coverage_note}；{sense_note}。",
     ]
+
+
+def _format_cangkun_identity_list(identity_ids, *, html=False):
+    names = [
+        _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        for identity_id in _normalize_replica_identity_ids(identity_ids or [])
+    ]
+    names = [name for name in names if name]
+    if not names:
+        return "无"
+    return " ".join(mono(name) if html else name for name in names)
+
+
+def _format_cangkun_planned_team_line(index, team, *, html=False):
+    team = team if isinstance(team, dict) else {}
+    leader_username = _normalize_replica_username(team.get("leader_username") or "")
+    leader_text = mono(leader_username) if html else leader_username
+    sense_username = _normalize_replica_username(team.get("sense_username") or "")
+    sense_text = mono(sense_username) if html and sense_username else sense_username
+    sense_value = int(team.get("sense_value") or 0)
+    join_text = _format_cangkun_identity_list(team.get("join_ids") or [], html=html)
+    return f"{index}. 队长 {leader_text or '-'}｜神识 {sense_text or '-'} {sense_value}｜加入 {join_text}"
+
+
+def _format_cangkun_multi_team_preview(plan=None, *, html=False, max_teams=_CANGKUN_PLAN_PREVIEW_MAX_TEAMS):
+    plan = plan if isinstance(plan, dict) else build_cangkun_multi_team_plan()
+    teams = list(plan.get("teams") or [])
+    opener_count = int(plan.get("opener_count") or 0)
+    sense_ok_count = int(plan.get("sense_ok_count") or 0)
+    upper_bound = int(plan.get("upper_bound") or 0)
+    if not teams:
+        role_counts = plan.get("role_counts") if isinstance(plan.get("role_counts"), dict) else {}
+        role_text = "、".join(f"{role}{int(role_counts.get(role) or 0)}" for role in _CANGKUN_REQUIRED_PROFESSIONS)
+        return (
+            f"苍坤多队预览：暂不能形成完整队｜可开{opener_count}｜神识{sense_ok_count}｜上限{upper_bound}\n"
+            f"职业池：{role_text or '无'}。"
+        )
+    lines = [
+        f"苍坤多队预览：可组 {len(teams)} 队｜可开{opener_count}｜神识{sense_ok_count}｜理论上限{upper_bound}"
+    ]
+    visible = teams[:max(1, int(max_teams or 1))]
+    for index, team in enumerate(visible, start=1):
+        lines.append(_format_cangkun_planned_team_line(index, team, html=html))
+    if len(teams) > len(visible):
+        lines.append(f"另 {len(teams) - len(visible)} 队略。")
+    lines.append("策略：每队优先只放 1 个神识过千号，神识号尽量各自领队；瓶颈通常看影刃/门票/CD。")
+    return "\n".join(lines)
+
+
+def _format_log_group_cangkun_preview_section(summary=None, *, html=False):
+    return _format_cangkun_multi_team_preview(build_cangkun_multi_team_plan(), html=html)
 
 
 def _is_zhuimo_preferred_baji_identity(identity_id):
@@ -4958,7 +5291,9 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return _format_zhuimo_recommendation_section(leader_identity_id, html=html)
     leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
-    team_ids = _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
+    planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id) if replica_kind == _REPLICA_KIND_CANGKUN else {}
+    planned_join_ids = _cangkun_team_join_identity_ids(planned_team)
+    team_ids = planned_join_ids or _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
     usernames = [
         _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         for identity_id in team_ids
@@ -4966,7 +5301,10 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     usernames = [username for username in usernames if username]
     replica_name = _REPLICA_KIND_META[replica_kind]["name"]
     leader_text = f"（开房 {leader_username}）" if leader_username else ""
-    recommend_label = "轻量补位" if replica_kind == _REPLICA_KIND_LUOYUN else "职业补位"
+    if replica_kind == _REPLICA_KIND_CANGKUN and planned_join_ids:
+        recommend_label = "多队规划"
+    else:
+        recommend_label = "轻量补位" if replica_kind == _REPLICA_KIND_LUOYUN else "职业补位"
     lines = [f"推荐配置：{replica_name}｜{recommend_label}{leader_text}"]
     if usernames:
         display_usernames = " ".join(mono(username) if html else username for username in usernames)
@@ -4988,6 +5326,8 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
         if leader_identity_id > 0 and not _is_cangkun_realm_available(leader_identity_id):
             lines.append(f"开房身份未达要求，不计入职业覆盖：{_format_cangkun_realm_requirement(leader_identity_id)}。")
         lines.append(_format_cangkun_spiritual_sense_status(([leader_identity_id] if leader_identity_id else []) + team_ids, html=html))
+        if planned_join_ids:
+            lines.append("规划：已按多队拆分保留其他神识号，避免多个过千神识挤进同一队。")
         lines.append("提示：苍坤要求结丹初期及以上、五职业齐全、队内一名可调神识>=1000；无需DPS标识。默认路线 .苍坤抉择 1 / 3 / 2。")
     elif replica_kind == _REPLICA_KIND_LUOYUN:
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
@@ -5293,6 +5633,7 @@ def _build_log_group_replica_room_action_buttons(room):
         room,
         join_command=action.get("join_command") or "",
         join_label=action.get("join_label") or "加入推荐",
+        extra_join_actions=action.get("extra_join_actions"),
         include_enter=bool(action.get("include_enter")),
         include_dissolve=True,
         include_query=False,
@@ -5369,6 +5710,10 @@ def format_log_group_replica_panel(query_text="", *, html=False):
     ]
     if requested_kind == _REPLICA_KIND_ZHUIMO and not room:
         preview_section = _format_log_group_zhuimo_preview_section(opener_summary, html=html)
+        if preview_section:
+            lines.append(preview_section)
+    if requested_kind == _REPLICA_KIND_CANGKUN and not room:
+        preview_section = _format_log_group_cangkun_preview_section(opener_summary, html=html)
         if preview_section:
             lines.append(preview_section)
     lines.append("操作：点按钮")
