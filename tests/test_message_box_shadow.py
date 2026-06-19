@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import sys
@@ -33,13 +34,33 @@ from model.message_box import (
     write_message_box_snapshot_payload,
 )
 from model.real_message_replay import iter_real_message_samples
-from model.verified_event import from_telegram_event
+from model.verified_event import DELIVERY_EDITED, DELIVERY_NEW, from_telegram_event
 
 
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "real_message_samples.json"
 
 
 class MessageBoxShadowTests(unittest.TestCase):
+    def test_claimed_prompt_handler_ignores_edited_deliveries(self):
+        async def handler(*args, **kwargs):
+            return True
+
+        event = SimpleNamespace(id=7001)
+        with patch.object(app, "_claim_runtime_event") as claim_mock:
+            handled = asyncio.run(
+                app._run_claimed_prompt_handler(
+                    "jiyin_prompt",
+                    handler,
+                    "prompt",
+                    1234.0,
+                    event,
+                    event_kind="edit",
+                )
+            )
+
+        self.assertFalse(handled)
+        claim_mock.assert_not_called()
+
     def test_message_fact_matches_existing_verified_event_contract(self):
         event = SimpleNamespace(id=10140775, chat_id=-1001680975844, sender_id=8325841058)
         reply_to = SimpleNamespace(id=10140774, sender_id=8325841058, raw_text=".侍妾远航 冒险")
@@ -68,6 +89,12 @@ class MessageBoxShadowTests(unittest.TestCase):
         self.assertTrue(fact.is_game_group)
         self.assertTrue(fact.is_game_bot)
         self.assertTrue(fact.is_edit)
+        self.assertEqual(DELIVERY_EDITED, fact.delivery_kind)
+        self.assertTrue(fact.is_edited_delivery)
+        self.assertFalse(fact.is_new_delivery)
+        self.assertEqual(DELIVERY_EDITED, verified.delivery_kind)
+        self.assertTrue(verified.is_edited_delivery)
+        self.assertFalse(verified.is_new_delivery)
         self.assertEqual(10140774, fact.reply_to_msg_id)
         self.assertEqual(16, len(fact.text_hash))
 
@@ -80,6 +107,12 @@ class MessageBoxShadowTests(unittest.TestCase):
 
         self.assertTrue(all(shadow_compare_verified_event(fact, verified).values()))
         self.assertEqual("message:reply_context", fact.route_source)
+        self.assertEqual(DELIVERY_NEW, fact.delivery_kind)
+        self.assertTrue(fact.is_new_delivery)
+        self.assertFalse(fact.is_edited_delivery)
+        self.assertEqual(DELIVERY_NEW, verified.delivery_kind)
+        self.assertTrue(verified.is_new_delivery)
+        self.assertFalse(verified.is_edited_delivery)
         self.assertEqual(0, fact.identity_id)
         self.assertEqual("", fact.family)
         self.assertEqual({}, fact.reply_context)
@@ -267,6 +300,7 @@ class MessageBoxShadowTests(unittest.TestCase):
         self.assertEqual(1001, payload["head_msg_id"])
         self.assertEqual(1, payload["head_seq"])
         self.assertEqual("concubine_voyage", payload["facts"][0]["family"])
+        self.assertEqual(DELIVERY_NEW, payload["facts"][0]["delivery_kind"])
         self.assertEqual(3504367852, payload["facts"][0]["identity_id"])
         self.assertEqual("【乱星海远航·归】", payload["facts"][0]["raw_text"])
 

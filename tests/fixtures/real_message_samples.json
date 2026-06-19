@@ -608,6 +608,34 @@
     "event_type": "message",
     "text": "【九天罡风】\n你强引九天罡风贯体，消耗了 260 点修为。\n【罡风淬体】提升至 12 / 12 层，并凝得一道【澄明】之印。\n下一次登天阶的成功率将显著提高。"
   },
+  "tree.panel.pulse": {
+    "source": "unit:tree_pulse_panel",
+    "module": "灵树",
+    "family": "tree_panel",
+    "event_type": "message",
+    "text": "【落云宗 · 灵树玩法】\n⚙️ 当前玩法: 云梦灵眼定脉\n🌲 进度:\n75.08%\n🧭 今日脉象: 主脉【木】 / 辅脉【水】 / 逆脉【火】 / 平脉【土/金】\n🧷 脉稳: 62/100 | ☁️ 浊息/紊乱: 0/165\n📜 今日定脉令: 0/6 | 冲脉 0/2"
+  },
+  "tree.pulse.result": {
+    "source": "unit:tree_pulse_result",
+    "module": "灵树",
+    "family": "tree_pulse",
+    "event_type": "message",
+    "text": "【云梦灵眼定脉 · 注灵】\n你循木脉注入灵机，灵眼之树脉象微明。\n进度 +0.30%，脉稳 +2。"
+  },
+  "tree.guard.success": {
+    "source": "unit:tree_guard_success",
+    "module": "灵树",
+    "family": "tree_guard",
+    "event_type": "message",
+    "text": "【守山成功】\n你向护山大阵注入灵力，暂时稳住了阵脚。"
+  },
+  "tree.harvest.success": {
+    "source": "unit:tree_harvest_success",
+    "module": "灵树",
+    "family": "tree_harvest",
+    "event_type": "message",
+    "text": "你摘下一枚【造化青莲果】。\n修为增长：+33600\n灵纹回馈：额外 +3600 点修为\n稳定分得【灵眼木髓碎片】x3。"
+  },
   "world_boss.qingyuanzi.counter": {
     "source": "/opt/xiuxian-main/data/state/passive_event_ledger/2026-06-15.jsonl:8420",
     "module": "world_boss",

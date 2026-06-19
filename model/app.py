@@ -157,7 +157,7 @@ from .message_box import (
     build_message_fact_from_event,
     write_message_box_snapshot_payload,
 )
-from .verified_event import from_telegram_event
+from .verified_event import from_telegram_event, is_new_delivery
 from .runtime import (
     _fire_and_forget,
     check_bot_health_timeout,
@@ -237,6 +237,8 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_small_world_scheduler,
     run_explore_rift_scheduler,
     run_wendao_scheduler,
+    run_tree_bootstrap_check,
+    run_tree_scheduler,
     run_checkin_scheduler,
     run_tower_scheduler,
     run_second_soul_bootstrap_check,
@@ -707,7 +709,9 @@ async def _run_until_handled_for_enabled_identities(handler, text, now, event, *
     return False
 
 
-async def _run_claimed_prompt_handler(scope, handler, text, now, event):
+async def _run_claimed_prompt_handler(scope, handler, text, now, event, *, event_kind="message"):
+    if not is_new_delivery(event_kind):
+        return False
     if not _claim_runtime_event(event, scope=scope):
         return False
     return await _run_until_handled_for_enabled_identities(handler, text, now, event)

@@ -71,6 +71,7 @@ DIVINATION_LISTING_ITEM_CANDIDATES = (
 DIVINATION_FORBIDDEN_LISTING_ITEM_KEYWORDS = ("灵石",)
 DIVINATION_AUTO_EXCHANGE_TARGETS = ("昆吾通行令",)
 DIVINATION_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(PROJECT_ROOT_DIR, "data", "storage_bag_item_rules.json")
+DIVINATION_AUTO_API_ENV = "XIUXIAN_DIVINATION_ALLOW_AUTO_API_REFRESH"
 DIVINATION_PENDING_STATUS_LABELS = {
     "created": "已记录",
     "transfer_running": "资源转移中",
@@ -94,6 +95,20 @@ RE_DIVINATION_WAITING = re.compile(r"开始转动天机罗盘|卦象.*?(?:凝聚
 RE_DIVINATION_XIUWEI_SHORTAGE = re.compile(r"修为不足")
 RE_DIVINATION_DAILY_LIMIT = re.compile(r"今日.*?(?:次数|问天|窥探).*?(?:已满|已达|达到|上限|用尽)|(?:已满|已达|达到).*?今日.*?(?:次数|上限)")
 RE_DIVINATION_HEXAGRAM = re.compile(r"【卦象[：:]\s*(?P<bracket>[^】]+)】|得卦【(?P<gua>[^】]+)】")
+
+
+def _allow_auto_api_refresh():
+    value = str(os.environ.get(DIVINATION_AUTO_API_ENV) or "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _mark_api_disabled_manual_required(pending, now):
+    pending["status"] = "manual_required"
+    pending["last_error"] = "本地储物袋缓存不足，未自动读取天机阁API"
+    pending["api_checked_at"] = float(now or time.time())
+    pending["api_auto_disabled"] = True
+    _record_pending(pending)
+    return True
 
 
 def _normalize_costs(raw_costs):
@@ -663,16 +678,6 @@ def _local_cached_identity_ids(target_identity_id, *, include_sources=True):
     return result
 
 
-def _can_start_resource_transfer_from_cache(identity_id, costs, refreshed_identity_ids):
-    refreshed_identity_ids = set(refreshed_identity_ids or set())
-    if int(identity_id or 0) not in refreshed_identity_ids:
-        return False
-    tasks, still_missing = _build_transfer_tasks(identity_id, costs, refreshed_identity_ids=refreshed_identity_ids)
-    if still_missing or not tasks:
-        return False
-    return bool(_choose_listing_item(identity_id, costs, refreshed_identity_ids=refreshed_identity_ids))
-
-
 def _storage_items(identity_id, refreshed_identity_ids=None):
     if refreshed_identity_ids is not None and int(identity_id or 0) not in refreshed_identity_ids:
         return {}
@@ -758,6 +763,15 @@ def _is_protected_transfer_source(identity_id):
 async def _refresh_divination_assets_from_api(pending, now, *, include_sources=True):
     identity_id = int((pending or {}).get("target_identity_id") or 0)
     if identity_id <= 0:
+        return set()
+    if not _allow_auto_api_refresh():
+        _mark_api_disabled_manual_required(pending, now)
+        await send_audit_log(
+            f"🔮 卜筮神物资源检查停止：{mono(pending.get('target_item'))}｜本地储物袋缓存不足，未自动读取天机阁API",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=320,
+        )
         return set()
     try:
         result = await refresh_storage_bag_records_from_api(
@@ -1218,8 +1232,7 @@ async def handle_divination_reply(text, now, event=None, reply_to=None, matched_
             )
             _record_pending(pending)
             return True
-        if _can_start_resource_transfer_from_cache(identity_id, pending["costs"], cached_identity_ids):
-            return await _start_resource_transfer(pending, now, refreshed_identity_ids=cached_identity_ids)
+        return await _start_resource_transfer(pending, now, refreshed_identity_ids=cached_identity_ids)
 
     refreshed_identity_ids = await _refresh_divination_assets_from_api(pending, now, include_sources=True)
     if not refreshed_identity_ids:

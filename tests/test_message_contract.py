@@ -518,14 +518,14 @@ class MessageContractTests(unittest.TestCase):
         payload = json.loads(out.getvalue())
         readiness = payload["readiness"]
         rows = {row["module"]: row for row in readiness["modules"]}
-        self.assertEqual(30, readiness["totals"]["sample_complete_modules"])
+        self.assertEqual(31, readiness["totals"]["sample_complete_modules"])
         self.assertEqual(1, readiness["totals"]["sample_partial_modules"])
         self.assertEqual(0, readiness["totals"]["sample_missing_modules"])
         self.assertEqual(3, readiness["totals"]["contract_only_modules"])
-        self.assertEqual(1, readiness["totals"]["archived_modules"])
+        self.assertEqual(0, readiness["totals"]["archived_modules"])
         self.assertTrue(rows["灵树"]["strict"])
-        self.assertTrue(rows["灵树"]["archived"])
-        self.assertEqual(module_manifest.READINESS_ARCHIVED, rows["灵树"]["readiness"])
+        self.assertFalse(rows["灵树"]["archived"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])
 
     def test_report_tool_json_output_can_include_gap_classes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -74,8 +74,14 @@ RE_TREE_HARVEST_REWARD_ITEM = re.compile(r"【([^】]+)】\s*(?:[xX×]\s*([\d,]+
 TREE_HARVEST_REWARD_KEYWORDS = ("获得【", "分得【", "稳定分得【")
 RE_TREE_PULSE_PROGRESS = re.compile(r"([0-9]+(?:\.[0-9]+)?)%")
 RE_TREE_PULSE_ELEMENTS = re.compile(r"主脉【([^】]+)】\s*/\s*辅脉【([^】]+)】\s*/\s*逆脉【([^】]+)】\s*/\s*平脉【([^】]+)】")
+RE_TREE_PULSE_MAIN = re.compile(r"主脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
+RE_TREE_PULSE_AUX = re.compile(r"辅脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
+RE_TREE_PULSE_REVERSE = re.compile(r"逆脉\s*(?:[:：]\s*)?【?([金木水火土])】?")
+RE_TREE_PULSE_NEUTRAL = re.compile(r"(?:平脉|中脉)\s*(?:[:：]\s*)?【?([金木水火土/、,，\s]+)】?")
 RE_TREE_PULSE_STABILITY = re.compile(r"脉稳[:：]\s*(\d+)\s*/\s*(\d+)")
-RE_TREE_PULSE_TURBIDITY = re.compile(r"浊息/紊乱[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_TREE_PULSE_STABILITY_CURRENT = re.compile(r"(?:脉稳|稳固|稳定)[^\n]*[（(]当前\s*(\d+)")
+RE_TREE_PULSE_TURBIDITY = re.compile(r"(?:浊息|浊气)/紊乱[:：]\s*(\d+)\s*/\s*(\d+)")
+RE_TREE_PULSE_TURBIDITY_CURRENT = re.compile(r"(?:浊息|浊气)[^\n]*[（(]当前\s*(\d+)")
 RE_TREE_PULSE_DAILY = re.compile(r"今日定脉令[:：]\s*(\d+)\s*/\s*(\d+)")
 RE_TREE_PULSE_RUSH = re.compile(r"冲脉\s*(\d+)\s*/\s*(\d+)")
 
@@ -148,6 +154,18 @@ def _split_tree_elements(raw_value):
     return [part.strip() for part in re.split(r"[/、,，\s]+", str(raw_value or "")) if part.strip()]
 
 
+def _tree_regex_text(pattern, raw_text):
+    match = pattern.search(str(raw_text or ""))
+    return match.group(1).strip() if match else ""
+
+
+def _tree_regex_int_pair(pattern, raw_text):
+    match = pattern.search(str(raw_text or ""))
+    if not match:
+        return 0, 0
+    return int(match.group(1)), int(match.group(2))
+
+
 def parse_tree_pulse_panel(text):
     raw_text = str(text or "")
     if not _is_tree_pulse_panel(raw_text):
@@ -155,22 +173,35 @@ def parse_tree_pulse_panel(text):
 
     progress_match = RE_TREE_PULSE_PROGRESS.search(raw_text)
     element_match = RE_TREE_PULSE_ELEMENTS.search(raw_text)
-    stability_match = RE_TREE_PULSE_STABILITY.search(raw_text)
-    turbidity_match = RE_TREE_PULSE_TURBIDITY.search(raw_text)
     daily_match = RE_TREE_PULSE_DAILY.search(raw_text)
     rush_match = RE_TREE_PULSE_RUSH.search(raw_text)
-    neutral_raw = element_match.group(4).strip() if element_match else ""
+    main = element_match.group(1).strip() if element_match else _tree_regex_text(RE_TREE_PULSE_MAIN, raw_text)
+    aux = element_match.group(2).strip() if element_match else _tree_regex_text(RE_TREE_PULSE_AUX, raw_text)
+    reverse = element_match.group(3).strip() if element_match else _tree_regex_text(RE_TREE_PULSE_REVERSE, raw_text)
+    neutral_raw = element_match.group(4).strip() if element_match else _tree_regex_text(RE_TREE_PULSE_NEUTRAL, raw_text)
+    stability, stability_max = _tree_regex_int_pair(RE_TREE_PULSE_STABILITY, raw_text)
+    if stability <= 0:
+        current_stability = _tree_regex_text(RE_TREE_PULSE_STABILITY_CURRENT, raw_text)
+        if current_stability:
+            stability = int(current_stability)
+            stability_max = 100
+    turbidity, turbidity_max = _tree_regex_int_pair(RE_TREE_PULSE_TURBIDITY, raw_text)
+    if turbidity <= 0:
+        current_turbidity = _tree_regex_text(RE_TREE_PULSE_TURBIDITY_CURRENT, raw_text)
+        if current_turbidity:
+            turbidity = int(current_turbidity)
+            turbidity_max = 100
     return {
         "progress": float(progress_match.group(1)) if progress_match else 0.0,
-        "main": element_match.group(1).strip() if element_match else "",
-        "aux": element_match.group(2).strip() if element_match else "",
-        "reverse": element_match.group(3).strip() if element_match else "",
+        "main": main,
+        "aux": aux,
+        "reverse": reverse,
         "neutral": neutral_raw,
         "neutral_elements": _split_tree_elements(neutral_raw),
-        "stability": int(stability_match.group(1)) if stability_match else 0,
-        "stability_max": int(stability_match.group(2)) if stability_match else 0,
-        "turbidity": int(turbidity_match.group(1)) if turbidity_match else 0,
-        "turbidity_max": int(turbidity_match.group(2)) if turbidity_match else 0,
+        "stability": stability,
+        "stability_max": stability_max,
+        "turbidity": turbidity,
+        "turbidity_max": turbidity_max,
         "daily_used": int(daily_match.group(1)) if daily_match else 0,
         "daily_limit": int(daily_match.group(2)) if daily_match else 0,
         "rush_used": int(rush_match.group(1)) if rush_match else 0,

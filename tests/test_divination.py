@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -52,6 +53,8 @@ OTHER_TREASURE_TEXT = (
 class DivinationTests(unittest.TestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._env_patcher = patch.dict(os.environ, {divination.DIVINATION_AUTO_API_ENV: ""})
+        self._env_patcher.start()
         self._save_state_patcher = patch("model.features.divination.save_state", return_value=True)
         self.save_state_mock = self._save_state_patcher.start()
         async def fake_api_refresh(*, identity_ids=None, write_empty=False, fetch_func=None):
@@ -76,6 +79,7 @@ class DivinationTests(unittest.TestCase):
     def tearDown(self):
         self._api_refresh_patcher.stop()
         self._save_state_patcher.stop()
+        self._env_patcher.stop()
         state_module._meta_state.clear()
         state_module._meta_state.update(self._meta_state_snapshot)
 
@@ -991,11 +995,10 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual("exchange_sent", pending["status"])
         self.assertGreaterEqual(self.save_state_mock.call_count, 1)
 
-    def test_api_refresh_failure_blocks_when_local_cache_cannot_decide(self):
+    def test_local_cache_gap_does_not_auto_read_api_by_default(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         state_module.set_storage_bag_records({})
         event = SimpleNamespace(id=7001, chat_id=-100123)
-        self.api_refresh_mock.side_effect = RuntimeError("api down")
 
         async def run_test():
             with patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock, \
@@ -1013,6 +1016,35 @@ class DivinationTests(unittest.TestCase):
                 return handled
 
         self.assertTrue(asyncio.run(run_test()))
+        self.api_refresh_mock.assert_not_awaited()
+        pending = next(iter(state_module.get_divination_pending_exchanges().values()))
+        self.assertEqual("manual_required", pending["status"])
+        self.assertIn("本地储物袋缓存不足", pending["last_error"])
+
+    def test_api_refresh_can_be_explicitly_enabled_as_backup(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        state_module.set_storage_bag_records({})
+        event = SimpleNamespace(id=7001, chat_id=-100123)
+        self.api_refresh_mock.side_effect = RuntimeError("api down")
+
+        async def run_test():
+            with patch.dict(os.environ, {divination.DIVINATION_AUTO_API_ENV: "1"}), \
+                    patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock, \
+                    patch("model.features.divination.start_storage_bag_transfer_batch", new=AsyncMock()) as transfer_mock, \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                handled = await divination.handle_divination_reply(
+                    TREASURE_TEXT,
+                    1000.0,
+                    event=event,
+                    matched_family="divination",
+                    reply_context={"send_as_id": identity_id},
+                )
+                send_mock.assert_not_awaited()
+                transfer_mock.assert_not_awaited()
+                return handled
+
+        self.assertTrue(asyncio.run(run_test()))
+        self.api_refresh_mock.assert_awaited()
         pending = next(iter(state_module.get_divination_pending_exchanges().values()))
         self.assertEqual("manual_required", pending["status"])
         self.assertIn("天机阁API读取失败", pending["last_error"])

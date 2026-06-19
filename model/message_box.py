@@ -8,7 +8,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 
-from .verified_event import VerifiedGameEvent
+from .verified_event import VerifiedGameEvent, clean_event_type, delivery_kind_for_event_type
 
 
 def _safe_int(value):
@@ -19,10 +19,7 @@ def _safe_int(value):
 
 
 def _clean_event_type(value):
-    event_type = str(value or "message").strip().lower() or "message"
-    if event_type in {"edit", "edited", "message_edited"}:
-        return "edit"
-    return "message"
+    return clean_event_type(value)
 
 
 def _event_revision_rank(event_type):
@@ -81,6 +78,18 @@ class MessageFact:
     @property
     def is_edit(self):
         return _clean_event_type(self.event_type) == "edit"
+
+    @property
+    def delivery_kind(self):
+        return delivery_kind_for_event_type(self.event_type)
+
+    @property
+    def is_new_delivery(self):
+        return self.delivery_kind == "New"
+
+    @property
+    def is_edited_delivery(self):
+        return self.delivery_kind == "Edited"
 
     def dedupe_key(self):
         return (
@@ -329,6 +338,7 @@ def build_message_fact_from_fixture(sample, *, chat_id=0, msg_id=0, sender_id=0)
 def message_fact_to_dict(fact):
     return {
         "event_type": _clean_event_type(fact.event_type),
+        "delivery_kind": fact.delivery_kind,
         "chat_id": _safe_int(fact.chat_id),
         "msg_id": _safe_int(fact.msg_id),
         "sender_id": _safe_int(fact.sender_id),

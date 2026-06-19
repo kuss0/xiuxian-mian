@@ -49,7 +49,7 @@ def test_candidate_report_suggests_missing_family_samples(tmp_path):
     assert "挣脱心印" in suggestion["payload"]["text"]
 
 
-def test_candidate_report_skips_archived_family_by_default(tmp_path):
+def test_candidate_report_skips_covered_tree_family_by_default(tmp_path):
     source = tmp_path / "passive.jsonl"
     _write_jsonl(
         source,
@@ -64,17 +64,16 @@ def test_candidate_report_skips_archived_family_by_default(tmp_path):
     )
 
     default_report = build_candidate_sample_suggestions([source], fixture_path=FIXTURE_PATH)
-    archived_report = build_candidate_sample_suggestions(
+    covered_report = build_candidate_sample_suggestions(
         [source],
         fixture_path=FIXTURE_PATH,
         include_covered=True,
-        include_archived=True,
     )
 
     assert default_report["total"] == 0
-    assert default_report["skipped"]["archived_family"] == 1
-    assert archived_report["total"] == 1
-    assert archived_report["suggestions"][0]["payload"]["module"] == "灵树"
+    assert default_report["skipped"]["covered_family"] == 1
+    assert covered_report["total"] == 1
+    assert covered_report["suggestions"][0]["payload"]["module"] == "灵树"
 
 
 def test_candidate_report_skips_covered_family_unless_requested(tmp_path):
