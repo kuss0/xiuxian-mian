@@ -4872,14 +4872,10 @@ def _get_zhuimo_leader_item_counts(leader_identity_id):
         items = {}
     counts = {}
     for required_item in _ZHUIMO_LEADER_REQUIRED_ITEMS:
-        count = 0
-        for item_name, raw_count in items.items():
-            if required_item not in str(item_name or ""):
-                continue
-            try:
-                count += int(raw_count or 0)
-            except (TypeError, ValueError):
-                continue
+        try:
+            count = int(items.get(required_item) or 0)
+        except (TypeError, ValueError):
+            count = 0
         counts[required_item] = count
     return counts
 

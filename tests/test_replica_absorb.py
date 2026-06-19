@@ -1848,6 +1848,27 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("默认路线：2-1。", section)
         self.assertEqual(".加入副本 @dps @healer @blade @jfdffdddd", join_command)
 
+    def test_zhuimo_leader_item_reminder_uses_exact_item_names(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="御山")
+        state_module.set_storage_bag_records({
+            str(leader_id): {
+                "items": {
+                    "坠魔谷禁制令": 1,
+                    "苍坤路线残图": 1,
+                    "毒囊残片": 1,
+                    "阴环碎片": 1,
+                },
+                "sections": {},
+            },
+        })
+
+        reminder = app_replica._format_zhuimo_leader_item_reminder(leader_id)
+
+        self.assertEqual(
+            "队长储物袋提醒：入本前确认路线图、毒囊、阴环均在队长储物袋；本地记录缺 路线图、毒囊、阴环。",
+            reminder,
+        )
+
     def test_zhuimo_recommendation_can_use_baji_without_zhuimo_ticket(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="御山")
         dps_id = self._register_replica_identity(991202, "dps", root_attrs="雷", professions="破军")
