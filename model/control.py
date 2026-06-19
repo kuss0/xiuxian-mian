@@ -151,8 +151,15 @@ from .features.hehuan import execute_hehuan_manual_action, get_hehuan_status_tex
 from .features.jiyin import clear_jiyin_state, get_jiyin_status_text
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.nanlong import clear_nanlong_state, get_nanlong_status_text
+from .features import passive_event_ledger
 from .features.passive_inbox import get_passive_inbox_snapshot, get_passive_inbox_status_text
-from .message_contract import MESSAGE_CONTRACT_GAP_REASONS, get_message_contract_status_text
+from .message_box import message_fact_from_dict, write_message_box_snapshot_payload
+from .message_contract import (
+    MESSAGE_CONTRACT_GAP_REASONS,
+    format_message_box_shadow_alignment,
+    get_message_contract_status_text,
+    summarize_message_box_shadow_alignment,
+)
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
@@ -255,6 +262,7 @@ from .timing import calc_next_daily_window_after_completion, calc_next_daily_win
 RE_IDENTITY_INFO_CARD = re.compile(r"天命玉牒")
 RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
 RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
+RE_CMD_MESSAGE_BOX_SHADOW = re.compile(r"^\.(?:消息盒子shadow|shadow消息盒子|消息盒子影子)(?:\s+(\d{1,5}))?$", re.I)
 RE_CMD_MESSAGE_CONTRACT_STATUS = re.compile(r"^\.(?:消息契约|契约缺口)(?:状态)?(?:\s+([\w_\-\u4e00-\u9fff]+))?$")
 RE_CMD_DUNGEON_QUERY_ALIAS = re.compile(r"^\.(?:查询副本|查询\s*(?:副本|虚天殿|虚天|坠魔谷|坠魔|黄龙山|黄龙|苍坤洞府|苍坤|昆吾山|昆吾|落云秘圃|落云)|查询(?:虚|昆|苍|坠|黄|落))$")
 RE_CMD_DUNGEON_CD_OVERVIEW = re.compile(r"^\.(?:副本(?:cd|冷却)(?:概览)?|查询副本(?:cd|冷却)(?:概览)?)$", re.I)
@@ -271,6 +279,8 @@ STORAGE_BAG_REPORT_TIMEOUT_SEC = 30
 STORAGE_BAG_REPORT_REPLY_LIMIT = 3300
 ANALYSIS_REPORT_DIR = Path(PROJECT_ROOT_DIR) / "data" / "analysis" / "latest"
 ANALYSIS_PAYLOAD_FILE = ANALYSIS_REPORT_DIR / "analysis_payload.json"
+MESSAGE_BOX_SHADOW_DIR = Path(STATE_DIR) / "message_box_shadow"
+MESSAGE_BOX_SHADOW_LATEST_FILE = MESSAGE_BOX_SHADOW_DIR / "latest.json"
 RE_IDENTITY_INFO_NAME = re.compile(r"(?:道号|修士)[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_WITH_SECT = re.compile(r"境界[:：]\s*\S+\s*\(([^)]+)\)")
@@ -325,6 +335,49 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_second_soul_time",
     "next_taiyi_cycle_time",
 )
+
+_message_box_shadow_payload_provider = None
+
+
+def register_message_box_shadow_payload_provider(provider):
+    global _message_box_shadow_payload_provider
+    _message_box_shadow_payload_provider = provider
+
+
+def _payload_to_message_box_facts(payload):
+    rows = []
+    if isinstance(payload, dict):
+        rows = payload.get("facts") or []
+    elif isinstance(payload, list):
+        rows = payload
+    facts = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict):
+            facts.append(message_fact_from_dict(row))
+    return facts
+
+
+def get_message_box_shadow_status_text(limit=500):
+    if _message_box_shadow_payload_provider is None:
+        return "📦 MessageBox shadow 对账\n- 未注册 shadow provider，当前进程不能导出内存消息盒子。"
+    safe_limit = max(1, min(int(limit or 500), 5000))
+    try:
+        payload = _message_box_shadow_payload_provider(include_edits=True, limit=safe_limit)
+        path = write_message_box_snapshot_payload(MESSAGE_BOX_SHADOW_LATEST_FILE, payload)
+        facts = _payload_to_message_box_facts(payload)
+        summary = summarize_message_box_shadow_alignment(
+            facts,
+            passive_event_ledger.iter_passive_events(limit=safe_limit),
+            latest_limit=8,
+        )
+    except Exception as exc:
+        return f"📦 MessageBox shadow 对账\n- 导出失败：{str(exc)[:160]}"
+    return "\n".join(
+        [
+            format_message_box_shadow_alignment(summary, latest_limit=8),
+            f"- 快照文件：{path}",
+        ]
+    )
 
 
 def _coerce_control_bool(value, default=False):
@@ -2330,7 +2383,7 @@ def _format_log_group_help_html(send_as_id=None):
     if send_as_id is not None:
         suffix = f" @{get_identity_display_name(send_as_id)}"
     status_aliases = {"登天阶": ".天阶状态", "自动副本": ".自动副本状态"}
-    module_commands = [".状态", ".消息盒子状态", ".消息契约"] + [
+    module_commands = [".状态", ".消息盒子状态", ".消息盒子shadow", ".消息契约"] + [
         status_aliases.get(module_name, f".{module_name}状态")
         for module_name in MODULE_NAMES
     ]
@@ -4884,6 +4937,16 @@ async def handle_log_group_command(event):
             "消息盒子状态",
             get_passive_inbox_status_text(),
             error_prefix="❌ 消息盒子状态发送失败",
+        )
+        return True
+
+    shadow_match = RE_CMD_MESSAGE_BOX_SHADOW.match(text)
+    if shadow_match:
+        await _reply_log_group_card(
+            event,
+            "消息盒子 shadow",
+            get_message_box_shadow_status_text(limit=int(shadow_match.group(1) or 500)),
+            error_prefix="❌ 消息盒子 shadow 发送失败",
         )
         return True
 

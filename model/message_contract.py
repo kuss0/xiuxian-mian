@@ -1,5 +1,5 @@
 import json
-from collections import Counter
+from collections import Counter, OrderedDict, defaultdict
 from datetime import datetime
 
 from .features import passive_event_ledger, passive_inbox
@@ -23,6 +23,12 @@ MESSAGE_CONTRACT_CLASS_UNRESOLVED_IDENTITY = "unresolved_identity"
 MESSAGE_CONTRACT_CLASS_EXTERNAL_OBSERVATION = "external_observation"
 MESSAGE_CONTRACT_CLASS_WEAK_OWNER_HINT = "weak_owner_hint"
 MESSAGE_CONTRACT_CLASS_OTHER = "other"
+MESSAGE_BOX_SHADOW_STATUS_CHANGED = "changed"
+MESSAGE_BOX_SHADOW_STATUS_UNHANDLED = "unhandled"
+MESSAGE_BOX_SHADOW_STATUS_NO_CHANGE = "no_change"
+MESSAGE_BOX_SHADOW_STATUS_GAP = "gap"
+MESSAGE_BOX_SHADOW_STATUS_OBSERVED = "observed"
+MESSAGE_BOX_SHADOW_STATUS_MISSING = "missing"
 MESSAGE_CONTRACT_EXTERNAL_REASONS = frozenset(
     {
         "external_identity_no_match",
@@ -182,6 +188,141 @@ def _routed_reply_resolution_key(event):
     if msg_id <= 0 or not family or identity_id <= 0:
         return None
     return identity_id, family, msg_id
+
+
+def _message_box_fact_resolution_key(fact):
+    if fact is None:
+        return None
+    context = getattr(fact, "reply_context", None)
+    context = context if isinstance(context, dict) else {}
+    msg_id = _safe_int(getattr(fact, "msg_id", 0))
+    family = str(getattr(fact, "family", "") or context.get("family") or "").strip()
+    identity_id = _safe_int(getattr(fact, "identity_id", 0) or context.get("send_as_id"))
+    if msg_id <= 0 or not family or identity_id <= 0:
+        return None
+    return identity_id, family, msg_id
+
+
+def _iter_message_box_shadow_facts(source, *, include_edits=True):
+    if source is None:
+        return
+    if hasattr(source, "snapshot"):
+        source = source.snapshot()
+    if hasattr(source, "scan_after_seq"):
+        yield from source.scan_after_seq(None, include_edits=include_edits)
+        return
+    for item in source:
+        if getattr(item, "is_edit", False) and not include_edits:
+            continue
+        yield item
+
+
+def _message_box_fact_payload(fact):
+    context = getattr(fact, "reply_context", None)
+    context = context if isinstance(context, dict) else {}
+    return {
+        "identity_id": _safe_int(getattr(fact, "identity_id", 0) or context.get("send_as_id")),
+        "family": str(getattr(fact, "family", "") or context.get("family") or "").strip(),
+        "msg_id": _safe_int(getattr(fact, "msg_id", 0)),
+        "chat_id": _safe_int(getattr(fact, "chat_id", 0)),
+        "event_type": str(getattr(fact, "event_type", "") or "").strip() or "message",
+        "route_source": str(getattr(fact, "route_source", "") or "").strip(),
+        "reply_to_msg_id": _safe_int(getattr(fact, "reply_to_msg_id", 0) or context.get("reply_to_msg_id")),
+        "reply_to_sender_id": _safe_int(getattr(fact, "reply_to_sender_id", 0) or context.get("reply_to_sender_id")),
+        "root_msg_id": _safe_int(getattr(fact, "root_msg_id", 0) or context.get("root_msg_id")),
+        "matched_text": _clean_text(getattr(fact, "raw_text", "")),
+        "text_hash": str(getattr(fact, "text_hash", "") or "").strip(),
+    }
+
+
+def _classify_message_box_shadow_events(events):
+    if not events:
+        return MESSAGE_BOX_SHADOW_STATUS_MISSING
+    if any(str(event.get("kind") or "") == "changed" for event in events):
+        return MESSAGE_BOX_SHADOW_STATUS_CHANGED
+    if any(is_unhandled_routed_reply_event(event) for event in events):
+        return MESSAGE_BOX_SHADOW_STATUS_UNHANDLED
+    if any(str(event.get("reason") or "") == "no_change" for event in events):
+        return MESSAGE_BOX_SHADOW_STATUS_NO_CHANGE
+    if any(is_message_contract_gap_event(event) for event in events):
+        return MESSAGE_BOX_SHADOW_STATUS_GAP
+    return MESSAGE_BOX_SHADOW_STATUS_OBSERVED
+
+
+def summarize_message_box_shadow_alignment(message_box_source, passive_events, *, include_edits=True, latest_limit=8):
+    passive_events = list(passive_events or [])
+    event_index = defaultdict(list)
+    for event in passive_events:
+        key = _routed_reply_resolution_key(event)
+        if key:
+            event_index[key].append(event)
+
+    observed_total = 0
+    routeable = OrderedDict()
+    for fact in _iter_message_box_shadow_facts(message_box_source, include_edits=include_edits):
+        observed_total += 1
+        key = _message_box_fact_resolution_key(fact)
+        if not key:
+            continue
+        routeable[key] = _message_box_fact_payload(fact)
+
+    by_status = Counter()
+    by_family = Counter()
+    latest_missing = []
+    for key, payload in routeable.items():
+        status = _classify_message_box_shadow_events(event_index.get(key) or [])
+        by_status[status] += 1
+        by_family[payload["family"]] += 1
+        if status == MESSAGE_BOX_SHADOW_STATUS_MISSING:
+            latest_missing.append(payload)
+
+    latest_limit = max(1, int(latest_limit or 1))
+    latest_missing = sorted(
+        latest_missing,
+        key=lambda item: (_safe_int(item.get("msg_id")), str(item.get("family") or "")),
+    )[-latest_limit:]
+    return {
+        "observed_total": observed_total,
+        "routeable_total": len(routeable),
+        "passive_event_total": len(passive_events),
+        "matched_total": len(routeable) - int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_MISSING, 0) or 0),
+        "missing_total": int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_MISSING, 0) or 0),
+        "changed_total": int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_CHANGED, 0) or 0),
+        "unhandled_total": int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_UNHANDLED, 0) or 0),
+        "no_change_total": int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_NO_CHANGE, 0) or 0),
+        "gap_total": int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_GAP, 0) or 0),
+        "observed_only_total": int(by_status.get(MESSAGE_BOX_SHADOW_STATUS_OBSERVED, 0) or 0),
+        "by_status": dict(sorted(by_status.items(), key=lambda pair: (-pair[1], pair[0]))),
+        "by_family": dict(sorted(by_family.items(), key=lambda pair: (-pair[1], pair[0]))),
+        "latest_missing": latest_missing,
+    }
+
+
+def format_message_box_shadow_alignment(summary, *, latest_limit=8):
+    summary = summary if isinstance(summary, dict) else {}
+    lines = [
+        "📦 MessageBox shadow 对账",
+        "- 只读：不自动处理，不发送游戏命令。",
+        "- missing 只表示 shadow 里有可路由事实，但 passive ledger 没有 changed/skipped 证据。",
+        f"- shadow 观察：{_safe_int(summary.get('observed_total'))}",
+        f"- 可路由事实：{_safe_int(summary.get('routeable_total'))}",
+        f"- 已匹配 ledger：{_safe_int(summary.get('matched_total'))}",
+        f"- 缺失 ledger 证据：{_safe_int(summary.get('missing_total'))}",
+        f"- 状态分布：{_format_counter(summary.get('by_status') or {})}",
+        f"- family 分布：{_format_counter(summary.get('by_family') or {})}",
+    ]
+    latest = list(summary.get("latest_missing") or [])[-max(1, int(latest_limit or 1)):]
+    if latest:
+        lines.append("- 最近 missing：")
+        for item in latest:
+            family = str(item.get("family") or "unknown")
+            identity_id = _safe_int(item.get("identity_id"))
+            msg_id = _safe_int(item.get("msg_id"))
+            reply_to = _safe_int(item.get("reply_to_msg_id") or item.get("root_msg_id"))
+            event_type = str(item.get("event_type") or "message")
+            excerpt = _compact_excerpt(item.get("matched_text"))
+            lines.append(f"  {family} identity={identity_id} msg={msg_id} reply={reply_to} type={event_type} | {excerpt}")
+    return "\n".join(lines)
 
 
 def _handled_routed_reply_keys(events):
@@ -398,6 +539,7 @@ __all__ = [
     "iter_unhandled_routed_replies",
     "record_unhandled_routed_reply",
     "replay_module_for_family",
+    "summarize_message_box_shadow_alignment",
     "summarize_message_contract_gaps",
     "summarize_unhandled_routed_replies",
 ]

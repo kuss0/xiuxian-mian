@@ -29,7 +29,7 @@ from .app_replica import (
     is_replica_group_command_text,
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
-from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
+from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .module_manifest import is_module_archived
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
@@ -151,6 +151,12 @@ from .persistence import (
 from .action_guard import close_by_family as close_action_guard_by_family
 from .delayed_actions import drain_due_actions
 from .message_contract import record_unhandled_routed_reply
+from .message_box import (
+    MessageBox,
+    build_message_box_snapshot_payload,
+    build_message_fact_from_event,
+    write_message_box_snapshot_payload,
+)
 from .verified_event import from_telegram_event
 from .runtime import (
     _fire_and_forget,
@@ -203,6 +209,8 @@ _identity_scheduler_started_at = 0.0
 _identity_scheduler_last_warn_at = 0.0
 _log_bot_callback_task = None
 _suspected_game_bot_hits = {}
+_MESSAGE_BOX_SHADOW_CAP = 10000
+_message_box_shadow = MessageBox(cap=_MESSAGE_BOX_SHADOW_CAP)
 
 IDENTITY_SCHEDULER_STUCK_WARN_SEC = 15 * 60
 UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
@@ -294,6 +302,61 @@ def _scheduler_function_names(schedulers):
 
 def _is_tree_runtime_archived():
     return is_module_archived("灵树")
+
+
+def _get_message_box_shadow_snapshot():
+    return _message_box_shadow.snapshot()
+
+
+def get_message_box_shadow_payload(*, include_edits=True, limit=None, now=None):
+    return build_message_box_snapshot_payload(
+        _message_box_shadow.snapshot(),
+        include_edits=include_edits,
+        limit=limit,
+        now=now,
+    )
+
+
+def write_message_box_shadow_snapshot(path, *, include_edits=True, limit=None, now=None):
+    payload = get_message_box_shadow_payload(include_edits=include_edits, limit=limit, now=now)
+    return write_message_box_snapshot_payload(path, payload)
+
+
+register_message_box_shadow_payload_provider(get_message_box_shadow_payload)
+
+
+def _reset_message_box_shadow_for_test():
+    global _message_box_shadow
+    _message_box_shadow = MessageBox(cap=_MESSAGE_BOX_SHADOW_CAP)
+
+
+def _record_message_box_shadow(
+    event,
+    text,
+    reply_context=None,
+    *,
+    reply_to=None,
+    event_type="message",
+    is_game_bot=False,
+    is_game_group=None,
+):
+    try:
+        if is_game_group is None:
+            is_game_group = int(getattr(event, "chat_id", 0) or 0) == int(get_game_group_id() or 0)
+        fact = build_message_fact_from_event(
+            event,
+            text,
+            reply_context,
+            reply_to=reply_to,
+            event_type=event_type,
+            is_game_group=bool(is_game_group),
+            is_game_bot=bool(is_game_bot),
+            source="telegram_shadow",
+        )
+        _message_box_shadow.upsert(fact)
+        return fact
+    except Exception:
+        return None
 
 
 def get_identity_scheduler_order_contract():
@@ -528,6 +591,15 @@ async def _handle_suspected_game_bot_reply(event, text, now, *, edited=False):
         return False
     if not _looks_like_game_bot_reply(text, matched_family):
         return False
+    _record_message_box_shadow(
+        event,
+        text,
+        reply_context,
+        reply_to=reply_to,
+        event_type="edit" if edited else "message",
+        is_game_bot=True,
+        is_game_group=True,
+    )
 
     handled_reply = await _handle_routed_reply_event(
         event,
@@ -1188,6 +1260,15 @@ async def on_message(event):
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
+        _record_message_box_shadow(
+            event,
+            text,
+            reply_context,
+            reply_to=reply_to,
+            event_type="message",
+            is_game_bot=sender_is_game_bot,
+            is_game_group=True,
+        )
 
         await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to, reply_context=reply_context)
         await handle_dungeon_join_bot_message(event, text, now)
@@ -1274,6 +1355,15 @@ async def on_message_edited(event):
 
     try:
         reply_to, reply_context = await _resolve_event_reply(event)
+        _record_message_box_shadow(
+            event,
+            text,
+            reply_context,
+            reply_to=reply_to,
+            event_type="edit",
+            is_game_bot=sender_is_game_bot,
+            is_game_group=True,
+        )
 
         await _dispatch_message_edited_realm_breakthrough(event, text, now)
         await _dispatch_message_edited_concubine_loss(event, text, now)

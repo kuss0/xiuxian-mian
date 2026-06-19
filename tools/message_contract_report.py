@@ -29,12 +29,15 @@ from model import module_manifest  # noqa: E402
 from model.features import passive_event_ledger  # noqa: E402
 from model.message_contract import (  # noqa: E402
     build_replay_sample_suggestion,
+    format_message_box_shadow_alignment,
     format_unhandled_reply_line,
     iter_message_contract_gaps,
     iter_unhandled_routed_replies,
+    summarize_message_box_shadow_alignment,
     summarize_message_contract_gaps,
     summarize_unhandled_routed_replies,
 )
+from model.message_box import message_fact_from_dict  # noqa: E402
 from model.real_message_replay import load_real_message_samples  # noqa: E402
 
 
@@ -55,6 +58,30 @@ def _format_counter(title, items):
     return f"{title}: " + "、".join(parts)
 
 
+def _safe_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _load_shadow_facts(path: Path):
+    if not path or not path.exists():
+        return []
+    with path.open("r", encoding="utf-8") as fp:
+        payload = json.load(fp)
+    if isinstance(payload, dict):
+        rows = payload.get("facts") or payload.get("messages") or payload.get("items") or []
+    else:
+        rows = payload
+    facts = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        facts.append(message_fact_from_dict(row))
+    return facts
+
+
 def build_report(
     *,
     ledger_path: Path | None,
@@ -70,6 +97,7 @@ def build_report(
     include_admission: bool = False,
     include_contracts: bool = False,
     include_readiness: bool = False,
+    shadow_path: Path | None = None,
     strict_modules: tuple = (),
 ):
     requested_limit = max(1, int(limit or 1))
@@ -100,6 +128,7 @@ def build_report(
     admission = None
     contracts = None
     readiness = None
+    shadow_alignment = None
     if include_coverage and fixture_path:
         fixture_samples = _load_fixture_payload(fixture_path)
         coverage = module_manifest.summarize_replay_family_coverage(fixture_samples)
@@ -120,6 +149,14 @@ def build_report(
         readiness = module_manifest.summarize_module_readiness(
             fixture_samples if fixture_path else None,
             strict_modules=strict_modules,
+        )
+    if shadow_path:
+        shadow_facts = _load_shadow_facts(shadow_path)
+        passive_events = passive_event_ledger.iter_passive_events(path=str(ledger_path) if ledger_path else None, limit=requested_limit)
+        shadow_alignment = summarize_message_box_shadow_alignment(
+            shadow_facts,
+            passive_events,
+            latest_limit=latest,
         )
     suggestions = []
     for event in summary["latest"]:
@@ -144,6 +181,7 @@ def build_report(
         "admission": admission,
         "contracts": contracts,
         "readiness": readiness,
+        "shadow_alignment": shadow_alignment,
     }
 
 
@@ -174,6 +212,10 @@ def format_report(report):
         lines.append("fixture 建议:")
         for item in suggestions:
             lines.append(json.dumps({item["sample_id"]: item["payload"]}, ensure_ascii=False, indent=2))
+    shadow_alignment = report.get("shadow_alignment")
+    if shadow_alignment:
+        lines.append("")
+        lines.append(format_message_box_shadow_alignment(shadow_alignment))
     coverage = report.get("coverage")
     if coverage:
         lines.append("")
@@ -318,6 +360,7 @@ def parse_args(argv):
     parser.add_argument("--admission", action="store_true", help="附带新模块准入合同检查")
     parser.add_argument("--contracts", action="store_true", help="附带所有模块的合约矩阵")
     parser.add_argument("--readiness", action="store_true", help="附带现有模块真实文案就绪度看板")
+    parser.add_argument("--shadow-path", default="", help="MessageBox shadow JSON 快照；只读对账 passive ledger")
     parser.add_argument("--strict-module", action="append", default=[], help="准入合同中需要真实样本硬校验的模块，可重复")
     parser.add_argument("--json", action="store_true", help="输出 JSON")
     return parser.parse_args(argv)
@@ -344,6 +387,7 @@ def main(argv=None):
         include_admission=bool(args.admission),
         include_contracts=bool(args.contracts),
         include_readiness=bool(args.readiness),
+        shadow_path=Path(args.shadow_path).expanduser().resolve() if args.shadow_path else None,
         strict_modules=tuple(args.strict_module or ()),
     )
     if args.json:

@@ -719,6 +719,116 @@ class MessageContractTests(unittest.TestCase):
         self.assertIn("reply_context_no_identity:1", text)
         self.assertIn("sample=contract_gap.concubine_voyage.message.10146047", text)
 
+    def test_report_tool_json_output_can_include_message_box_shadow_alignment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shadow_path = Path(tmpdir) / "shadow.json"
+            shadow_path.write_text(
+                json.dumps(
+                    {
+                        "facts": [
+                            {
+                                "event_type": "message",
+                                "chat_id": -1001680975844,
+                                "msg_id": 10140775,
+                                "sender_id": 8325841058,
+                                "raw_text": "【乱星海远航·归】",
+                                "identity_id": 3504367852,
+                                "family": "concubine_voyage",
+                                "reply_to_msg_id": 10140774,
+                            },
+                            {
+                                "event_type": "edit",
+                                "chat_id": -1001680975844,
+                                "msg_id": 10140776,
+                                "sender_id": 8325841058,
+                                "raw_text": "【神物现世】请回复 .换取",
+                                "identity_id": 3504367852,
+                                "family": "divination",
+                                "reply_to_msg_id": 10140774,
+                            },
+                        ]
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            with patch.object(passive_event_ledger, "PASSIVE_EVENT_LEDGER_DIR", tmpdir):
+                passive_event_ledger.append_passive_event(
+                    kind="changed",
+                    module="侍妾远航",
+                    identity_id=3504367852,
+                    family="concubine_voyage",
+                    msg_id=10140775,
+                    source_message_id=10140775,
+                    matched_text="【乱星海远航·归】",
+                    decision="state_changed",
+                    now=1_781_077_200.0,
+                )
+                ledger_path = passive_event_ledger.get_passive_event_ledger_path(1_781_077_200.0)
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    ledger_path,
+                    "--shadow-path",
+                    str(shadow_path),
+                    "--json",
+                    "--latest",
+                    "2",
+                ])
+
+        self.assertEqual(0, code)
+        payload = json.loads(out.getvalue())
+        shadow = payload["shadow_alignment"]
+        self.assertEqual(2, shadow["observed_total"])
+        self.assertEqual(2, shadow["routeable_total"])
+        self.assertEqual(1, shadow["changed_total"])
+        self.assertEqual(1, shadow["missing_total"])
+        self.assertEqual("divination", shadow["latest_missing"][0]["family"])
+
+    def test_report_tool_text_output_can_include_message_box_shadow_alignment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            shadow_path = Path(tmpdir) / "shadow.json"
+            shadow_path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "event_type": "message",
+                            "chat_id": -1001680975844,
+                            "msg_id": 10140776,
+                            "sender_id": 8325841058,
+                            "raw_text": "裂缝深处法则乱流渐息",
+                            "identity_id": 3504367852,
+                            "family": "explore_rift",
+                            "reply_to_msg_id": 10140774,
+                        }
+                    ],
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            ledger_path = Path(tmpdir) / "ledger.jsonl"
+            ledger_path.write_text("", encoding="utf-8")
+
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = message_contract_report.main([
+                    "--ledger-path",
+                    str(ledger_path),
+                    "--shadow-path",
+                    str(shadow_path),
+                    "--latest",
+                    "1",
+                ])
+
+        self.assertEqual(0, code)
+        text = out.getvalue()
+        self.assertIn("MessageBox shadow 对账", text)
+        self.assertIn("只读", text)
+        self.assertIn("缺失 ledger 证据：1", text)
+        self.assertIn("explore_rift identity=3504367852 msg=10140776", text)
+
 
 class ReplayFamilyCoverageTests(unittest.TestCase):
     def test_manifest_accepts_new_replay_module_aliases(self):

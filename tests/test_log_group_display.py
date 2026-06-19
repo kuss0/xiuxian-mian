@@ -3,6 +3,7 @@ import asyncio
 import copy
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import contextmanager
 from pathlib import Path
@@ -181,6 +182,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".状态", html_text)
         self.assertIn("@昵称", html_text)
         self.assertIn("全局锁", html_text)
+        self.assertIn(".消息盒子shadow", html_text)
         self.assertIn(".消息契约", html_text)
         self.assertIn(".放养状态", html_text)
         self.assertIn(".野外历练状态", html_text)
@@ -397,6 +399,86 @@ class LogGroupDisplayTests(unittest.TestCase):
 
         self.assertTrue(handled)
         status_mock.assert_called_once_with(module="", family="", reason="reply_context_no_identity")
+
+    def test_log_group_message_box_shadow_reports_read_only_alignment(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".消息盒子shadow 20")
+        provider_snapshot = control._message_box_shadow_payload_provider
+
+        def fake_provider(**kwargs):
+            self.assertTrue(kwargs["include_edits"])
+            self.assertEqual(20, kwargs["limit"])
+            return {
+                "schema": "xiuxian.message_box.shadow.v1",
+                "facts": [
+                    {
+                        "event_type": "message",
+                        "chat_id": -1001680975844,
+                        "msg_id": 10140776,
+                        "sender_id": 8325841058,
+                        "raw_text": "裂缝深处法则乱流渐息",
+                        "identity_id": 3504367852,
+                        "family": "explore_rift",
+                        "reply_to_msg_id": 10140774,
+                    }
+                ],
+            }
+
+        try:
+            control.register_message_box_shadow_payload_provider(fake_provider)
+            with tempfile.TemporaryDirectory() as tmpdir:
+                shadow_path = Path(tmpdir) / "latest.json"
+                with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                        patch.object(control, "MESSAGE_BOX_SHADOW_LATEST_FILE", shadow_path), \
+                        patch.object(control.passive_event_ledger, "iter_passive_events", return_value=[]), \
+                        patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                        patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+                    handled = asyncio.run(control.handle_log_group_command(event))
+        finally:
+            control.register_message_box_shadow_payload_provider(provider_snapshot)
+
+        self.assertTrue(handled)
+        reply_mock.assert_awaited_once()
+        self.assertEqual("消息盒子 shadow", reply_mock.await_args.args[1])
+        body = reply_mock.await_args.args[2]
+        self.assertIn("只读", body)
+        self.assertIn("缺失 ledger 证据：1", body)
+        self.assertIn("explore_rift identity=3504367852 msg=10140776", body)
+        send_mock.assert_not_awaited()
+
+    def test_log_group_message_box_shadow_reports_missing_provider(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".消息盒子shadow")
+        provider_snapshot = control._message_box_shadow_payload_provider
+
+        try:
+            control.register_message_box_shadow_payload_provider(None)
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+        finally:
+            control.register_message_box_shadow_payload_provider(provider_snapshot)
+
+        self.assertTrue(handled)
+        self.assertIn("未注册 shadow provider", reply_mock.await_args.args[2])
+
+    def test_log_group_message_box_shadow_provider_failure_is_reported(self):
+        event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".消息盒子shadow")
+        provider_snapshot = control._message_box_shadow_payload_provider
+
+        def broken_provider(**_kwargs):
+            raise RuntimeError("shadow unavailable")
+
+        try:
+            control.register_message_box_shadow_payload_provider(broken_provider)
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock, \
+                    patch.object(control, "send_game_command", new=AsyncMock()) as send_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+        finally:
+            control.register_message_box_shadow_payload_provider(provider_snapshot)
+
+        self.assertTrue(handled)
+        self.assertIn("导出失败：shadow unavailable", reply_mock.await_args.args[2])
+        send_mock.assert_not_awaited()
 
     def test_three_sect_manual_command_without_identity_only_replies_usage(self):
         event = SimpleNamespace()
