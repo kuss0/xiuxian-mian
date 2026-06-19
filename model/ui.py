@@ -81,7 +81,7 @@ from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normaliz
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.stargazer import sync_stargazer_total_slots
-from .features.storage_bag import CMD_STORAGE_BAG, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
@@ -2024,7 +2024,7 @@ def ui_preview_storage_bag_transfer(payload):
 
     listing_item = str(payload.get("listing_item") or "").strip()
     requested_listing_count = normalize_storage_bag_listing_count(payload.get("listing_count") or 1)
-    listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or "space")
+    listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX)
     listing_stock_count = 0
     commands = []
     if exchange_parts:
@@ -2061,7 +2061,7 @@ def ui_preview_storage_bag_transfer(payload):
         for item in gift_items:
             commands.append({
                 "identity_id": source_identity_id,
-                "command": f".赠送 {item['item_name']} {item['quantity']}",
+                "command": f".赠送 {item['item_name']}*{item['quantity']}",
                 "note": "来源身份回复目标身份标记消息发送",
             })
 
@@ -2099,12 +2099,12 @@ async def ui_start_storage_bag_transfer(payload):
                 "items": preview.get("items") or [],
                 "listing_item": preview.get("listing_item") or "",
                 "listing_count": preview.get("listing_count") or 1,
-                "listing_syntax": preview.get("listing_syntax") or "space",
+                "listing_syntax": preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
             }],
             target_identity_id=preview["target_identity_id"],
             listing_item=preview.get("listing_item") or "",
             listing_count=preview.get("listing_count") or 1,
-            listing_syntax=preview.get("listing_syntax") or "space",
+            listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
             stop_on_error=True,
         )
     return await start_storage_bag_transfer_task(
@@ -2113,7 +2113,7 @@ async def ui_start_storage_bag_transfer(payload):
         preview.get("items") or [],
         preview.get("listing_item") or "",
         listing_count=preview.get("listing_count") or 1,
-        listing_syntax=preview.get("listing_syntax") or "space",
+        listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     )
 
 
@@ -2137,7 +2137,7 @@ def ui_preview_storage_bag_transfer_batch(payload):
     rows = storage_bag.get("rows") or []
     listing_item = str(payload.get("listing_item") or "").strip()
     listing_count = normalize_storage_bag_listing_count(payload.get("listing_count") or 1)
-    listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or "space")
+    listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX)
     mode = str(payload.get("mode") or "all").strip().lower()
     if mode not in {"all", "fixed"}:
         mode = "all"
@@ -2227,7 +2227,7 @@ async def ui_start_storage_bag_transfer_batch(payload):
         target_identity_id=preview.get("target_identity_id") or 0,
         listing_item=preview.get("listing_item") or "",
         listing_count=preview.get("listing_count") or 1,
-        listing_syntax=preview.get("listing_syntax") or "space",
+        listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
         stop_on_error=not bool(payload.get("continue_on_error")),
     )
 

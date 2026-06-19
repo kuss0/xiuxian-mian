@@ -197,7 +197,7 @@
       "reason": "此物不可交易。"
     },
     "元磁山核·丙": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -323,7 +323,7 @@
       "reason": ""
     },
     "坠魔谷禁制令": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -344,7 +344,7 @@
       "reason": ""
     },
     "大挪移令": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -484,14 +484,14 @@
       "reason": ""
     },
     "昆吾通行令": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
       "reason": "上架失败！【昆吾通行令】不可作为万宝楼交易货币流通。"
     },
     "梅凝的灵气": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -512,7 +512,7 @@
       "reason": ""
     },
     "法则碎片·土": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -526,35 +526,35 @@
       "reason": "上架失败！【法则碎片·暗】不可作为万宝楼交易货币流通。"
     },
     "法则碎片·木": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
       "reason": "上架失败！【法则碎片·木】不可作为万宝楼交易货币流通。"
     },
     "法则碎片·水": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
       "reason": "上架失败！【法则碎片·水】不可作为万宝楼交易货币流通。"
     },
     "法则碎片·火": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
       "reason": "上架失败！【法则碎片·火】不可作为万宝楼交易货币流通。"
     },
     "法则碎片·空间": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
       "reason": "上架失败！【法则碎片·空间】不可作为万宝楼交易货币流通。"
     },
     "法则碎片·金": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -568,7 +568,7 @@
       "reason": ""
     },
     "法则碎片·风": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -603,7 +603,7 @@
       "reason": ""
     },
     "灵眼之液": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -715,14 +715,14 @@
       "reason": ""
     },
     "紫灵的轻吻": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
       "reason": "上架失败！【紫灵的轻吻】不可作为万宝楼交易货币流通。"
     },
     "虚天残图": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],
@@ -827,7 +827,7 @@
       "reason": ""
     },
     "降伏年兽": {
-      "method": "blocked",
+      "method": "gift",
       "tags": [
         "未知"
       ],

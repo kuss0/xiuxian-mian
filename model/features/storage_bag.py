@@ -26,7 +26,9 @@ RE_STORAGE_TRANSFER_GIFT_TAX = re.compile(r"额外支付了\s*(?P<tax>[\d,]+)\s*
 STORAGE_BAG_SECTION_NAMES = ("法宝/丹药/杂物", "材料")
 STORAGE_TRANSFER_REPLY_TIMEOUT_SEC = 180
 STORAGE_TRANSFER_WAITING_PREFIX = "正在思考，请稍等"
-STORAGE_TRANSFER_BLOCKED_KEYWORDS = ("此物不可交易", "【天道禁制】", "不可作为万宝楼交易货币流通", "🚫 操作禁止")
+STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX = "compact"
+STORAGE_TRANSFER_BLOCKED_KEYWORDS = ("此物不可交易", "【天道禁制】", "🚫 操作禁止")
+STORAGE_TRANSFER_GIFT_FALLBACK_KEYWORDS = ("不可作为万宝楼交易货币流通", "禁止其作为交易货币流通")
 STORAGE_TRANSFER_NON_RULE_FAILURE_KEYWORDS = ("价格格式错误", "数量不足", "严重偏离天道估值")
 STORAGE_TRANSFER_GIFT_SUCCESS_PREFIX = "【赠送成功】"
 STORAGE_TRANSFER_LOCATOR_MESSAGES = ("稍等", "我看下", "转一下", "放这", "这边", "好了")
@@ -56,7 +58,7 @@ _storage_bag_transfer_state = {
     "gift_items": [],
     "listing_item": "",
     "listing_count": 1,
-    "listing_syntax": "space",
+    "listing_syntax": STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     "listing_command": "",
     "listing_msg_id": 0,
     "listing_id": "",
@@ -85,7 +87,7 @@ _storage_bag_transfer_batch_state = {
     "target_identity_id": 0,
     "listing_item": "",
     "listing_count": 1,
-    "listing_syntax": "space",
+    "listing_syntax": STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     "queue": [],
     "active_task": None,
     "completed": [],
@@ -113,11 +115,11 @@ def normalize_storage_bag_listing_count(value, default=1):
 
 
 def normalize_storage_bag_listing_syntax(value):
-    syntax = str(value or "space").strip().lower()
-    return syntax if syntax in STORAGE_TRANSFER_LISTING_SYNTAXES else "space"
+    syntax = str(value or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX).strip().lower()
+    return syntax if syntax in STORAGE_TRANSFER_LISTING_SYNTAXES else STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX
 
 
-def format_storage_bag_listing_command(listing_item, listing_count, exchange_parts, *, listing_syntax="space"):
+def format_storage_bag_listing_command(listing_item, listing_count, exchange_parts, *, listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX):
     listing_item = str(listing_item or "").strip()
     listing_count = normalize_storage_bag_listing_count(listing_count)
     syntax = normalize_storage_bag_listing_syntax(listing_syntax)
@@ -410,7 +412,7 @@ def _clear_storage_bag_transfer_state():
         "gift_items": [],
         "listing_item": "",
         "listing_count": 1,
-        "listing_syntax": "space",
+        "listing_syntax": STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
         "listing_command": "",
         "listing_msg_id": 0,
         "listing_id": "",
@@ -441,7 +443,7 @@ def _clear_storage_bag_transfer_batch_state():
         "target_identity_id": 0,
         "listing_item": "",
         "listing_count": 1,
-        "listing_syntax": "space",
+        "listing_syntax": STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
         "queue": [],
         "active_task": None,
         "completed": [],
@@ -817,7 +819,7 @@ async def _send_next_storage_bag_gift():
     item = gift_items[index]
     item_name = str(item.get("item_name") or "").strip()
     quantity = int(item.get("quantity") or 0)
-    command = f"{CMD_STORAGE_BAG_GIFT} {item_name} {quantity}"
+    command = f"{CMD_STORAGE_BAG_GIFT} {item_name}*{quantity}"
     _storage_bag_transfer_state.update({
         "gift_command": command,
         "gift_msg_id": 0,
@@ -915,7 +917,7 @@ async def start_storage_bag_transfer_task(
     listing_item,
     *,
     listing_count=1,
-    listing_syntax="space",
+    listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     batch_child=False,
 ):
     if _storage_bag_transfer_state.get("running"):
@@ -1030,7 +1032,7 @@ async def _start_next_storage_bag_transfer_batch_task():
         task.get("items") or [],
         task.get("listing_item") or "",
         listing_count=task.get("listing_count") or _storage_bag_transfer_batch_state.get("listing_count") or 1,
-        listing_syntax=task.get("listing_syntax") or _storage_bag_transfer_batch_state.get("listing_syntax") or "space",
+        listing_syntax=task.get("listing_syntax") or _storage_bag_transfer_batch_state.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
         batch_child=True,
     )
     if ok:
@@ -1056,7 +1058,7 @@ async def _enqueue_storage_bag_transfer_batch_tasks(
     target_identity_id=0,
     listing_item="",
     listing_count=1,
-    listing_syntax="space",
+    listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     stop_on_error=True,
 ):
     now = time.time()
@@ -1104,7 +1106,7 @@ async def start_storage_bag_transfer_batch(
     target_identity_id=0,
     listing_item="",
     listing_count=1,
-    listing_syntax="space",
+    listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     stop_on_error=True,
 ):
     normalized_tasks = []
@@ -1279,8 +1281,17 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
         return True
     reason = raw_text.splitlines()[0].strip() if raw_text.splitlines() else raw_text[:80]
     blocked = any(keyword in raw_text for keyword in STORAGE_TRANSFER_BLOCKED_KEYWORDS)
+    gift_fallback = any(keyword in raw_text for keyword in STORAGE_TRANSFER_GIFT_FALLBACK_KEYWORDS)
     non_rule_failure = any(keyword in raw_text for keyword in STORAGE_TRANSFER_NON_RULE_FAILURE_KEYWORDS)
-    if blocked and not non_rule_failure:
+    if gift_fallback and not non_rule_failure:
+        for item_name in _storage_transfer_item_names_for_rule_update(raw_text, fallback_all=False):
+            rule = get_storage_bag_item_rules().get(item_name)
+            method = str((rule or {}).get("method") or "unknown") if isinstance(rule, dict) else "unknown"
+            reason_text = str((rule or {}).get("reason") or "") if isinstance(rule, dict) else ""
+            can_learn = method == "unknown" or (method == "blocked" and any(keyword in reason_text for keyword in STORAGE_TRANSFER_GIFT_FALLBACK_KEYWORDS))
+            if can_learn:
+                _set_storage_bag_rule_method(item_name, "gift", reason=reason)
+    elif blocked and not non_rule_failure:
         for item_name in _storage_transfer_item_names_for_rule_update(raw_text, fallback_all=False):
             rule = get_storage_bag_item_rules().get(item_name)
             if not isinstance(rule, dict) or str(rule.get("method") or "unknown") == "unknown":
@@ -1583,6 +1594,7 @@ __all__ = [
     "CMD_STORAGE_BAG_BUY",
     "CMD_STORAGE_BAG_GIFT",
     "CMD_STORAGE_BAG_LISTING",
+    "STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX",
     "apply_storage_bag_item_deltas",
     "apply_storage_bag_item_text_delta",
     "cancel_storage_bag_transfer_task",

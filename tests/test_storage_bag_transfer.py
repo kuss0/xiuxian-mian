@@ -179,9 +179,10 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual("已生成转移预览", message)
         self.assertEqual([
-            {"identity_id": self.target_id, "command": ".上架 灵石 1 换 妖丹*3", "note": "目标身份上架换购物品"},
+            {"identity_id": self.target_id, "command": ".上架 灵石*1 换 妖丹*3", "note": "目标身份上架换购物品"},
             {"identity_id": self.source_id, "command": ".购买 <挂单ID>", "note": "上架成功后来源身份购买挂单"},
         ], preview["commands"])
+        self.assertEqual("compact", preview["listing_syntax"])
         self.assertIn("可手动开始执行", preview["summary"])
 
     def test_money_preset_preview_uses_compact_huangyadan_listing(self):
@@ -217,7 +218,7 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual([
             {"identity_id": self.target_id, "command": "转移标记 <本次转移ID>", "note": "目标身份先发送一条可回复的标记消息"},
-            {"identity_id": self.source_id, "command": ".赠送 木髓 2", "note": "来源身份回复目标身份标记消息发送"},
+            {"identity_id": self.source_id, "command": ".赠送 木髓*2", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
     def test_batch_transfer_preview_defaults_to_all_non_protected_sources(self):
@@ -650,7 +651,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
                 "灵石",
             )
             self.assertTrue(ok, message)
-            self.assertEqual(".上架 灵石 1 换 妖丹*3", sent[0][0])
+            self.assertEqual(".上架 灵石*1 换 妖丹*3", sent[0][0])
             ignored_listing = await handle_storage_bag_transfer_reply(
                 "上架成功！\n你已将 【灵石】x1 上架至万宝楼。\n捆绑总价: 妖丹*3\n挂单ID: 777",
                 999.0,
@@ -677,7 +678,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(handled_buy)
         summaries = self._inbox_summaries(inbox_mock)
-        self.assertTrue(any("上架已发送" in summary and ".上架 灵石 1 换 妖丹*3" in summary for summary in summaries))
+        self.assertTrue(any("上架已发送" in summary and ".上架 灵石*1 换 妖丹*3" in summary for summary in summaries))
         self.assertTrue(any("准备购买" in summary and "挂单ID=888" in summary for summary in summaries))
         self.assertTrue(any("购买已发送" in summary and "挂单ID=888" in summary for summary in summaries))
         self.assertTrue(any("购买成功" in summary and "挂单ID=888" in summary for summary in summaries))
@@ -760,7 +761,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
                 "items": [{"item_name": "妖丹", "quantity": 3}],
             })
             self.assertTrue(ok, message)
-            self.assertEqual(".上架 灵石 1 换 妖丹*3", sent[0][0])
+            self.assertEqual(".上架 灵石*1 换 妖丹*3", sent[0][0])
 
             queued_ok, queued_message, queued_snapshot = await ui.ui_start_storage_bag_transfer({
                 "source_identity_id": self.source_id,
@@ -798,7 +799,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
 
             self.assertGreaterEqual(len(sent), 3)
-            self.assertEqual(".上架 灵石 1 换 木髓*2", sent[2][0])
+            self.assertEqual(".上架 灵石*1 换 木髓*2", sent[2][0])
             self.assertEqual("running_task", storage_bag._storage_bag_transfer_batch_state["status"])
             self.assertEqual(self.source_id, storage_bag._storage_bag_transfer_batch_state["active_task"]["source_identity_id"])
             self.assertEqual([], storage_bag._storage_bag_transfer_batch_state["queue"])
@@ -834,7 +835,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(ok, message)
             self.assertTrue(snapshot["batch"]["running"])
             self.assertEqual("running_task", snapshot["batch"]["status"])
-            self.assertEqual(".上架 灵石 1 换 妖丹*9", sent[0][0])
+            self.assertEqual(".上架 灵石*1 换 妖丹*9", sent[0][0])
 
             handled_listing = await handle_storage_bag_transfer_reply(
                 "上架成功！\n"
@@ -858,7 +859,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
 
             self.assertGreaterEqual(len(sent), 3)
-            self.assertEqual(".上架 灵石 1 换 妖丹*2", sent[2][0])
+            self.assertEqual(".上架 灵石*1 换 妖丹*2", sent[2][0])
             self.assertEqual(other_id, storage_bag._storage_bag_transfer_state["source_identity_id"])
             self.assertEqual(1, len(storage_bag._storage_bag_transfer_batch_state["completed"]))
             self.assertEqual(other_id, storage_bag._storage_bag_transfer_batch_state["active_task"]["source_identity_id"])
@@ -907,6 +908,39 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([], storage_bag._storage_bag_transfer_batch_state["queue"])
             self.assertEqual(1, len(storage_bag._storage_bag_transfer_batch_state["failed"]))
             self.assertEqual(1, len(sent))
+
+    async def test_listing_currency_failure_learns_gift_method(self):
+        state_module.set_storage_bag_item_rules({
+            "虚天残图": {
+                "method": "blocked",
+                "tags": ["副本"],
+                "reason": "上架失败！【虚天残图】不可作为万宝楼交易货币流通。",
+            },
+        })
+        storage_bag._storage_bag_transfer_state.update({
+            "running": True,
+            "step": "waiting_listing_reply",
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+            "items": [{"item_name": "虚天残图", "quantity": 1, "method": "unknown"}],
+            "basic_items": [{"item_name": "虚天残图", "quantity": 1, "method": "unknown"}],
+            "listing_item": "灵石",
+            "listing_count": 1,
+            "listing_command": ".上架 灵石*1 换 虚天残图*1",
+            "listing_msg_id": 321,
+        })
+
+        with patch("model.features.storage_bag.send_audit_log"):
+            handled = await handle_storage_bag_transfer_reply(
+                "上架失败！【虚天残图】不可作为万宝楼交易货币流通。",
+                1000.0,
+                SimpleNamespace(id=321, raw_text=".上架 灵石*1 换 虚天残图*1"),
+                reply_context={"reply_to_msg_id": 321},
+            )
+
+        self.assertTrue(handled)
+        self.assertFalse(storage_bag._storage_bag_transfer_state["running"])
+        self.assertEqual("gift", state_module.get_storage_bag_item_rules()["虚天残图"]["method"])
 
     async def test_batch_transfer_immediate_send_failure_does_not_double_advance(self):
         other_id = 1003
@@ -1010,7 +1044,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
     async def test_storage_transfer_commands_route_without_pending_tasks(self):
         with state_module.use_identity(self.target_id) as identity_state:
             identity_state["my_msg_ids"][301] = 1000.0
-        context = runtime.get_reply_context(SimpleNamespace(id=301, raw_text=".上架 灵石 1 换 妖丹*3"))
+        context = runtime.get_reply_context(SimpleNamespace(id=301, raw_text=".上架 灵石*1 换 妖丹*3"))
 
         self.assertEqual(self.target_id, context["send_as_id"])
         self.assertEqual("storage_bag_listing", context["family"])
@@ -1193,7 +1227,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok, message)
         self.assertEqual("waiting_listing_reply", storage_bag._storage_bag_transfer_state["step"])
-        self.assertEqual([".上架 灵石 1 换 妖丹*3"], [item[0] for item in sent])
+        self.assertEqual([".上架 灵石*1 换 妖丹*3"], [item[0] for item in sent])
 
     async def test_gift_transfer_sends_locator_and_gift_reply_then_syncs_tax(self):
         sent = []
@@ -1211,7 +1245,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertTrue(ok, message)
             self.assertEqual("稍等", sent[0][0])
-            self.assertEqual(".赠送 木髓 2", sent[1][0])
+            self.assertEqual(".赠送 木髓*2", sent[1][0])
             self.assertEqual(201, sent[1][1]["reply_to"])
             handled = await handle_storage_bag_transfer_reply(
                 "【赠送成功】\n"
@@ -1289,7 +1323,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(ok, message)
-        self.assertEqual(["稍等", ".赠送 木髓 1"], [item[0] for item in sent])
+        self.assertEqual(["稍等", ".赠送 木髓*1"], [item[0] for item in sent])
 
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log"), \
@@ -1304,7 +1338,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(handled)
-        self.assertEqual(["稍等", ".赠送 木髓 1"], [item[0] for item in sent])
+        self.assertEqual(["稍等", ".赠送 木髓*1"], [item[0] for item in sent])
         self.assertEqual("gift_waiting_interval", storage_bag._storage_bag_transfer_state["step"])
         self.assertEqual(1025.0, storage_bag._storage_bag_transfer_state["gift_next_due_at"])
 
@@ -1312,13 +1346,13 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
                 patch("model.features.storage_bag.send_audit_log"):
             await run_storage_bag_transfer_scheduler(1024.0)
 
-        self.assertEqual(["稍等", ".赠送 木髓 1"], [item[0] for item in sent])
+        self.assertEqual(["稍等", ".赠送 木髓*1"], [item[0] for item in sent])
 
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log"):
             await run_storage_bag_transfer_scheduler(1025.0)
 
-        self.assertEqual(["稍等", ".赠送 木髓 1", ".赠送 妖丹 2"], [item[0] for item in sent])
+        self.assertEqual(["稍等", ".赠送 木髓*1", ".赠送 妖丹*2"], [item[0] for item in sent])
         self.assertEqual("waiting_gift_reply", storage_bag._storage_bag_transfer_state["step"])
 
     async def test_locator_delete_respects_auto_delete_switch(self):
