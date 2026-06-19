@@ -610,8 +610,6 @@ def _adjust_storage_bag_identity_item(records, identity_id, item_name, delta):
         items.pop(item_name, None)
     _adjust_storage_bag_section_item(sections, item_name, new_value)
     record["empty"] = not bool(items)
-    record["updated_at"] = time.time()
-    record["updated_at_text"] = fmt_abs_ts(record["updated_at"])
     return True
 
 

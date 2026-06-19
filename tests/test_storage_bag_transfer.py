@@ -295,7 +295,7 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertEqual("gift", state_module.get_storage_bag_item_rules()["妖丹"]["method"])
         send_mock.assert_not_called()
 
-    def test_apply_item_deltas_updates_sections_and_timestamp(self):
+    def test_apply_item_deltas_updates_sections_without_refreshing_snapshot_timestamp(self):
         with patch("model.features.storage_bag.time.time", return_value=2000.0):
             changed = apply_storage_bag_item_deltas(self.source_id, {"妖丹": 2, "木髓": -3})
 
@@ -305,8 +305,8 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertEqual(1, record["items"]["木髓"])
         self.assertEqual(11, record["sections"]["材料"]["妖丹"])
         self.assertEqual(1, record["sections"]["材料"]["木髓"])
-        self.assertEqual(2000.0, record["updated_at"])
-        self.assertTrue(record["updated_at_text"])
+        self.assertEqual(1000, record["updated_at"])
+        self.assertNotIn("updated_at_text", record)
 
     def test_apply_item_deltas_floors_at_zero(self):
         changed = apply_storage_bag_item_deltas(self.source_id, {"木髓": -99})
