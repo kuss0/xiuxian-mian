@@ -305,6 +305,7 @@ _LUOYUN_REQUIRED_SECT = "落云宗"
 _LUOYUN_MIN_REALM = "结丹后期"
 _LUOYUN_MIN_REALM_INDEX = REALM_SORT_ORDER.index(_LUOYUN_MIN_REALM)
 _LUOYUN_OPEN_CONTRIBUTION = 420
+_LUOYUN_REQUIRED_BOTTLE_ITEM = "掌天瓶"
 _XUTIAN_ORACLE_EXPLICIT = {
     "乾天上坤地下 · 三爻争锋": ("火路", "压策", "#528 明示"),
     "震雷上艮山下 · 五爻乘时": ("火路", "势策", "#529 明示"),
@@ -1790,7 +1791,7 @@ def _get_luoyun_decision_stage(text):
         return {}
     if "落云后续抉择：" in raw_text and "兜底命令" in raw_text:
         return {}
-    if "请队长使用" not in raw_text and "队长使用" not in raw_text:
+    if "队长使用" not in raw_text and "队长继续使用" not in raw_text:
         return {}
     title_match = re.search(r"【落云秘圃·([^】]+)】", raw_text)
     title = title_match.group(1).strip() if title_match else "后续抉择"
@@ -3800,6 +3801,8 @@ def _is_lightweight_room_enter_actionable(room):
             return _get_cangkun_room_spiritual_sense_snapshot(room).get("status") == "ok"
         if room.get("replica_kind") == _REPLICA_KIND_ZHUIMO:
             return bool(_get_zhuimo_room_snapshot(room).get("actionable"))
+        if room.get("replica_kind") == _REPLICA_KIND_LUOYUN:
+            return bool(_get_luoyun_room_snapshot(room).get("actionable"))
         return True
     return bool(_get_lightweight_room_recommendation_action(room).get("include_enter"))
 
@@ -4036,6 +4039,28 @@ def _get_luoyun_contribution(profile):
         return 0
 
 
+def _is_luoyun_bottle_identity(identity_id):
+    return _get_storage_bag_item_count(identity_id, _LUOYUN_REQUIRED_BOTTLE_ITEM) > 0
+
+
+def _format_luoyun_identity_list(identity_ids, *, html=False):
+    usernames = [
+        _normalize_replica_username(get_send_as_profile(identity_id).get("username") or str(identity_id))
+        for identity_id in _normalize_replica_identity_ids(identity_ids or [])
+    ]
+    usernames = [username for username in usernames if username]
+    if not usernames:
+        return "无"
+    return " ".join(mono(username) if html else username for username in usernames)
+
+
+def _luoyun_identity_sort_key(identity_id):
+    username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+    professions = set(_get_replica_profile_professions(identity_id))
+    role_score = sum(1 for role in ("破军", "御山", "灵医", "影刃", "咒师") if role in professions)
+    return (0 if _is_luoyun_bottle_identity(identity_id) else 1, -role_score, username)
+
+
 def _is_luoyun_open_available(identity_id):
     profile = _get_luoyun_profile(identity_id)
     sect_name = _normalize_replica_sect_name(profile.get("sect_name") or "")
@@ -4060,6 +4085,85 @@ def _format_luoyun_open_requirement(identity_id):
         contribution_updated_at = 0.0
     contribution_text = str(contribution) if contribution_updated_at > 0 or contribution > 0 else "未知"
     return f"落云要求{_LUOYUN_REQUIRED_SECT}、{_LUOYUN_MIN_REALM}及以上、宗门贡献>={_LUOYUN_OPEN_CONTRIBUTION}，当前：{sect_name}/{realm}/贡献{contribution_text}"
+
+
+def _get_luoyun_available_candidate_ids(leader_identity_id=0, *, now=None, excluded_usernames=None):
+    leader_identity_id = int(leader_identity_id or 0)
+    now = float(now or time.time())
+    records = _cleanup_replica_run_state(now)
+    excluded_username_set = set(_normalize_replica_username_list(excluded_usernames or []))
+    identity_ids = []
+    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
+        if identity_id == leader_identity_id:
+            continue
+        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        if username and username in excluded_username_set:
+            continue
+        if _get_replica_identity_kind_status(identity_id, _REPLICA_KIND_LUOYUN, now, records=records) != "可":
+            continue
+        identity_ids.append(identity_id)
+    return _normalize_replica_identity_ids(identity_ids)
+
+
+def _build_luoyun_snapshot_from_identity_ids(identity_ids, *, leader_identity_id=0, limit=4):
+    leader_identity_id = int(leader_identity_id or 0)
+    limit = max(1, int(limit or 4))
+    candidates = [
+        identity_id
+        for identity_id in _normalize_replica_identity_ids(identity_ids or [])
+        if identity_id != leader_identity_id
+    ]
+    selected = []
+    used = set()
+    leader_ids = [leader_identity_id] if leader_identity_id > 0 else []
+    leader_has_bottle = any(_is_luoyun_bottle_identity(identity_id) for identity_id in leader_ids)
+    if not leader_has_bottle:
+        bottle_candidates = [identity_id for identity_id in candidates if _is_luoyun_bottle_identity(identity_id)]
+        if bottle_candidates:
+            bottle_id = sorted(bottle_candidates, key=_luoyun_identity_sort_key)[0]
+            selected.append(bottle_id)
+            used.add(bottle_id)
+    for identity_id in sorted(candidates, key=_luoyun_identity_sort_key):
+        if len(selected) >= limit:
+            break
+        if identity_id in used:
+            continue
+        selected.append(identity_id)
+        used.add(identity_id)
+    team_ids = _normalize_replica_identity_ids(leader_ids + selected)
+    bottle_ids = [identity_id for identity_id in team_ids if _is_luoyun_bottle_identity(identity_id)]
+    return {
+        "team_ids": team_ids,
+        "join_ids": selected[:limit] if bottle_ids else [],
+        "bottle_ids": bottle_ids,
+        "actionable": bool(bottle_ids),
+    }
+
+
+def _get_luoyun_team_snapshot(leader_identity_id=0, *, now=None):
+    leader_identity_id = int(leader_identity_id or 0)
+    return _build_luoyun_snapshot_from_identity_ids(
+        _get_luoyun_available_candidate_ids(leader_identity_id, now=now),
+        leader_identity_id=leader_identity_id,
+        limit=4 if leader_identity_id else 5,
+    )
+
+
+def _get_luoyun_room_snapshot(room, *, now=None):
+    room = room if isinstance(room, dict) else {}
+    leader_identity_id = int(room.get("leader_identity_id") or 0)
+    return _build_luoyun_snapshot_from_identity_ids(
+        _get_lightweight_room_team_identity_ids(room, now=now),
+        leader_identity_id=leader_identity_id,
+        limit=4 if leader_identity_id else 5,
+    )
+
+
+def _format_luoyun_bottle_status(identity_ids, *, html=False):
+    bottle_ids = [identity_id for identity_id in _normalize_replica_identity_ids(identity_ids or []) if _is_luoyun_bottle_identity(identity_id)]
+    if bottle_ids:
+        return f"掌天瓶：{_format_luoyun_identity_list(bottle_ids[:3], html=html)}。"
+    return f"缺掌天瓶：落云秘圃必须至少 1 名队员本地储物袋缓存持有【{_LUOYUN_REQUIRED_BOTTLE_ITEM}】。"
 
 
 def _is_replica_open_requirement_available(identity_id, replica_kind):
@@ -4710,6 +4814,8 @@ def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, lim
     now = float(now or time.time())
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return _get_zhuimo_team_snapshot(leader_identity_id, now=now).get("join_ids", [])[:limit]
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        return _get_luoyun_team_snapshot(leader_identity_id, now=now).get("join_ids", [])[:limit]
     excluded_username_set = set(_normalize_replica_username_list(excluded_usernames or []))
     leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
     if leader_username and leader_username in excluded_username_set:
@@ -4790,6 +4896,16 @@ def _get_lightweight_profession_recommendation_join_command(replica_kind, leader
     leader_identity_id = int(leader_identity_id or 0)
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return _get_zhuimo_join_command(leader_identity_id)
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        snapshot = _get_luoyun_team_snapshot(leader_identity_id)
+        if not snapshot.get("actionable"):
+            return ""
+        usernames = [
+            _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+            for identity_id in snapshot.get("join_ids") or []
+        ]
+        usernames = [username for username in usernames if username]
+        return ".加入副本 " + " ".join(usernames) if usernames else ""
     if replica_kind == _REPLICA_KIND_CANGKUN:
         planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id)
         planned_command = _cangkun_join_command_from_team(planned_team)
@@ -5285,11 +5401,42 @@ def _format_zhuimo_room_block_notice(room, *, html=False):
     return "\n".join(lines)
 
 
+def _format_luoyun_recommendation_section(leader_identity_id=0, *, html=False):
+    leader_identity_id = int(leader_identity_id or 0)
+    leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
+    leader_text = f"（开房 {leader_username}）" if leader_username else ""
+    snapshot = _get_luoyun_team_snapshot(leader_identity_id)
+    lines = [f"推荐配置：落云秘圃｜轻量补位{leader_text}"]
+    if snapshot.get("join_ids"):
+        lines.append(f"推荐加入：{_format_luoyun_identity_list(snapshot.get('join_ids'), html=html)}")
+    elif snapshot.get("actionable"):
+        lines.append("队长已满足掌天瓶要求，可按可用队员人工补位。")
+    else:
+        lines.append("暂未找到本地储物袋缓存持有掌天瓶的可参加身份。")
+    lines.append(_format_luoyun_bottle_status(snapshot.get("team_ids"), html=html))
+    if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
+        lines.append(f"开房身份未达要求：{_format_luoyun_open_requirement(leader_identity_id)}。")
+    lines.append("提示：落云开房要求落云宗、结丹后期及以上、宗门贡献>=420；队伍必须至少 1 人持有掌天瓶。")
+    return "\n".join(lines)
+
+
+def _format_luoyun_room_block_notice(room, *, html=False):
+    room = room if isinstance(room, dict) else {}
+    room_id = str(room.get("room_id") or "-")
+    snapshot = _get_luoyun_room_snapshot(room)
+    lines = [f"落云秘圃房间 {room_id} 当前不建议自动进入。"]
+    lines.append(_format_luoyun_bottle_status(snapshot.get("team_ids"), html=html))
+    lines.append("请先用持瓶身份加入，或人工确认后再处理。")
+    return "\n".join(lines)
+
+
 def _format_lightweight_profession_recommendation_section(replica_kind, leader_identity_id=0, *, html=False):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else _REPLICA_KIND_CANGKUN
     leader_identity_id = int(leader_identity_id or 0)
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return _format_zhuimo_recommendation_section(leader_identity_id, html=html)
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        return _format_luoyun_recommendation_section(leader_identity_id, html=html)
     leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
     planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id) if replica_kind == _REPLICA_KIND_CANGKUN else {}
     planned_join_ids = _cangkun_team_join_identity_ids(planned_team)
@@ -5332,7 +5479,7 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     elif replica_kind == _REPLICA_KIND_LUOYUN:
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
             lines.append(f"开房身份未达要求：{_format_luoyun_open_requirement(leader_identity_id)}。")
-        lines.append("提示：落云开房要求落云宗、结丹后期及以上、宗门贡献>=420；加入仅走轻量补位。")
+        lines.append("提示：落云开房要求落云宗、结丹后期及以上、宗门贡献>=420；队伍必须至少 1 人持有掌天瓶。")
     else:
         lines.append("提示：先按破军/御山/灵医补齐，若后续出现专属卦象再按卦象改配。")
     return "\n".join(lines)
@@ -10520,6 +10667,35 @@ async def _handle_lightweight_join_command(event):
         )
         return True
     leader_identity_id = int(room.get("leader_identity_id") or 0)
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        now_for_join = time.time()
+        current_team_ids = _get_lightweight_room_team_identity_ids(room, now=now_for_join)
+        current_has_bottle = any(_is_luoyun_bottle_identity(identity_id) for identity_id in current_team_ids)
+        selector_identity_ids = [
+            _resolve_replica_command_identity(selector)
+            for selector in selectors
+        ]
+        selector_has_bottle = any(
+            identity_id > 0
+            and identity_id != leader_identity_id
+            and get_identity_enabled(identity_id)
+            and not _get_replica_identity_block_reason(identity_id, now=now_for_join)
+            and _is_luoyun_bottle_identity(identity_id)
+            for identity_id in selector_identity_ids
+        )
+        if not current_has_bottle and not selector_has_bottle:
+            text = _format_luoyun_room_block_notice(room, html=True)
+            text += "\n\n" + _format_lightweight_next_commands(".加入副本 @持瓶用户名", ".解散副本", ".查询副本", html=True)
+            await _send_replica_group_message(
+                event.client,
+                event.chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+            )
+            return True
     sent_usernames = []
     skipped = []
     seen_identity_ids = set()
@@ -10680,6 +10856,19 @@ async def _handle_lightweight_enter_command(event):
     if replica_kind == _REPLICA_KIND_ZHUIMO and not _is_lightweight_room_enter_actionable(room):
         text = _format_zhuimo_room_block_notice(room, html=True)
         text += "\n\n" + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", ".查询副本", html=True)
+        await _send_replica_group_message(
+            event.client,
+            event.chat_id,
+            text,
+            parse_mode="html",
+            listener_account_id=listener_account_id,
+            log_text=_strip_html_code_tags(text),
+            buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+        )
+        return True
+    if replica_kind == _REPLICA_KIND_LUOYUN and not _is_lightweight_room_enter_actionable(room):
+        text = _format_luoyun_room_block_notice(room, html=True)
+        text += "\n\n" + _format_lightweight_next_commands(".加入副本 @持瓶用户名", ".解散副本", ".查询副本", html=True)
         await _send_replica_group_message(
             event.client,
             event.chat_id,

@@ -3031,6 +3031,53 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(records[str(leader_id)]["replica_states"][app_replica._REPLICA_KIND_LUOYUN]["participating"])
         self.assertTrue(records[str(member_id)]["replica_states"][app_replica._REPLICA_KIND_LUOYUN]["participating"])
 
+    def test_luoyun_later_stage_sends_decision_buttons(self):
+        leader_id = self._register_replica_identity(991201, "growrdick", realm="结丹后期", sect_name="落云宗")
+        member_id = self._register_replica_identity(991202, "jfdffdddd")
+        group_event = self._prepare_replica_group([leader_id, member_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "65",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": group_event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@growrdick",
+            "join_requested_usernames": ["@jfdffdddd"],
+            "opened_at": now,
+            "entered_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        text = (
+            "【第一幕·破禁入圃·结果】\n"
+            "你们分作数路探明禁制薄弱处，虽耗了些神识，仍找到一条较稳的入圃路径。\n\n"
+            "当前状态：伤根值 10 | 灵压稳定 66 | 累计判定分 32\n\n"
+            "【落云秘圃·第二幕·护根稳压】\n"
+            "深入侧根后，护根灵影开始回潮。此时要先稳住母树活脉，才有资格谈截枝。\n\n"
+            "1 · 三才护根：以队伍站位镇住木、水、土三才位，修复前一幕伤根。\n"
+            "2 · 引傀离根：诱出镇灵木傀残影再战，能提高掉落，但会继续伤根。\n"
+            "3 · 瓶灵照脉：借掌天瓶气机照出真正活脉；队伍无人持瓶时效果大幅下降。\n\n"
+            "请队长继续使用 .落云抉择 1/2/3 做出下一幕抉择。"
+        )
+        event = SimpleNamespace(id=10620545, chat_id=-100123, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_replica_progress_event(event, now + 2)
+                send_mock.assert_not_awaited()
+                audit_mock.assert_not_awaited()
+                buttons = notice_mock.await_args.kwargs["buttons"]
+                return handled, notice_mock.await_args.args[1], self._button_texts(buttons)
+
+        handled, notice_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("落云后续抉择：第二幕·护根稳压", notice_text)
+        self.assertEqual({"1 三才护根", "2 引傀离根", "3 瓶灵照脉"}, set(button_texts))
+
     def test_cangkun_later_stage_without_dungeon_name_sends_decision_buttons(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
         member_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")
@@ -4556,6 +4603,51 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(app_replica._REPLICA_KIND_LUOYUN, flow["replica_kind"])
         self.assertEqual(501, flow["open_command_msg_id"])
 
+    def test_luoyun_recommendation_requires_bottle_holder(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹后期", sect_name="落云宗")
+        bottle_id = self._register_replica_identity(991202, "bottle")
+        filler_id = self._register_replica_identity(991203, "filler")
+        state_module.set_replica_participant_identity_ids([leader_id, bottle_id, filler_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {}, "sections": {}},
+            str(bottle_id): {"items": {"掌天瓶": 1}, "sections": {}},
+            str(filler_id): {"items": {}, "sections": {}},
+        })
+
+        command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_LUOYUN,
+            leader_id,
+        )
+        text = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_LUOYUN,
+            leader_id,
+        )
+
+        self.assertIn("@bottle", command)
+        self.assertIn("@bottle", text)
+        self.assertIn("掌天瓶", text)
+
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {}, "sections": {}},
+            str(bottle_id): {"items": {}, "sections": {}},
+            str(filler_id): {"items": {}, "sections": {}},
+        })
+
+        self.assertEqual(
+            "",
+            app_replica._get_lightweight_profession_recommendation_join_command(
+                app_replica._REPLICA_KIND_LUOYUN,
+                leader_id,
+            ),
+        )
+        self.assertIn(
+            "暂未找到本地储物袋缓存持有掌天瓶",
+            app_replica._format_lightweight_profession_recommendation_section(
+                app_replica._REPLICA_KIND_LUOYUN,
+                leader_id,
+            ),
+        )
+
     def test_lightweight_open_command_blocks_luoyun_without_contribution(self):
         leader_id = self._register_replica_identity(991201, "leader", realm="结丹后期", sect_name="落云宗")
         event = self._prepare_replica_group([leader_id])
@@ -5285,6 +5377,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         leader_id = self._register_replica_identity(991201, "leader", realm="结丹后期", sect_name="落云宗")
         first_id = self._register_replica_identity(991202, "first")
         event = self._prepare_replica_group([leader_id, first_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {}, "sections": {}},
+            str(first_id): {"items": {"掌天瓶": 1}, "sections": {}},
+        })
         now = 1000.0
         flow = {
             "flow_id": "flow-luoyun",
@@ -5323,11 +5419,55 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertIn("已记录落云秘圃房间 12", notice_text)
         self.assertIn("轻量补位", notice_text)
-        self.assertIn("进入落云秘圃", button_texts)
+        self.assertIn("@first", notice_text)
+        self.assertIn("掌天瓶", notice_text)
+        self.assertNotIn("进入落云秘圃", button_texts)
+        self.assertIn("加入推荐", button_texts)
         self.assertIn("解散副本", button_texts)
         room = app_replica._get_lightweight_last_room(event.chat_id, now=now)
         self.assertEqual("12", room["room_id"])
         self.assertEqual(app_replica._REPLICA_KIND_LUOYUN, room["replica_kind"])
+
+    def test_luoyun_enter_blocks_without_bottle_holder(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹后期", sect_name="落云宗")
+        first_id = self._register_replica_identity(991202, "first")
+        event = self._prepare_replica_group([leader_id, first_id])
+        event.raw_text = ".进入落云秘圃"
+        now = time.time()
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "12",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "join_requested_usernames": ["@first"],
+            "opened_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {}, "sections": {}},
+            str(first_id): {"items": {}, "sections": {}},
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_enter_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, send_mock.await_count, self._button_texts(buttons)
+
+        handled, reply_text, send_count, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(0, send_count)
+        self.assertIn("缺掌天瓶", reply_text)
+        self.assertNotIn("进入落云秘圃", button_texts)
+        self.assertIn("解散副本", button_texts)
 
     def test_lightweight_enter_command_marks_cangkun_entered_once(self):
         leader_id = self._register_replica_identity(991201, "leader", sect_name="太一门")
