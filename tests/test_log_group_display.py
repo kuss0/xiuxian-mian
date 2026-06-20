@@ -66,6 +66,7 @@ class LogGroupDisplayTests(unittest.TestCase):
 
     def test_analysis_regex_accepts_log_group_aliases(self):
         self.assertIsNotNone(RE_CMD_ANALYSIS_SUMMARY.match(".玩法总览"))
+        self.assertIsNotNone(RE_CMD_ANALYSIS_HEALTH.match(".分析健康"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_HEALTH.match(".发送健康码"))
         self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH.match(".运行健康"))
         self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH.match(".健康摘要"))
@@ -74,12 +75,14 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIsNotNone(RE_CMD_ANALYSIS_UNKNOWN.match(".未知指令"))
 
     def test_audit_push_regex_accepts_log_group_aliases(self):
+        self.assertIsNotNone(RE_CMD_AUDIT_PUSH_STATUS.match(".审计推送状态"))
         self.assertIsNotNone(RE_CMD_AUDIT_PUSH_STATUS.match(".日志推送状态"))
         self.assertIsNotNone(RE_CMD_AUDIT_PUSH_STATUS.match(".推送状态"))
         self.assertIsNotNone(RE_CMD_AUDIT_FLUSH_SUMMARY.match(".发送日志汇总"))
         self.assertIsNotNone(RE_CMD_AUDIT_FLUSH_SUMMARY.match(".立即日志汇总"))
 
     def test_staging_preflight_regex_accepts_aliases(self):
+        self.assertIsNotNone(RE_CMD_STAGING_PREFLIGHT.match(".预发布检查"))
         self.assertIsNotNone(RE_CMD_STAGING_PREFLIGHT.match(".上线预检"))
         self.assertIsNotNone(RE_CMD_STAGING_PREFLIGHT.match(".待上线预检"))
         self.assertIsNotNone(RE_CMD_STAGING_PREFLIGHT.match(".预检"))
@@ -176,6 +179,26 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertFalse(handled)
         toggle_mock.assert_not_awaited()
         reply_mock.assert_not_awaited()
+
+    def test_readme_maintenance_aliases_are_handled(self):
+        cases = [
+            (".审计推送状态", "日志推送状态", "ok"),
+            (".预发布检查", "待上线预检", "preflight"),
+            (".分析健康", "发送健康码", "health"),
+        ]
+        for command, expected_title, formatter_result in cases:
+            with self.subTest(command=command):
+                event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=command)
+                with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                        patch.object(control, "get_audit_push_status_text", return_value=formatter_result), \
+                        patch.object(control, "_format_staging_preflight_text", return_value=formatter_result), \
+                        patch.object(control, "_format_analysis_report_text", return_value=formatter_result), \
+                        patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                    handled = asyncio.run(control.handle_log_group_command(event))
+
+                self.assertTrue(handled)
+                reply_mock.assert_awaited_once()
+                self.assertEqual(expected_title, reply_mock.await_args.args[1])
 
     def test_help_mentions_safe_status_and_selector(self):
         html_text = control._format_log_group_help_html()

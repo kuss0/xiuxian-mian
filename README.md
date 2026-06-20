@@ -142,7 +142,7 @@ UI 登录链接有有效期，浏览器会话也会超时。它是运维入口�
 - `.全局暂停` / `.全局恢复`：暂停或恢复自动调度。
 - `.开启<模块>` / `.关闭<模块>`：按模块开关当前身份或指定身份。
 - `.储物袋汇总`：基于历史快照汇总材料，不主动发送游戏命令。
-- `.审计推送状态`、`.预发布检查`、`.分析健康`：维护和排障入口。
+- `.日志推送状态` / `.审计推送状态`、`.上线预检` / `.预发布检查`、`.发送健康码` / `.分析健康`：维护和排障入口。
 
 具体支持项以 `model/control.py` 中的正则和处理器为准。
 
@@ -155,6 +155,7 @@ UI 登录链接有有效期，浏览器会话也会超时。它是运维入口�
 ```bash
 .venv/bin/python -m pytest -q
 .venv/bin/python -m py_compile xiuxian.py model/*.py model/features/*.py
+.venv/bin/python tools/ui_http_smoke.py
 .venv/bin/python tools/safety_watchdog.py --once --dry-run
 ```
 
