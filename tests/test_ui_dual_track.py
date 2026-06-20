@@ -64,6 +64,17 @@ def test_render_legacy_ui_keeps_old_assets_and_links_to_new_track():
     assert "/static/js/storage_bag_ui.js" in body
 
 
+def test_legacy_home_keeps_passive_inbox_in_secondary_modal():
+    with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
+        body = ui.render_ui_page(variant="legacy")
+
+    assert "data-open-passive-inbox='1'" in body
+    assert "id='passive-inbox-modal'" in body
+    assert "id='passive-inbox-modal-body'" in body
+    assert "id='passive-inbox-panel'" not in body
+    assert "passive-inbox-home-card" not in body
+
+
 def test_render_new_ui_adds_isolated_skin_and_links_back_to_legacy():
     with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
         body = ui.render_ui_page(variant="new")

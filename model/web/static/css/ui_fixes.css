@@ -1901,10 +1901,6 @@ body {
   margin-bottom: 0;
 }
 
-.passive-inbox-home-card {
-  margin-bottom: 16px;
-}
-
 .passive-inbox-modal-card {
   width: min(720px, 100%);
 }
