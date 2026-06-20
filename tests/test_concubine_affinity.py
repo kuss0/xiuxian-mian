@@ -2568,14 +2568,14 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("voyage_return_pending", state_module.state["concubine_phase"])
         self.assertEqual(913, state_module.state["concubine_voyage_msg_id"])
 
-    async def test_scheduler_does_not_start_archived_voyage_after_other_actions_clear(self):
+    async def test_scheduler_does_not_start_voyage_when_module_disabled(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["concubine_enabled"] = False
             identity_state["concubine_tianji_enabled"] = False
             identity_state["concubine_heart_enabled"] = False
-            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_voyage_enabled"] = False
             identity_state["concubine_voyage_route"] = "均衡"
             identity_state["next_concubine_time"] = now + 3600
 
@@ -2588,11 +2588,35 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("idle", state_module.state["concubine_phase"])
         self.assertEqual(0, state_module.state["concubine_voyage_msg_id"])
         self.assertEqual("均衡", state_module.state["concubine_voyage_route"])
-        self.assertIn("远航已归档", state_module.state["concubine_voyage_last_error"])
+        self.assertEqual("", state_module.state["concubine_voyage_last_error"])
 
-    async def test_scheduler_does_not_start_archived_voyage_during_summary_due(self):
+    async def test_scheduler_starts_voyage_when_module_enabled_after_other_actions_clear(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        sent_msg = SimpleNamespace(id=916, sent_at=now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_enabled"] = False
+            identity_state["concubine_tianji_enabled"] = False
+            identity_state["concubine_heart_enabled"] = False
+            identity_state["concubine_voyage_enabled"] = True
+            identity_state["concubine_voyage_route"] = "均衡"
+            identity_state["next_concubine_time"] = now - 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(f"{config.CMD_CONCUBINE_VOYAGE} {config.CONCUBINE_VOYAGE_DEFAULT_ROUTE}", track=False, priority="chain")
+        self.assertEqual("voyage_pending", state_module.state["concubine_phase"])
+        self.assertEqual(916, state_module.state["concubine_voyage_msg_id"])
+        self.assertEqual(config.CONCUBINE_VOYAGE_DEFAULT_ROUTE, state_module.state["concubine_voyage_route"])
+        self.assertEqual(now + config.CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+
+    async def test_scheduler_starts_voyage_during_summary_due_when_only_voyage_due(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        sent_msg = SimpleNamespace(id=917, sent_at=now)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["concubine_enabled"] = False
             identity_state["concubine_tianji_enabled"] = False
@@ -2605,14 +2629,13 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id), \
              patch.object(concubine, "save_state"), \
              patch.object(concubine.random, "uniform", return_value=90), \
-             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_not_awaited()
-        self.assertEqual("idle", state_module.state["concubine_phase"])
-        self.assertEqual(0, state_module.state["concubine_voyage_msg_id"])
-        self.assertEqual(now + 90, state_module.state["next_concubine_time"])
-        self.assertIn("远航已归档", state_module.state["concubine_voyage_last_error"])
+        mock_send.assert_awaited_once_with(f"{config.CMD_CONCUBINE_VOYAGE} {config.CONCUBINE_VOYAGE_DEFAULT_ROUTE}", track=False, priority="chain")
+        self.assertEqual("voyage_pending", state_module.state["concubine_phase"])
+        self.assertEqual(917, state_module.state["concubine_voyage_msg_id"])
+        self.assertEqual(now + config.CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC, state_module.state["next_concubine_time"])
 
     async def test_summary_due_voyage_waits_for_due_tianji(self):
         now = 1_700_000_000.0
@@ -2637,9 +2660,10 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 90, state_module.state["next_concubine_time"])
         self.assertIn("天机代卜等待闭关/元婴结算", state_module.state["concubine_tianji_last_error"])
 
-    async def test_scheduler_does_not_status_calibrate_for_archived_voyage_only(self):
+    async def test_scheduler_status_calibrates_for_enabled_voyage_without_cached_partner(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        sent_msg = SimpleNamespace(id=918, sent_at=now)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["concubine_enabled"] = False
             identity_state["concubine_tianji_enabled"] = False
@@ -2652,17 +2676,17 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id), \
              patch.object(concubine, "save_state"), \
              patch.object(concubine.random, "uniform", return_value=90), \
-             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_not_awaited()
-        self.assertEqual("idle", state_module.state["concubine_phase"])
-        self.assertEqual(0, state_module.state["concubine_status_msg_id"])
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(918, state_module.state["concubine_status_msg_id"])
         self.assertEqual(0, state_module.state["concubine_dream_msg_id"])
-        self.assertEqual(now + 90, state_module.state["next_concubine_time"])
-        self.assertIn("远航已归档", state_module.state["concubine_voyage_last_error"])
+        self.assertEqual(now + config.CONCUBINE_PHASE_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+        self.assertEqual("", state_module.state["concubine_voyage_last_error"])
 
-    async def test_scheduler_skips_archived_voyage_regardless_affinity_or_sect(self):
+    async def test_scheduler_keeps_voyage_affinity_gate_after_unarchiving(self):
         now = 1_700_000_000.0
         low_affinity_id = self._prepare_identity(affinity=119, dream_due_at=now + 3600, tianji_due_at=now + 3600)
         with state_module.use_identity(low_affinity_id) as identity_state:
@@ -2678,9 +2702,10 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             await concubine.run_concubine_scheduler(now)
 
         mock_send.assert_not_awaited()
-        self.assertIn("远航已归档", state_module.state["concubine_voyage_last_error"])
+        self.assertIn("情缘不足", state_module.state["concubine_voyage_last_error"])
 
         other_sect_id = self._prepare_identity(affinity=120, dream_due_at=now + 3600, tianji_due_at=now + 3600, sect_name="落云宗")
+        sent_msg = SimpleNamespace(id=919, sent_at=now)
         with state_module.use_identity(other_sect_id) as identity_state:
             identity_state["concubine_enabled"] = False
             identity_state["concubine_tianji_enabled"] = False
@@ -2690,13 +2715,13 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(other_sect_id), \
              patch.object(concubine, "save_state"), \
              patch.object(concubine.random, "uniform", return_value=60), \
-             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_not_awaited()
-        self.assertEqual("idle", state_module.state["concubine_phase"])
-        self.assertEqual(0, state_module.state["concubine_voyage_msg_id"])
-        self.assertIn("远航已归档", state_module.state["concubine_voyage_last_error"])
+        mock_send.assert_awaited_once_with(f"{config.CMD_CONCUBINE_VOYAGE} {config.CONCUBINE_VOYAGE_DEFAULT_ROUTE}", track=False, priority="chain")
+        self.assertEqual("voyage_pending", state_module.state["concubine_phase"])
+        self.assertEqual(919, state_module.state["concubine_voyage_msg_id"])
+        self.assertEqual("", state_module.state["concubine_voyage_last_error"])
 
     async def test_voyage_return_reply_sets_idle_and_schedules_next_chain(self):
         now = 1_700_000_000.0
@@ -3120,9 +3145,10 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["next_concubine_time"],
         )
 
-    async def test_voyage_start_pending_timeout_does_not_retry_archived_start(self):
+    async def test_voyage_start_pending_timeout_retries_once_after_unarchive(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        retry_msg = SimpleNamespace(id=922, sent_at=now)
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["concubine_voyage_enabled"] = True
             identity_state["concubine_phase"] = "voyage_pending"
@@ -3135,16 +3161,23 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
              patch.object(concubine, "save_state"), \
              patch.object(concubine, "_recover_concubine_pending_from_message_log", new=AsyncMock(return_value=False)), \
              patch.object(concubine, "send_audit_log", new=AsyncMock()) as audit_mock, \
-             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=retry_msg)) as mock_send:
             await concubine.run_concubine_scheduler(now)
 
-        mock_send.assert_not_awaited()
+        mock_send.assert_awaited_once_with(
+            f"{config.CMD_CONCUBINE_VOYAGE} 冒险",
+            track=False,
+            priority="retry",
+            source_module="侍妾远航",
+            op_id=f"concubine_voyage_retry:{send_as_id}:921:{config.CMD_CONCUBINE_VOYAGE} 冒险",
+            chain_id=f"concubine_voyage_retry:{send_as_id}:921",
+        )
         audit_mock.assert_awaited_once()
-        self.assertEqual("idle", state_module.state["concubine_phase"])
-        self.assertEqual(0, state_module.state["concubine_voyage_msg_id"])
-        self.assertEqual(2, state_module.state["concubine_voyage_retry_count"])
-        self.assertEqual("sailing", state_module.state["concubine_voyage_status"])
-        self.assertIn("不再补发出发", state_module.state["concubine_voyage_last_error"])
+        self.assertEqual("voyage_pending", state_module.state["concubine_phase"])
+        self.assertEqual(922, state_module.state["concubine_voyage_msg_id"])
+        self.assertEqual(1, state_module.state["concubine_voyage_retry_count"])
+        self.assertEqual("", state_module.state["concubine_voyage_status"])
+        self.assertEqual(now + config.CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC, state_module.state["next_concubine_time"])
 
     def test_voyage_status_no_task_clears_stale_sailing_lock(self):
         now = 1_700_000_000.0

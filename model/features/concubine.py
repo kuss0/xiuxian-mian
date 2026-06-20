@@ -137,7 +137,6 @@ CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_VOYAGE_MIN_AFFINITY = 120
-CONCUBINE_VOYAGE_START_ARCHIVED = True
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
 CONCUBINE_VOYAGE_PENDING_PHASES = {"voyage_pending", "voyage_return_pending"}
 CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC = 60 * 60
@@ -897,15 +896,7 @@ def _is_voyage_affinity_eligible():
     return int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_VOYAGE_MIN_AFFINITY
 
 
-def _is_voyage_start_archived():
-    return CONCUBINE_VOYAGE_START_ARCHIVED
-
-
 def _is_voyage_eligible(now):
-    if _is_voyage_start_archived():
-        if state.get("concubine_voyage_enabled"):
-            state["concubine_voyage_last_error"] = "侍妾远航已归档，仅保留归航结算"
-        return False
     if not state.get("concubine_voyage_enabled"):
         return False
     if not _has_available_partner():
@@ -3426,16 +3417,6 @@ async def _handle_voyage_pending_timeout(now, phase):
         save_state()
         return True
     await _audit_pending_timeout_candidates(now, phase)
-    if phase != "voyage_return_pending" and _is_voyage_start_archived():
-        retry_at = _mark_voyage_pending_exhausted(now, phase)
-        state["concubine_voyage_last_error"] = f"{phase} 未见回复；远航已归档，不再补发出发，保持远航锁"
-        save_state()
-        await send_audit_log(
-            f"⚠️ 侍妾远航 {phase} 未见回复；远航已归档，不再补发出发，保持本地远航锁；{fmt_time_after(max(0, retry_at - now))} 后再观察。",
-            scope="identity",
-            limit=260,
-        )
-        return True
     retry_count = int(state.get("concubine_voyage_retry_count", 0) or 0)
     if retry_count < 1:
         state["concubine_voyage_retry_count"] = retry_count + 1
@@ -4761,8 +4742,10 @@ async def _run_concubine_scheduler(now):
             await _send_status_command(now)
         elif state.get("concubine_enabled"):
             await _send_dream_command(now)
+        elif state.get("concubine_voyage_enabled"):
+            await _send_status_command(now)
         else:
-            state["concubine_voyage_last_error"] = "侍妾远航已归档，仅保留归航结算"
+            state["concubine_voyage_last_error"] = "侍妾远航需先确认侍妾"
             _schedule_status_recheck(now)
             save_state()
         return
