@@ -3306,6 +3306,12 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None, var
         ensure_ascii=False,
     ).replace("</", "<\\/")
     is_new_variant = variant == "new"
+    selected_query = f"?send_as_id={selected_id}" if selected_id else ""
+    ui_mode_link = (
+        f"<a class='topbar-btn ui-mode-entry' href='/{selected_query}' title='旧版UI'>旧版</a>"
+        if is_new_variant
+        else f"<a class='topbar-btn ui-mode-entry' href='/new{selected_query}' title='新版UI'>新版</a>"
+    )
     return _render_ui_template(
         "index.html",
         {
@@ -3314,7 +3320,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None, var
             "poll_interval_ms": int(UI_AUTO_REFRESH_SEC) * 1000,
             "new_ui_css_link": "<link rel='stylesheet' href='/static-new/css/app.css' />" if is_new_variant else "",
             "ui_body_class": "ui-new" if is_new_variant else "ui-legacy",
-            "ui_mode_link": "<a class='topbar-btn ui-mode-entry' href='/' title='旧版UI'>旧版</a>" if is_new_variant else "<a class='topbar-btn ui-mode-entry' href='/new' title='新版UI'>新版</a>",
+            "ui_mode_link": ui_mode_link,
         },
     )
 

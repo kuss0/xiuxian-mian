@@ -57,7 +57,7 @@ def test_render_legacy_ui_keeps_old_assets_and_links_to_new_track():
         body = ui.render_ui_page(variant="legacy")
 
     assert "class='ui-legacy'" in body
-    assert "href='/new'" in body
+    assert "href='/new?send_as_id=1001'" in body
     assert "/static/css/app.css" in body
     assert "/static/css/ui_fixes.css" in body
     assert "/static-new/css/app.css" not in body
@@ -69,7 +69,7 @@ def test_render_new_ui_adds_isolated_skin_and_links_back_to_legacy():
         body = ui.render_ui_page(variant="new")
 
     assert "class='ui-new'" in body
-    assert "href='/'" in body
+    assert "href='/?send_as_id=1001'" in body
     assert "/static-new/css/app.css" in body
     assert "/static/js/passive_inbox_ui.js" in body
     assert "fonts.googleapis.com" not in body
@@ -82,5 +82,7 @@ def test_new_static_asset_loader_serves_css_and_blocks_traversal():
     assert css_body is not None
     assert css_type == "text/css; charset=utf-8"
     assert b"body.ui-new" in css_body
+    assert b"grid-template-columns: repeat(auto-fit, minmax(260px, 1fr))" in css_body
+    assert b"scrollbar-width: none" in css_body
     assert traversal_body is None
     assert traversal_type is None

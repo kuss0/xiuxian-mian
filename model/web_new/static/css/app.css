@@ -26,6 +26,10 @@ body.ui-new .topbar {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+body.ui-new .topbar-brand {
+  min-width: 150px;
+}
+
 body.ui-new .topbar-logo-img {
   border-radius: 8px;
 }
@@ -45,6 +49,7 @@ body.ui-new .section-subtitle {
 
 body.ui-new .topbar-actions {
   gap: 6px;
+  min-width: 0;
 }
 
 body.ui-new .topbar-btn,
@@ -59,8 +64,11 @@ body.ui-new .icon-btn {
 }
 
 body.ui-new .topbar-btn {
+  flex: 0 0 auto;
   padding: 0 10px;
   font-size: 12px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 body.ui-new .topbar-btn:hover,
@@ -84,6 +92,15 @@ body.ui-new .sidebar {
   width: 282px;
   border-right: 1px solid var(--new-line);
   background: #111419;
+}
+
+body.ui-new .sidebar-identity-section {
+  min-height: 0;
+}
+
+body.ui-new .identity-list {
+  gap: 6px;
+  padding-right: 2px;
 }
 
 body.ui-new .sidebar-section,
@@ -115,10 +132,20 @@ body.ui-new .sidebar-account-info {
 
 body.ui-new .identity-item {
   min-height: 58px;
+  width: 100%;
+  padding: 10px 12px;
   border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--new-text);
+  text-align: left;
+}
+
+body.ui-new .identity-item strong,
+body.ui-new .identity-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 body.ui-new .identity-item span {
@@ -145,6 +172,12 @@ body.ui-new .main-inner {
   gap: 14px;
 }
 
+body.ui-new #summary-panel,
+body.ui-new .passive-inbox-home-card,
+body.ui-new .module-section-card {
+  width: 100%;
+}
+
 body.ui-new .card,
 body.ui-new .passive-inbox-home-card,
 body.ui-new .module-section-card,
@@ -156,6 +189,13 @@ body.ui-new .modal-card {
   box-shadow: none;
 }
 
+body.ui-new .section-head-row,
+body.ui-new .summary-head,
+body.ui-new .passive-head,
+body.ui-new .module-head {
+  align-items: center;
+}
+
 body.ui-new .card h2,
 body.ui-new .module-card h3,
 body.ui-new .modal-title {
@@ -164,7 +204,13 @@ body.ui-new .modal-title {
 }
 
 body.ui-new .summary-head {
+  flex-wrap: wrap;
   gap: 12px;
+}
+
+body.ui-new .summary-head-actions {
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 body.ui-new .summary-chip,
@@ -177,14 +223,35 @@ body.ui-new .queue-pill {
   color: var(--new-text);
 }
 
+body.ui-new .summary-chip {
+  max-width: 100%;
+}
+
+body.ui-new .module-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
 body.ui-new .module-card {
   min-height: 186px;
   padding: 14px;
+  overflow: hidden;
 }
 
 body.ui-new .module-card:hover {
   border-color: #3a4450;
   transform: none;
+}
+
+body.ui-new .module-head {
+  gap: 10px;
+}
+
+body.ui-new .module-head h3,
+body.ui-new .module-note,
+body.ui-new .detail-value,
+body.ui-new .detail-text {
+  overflow-wrap: anywhere;
 }
 
 body.ui-new .module-note,
@@ -200,6 +267,20 @@ body.ui-new .passive-event,
 body.ui-new .queue-row,
 body.ui-new .logs-entry {
   border-color: var(--new-line-soft);
+}
+
+body.ui-new .passive-stats {
+  gap: 8px;
+}
+
+body.ui-new .passive-stats > div {
+  border: 1px solid var(--new-line);
+  border-radius: 8px;
+  background: var(--new-panel-2);
+}
+
+body.ui-new .passive-columns {
+  gap: 12px;
 }
 
 body.ui-new .switch-track {
@@ -239,6 +320,20 @@ body.ui-new .modal-backdrop {
   background: rgba(0, 0, 0, 0.62);
 }
 
+body.ui-new .modal-card {
+  max-height: min(86vh, 920px);
+}
+
+body.ui-new .modal-card-wide {
+  width: min(1160px, calc(100vw - 28px));
+}
+
+body.ui-new .logs-modal-card,
+body.ui-new .storage-bag-modal-card,
+body.ui-new .dungeon-modal-card {
+  width: min(1280px, calc(100vw - 28px));
+}
+
 body.ui-new .modal-header {
   border-bottom: 1px solid var(--new-line);
 }
@@ -265,8 +360,22 @@ body.ui-new .flash.error {
     padding: 0 10px;
   }
 
+  body.ui-new .topbar-brand {
+    min-width: 112px;
+  }
+
+  body.ui-new .topbar-meta {
+    display: none;
+  }
+
   body.ui-new .topbar-actions {
+    flex: 1;
     overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  body.ui-new .topbar-actions::-webkit-scrollbar {
+    display: none;
   }
 
   body.ui-new .sidebar {
@@ -275,5 +384,14 @@ body.ui-new .flash.error {
 
   body.ui-new .main-inner {
     padding: 12px;
+  }
+
+  body.ui-new .module-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body.ui-new .modal-card {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
   }
 }
