@@ -219,6 +219,8 @@ UI_STORAGE_BAG_ITEM_RULES_PATH = os.path.join(UI_PROJECT_ROOT, "data", "storage_
 UI_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 UI_TEMPLATE_DIR = os.path.join(UI_WEB_DIR, "pages")
 UI_STATIC_DIR = os.path.join(UI_WEB_DIR, "static")
+UI_WEB_NEW_DIR = os.path.join(os.path.dirname(__file__), "web_new")
+UI_NEW_STATIC_DIR = os.path.join(UI_WEB_NEW_DIR, "static")
 UI_STATIC_CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".js": "application/javascript; charset=utf-8",
@@ -3185,10 +3187,10 @@ def _render_ui_template(template_name, context):
     return template
 
 
-def _load_ui_static_asset(asset_path):
+def _load_static_asset_from(static_dir, asset_path):
     normalized_path = (asset_path or "").lstrip("/")
-    asset_full_path = os.path.normpath(os.path.join(UI_STATIC_DIR, normalized_path))
-    if not asset_full_path.startswith(UI_STATIC_DIR + os.sep):
+    asset_full_path = os.path.normpath(os.path.join(static_dir, normalized_path))
+    if not asset_full_path.startswith(static_dir + os.sep):
         return None, None
     if not os.path.isfile(asset_full_path):
         return None, None
@@ -3197,6 +3199,14 @@ def _load_ui_static_asset(asset_path):
         return None, None
     with open(asset_full_path, "rb") as fp:
         return fp.read(), content_type
+
+
+def _load_ui_static_asset(asset_path):
+    return _load_static_asset_from(UI_STATIC_DIR, asset_path)
+
+
+def _load_new_static_asset(asset_path):
+    return _load_static_asset_from(UI_NEW_STATIC_DIR, asset_path)
 
 
 def _build_session_cookie_header(session_token, *, clear=False):
@@ -3284,7 +3294,7 @@ def _render_login_page(message=""):
     )
 
 
-def render_ui_page(message="", selected_send_as_id=None, session_token=None):
+def render_ui_page(message="", selected_send_as_id=None, session_token=None, variant="legacy"):
     snapshot = get_ui_snapshot(session_token=session_token)
     selected_id = _resolve_selected_send_as_id(snapshot, selected_send_as_id)
     boot_data = json.dumps(
@@ -3295,12 +3305,16 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None):
         },
         ensure_ascii=False,
     ).replace("</", "<\\/")
+    is_new_variant = variant == "new"
     return _render_ui_template(
         "index.html",
         {
             "boot_data": boot_data,
             "ui_auto_refresh_sec": html_escape(str(UI_AUTO_REFRESH_SEC)),
             "poll_interval_ms": int(UI_AUTO_REFRESH_SEC) * 1000,
+            "new_ui_css_link": "<link rel='stylesheet' href='/static-new/css/app.css' />" if is_new_variant else "",
+            "ui_body_class": "ui-new" if is_new_variant else "ui-legacy",
+            "ui_mode_link": "<a class='topbar-btn ui-mode-entry' href='/' title='旧版UI'>旧版</a>" if is_new_variant else "<a class='topbar-btn ui-mode-entry' href='/new' title='新版UI'>新版</a>",
         },
     )
 
@@ -4516,7 +4530,16 @@ async def handle_ui_http(reader, writer):
                         _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
                     else:
                         _write_response(writer, "HTTP/1.1 200 OK", asset_body, content_type=asset_content_type)
-            elif path == "/":
+            elif path.startswith("/static-new/"):
+                if method != "GET":
+                    _write_method_not_allowed(writer)
+                else:
+                    asset_body, asset_content_type = _load_new_static_asset(path[len("/static-new/"):])
+                    if asset_body is None:
+                        _write_response(writer, "HTTP/1.1 404 Not Found", "Not Found", content_type="text/plain; charset=utf-8")
+                    else:
+                        _write_response(writer, "HTTP/1.1 200 OK", asset_body, content_type=asset_content_type)
+            elif path == "/" or path == "/new":
                 if method != "GET":
                     _write_method_not_allowed(writer)
                 elif session is None:
@@ -4530,10 +4553,15 @@ async def handle_ui_http(reader, writer):
                     )
                 else:
                     selected_send_as_id = query.get("send_as_id", [""])[0]
+                    variant = "new" if path == "/new" or query.get("ui", [""])[0] == "new" else "legacy"
                     _write_response(
                         writer,
                         "HTTP/1.1 200 OK",
-                        render_ui_page(selected_send_as_id=selected_send_as_id, session_token=(session or {}).get("session_token")),
+                        render_ui_page(
+                            selected_send_as_id=selected_send_as_id,
+                            session_token=(session or {}).get("session_token"),
+                            variant=variant,
+                        ),
                         content_type="text/html; charset=utf-8",
                         extra_headers=auth_headers,
                     )
