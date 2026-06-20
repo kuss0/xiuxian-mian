@@ -498,6 +498,20 @@ def _event_chain_id(run_state, now=None):
     return f"world_boss:{event_key}"
 
 
+def _open_event_key(parsed, now, current_msg_id=0):
+    msg_id = _coerce_int(current_msg_id, 0)
+    if msg_id > 0:
+        return f"{get_day_key(now)}:{msg_id}"
+    return str(parsed.get("event_key") or f"{get_day_key(now)}:{int(now)}")
+
+
+def _status_event_key(now, current_msg_id=0):
+    msg_id = _coerce_int(current_msg_id, 0)
+    if msg_id > 0:
+        return f"{get_day_key(now)}:status:{msg_id}"
+    return f"{get_day_key(now)}:status:{int(now)}"
+
+
 def _strong_attack_allowed(run_state):
     phase = str(run_state.get("phase") or "")
     if "第二阶段" not in phase:
@@ -704,7 +718,7 @@ async def _maybe_log_progress(run_state, now, *, force=False):
 
 async def _open_event(parsed, now, current_msg_id=0):
     run_state = _get_run_state(now)
-    event_key = str(parsed.get("event_key") or f"{get_day_key(now)}:{current_msg_id or int(now)}")
+    event_key = _open_event_key(parsed, now, current_msg_id=current_msg_id)
     if run_state.get("active") and run_state.get("event_key") == event_key:
         return True
     if run_state.get("last_open_log_key") != event_key:
@@ -726,6 +740,17 @@ async def _open_event(parsed, now, current_msg_id=0):
     run_state["next_status_query_at"] = float(now) + 15
     _set_run_state(run_state)
     return True
+
+
+def _start_world_boss_round_if_ready(now):
+    run_state = _get_run_state(now)
+    if (
+        run_state.get("active")
+        and _status_is_fresh(run_state, now)
+        and float(now) >= _coerce_float(run_state.get("next_action_at"), 0)
+        and not _world_boss_round_task_running()
+    ):
+        _start_world_boss_round_task(now)
 
 
 async def _close_event(parsed, now, *, log=True):
@@ -808,9 +833,12 @@ def _note_identity_action_reply(identity_state, action, now, *, pending_action="
 async def _handle_status(parsed, now, *, identity_id=0, current_msg_id=0):
     run_state = _get_run_state(now)
     if not run_state.get("active"):
+        _clear_world_boss_pending_tasks()
+        _reset_all_identity_event_state(persist=False)
+        run_state = _blank_run_state(now)
         run_state["active"] = True
-        run_state["event_key"] = run_state.get("event_key") or f"{get_day_key(now)}:status"
-        run_state["opened_at"] = run_state.get("opened_at") or float(now)
+        run_state["event_key"] = _status_event_key(now, current_msg_id=current_msg_id)
+        run_state["opened_at"] = float(now)
     _update_run_metrics(run_state, parsed, now, current_msg_id=current_msg_id)
     if identity_id:
         try:
@@ -822,6 +850,7 @@ async def _handle_status(parsed, now, *, identity_id=0, current_msg_id=0):
             pass
     await _maybe_log_phase_change(run_state, now)
     _set_run_state(run_state)
+    _start_world_boss_round_if_ready(now)
     return True
 
 
@@ -847,6 +876,7 @@ async def _handle_action(parsed, now, *, identity_id=0, current_msg_id=0):
     await _maybe_log_phase_change(run_state, now)
     await _maybe_log_progress(run_state, now)
     _set_run_state(run_state)
+    _start_world_boss_round_if_ready(now)
     return True
 
 

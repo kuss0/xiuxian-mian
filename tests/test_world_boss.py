@@ -412,6 +412,111 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 22 * world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["round_completed_at"])
         self.assertEqual(run_state["round_completed_at"] + world_boss.WORLD_BOSS_ROUND_GAP_SEC, world_boss._next_new_round_at(run_state))
 
+    async def test_open_broadcast_message_id_starts_new_event_even_with_same_text(self):
+        identity_id = 8659059191
+        identity_state = self._register(identity_id, label="WalterWA2000")
+        now = 1_781_318_650.0
+        stale_key = world_boss.parse_world_boss_text(OPEN_TEXT, now=now)["event_key"]
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": stale_key,
+                "opened_at": now - 120,
+                "phase": "第二阶段·斩灵压顶",
+                "last_status_at": now - 60,
+                "summary": {"镇魂": 43, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+        identity_state["world_boss_action_count"] = 5
+        identity_state["world_boss_exhausted"] = True
+
+        with (
+            patch.object(world_boss.time, "time", return_value=now),
+            patch.object(world_boss, "save_state", return_value=True),
+        ):
+            await world_boss.handle_world_boss_broadcast(OPEN_TEXT, now, event=SimpleNamespace(id=990001))
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual(f"2026-06-13:990001", run_state["event_key"])
+        self.assertTrue(run_state["active"])
+        self.assertEqual({"镇魂": 0, "护阵": 0, "强攻": 0, "破幡": 0}, run_state["summary"])
+        self.assertEqual(0, identity_state["world_boss_action_count"])
+        self.assertFalse(identity_state["world_boss_exhausted"])
+
+    async def test_status_broadcast_immediately_starts_action_round(self):
+        first_id = 8659059191
+        second_id = 3504367852
+        self._register(first_id, label="WalterWA2000")
+        self._register(second_id, label="竹节虫1")
+        now = 1_781_318_650.0
+
+        with (
+            patch.object(world_boss.time, "time", return_value=now),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(side_effect=[
+                    SimpleNamespace(id=9601, sent_at=now + 1),
+                    SimpleNamespace(id=9602, sent_at=now + 1 + world_boss.WORLD_BOSS_ACTION_GAP_SEC),
+                ]),
+            ) as send_mock,
+        ):
+            await world_boss.handle_world_boss_broadcast(OPEN_TEXT, now, event=SimpleNamespace(id=9600))
+            await world_boss.handle_world_boss_broadcast(STATUS_TEXT, now + 1, event=SimpleNamespace(id=9603))
+            await self._await_world_boss_round_task()
+
+        self.assertEqual(2, send_mock.await_count)
+        self.assertEqual([".讨伐青元子 镇魂", ".讨伐青元子 镇魂"], [call.args[0] for call in send_mock.await_args_list])
+
+    async def test_status_without_open_resets_stale_closed_event_before_actions(self):
+        first_id = 8659059191
+        second_id = 3504367852
+        first_state = self._register(first_id, label="WalterWA2000")
+        second_state = self._register(second_id, label="竹节虫1")
+        now = 1_781_318_650.0
+        state_module.set_world_boss_run_state(
+            {
+                "active": False,
+                "event_key": "2026-06-12:old",
+                "opened_at": now - 2 * 3600,
+                "closed_at": now - 1800,
+                "phase": "第二阶段·斩灵压顶",
+                "last_status_at": now - 1800,
+                "round_started_at": now - 1900,
+                "round_completed_at": now - 1850,
+                "summary": {"镇魂": 43, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+        first_state["world_boss_action_count"] = 5
+        first_state["world_boss_exhausted"] = True
+        second_state["world_boss_action_count"] = 5
+        second_state["world_boss_exhausted"] = True
+
+        with (
+            patch.object(world_boss.time, "time", return_value=now),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(side_effect=[
+                    SimpleNamespace(id=9701, sent_at=now),
+                    SimpleNamespace(id=9702, sent_at=now + world_boss.WORLD_BOSS_ACTION_GAP_SEC),
+                ]),
+            ) as send_mock,
+        ):
+            await world_boss.handle_world_boss_broadcast(STATUS_TEXT, now, event=SimpleNamespace(id=9700))
+            await self._await_world_boss_round_task()
+
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual("2026-06-13:status:9700", run_state["event_key"])
+        self.assertEqual({"镇魂": 0, "护阵": 0, "强攻": 0, "破幡": 0}, run_state["summary"])
+        self.assertEqual(2, send_mock.await_count)
+        self.assertEqual(1, first_state["world_boss_action_count"])
+        self.assertEqual(1, second_state["world_boss_action_count"])
+
     async def test_scheduler_starts_next_round_after_round_gap(self):
         first_state = self._register(301299112, label="jfdffdddd")
         second_state = self._register(3504367852, label="竹节虫1")
