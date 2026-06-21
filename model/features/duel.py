@@ -158,8 +158,8 @@ def _is_weak_or_unknown_result(text):
         username = str(profile.get("username") or "").strip().lstrip("@").lower()
         winner_match = RE_DUEL_WINNER.search(raw)
         loser_match = RE_DUEL_LOSER.search(raw)
-        if username and winner_match and winner_match.group(1).strip().lstrip("@").lower() == username:
-            return False
+        if username and winner_match:
+            return winner_match.group(1).strip().lstrip("@").lower() != username
         if username and loser_match:
             return loser_match.group(1).strip().lstrip("@").lower() == username
         return not winner_match
@@ -246,7 +246,7 @@ def get_duel_status_text():
         "🗡️ 斗法",
         f"- 已启用：{'是' if state.get('duel_enabled') else '否'}",
         f"- 目标：{target}",
-        f"- 次数：{completed_count}/{total_count if total_count > 0 else '不限'}",
+        f"- 次数：{completed_count}/{total_count if total_count > 0 else '未配置'}",
         f"- 下次执行：{fmt_abs_ts(state.get('next_duel_time', 0))}（{fmt_remaining(state.get('next_duel_time', 0))}）",
         f"- 境界门槛：{DUEL_MIN_REALM} 且修为 >{DUEL_MIN_XIUWEI}",
         f"- 当前境界：{profile.get('realm') or '未知'}",
@@ -375,6 +375,10 @@ async def run_duel_scheduler(now):
         return
 
     if _duel_next_time_blocks(now):
+        return
+
+    if total_count <= 0:
+        _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
 
     command = build_duel_command(target)

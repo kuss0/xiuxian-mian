@@ -3371,7 +3371,7 @@ async def ui_set_duel_config(send_as_id, *, target=None, total_count=None, reset
             now=time.time(),
             persist=True,
         )
-    count_text = config["total_count"] if config["total_count"] > 0 else "不限"
+    count_text = config["total_count"] if config["total_count"] > 0 else "未配置"
     return True, f"斗法配置已更新：{config['target'] or '未配置'}｜次数 {count_text}"
 
 

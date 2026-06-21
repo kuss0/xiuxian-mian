@@ -4565,7 +4565,7 @@ async def _handle_duel_config_command(event, text, explicit_identity_id=None):
             [
                 f"身份：{get_identity_display_name(explicit_identity_id)}",
                 f"目标：{config['target'] or '未配置'}",
-                f"次数：{config['total_count'] if config['total_count'] > 0 else '不限'}",
+                f"次数：{config['total_count'] if config['total_count'] > 0 else '未配置'}",
                 "进度：已重置",
             ]
         )
