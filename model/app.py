@@ -138,6 +138,7 @@ from .features.yuanying import (
     run_yuanying_scheduler,
 )
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
+from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
 from .features.wild_training import handle_wild_training_reply, run_wild_training_scheduler
 from .persistence import (
     flush_if_dirty,
@@ -237,6 +238,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_small_world_scheduler,
     run_explore_rift_scheduler,
     run_wendao_scheduler,
+    run_duel_scheduler,
     run_tree_bootstrap_check,
     run_tree_scheduler,
     run_checkin_scheduler,
@@ -292,6 +294,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_tree_bootstrap_check": {"manifest_names": ("灵树",), "helper": True},
     "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
     "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
+    "run_duel_scheduler": {"manifest_names": ("斗法",), "helper": False},
     "run_wild_training_scheduler": {"manifest_names": ("野外历练",), "helper": False},
     "run_yinluo_scheduler": {"manifest_names": ("阴罗宗",), "helper": False},
     "run_yuanying_scheduler": {"manifest_names": ("元婴",), "helper": False},
@@ -408,6 +411,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "tianti_gangfeng": ("九天罡风", "罡风", "再聚"),
     "yuanying": ("元婴", "出窍", "归窍", "法则碎片", "探寻"),
     "wendao": ("问道", "问道得宝", "宗门长老", "天机不可频繁窥探"),
+    "duel": ("斗法", "天道战报", "斗法终局", "正在锁定对手天机", "法宝齐出", "战斗结束，正在整理天道战报"),
     "deep_retreat": ("深度闭关", "闭关", "神魂", "功成圆满", "总结"),
     "small_world_preach": ("小世界", "香火", "信仰", "神识", "神迹"),
     "small_world_relief": ("小世界", "赈灾", "甘霖", "神谕", "稳定", "人口"),
@@ -823,6 +827,17 @@ async def _dispatch_world_boss_broadcast_fallbacks(event, text, now):
         await handle_world_boss_broadcast(text, now, event=event)
 
 
+async def _dispatch_duel_broadcast_fallbacks(event, text, now):
+    raw_text = str(text or "")
+    if not (
+        raw_text.startswith("【天道战报·文字版】")
+        or raw_text.startswith("【斗法终局】")
+    ):
+        return
+    if _claim_runtime_event(event, scope="duel_broadcast"):
+        await _run_until_handled_for_enabled_identities(handle_duel_broadcast, text, now, event)
+
+
 async def _dispatch_nanlong_result_broadcast_fallbacks(event, text, now):
     if _claim_runtime_event(event, scope="nanlong_result"):
         await _run_until_handled_for_enabled_identities(handle_nanlong_result_broadcast, text, now, event)
@@ -1128,6 +1143,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 matched_family=matched_family,
                 result_msg_id=event.id,
             ) or handled_any
+            handled_any = await handle_duel_reply(
+                text,
+                now,
+                reply_to,
+                matched_family=matched_family,
+                result_msg_id=event.id,
+            ) or handled_any
             if not tree_runtime_archived:
                 handled_any = await handle_tree_exception_prompt(text, now) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -1304,6 +1326,7 @@ async def on_message(event):
         await _dispatch_formation_broadcast_fallbacks(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="message")
         await _dispatch_small_world_broadcast_fallbacks(event, text, now)
         await _dispatch_world_boss_broadcast_fallbacks(event, text, now)
+        await _dispatch_duel_broadcast_fallbacks(event, text, now)
         await _dispatch_nanlong_result_broadcast_fallbacks(event, text, now)
         await _dispatch_concubine_affinity_fallbacks(event, text, now)
         await _dispatch_second_soul_broadcast_fallbacks(event, text, now)
@@ -1415,6 +1438,7 @@ async def on_message_edited(event):
         await _dispatch_message_edited_guanxing_monitor(event, text, now)
         await _dispatch_formation_broadcast_fallbacks(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")
         await _dispatch_world_boss_broadcast_fallbacks(event, text, now)
+        await _dispatch_duel_broadcast_fallbacks(event, text, now)
         await _dispatch_message_edited_tiandao_judgement_prompt(event, text, now)
         await _dispatch_message_edited_broadcasts(event, text, now, (("ranch_return_edit", handle_ranch_return_broadcast),))
         await _dispatch_concubine_affinity_fallbacks(event, text, now)

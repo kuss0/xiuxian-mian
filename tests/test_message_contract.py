@@ -518,7 +518,7 @@ class MessageContractTests(unittest.TestCase):
         payload = json.loads(out.getvalue())
         readiness = payload["readiness"]
         rows = {row["module"]: row for row in readiness["modules"]}
-        self.assertEqual(31, readiness["totals"]["sample_complete_modules"])
+        self.assertEqual(32, readiness["totals"]["sample_complete_modules"])
         self.assertEqual(1, readiness["totals"]["sample_partial_modules"])
         self.assertEqual(0, readiness["totals"]["sample_missing_modules"])
         self.assertEqual(3, readiness["totals"]["contract_only_modules"])

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from ..config import (
     CMD_QINGYUANZI_ATTACK,
+    CMD_QINGYUANZI_BREAK,
     CMD_QINGYUANZI_GUARD,
     CMD_QINGYUANZI_SUPPRESS,
     CMD_WORLD_BOSS_STATUS,
@@ -31,6 +32,7 @@ WORLD_BOSS_MODULE_NAME = "真仙试锋"
 WORLD_BOSS_ACTIONS = {"镇魂", "护阵", "强攻", "破幡"}
 WORLD_BOSS_MAINTENANCE_ACTIONS = {"镇魂", "护阵"}
 WORLD_BOSS_ACTION_COMMANDS = {
+    "破幡": CMD_QINGYUANZI_BREAK,
     "镇魂": CMD_QINGYUANZI_SUPPRESS,
     "护阵": CMD_QINGYUANZI_GUARD,
     "强攻": CMD_QINGYUANZI_ATTACK,
@@ -52,6 +54,7 @@ WORLD_BOSS_FALLBACK_END_MINUTE = 14 * 60 + 10
 WORLD_BOSS_PENDING_MAX_RETRY = 2
 WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN = 35
 WORLD_BOSS_PHASE_TWO_GUARD_MOYA_LIMIT = 95
+WORLD_BOSS_OPENING_GROUP_SIZE = 11
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {f"{CMD_WORLD_BOSS_STATUS} 查看战况"}
@@ -473,6 +476,29 @@ def _enabled_identity_ids():
     return result
 
 
+def _opening_action_for_identity(identity_id, identity_state):
+    action_count = _coerce_int(identity_state.get("world_boss_action_count"), 0)
+    if action_count not in {0, 1}:
+        return ""
+    enabled_ids = sorted(_enabled_identity_ids())
+    if not enabled_ids:
+        return ""
+    try:
+        index = enabled_ids.index(int(identity_id))
+    except ValueError:
+        return ""
+    group_size = min(WORLD_BOSS_OPENING_GROUP_SIZE, max(1, (len(enabled_ids) + 1) // 2))
+    first_group = index < group_size
+    if action_count == 0:
+        return "破幡" if first_group else "镇魂"
+    return "镇魂" if first_group else "破幡"
+
+
+def _opening_strategy_active(run_state):
+    phase = str(run_state.get("phase") or "")
+    return not phase or "第一阶段" in phase
+
+
 def _strong_attacker(identity_id):
     if int(identity_id or 0) in WORLD_BOSS_STRONG_ATTACK_IDS:
         return True
@@ -575,6 +601,10 @@ def choose_world_boss_action(identity_id, identity_state, run_state, now=None):
     action_limit = max(1, _coerce_int(identity_state.get("world_boss_action_limit"), WORLD_BOSS_DEFAULT_ACTION_LIMIT))
     if _coerce_int(identity_state.get("world_boss_action_count"), 0) >= action_limit:
         return ""
+    if _opening_strategy_active(run_state):
+        opening_action = _opening_action_for_identity(identity_id, identity_state)
+        if opening_action:
+            return opening_action
     if _strong_attack_allowed(run_state) and _strong_attacker(identity_id):
         attack_count = _coerce_int(identity_state.get("world_boss_attack_count"), 0)
         if attack_count < WORLD_BOSS_STRONG_ATTACK_LIMIT:
@@ -709,7 +739,7 @@ async def _maybe_log_progress(run_state, now, *, force=False):
     run_state["last_summary_log_at"] = float(now)
     run_state["last_summary_log_total"] = total
     await send_audit_log(
-        f"🗡 真仙试锋进度：{run_state.get('phase') or '阶段未明'}｜血量 {run_state.get('hp_percent', '?')}%｜魔压 {run_state.get('moya', '?')}/100｜阵势 {run_state.get('zhen', '?')}/120｜镇魂 {summary['镇魂']}｜护阵 {summary['护阵']}｜强攻 {summary['强攻']}",
+        f"🗡 真仙试锋进度：{run_state.get('phase') or '阶段未明'}｜血量 {run_state.get('hp_percent', '?')}%｜魔压 {run_state.get('moya', '?')}/100｜阵势 {run_state.get('zhen', '?')}/120｜破幡 {summary['破幡']}｜镇魂 {summary['镇魂']}｜护阵 {summary['护阵']}｜强攻 {summary['强攻']}",
         scope="global",
         priority="low",
         limit=260,
@@ -777,7 +807,7 @@ async def _close_event(parsed, now, *, log=True):
         await _maybe_log_progress(run_state, now, force=True)
         summary = _normalize_summary(run_state.get("summary"))
         await send_audit_log(
-            f"🗡 真仙试锋{result}：参战 {run_state.get('participants') or participants or '未知'}｜本脚本确认 镇魂 {summary['镇魂']} / 护阵 {summary['护阵']} / 强攻 {summary['强攻']}。",
+            f"🗡 真仙试锋{result}：参战 {run_state.get('participants') or participants or '未知'}｜本脚本确认 破幡 {summary['破幡']} / 镇魂 {summary['镇魂']} / 护阵 {summary['护阵']} / 强攻 {summary['强攻']}。",
             scope="global",
             priority="medium",
             limit=320,
@@ -1222,7 +1252,7 @@ def get_world_boss_status_text():
         f"- 阶段：{run_state.get('phase') or '未知'}",
         f"- 战况：血量 {run_state.get('hp_percent', '?')}%｜魔压 {run_state.get('moya', '?')}/100｜阵势 {run_state.get('zhen', '?')}/120",
         f"- 本身份：出手 {state.get('world_boss_action_count', 0)}/{state.get('world_boss_action_limit', WORLD_BOSS_DEFAULT_ACTION_LIMIT)}｜强攻 {state.get('world_boss_attack_count', 0)}/{WORLD_BOSS_STRONG_ATTACK_LIMIT}｜{'已耗尽' if state.get('world_boss_exhausted') else '可参与'}",
-        f"- 全局确认：镇魂 {summary['镇魂']}｜护阵 {summary['护阵']}｜强攻 {summary['强攻']}",
+        f"- 全局确认：破幡 {summary['破幡']}｜镇魂 {summary['镇魂']}｜护阵 {summary['护阵']}｜强攻 {summary['强攻']}",
         f"- 待回复：{pending_text}",
         f"- 下次动作：{fmt_abs_ts(next_action_at)}（{fmt_remaining(next_action_at)}）",
         f"- 最近错误：{last_error}",

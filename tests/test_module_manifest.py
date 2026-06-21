@@ -75,6 +75,7 @@ class ModuleManifestTests(unittest.TestCase):
                 "侍妾远航",
                 "南陇侯",
                 "问道",
+                "斗法",
                 "小世界",
                 "卜筮问天",
                 "点卯",
@@ -348,13 +349,13 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(35, summary["totals"]["active_modules"])
+        self.assertEqual(36, summary["totals"]["active_modules"])
         self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(85, summary["totals"]["reply_families"])
+        self.assertEqual(86, summary["totals"]["reply_families"])
         self.assertEqual(0, summary["totals"]["archived_reply_families"])
-        self.assertEqual(84, summary["totals"]["covered_sample_families"])
+        self.assertEqual(85, summary["totals"]["covered_sample_families"])
         self.assertEqual(1, summary["totals"]["missing_sample_families"])
-        self.assertEqual(31, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(32, summary["totals"]["sample_complete_modules"])
         self.assertEqual(1, summary["totals"]["sample_partial_modules"])
         self.assertEqual(0, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])

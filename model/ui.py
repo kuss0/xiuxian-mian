@@ -85,6 +85,7 @@ from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LIST
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
+from .features.duel import apply_duel_config, normalize_duel_target
 from .features.yuanying import get_yuanying_phase_text
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -2929,6 +2930,12 @@ def get_identity_ui_snapshot(send_as_id):
             "tianti_rank_choices": list(TIANTI_RANK_CHOICES),
             "wild_training_strategy": get_wild_training_strategy(send_as_id),
             "wild_training_strategy_choices": ["谨慎", "均衡", "深入"],
+            "duel_target": identity_state.get("duel_target") or "",
+            "duel_total_count": int(identity_state.get("duel_total_count", 0) or 0),
+            "duel_completed_count": int(identity_state.get("duel_completed_count", 0) or 0),
+            "duel_next_time": fmt_abs_ts(identity_state.get("next_duel_time", 0) or 0),
+            "duel_last_result": identity_state.get("duel_last_result") or "",
+            "duel_last_error": identity_state.get("duel_last_error") or "",
             "divination_daily_limit": get_divination_daily_limit(send_as_id),
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
             "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
@@ -3348,6 +3355,24 @@ async def ui_set_module_enabled(send_as_id, module_name, enabled):
         return False, message or f"切换失败: {module_name}"
     action_text = "开启" if enabled else "关闭"
     return True, f"已{action_text}{module_name}[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_duel_config(send_as_id, *, target=None, total_count=None, reset_progress=False):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    if target is not None and not normalize_duel_target(target):
+        return False, "斗法目标不能为空"
+    with use_identity(send_as_id):
+        config = apply_duel_config(
+            target=target,
+            total_count=total_count,
+            reset_progress=bool(reset_progress),
+            now=time.time(),
+            persist=True,
+        )
+    count_text = config["total_count"] if config["total_count"] > 0 else "不限"
+    return True, f"斗法配置已更新：{config['target'] or '未配置'}｜次数 {count_text}"
 
 
 async def ui_set_pet_name(send_as_id, pet_name, pet_warm_name=None, pet_trial_name=None):
@@ -5192,6 +5217,23 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_wild_training_strategy(send_as_id, choice)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/duel-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_duel_config(
+                            send_as_id,
+                            target=payload.get("target") if "target" in payload else None,
+                            total_count=payload.get("total_count") if "total_count" in payload else None,
+                            reset_progress=_coerce_ui_bool(payload.get("reset_progress")),
+                        )
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/second-soul-choice-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -5446,6 +5488,7 @@ __all__ = [
     "ui_set_yinluo_auto_config",
     "ui_set_module_window",
     "ui_set_pet_name",
+    "ui_set_duel_config",
     "ui_set_small_world_feature_enabled",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",

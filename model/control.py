@@ -44,6 +44,7 @@ from .config import (
     CMD_PET_WARM,
     CMD_PET_TRIAL,
     CMD_QINGYUANZI_ATTACK,
+    CMD_QINGYUANZI_BREAK,
     CMD_QINGYUANZI_GUARD,
     CMD_QINGYUANZI_SUPPRESS,
     CMD_QUIZ_ANSWER,
@@ -82,6 +83,7 @@ from .config import (
     CMD_TREE_WATER,
     CMD_WILD_TRAINING,
     CMD_WENDAO,
+    CMD_DUEL,
     CMD_WORLD_BOSS_STATUS,
     CMD_YINDAO,
     CMD_YINLUO_BANNER,
@@ -178,6 +180,7 @@ from .features.explore_rift import (
     schedule_explore_rift_initial_check,
 )
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
+from .features.duel import apply_duel_config, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
 from .app_replica import (
@@ -264,6 +267,7 @@ RE_BATTLE_POWER_CARD = re.compile(r"📊\s*【天机阁[\s\S]*?战力评估】")
 RE_CMD_PASSIVE_INBOX_STATUS = re.compile(r"^\.(?:消息盒子|被动|被动盒子)(?:状态)?$")
 RE_CMD_MESSAGE_BOX_SHADOW = re.compile(r"^\.(?:消息盒子shadow|shadow消息盒子|消息盒子影子)(?:\s+(\d{1,5}))?$", re.I)
 RE_CMD_MESSAGE_CONTRACT_STATUS = re.compile(r"^\.(?:消息契约|契约缺口)(?:状态)?(?:\s+([\w_\-\u4e00-\u9fff]+))?$")
+RE_CMD_DUEL_CONFIG = re.compile(r"^\.(?:设置斗法|斗法配置)\s+(\S+)(?:\s+(\d+))?$")
 RE_CMD_DUNGEON_QUERY_ALIAS = re.compile(r"^\.(?:查询副本|查询\s*(?:副本|虚天殿|虚天|坠魔谷|坠魔|黄龙山|黄龙|苍坤洞府|苍坤|昆吾山|昆吾|落云秘圃|落云)|查询(?:虚|昆|苍|坠|黄|落))$")
 RE_CMD_DUNGEON_CD_OVERVIEW = re.compile(r"^\.(?:副本(?:cd|冷却)(?:概览)?|查询副本(?:cd|冷却)(?:概览)?)$", re.I)
 RE_CMD_DUNGEON_HELP = re.compile(r"^\.副本帮助$")
@@ -331,6 +335,7 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_yuanying_time",
     "next_explore_rift_time",
     "next_wendao_time",
+    "next_duel_time",
     "next_deep_retreat_time",
     "next_second_soul_time",
     "next_taiyi_cycle_time",
@@ -534,6 +539,9 @@ def _schedule_module_immediate_retry(module_name, now):
         return retry_at
     if module_name == "问道":
         state["next_wendao_time"] = retry_at
+        return retry_at
+    if module_name == "斗法":
+        state["next_duel_time"] = retry_at
         return retry_at
     if module_name == "深度闭关":
         state["next_deep_retreat_time"] = retry_at
@@ -986,6 +994,12 @@ def _disable_wendao_module_state():
     _clear_pending_tasks_by_commands({CMD_WENDAO})
 
 
+def _disable_duel_module_state():
+    state["duel_enabled"] = False
+    clear_duel_state(persist=False, keep_last_error=True, keep_config=True)
+    _clear_pending_tasks_by_commands({CMD_DUEL})
+
+
 def _get_checkin_resume_time():
     return float(state.get("next_checkin_time", 0) or 0)
 
@@ -1261,6 +1275,24 @@ def _manual_enable_wendao_module_state(now):
     state["next_wendao_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
 
 
+def _manual_disable_duel_module_state():
+    _disable_duel_module_state()
+
+
+def _manual_enable_duel_module_state(now):
+    state["duel_enabled"] = True
+    state["duel_last_error"] = ""
+    if float(state.get("next_duel_time", 0) or 0) > now:
+        return
+    state["duel_reply_to_msg_id"] = 0
+    state["duel_reply_due_at"] = 0
+    state["duel_open_msg_id"] = 0
+    state["duel_magic_due_at"] = 0
+    state["duel_magic_sent_at"] = 0
+    state["duel_started_at"] = 0
+    state["next_duel_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+
+
 def _clear_explore_rift_runtime():
     state["next_explore_rift_time"] = 0
     state["explore_rift_reply_to_msg_id"] = 0
@@ -1288,7 +1320,7 @@ def _manual_enable_explore_rift_module_state(now):
 def _manual_disable_world_boss_module_state():
     state["world_boss_enabled"] = False
     clear_world_boss_identity_state(persist=False)
-    _clear_pending_tasks_by_commands({CMD_WORLD_BOSS_STATUS, CMD_QINGYUANZI_SUPPRESS, CMD_QINGYUANZI_GUARD, CMD_QINGYUANZI_ATTACK})
+    _clear_pending_tasks_by_commands({CMD_WORLD_BOSS_STATUS, CMD_QINGYUANZI_BREAK, CMD_QINGYUANZI_SUPPRESS, CMD_QINGYUANZI_GUARD, CMD_QINGYUANZI_ATTACK})
 
 
 def _manual_enable_world_boss_module_state(now):
@@ -1441,6 +1473,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_SMALL_WORLD_PREACH: "小世界",
     CMD_SMALL_WORLD_RELIEF: "小世界",
     CMD_WORLD_BOSS_STATUS: "真仙试锋",
+    CMD_QINGYUANZI_BREAK: "真仙试锋",
     CMD_QINGYUANZI_SUPPRESS: "真仙试锋",
     CMD_QINGYUANZI_GUARD: "真仙试锋",
     CMD_QINGYUANZI_ATTACK: "真仙试锋",
@@ -1453,6 +1486,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_YUANYING_STATUS: "元婴",
     CMD_EXPLORE_RIFT: "探寻裂缝",
     CMD_WENDAO: "问道",
+    CMD_DUEL: "斗法",
     CMD_DEEP_RETREAT: "深度闭关",
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
     CMD_DIVINATION: "卜筮问天",
@@ -1493,6 +1527,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "闯塔": (_manual_enable_tower_module_state, _manual_disable_tower_module_state),
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
     "问道": (_manual_enable_wendao_module_state, _manual_disable_wendao_module_state),
+    "斗法": (_manual_enable_duel_module_state, _manual_disable_duel_module_state),
     "深度闭关": (_manual_enable_deep_retreat_module_state, _manual_disable_deep_retreat_module_state),
     "第二元神": (_manual_enable_second_soul_module_state, _manual_disable_second_soul_module_state),
     "太一": (_manual_enable_taiyi_module_state, _manual_disable_taiyi_module_state),
@@ -1523,6 +1558,7 @@ MODULE_DISABLE_HANDLERS = {
     "元婴": _disable_yuanying_module_state,
     "探寻裂缝": _manual_disable_explore_rift_module_state,
     "问道": _disable_wendao_module_state,
+    "斗法": _disable_duel_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "第二元神": _disable_second_soul_module_state,
     "太一": _disable_taiyi_module_state,
@@ -1781,6 +1817,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "元婴": get_yuanying_status_detail_text,
         "探寻裂缝": get_explore_rift_status_text,
         "问道": get_wendao_status_text,
+        "斗法": get_duel_status_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "卜筮问天": get_divination_status_text,
         "点卯": get_checkin_status_text,
@@ -2917,6 +2954,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             schedule_explore_rift_initial_check(now, persist=False, keep_last_error=True)
         if state.get("wendao_enabled") and float(state.get("next_wendao_time", 0) or 0) <= 0:
             schedule_wendao_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("duel_enabled") and float(state.get("next_duel_time", 0) or 0) <= 0:
+            schedule_duel_initial_check(now, persist=False, keep_last_error=True)
         if state["second_soul_enabled"]:
             _restore_second_soul_runtime(now)
         if state["taiyi_enabled"]:
@@ -4506,6 +4545,39 @@ async def _handle_storage_bag_api_refresh_command(event, explicit_identity_id=No
     return True
 
 
+async def _handle_duel_config_command(event, text, explicit_identity_id=None):
+    match = RE_CMD_DUEL_CONFIG.match(text)
+    if not match:
+        return False
+    if explicit_identity_id is None:
+        await _reply_log_group_card(
+            event,
+            "斗法配置",
+            "必须指定单个身份：.设置斗法 <目标> [次数] @身份",
+            error_prefix="❌ 斗法配置回复失败",
+        )
+        return True
+    target = match.group(1)
+    total_count = match.group(2)
+    with use_identity(explicit_identity_id):
+        config = apply_duel_config(target=target, total_count=total_count, reset_progress=True, now=time.time(), persist=True)
+        body = "\n".join(
+            [
+                f"身份：{get_identity_display_name(explicit_identity_id)}",
+                f"目标：{config['target'] or '未配置'}",
+                f"次数：{config['total_count'] if config['total_count'] > 0 else '不限'}",
+                "进度：已重置",
+            ]
+        )
+    await _reply_log_group_card(
+        event,
+        "斗法配置",
+        body,
+        error_prefix="❌ 斗法配置回复失败",
+    )
+    return True
+
+
 THREE_SECT_MANUAL_USAGE = (
     "三宗门手动发送必须指定单个身份：\n"
     "- .合欢温养 @身份\n"
@@ -4701,6 +4773,9 @@ async def handle_log_group_command(event):
 
     if RE_CMD_STORAGE_BAG_API_REFRESH.match(text):
         return await _handle_storage_bag_api_refresh_command(event, explicit_identity_id)
+
+    if await _handle_duel_config_command(event, text, explicit_identity_id):
+        return True
 
     if await _handle_xutian_followup_manual_command(event, text, explicit_identity_id):
         return True

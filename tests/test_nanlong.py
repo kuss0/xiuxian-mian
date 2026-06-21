@@ -465,6 +465,57 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["nanlong_last_msg_id"])
             self.assertEqual("", state_module.state["nanlong_last_error"])
 
+    async def test_protected_trade_confirmation_clears_prompt_anchor_before_recall_retry(self):
+        now = 1_781_389_500.0
+        identity_id = 991304
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="nan", enabled=True)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["nanlong_enabled"] = True
+            state_module.state["nanlong_reply_to_msg_id"] = 10672233
+            state_module.state["next_nanlong_time"] = now + 300
+            state_module.state["nanlong_reply_due_at"] = now + 60
+            state_module.state["nanlong_last_msg_id"] = 10672294
+            state_module.state["nanlong_last_command"] = ".交换 功法"
+            state_module.state["nanlong_protect_phase"] = "exchange_pending"
+
+            async def fake_recall(command, **kwargs):
+                return SimpleNamespace(id=10672365, sent_at=now + 1)
+
+            with (
+                patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=fake_recall)) as send_mock,
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+                patch.object(nanlong, "save_state"),
+            ):
+                handled = await nanlong.handle_nanlong_result_broadcast(
+                    real_text("nanlong.result.trade"),
+                    now,
+                    SimpleNamespace(id=10672295),
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_awaited_once_with(".召回侍妾", track=False)
+            self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["next_nanlong_time"])
+            self.assertEqual("recall_pending", state_module.state["nanlong_protect_phase"])
+            self.assertEqual(".召回侍妾", state_module.state["nanlong_last_command"])
+
+            async def fake_recall_retry(command, **kwargs):
+                return SimpleNamespace(id=10672390, sent_at=now + 62)
+
+            with (
+                patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=fake_recall_retry)) as send_mock,
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()),
+                patch.object(nanlong, "save_state"),
+            ):
+                await nanlong.run_nanlong_scheduler(now + 62)
+
+            send_mock.assert_awaited_once_with(".召回侍妾", track=False)
+            self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["next_nanlong_time"])
+            self.assertEqual("recall_pending", state_module.state["nanlong_protect_phase"])
+
 
 if __name__ == "__main__":
     unittest.main()

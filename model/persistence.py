@@ -226,6 +226,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN dungeon_join_enabled INTEGER NOT NULL DEFAULT 0")
     if "wendao_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN wendao_enabled INTEGER NOT NULL DEFAULT 0")
+    if "duel_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN duel_enabled INTEGER NOT NULL DEFAULT 0")
     if "explore_rift_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN explore_rift_enabled INTEGER NOT NULL DEFAULT 0")
     if "sect_teach_enabled" not in module_columns:
@@ -320,6 +322,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_explore_rift_time REAL NOT NULL DEFAULT 0")
     if "next_wendao_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wendao_time REAL NOT NULL DEFAULT 0")
+    if "next_duel_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_duel_time REAL NOT NULL DEFAULT 0")
     if "next_formation_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_formation_time REAL NOT NULL DEFAULT 0")
     if "formation_cooldown_until" not in timer_columns:
@@ -793,6 +797,30 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_result TEXT NOT NULL DEFAULT ''")
     if "wendao_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_error TEXT NOT NULL DEFAULT ''")
+    if "duel_target" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_target TEXT NOT NULL DEFAULT ''")
+    if "duel_total_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_total_count INTEGER NOT NULL DEFAULT 0")
+    if "duel_completed_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_completed_count INTEGER NOT NULL DEFAULT 0")
+    if "duel_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "duel_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "duel_open_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_open_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "duel_magic_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_magic_due_at REAL NOT NULL DEFAULT 0")
+    if "duel_magic_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_magic_sent_at REAL NOT NULL DEFAULT 0")
+    if "duel_started_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_started_at REAL NOT NULL DEFAULT 0")
+    if "duel_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "duel_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_result TEXT NOT NULL DEFAULT ''")
+    if "duel_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_error TEXT NOT NULL DEFAULT ''")
     if "explore_rift_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "explore_rift_reply_due_at" not in runtime_columns:
@@ -1023,6 +1051,7 @@ def init_db():
             second_soul_enabled INTEGER NOT NULL DEFAULT 0,
             second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1,
             wendao_enabled INTEGER NOT NULL DEFAULT 0,
+            duel_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -1067,6 +1096,7 @@ def init_db():
             next_yuanying_time REAL NOT NULL,
             next_explore_rift_time REAL NOT NULL DEFAULT 0,
             next_wendao_time REAL NOT NULL DEFAULT 0,
+            next_duel_time REAL NOT NULL DEFAULT 0,
             next_formation_time REAL NOT NULL DEFAULT 0,
             formation_cooldown_until REAL NOT NULL DEFAULT 0,
             next_deep_retreat_time REAL NOT NULL,
@@ -1319,6 +1349,18 @@ def init_db():
             wendao_last_msg_id INTEGER NOT NULL DEFAULT 0,
             wendao_last_result TEXT NOT NULL DEFAULT '',
             wendao_last_error TEXT NOT NULL DEFAULT '',
+            duel_target TEXT NOT NULL DEFAULT '',
+            duel_total_count INTEGER NOT NULL DEFAULT 0,
+            duel_completed_count INTEGER NOT NULL DEFAULT 0,
+            duel_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            duel_reply_due_at REAL NOT NULL DEFAULT 0,
+            duel_open_msg_id INTEGER NOT NULL DEFAULT 0,
+            duel_magic_due_at REAL NOT NULL DEFAULT 0,
+            duel_magic_sent_at REAL NOT NULL DEFAULT 0,
+            duel_started_at REAL NOT NULL DEFAULT 0,
+            duel_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            duel_last_result TEXT NOT NULL DEFAULT '',
+            duel_last_error TEXT NOT NULL DEFAULT '',
             deep_retreat_phase TEXT NOT NULL,
             deep_retreat_probe_pending INTEGER NOT NULL,
             deep_retreat_waiting_logged INTEGER NOT NULL DEFAULT 0,

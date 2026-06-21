@@ -184,6 +184,7 @@ _MANIFESTS = (
     ModuleManifest("南陇侯", MODULE_KEY_MAP["南陇侯"], reply_families=("nanlong",), replay_required=False, duplicate_guard="prompt_claim"),
     ModuleManifest("元婴", MODULE_KEY_MAP["元婴"], replay_modules=("yuanying",), reply_families=("yuanying",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful"),
     ModuleManifest("问道", MODULE_KEY_MAP["问道"], replay_modules=("wendao",), reply_families=("wendao",), replay_required=False, duplicate_guard="reply_msg_id"),
+    ModuleManifest("斗法", MODULE_KEY_MAP["斗法"], replay_modules=("duel",), reply_families=("duel",), replay_required=False, duplicate_guard="reply_msg_id"),
     ModuleManifest("深度闭关", MODULE_KEY_MAP["深度闭关"], replay_modules=("deep_retreat",), reply_families=("deep_retreat",), send_policy=SEND_POLICY_PASSIVE_FIRST, active_query_policy=ACTIVE_QUERY_LAST_RESORT, duplicate_guard="phaseful", workflow_names=("deep_retreat",)),
     ModuleManifest("小世界", MODULE_KEY_MAP["小世界"], replay_modules=("small_world",), reply_families=("small_world_preach", "small_world_relief", "small_world_query", "small_world_manifest", "small_world_harvest", "small_world_refine"), replay_required=False, duplicate_guard="phase"),
     ModuleManifest("卜筮问天", MODULE_KEY_MAP["卜筮问天"], replay_modules=("divination",), reply_families=("divination", "divination_exchange"), replay_required=False, duplicate_guard="reply_msg_id"),

@@ -63,6 +63,13 @@ GUARD_REPLY = (
     "当前：[██████████████████] 100% ｜ 幡魂 9 ｜ 魔压 38/100 ｜ 阵势 92/120"
 )
 
+BREAK_REPLY = (
+    "【讨伐青元子】\n"
+    "你斩落幡魂一角，推进破幡进度。\n"
+    "【青元反击·七焰扇·万火归源】｜魔压 +2｜你被真仙余威震伤，修为 -1854。\n"
+    "当前：[██████████████████] 100% ｜ 幡魂 8 ｜ 魔压 38/100 ｜ 阵势 92/120"
+)
+
 ATTACK_REPLY = (
     "【讨伐青元子】\n"
     "你祭出攻势，造成 3.30亿亿 伤害。\n"
@@ -117,6 +124,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         status = world_boss.parse_world_boss_text(STATUS_TEXT, now=1_781_318_000.0)
         suppress = world_boss.parse_world_boss_text(SUPPRESS_REPLY, now=1_781_318_000.0)
         guard = world_boss.parse_world_boss_text(GUARD_REPLY, now=1_781_318_000.0)
+        break_flag = world_boss.parse_world_boss_text(BREAK_REPLY, now=1_781_318_000.0)
         attack = world_boss.parse_world_boss_text(ATTACK_REPLY, now=1_781_318_000.0)
         exhausted = world_boss.parse_world_boss_text("你本期真仙试锋出手已尽。（5/5）")
         inactive = world_boss.parse_world_boss_text("当前没有进行中的【真仙试锋】。")
@@ -134,6 +142,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("镇魂", suppress["action"])
         self.assertEqual(89, suppress["moya"])
         self.assertEqual("护阵", guard["action"])
+        self.assertEqual("破幡", break_flag["action"])
         self.assertEqual("强攻", attack["action"])
         self.assertEqual("3.30亿亿", attack["damage"])
         self.assertEqual("exhausted", exhausted["type"])
@@ -337,7 +346,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             first_send_args = send_mock.await_args_list[0]
             second_send_args = send_mock.await_args_list[1]
 
-        self.assertEqual(".讨伐青元子 镇魂", first_send_args.args[0])
+        self.assertEqual(".讨伐青元子 破幡", first_send_args.args[0])
         self.assertEqual(".讨伐青元子 镇魂", second_send_args.args[0])
         self.assertEqual(0, first_send_args.kwargs["max_retry"])
         self.assertEqual("event_burst", first_send_args.kwargs["priority"])
@@ -361,7 +370,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 2 * world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["round_completed_at"])
         self.assertEqual(run_state["round_completed_at"] + world_boss.WORLD_BOSS_ROUND_GAP_SEC, run_state["next_action_at"])
 
-    async def test_scheduler_sends_twenty_two_identity_round_before_next_round_gap(self):
+    async def test_scheduler_opening_two_rounds_assigns_break_flag_once_per_identity(self):
         identity_ids = [3_100_000_000 + index for index in range(22)]
         for identity_id in identity_ids:
             self._register(identity_id, label=f"真仙{identity_id}")
@@ -380,8 +389,13 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
                 "summary": {"镇魂": 0, "护阵": 0, "强攻": 0, "破幡": 0},
             }
         )
-        sends = [
+        run1_sends = [
             SimpleNamespace(id=9500 + index, sent_at=now + index * world_boss.WORLD_BOSS_ACTION_GAP_SEC)
+            for index in range(len(identity_ids))
+        ]
+        next_round_at = now + 22 * world_boss.WORLD_BOSS_ACTION_GAP_SEC + world_boss.WORLD_BOSS_ROUND_GAP_SEC
+        run2_sends = [
+            SimpleNamespace(id=9600 + index, sent_at=next_round_at + index * world_boss.WORLD_BOSS_ACTION_GAP_SEC)
             for index in range(len(identity_ids))
         ]
 
@@ -389,28 +403,71 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             patch.object(world_boss.time, "time", return_value=now),
             patch.object(world_boss, "save_state", return_value=True),
             patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
-            patch.object(world_boss, "send_game_command", new=AsyncMock(side_effect=sends)) as send_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock(side_effect=run1_sends + run2_sends)) as send_mock,
         ):
             await world_boss.run_world_boss_scheduler(now)
             await self._await_world_boss_round_task()
+            for identity_id in identity_ids:
+                world_boss._clear_world_boss_pending_action(state_module.get_identity_state(identity_id))
+            await world_boss.run_world_boss_scheduler(next_round_at)
+            await self._await_world_boss_round_task()
 
-        self.assertEqual(22, send_mock.await_count)
-        self.assertEqual(identity_ids, [call.kwargs["send_as_id"] for call in send_mock.await_args_list])
-        sent_identity_ids = [call.kwargs["send_as_id"] for call in send_mock.await_args_list]
+        self.assertEqual(44, send_mock.await_count)
+        first_round = send_mock.await_args_list[:22]
+        second_round = send_mock.await_args_list[22:]
+        self.assertEqual(identity_ids, [call.kwargs["send_as_id"] for call in first_round])
+        self.assertEqual(identity_ids, [call.kwargs["send_as_id"] for call in second_round])
+        self.assertEqual([".讨伐青元子 破幡"] * 11 + [".讨伐青元子 镇魂"] * 11, [call.args[0] for call in first_round])
+        self.assertEqual([".讨伐青元子 镇魂"] * 11 + [".讨伐青元子 破幡"] * 11, [call.args[0] for call in second_round])
+        sent_identity_ids = [call.kwargs["send_as_id"] for call in first_round]
         self.assertEqual(22, len(set(sent_identity_ids)))
-        self.assertTrue(all(state_module.get_identity_state(identity_id)["world_boss_action_count"] == 1 for identity_id in identity_ids))
+        self.assertTrue(all(state_module.get_identity_state(identity_id)["world_boss_action_count"] == 2 for identity_id in identity_ids))
         pending_since_values = [
             state_module.get_identity_state(identity_id)["world_boss_pending_since"]
             for identity_id in identity_ids
         ]
         self.assertEqual(
-            [now + index * world_boss.WORLD_BOSS_ACTION_GAP_SEC for index in range(22)],
+            [next_round_at + index * world_boss.WORLD_BOSS_ACTION_GAP_SEC for index in range(22)],
             pending_since_values,
         )
         run_state = state_module.get_world_boss_run_state()
-        self.assertEqual(now, run_state["round_started_at"])
-        self.assertEqual(now + 22 * world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["round_completed_at"])
+        self.assertEqual(next_round_at, run_state["round_started_at"])
+        self.assertEqual(next_round_at + 22 * world_boss.WORLD_BOSS_ACTION_GAP_SEC, run_state["round_completed_at"])
         self.assertEqual(run_state["round_completed_at"] + world_boss.WORLD_BOSS_ROUND_GAP_SEC, world_boss._next_new_round_at(run_state))
+
+    def test_opening_two_rounds_cover_all_enabled_identities_when_count_is_not_twenty_two(self):
+        identity_ids = [3_200_000_000 + index for index in range(15)]
+        for identity_id in identity_ids:
+            self._register(identity_id, label=f"真仙{identity_id}")
+
+        first_round = []
+        second_round = []
+        for identity_id in identity_ids:
+            identity_state = state_module.get_identity_state(identity_id)
+            identity_state["world_boss_action_count"] = 0
+            first_round.append(world_boss._opening_action_for_identity(identity_id, identity_state))
+            identity_state["world_boss_action_count"] = 1
+            second_round.append(world_boss._opening_action_for_identity(identity_id, identity_state))
+
+        self.assertEqual(["破幡"] * 8 + ["镇魂"] * 7, first_round)
+        self.assertEqual(["镇魂"] * 8 + ["破幡"] * 7, second_round)
+        self.assertTrue(all("破幡" in {first_round[index], second_round[index]} for index in range(len(identity_ids))))
+
+        expanded_ids = identity_ids + [3_200_000_000 + index for index in range(15, 25)]
+        for identity_id in expanded_ids[15:]:
+            self._register(identity_id, label=f"真仙{identity_id}")
+        first_round = []
+        second_round = []
+        for identity_id in expanded_ids:
+            identity_state = state_module.get_identity_state(identity_id)
+            identity_state["world_boss_action_count"] = 0
+            first_round.append(world_boss._opening_action_for_identity(identity_id, identity_state))
+            identity_state["world_boss_action_count"] = 1
+            second_round.append(world_boss._opening_action_for_identity(identity_id, identity_state))
+
+        self.assertEqual(["破幡"] * 11 + ["镇魂"] * 14, first_round)
+        self.assertEqual(["镇魂"] * 11 + ["破幡"] * 14, second_round)
+        self.assertTrue(all("破幡" in {first_round[index], second_round[index]} for index in range(len(expanded_ids))))
 
     async def test_open_broadcast_message_id_starts_new_event_even_with_same_text(self):
         identity_id = 8659059191
@@ -468,7 +525,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             await self._await_world_boss_round_task()
 
         self.assertEqual(2, send_mock.await_count)
-        self.assertEqual([".讨伐青元子 镇魂", ".讨伐青元子 镇魂"], [call.args[0] for call in send_mock.await_args_list])
+        self.assertEqual([".讨伐青元子 破幡", ".讨伐青元子 镇魂"], [call.args[0] for call in send_mock.await_args_list])
 
     async def test_status_without_open_resets_stale_closed_event_before_actions(self):
         first_id = 8659059191

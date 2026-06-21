@@ -109,6 +109,21 @@ def _has_checkin_pending():
     return False
 
 
+def _has_recent_checkin_send(now):
+    last_msg_id = int(state.get("last_checkin_msg_id", 0) or 0)
+    if last_msg_id <= 0:
+        return False
+    try:
+        sent_at = float((state.get("my_msg_ids") or {}).get(last_msg_id, 0) or 0)
+    except (TypeError, ValueError):
+        sent_at = 0
+    if sent_at <= 0:
+        return False
+    if get_checkin_day_key(sent_at) != get_checkin_day_key(now):
+        return False
+    return 0 <= float(now) - sent_at <= RETRY_MAX_SEC + 60
+
+
 def is_no_sect_checkin_text(text):
     raw_text = str(text or "")
     return any(keyword in raw_text for keyword in NO_SECT_CHECKIN_HINTS)
@@ -268,7 +283,7 @@ def _mark_checkin_done_and_schedule_teach(now, status_text):
 def _normalize_checkin_schedule(now):
     day_key = get_checkin_day_key(now)
     next_checkin_time = float(state.get("next_checkin_time", 0) or 0)
-    if _has_checkin_pending():
+    if _has_checkin_pending() or _has_recent_checkin_send(now):
         return next_checkin_time, True
 
     if state["last_checkin_done_day"] == day_key:
@@ -498,6 +513,11 @@ async def run_checkin_scheduler(now):
             await send_audit_log("❌ 点卯发送失败，稍后重试。")
             return
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
+        msg_id = int(getattr(msg, "id", 0) or 0)
+        if msg_id:
+            state["last_checkin_msg_id"] = msg_id
+            state.setdefault("my_msg_ids", {})[msg_id] = sent_at
+            remember_checkin_cleanup_msg_id(msg_id)
         next_ts = _schedule_checkin_next_day(sent_at)
         save_state()
         console_log(f"📝 执行点卯，等待回复→{fmt_abs_ts(next_ts)}")

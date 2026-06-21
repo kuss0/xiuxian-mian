@@ -262,6 +262,7 @@ CMD_YUANYING = ".元婴出窍"
 CMD_YUANYING_STATUS = ".元婴状态"
 CMD_EXPLORE_RIFT = ".探寻裂缝"
 CMD_WENDAO = ".问道"
+CMD_DUEL = ".斗法"
 CMD_DEEP_RETREAT = ".深度闭关"
 CMD_DEEP_RETREAT_QUERY = ".查看闭关"
 CMD_IDENTITY_INFO = ".我的灵根"
@@ -320,6 +321,7 @@ CMD_WORLD_BOSS_STATUS = ".世界boss"
 CMD_QINGYUANZI_SUPPRESS = ".讨伐青元子 镇魂"
 CMD_QINGYUANZI_GUARD = ".讨伐青元子 护阵"
 CMD_QINGYUANZI_ATTACK = ".讨伐青元子 强攻"
+CMD_QINGYUANZI_BREAK = ".讨伐青元子 破幡"
 CMD_SMALL_WORLD_QUERY = ".小世界"
 CMD_SMALL_WORLD_MANIFEST = ".显灵"
 CMD_SMALL_WORLD_HARVEST = ".收割香火"
@@ -446,6 +448,7 @@ SCRIPT_COMMANDS = [
     CMD_YUANYING_STATUS,
     CMD_EXPLORE_RIFT,
     CMD_WENDAO,
+    CMD_DUEL,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_IDENTITY_INFO,
@@ -504,6 +507,7 @@ SCRIPT_COMMANDS = [
     CMD_QINGYUANZI_SUPPRESS,
     CMD_QINGYUANZI_GUARD,
     CMD_QINGYUANZI_ATTACK,
+    CMD_QINGYUANZI_BREAK,
     CMD_SMALL_WORLD_QUERY,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_HARVEST,
@@ -524,7 +528,7 @@ SCRIPT_COMMANDS = [
     "1",
 ]
 DIVINATION_DEFAULT_DAILY_LIMIT = 6
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -551,6 +555,7 @@ MODULE_KEY_MAP = {
     "元婴": "yuanying_enabled",
     "探寻裂缝": "explore_rift_enabled",
     "问道": "wendao_enabled",
+    "斗法": "duel_enabled",
     "深度闭关": "deep_retreat_enabled",
     "小世界": "small_world_enabled",
     "卜筮问天": "divination_enabled",
@@ -769,6 +774,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.元婴状态$'), "元婴"),
     (re.compile(r'^\.探寻裂缝状态$'), "探寻裂缝"),
     (re.compile(r'^\.问道状态$'), "问道"),
+    (re.compile(r'^\.斗法状态$'), "斗法"),
     (re.compile(r'^\.深度闭关状态$'), "深度闭关"),
     (re.compile(r'^\.第二元神状态$'), "第二元神"),
     (re.compile(r'^\.太一状态$'), "太一"),
@@ -829,6 +835,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)探寻裂缝$'), "探寻裂缝", False),
     (re.compile(r'^\.(开启|打开)问道$'), "问道", True),
     (re.compile(r'^\.(关闭|关掉)问道$'), "问道", False),
+    (re.compile(r'^\.(开启|打开)斗法$'), "斗法", True),
+    (re.compile(r'^\.(关闭|关掉)斗法$'), "斗法", False),
     (re.compile(r'^\.(开启|打开)深度闭关$'), "深度闭关", True),
     (re.compile(r'^\.(关闭|关掉)深度闭关$'), "深度闭关", False),
     (re.compile(r'^\.(开启|打开)小世界$'), "小世界", True),

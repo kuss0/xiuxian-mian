@@ -692,6 +692,13 @@
     "event_type": "message",
     "text": "【天机异闻·南陇侯的交易】\n道友 @nan 经过深思熟虑，选择将侍妾【洛神】与南陇侯交换！\n作为回报，南陇侯赐予了其一件至宝：【九曲灵参丹丹方】！"
   },
+  "duel.result.final": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-08.log:27189",
+    "module": "duel",
+    "family": "duel",
+    "event_type": "message",
+    "text": "【斗法终局】\n@cupaopao (HP: 100/580.7万)\n       VS\n@hughpig (HP: 0/52.5万)\n\n🏆 胜者: @cupaopao\n   - 净得修为: +60000\n   - 法宝磨损: -4\n\n💀 败者: @hughpig\n   - 损失修为: -60000\n   - 法宝磨损: -10\n\n💀 【神魂陨落】 @hughpig 伤重不治，境界跌落至 结丹初期！\n━━━━━━━━━━━━━━━\n🧠 今日神念: 8/10 | 对此人剩余胜场: 3"
+  },
   "small_world.relief.success": {
     "source": "/opt/xiuxian-main/data/messages/2026-06-14.log:3127",
     "module": "small_world",
