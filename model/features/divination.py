@@ -300,6 +300,15 @@ def _schedule_next_day(record, now):
     return record
 
 
+def _clear_stale_done_error(record):
+    record = record if isinstance(record, dict) else {}
+    last_error = str(record.get("last_error") or "").strip()
+    if last_error.startswith("等待问天") or "最终结果缺少今日次数" in last_error:
+        record["last_error"] = ""
+        return True
+    return False
+
+
 def _has_exchange_success_today(record, now):
     record = record if isinstance(record, dict) else {}
     return str(record.get("exchange_success_day") or "") == get_day_key(now)
@@ -512,6 +521,8 @@ def _sync_daily_count_from_message_log(identity_id, record, now, limit, *, force
         changed = True
     if int(record.get("count") or 0) >= int(limit or 0) and str(record.get("phase") or "") != DIVINATION_PHASE_DONE_TODAY:
         record["phase"] = DIVINATION_PHASE_DONE_TODAY
+        changed = True
+    if int(record.get("count") or 0) >= int(limit or 0) and _clear_stale_done_error(record):
         changed = True
     return changed
 

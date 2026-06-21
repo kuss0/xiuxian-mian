@@ -519,6 +519,33 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(6, record["count"])
         self.assertEqual("done_today", record["phase"])
 
+    def test_scheduler_clears_stale_timeout_when_daily_done_without_sending(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {
+                "day_key": get_day_key(now),
+                "phase": "done_today",
+                "count": 6,
+                "next_query_at": now + 3600,
+                "last_error": "等待问天最终结果超时",
+                "message_log_checked_day": "",
+                "message_log_checked_at": 0,
+            }
+        })
+
+        async def run_test():
+            with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
+                    patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock:
+                await divination.run_divination_scheduler(now)
+                send_mock.assert_not_awaited()
+
+        asyncio.run(run_test())
+        record = state_module.get_divination_run_state()[str(identity_id)]
+        self.assertEqual(6, record["count"])
+        self.assertEqual("done_today", record["phase"])
+        self.assertEqual("", record["last_error"])
+
     def test_scheduler_does_not_send_after_exchange_success_today(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         now = 1000.0
