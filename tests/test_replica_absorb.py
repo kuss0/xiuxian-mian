@@ -992,7 +992,24 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertEqual(1, state_module.get_storage_bag_records()[str(leader_id)]["items"]["坠魔谷禁制令"])
 
-    def test_ticket_text_deltas_follow_real_gift_transfer_text(self):
+    def test_ticket_text_deltas_deduct_kunwu_ticket_from_real_open_text_without_item_name(self):
+        leader_id = self._prepare_replica_identity(username="leader")
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"昆吾通行令": 2}, "sections": {"法宝/丹药/杂物": {"昆吾通行令": 2}}},
+        })
+
+        opened = (
+            "【昆吾山·集结】\n"
+            "道友 @leader 准备开启昆吾山试炼，正在召集同伴！(1/3)\n"
+            "房间ID: 370\n\n"
+            "其他道友可使用 .加入昆吾山 370 加入队伍。"
+        )
+        changed = app_replica.apply_replica_ticket_text_deltas(SimpleNamespace(id=27, chat_id=1), opened, 1006.0)
+
+        self.assertTrue(changed)
+        self.assertEqual(1, state_module.get_storage_bag_records()[str(leader_id)]["items"]["昆吾通行令"])
+
+    def test_ticket_text_deltas_leave_gift_transfer_text_to_storage_bag_state_machine(self):
         source_id = self._register_replica_identity(991201, "source")
         target_id = self._register_replica_identity(991202, "target")
         state_module.set_storage_bag_records({
@@ -1003,10 +1020,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         text = "【赠送成功】\n道友 @source 向 @target 赠送了 【苍坤残图】x2。\n并额外支付了 20 灵石作为因果税 (基础税率 10%)。"
         changed = app_replica.apply_replica_ticket_text_deltas(SimpleNamespace(id=25, chat_id=1), text, 1004.0)
 
-        self.assertTrue(changed)
+        self.assertFalse(changed)
         records = state_module.get_storage_bag_records()
-        self.assertEqual(1, records[str(source_id)]["items"]["苍坤残图"])
-        self.assertEqual(2, records[str(target_id)]["items"]["苍坤残图"])
+        self.assertEqual(3, records[str(source_id)]["items"]["苍坤残图"])
+        self.assertNotIn("苍坤残图", records[str(target_id)]["items"])
 
     def test_ticket_text_deltas_skip_controlled_storage_bag_gift_reply(self):
         source_id = self._register_replica_identity(991201, "source")

@@ -1186,8 +1186,10 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_search_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_node_define_reply(text, now, reply_to, matched_family=matched_family) or handled_any
-            handled_any = await handle_storage_bag_transfer_reply(text, now, reply_to, matched_family=matched_family, reply_context=reply_context) or handled_any
-            handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            storage_transfer_done = await handle_storage_bag_transfer_reply(text, now, reply_to, matched_family=matched_family, reply_context=reply_context)
+            handled_any = storage_transfer_done or handled_any
+            if not storage_transfer_done:
+                handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if matched_family and handled_any and not already_consumed:
             _mark_runtime_message_consumed(event, matched_family)

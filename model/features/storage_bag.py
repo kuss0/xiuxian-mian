@@ -22,6 +22,9 @@ RE_STORAGE_TRANSFER_LISTING_SUCCESS = re.compile(
 )
 RE_STORAGE_TRANSFER_BRACKET_ITEM = re.compile(r"【([^】]+)】")
 RE_STORAGE_TRANSFER_GIFT_RESULT = re.compile(r"赠送了 【(?P<item>.+?)】x(?P<count>[\d,]+)")
+RE_STORAGE_BAG_GIFT_SUCCESS = re.compile(
+    r"道友\s*(?P<source>@\S+)\s*向\s*(?P<target>@\S+)\s*赠送了\s*【(?P<item>.+?)】x(?P<count>[\d,]+)"
+)
 RE_STORAGE_TRANSFER_GIFT_TAX = re.compile(r"额外支付了\s*(?P<tax>[\d,]+)\s*灵石")
 STORAGE_BAG_SECTION_NAMES = ("法宝/丹药/杂物", "材料")
 STORAGE_TRANSFER_REPLY_TIMEOUT_SEC = 180
@@ -736,6 +739,48 @@ def _parse_storage_transfer_gift_result(raw_text):
         "quantity": int((match.group("count") or "0").replace(",", "") or 0),
         "tax": int((tax_match.group("tax") or "0").replace(",", "") or 0) if tax_match else 0,
     }
+
+
+def parse_storage_bag_gift_success(text):
+    raw_text = str(text or "").strip()
+    if not raw_text.startswith(STORAGE_TRANSFER_GIFT_SUCCESS_PREFIX):
+        return None
+    match = RE_STORAGE_BAG_GIFT_SUCCESS.search(raw_text)
+    if not match:
+        return None
+    tax_match = RE_STORAGE_TRANSFER_GIFT_TAX.search(raw_text)
+    return {
+        "source_username": _normalize_username(match.group("source")),
+        "target_username": _normalize_username(match.group("target")),
+        "item_name": match.group("item").strip(),
+        "quantity": int((match.group("count") or "0").replace(",", "") or 0),
+        "tax": int((tax_match.group("tax") or "0").replace(",", "") or 0) if tax_match else 0,
+    }
+
+
+def apply_storage_bag_gift_success(text):
+    parsed = parse_storage_bag_gift_success(text)
+    if not parsed:
+        return False
+    item_name = str(parsed.get("item_name") or "").strip()
+    quantity = int(parsed.get("quantity") or 0)
+    if not item_name or quantity <= 0:
+        return False
+    source_id = resolve_storage_bag_identity_id(parsed.get("source_username"))
+    target_id = resolve_storage_bag_identity_id(parsed.get("target_username"))
+    if source_id <= 0 and target_id <= 0:
+        return False
+
+    changed = False
+    tax = int(parsed.get("tax") or 0)
+    if source_id > 0:
+        source_deltas = {item_name: -quantity}
+        if tax > 0:
+            source_deltas["灵石"] = source_deltas.get("灵石", 0) - tax
+        changed = apply_storage_bag_item_deltas(source_id, source_deltas) or changed
+    if target_id > 0:
+        changed = apply_storage_bag_item_deltas(target_id, {item_name: quantity}) or changed
+    return changed
 
 
 def _current_storage_transfer_gift_item():
@@ -1566,6 +1611,8 @@ async def run_storage_bag_transfer_scheduler(now):
 
 
 async def handle_storage_bag_reply(text, now, reply_to=None, matched_family=None):
+    if apply_storage_bag_gift_success(text):
+        return True
     parsed = parse_storage_bag_reply(text)
     if not parsed:
         return False
@@ -1595,6 +1642,7 @@ __all__ = [
     "CMD_STORAGE_BAG_GIFT",
     "CMD_STORAGE_BAG_LISTING",
     "STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX",
+    "apply_storage_bag_gift_success",
     "apply_storage_bag_item_deltas",
     "apply_storage_bag_item_text_delta",
     "cancel_storage_bag_transfer_task",
@@ -1602,6 +1650,7 @@ __all__ = [
     "handle_storage_bag_reply",
     "handle_storage_bag_transfer_reply",
     "is_storage_transfer_waiting_reply",
+    "parse_storage_bag_gift_success",
     "parse_storage_bag_item_counts",
     "parse_storage_bag_reply",
     "resolve_storage_bag_identity_id",

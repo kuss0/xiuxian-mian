@@ -6052,7 +6052,7 @@ def _extract_replica_ticket_deltas_from_text(text, reply_context=None):
             add_delta(leader_identity_id, "坠魔谷禁制令", -1)
         elif replica_kind == _REPLICA_KIND_HUANGLONG and "黄龙急援令" in raw_text:
             add_delta(leader_identity_id, "黄龙急援令（宗门版）" if "宗门版" in raw_text else "黄龙急援令", -1)
-        elif replica_kind == _REPLICA_KIND_KUNWU and "昆吾通行令" in raw_text:
+        elif replica_kind == _REPLICA_KIND_KUNWU:
             add_delta(leader_identity_id, "昆吾通行令", -1)
 
     if "归还" in raw_text:
@@ -6076,18 +6076,6 @@ def _extract_replica_ticket_deltas_from_text(text, reply_context=None):
         if "你获得" not in raw_text and "获得：" not in raw_text:
             continue
         add_delta(own_identity_id, item_name, int(count_text or 0))
-
-    if reply_context.get("family") != "storage_bag_gift":
-        for match in re.finditer(
-            r"道友\s*(?P<source>@[A-Za-z0-9_]{3,32})\s*向\s*(?P<target>@[A-Za-z0-9_]{3,32})\s*赠送了\s*【(?P<item>虚天残图|苍坤残图|坠魔谷禁制令|黄龙急援令|昆吾通行令)】\s*[x×]\s*(?P<count>\d+)",
-            raw_text,
-        ):
-            item_name = _normalize_replica_ticket_item_name(match.group("item"))
-            count = int(match.group("count") or 0)
-            if not item_name or count <= 0:
-                continue
-            add_delta(_get_identity_id_by_replica_username(match.group("source")), item_name, -count)
-            add_delta(_get_identity_id_by_replica_username(match.group("target")), item_name, count)
 
     for match in re.finditer(r"(?P<users>(?:@[A-Za-z0-9_]{3,32}[、,，\s]*)+)\s*获得\s*【(?P<item>虚天残图|苍坤残图|坠魔谷禁制令|黄龙急援令|昆吾通行令)】", raw_text):
         item_name = match.group("item")

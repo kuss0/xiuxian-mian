@@ -89,6 +89,32 @@ class RealMessageReplayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(319, record["sections"]["材料"]["凝血草"])
         self.assertEqual(1, record["sections"]["法宝/丹药/杂物"]["真仙试锋"])
 
+    async def test_storage_bag_real_gift_success_updates_inventory_cache(self):
+        source_id = 8659059191
+        target_id = 3101
+        self._prepare_identity(source_id, "WalterWA2000")
+        self._prepare_identity(target_id, "boxboxji")
+        state_module.set_storage_bag_records({
+            str(source_id): {
+                "items": {"苍坤残图": 3, "灵石": 100},
+                "sections": {"法宝/丹药/杂物": {"苍坤残图": 3}, "材料": {"灵石": 100}},
+            },
+            str(target_id): {"items": {}, "sections": {}},
+        })
+
+        with patch.object(storage_bag, "save_state"):
+            handled = await storage_bag.handle_storage_bag_reply(
+                real_text("storage_bag.gift.success"),
+                1_781_452_400.0,
+                matched_family="storage_bag_gift",
+            )
+
+        self.assertTrue(handled)
+        records = state_module.get_storage_bag_records()
+        self.assertNotIn("苍坤残图", records[str(source_id)]["items"])
+        self.assertEqual(70, records[str(source_id)]["items"]["灵石"])
+        self.assertEqual(3, records[str(target_id)]["items"]["苍坤残图"])
+
     async def test_small_world_real_refine_reply_clears_pending_and_rechecks(self):
         send_as_id = 5231593703
         now = 1_781_453_889.0

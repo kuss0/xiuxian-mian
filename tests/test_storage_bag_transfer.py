@@ -349,6 +349,32 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertNotIn("木髓", record["items"])
         self.assertFalse(any("木髓" in section for section in (record.get("sections") or {}).values()))
 
+    def test_manual_gift_success_syncs_local_storage_records(self):
+        state_module.set_storage_bag_records({
+            str(self.source_id): {
+                "updated_at": 1000,
+                "items": {"昆吾通行令": 1, "灵石": 1000},
+                "sections": {"法宝/丹药/杂物": {"昆吾通行令": 1}, "材料": {"灵石": 1000}},
+            },
+            str(self.target_id): {
+                "updated_at": 1000,
+                "items": {},
+                "sections": {},
+            },
+        })
+
+        changed = storage_bag.apply_storage_bag_gift_success(
+            "【赠送成功】\n"
+            "道友 @source 向 @target 赠送了 【昆吾通行令】x1。\n"
+            "并额外支付了 10 灵石作为因果税 (基础税率 10%)。"
+        )
+
+        self.assertTrue(changed)
+        records = state_module.get_storage_bag_records()
+        self.assertNotIn("昆吾通行令", records[str(self.source_id)]["items"])
+        self.assertEqual(990, records[str(self.source_id)]["items"]["灵石"])
+        self.assertEqual(1, records[str(self.target_id)]["items"]["昆吾通行令"])
+
     def test_parse_item_counts_from_real_reward_and_cost_text(self):
         self.assertEqual(
             {"灵石": 3000, "养魂木": 3},
