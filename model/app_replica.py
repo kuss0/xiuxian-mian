@@ -3006,7 +3006,13 @@ def _format_lightweight_existing_room_notice(room, *, html=False):
             _format_lightweight_next_commands(*next_commands, html=html),
         ]
         if replica_kind == _REPLICA_KIND_CANGKUN:
-            lines.insert(1, _format_cangkun_spiritual_sense_status(_get_lightweight_room_team_identity_ids(room), html=html))
+            team_ids = _get_lightweight_room_team_identity_ids(room)
+            covered_text, missing_text = _format_cangkun_profession_coverage(
+                team_ids,
+                leader_identity_id=int(room.get("leader_identity_id") or 0),
+            )
+            lines.insert(1, f"覆盖职业：{covered_text}；缺职业：{missing_text}。")
+            lines.insert(2, _format_cangkun_spiritual_sense_status(team_ids, html=html))
     return "\n".join(line for line in lines if line)
 
 
@@ -3798,7 +3804,7 @@ def _is_lightweight_room_enter_actionable(room):
     room = room if isinstance(room, dict) else {}
     if room.get("replica_kind") != _REPLICA_KIND_VIRTUAL_HALL:
         if room.get("replica_kind") == _REPLICA_KIND_CANGKUN:
-            return _get_cangkun_room_spiritual_sense_snapshot(room).get("status") == "ok"
+            return bool(_get_cangkun_room_readiness_snapshot(room).get("actionable"))
         if room.get("replica_kind") == _REPLICA_KIND_ZHUIMO:
             return bool(_get_zhuimo_room_snapshot(room).get("actionable"))
         if room.get("replica_kind") == _REPLICA_KIND_LUOYUN:
@@ -3831,6 +3837,22 @@ def _format_virtual_hall_room_not_actionable_notice(room, *, html=False):
         ))
     lines.append("建议：解散后换能入卦的队长重开；若要强行继续，请在游戏群手动处理。")
     return "\n".join(lines)
+
+
+def _format_cangkun_room_block_notice(room, *, html=False):
+    room = room if isinstance(room, dict) else {}
+    room_id = str(room.get("room_id") or "-")
+    snapshot = _get_cangkun_room_readiness_snapshot(room)
+    missing = snapshot.get("missing") or []
+    lines = [f"苍坤洞府房间 {room_id} 当前不建议自动加入/进入。"]
+    if missing:
+        lines.append(f"缺职业：{'、'.join(missing)}（按一人一职计算）。")
+    else:
+        lines.append("五职业已齐。")
+    lines.append(_format_cangkun_spiritual_sense_status(snapshot.get("identity_ids") or [], html=False))
+    lines.append("请先补齐五职业并确认神识过千，再使用自动按钮。")
+    text = "\n".join(lines)
+    return escape(text) if html else text
 
 
 def _format_lightweight_reply_text(text, *, html=False):
@@ -4508,8 +4530,8 @@ def _best_cangkun_profession_assignment(identity_ids, *, leader_identity_id=0):
     return best_assignments
 
 
-def _get_cangkun_profession_coverage(identity_ids):
-    assignments = _best_cangkun_profession_assignment(identity_ids)
+def _get_cangkun_profession_coverage(identity_ids, *, leader_identity_id=0):
+    assignments = _best_cangkun_profession_assignment(identity_ids, leader_identity_id=leader_identity_id)
     return {role for role, _identity_id in assignments}
 
 
@@ -4602,20 +4624,56 @@ def _cangkun_join_command_from_team(team):
     return ".加入副本 " + " ".join(usernames) if usernames else ""
 
 
-def _cangkun_team_covered_roles(identity_ids):
-    covered = set()
-    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
-        covered.update(_get_cangkun_identity_roles(identity_id))
-    return covered
+def _cangkun_team_covered_roles(identity_ids, *, leader_identity_id=0):
+    return _get_cangkun_profession_coverage(identity_ids, leader_identity_id=leader_identity_id)
 
 
-def _cangkun_team_missing_roles(identity_ids):
-    covered = _cangkun_team_covered_roles(identity_ids)
+def _cangkun_team_missing_roles(identity_ids, *, leader_identity_id=0):
+    covered = _cangkun_team_covered_roles(identity_ids, leader_identity_id=leader_identity_id)
     return [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered]
 
 
 def _cangkun_team_has_required_sense(identity_ids):
     return any(_has_cangkun_required_spiritual_sense(identity_id) for identity_id in _normalize_replica_identity_ids(identity_ids or []))
+
+
+def _get_cangkun_team_readiness_snapshot(identity_ids, *, leader_identity_id=0):
+    identity_ids = _normalize_replica_identity_ids(identity_ids or [])
+    leader_identity_id = int(leader_identity_id or 0)
+    missing = _cangkun_team_missing_roles(identity_ids, leader_identity_id=leader_identity_id)
+    sense_snapshot = _get_cangkun_team_spiritual_sense_snapshot(identity_ids)
+    return {
+        "identity_ids": identity_ids,
+        "missing": missing,
+        "profession_ok": not missing,
+        "sense": sense_snapshot,
+        "sense_ok": str(sense_snapshot.get("status") or "") == "ok",
+        "actionable": not missing and str(sense_snapshot.get("status") or "") == "ok",
+    }
+
+
+def _get_cangkun_room_readiness_snapshot(room, now=None):
+    room = room if isinstance(room, dict) else {}
+    team_ids = _get_lightweight_room_team_identity_ids(room, now=now)
+    return _get_cangkun_team_readiness_snapshot(
+        team_ids,
+        leader_identity_id=int(room.get("leader_identity_id") or 0),
+    )
+
+
+def _cangkun_join_command_for_team_ids(leader_identity_id, join_identity_ids):
+    leader_identity_id = int(leader_identity_id or 0)
+    join_identity_ids = _normalize_replica_identity_ids(join_identity_ids or [])
+    team_ids = ([leader_identity_id] if leader_identity_id else []) + join_identity_ids
+    if _cangkun_team_missing_roles(team_ids, leader_identity_id=leader_identity_id):
+        return ""
+    usernames = [
+        _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        for identity_id in join_identity_ids
+        if identity_id != leader_identity_id
+    ]
+    usernames = [username for username in usernames if username]
+    return ".加入副本 " + " ".join(usernames) if usernames else ""
 
 
 def _cangkun_team_option_key(identity_ids, record_by_id):
@@ -4704,7 +4762,7 @@ def build_cangkun_multi_team_plan(now=None, *, max_teams=None):
                     continue
                 if not _cangkun_team_has_required_sense(identity_ids):
                     continue
-                if _cangkun_team_missing_roles(identity_ids):
+                if _cangkun_team_missing_roles(identity_ids, leader_identity_id=opener_id):
                     continue
                 options.append(tuple(sorted(identity_ids, key=lambda identity_id: _cangkun_record_username(record_by_id.get(identity_id)))))
         options = sorted(set(options), key=lambda identity_ids: _cangkun_team_option_key(identity_ids, record_by_id))
@@ -4766,7 +4824,7 @@ def build_cangkun_multi_team_plan(now=None, *, max_teams=None):
             "sense_username": _normalize_replica_username(get_send_as_profile(sense_identity_id).get("username") or "") if sense_identity_id else "",
             "sense_value": int(sense_snapshot.get("value") or 0),
             "sense_status": str(sense_snapshot.get("status") or ""),
-            "missing": _cangkun_team_missing_roles(identity_ids),
+            "missing": _cangkun_team_missing_roles(identity_ids, leader_identity_id=leader_identity_id),
         }
         teams.append(team)
     teams = sorted(teams, key=_cangkun_plan_sort_key)
@@ -4908,10 +4966,14 @@ def _get_lightweight_profession_recommendation_join_command(replica_kind, leader
         return ".加入副本 " + " ".join(usernames) if usernames else ""
     if replica_kind == _REPLICA_KIND_CANGKUN:
         planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id)
-        planned_command = _cangkun_join_command_from_team(planned_team)
+        planned_command = ""
+        if planned_team and not (planned_team.get("missing") or []):
+            planned_command = _cangkun_join_command_from_team(planned_team)
         if planned_command:
             return planned_command
     team_ids = _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        return _cangkun_join_command_for_team_ids(leader_identity_id, team_ids)
     usernames = [
         _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         for identity_id in team_ids
@@ -4945,9 +5007,11 @@ def _get_cangkun_backup_join_command(leader_identity_id=0, *, primary_join_comma
         for identity_id in backup_team_ids
     ]
     backup_usernames = [username for username in backup_usernames if username]
+    backup_command = _cangkun_join_command_for_team_ids(leader_identity_id, backup_team_ids)
+    if not backup_command:
+        return ""
     if not backup_usernames:
         return ""
-    backup_command = ".加入副本 " + " ".join(backup_usernames)
     return "" if backup_command == primary_join_command else backup_command
 
 
@@ -5558,10 +5622,16 @@ def _format_log_group_replica_room_line(room, *, html=False):
         line += f"｜队长 {leader}"
     if replica_kind == _REPLICA_KIND_CANGKUN:
         team_count = len(_get_lightweight_room_usernames(room))
-        sense_snapshot = _get_cangkun_room_spiritual_sense_snapshot(room)
+        readiness = _get_cangkun_room_readiness_snapshot(room)
+        missing = readiness.get("missing") or []
+        sense_snapshot = readiness.get("sense") or {}
         sense_status = str(sense_snapshot.get("status") or "unknown")
-        if phase == "opened" and team_count >= 5:
-            line += "｜满员待进入"
+        if phase == "opened" and readiness.get("actionable"):
+            line += "｜五职+神识可进"
+        elif missing:
+            line += "｜缺" + "、".join(missing)
+        elif team_count >= 5:
+            line += "｜五职已齐"
         if sense_status == "ok":
             line += f"｜神识过千 {int(sense_snapshot.get('value') or 0)}"
         elif sense_status == "low":
@@ -10696,6 +10766,47 @@ async def _handle_lightweight_join_command(event):
                 buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
             )
             return True
+    if replica_kind == _REPLICA_KIND_CANGKUN:
+        now_for_join = time.time()
+        current_team_ids = _get_lightweight_room_team_identity_ids(room, now=now_for_join)
+        projected_team_ids = list(current_team_ids)
+        projected_seen = set(projected_team_ids)
+        for selector in selectors:
+            identity_id = _resolve_replica_command_identity(selector)
+            if identity_id <= 0 or identity_id == leader_identity_id or identity_id in projected_seen:
+                continue
+            if not get_identity_enabled(identity_id):
+                continue
+            if not _is_cangkun_realm_available(identity_id):
+                continue
+            if _get_replica_identity_block_reason(identity_id, now=now_for_join):
+                continue
+            projected_seen.add(identity_id)
+            projected_team_ids.append(identity_id)
+        missing = _cangkun_team_missing_roles(projected_team_ids, leader_identity_id=leader_identity_id)
+        if missing:
+            covered_text, missing_text = _format_cangkun_profession_coverage(
+                projected_team_ids,
+                leader_identity_id=leader_identity_id,
+            )
+            plain_text = (
+                f"未发送加入苍坤洞府 {room_id or '-'}：当前选择无法凑齐五职业。\n"
+                f"覆盖职业：{covered_text}\n"
+                f"缺职业：{missing_text}\n"
+                + _format_cangkun_spiritual_sense_status(projected_team_ids)
+            )
+            commands_text = _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", ".查询副本", html=True)
+            text = escape(plain_text) + "\n\n" + commands_text
+            await _send_replica_group_message(
+                event.client,
+                event.chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=plain_text + "\n\n" + _strip_html_code_tags(commands_text),
+                buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+            )
+            return True
     sent_usernames = []
     skipped = []
     seen_identity_ids = set()
@@ -10751,7 +10862,15 @@ async def _handle_lightweight_join_command(event):
         summary += f"\n未发送：{' '.join(skipped)}"
     enter_actionable = _is_lightweight_room_enter_actionable(room)
     if replica_kind == _REPLICA_KIND_CANGKUN:
-        summary += "\n" + _format_cangkun_spiritual_sense_status(_get_lightweight_room_team_identity_ids(room, now=time.time()))
+        cangkun_team_ids = _get_lightweight_room_team_identity_ids(room, now=time.time())
+        covered_text, missing_text = _format_cangkun_profession_coverage(
+            cangkun_team_ids,
+            leader_identity_id=leader_identity_id,
+        )
+        summary += f"\n覆盖职业：{covered_text}"
+        if missing_text != "无":
+            summary += f"\n缺职业：{missing_text}"
+        summary += "\n" + _format_cangkun_spiritual_sense_status(cangkun_team_ids)
     summary = escape(summary)
     next_commands = [_REPLICA_KIND_META[replica_kind]["enter_command"]] if enter_actionable else []
     next_commands.append(".解散副本")
@@ -10838,11 +10957,15 @@ async def _handle_lightweight_enter_command(event):
         return True
     cangkun_sense_snapshot = {}
     if replica_kind == _REPLICA_KIND_CANGKUN:
-        cangkun_team_ids = _get_lightweight_room_team_identity_ids(room, now=now)
-        cangkun_sense_snapshot = _get_cangkun_team_spiritual_sense_snapshot(cangkun_team_ids)
-        if cangkun_sense_snapshot.get("status") != "ok":
-            sense_text = _format_cangkun_spiritual_sense_status(cangkun_team_ids, html=True)
-            text = f"{escape(command)} 未发送：{sense_text}\n\n" + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", ".查询副本", html=True)
+        cangkun_readiness = _get_cangkun_room_readiness_snapshot(room, now=now)
+        cangkun_sense_snapshot = cangkun_readiness.get("sense") or {}
+        if not cangkun_readiness.get("actionable"):
+            text = (
+                f"{escape(command)} 未发送：\n"
+                + _format_cangkun_room_block_notice(room, html=True)
+                + "\n\n"
+                + _format_lightweight_next_commands(".加入副本 @用户名 @用户名", ".解散副本", ".查询副本", html=True)
+            )
             await _send_replica_group_message(
                 event.client,
                 event.chat_id,

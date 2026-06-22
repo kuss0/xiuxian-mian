@@ -1657,6 +1657,109 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("缺职业：", section)
         self.assertNotIn("五职业已齐", section)
 
+    def test_cangkun_live_incomplete_multirole_team_has_no_action_buttons(self):
+        leader_id = self._register_replica_identity(991201, "jfdffdddd", professions="咒师", realm="元婴后期", root_type="天灵根", root_attrs="火")
+        box_id = self._register_replica_identity(991202, "boxboxji", professions="御山|灵医", realm="结丹后期", sect_name="太一门", root_attrs="土木")
+        ding_id = self._register_replica_identity(991203, "dingfengbosushi", professions="咒师", realm="结丹后期", root_type="异灵根", root_attrs="暗")
+        fan_id = self._register_replica_identity(991204, "fanb0x", professions="灵医|破军", realm="结丹后期", root_type="伪灵根", root_attrs="金木水")
+        xue_id = self._register_replica_identity(991205, "xueuode5", professions="影刃", realm="结丹后期", root_type="异灵根", root_attrs="风")
+        state_module.set_replica_participant_identity_ids([leader_id, box_id, ding_id, fan_id, xue_id])
+        state_module.set_tianjige_dao_path_records({
+            str(box_id): {"spiritual_sense": 6956},
+        })
+        room = {
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "room_id": "204",
+            "leader_identity_id": leader_id,
+            "leader_username": "@jfdffdddd",
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "join_requested_usernames": ["@boxboxji", "@dingfengbosushi", "@fanb0x", "@xueuode5"],
+        }
+
+        section = app_replica._format_lightweight_profession_recommendation_section(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+        join_command = app_replica._get_lightweight_profession_recommendation_join_command(
+            app_replica._REPLICA_KIND_CANGKUN,
+            leader_id,
+        )
+        buttons = app_replica._build_lightweight_room_action_buttons(
+            room,
+            join_command=join_command,
+            include_enter=True,
+            include_dissolve=True,
+            include_query=True,
+        )
+
+        self.assertIn("缺职业：", section)
+        self.assertNotIn("五职业已齐", section)
+        self.assertEqual("", join_command)
+        self.assertNotIn("加入推荐", self._button_texts(buttons))
+        self.assertNotIn("进入苍坤洞府", self._button_texts(buttons))
+
+    def test_lightweight_join_blocks_incomplete_cangkun_projection(self):
+        leader_id = self._register_replica_identity(991201, "jfdffdddd", professions="咒师", realm="元婴后期")
+        box_id = self._register_replica_identity(991202, "boxboxji", professions="御山|灵医", realm="结丹后期", sect_name="太一门")
+        ding_id = self._register_replica_identity(991203, "dingfengbosushi", professions="咒师", realm="结丹后期")
+        fan_id = self._register_replica_identity(991204, "fanb0x", professions="灵医|破军", realm="结丹后期")
+        xue_id = self._register_replica_identity(991205, "xueuode5", professions="影刃", realm="结丹后期")
+        event = self._prepare_replica_group([leader_id, box_id, ding_id, fan_id, xue_id])
+        event.raw_text = ".加入副本 @boxboxji @dingfengbosushi @fanb0x @xueuode5"
+        state_module.set_tianjige_dao_path_records({
+            str(box_id): {"spiritual_sense": 6956},
+        })
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "204",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@jfdffdddd",
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=800))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_join_command(event)
+                send_mock.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, self._button_texts(buttons)
+
+        handled, reply_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("无法凑齐五职业", reply_text)
+        self.assertIn("缺职业：", reply_text)
+        self.assertNotIn("进入苍坤洞府", button_texts)
+
+    def test_cangkun_multi_team_plan_rejects_raw_union_only_team(self):
+        leader_id = self._register_replica_identity(991201, "jfdffdddd", professions="咒师", realm="元婴后期")
+        box_id = self._register_replica_identity(991202, "boxboxji", professions="御山|灵医", realm="结丹后期", sect_name="太一门")
+        ding_id = self._register_replica_identity(991203, "dingfengbosushi", professions="咒师", realm="结丹后期")
+        fan_id = self._register_replica_identity(991204, "fanb0x", professions="灵医|破军", realm="结丹后期")
+        xue_id = self._register_replica_identity(991205, "xueuode5", professions="影刃", realm="结丹后期")
+        state_module.set_replica_participant_identity_ids([leader_id, box_id, ding_id, fan_id, xue_id])
+        state_module.set_storage_bag_records({
+            str(leader_id): {"items": {"苍坤残图": 1}, "sections": {}},
+        })
+        state_module.set_tianjige_dao_path_records({
+            str(box_id): {"spiritual_sense": 6956},
+        })
+
+        plan = app_replica.build_cangkun_multi_team_plan()
+        preview = app_replica._format_cangkun_multi_team_preview(plan)
+
+        self.assertEqual(1, plan.get("upper_bound"))
+        self.assertEqual([], plan.get("teams"))
+        self.assertIn("暂不能形成完整队", preview)
+
     def test_cangkun_recommendation_prefers_root_grade_for_same_profession(self):
         leader_id = self._register_replica_identity(991201, "leader", professions="破军", realm="结丹初期")
         shield_id = self._register_replica_identity(991202, "shield", professions="御山", realm="结丹初期")
@@ -5229,9 +5332,12 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_opened_text_records_latest_room_for_lightweight_flow(self):
         leader_id = self._register_replica_identity(991201, "leader", sect_name="太一门")
-        first_id = self._register_replica_identity(991202, "first", professions="御山")
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
         event = self._prepare_replica_group([leader_id])
-        state_module.set_replica_participant_identity_ids([leader_id, first_id])
+        state_module.set_replica_participant_identity_ids([leader_id, shield_id, healer_id, blade_id, curse_id])
         state_module.set_tianjige_dao_path_records({
             str(leader_id): {"spiritual_sense": 1200},
         })
@@ -5265,10 +5371,10 @@ class ReplicaAbsorbTests(unittest.TestCase):
         handled, button_texts, join_payload = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertIn("加入推荐", button_texts)
-        self.assertIn("进入苍坤洞府", button_texts)
+        self.assertNotIn("进入苍坤洞府", button_texts)
         self.assertIn("解散副本", button_texts)
         self.assertIn("刷新副本", button_texts)
-        self.assertEqual(".加入副本 @first", join_payload.get("command"))
+        self.assertEqual(".加入副本 @shield @healer @blade @curse", join_payload.get("command"))
         room = app_replica._get_lightweight_last_room(event.chat_id, now=now)
         self.assertEqual("16", room["room_id"])
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, room["replica_kind"])
@@ -5471,8 +5577,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_lightweight_enter_command_marks_cangkun_entered_once(self):
         leader_id = self._register_replica_identity(991201, "leader", sect_name="太一门")
-        member_id = self._register_replica_identity(991202, "member", professions="御山")
-        event = self._prepare_replica_group([leader_id, member_id])
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
+        event = self._prepare_replica_group([leader_id, shield_id, healer_id, blade_id, curse_id])
         event.raw_text = ".进入苍坤洞府"
         now = 1000.0
         state_module.set_tianjige_dao_path_records({
@@ -5484,7 +5593,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             msg_id=880,
         )
         app_replica._mark_replica_team_joined_from_text(
-            "@member 已加入苍坤上人洞府队伍！\n当前队伍 (2/5):\n - @leader\n - @member",
+            "@curse 已加入苍坤上人洞府队伍！\n当前队伍 (5/5):\n - @leader\n - @shield\n - @healer\n - @blade\n - @curse",
             now=now + 1,
             msg_id=881,
         )
@@ -5496,6 +5605,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "listener_account_id": 9001,
             "leader_identity_id": leader_id,
             "leader_username": "@leader",
+            "join_requested_usernames": ["@shield", "@healer", "@blade", "@curse"],
             "opened_at": now,
             "expires_at": 9999999999,
             "updated_at": now,
@@ -5529,7 +5639,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(901, saved_room["enter_msg_id"])
         self.assertEqual(now + 2 + app_replica.REPLICA_ACTIVE_TTL_SEC, saved_room["expires_at"])
         records = state_module.get_replica_run_state()["by_identity"]
-        for identity_id in (leader_id, member_id):
+        for identity_id in (leader_id, shield_id, healer_id, blade_id, curse_id):
             state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
             self.assertTrue(state_item["participating"])
             self.assertEqual("entered", records[str(identity_id)]["last_join_result"])
@@ -5551,12 +5661,15 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_lightweight_enter_command_blocks_cangkun_confirmed_low_sense(self):
         leader_id = self._register_replica_identity(991201, "leader")
-        member_id = self._register_replica_identity(991202, "member", professions="御山", sect_name="太一门")
-        event = self._prepare_replica_group([leader_id, member_id])
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", sect_name="太一门")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
+        event = self._prepare_replica_group([leader_id, shield_id, healer_id, blade_id, curse_id])
         event.raw_text = ".进入苍坤洞府"
         now = 1000.0
         state_module.set_tianjige_dao_path_records({
-            str(member_id): {"spiritual_sense": 200},
+            str(shield_id): {"spiritual_sense": 200},
         })
         app_replica._set_lightweight_last_room({
             "phase": "opened",
@@ -5566,7 +5679,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "listener_account_id": 9001,
             "leader_identity_id": leader_id,
             "leader_username": "@leader",
-            "join_requested_usernames": ["@member"],
+            "join_requested_usernames": ["@shield", "@healer", "@blade", "@curse"],
             "opened_at": now,
             "expires_at": 9999999999,
             "updated_at": now,
@@ -6781,12 +6894,14 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
     def test_lightweight_join_and_dissolve_use_latest_room(self):
         leader_id = self._register_replica_identity(991201, "leader")
-        first_id = self._register_replica_identity(991202, "first", sect_name="太一门")
-        second_id = self._register_replica_identity(991203, "second")
-        event = self._prepare_replica_group([leader_id, first_id, second_id])
+        shield_id = self._register_replica_identity(991202, "shield", professions="御山", sect_name="太一门")
+        healer_id = self._register_replica_identity(991203, "healer", professions="灵医")
+        blade_id = self._register_replica_identity(991204, "blade", professions="影刃")
+        curse_id = self._register_replica_identity(991205, "curse", professions="咒师")
+        event = self._prepare_replica_group([leader_id, shield_id, healer_id, blade_id, curse_id])
         event.sender_id = 4242
         state_module.set_tianjige_dao_path_records({
-            str(first_id): {"spiritual_sense": 1200},
+            str(shield_id): {"spiritual_sense": 1200},
         })
         app_replica._set_lightweight_last_room({
             "phase": "opened",
@@ -6801,7 +6916,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         })
 
         async def run_join():
-            event.raw_text = ".加入副本 @first @second"
+            event.raw_text = ".加入副本 @shield @healer @blade @curse"
             with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
                     patch("model.app_replica._claim_runtime_event", return_value=True), \
                     patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=800))), \
@@ -6814,10 +6929,12 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         handled, calls, join_reply, button_texts = asyncio.run(run_join())
         self.assertTrue(handled)
-        self.assertEqual(2, len(calls))
+        self.assertEqual(4, len(calls))
         self.assertEqual(".加入苍坤洞府 16", calls[0].args[0])
-        self.assertEqual(first_id, calls[0].kwargs["send_as_id"])
-        self.assertEqual(second_id, calls[1].kwargs["send_as_id"])
+        self.assertEqual(shield_id, calls[0].kwargs["send_as_id"])
+        self.assertEqual(healer_id, calls[1].kwargs["send_as_id"])
+        self.assertEqual(blade_id, calls[2].kwargs["send_as_id"])
+        self.assertEqual(curse_id, calls[3].kwargs["send_as_id"])
         self.assertEqual("自动副本", calls[0].kwargs["source_module"])
         self.assertEqual("keep", calls[0].kwargs["delete_policy"])
         self.assertIn("replica_lightweight_join", calls[0].kwargs["op_id"])
@@ -6829,11 +6946,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("解散副本", button_texts)
         self.assertIn("刷新副本", button_texts)
 
-        low_id = self._register_replica_identity(991204, "low", realm="筑基后期")
-        state_module.set_replica_participant_identity_ids([leader_id, first_id, second_id, low_id])
+        low_id = self._register_replica_identity(991206, "low", realm="筑基后期")
+        state_module.set_replica_participant_identity_ids([leader_id, shield_id, healer_id, blade_id, curse_id, low_id])
 
         async def run_low_join():
-            event.raw_text = ".加入副本 @first @low"
+            event.raw_text = ".加入副本 @shield @low"
             with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
                     patch("model.app_replica._claim_runtime_event", return_value=True), \
                     patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=804))), \
@@ -6846,7 +6963,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         handled, calls, low_join_reply = asyncio.run(run_low_join())
         self.assertTrue(handled)
         self.assertEqual(1, len(calls))
-        self.assertEqual(first_id, calls[0].kwargs["send_as_id"])
+        self.assertEqual(shield_id, calls[0].kwargs["send_as_id"])
         self.assertIn("@low(苍坤要求结丹初期及以上，当前境界：筑基后期)", low_join_reply)
 
         async def run_dissolve():
