@@ -88,7 +88,11 @@ def test_cached_storage_bag_report_includes_wa_by_default(tmp_path):
     assert "阴凝之晶：1,004" in text
     assert "玄铁剑：1" in text
     assert "999" in text
-    assert "wa2000" in text.casefold()
+    assert "boxboxji" in text
+    assert "WalterWA2000" in text
+    assert "盒子" not in text
+    assert "守一子" not in text
+    assert "清源子" not in text
 
 
 def test_storage_bag_report_auto_prefers_cache_over_old_logs(tmp_path, capsys):

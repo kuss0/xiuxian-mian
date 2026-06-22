@@ -4405,9 +4405,9 @@ def _normalize_storage_bag_simple_find_query(raw_query):
 def _get_storage_bag_log_identity_name(identity_id):
     profile = get_send_as_profile(identity_id)
     return str(
-        profile.get("daohao")
+        profile.get("username")
         or profile.get("label")
-        or profile.get("username")
+        or profile.get("daohao")
         or "未知身份"
     ).strip()
 

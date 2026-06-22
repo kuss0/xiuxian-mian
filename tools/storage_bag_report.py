@@ -463,7 +463,7 @@ def get_freshness_summary(
         details.append(f"{display_name}：{age_text}")
     for owner_key in missing_names[:8 - len(details)]:
         identity = identities.get(owner_key)
-        display_name = (identity.label or identity.username) if identity else owner_key
+        display_name = (identity.username or identity.label or identity.daohao) if identity else owner_key
         details.append(f"{display_name}：无快照")
     if stale_count + missing_count > len(details):
         details.append(f"其余 {stale_count + missing_count - len(details)} 个未展开")
@@ -474,7 +474,7 @@ def get_identity_display_name(owner: str, identities: dict[str, Identity]) -> st
     identity = identities.get(normalize_name(owner))
     if not identity:
         return owner
-    return identity.label or identity.username or owner
+    return identity.username or identity.label or identity.daohao or owner
 
 
 def format_holder_list(

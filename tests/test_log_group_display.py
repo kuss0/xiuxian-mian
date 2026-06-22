@@ -248,8 +248,8 @@ class LogGroupDisplayTests(unittest.TestCase):
             state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
             state_module.ensure_identity_registered(3101)
             state_module.ensure_identity_registered(3102)
-            state_module.update_send_as_profile(3101, username="boxboxji", label="boxboxji")
-            state_module.update_send_as_profile(3102, username="WalterWA2000", label="wa2000")
+            state_module.update_send_as_profile(3101, username="boxboxji", label="盒子", daohao="守一子")
+            state_module.update_send_as_profile(3102, username="WalterWA2000", label="wa2000", daohao="清源子")
             state_module.set_storage_bag_records({
                 "3101": {"items": {"木髓": 5, "木髓精华": 2, "灵石": 100}},
                 "3102": {"items": {"木髓": 999}},
@@ -268,7 +268,10 @@ class LogGroupDisplayTests(unittest.TestCase):
             self.assertIn("boxboxji", text)
             self.assertIn("999", text)
             self.assertNotIn("3101", text)
-            self.assertIn("wa2000", text.casefold())
+            self.assertIn("WalterWA2000", text)
+            self.assertNotIn("盒子", text)
+            self.assertNotIn("守一子", text)
+            self.assertNotIn("清源子", text)
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
