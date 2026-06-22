@@ -4891,10 +4891,6 @@ def _pick_lightweight_profession_team(replica_kind, leader_identity_id=0, *, lim
         return []
     if replica_kind == _REPLICA_KIND_CANGKUN:
         candidates = [identity_id for identity_id in candidates if _is_cangkun_realm_available(identity_id)]
-        planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id, now=now)
-        planned_join_ids = _cangkun_team_join_identity_ids(planned_team)
-        if planned_join_ids:
-            return planned_join_ids[:limit]
         assignments = _best_cangkun_profession_assignment(
             ([leader_identity_id] if leader_identity_id else []) + candidates,
             leader_identity_id=leader_identity_id,
@@ -4964,13 +4960,6 @@ def _get_lightweight_profession_recommendation_join_command(replica_kind, leader
         ]
         usernames = [username for username in usernames if username]
         return ".加入副本 " + " ".join(usernames) if usernames else ""
-    if replica_kind == _REPLICA_KIND_CANGKUN:
-        planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id)
-        planned_command = ""
-        if planned_team and not (planned_team.get("missing") or []):
-            planned_command = _cangkun_join_command_from_team(planned_team)
-        if planned_command:
-            return planned_command
     team_ids = _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return _cangkun_join_command_for_team_ids(leader_identity_id, team_ids)
@@ -5129,7 +5118,7 @@ def _format_cangkun_multi_team_preview(plan=None, *, html=False, max_teams=_CANG
         lines.append(_format_cangkun_planned_team_line(index, team, html=html))
     if len(teams) > len(visible):
         lines.append(f"另 {len(teams) - len(visible)} 队略。")
-    lines.append("策略：每队优先只放 1 个神识过千号，神识号尽量各自领队；瓶颈通常看影刃/门票/CD。")
+    lines.append("策略：自动推荐主推 WA，可给无 WA 备选；多队预览只作容量参考，实际进本仍按五职+神识校验。")
     return "\n".join(lines)
 
 
@@ -5502,9 +5491,7 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     if replica_kind == _REPLICA_KIND_LUOYUN:
         return _format_luoyun_recommendation_section(leader_identity_id, html=html)
     leader_username = _normalize_replica_username(get_send_as_profile(leader_identity_id).get("username") or "") if leader_identity_id > 0 else ""
-    planned_team = _find_cangkun_planned_team_for_leader(leader_identity_id) if replica_kind == _REPLICA_KIND_CANGKUN else {}
-    planned_join_ids = _cangkun_team_join_identity_ids(planned_team)
-    team_ids = planned_join_ids or _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
+    team_ids = _pick_lightweight_profession_team(replica_kind, leader_identity_id=leader_identity_id, limit=4 if leader_identity_id else 5)
     usernames = [
         _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         for identity_id in team_ids
@@ -5512,10 +5499,7 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
     usernames = [username for username in usernames if username]
     replica_name = _REPLICA_KIND_META[replica_kind]["name"]
     leader_text = f"（开房 {leader_username}）" if leader_username else ""
-    if replica_kind == _REPLICA_KIND_CANGKUN and planned_join_ids:
-        recommend_label = "多队规划"
-    else:
-        recommend_label = "轻量补位" if replica_kind == _REPLICA_KIND_LUOYUN else "职业补位"
+    recommend_label = "轻量补位" if replica_kind == _REPLICA_KIND_LUOYUN else "职业补位"
     lines = [f"推荐配置：{replica_name}｜{recommend_label}{leader_text}"]
     if usernames:
         display_usernames = " ".join(mono(username) if html else username for username in usernames)
@@ -5537,8 +5521,6 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
         if leader_identity_id > 0 and not _is_cangkun_realm_available(leader_identity_id):
             lines.append(f"开房身份未达要求，不计入职业覆盖：{_format_cangkun_realm_requirement(leader_identity_id)}。")
         lines.append(_format_cangkun_spiritual_sense_status(([leader_identity_id] if leader_identity_id else []) + team_ids, html=html))
-        if planned_join_ids:
-            lines.append("规划：已按多队拆分保留其他神识号，避免多个过千神识挤进同一队。")
         lines.append("提示：苍坤要求结丹初期及以上、五职业齐全、队内一名可调神识>=1000；无需DPS标识。默认路线 .苍坤抉择 1 / 3 / 2。")
     elif replica_kind == _REPLICA_KIND_LUOYUN:
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):

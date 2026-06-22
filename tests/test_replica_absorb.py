@@ -1306,7 +1306,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("苍坤多队预览：可组 2 队", text)
         self.assertIn("队长 @firstleader｜神识 @firstsense 1300", text)
         self.assertIn("队长 @secondleader｜神识 @secondsense 1200", text)
-        self.assertIn("策略：每队优先只放 1 个神识过千号", text)
+        self.assertIn("策略：自动推荐主推 WA，可给无 WA 备选", text)
         self.assertIn("开苍 @firstleader", button_texts)
         self.assertIn("开苍 @secondleader", button_texts)
 
@@ -1909,8 +1909,9 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("@firstsense", join_command)
         self.assertNotIn("@secondsense", join_command)
         self.assertNotIn("@sparesense", join_command)
-        self.assertIn("推荐配置：苍坤洞府｜多队规划（开房 @firstleader）", section)
-        self.assertIn("规划：已按多队拆分保留其他神识号", section)
+        self.assertIn("推荐配置：苍坤洞府｜职业补位（开房 @firstleader）", section)
+        self.assertNotIn("多队规划", section)
+        self.assertNotIn("规划：已按多队拆分保留其他神识号", section)
 
     def test_cangkun_multi_team_plan_reports_role_bottleneck(self):
         opener_ids = [
