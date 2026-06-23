@@ -344,7 +344,6 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_explore_rift_time",
     "next_wendao_time",
     "next_duel_time",
-    "next_fishing_time",
     "next_deep_retreat_time",
     "next_second_soul_time",
     "next_taiyi_cycle_time",
