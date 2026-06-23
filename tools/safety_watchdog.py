@@ -133,7 +133,6 @@ WORLD_BOSS_ACTION_COMMANDS = {
     ".讨伐青元子 强攻",
 }
 WORLD_BOSS_MAX_ACTIONS_PER_IDENTITY_45M = 5
-WORLD_BOSS_MAX_TRIES_PER_ACTION = 3
 FISHING_SOURCE_MODULE = "灵溪垂钓"
 FISHING_FAMILY = "fishing"
 FISHING_SHORT_WINDOW_PREFIXES = (
@@ -206,7 +205,6 @@ HARD_BREACH_REASON_PREFIXES = (
     "send burst:",
     "hard-stop reply keyword:",
     "journal hard-stop keyword:",
-    "world boss retry over limit:",
     "world boss over attempts:",
 )
 SOFT_BREACH_CONFIRM_HITS = 2
@@ -823,8 +821,6 @@ def find_world_boss_attempt_breach(items: list[dict], sender_id: int) -> str:
         chain_id, identity_id, action, action_seq, try_no = parsed
         if identity_id != sender_id:
             return f"same command repeat: {sender_id}:{command_key(str(item.get('text') or ''))} invalid world boss sender"
-        if try_no >= WORLD_BOSS_MAX_TRIES_PER_ACTION:
-            return f"world boss retry over limit: {sender_id} action={action_seq} try={try_no}"
         key = (chain_id, action, action_seq)
         if try_no in action_tries[key]:
             return f"same command repeat: {sender_id}:{command_key(str(item.get('text') or ''))} duplicate world boss try"

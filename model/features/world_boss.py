@@ -37,21 +37,23 @@ WORLD_BOSS_ACTION_COMMANDS = {
     "护阵": CMD_QINGYUANZI_GUARD,
     "强攻": CMD_QINGYUANZI_ATTACK,
 }
-WORLD_BOSS_PENDING_TIMEOUT_SEC = 90
+WORLD_BOSS_PENDING_TIMEOUT_SEC = 5
 WORLD_BOSS_REPLY_TIMEOUT_SEC = 90
 WORLD_BOSS_ACTION_GAP_SEC = 1.0
-WORLD_BOSS_ROUND_GAP_SEC = 70.0
+WORLD_BOSS_ACTION_COOLDOWN_SEC = 90
+WORLD_BOSS_ROUND_GAP_SEC = 90.0
 WORLD_BOSS_MAX_ACTIONS_PER_TICK = 64
 WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC = 0
 WORLD_BOSS_STATUS_STALE_SEC = 120
 WORLD_BOSS_STATUS_QUERY_GAP_SEC = 3 * 60
 WORLD_BOSS_EVENT_TTL_SEC = 35 * 60
-WORLD_BOSS_STRONG_ATTACK_LIMIT = 2
+WORLD_BOSS_STRONG_ATTACK_LIMIT = 5
 WORLD_BOSS_DEFAULT_ACTION_LIMIT = 5
 WORLD_BOSS_PROGRESS_LOG_GAP_SEC = 5 * 60
 WORLD_BOSS_FALLBACK_START_MINUTE = 13 * 60 + 25
 WORLD_BOSS_FALLBACK_END_MINUTE = 14 * 60 + 10
-WORLD_BOSS_PENDING_MAX_RETRY = 2
+WORLD_BOSS_RESCUE_MOYA_THRESHOLD = 80
+WORLD_BOSS_RESCUE_ZHEN_THRESHOLD = 10
 WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN = 35
 WORLD_BOSS_PHASE_TWO_GUARD_MOYA_LIMIT = 95
 WORLD_BOSS_OPENING_GROUP_SIZE = 11
@@ -356,6 +358,7 @@ def clear_world_boss_identity_state(send_as_id=None, *, persist=True, keep_last_
     identity_state["world_boss_pending_action_seq"] = 0
     identity_state["world_boss_last_action"] = ""
     identity_state["world_boss_last_action_at"] = 0
+    identity_state["world_boss_last_sent_at"] = 0
     identity_state["world_boss_last_reply_msg_id"] = 0
     identity_state["world_boss_exhausted"] = False
     identity_state["world_boss_last_error"] = last_error if keep_last_error else ""
@@ -425,6 +428,27 @@ def _next_pending_action_due_at():
     return min(due_times) if due_times else 0
 
 
+def _next_identity_cooldown_due_at(now):
+    due_times = []
+    for identity_id in _enabled_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if _has_pending_world_boss_action(identity_state):
+            continue
+        if bool(identity_state.get("world_boss_exhausted")):
+            continue
+        action_limit = max(1, _coerce_int(identity_state.get("world_boss_action_limit"), WORLD_BOSS_DEFAULT_ACTION_LIMIT))
+        if _coerce_int(identity_state.get("world_boss_action_count"), 0) >= action_limit:
+            continue
+        last_action_at = _coerce_float(identity_state.get("world_boss_last_action_at"), 0)
+        if last_action_at <= 0:
+            return 0
+        due_times.append(last_action_at + WORLD_BOSS_ACTION_COOLDOWN_SEC)
+    return min(due_times) if due_times else 0
+
+
 def _has_any_pending_action():
     for identity_id in _enabled_identity_ids():
         try:
@@ -452,7 +476,11 @@ def _schedule_next_world_boss_action(run_state, now, *, persist=True):
     candidates = []
     next_round_at = _next_new_round_at(run_state)
     if next_round_at > 0:
-        candidates.append(next_round_at)
+        if next_round_at > float(now):
+            candidates.append(next_round_at)
+        else:
+            cooldown_due_at = _next_identity_cooldown_due_at(now)
+            candidates.append(cooldown_due_at if cooldown_due_at > float(now) else float(now))
     next_pending_due_at = _next_pending_action_due_at()
     if next_pending_due_at > 0:
         candidates.append(next_pending_due_at)
@@ -478,7 +506,7 @@ def _enabled_identity_ids():
 
 def _opening_action_for_identity(identity_id, identity_state):
     action_count = _coerce_int(identity_state.get("world_boss_action_count"), 0)
-    if action_count not in {0, 1}:
+    if action_count != 0:
         return ""
     enabled_ids = sorted(_enabled_identity_ids())
     if not enabled_ids:
@@ -488,10 +516,7 @@ def _opening_action_for_identity(identity_id, identity_state):
     except ValueError:
         return ""
     group_size = min(WORLD_BOSS_OPENING_GROUP_SIZE, max(1, (len(enabled_ids) + 1) // 2))
-    first_group = index < group_size
-    if action_count == 0:
-        return "破幡" if first_group else "镇魂"
-    return "镇魂" if first_group else "破幡"
+    return "破幡" if index < group_size else ""
 
 
 def _opening_strategy_active(run_state):
@@ -550,6 +575,22 @@ def _strong_attack_allowed(run_state):
     return 0 <= moya <= 70 and zhen >= 75
 
 
+def _urgent_rescue_action(run_state):
+    moya = _coerce_int(run_state.get("moya"), -1)
+    zhen = _coerce_int(run_state.get("zhen"), -1)
+    moya_danger = moya >= WORLD_BOSS_RESCUE_MOYA_THRESHOLD if moya >= 0 else False
+    zhen_danger = 0 <= zhen <= WORLD_BOSS_RESCUE_ZHEN_THRESHOLD if zhen >= 0 else False
+    if not moya_danger and not zhen_danger:
+        return ""
+    if moya_danger and not zhen_danger:
+        return "镇魂"
+    if zhen_danger and not moya_danger:
+        return "护阵"
+    moya_margin = max(0, 100 - moya)
+    zhen_margin = max(0, zhen)
+    return "护阵" if zhen_margin <= moya_margin else "镇魂"
+
+
 def _phase_two_guard_target(run_state, summary):
     phase = str(run_state.get("phase") or "")
     if "第二阶段" not in phase:
@@ -574,6 +615,9 @@ def _choose_maintenance_action(run_state):
     moya = _coerce_int(run_state.get("moya"), -1)
     zhen = _coerce_int(run_state.get("zhen"), -1)
     summary = _normalize_summary(run_state.get("summary"))
+    rescue_action = _urgent_rescue_action(run_state)
+    if rescue_action:
+        return rescue_action
     phase_two_guard_target = _phase_two_guard_target(run_state, summary)
     if phase_two_guard_target > 0 and summary["护阵"] < phase_two_guard_target:
         return "护阵"
@@ -601,13 +645,17 @@ def choose_world_boss_action(identity_id, identity_state, run_state, now=None):
     action_limit = max(1, _coerce_int(identity_state.get("world_boss_action_limit"), WORLD_BOSS_DEFAULT_ACTION_LIMIT))
     if _coerce_int(identity_state.get("world_boss_action_count"), 0) >= action_limit:
         return ""
+    rescue_action = _urgent_rescue_action(run_state)
+    if rescue_action:
+        return rescue_action
     if _opening_strategy_active(run_state):
         opening_action = _opening_action_for_identity(identity_id, identity_state)
         if opening_action:
             return opening_action
     if _strong_attack_allowed(run_state) and _strong_attacker(identity_id):
         attack_count = _coerce_int(identity_state.get("world_boss_attack_count"), 0)
-        if attack_count < WORLD_BOSS_STRONG_ATTACK_LIMIT:
+        summary = _normalize_summary(run_state.get("summary"))
+        if attack_count < WORLD_BOSS_STRONG_ATTACK_LIMIT and summary.get("强攻", 0) < WORLD_BOSS_STRONG_ATTACK_LIMIT:
             return "强攻"
     return _choose_maintenance_action(run_state)
 
@@ -621,12 +669,12 @@ def _clear_expired_pending(identity_id, identity_state, now):
         return True
     pending_action = str(identity_state.get("world_boss_pending_action") or "").strip()
     retry_count = _coerce_int(identity_state.get("world_boss_pending_retry_count"), 0)
-    if pending_action in WORLD_BOSS_ACTION_COMMANDS and retry_count < WORLD_BOSS_PENDING_MAX_RETRY:
+    if pending_action in WORLD_BOSS_ACTION_COMMANDS:
         return False
     _clear_world_boss_pending_action(identity_state)
-    identity_state["world_boss_last_error"] = f"{pending_action or '指令'}等待回复超时，已补发 {retry_count} 次后放弃"
+    identity_state["world_boss_last_error"] = f"{pending_action or '指令'}等待回复超时"
     console_log(
-        f"🗡 真仙试锋[{_identity_label(identity_id)}] {pending_action or '指令'}超时，已补发 {retry_count} 次后放弃。",
+        f"🗡 真仙试锋[{_identity_label(identity_id)}] {pending_action or '指令'}超时。",
         scope="identity",
         send_as_id=identity_id,
         limit=180,
@@ -648,7 +696,10 @@ def _eligible_identity_action(identity_id, run_state, now):
 
 def _identity_sort_key(identity_id, identity_state, run_state):
     return (
-        _coerce_float(identity_state.get("world_boss_last_action_at"), 0),
+        max(
+            _coerce_float(identity_state.get("world_boss_last_action_at"), 0),
+            _coerce_float(identity_state.get("world_boss_last_sent_at"), 0),
+        ),
         _coerce_int(identity_state.get("world_boss_action_count"), 0),
         _coerce_int(identity_state.get("world_boss_pending_retry_count"), 0),
         _coerce_int(identity_state.get("world_boss_pending_action_seq"), 0),
@@ -658,6 +709,7 @@ def _identity_sort_key(identity_id, identity_state, run_state):
 
 def _select_identity_and_action(run_state, now, *, allow_new_actions=True):
     candidates = []
+    pending_candidates = []
     round_started_at = _coerce_float(run_state.get("round_started_at"), 0)
     for identity_id in _enabled_identity_ids():
         try:
@@ -670,20 +722,25 @@ def _select_identity_and_action(run_state, now, *, allow_new_actions=True):
             if _clear_expired_pending(identity_id, identity_state, now):
                 continue
             if _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0) > 0 and pending_action in WORLD_BOSS_ACTION_COMMANDS:
-                candidates.append((0.0, 0, 0, 0, int(identity_id), identity_state, pending_action))
+                pending_candidates.append((0.0, 0, 0, 0, int(identity_id), identity_state, pending_action))
             continue
         if not allow_new_actions:
             continue
         if _coerce_int(identity_state.get("world_boss_action_count"), 0) >= max(1, _coerce_int(identity_state.get("world_boss_action_limit"), WORLD_BOSS_DEFAULT_ACTION_LIMIT)):
             continue
         last_action_at = _coerce_float(identity_state.get("world_boss_last_action_at"), 0)
-        if round_started_at > 0 and last_action_at >= round_started_at:
+        if last_action_at > 0 and now - last_action_at < WORLD_BOSS_ACTION_COOLDOWN_SEC:
+            continue
+        last_sent_at = _coerce_float(identity_state.get("world_boss_last_sent_at"), 0)
+        if round_started_at > 0 and max(last_action_at, last_sent_at) >= round_started_at:
             continue
         candidates.append((*_identity_sort_key(identity_id, identity_state, run_state)[:-1], int(identity_id), identity_state, ""))
     candidates.sort()
+    pending_candidates.sort()
     if _strong_attack_allowed(run_state):
         candidates.sort(key=lambda item: (0 if _strong_attacker(item[4]) else 1, item[0], item[1], item[2], item[4]))
-    for _last_at, _count, _retry_count, _action_seq, identity_id, identity_state, pending_action in candidates:
+    search_order = candidates if allow_new_actions and candidates else pending_candidates
+    for _last_at, _count, _retry_count, _action_seq, identity_id, identity_state, pending_action in search_order:
         if pending_action:
             return identity_id, identity_state, pending_action
         action = choose_world_boss_action(identity_id, identity_state, run_state, now)
@@ -854,7 +911,7 @@ def _note_identity_action_reply(identity_state, action, now, *, pending_action="
         identity_state["world_boss_action_count"] = _coerce_int(identity_state.get("world_boss_action_count"), 0) + 1
         if action == "强攻":
             identity_state["world_boss_attack_count"] = _coerce_int(identity_state.get("world_boss_attack_count"), 0) + 1
-        identity_state["world_boss_last_action_at"] = float(now)
+    identity_state["world_boss_last_action_at"] = float(now)
     identity_state["world_boss_last_action"] = action
     identity_state["world_boss_last_error"] = ""
     return True
@@ -1061,14 +1118,14 @@ async def _send_action(identity_id, identity_state, action, now, run_state):
         return sent_at
     run_state = latest_run_state
     identity_state["world_boss_last_action"] = action
-    identity_state["world_boss_last_action_at"] = sent_at
+    identity_state["world_boss_last_sent_at"] = sent_at
     identity_state["world_boss_last_error"] = ""
     if not is_retry:
         identity_state["world_boss_action_count"] = action_seq
     if action == "强攻" and not is_retry:
         identity_state["world_boss_attack_count"] = _coerce_int(identity_state.get("world_boss_attack_count"), 0) + 1
     run_state["last_action_at"] = sent_at
-    run_state["next_action_at"] = sent_at + WORLD_BOSS_ACTION_GAP_SEC
+    run_state["next_action_at"] = sent_at + (WORLD_BOSS_PENDING_TIMEOUT_SEC if is_retry else WORLD_BOSS_ACTION_GAP_SEC)
     _set_run_state(run_state)
     retry_suffix = f"补发{retry_count}" if is_retry else ""
     console_log(
@@ -1165,11 +1222,18 @@ async def _run_world_boss_action_round(now):
                 else:
                     _schedule_next_world_boss_action(run_state, current_now)
                 return
+            is_pending_retry = _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0) > 0
+            if is_pending_retry and sent_count > 0 and allow_new_actions:
+                _complete_world_boss_round(run_state, current_now)
+                return
             sent_at = await _send_action(identity_id, identity_state, action, current_now, run_state)
             if not sent_at:
                 return
             sent_count += 1
             current_now = max(current_now, _coerce_float(sent_at, current_now))
+            if is_pending_retry:
+                _schedule_next_world_boss_action(_get_run_state(current_now), current_now)
+                return
             if sent_count < WORLD_BOSS_MAX_ACTIONS_PER_TICK:
                 run_state = _get_run_state(current_now)
                 delay = max(0.0, _coerce_float(run_state.get("next_action_at"), 0) - current_now)

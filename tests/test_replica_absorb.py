@@ -6498,7 +6498,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         now = 1000.0
 
         self.assertEqual(12.0, app_replica._get_lightweight_retry_delay_sec("open", now=now))
-        self.assertEqual(8.0, app_replica._get_lightweight_retry_delay_sec("join", now=now))
+        self.assertEqual(3.0, app_replica._get_lightweight_retry_delay_sec("join", now=now))
 
         app_replica._note_replica_settlement_observed(now)
 

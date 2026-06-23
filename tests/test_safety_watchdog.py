@@ -898,7 +898,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("duplicate world boss try", breach)
 
-    def test_world_boss_try3_still_fuses(self):
+    def test_world_boss_high_retry_number_is_allowed_for_unread_reply_resend(self):
         now = time.time()
         sender_id = 301299112
         event_key = "test"
@@ -910,14 +910,12 @@ class SafetyWatchdogTests(unittest.TestCase):
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
-                op_id=_world_boss_action_op_id(event_key, sender_id, "镇魂", 1, 3),
+                op_id=_world_boss_action_op_id(event_key, sender_id, "镇魂", 1, 10),
                 chain_id=f"world_boss:{event_key}",
             )
         ]
 
-        breach = safety_watchdog.find_send_breach(events, now, self._config())
-
-        self.assertIn("world boss retry over limit", breach)
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
     def test_world_boss_sixth_action_seq_within_45m_still_fuses(self):
         now = time.time()
