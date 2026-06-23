@@ -839,6 +839,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_chum_enabled INTEGER NOT NULL DEFAULT 0")
     if "fishing_chum_name" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_name TEXT NOT NULL DEFAULT ''")
+    if "fishing_chum_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_day TEXT NOT NULL DEFAULT ''")
+    if "fishing_chum_counts" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_counts TEXT NOT NULL DEFAULT ''")
     if "fishing_auto_buy_bait_enabled" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_buy_bait_enabled INTEGER NOT NULL DEFAULT 0")
     if "fishing_auto_buy_bait_count" not in runtime_columns:
@@ -1424,6 +1428,8 @@ def init_db():
             fishing_daily_count INTEGER NOT NULL DEFAULT 0,
             fishing_auto_chum_enabled INTEGER NOT NULL DEFAULT 0,
             fishing_chum_name TEXT NOT NULL DEFAULT '',
+            fishing_chum_day TEXT NOT NULL DEFAULT '',
+            fishing_chum_counts TEXT NOT NULL DEFAULT '',
             fishing_auto_buy_bait_enabled INTEGER NOT NULL DEFAULT 0,
             fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 8,
             fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0,

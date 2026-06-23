@@ -104,6 +104,35 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         missing_resources = {item["item_name"]: item["missing_count"] for item in snapshot["fishing"]["plan"]["resource_requirements"]}
         self.assertEqual(5, missing_resources["凝血草"])
 
+    async def test_set_fishing_config_uses_target_identity_for_plan(self):
+        other_id = 10002
+        state_module.ensure_identity_registered(other_id)
+        state_module.update_send_as_profile(other_id, username="target", label="目标号")
+        state_module.set_storage_bag_records({
+            str(other_id): {"items": {"灵米饵": 3, "灵石": 1000, "凝血草": 10}, "sections": {}},
+        })
+        with state_module.use_identity(other_id):
+            state_module.state["fishing_active_chum_name"] = "灵草窝"
+            state_module.state["fishing_chum_rods_remaining"] = 3
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message = await ui.ui_set_fishing_config(
+                other_id,
+                {
+                    "pond": "青溪浅滩",
+                    "bait": "灵米饵",
+                    "auto_chum_enabled": True,
+                    "chum_name": "灵草窝",
+                    "auto_buy_bait_enabled": True,
+                    "auto_buy_bait_count": 8,
+                },
+            )
+
+        self.assertTrue(ok)
+        self.assertNotIn(".打窝 灵草窝", message)
+        snapshot = ui.get_identity_ui_snapshot(other_id)
+        self.assertEqual([".钓鱼 青溪浅滩 灵米饵"], snapshot["fishing"]["plan"]["commands"])
+
     async def test_set_fishing_config_clamps_daily_limit(self):
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
             ok_high, _message_high = await ui.ui_set_fishing_config(self.identity_id, {"pond": "青溪浅滩", "bait": "凡饵", "daily_limit": 99})

@@ -95,6 +95,7 @@ from .features.fishing import (
     normalize_fishing_config,
     plan_fishing_commands,
 )
+from .features.fishing_behavior import parse_chum_usage_counts
 from .features.yuanying import get_yuanying_phase_text
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -2365,6 +2366,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
     plan = plan_fishing_commands(
         config,
         bait_inventory=bait_inventory,
+        chum_usage_counts=parse_chum_usage_counts(identity_state.get("fishing_chum_counts")),
         active_chum_name=identity_state.get("fishing_active_chum_name") or "",
         active_chum_rods_remaining=int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
     )
@@ -2398,6 +2400,8 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "auto_probe_enabled": bool(config.auto_probe_enabled),
         "active_chum_name": identity_state.get("fishing_active_chum_name") or "",
         "chum_rods_remaining": int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
+        "chum_day": identity_state.get("fishing_chum_day") or "",
+        "chum_counts": parse_chum_usage_counts(identity_state.get("fishing_chum_counts")),
         "pond_choices": list(FISHING_PONDS),
         "bait_choices": list(FISHING_BAITS),
         "chum_choices": ["无", *FISHING_CHUMS],
@@ -3604,7 +3608,14 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or 8)
         state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
         save_state()
-    plan = plan_fishing_commands(config, bait_inventory=_get_fishing_bait_inventory(send_as_id))
+        saved_identity_state = dict(state.items())
+    plan = plan_fishing_commands(
+        config,
+        bait_inventory=_get_fishing_bait_inventory(send_as_id),
+        chum_usage_counts=parse_chum_usage_counts(saved_identity_state.get("fishing_chum_counts")),
+        active_chum_name=saved_identity_state.get("fishing_active_chum_name") or "",
+        active_chum_rods_remaining=int(saved_identity_state.get("fishing_chum_rods_remaining", 0) or 0),
+    )
     await send_audit_log(
         "🎣 已更新灵溪垂钓配置："
         f"{config.pond}/{config.bait}｜"

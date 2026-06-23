@@ -292,6 +292,8 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
         "fishing_started_at": 0,
         "fishing_active_chum_name": "",
         "fishing_chum_rods_remaining": 0,
+        "fishing_chum_day": "",
+        "fishing_chum_counts": "",
         "fishing_last_msg_id": 0,
         "fishing_last_result": "",
         "fishing_last_error": last_error or "",
@@ -315,6 +317,7 @@ def get_fishing_status_text():
     plan = plan_fishing_commands(
         config,
         bait_inventory=_get_bait_inventory_from_storage(),
+        chum_usage_counts=fishing_behavior.parse_chum_usage_counts(snapshot.get("fishing_chum_counts")),
         **fishing_behavior.active_chum_plan_kwargs(snapshot),
     )
     plan_summary = " -> ".join(plan.commands or ()) if plan.commands else (plan.blocked_reason or "未生成")

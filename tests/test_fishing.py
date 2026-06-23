@@ -283,6 +283,25 @@ class FishingLabTests(unittest.TestCase):
             plan.commands,
         )
 
+    def test_fishing_plan_skips_chum_after_daily_chum_limit(self):
+        config = fishing.normalize_fishing_config(
+            "青溪浅滩",
+            "凡饵",
+            auto_chum_enabled=True,
+            chum_name="米糠小窝",
+            auto_buy_bait_enabled=True,
+        )
+        plan = fishing.plan_fishing_commands(
+            config,
+            bait_inventory={"凡饵": 1, "灵石": 1000},
+            chum_usage_counts={"米糠小窝": 2},
+        )
+
+        self.assertTrue(plan.allow_start)
+        self.assertEqual((), plan.purchase_commands)
+        self.assertEqual((".钓鱼 青溪浅滩 凡饵",), plan.commands)
+        self.assertEqual(1, plan.bait_requirements[0].required_count)
+
     def test_fishing_plan_uses_custom_buy_count_and_never_underbuys_missing_amount(self):
         config = fishing.normalize_fishing_config(
             "青溪浅滩",
@@ -639,7 +658,7 @@ class FishingLabTests(unittest.TestCase):
         from model.features import fishing_behavior
 
         effect = fishing_behavior.decide_reply(
-            {"fishing_enabled": True},
+            {"fishing_enabled": True, "fishing_chum_day": "", "fishing_chum_counts": ""},
             "【打窝已成】\n你在乱星海礁边撒下 【妖腥窝】，接下来 6 竿会受其牵引。",
             1_700_000_000.0,
             result_msg_id=22032,
@@ -647,6 +666,8 @@ class FishingLabTests(unittest.TestCase):
 
         self.assertTrue(effect.handled)
         self.assertEqual({"妖血饵": -2, "一阶妖丹": -3, "灵石": -200}, effect.storage_deltas)
+        self.assertEqual(fishing_behavior.get_day_key(1_700_000_000.0), effect.updates["fishing_chum_day"])
+        self.assertEqual('{"妖腥窝": 1}', effect.updates["fishing_chum_counts"])
 
     def test_fishing_behavior_bite_schedules_lift_after_delay(self):
         from model.features import fishing_behavior

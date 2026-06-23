@@ -125,6 +125,57 @@ def parse_pending_open_fish(value):
     return {}
 
 
+def parse_chum_usage_counts(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    out = {}
+    for chum, count in parsed.items():
+        name = str(chum or "").strip()
+        if not name:
+            continue
+        try:
+            parsed_count = int(count or 0)
+        except (TypeError, ValueError):
+            parsed_count = 0
+        if parsed_count > 0:
+            out[name] = parsed_count
+    return out
+
+
+def format_chum_usage_counts(counts):
+    cleaned = {
+        str(chum).strip(): int(count)
+        for chum, count in (counts or {}).items()
+        if str(chum or "").strip() and int(count or 0) > 0
+    }
+    if not cleaned:
+        return ""
+    return json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
+
+
+def normalize_chum_counter(snapshot, now):
+    day_key = get_day_key(now)
+    if str(snapshot.get("fishing_chum_day") or "") != day_key:
+        return {}, {"fishing_chum_day": day_key, "fishing_chum_counts": ""}
+    return parse_chum_usage_counts(snapshot.get("fishing_chum_counts")), {}
+
+
+def mark_chum_confirmed(snapshot, now, chum_name):
+    counts, updates = normalize_chum_counter(snapshot, now)
+    name = str(chum_name or "").strip()
+    if name:
+        counts[name] = int(counts.get(name, 0) or 0) + 1
+    updates["fishing_chum_counts"] = format_chum_usage_counts(counts)
+    return updates
+
+
 def format_pending_open_fish(queue):
     cleaned = {
         str(fish).strip(): int(count)
@@ -278,6 +329,7 @@ def next_planned_command(snapshot, *, bait_inventory=None):
     plan = plan_fishing_commands(
         config,
         bait_inventory=bait_inventory,
+        chum_usage_counts=parse_chum_usage_counts(snapshot.get("fishing_chum_counts")),
         **active_chum_plan_kwargs(snapshot),
     )
     if not plan.allow_start:
@@ -481,6 +533,10 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
         )
 
     _day_key, count, limit, daily_updates = normalize_daily_counter(snapshot, now)
+    _chum_counts, chum_updates = normalize_chum_counter(snapshot, now)
+    daily_updates.update(chum_updates)
+    planning_snapshot = dict(snapshot)
+    planning_snapshot.update(daily_updates)
     if count >= limit:
         pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))
         if pending_open_command:
@@ -491,7 +547,7 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
         updates["next_fishing_time"] = next_fishing_day_timestamp(now, next_day_jitter_sec)
         return FishingEffect(handled=True, updates=updates)
 
-    command, plan = next_planned_command(snapshot, bait_inventory=bait_inventory)
+    command, plan = next_planned_command(planning_snapshot, bait_inventory=bait_inventory)
     if not command:
         reason = (plan.blocked_reason if plan else "") or "计划不可执行"
         return FishingEffect(
@@ -609,6 +665,7 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
     chum_success = parse_chum_success_detail(raw_text)
     if chum_success:
         updates = clear_pending_updates()
+        updates.update(mark_chum_confirmed(snapshot, now, chum_success.chum))
         updates.update({
             "fishing_active_chum_name": chum_success.chum,
             "fishing_chum_rods_remaining": max(0, int(chum_success.rods or 0)),
