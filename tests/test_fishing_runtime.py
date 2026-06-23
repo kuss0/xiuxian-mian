@@ -173,6 +173,36 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
             self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
 
+    async def test_pending_lift_send_inflight_blocks_status_reentry(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        sent_commands = []
+
+        async def fake_send(command, **_kwargs):
+            sent_commands.append(command)
+            if command == ".提竿":
+                await fishing_runtime.run_fishing_scheduler(now + 0.1)
+            return SimpleNamespace(id=22028, sent_at=now)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now - 1
+            state_module.state["fishing_reply_to_msg_id"] = 0
+            state_module.state["fishing_reply_due_at"] = 0
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=fake_send),
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            self.assertEqual([".提竿"], sent_commands)
+            self.assertEqual("lifting", state_module.state["fishing_phase"])
+            self.assertEqual("", state_module.state["fishing_pending_action"])
+            self.assertEqual(22028, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+
     async def test_followup_keeps_pending_until_command_is_sent(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

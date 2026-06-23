@@ -463,6 +463,13 @@ async def _send_fishing_command(command, now):
     }
     if priority:
         send_kwargs["priority"] = priority
+    if phase != "idle":
+        _apply_updates({
+            "fishing_phase": phase,
+            "fishing_pending_action": "",
+            "next_fishing_time": float(now + _reply_timeout_for_fishing_command(command)),
+        })
+        mark_dirty()
     msg = await send_game_command(command, **send_kwargs)
     if not msg:
         effect = fishing_behavior.build_send_failure_effect(command, now)
