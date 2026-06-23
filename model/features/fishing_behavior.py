@@ -12,6 +12,7 @@ import re
 
 from ..config import (
     CMD_FISHING,
+    CMD_FISHING_BASKET,
     CMD_FISHING_BUY_BAIT,
     CMD_FISHING_CHUM,
     CMD_FISHING_LIFT,
@@ -24,6 +25,7 @@ from ..config import (
 from ..timing import cd_blocks, get_day_key
 from .fishing import (
     FISHING_BAITS,
+    FISHING_CHUM_DAILY_LIMITS,
     FISHING_DEFAULT_BUY_BAIT_COUNT,
     FISHING_DEFAULT_DAILY_LIMIT,
     FISHING_BAIT_COSTS,
@@ -35,6 +37,8 @@ from .fishing import (
     normalize_fishing_config,
     parse_buy_bait_result,
     parse_generic_resource_shortage,
+    parse_chum_daily_limit_reply,
+    parse_chum_duplicate_active_reply,
     parse_chum_shortage,
     parse_chum_success_detail,
     parse_empty_fishing_result,
@@ -176,6 +180,16 @@ def mark_chum_confirmed(snapshot, now, chum_name):
     return updates
 
 
+def mark_chum_daily_limit_reached(snapshot, now, chum_name):
+    counts, updates = normalize_chum_counter(snapshot, now)
+    name = str(chum_name or "").strip()
+    limit = FISHING_CHUM_DAILY_LIMITS.get(name)
+    if name and limit:
+        counts[name] = max(int(counts.get(name, 0) or 0), int(limit))
+    updates["fishing_chum_counts"] = format_chum_usage_counts(counts)
+    return updates
+
+
 def format_pending_open_fish(queue):
     cleaned = {
         str(fish).strip(): int(count)
@@ -222,6 +236,15 @@ def remove_pending_open_fish(value, fish, count=1):
         if queue[name] <= 0:
             queue.pop(name, None)
     return format_pending_open_fish(queue)
+
+
+def last_sent_chum_name(snapshot):
+    raw = str(snapshot.get("fishing_last_result") or "").strip()
+    prefix = f"已发送：{CMD_FISHING_CHUM} "
+    if not raw.startswith(prefix):
+        return ""
+    name = raw[len(prefix):].strip()
+    return name if name in FISHING_CHUM_DAILY_LIMITS else ""
 
 
 def next_pending_open_command(value):
@@ -290,6 +313,8 @@ def is_fishing_reply_text(text):
         or raw.startswith("【打窝已成】")
         or raw.startswith("【鱼篓】")
         or raw.startswith("打窝失败，资源不足：")
+        or parse_chum_daily_limit_reply(raw)
+        or parse_chum_duplicate_active_reply(raw) is not None
         or ("你今日已垂钓" in raw and "明日再来" in raw)
         or "你已有一竿尚未收起" in raw
         or "你当前没有正在进行的垂钓" in raw
@@ -388,6 +413,8 @@ def command_phase(command):
         return "buying"
     if raw.startswith(CMD_FISHING_CHUM):
         return "chumming"
+    if raw.startswith(CMD_FISHING_BASKET):
+        return "basket"
     if raw.startswith(CMD_FISHING_STATUS):
         return "checking"
     if raw.startswith(CMD_FISHING_PROBE):
@@ -417,7 +444,7 @@ def is_nonblocking_open_timeout(snapshot):
 
 def should_preserve_current_flow_for_open_reply(snapshot):
     phase = str(snapshot.get("fishing_phase") or "idle").strip()
-    return is_rod_in_progress(snapshot) or phase in {"buying", "chumming"}
+    return is_rod_in_progress(snapshot) or phase in {"buying", "chumming", "basket"}
 
 
 def build_send_success_effect(snapshot, command, *, sent_at, msg_id, reply_timeout_sec):
@@ -661,6 +688,37 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             handled=True,
             updates=_with_next_delay(updates, now, FISHING_RESOURCE_SHORTAGE_RETRY_SEC),
             audit_messages=(f"⚠️ 灵溪垂钓资源不足：{generic_shortage.label}，已暂停本轮避免超发。",),
+        )
+
+    if parse_chum_daily_limit_reply(raw_text):
+        chum_name = last_sent_chum_name(snapshot)
+        updates = clear_pending_updates()
+        updates.update(mark_chum_daily_limit_reached(snapshot, now, chum_name))
+        result = f"打窝次数已用尽：{chum_name or '未知窝料'}"
+        updates.update({
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": result,
+            "fishing_last_error": "",
+        })
+        return FishingEffect(
+            handled=True,
+            updates=_with_next_delay(updates, now, action_delay_sec),
+            audit_messages=(f"⚠️ 灵溪垂钓{result}，已跳过该窝料重新规划。",) if chum_name else (),
+        )
+
+    duplicate_chum = parse_chum_duplicate_active_reply(raw_text)
+    if duplicate_chum:
+        updates = clear_pending_updates()
+        updates.update({
+            "fishing_active_chum_name": duplicate_chum.chum,
+            "fishing_chum_rods_remaining": max(0, int(duplicate_chum.rods or 0)),
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": f"打窝已存在：{duplicate_chum.chum}，剩余{max(0, int(duplicate_chum.rods or 0))}竿",
+            "fishing_last_error": "",
+        })
+        return FishingEffect(
+            handled=True,
+            updates=_with_next_delay(updates, now, action_delay_sec),
         )
 
     chum_success = parse_chum_success_detail(raw_text)

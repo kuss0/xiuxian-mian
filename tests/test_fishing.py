@@ -176,6 +176,13 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual("灵米饵", fishing.fishing_bait_name_for_item_key(spirit_rice.item_key))
         self.assertEqual("妖血饵", fishing.fishing_bait_name_for_item_key(demon_blood.item_key))
 
+    def test_parse_chum_daily_limit_and_duplicate_active_replies(self):
+        duplicate = fishing.parse_chum_duplicate_active_reply("你已打下【米糠小窝】，还可影响 1 竿，不可重复叠加。")
+
+        self.assertTrue(fishing.parse_chum_daily_limit_reply("今日此类窝料已经用尽，莫要把整条溪都喂饱了。"))
+        self.assertEqual("米糠小窝", duplicate.chum)
+        self.assertEqual(1, duplicate.rods)
+
     def test_parse_generic_resource_shortage(self):
         shortage = fishing.parse_generic_resource_shortage("购买失败，当前灵石不足。")
 
@@ -693,6 +700,60 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual({"妖血饵": -2, "一阶妖丹": -3, "灵石": -200}, effect.storage_deltas)
         self.assertEqual(fishing_behavior.get_day_key(1_700_000_000.0), effect.updates["fishing_chum_day"])
         self.assertEqual('{"妖腥窝": 1}', effect.updates["fishing_chum_counts"])
+
+    def test_fishing_behavior_chum_daily_limit_marks_chum_exhausted(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "fishing_last_result": "已发送：.打窝 米糠小窝",
+            "fishing_chum_day": fishing_behavior.get_day_key(now),
+            "fishing_chum_counts": '{"米糠小窝": 1}',
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_auto_chum_enabled": True,
+            "fishing_chum_names": '["米糠小窝", "灵草窝"]',
+            "fishing_auto_buy_bait_enabled": True,
+        }
+
+        effect = fishing_behavior.decide_reply(
+            snapshot,
+            "今日此类窝料已经用尽，莫要把整条溪都喂饱了。",
+            now,
+            result_msg_id=22033,
+            action_delay_sec=5,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual('{"米糠小窝": 2}', effect.updates["fishing_chum_counts"])
+        self.assertEqual("打窝次数已用尽：米糠小窝", effect.updates["fishing_last_result"])
+        self.assertEqual(now + 5, effect.updates["next_fishing_time"])
+
+        planning_snapshot = dict(snapshot)
+        planning_snapshot.update(effect.updates)
+        command, _plan = fishing_behavior.next_planned_command(
+            planning_snapshot,
+            bait_inventory={"凡饵": 10, "灵米饵": 10, "灵石": 1000, "凝血草": 10},
+        )
+        self.assertEqual(".打窝 灵草窝", command)
+
+    def test_fishing_behavior_duplicate_chum_reply_records_active_chum(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True, "fishing_phase": "chumming"},
+            "你已打下【米糠小窝】，还可影响 1 竿，不可重复叠加。",
+            1_700_000_000.0,
+            result_msg_id=22034,
+            action_delay_sec=5,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("米糠小窝", effect.updates["fishing_active_chum_name"])
+        self.assertEqual(1, effect.updates["fishing_chum_rods_remaining"])
+        self.assertEqual("打窝已存在：米糠小窝，剩余1竿", effect.updates["fishing_last_result"])
+        self.assertEqual(1_700_000_005.0, effect.updates["next_fishing_time"])
 
     def test_fishing_behavior_bite_schedules_lift_after_delay(self):
         from model.features import fishing_behavior

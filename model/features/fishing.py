@@ -51,6 +51,8 @@ _LIFT_SECONDS_RE = re.compile(r"提竿剩余：(?P<seconds>\d+)秒")
 _AVAILABLE_RE = re.compile(r"可用：(?P<commands>[^\n]+)")
 _START_BAIT_RE = re.compile(r"你挂上 【(?P<bait>[^】]+)】")
 _CHUM_SUCCESS_RE = re.compile(r"【打窝已成】\s*你在.*?撒下 【(?P<chum>[^】]+)】.*?接下来\s*(?P<rods>\d+)\s*竿", re.S)
+_CHUM_DUPLICATE_ACTIVE_RE = re.compile(r"你已打下【(?P<chum>[^】]+)】，还可影响\s*(?P<rods>\d+)\s*竿，不可重复叠加。")
+_CHUM_DAILY_LIMIT_TEXT = "今日此类窝料已经用尽"
 _NO_ROD_RE = re.compile(r"你尚无【青竹钓竿】")
 _NO_FISH_RE = re.compile(r"你的鱼篓中只有【(?P<fish>[^】]+)】x0。")
 _FISHING_IN_PROGRESS_RE = re.compile(r"你已有一竿尚未收起。可用 \.钓鱼状态 查看，或 \.收竿 放弃。")
@@ -401,6 +403,20 @@ def parse_chum_success_detail(text):
 def parse_chum_success(text):
     detail = parse_chum_success_detail(text)
     return detail.chum if detail else ""
+
+
+def parse_chum_duplicate_active_reply(text):
+    match = _CHUM_DUPLICATE_ACTIVE_RE.search(str(text or ""))
+    if not match:
+        return None
+    return FishingChumSuccess(
+        chum=match.group("chum").strip(),
+        rods=int(match.group("rods")),
+    )
+
+
+def parse_chum_daily_limit_reply(text):
+    return _CHUM_DAILY_LIMIT_TEXT in str(text or "")
 
 
 def parse_no_rod_reply(text):

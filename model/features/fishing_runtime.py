@@ -430,6 +430,8 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
             fishing_behavior.parse_buy_bait_result(raw_text)
             or fishing_behavior.parse_fishing_basket(raw_text)
             or fishing_behavior.parse_chum_success_detail(raw_text)
+            or fishing_behavior.parse_chum_duplicate_active_reply(raw_text)
+            or fishing_behavior.parse_chum_daily_limit_reply(raw_text)
             or fishing_behavior.parse_generic_resource_shortage(raw_text)
             or fishing_behavior.parse_chum_shortage(raw_text)
         ):
