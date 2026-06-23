@@ -29,8 +29,8 @@ SMALL_WORLD_CHAIN_COMMANDS = {
 SMALL_WORLD_GOD_COMMANDS = {CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF}
 SMALL_WORLD_CHAIN_PENDING = {"query_pending", "manifest_pending", "harvest_pending", "refine_pending"}
 SMALL_WORLD_PENDING_TIMEOUT_SEC = 20 * 60
-SMALL_WORLD_REFRESH_MIN_SEC = 5 * 60
-SMALL_WORLD_REFRESH_MAX_SEC = 8 * 60
+SMALL_WORLD_REFRESH_MIN_SEC = 60
+SMALL_WORLD_REFRESH_MAX_SEC = 60
 SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 7
 SMALL_WORLD_CYCLE_CD_SEC = 8 * 3600
 SMALL_WORLD_MANIFEST_CD_SEC = 6 * 3600
@@ -913,7 +913,13 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         save_state()
         return True
 
-    if state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
+    manifest_refresh_enabled = bool(
+        allow_tool_chain
+        and state.get("small_world_manifest_enabled")
+        and state.get("small_world_refresh_enabled")
+    )
+
+    if not manifest_refresh_enabled and state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
         if _queue_maintenance_god_action(panel, now):
             _clear_chain_pending()
             return await _try_send_pending_god_action(now)
@@ -930,7 +936,6 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         allow_tool_actions
         and
         state.get("small_world_harvest_enabled")
-        and state.get("small_world_refine_enabled")
         and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE
     ):
         save_state()
@@ -940,6 +945,14 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
     if allow_tool_chain and allow_tool_actions and state.get("small_world_refine_enabled") and refine_amount >= 10:
         save_state()
         return await _send_refine(now, refine_amount)
+
+    if manifest_refresh_enabled:
+        return await _finish_no_prayer_panel(now, panel, allow_refresh=True)
+
+    if state.get("small_world_preach_enabled", False) and not _has_active_small_world_pending(now):
+        if _queue_maintenance_god_action(panel, now):
+            _clear_chain_pending()
+            return await _try_send_pending_god_action(now)
 
     return await _finish_no_prayer_panel(now, panel, allow_refresh=allow_tool_chain)
 
