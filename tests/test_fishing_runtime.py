@@ -102,16 +102,16 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
             self.assertEqual("fishing", state_module.state["fishing_phase"])
 
-    async def test_initial_check_uses_about_one_minute_delay(self):
+    async def test_initial_check_uses_short_human_delay(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
             state_module.state["fishing_enabled"] = True
-            with patch.object(fishing_runtime.random, "uniform", return_value=60):
+            with patch.object(fishing_runtime.random, "uniform", return_value=30):
                 due_at = fishing_runtime.schedule_fishing_initial_check(now, persist=False)
 
-            self.assertEqual(now + 60, due_at)
-            self.assertEqual(now + 60, state_module.state["next_fishing_time"])
+            self.assertEqual(now + 30, due_at)
+            self.assertEqual(now + 30, state_module.state["next_fishing_time"])
 
     async def test_daily_limit_blocks_only_new_fishing_commands(self):
         identity_id = self._prepare_identity()
