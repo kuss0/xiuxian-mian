@@ -594,11 +594,12 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
     basket = parse_fishing_basket(raw_text)
     if basket:
         chum_name, chum_rods = _parse_basket_chum(basket.current_chum)
+        pending_open_fish = format_pending_open_fish(basket.fish)
         updates = {
             "fishing_last_msg_id": result_msg_id,
             "fishing_last_result": "鱼篓校准",
             "fishing_last_error": "",
-            "fishing_pending_open_fish": format_pending_open_fish(basket.fish),
+            "fishing_pending_open_fish": pending_open_fish,
         }
         if basket.daily_rods_used is not None:
             updates["fishing_daily_day"] = get_day_key(now)
@@ -607,6 +608,22 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             updates["fishing_daily_limit"] = clamp_fishing_daily_limit(basket.daily_rods_limit)
         updates["fishing_active_chum_name"] = chum_name
         updates["fishing_chum_rods_remaining"] = chum_rods
+        if snapshot.get("fishing_enabled") and not is_rod_in_progress(snapshot):
+            count = updates.get("fishing_daily_count")
+            limit = updates.get("fishing_daily_limit", fishing_daily_limit(snapshot))
+            if count is not None:
+                updates.update(clear_pending_updates(keep_open_fish=True))
+                updates["fishing_pending_open_fish"] = pending_open_fish
+                if int(count or 0) >= int(limit or 0):
+                    pending_open_command = next_pending_open_command(pending_open_fish)
+                    if pending_open_command:
+                        updates["fishing_pending_action"] = pending_open_command
+                        updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
+                    else:
+                        updates["next_fishing_time"] = next_fishing_day_timestamp(now, action_delay_sec)
+                        updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}"
+                else:
+                    updates["next_fishing_time"] = float(now + _bounded_action_delay(post_rod_delay_sec))
         return FishingEffect(
             handled=True,
             updates=updates,

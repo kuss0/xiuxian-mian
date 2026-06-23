@@ -686,6 +686,71 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(0, effect.storage_counts["凡饵"])
         self.assertEqual(2, effect.storage_counts["银须灵鲢"])
 
+    def test_fishing_behavior_basket_under_limit_resumes_without_opening(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "next_fishing_time": now + 3600,
+                "fishing_pending_action": ".开鱼 银须灵鲢 6",
+                "fishing_pending_open_fish": '{"银须灵鲢": 6, "青鳞小鲫": 1}',
+            },
+            "【鱼篓】\n"
+            "青竹钓竿：已持有\n"
+            "钓术：Lv.0 凡竿（56熟练度）\n"
+            "今日竿数：16/20\n"
+            "当前窝料：无\n\n"
+            "鱼饵\n"
+            "- 凡饵 x20\n\n"
+            "鱼获\n"
+            "- 青鳞小鲫 x1\n"
+            "- 银须灵鲢 x6\n\n"
+            "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+            now,
+            result_msg_id=22040,
+            post_rod_delay_sec=4,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(16, effect.updates["fishing_daily_count"])
+        self.assertEqual(20, effect.updates["fishing_daily_limit"])
+        self.assertEqual("", effect.updates["fishing_pending_action"])
+        self.assertEqual(now + 4, effect.updates["next_fishing_time"])
+        self.assertEqual('{"银须灵鲢": 6, "青鳞小鲫": 1}', effect.updates["fishing_pending_open_fish"])
+
+    def test_fishing_behavior_basket_at_limit_queues_opening(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "next_fishing_time": now + 3600,
+                "fishing_pending_open_fish": "",
+            },
+            "【鱼篓】\n"
+            "青竹钓竿：已持有\n"
+            "钓术：Lv.0 凡竿（56熟练度）\n"
+            "今日竿数：20/20\n"
+            "当前窝料：无\n\n"
+            "鱼饵\n"
+            "- 凡饵 x20\n\n"
+            "鱼获\n"
+            "- 青鳞小鲫 x1\n"
+            "- 银须灵鲢 x6\n\n"
+            "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+            now,
+            result_msg_id=22040,
+            action_delay_sec=6,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(20, effect.updates["fishing_daily_count"])
+        self.assertEqual(".开鱼 银须灵鲢 6", effect.updates["fishing_pending_action"])
+        self.assertEqual(now + 6, effect.updates["next_fishing_time"])
+
     def test_fishing_behavior_chum_success_updates_full_resource_deltas(self):
         from model.features import fishing_behavior
 
