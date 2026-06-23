@@ -48,6 +48,8 @@ FISHING_CATCH_TEXT = """【提竿成功】
 
 鱼获已入鱼篓，可用 .开鱼 银须灵鲢 查看鱼腹机缘。"""
 
+OTHER_ANGLER_CATCH_TEXT = FISHING_CATCH_TEXT.replace("@WalterWA2000", "@xianxia_01")
+
 OPEN_FISH_TEXT = """【剖鱼取机缘】
 你剖开 【银须灵鲢】x1，鱼腹中灵光微闪。
 
@@ -293,6 +295,47 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["fishing_reply_due_at"])
             self.assertEqual(fake_open_msg.sent_at, state_module.state["next_fishing_time"])
             self.assertIn("不等待开鱼结算", state_module.state["fishing_last_result"])
+
+    async def test_other_angler_catch_does_not_open_fish_for_current_identity(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_reply_to_msg_id"] = 22027
+            state_module.state["fishing_reply_due_at"] = now + 60
+            state_module.state["fishing_phase"] = "waiting"
+            with (
+                patch.object(fishing_runtime, "save_state") as save_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    OTHER_ANGLER_CATCH_TEXT,
+                    now,
+                    reply_to=SimpleNamespace(id=777, raw_text=".提竿"),
+                    matched_family="fishing",
+                    result_msg_id=22032,
+                )
+
+            self.assertFalse(handled)
+            send_mock.assert_not_awaited()
+            save_mock.assert_not_called()
+            self.assertEqual("waiting", state_module.state["fishing_phase"])
+            self.assertEqual(22027, state_module.state["fishing_reply_to_msg_id"])
+
+    async def test_duplicate_lift_is_suppressed_while_lift_reply_is_pending(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "lifting"
+            state_module.state["fishing_reply_to_msg_id"] = 22040
+            state_module.state["fishing_reply_due_at"] = now + 60
+            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock:
+                sent = await fishing_runtime._send_fishing_command(".提竿", now)
+
+            self.assertFalse(sent)
+            send_mock.assert_not_awaited()
+            self.assertEqual(22040, state_module.state["fishing_reply_to_msg_id"])
 
     async def test_late_open_fish_reply_preserves_new_active_rod(self):
         identity_id = self._prepare_identity()

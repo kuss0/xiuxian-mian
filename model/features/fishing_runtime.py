@@ -20,7 +20,7 @@ from ..runtime import (
     send_audit_log,
     send_game_command,
 )
-from ..state import get_current_identity_id, get_storage_bag_records, state, use_identity
+from ..state import get_current_identity_id, get_send_as_profile, get_storage_bag_records, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
 from .fishing import plan_fishing_commands
@@ -95,6 +95,35 @@ def _is_fishing_reply(reply_to=None, matched_family=None):
         f"{CMD_FISHING_CHUM} ",
         f"{CMD_FISHING_OPEN} ",
     ))
+
+
+def _normalize_username(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if not raw.startswith("@"):
+        raw = f"@{raw}"
+    return raw.lower()
+
+
+def _current_identity_username():
+    profile = get_send_as_profile(get_current_identity_id())
+    return _normalize_username((profile or {}).get("username") or "")
+
+
+def _explicit_fishing_angler(text):
+    status = fishing_behavior.parse_fishing_status(text)
+    if status:
+        return _normalize_username(status.angler)
+    catch = fishing_behavior.parse_fishing_catch(text)
+    if catch:
+        return _normalize_username(catch.angler)
+    return ""
+
+
+def _is_open_fish_reply_to_command(reply_to=None):
+    orig_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()
+    return orig_cmd.startswith(f"{CMD_FISHING_OPEN} ")
 
 
 def _priority_for_fishing_command(command):
@@ -290,8 +319,14 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
     reply_to_msg_id = _parse_int(getattr(reply_to, "id", 0))
     active_ids = fishing_behavior.active_fishing_anchor_ids(snapshot)
     swallowed_reply = reply_to_msg_id <= 0 and looks_like_fishing and active_pending
-    routed_fishing_text = matched_family == "fishing" and looks_like_fishing
-    if active_ids and reply_to_msg_id not in active_ids and not swallowed_reply and not routed_fishing_text:
+    explicit_angler = _explicit_fishing_angler(raw_text)
+    current_username = _current_identity_username()
+    explicit_angler_matches = bool(explicit_angler and current_username and explicit_angler == current_username)
+    if explicit_angler and not explicit_angler_matches:
+        return False
+    allow_routed_by_angler = matched_family == "fishing" and looks_like_fishing and explicit_angler_matches
+    allow_open_reply = matched_family == "fishing" and _is_open_fish_reply_to_command(reply_to)
+    if active_ids and reply_to_msg_id not in active_ids and not swallowed_reply and not allow_routed_by_angler and not allow_open_reply:
         return False
 
     result_msg_id = int(result_msg_id or reply_to_msg_id or 0)
@@ -317,6 +352,14 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
 
 
 async def _send_fishing_command(command, now):
+    phase = fishing_behavior.command_phase(command)
+    if (
+        phase != "idle"
+        and str(state.get("fishing_phase") or "").strip() == phase
+        and _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
+        and float(state.get("fishing_reply_due_at", 0) or 0) > float(now)
+    ):
+        return False
     priority = _priority_for_fishing_command(command)
     send_kwargs = {
         "track": False,
