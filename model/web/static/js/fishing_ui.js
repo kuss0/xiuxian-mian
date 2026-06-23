@@ -101,6 +101,95 @@
     }).join('');
   }
 
+  function fishingStatusText(fishing, plan){
+    var bits = [];
+    bits.push(esc(fishing.pond || '青溪浅滩')+'/'+esc(fishing.bait || '凡饵'));
+    bits.push('竿 '+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit)));
+    bits.push('买饵 '+(fishing.auto_buy_bait_enabled ? '开' : '关')+'x'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count)));
+    if(fishing.auto_chum_enabled){
+      bits.push('窝 '+esc((Array.isArray(fishing.chum_names) && fishing.chum_names.length ? fishing.chum_names : [fishing.chum_name || '无']).join(',')));
+    }
+    if(plan && plan.blocked_reason){
+      bits.push(esc(plan.blocked_reason));
+    }
+    return bits.join(' ｜ ');
+  }
+
+  function fishingConfigFormHtml(fishing, plan){
+    return ''+
+      '<form id="fishing-config-form" class="fishing-config-grid fishing-config-modal-grid">'+
+      '<label class="field-label"><span>鱼塘</span><select class="text-input" name="pond">'+optionHtml(fishing.pond_choices || [], fishing.pond)+'</select></label>'+
+      '<label class="field-label"><span>鱼饵</span><select class="text-input" name="bait">'+optionHtml(fishing.bait_choices || [], fishing.bait)+'</select></label>'+
+      '<label class="field-label"><span>每日竿数</span><input class="text-input" type="number" name="daily_limit" min="1" max="20" step="1" value="'+esc(clampDailyLimit(fishing.daily_limit))+'" /></label>'+
+      '<label class="field-label"><span>买饵数量</span><input class="text-input" type="number" name="auto_buy_bait_count" min="1" max="99" step="1" value="'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count))+'" /></label>'+
+      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_chum_enabled" '+(fishing.auto_chum_enabled ? 'checked' : '')+' /><span>打窝</span></label>'+
+      '<div class="fishing-plan fishing-chum-plan"><span>窝料顺序</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
+      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_buy_bait_enabled" '+(fishing.auto_buy_bait_enabled ? 'checked' : '')+' /><span>缺饵购买</span></label>'+
+      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
+      '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
+      '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
+      '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+
+      '<div class="fishing-plan fishing-plan-wide"><span>计划</span><div>'+esc(plan.summary || '未生成')+'</div></div>'+
+      '<div class="fishing-actions"><button type="submit" class="btn btn-secondary">保存</button></div>'+
+      '</form>';
+  }
+
+  function ensureFishingConfigModal(){
+    var modal = document.getElementById('fishing-config-modal');
+    if(modal){
+      return modal;
+    }
+    modal = document.createElement('div');
+    modal.id = 'fishing-config-modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML =
+      '<div class="modal-card modal-card-wide fishing-modal-card">'+
+      '<div class="modal-header">'+
+      '<h3 class="modal-title">灵溪垂钓设置</h3>'+
+      '<button type="button" class="icon-btn" data-close-fishing-config aria-label="关闭">×</button>'+
+      '</div>'+
+      '<div id="fishing-config-modal-body"></div>'+
+      '</div>';
+    document.body.appendChild(modal);
+    return modal;
+  }
+
+  function closeFishingConfigModal(){
+    var modal = document.getElementById('fishing-config-modal');
+    if(modal){
+      modal.classList.remove('show');
+    }
+  }
+
+  function renderFishingConfigModal(force){
+    var identity = getIdentity();
+    if(!identity){
+      closeFishingConfigModal();
+      return;
+    }
+    var modal = ensureFishingConfigModal();
+    var selectedId = String(appState && appState.selectedId || '');
+    if(modal.classList.contains('show') && modal.dataset.sendAsId && modal.dataset.sendAsId !== selectedId){
+      closeFishingConfigModal();
+    }
+    if(modal.classList.contains('show') && !force){
+      return;
+    }
+    var fishing = identity.fishing || {};
+    var plan = fishing.plan || {};
+    modal.dataset.sendAsId = selectedId;
+    var body = document.getElementById('fishing-config-modal-body');
+    if(body){
+      body.innerHTML = fishingConfigFormHtml(fishing, plan);
+    }
+  }
+
+  function openFishingConfigModal(){
+    renderFishingConfigModal(true);
+    var modal = ensureFishingConfigModal();
+    modal.classList.add('show');
+  }
+
   function renderFishingConfigPanel(){
     var identity = getIdentity();
     var card = findFishingCard();
@@ -120,26 +209,15 @@
     }
     var fishing = identity.fishing || {};
     var plan = fishing.plan || {};
-    var openAttr = (fishing.auto_chum_enabled || fishing.auto_buy_bait_enabled || fishing.auto_probe_enabled) ? ' open' : '';
     panel.innerHTML =
-      '<details class="module-submenu fishing-submenu"'+openAttr+'>'+
-      '<summary><span>灵溪垂钓</span><strong>'+esc(plan.allow_start ? '可执行' : (plan.blocked_reason || '待配置'))+'</strong></summary>'+
-      '<form id="fishing-config-form" class="fishing-config-grid">'+
-      '<label class="field-label"><span>鱼塘</span><select class="text-input" name="pond">'+optionHtml(fishing.pond_choices || [], fishing.pond)+'</select></label>'+
-      '<label class="field-label"><span>鱼饵</span><select class="text-input" name="bait">'+optionHtml(fishing.bait_choices || [], fishing.bait)+'</select></label>'+
-      '<label class="field-label"><span>每日竿数</span><input class="text-input" type="number" name="daily_limit" min="1" max="20" step="1" value="'+esc(clampDailyLimit(fishing.daily_limit))+'" /></label>'+
-      '<label class="field-label"><span>买饵数量</span><input class="text-input" type="number" name="auto_buy_bait_count" min="1" max="99" step="1" value="'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count))+'" /></label>'+
-      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_chum_enabled" '+(fishing.auto_chum_enabled ? 'checked' : '')+' /><span>打窝</span></label>'+
-      '<div class="fishing-plan fishing-chum-plan"><span>窝料顺序</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
-      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_buy_bait_enabled" '+(fishing.auto_buy_bait_enabled ? 'checked' : '')+' /><span>缺饵购买</span></label>'+
-      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
-      '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
-      '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
-      '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+
-      '<div class="fishing-plan fishing-plan-wide"><span>计划</span><div>'+esc(plan.summary || '未生成')+'</div></div>'+
-      '<div class="fishing-actions"><button type="submit" class="btn btn-secondary">保存</button></div>'+
-      '</form>'+
-      '</details>';
+      '<div class="fishing-config-entry">'+
+      '<div class="fishing-config-summary">'+
+      '<strong>'+(plan.allow_start ? '可执行' : esc(plan.blocked_reason || '待配置'))+'</strong>'+
+      '<span>'+fishingStatusText(fishing, plan)+'</span>'+
+      '</div>'+
+      '<button type="button" class="btn btn-secondary" data-open-fishing-config>垂钓设置</button>'+
+      '</div>';
+    renderFishingConfigModal(false);
   }
 
   async function submitFishingConfig(event){
@@ -165,12 +243,23 @@
     try{
       var data = await postJson('/api/fishing-config', payload);
       updateFlash(data.message || '已更新灵溪垂钓', false);
+      closeFishingConfigModal();
       applySnapshot(data.snapshot || appState.snapshot, {keepFlash:true});
     }catch(error){
       updateFlash((error && error.message) || '灵溪垂钓更新失败', true);
-      renderFishingConfigPanel();
+      renderFishingConfigModal(false);
     }
   }
+
+  document.addEventListener('click', function(event){
+    if(event.target && event.target.closest && event.target.closest('[data-open-fishing-config]')){
+      openFishingConfigModal();
+      return;
+    }
+    if(event.target && event.target.closest && (event.target.closest('[data-close-fishing-config]') || event.target.id === 'fishing-config-modal')){
+      closeFishingConfigModal();
+    }
+  });
 
   document.addEventListener('submit', function(event){
     if(event.target && event.target.id === 'fishing-config-form'){

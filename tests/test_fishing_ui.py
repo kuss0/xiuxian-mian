@@ -167,6 +167,9 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("/api/fishing-config", script)
         self.assertIn("fishing-config-panel", script)
+        self.assertIn("fishing-config-modal", script)
+        self.assertIn("data-open-fishing-config", script)
+        self.assertIn("renderFishingConfigModal(false)", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
         self.assertIn('name="chum_names"', script)
@@ -174,6 +177,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("resourceRequirementHtml", script)
         self.assertIn("findFishingCard", script)
         self.assertIn("card.appendChild(panel)", script)
+        self.assertNotIn('<details class="module-submenu fishing-submenu"', script)
         self.assertNotIn("grid.parentNode.insertBefore(panel, grid.nextSibling)", script)
 
 
