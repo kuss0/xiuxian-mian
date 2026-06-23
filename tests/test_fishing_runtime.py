@@ -95,6 +95,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once_with(".钓鱼 青溪浅滩 凡饵", track=False, max_retry=0, source_module="灵溪垂钓")
             self.assertEqual(22027, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
             self.assertEqual("fishing", state_module.state["fishing_phase"])
 
     async def test_daily_limit_blocks_only_new_fishing_commands(self):
@@ -134,6 +135,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await fishing_runtime.run_fishing_scheduler(now)
 
             send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
 
     async def test_followup_keeps_pending_until_command_is_sent(self):
         identity_id = self._prepare_identity()
@@ -170,6 +172,28 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_awaited_once_with(".钓鱼状态", track=False, priority="urgent_reactive", max_retry=0, source_module="灵溪垂钓")
             self.assertNotEqual(".钓鱼 青溪浅滩 凡饵", send_mock.await_args.args[0])
+
+    async def test_scheduler_retries_swallowed_status_inside_fishing_window(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "checking"
+            state_module.state["fishing_status_msg_id"] = 22020
+            state_module.state["fishing_reply_to_msg_id"] = 22021
+            state_module.state["fishing_reply_due_at"] = now - 1
+            state_module.state["next_fishing_time"] = now - 1
+            fake_msg = SimpleNamespace(id=22022, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".钓鱼状态", track=False, priority="urgent_reactive", max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual(22022, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
 
     async def test_scheduler_releases_open_timeout_without_status_loop(self):
         identity_id = self._prepare_identity()

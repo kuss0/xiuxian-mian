@@ -28,6 +28,9 @@ from .storage_bag import apply_storage_bag_item_deltas
 
 
 FISHING_REPLY_TIMEOUT_SEC = 90
+FISHING_FAST_REPLY_TIMEOUT_SEC = 8
+FISHING_ACTION_REPLY_TIMEOUT_SEC = 12
+FISHING_SETUP_REPLY_TIMEOUT_SEC = 20
 FISHING_ACTION_DELAY_MIN_SEC = 2
 FISHING_ACTION_DELAY_MAX_SEC = 5
 FISHING_RECOVERY_MIN_SEC = 60
@@ -133,6 +136,17 @@ def _priority_for_fishing_command(command):
     if raw.startswith((CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_OPEN)):
         return SEND_PRIORITY_EVENT_BURST
     return None
+
+
+def _reply_timeout_for_fishing_command(command):
+    raw = str(command or "").strip()
+    if raw.startswith((CMD_FISHING, CMD_FISHING_STATUS, CMD_FISHING_PROBE)):
+        return FISHING_FAST_REPLY_TIMEOUT_SEC
+    if raw.startswith(CMD_FISHING_LIFT):
+        return FISHING_ACTION_REPLY_TIMEOUT_SEC
+    if raw.startswith((CMD_FISHING_BUY_BAIT, CMD_FISHING_CHUM)):
+        return FISHING_SETUP_REPLY_TIMEOUT_SEC
+    return FISHING_REPLY_TIMEOUT_SEC
 
 
 def _fishing_followup_key(send_as_id):
@@ -382,7 +396,7 @@ async def _send_fishing_command(command, now):
         command,
         sent_at=sent_at,
         msg_id=msg_id,
-        reply_timeout_sec=FISHING_REPLY_TIMEOUT_SEC,
+        reply_timeout_sec=_reply_timeout_for_fishing_command(command),
     )
     _apply_effect(effect)
     console_log(
