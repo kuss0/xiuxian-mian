@@ -70,6 +70,10 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if task and not task.done():
                 task.cancel()
         fishing_runtime._FOLLOWUP_TASKS.clear()
+        for task in list(fishing_runtime._RECOVERY_TASKS.values()):
+            if task and not task.done():
+                task.cancel()
+        fishing_runtime._RECOVERY_TASKS.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -191,9 +195,47 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".钓鱼状态", track=False, priority="urgent_reactive", max_retry=0, source_module="灵溪垂钓")
+            send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
             self.assertEqual(22022, state_module.state["fishing_reply_to_msg_id"])
-            self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+            self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+
+    async def test_recovery_task_advances_swallowed_status_without_global_scheduler(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "checking"
+            state_module.state["fishing_reply_to_msg_id"] = 22021
+            state_module.state["fishing_reply_due_at"] = now - 1
+            state_module.state["next_fishing_time"] = now - 1
+            fake_msg = SimpleNamespace(id=22022, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "time") as time_mock,
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                time_mock.time.return_value = now
+                await fishing_runtime._run_fishing_recovery(identity_id, 22021, now - 1)
+
+            send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
+
+    async def test_recovery_task_ignores_stale_anchor(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "checking"
+            state_module.state["fishing_reply_to_msg_id"] = 22022
+            state_module.state["fishing_reply_due_at"] = now - 1
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "time") as time_mock,
+            ):
+                time_mock.time.return_value = now
+                await fishing_runtime._run_fishing_recovery(identity_id, 22021, now - 1)
+
+            send_mock.assert_not_awaited()
 
     async def test_scheduler_releases_open_timeout_without_status_loop(self):
         identity_id = self._prepare_identity()

@@ -40,6 +40,7 @@ FISHING_POST_ROD_DELAY_MAX_SEC = 90
 FISHING_NEXT_DAY_MIN_SEC = 5 * 60
 FISHING_NEXT_DAY_MAX_SEC = 75 * 60
 _FOLLOWUP_TASKS = {}
+_RECOVERY_TASKS = {}
 
 
 def _parse_int(value, default=0):
@@ -159,6 +160,12 @@ def _cancel_fishing_followup(send_as_id):
         task.cancel()
 
 
+def _cancel_fishing_recovery(send_as_id):
+    task = _RECOVERY_TASKS.pop(_fishing_followup_key(send_as_id), None)
+    if task and not task.done():
+        task.cancel()
+
+
 def _has_fishing_followup(send_as_id):
     task = _FOLLOWUP_TASKS.get(_fishing_followup_key(send_as_id))
     return bool(task and not task.done())
@@ -191,6 +198,31 @@ def _schedule_fishing_followup(send_as_id, command, due_at):
     return True
 
 
+def _schedule_fishing_recovery(send_as_id, msg_id, due_at):
+    send_as_id = int(send_as_id or get_current_identity_id() or 0)
+    msg_id = int(msg_id or 0)
+    due_at = float(due_at or 0)
+    if send_as_id <= 0 or msg_id <= 0 or due_at <= 0:
+        return False
+    key = _fishing_followup_key(send_as_id)
+    _cancel_fishing_recovery(send_as_id)
+    task = asyncio.create_task(_run_fishing_recovery(send_as_id, msg_id, due_at))
+    _RECOVERY_TASKS[key] = task
+
+    def _done(done_task):
+        if _RECOVERY_TASKS.get(key) is done_task:
+            _RECOVERY_TASKS.pop(key, None)
+        try:
+            exc = done_task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is not None:
+            console_log(f"⚠️ 灵溪垂钓恢复任务异常：{str(exc)[:120]}", scope="identity", limit=180)
+
+    task.add_done_callback(_done)
+    return True
+
+
 async def _run_fishing_followup(send_as_id, command, due_at):
     wait_sec = max(0.0, float(due_at or 0) - time.time())
     if wait_sec > 0:
@@ -203,6 +235,20 @@ async def _run_fishing_followup(send_as_id, command, due_at):
         if _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0 and float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
             return
         await _send_fishing_command(command, time.time())
+
+
+async def _run_fishing_recovery(send_as_id, msg_id, due_at):
+    wait_sec = max(0.0, float(due_at or 0) - time.time())
+    if wait_sec > 0:
+        await asyncio.sleep(wait_sec)
+    with use_identity(send_as_id):
+        if not state.get("fishing_enabled"):
+            return
+        if _parse_int(state.get("fishing_reply_to_msg_id", 0)) != int(msg_id or 0):
+            return
+        if float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
+            return
+        await run_fishing_scheduler(time.time())
 
 
 def is_fishing_reply_text(text):
@@ -219,6 +265,7 @@ def _active_chum_plan_kwargs():
 
 def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=True):
     _cancel_fishing_followup(get_current_identity_id())
+    _cancel_fishing_recovery(get_current_identity_id())
     last_error = state.get("fishing_last_error") if keep_last_error else ""
     config_values = {}
     if keep_config:
@@ -356,6 +403,7 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
         return False
 
     _apply_effect(effect)
+    _cancel_fishing_recovery(get_current_identity_id())
     await _emit_effect_audits(effect)
     if effect.immediate_commands:
         _cancel_fishing_followup(get_current_identity_id())
@@ -399,6 +447,8 @@ async def _send_fishing_command(command, now):
         reply_timeout_sec=_reply_timeout_for_fishing_command(command),
     )
     _apply_effect(effect)
+    if int(state.get("fishing_reply_to_msg_id", 0) or 0) == msg_id and float(state.get("fishing_reply_due_at", 0) or 0) > 0:
+        _schedule_fishing_recovery(get_current_identity_id(), msg_id, state.get("fishing_reply_due_at", 0))
     console_log(
         f"🎣 灵溪垂钓已发送：{command}，等待回复→{fmt_abs_ts(state['fishing_reply_due_at'])}",
         scope="identity",

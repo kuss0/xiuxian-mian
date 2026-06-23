@@ -321,6 +321,20 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
         if reply_due_at > now:
             return FishingEffect()
         if is_rod_in_progress(snapshot):
+            phase = str(snapshot.get("fishing_phase") or "").strip()
+            if phase in {"checking", "probing"}:
+                return FishingEffect(
+                    handled=True,
+                    command=CMD_FISHING_LIFT,
+                    updates={
+                        "fishing_reply_to_msg_id": 0,
+                        "fishing_reply_due_at": 0,
+                        "fishing_pending_action": "",
+                        "fishing_phase": "lifting",
+                        "fishing_last_error": f"钓鱼状态回复超时：{reply_to_msg_id}，直接提竿兜底",
+                    },
+                    audit_messages=(f"⚠️ 灵溪垂钓状态回复超时，消息ID={reply_to_msg_id}，直接提竿避免错过鱼讯。",),
+                )
             return FishingEffect(
                 handled=True,
                 command=CMD_FISHING_STATUS,
