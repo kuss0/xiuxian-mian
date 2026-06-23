@@ -139,6 +139,7 @@ from .features.yuanying import (
 )
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
 from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
+from .features.fishing_runtime import handle_fishing_reply, is_fishing_reply_text, run_fishing_scheduler
 from .features.wild_training import handle_wild_training_reply, run_wild_training_scheduler
 from .persistence import (
     flush_if_dirty,
@@ -239,6 +240,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_explore_rift_scheduler,
     run_wendao_scheduler,
     run_duel_scheduler,
+    run_fishing_scheduler,
     run_tree_bootstrap_check,
     run_tree_scheduler,
     run_checkin_scheduler,
@@ -295,6 +297,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
     "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
     "run_duel_scheduler": {"manifest_names": ("斗法",), "helper": False},
+    "run_fishing_scheduler": {"manifest_names": ("灵溪垂钓",), "helper": False},
     "run_wild_training_scheduler": {"manifest_names": ("野外历练",), "helper": False},
     "run_yinluo_scheduler": {"manifest_names": ("阴罗宗",), "helper": False},
     "run_yuanying_scheduler": {"manifest_names": ("元婴",), "helper": False},
@@ -412,6 +415,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "yuanying": ("元婴", "出窍", "归窍", "法则碎片", "探寻"),
     "wendao": ("问道", "问道得宝", "宗门长老", "天机不可频繁窥探"),
     "duel": ("斗法", "天道战报", "斗法终局", "正在锁定对手天机", "法宝齐出", "战斗结束，正在整理天道战报"),
+    "fishing": ("灵溪垂钓", "提竿成功", "空竿", "剖鱼取机缘", "渔具铺", "打窝已成", "鱼篓"),
     "deep_retreat": ("深度闭关", "闭关", "神魂", "功成圆满", "总结"),
     "small_world_preach": ("小世界", "香火", "信仰", "神识", "神迹"),
     "small_world_relief": ("小世界", "赈灾", "甘霖", "神谕", "稳定", "人口"),
@@ -630,6 +634,51 @@ def _handled_reply_context(reply_context):
     context = dict(reply_context) if isinstance(reply_context, dict) else {}
     context["routed_reply_handled"] = True
     return context
+
+
+def _candidate_fishing_swallowed_reply_identity_ids(text, now):
+    if not is_fishing_reply_text(text):
+        return []
+    raw_lower = str(text or "").lower()
+    candidates = []
+    username_matched = []
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id)
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if not identity_state.get("fishing_enabled"):
+            continue
+        if int(identity_state.get("fishing_reply_to_msg_id", 0) or 0) <= 0:
+            continue
+        if float(identity_state.get("fishing_reply_due_at", 0) or 0) < float(now):
+            continue
+        candidates.append(identity_id)
+        username = str((get_send_as_profile(identity_id) or {}).get("username") or "").strip().lstrip("@").lower()
+        if username and f"@{username}" in raw_lower:
+            username_matched.append(identity_id)
+    if len(username_matched) == 1:
+        return username_matched
+    if len(candidates) == 1:
+        return candidates
+    return []
+
+
+async def _dispatch_fishing_swallowed_reply_fallback(event, text, now, *, event_kind="message"):
+    candidate_ids = _candidate_fishing_swallowed_reply_identity_ids(text, now)
+    if not candidate_ids:
+        return False
+    if not _claim_runtime_event(event, scope=f"fishing_swallowed_reply:{event_kind}:{candidate_ids[0]}"):
+        return False
+    with use_identity(candidate_ids[0]):
+        return await handle_fishing_reply(
+            text,
+            now,
+            reply_to=None,
+            matched_family=None,
+            result_msg_id=getattr(event, "id", 0),
+        )
 
 
 def _get_bot_health_probe_identity_id():
@@ -1150,6 +1199,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 matched_family=matched_family,
                 result_msg_id=event.id,
             ) or handled_any
+            handled_any = await handle_fishing_reply(
+                text,
+                now,
+                reply_to,
+                matched_family=matched_family,
+                result_msg_id=event.id,
+            ) or handled_any
             if not tree_runtime_archived:
                 handled_any = await handle_tree_exception_prompt(text, now) or handled_any
             handled_any = await handle_small_world_preach_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -1322,6 +1378,10 @@ async def on_message(event):
                 )
                 return
 
+        if await _dispatch_fishing_swallowed_reply_fallback(event, text, now, event_kind="message"):
+            await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "fishing"}, event_kind="message"), now)
+            return
+
         await _dispatch_tree_broadcast_fallbacks(event, text, now)
         await _dispatch_stargazer_broadcast_fallbacks(event, text, now)
         await _dispatch_guanxing_monitor_broadcast_fallbacks(event, text, now)
@@ -1423,6 +1483,10 @@ async def on_message_edited(event):
                     now,
                 )
                 return
+
+        if await _dispatch_fishing_swallowed_reply_fallback(event, text, now, event_kind="edit"):
+            await handle_passive_module_card(from_telegram_event(event, text, {"routed_reply_handled": True, "family": "fishing"}, event_kind="edit"), now)
+            return
 
         if await handle_divination_reply(
             text,

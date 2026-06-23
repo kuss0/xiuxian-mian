@@ -3343,6 +3343,87 @@ class ReplicaAbsorbTests(unittest.TestCase):
             {payload["exclusive_key"] for payload in payloads},
         )
 
+    def test_cangkun_team_stage_buttons_allow_each_identity_once(self):
+        leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
+        first_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")
+        state_module.set_replica_participant_identity_ids([leader_id, first_id])
+        now = 2000.0
+        app_replica._mark_replica_team_joined_from_text(
+            "【苍坤上人洞府·集结】\n@gyurihero 以【苍坤残图】锁定了太妙神禁的薄弱方位！\n房间ID: 47",
+            now=now - 600,
+            msg_id=991,
+        )
+        app_replica._mark_replica_team_joined_from_text(
+            "@WalterWA2000 已加入苍坤上人洞府队伍！\n"
+            "当前队伍 (2/5):\n"
+            "- @gyurihero (灵医)\n"
+            "- @WalterWA2000 (破军)",
+            now=now - 599,
+            msg_id=992,
+        )
+        app_replica._mark_replica_team_entered(
+            app_replica._REPLICA_KIND_CANGKUN,
+            now - 500,
+            source_msg_id=993,
+            leader_username="@gyurihero",
+        )
+        text = (
+            "【第三幕结果】\n"
+            "你们先撬开玉盒，洞府宝光顿时四散而起。\n\n"
+            "【第四幕·玉矶阁反目】\n"
+            "苍坤遗卷现形之后，阁中留下的古训却只容三人带着生门坐标先遁。\n\n"
+            "1 · 守契护人：不愿当场反目，准备护住卷轴与同伴退路。\n"
+            "2 · 夺图背盟：认定只有三人能带着生门坐标脱身，准备先夺卷轴再逼两人断后。\n\n"
+            "此阶段需全员表态。每位队员都可使用 .苍坤抉择 1/2 决定立场。"
+        )
+        event = SimpleNamespace(id=8806, chat_id=-100123, raw_text=text)
+        stage_info = app_replica._get_cangkun_decision_stage(text)
+        source_key = app_replica._make_cangkun_decision_notice_key(
+            event,
+            text,
+            stage_info,
+            leader_username="@gyurihero",
+            now=now,
+        )
+        app_replica._set_cangkun_stage_guard_current("cangkun:room:47", source_key)
+        buttons = app_replica._build_cangkun_team_decision_buttons(
+            stage_info,
+            event,
+            text,
+            now,
+            leader_identity_id=leader_id,
+            source_key=source_key,
+        )
+        actions = [
+            app_replica._get_replica_button_action(button["callback_data"])[1]
+            for row in buttons
+            for button in row
+        ]
+        leader_action = next(
+            action
+            for action in actions
+            if action["payload"]["identity_id"] == leader_id and action["payload"]["command"] == ".苍坤抉择 1"
+        )
+        first_action = next(
+            action
+            for action in actions
+            if action["payload"]["identity_id"] == first_id and action["payload"]["command"] == ".苍坤抉择 1"
+        )
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock(side_effect=[SimpleNamespace(id=901), SimpleNamespace(id=902)])) as send_mock:
+                first_ok, first_message = await app_replica._execute_replica_button_action(leader_action, actor_id=123456)
+                second_ok, second_message = await app_replica._execute_replica_button_action(first_action, actor_id=123456)
+                return first_ok, first_message, second_ok, second_message, send_mock.await_args_list
+
+        first_ok, first_message, second_ok, second_message, send_calls = asyncio.run(run_test())
+        self.assertTrue(first_ok)
+        self.assertTrue(second_ok)
+        self.assertIn("已发送", first_message)
+        self.assertIn("已发送", second_message)
+        self.assertEqual([leader_id, first_id], [call.kwargs["send_as_id"] for call in send_calls])
+        self.assertEqual([".苍坤抉择 1", ".苍坤抉择 1"], [call.args[0] for call in send_calls])
+
     def test_cangkun_team_stage_dedupes_same_stage_across_message_ids(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
         first_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")
@@ -3487,6 +3568,51 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertEqual("encounter", stage["stage"])
         self.assertEqual(".选择 强行摘取", app_replica._get_kunwu_auto_decision_command(stage))
+
+    def test_kunwu_repeated_encounter_in_same_room_auto_sends_again(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 2000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "entered_at": now - 60,
+            "updated_at": now - 60,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        text = (
+            "【奇遇：你们发现了一株即将成熟的【朱果】，但旁边有妖兽守护的痕迹。】\n"
+            "你们遭遇了特殊事件，请队长做出抉择！\n"
+            ".选择 强行摘取\n"
+            ".选择 静待时机"
+        )
+        first_event = SimpleNamespace(id=10755943, chat_id=-100123, raw_text=text)
+        second_event = SimpleNamespace(id=10755978, chat_id=-100123, raw_text=text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock, \
+                    patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock, \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(side_effect=[SimpleNamespace(id=901), SimpleNamespace(id=902)])) as send_mock, \
+                    patch("model.app_replica.console_log"), \
+                    patch("model.app_replica._fire_and_forget", side_effect=self._close_scheduled):
+                first = await app_replica._handle_replica_progress_event(first_event, now)
+                second = await app_replica._handle_replica_progress_event(second_event, now + 71)
+                audit_mock.assert_not_awaited()
+                notice_mock.assert_not_awaited()
+                return first, second, send_mock.await_args_list
+
+        first, second, send_calls = asyncio.run(run_test())
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual([".选择 强行摘取", ".选择 强行摘取"], [call.args[0] for call in send_calls])
+        self.assertEqual([leader_id, leader_id], [call.kwargs["send_as_id"] for call in send_calls])
+        self.assertNotEqual(send_calls[0].kwargs["op_id"], send_calls[1].kwargs["op_id"])
+        self.assertNotEqual(send_calls[0].kwargs["chain_id"], send_calls[1].kwargs["chain_id"])
 
     def test_kunwu_auto_choice_retry_skips_when_new_stage_is_current(self):
         leader_id = self._register_replica_identity(991201, "leader")

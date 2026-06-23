@@ -532,6 +532,10 @@ def _should_mark_replica_button_action_executed(action):
     action = action if isinstance(action, dict) else {}
     if _is_reusable_replica_command_action(action):
         return False
+    if str(action.get("type") or "").strip() == "game_command":
+        payload = action.get("payload") if isinstance(action.get("payload"), dict) else {}
+        if str(payload.get("exclusive_key") or "").strip():
+            return False
     return str(action.get("type") or "").strip() != "log_group_panel"
 
 
@@ -1906,6 +1910,17 @@ def _kunwu_auto_choice_chain_id(scope, stage, identity_id):
     return f"kunwu_auto_choice:{scope}:{int(identity_id or 0)}:{str(stage or '').strip()}"
 
 
+def _kunwu_auto_choice_stage_key(stage, text, event):
+    stage = str(stage or "").strip()
+    if stage != "encounter":
+        return stage
+    source_msg_id = int(getattr(event, "id", 0) or 0)
+    if source_msg_id > 0:
+        return f"{stage}:{source_msg_id}"
+    digest = hashlib.sha1(str(text or "").encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return f"{stage}:{digest}"
+
+
 def _should_retry_kunwu_auto_choice(key, scope, identity_id, room_id, now, first_msg_id=0):
     if not _is_current_kunwu_auto_choice(key, scope, now=now):
         return False
@@ -1976,7 +1991,7 @@ async def _send_kunwu_auto_choice_command(stage_info, event, text, identity_id, 
     command = str(command or "").strip()
     if identity_id <= 0 or not command or not get_identity_enabled(identity_id):
         return {"sent": False, "deduped": False, "key": ""}
-    stage = str((stage_info or {}).get("stage") or "").strip()
+    stage = _kunwu_auto_choice_stage_key((stage_info or {}).get("stage"), text, event)
     room_id, scope = _kunwu_auto_choice_scope(
         event,
         text,

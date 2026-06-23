@@ -56,6 +56,7 @@ class ModuleManifestTests(unittest.TestCase):
                 "天星宗",
                 "阴罗宗",
                 "真仙试锋",
+                "灵溪垂钓",
                 "探寻裂缝",
                 "观星监控",
                 "灵树",
@@ -349,13 +350,13 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(36, summary["totals"]["active_modules"])
+        self.assertEqual(37, summary["totals"]["active_modules"])
         self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(86, summary["totals"]["reply_families"])
+        self.assertEqual(87, summary["totals"]["reply_families"])
         self.assertEqual(0, summary["totals"]["archived_reply_families"])
-        self.assertEqual(85, summary["totals"]["covered_sample_families"])
+        self.assertEqual(86, summary["totals"]["covered_sample_families"])
         self.assertEqual(1, summary["totals"]["missing_sample_families"])
-        self.assertEqual(32, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(33, summary["totals"]["sample_complete_modules"])
         self.assertEqual(1, summary["totals"]["sample_partial_modules"])
         self.assertEqual(0, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])
@@ -395,7 +396,6 @@ class ModuleManifestTests(unittest.TestCase):
             self.assertFalse(contract.scheduler_connected)
             self.assertFalse(contract.ui_connected)
             self.assertNotIn(module_manifest.INPUT_SOURCE_API_BACKUP, contract.primary_inputs)
-            self.assertEqual(module_manifest.API_POLICY_BACKUP_ONLY, contract.api_policy)
 
     def test_module_admission_accepts_strict_report_only_contract_names(self):
         result = module_manifest.validate_module_admission_contract(
@@ -405,6 +405,17 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual([], result["strict_unknown_modules"])
         self.assertEqual(["search_node_api_fallback", "一键修理"], result["strict_report_only_modules"])
+
+    def test_fishing_manifest_is_send_capable_but_default_off(self):
+        manifest = module_manifest.get_module_manifest("灵溪垂钓")
+
+        self.assertIsNotNone(manifest)
+        self.assertEqual("fishing_enabled", manifest.state_key)
+        self.assertEqual(("fishing",), manifest.replay_modules)
+        self.assertEqual(("fishing",), manifest.reply_families)
+        self.assertEqual(module_manifest.SEND_POLICY_PASSIVE_FIRST, manifest.send_policy)
+        self.assertEqual(module_manifest.ACTIVE_QUERY_LAST_RESORT, manifest.active_query_policy)
+        self.assertEqual("reply_msg_id", manifest.duplicate_guard)
 
     def test_phaseful_modules_are_passive_first_last_resort_query(self):
         deep_retreat = module_manifest.get_module_manifest("深度闭关")

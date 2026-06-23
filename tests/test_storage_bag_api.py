@@ -358,6 +358,38 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({"青竹蜂云剑": 1, "灵石": 50}, record["items"])
         self.assertEqual("storage_bag_api_cultivator", record["source"])
 
+    async def test_manual_api_refresh_maps_fishing_bait_internal_keys_without_bootstrap_map(self):
+        state_module.set_storage_bag_api_config({
+            "base_url": "https://example.invalid",
+            "cookie": "session=old",
+            "api_token": "",
+        })
+        api_result = storage_bag_api_client.StorageBagApiResult(
+            payload={
+                "telegram_id": self.identity_id,
+                "username": "source",
+                "inventory": {
+                    "materials": {
+                        "item_fishing_bait_plain": 2,
+                        "item_fishing_bait_spirit_rice": 3,
+                        "item_fishing_bait_demon_blood": 1,
+                    },
+                },
+            },
+            status_code=200,
+            cookie="session=rotated",
+            api_token="token-from-html",
+            path="/api/cultivator/source",
+        )
+
+        with patch("model.ui.fetch_storage_bag_result", new=AsyncMock(return_value=api_result)):
+            ok, message, _snapshot = await ui.ui_refresh_storage_bag_from_api()
+
+        self.assertTrue(ok)
+        self.assertIn("已刷新 1 个身份", message)
+        record = state_module.get_storage_bag_records()[str(self.identity_id)]
+        self.assertEqual({"凡饵": 2, "灵米饵": 3, "妖血饵": 1}, record["items"])
+
     async def test_runtime_api_refresh_can_write_explicit_empty_inventory(self):
         state_module.set_storage_bag_api_config({
             "base_url": "https://example.invalid",

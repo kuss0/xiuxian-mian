@@ -84,6 +84,13 @@ from .config import (
     CMD_WILD_TRAINING,
     CMD_WENDAO,
     CMD_DUEL,
+    CMD_FISHING,
+    CMD_FISHING_BUY_BAIT,
+    CMD_FISHING_CHUM,
+    CMD_FISHING_LIFT,
+    CMD_FISHING_OPEN,
+    CMD_FISHING_PROBE,
+    CMD_FISHING_STATUS,
     CMD_WORLD_BOSS_STATUS,
     CMD_YINDAO,
     CMD_YINLUO_BANNER,
@@ -181,6 +188,7 @@ from .features.explore_rift import (
 )
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.duel import apply_duel_config, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
+from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_status_text
 from .app_replica import (
@@ -336,6 +344,7 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_explore_rift_time",
     "next_wendao_time",
     "next_duel_time",
+    "next_fishing_time",
     "next_deep_retreat_time",
     "next_second_soul_time",
     "next_taiyi_cycle_time",
@@ -1000,6 +1009,20 @@ def _disable_duel_module_state():
     _clear_pending_tasks_by_commands({CMD_DUEL})
 
 
+def _disable_fishing_module_state():
+    state["fishing_enabled"] = False
+    clear_fishing_state(persist=False, keep_last_error=True, keep_config=True)
+    _clear_pending_tasks_by_commands({
+        CMD_FISHING,
+        CMD_FISHING_STATUS,
+        CMD_FISHING_BUY_BAIT,
+        CMD_FISHING_CHUM,
+        CMD_FISHING_PROBE,
+        CMD_FISHING_LIFT,
+        CMD_FISHING_OPEN,
+    })
+
+
 def _get_checkin_resume_time():
     return float(state.get("next_checkin_time", 0) or 0)
 
@@ -1293,6 +1316,18 @@ def _manual_enable_duel_module_state(now):
     state["next_duel_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
 
 
+def _manual_disable_fishing_module_state():
+    _disable_fishing_module_state()
+
+
+def _manual_enable_fishing_module_state(now):
+    state["fishing_enabled"] = True
+    state["fishing_last_error"] = ""
+    if float(state.get("next_fishing_time", 0) or 0) > now:
+        return
+    schedule_fishing_initial_check(now, persist=False, keep_last_error=True)
+
+
 def _clear_explore_rift_runtime():
     state["next_explore_rift_time"] = 0
     state["explore_rift_reply_to_msg_id"] = 0
@@ -1528,6 +1563,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "元婴": (_manual_enable_yuanying_module_state, _manual_disable_yuanying_module_state),
     "问道": (_manual_enable_wendao_module_state, _manual_disable_wendao_module_state),
     "斗法": (_manual_enable_duel_module_state, _manual_disable_duel_module_state),
+    "灵溪垂钓": (_manual_enable_fishing_module_state, _manual_disable_fishing_module_state),
     "深度闭关": (_manual_enable_deep_retreat_module_state, _manual_disable_deep_retreat_module_state),
     "第二元神": (_manual_enable_second_soul_module_state, _manual_disable_second_soul_module_state),
     "太一": (_manual_enable_taiyi_module_state, _manual_disable_taiyi_module_state),
@@ -1559,6 +1595,7 @@ MODULE_DISABLE_HANDLERS = {
     "探寻裂缝": _manual_disable_explore_rift_module_state,
     "问道": _disable_wendao_module_state,
     "斗法": _disable_duel_module_state,
+    "灵溪垂钓": _disable_fishing_module_state,
     "深度闭关": _disable_deep_retreat_module_state,
     "第二元神": _disable_second_soul_module_state,
     "太一": _disable_taiyi_module_state,
@@ -1818,6 +1855,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "探寻裂缝": get_explore_rift_status_text,
         "问道": get_wendao_status_text,
         "斗法": get_duel_status_text,
+        "灵溪垂钓": get_fishing_status_text,
         "深度闭关": get_deep_retreat_status_detail_text,
         "卜筮问天": get_divination_status_text,
         "点卯": get_checkin_status_text,
@@ -2956,6 +2994,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             schedule_wendao_initial_check(now, persist=False, keep_last_error=True)
         if state.get("duel_enabled") and float(state.get("next_duel_time", 0) or 0) <= 0:
             schedule_duel_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("fishing_enabled") and float(state.get("next_fishing_time", 0) or 0) <= 0:
+            schedule_fishing_initial_check(now, persist=False, keep_last_error=True)
         if state["second_soul_enabled"]:
             _restore_second_soul_runtime(now)
         if state["taiyi_enabled"]:

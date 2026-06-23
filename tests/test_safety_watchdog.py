@@ -728,6 +728,28 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_marked_world_boss_break_flag_opening_burst_is_not_send_burst_or_gap(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        cfg.min_any_gap_sec = 12
+        event_key = "test-break"
+        events = [
+            _event(
+                now - (10 - index) * 0.8,
+                3000 + index,
+                ".讨伐青元子 破幡",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst",
+                op_id=_world_boss_action_op_id(event_key, 3000 + index, "破幡", 1, 0),
+                chain_id=f"world_boss:{event_key}",
+            )
+            for index in range(11)
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
     def test_unmarked_world_boss_burst_still_fuses(self):
         now = time.time()
         cfg = self._config()

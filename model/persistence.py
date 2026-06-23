@@ -228,6 +228,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN wendao_enabled INTEGER NOT NULL DEFAULT 0")
     if "duel_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN duel_enabled INTEGER NOT NULL DEFAULT 0")
+    if "fishing_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN fishing_enabled INTEGER NOT NULL DEFAULT 0")
     if "explore_rift_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN explore_rift_enabled INTEGER NOT NULL DEFAULT 0")
     if "sect_teach_enabled" not in module_columns:
@@ -324,6 +326,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wendao_time REAL NOT NULL DEFAULT 0")
     if "next_duel_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_duel_time REAL NOT NULL DEFAULT 0")
+    if "next_fishing_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_fishing_time REAL NOT NULL DEFAULT 0")
     if "next_formation_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_formation_time REAL NOT NULL DEFAULT 0")
     if "formation_cooldown_until" not in timer_columns:
@@ -821,6 +825,54 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_result TEXT NOT NULL DEFAULT ''")
     if "duel_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_last_error TEXT NOT NULL DEFAULT ''")
+    if "fishing_pond" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pond TEXT NOT NULL DEFAULT '青溪浅滩'")
+    if "fishing_bait" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_bait TEXT NOT NULL DEFAULT '凡饵'")
+    if "fishing_daily_limit" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_limit INTEGER NOT NULL DEFAULT 20")
+    if "fishing_daily_day" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_day TEXT NOT NULL DEFAULT ''")
+    if "fishing_daily_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_daily_count INTEGER NOT NULL DEFAULT 0")
+    if "fishing_auto_chum_enabled" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_chum_enabled INTEGER NOT NULL DEFAULT 0")
+    if "fishing_chum_name" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_name TEXT NOT NULL DEFAULT ''")
+    if "fishing_auto_buy_bait_enabled" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_buy_bait_enabled INTEGER NOT NULL DEFAULT 0")
+    if "fishing_auto_buy_bait_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 8")
+    if "fishing_auto_probe_enabled" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0")
+    if "fishing_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "fishing_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "fishing_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "fishing_status_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "fishing_pending_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pending_action TEXT NOT NULL DEFAULT ''")
+    if "fishing_pending_open_fish" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_pending_open_fish TEXT NOT NULL DEFAULT ''")
+    if "fishing_forced_buy_bait" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_forced_buy_bait TEXT NOT NULL DEFAULT ''")
+    if "fishing_forced_buy_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_forced_buy_count INTEGER NOT NULL DEFAULT 0")
+    if "fishing_started_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_started_at REAL NOT NULL DEFAULT 0")
+    if "fishing_active_chum_name" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_active_chum_name TEXT NOT NULL DEFAULT ''")
+    if "fishing_chum_rods_remaining" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_chum_rods_remaining INTEGER NOT NULL DEFAULT 0")
+    if "fishing_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "fishing_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_last_result TEXT NOT NULL DEFAULT ''")
+    if "fishing_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_last_error TEXT NOT NULL DEFAULT ''")
     if "explore_rift_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "explore_rift_reply_due_at" not in runtime_columns:
@@ -1052,6 +1104,7 @@ def init_db():
             second_soul_auto_choice_enabled INTEGER NOT NULL DEFAULT 1,
             wendao_enabled INTEGER NOT NULL DEFAULT 0,
             duel_enabled INTEGER NOT NULL DEFAULT 0,
+            fishing_enabled INTEGER NOT NULL DEFAULT 0,
             yuanying_enabled INTEGER NOT NULL,
             deep_retreat_enabled INTEGER NOT NULL,
             checkin_enabled INTEGER NOT NULL,
@@ -1097,6 +1150,7 @@ def init_db():
             next_explore_rift_time REAL NOT NULL DEFAULT 0,
             next_wendao_time REAL NOT NULL DEFAULT 0,
             next_duel_time REAL NOT NULL DEFAULT 0,
+            next_fishing_time REAL NOT NULL DEFAULT 0,
             next_formation_time REAL NOT NULL DEFAULT 0,
             formation_cooldown_until REAL NOT NULL DEFAULT 0,
             next_deep_retreat_time REAL NOT NULL,
@@ -1361,6 +1415,32 @@ def init_db():
             duel_last_msg_id INTEGER NOT NULL DEFAULT 0,
             duel_last_result TEXT NOT NULL DEFAULT '',
             duel_last_error TEXT NOT NULL DEFAULT '',
+            fishing_enabled INTEGER NOT NULL DEFAULT 0,
+            next_fishing_time REAL NOT NULL DEFAULT 0,
+            fishing_pond TEXT NOT NULL DEFAULT '青溪浅滩',
+            fishing_bait TEXT NOT NULL DEFAULT '凡饵',
+            fishing_daily_limit INTEGER NOT NULL DEFAULT 20,
+            fishing_daily_day TEXT NOT NULL DEFAULT '',
+            fishing_daily_count INTEGER NOT NULL DEFAULT 0,
+            fishing_auto_chum_enabled INTEGER NOT NULL DEFAULT 0,
+            fishing_chum_name TEXT NOT NULL DEFAULT '',
+            fishing_auto_buy_bait_enabled INTEGER NOT NULL DEFAULT 0,
+            fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 8,
+            fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0,
+            fishing_phase TEXT NOT NULL DEFAULT 'idle',
+            fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            fishing_reply_due_at REAL NOT NULL DEFAULT 0,
+            fishing_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            fishing_pending_action TEXT NOT NULL DEFAULT '',
+            fishing_pending_open_fish TEXT NOT NULL DEFAULT '',
+            fishing_forced_buy_bait TEXT NOT NULL DEFAULT '',
+            fishing_forced_buy_count INTEGER NOT NULL DEFAULT 0,
+            fishing_started_at REAL NOT NULL DEFAULT 0,
+            fishing_active_chum_name TEXT NOT NULL DEFAULT '',
+            fishing_chum_rods_remaining INTEGER NOT NULL DEFAULT 0,
+            fishing_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            fishing_last_result TEXT NOT NULL DEFAULT '',
+            fishing_last_error TEXT NOT NULL DEFAULT '',
             deep_retreat_phase TEXT NOT NULL,
             deep_retreat_probe_pending INTEGER NOT NULL,
             deep_retreat_waiting_logged INTEGER NOT NULL DEFAULT 0,

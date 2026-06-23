@@ -747,5 +747,12 @@
     "family": "formation_assist",
     "event_type": "edit",
     "text": "【周天星斗大阵-成】\n星光汇聚，大阵已成！\n参与者: @David, @rexy1205\n所有参与者已获得【星力加持】BUFF，持续 6 小时，并进入 12 小时的冷却期！"
+  },
+  "fishing.status.start": {
+    "source": "data/messages/2026-06-23.log:65",
+    "module": "fishing",
+    "family": "fishing",
+    "event_type": "message",
+    "text": "【灵溪垂钓】\n钓者：@WalterWA2000\n鱼塘：青溪浅滩\n天象：小雨\n鱼讯：静候鱼讯\n进度：□□□□□□□□□□ 0%\n\n你挂上 【灵米饵】，抛竿入水，敛息坐定。\n预计 47秒 内会有鱼讯。\n可用：.钓鱼状态 / .收竿"
   }
 }

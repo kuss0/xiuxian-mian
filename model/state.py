@@ -29,14 +29,14 @@ _identity_context_active = contextvars.ContextVar("identity_context_active", def
 
 IDENTITY_MODULE_COLUMNS = [
     "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
-    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled",
+    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_warm_time", "next_pet_trial_time", "next_ranch_time", "next_wild_training_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_explore_rift_time", "next_wendao_time", "next_formation_time", "formation_cooldown_until", "next_deep_retreat_time",
-    "next_second_soul_time", "second_soul_heart_demon_deadline", "next_duel_time",
+    "next_second_soul_time", "second_soul_heart_demon_deadline", "next_duel_time", "next_fishing_time",
     "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
     "weak_until",
 ]
@@ -63,6 +63,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
     "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_last_msg_id", "duel_last_result", "duel_last_error",
+    "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
@@ -73,7 +74,8 @@ IDENTITY_RUNTIME_COLUMNS = [
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "yinluo_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions"}
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
-    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled",
+    "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
+    "fishing_auto_chum_enabled", "fishing_auto_buy_bait_enabled", "fishing_auto_probe_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged",
@@ -217,6 +219,7 @@ IDENTITY_STATE_TEMPLATE = {
     "explore_rift_enabled": False,
     "wendao_enabled": False,
     "duel_enabled": False,
+    "fishing_enabled": False,
     "formation_enabled": False,
     "deep_retreat_enabled": False,
     "small_world_enabled": False,
@@ -550,6 +553,33 @@ IDENTITY_STATE_TEMPLATE = {
     "duel_last_msg_id": 0,
     "duel_last_result": "",
     "duel_last_error": "",
+
+    # 灵溪垂钓模块
+    "next_fishing_time": 0,
+    "fishing_pond": "青溪浅滩",
+    "fishing_bait": "凡饵",
+    "fishing_daily_limit": 20,
+    "fishing_daily_day": "",
+    "fishing_daily_count": 0,
+    "fishing_auto_chum_enabled": False,
+    "fishing_chum_name": "",
+    "fishing_auto_buy_bait_enabled": False,
+    "fishing_auto_buy_bait_count": 8,
+    "fishing_auto_probe_enabled": False,
+    "fishing_phase": "idle",
+    "fishing_reply_to_msg_id": 0,
+    "fishing_reply_due_at": 0,
+    "fishing_status_msg_id": 0,
+    "fishing_pending_action": "",
+    "fishing_pending_open_fish": "",
+    "fishing_forced_buy_bait": "",
+    "fishing_forced_buy_count": 0,
+    "fishing_started_at": 0,
+    "fishing_active_chum_name": "",
+    "fishing_chum_rods_remaining": 0,
+    "fishing_last_msg_id": 0,
+    "fishing_last_result": "",
+    "fishing_last_error": "",
 
     # 深度闭关模块
     "deep_retreat_phase": "idle",  # idle|queued_launch|launching|running|summary_due|observing_summary|waiting_summary|post_summary_wait

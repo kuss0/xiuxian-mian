@@ -31,6 +31,7 @@ IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
     },
     "run_explore_rift_scheduler": {"explore_rift"},
     "run_wendao_scheduler": {"wendao"},
+    "run_fishing_scheduler": {"fishing"},
     "run_taiyi_scheduler": {"taiyi"},
     "divination": {"divination"},
     "world_boss": {"world_boss"},

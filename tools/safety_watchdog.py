@@ -121,11 +121,13 @@ WORLD_BOSS_SOURCE_MODULE = "真仙试锋"
 WORLD_BOSS_FAMILY = "world_boss"
 WORLD_BOSS_EVENT_COMMANDS = {
     ".世界boss 查看战况",
+    ".讨伐青元子 破幡",
     ".讨伐青元子 镇魂",
     ".讨伐青元子 护阵",
     ".讨伐青元子 强攻",
 }
 WORLD_BOSS_ACTION_COMMANDS = {
+    ".讨伐青元子 破幡",
     ".讨伐青元子 镇魂",
     ".讨伐青元子 护阵",
     ".讨伐青元子 强攻",

@@ -86,6 +86,15 @@ from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
 from .features.duel import apply_duel_config, normalize_duel_target
+from .features.fishing import (
+    FISHING_BAITS,
+    FISHING_CHUMS,
+    FISHING_PONDS,
+    clamp_fishing_buy_bait_count,
+    clamp_fishing_daily_limit,
+    normalize_fishing_config,
+    plan_fishing_commands,
+)
 from .features.yuanying import get_yuanying_phase_text
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -551,6 +560,13 @@ def _storage_bag_api_normalize_item_name(value):
     return text.strip("[]【】")
 
 
+_STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP = {
+    "item_fishing_bait_plain": "凡饵",
+    "item_fishing_bait_spirit_rice": "灵米饵",
+    "item_fishing_bait_demon_blood": "妖血饵",
+}
+
+
 def _storage_bag_api_item_count(value):
     try:
         return int(str(value or 0).replace(",", "") or 0)
@@ -568,7 +584,7 @@ def _storage_bag_api_add_item(items, name, count):
 
 def _storage_bag_api_resolve_item_name(item_name, item_name_map):
     item_name = _storage_bag_api_normalize_item_name(item_name)
-    return str((item_name_map or {}).get(item_name) or item_name).strip()
+    return str((item_name_map or {}).get(item_name) or _STORAGE_BAG_API_DEFAULT_ITEM_NAME_MAP.get(item_name) or item_name).strip()
 
 
 def _storage_bag_api_extract_items(raw_inventory, item_name_map=None):
@@ -2287,6 +2303,102 @@ def get_storage_bag_snapshot():
     }
 
 
+def _get_fishing_bait_inventory(send_as_id):
+    records = get_storage_bag_records()
+    record_key = str(int(send_as_id or 0))
+    if record_key not in records:
+        return None
+    record = records.get(record_key) or {}
+    items = record.get("items") if isinstance(record, dict) else {}
+    if not isinstance(items, dict):
+        return None
+    return {str(name): int(count or 0) for name, count in items.items() if str(name or "").strip()}
+
+
+def _format_fishing_command_plan(plan):
+    if not plan:
+        return "未生成"
+    commands = list(plan.commands or ())
+    if commands:
+        return " -> ".join(commands)
+    if plan.purchase_commands:
+        return "需先补鱼饵：" + " -> ".join(plan.purchase_commands)
+    return plan.blocked_reason or "未生成"
+
+
+def _get_fishing_ui_config(identity_state):
+    config = normalize_fishing_config(
+        identity_state.get("fishing_pond") or "青溪浅滩",
+        identity_state.get("fishing_bait") or "凡饵",
+        auto_chum_enabled=bool(identity_state.get("fishing_auto_chum_enabled")),
+        chum_name=identity_state.get("fishing_chum_name") or "",
+        auto_buy_bait_enabled=bool(identity_state.get("fishing_auto_buy_bait_enabled")),
+        auto_buy_bait_count=identity_state.get("fishing_auto_buy_bait_count", 8),
+        auto_probe_enabled=bool(identity_state.get("fishing_auto_probe_enabled")),
+    )
+    return config
+
+
+def _coerce_fishing_daily_limit(value):
+    return clamp_fishing_daily_limit(value)
+
+
+def _coerce_fishing_buy_bait_count(value):
+    return clamp_fishing_buy_bait_count(value)
+
+
+def get_fishing_ui_snapshot(send_as_id, identity_state=None):
+    send_as_id = int(send_as_id)
+    identity_state = identity_state or get_identity_state(send_as_id)
+    try:
+        config = _get_fishing_ui_config(identity_state)
+    except ValueError:
+        config = normalize_fishing_config()
+    bait_inventory = _get_fishing_bait_inventory(send_as_id)
+    plan = plan_fishing_commands(
+        config,
+        bait_inventory=bait_inventory,
+        active_chum_name=identity_state.get("fishing_active_chum_name") or "",
+        active_chum_rods_remaining=int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
+    )
+    requirements = []
+    for requirement in plan.bait_requirements or ():
+        requirements.append({
+            "bait": requirement.bait,
+            "item_key": requirement.item_key,
+            "required_count": int(requirement.required_count or 0),
+            "available_count": requirement.available_count,
+            "missing_count": int(requirement.missing_count or 0),
+        })
+    return {
+        "pond": config.pond,
+        "bait": config.bait,
+        "daily_limit": _coerce_fishing_daily_limit(identity_state.get("fishing_daily_limit", 20)),
+        "daily_day": identity_state.get("fishing_daily_day") or "",
+        "daily_count": int(identity_state.get("fishing_daily_count", 0) or 0),
+        "auto_chum_enabled": bool(config.auto_chum_enabled),
+        "chum_name": config.chum_name,
+        "auto_buy_bait_enabled": bool(config.auto_buy_bait_enabled),
+        "auto_buy_bait_count": int(config.auto_buy_bait_count or 8),
+        "auto_probe_enabled": bool(config.auto_probe_enabled),
+        "active_chum_name": identity_state.get("fishing_active_chum_name") or "",
+        "chum_rods_remaining": int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
+        "pond_choices": list(FISHING_PONDS),
+        "bait_choices": list(FISHING_BAITS),
+        "chum_choices": ["无", *FISHING_CHUMS],
+        "bait_inventory": bait_inventory if bait_inventory is not None else {},
+        "bait_inventory_known": bait_inventory is not None,
+        "plan": {
+            "allow_start": bool(plan.allow_start),
+            "commands": list(plan.commands or ()),
+            "purchase_commands": list(plan.purchase_commands or ()),
+            "blocked_reason": plan.blocked_reason or "",
+            "summary": _format_fishing_command_plan(plan),
+            "requirements": requirements,
+        },
+    }
+
+
 def _to_float(value, default=0.0):
     try:
         return float(value or default)
@@ -2936,6 +3048,7 @@ def get_identity_ui_snapshot(send_as_id):
             "duel_next_time": fmt_abs_ts(identity_state.get("next_duel_time", 0) or 0),
             "duel_last_result": identity_state.get("duel_last_result") or "",
             "duel_last_error": identity_state.get("duel_last_error") or "",
+            "fishing": get_fishing_ui_snapshot(send_as_id, identity_state),
             "divination_daily_limit": get_divination_daily_limit(send_as_id),
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
             "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
@@ -3438,6 +3551,57 @@ async def ui_set_divination_config(send_as_id, daily_limit=None):
         send_as_id=send_as_id,
     )
     return True, f"已更新卜筮问天次数[{get_identity_display_name(send_as_id)}]：{limit}/日"
+
+
+async def ui_set_fishing_config(send_as_id, payload=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    payload = payload if isinstance(payload, dict) else {}
+    pond = payload.get("pond")
+    bait = payload.get("bait")
+    chum_name = payload.get("chum_name")
+    daily_limit = _coerce_fishing_daily_limit(payload.get("daily_limit"))
+    auto_buy_bait_count = _coerce_fishing_buy_bait_count(payload.get("auto_buy_bait_count"))
+    auto_chum_enabled = _coerce_ui_bool(payload.get("auto_chum_enabled"))
+    auto_buy_bait_enabled = _coerce_ui_bool(payload.get("auto_buy_bait_enabled"))
+    auto_probe_enabled = _coerce_ui_bool(payload.get("auto_probe_enabled"))
+    try:
+        config = normalize_fishing_config(
+            pond or "青溪浅滩",
+            bait or "凡饵",
+            auto_chum_enabled=auto_chum_enabled,
+            chum_name=chum_name or "",
+            auto_buy_bait_enabled=auto_buy_bait_enabled,
+            auto_buy_bait_count=auto_buy_bait_count,
+            auto_probe_enabled=auto_probe_enabled,
+        )
+    except ValueError as exc:
+        return False, f"无效的钓鱼配置：{exc}"
+    with use_identity(send_as_id):
+        state["fishing_pond"] = config.pond
+        state["fishing_bait"] = config.bait
+        state["fishing_daily_limit"] = daily_limit
+        state["fishing_auto_chum_enabled"] = bool(config.auto_chum_enabled)
+        state["fishing_chum_name"] = config.chum_name
+        state["fishing_auto_buy_bait_enabled"] = bool(config.auto_buy_bait_enabled)
+        state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or 8)
+        state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
+        save_state()
+    plan = plan_fishing_commands(config, bait_inventory=_get_fishing_bait_inventory(send_as_id))
+    await send_audit_log(
+        "🎣 已更新灵溪垂钓配置："
+        f"{config.pond}/{config.bait}｜"
+        f"次数={daily_limit}/日｜"
+        f"打窝={config.chum_name or '无'}｜"
+        f"买饵={'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}｜"
+        f"试饵={'开' if config.auto_probe_enabled else '关'}｜"
+        f"计划={_format_fishing_command_plan(plan)}",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=260,
+    )
+    return True, f"已更新灵溪垂钓[{get_identity_display_name(send_as_id)}]：{daily_limit}/日｜买饵{config.auto_buy_bait_count}｜{_format_fishing_command_plan(plan)}"
 
 
 async def ui_set_stargazer_star_choice(send_as_id, choice):
@@ -5177,6 +5341,18 @@ async def handle_ui_http(reader, writer):
                         _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
                     else:
                         ok, message = await ui_set_divination_config(send_as_id, daily_limit=payload.get("daily_limit"))
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/fishing-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_fishing_config(send_as_id, payload)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/stargazer-star-choice":
                 if session is None:

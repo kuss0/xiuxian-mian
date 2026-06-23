@@ -16,6 +16,12 @@ from .state import (
 from .storage_bag_api_client import REFRESH_PATH, StorageBagApiError, build_cultivator_path, fetch_storage_bag_result
 from .timing import fmt_abs_ts
 
+DEFAULT_STORAGE_BAG_ITEM_NAME_MAP = {
+    "item_fishing_bait_plain": "凡饵",
+    "item_fishing_bait_spirit_rice": "灵米饵",
+    "item_fishing_bait_demon_blood": "妖血饵",
+}
+
 
 def _parse_json_maybe(value):
     if isinstance(value, str):
@@ -142,7 +148,7 @@ def storage_bag_api_add_item(items, name, count):
 
 def storage_bag_api_resolve_item_name(item_name, item_name_map):
     item_name = storage_bag_api_normalize_item_name(item_name)
-    return str((item_name_map or {}).get(item_name) or item_name).strip()
+    return str((item_name_map or {}).get(item_name) or DEFAULT_STORAGE_BAG_ITEM_NAME_MAP.get(item_name) or item_name).strip()
 
 
 def storage_bag_api_extract_items(raw_inventory, item_name_map=None):

@@ -144,6 +144,14 @@ async def _run_smoke(port: int) -> list[CheckResult]:
         status, _headers, text = await _request(port, "GET", "/static/js/app.js", cookie=cookie)
         _add(results, "app javascript is served", status == 200 and "const appState" in text, f"status={status}")
 
+        status, _headers, text = await _request(port, "GET", "/static/js/fishing_ui.js", cookie=cookie)
+        _add(
+            results,
+            "fishing javascript is served",
+            status == 200 and "/api/fishing-config" in text,
+            f"status={status}",
+        )
+
         status, _headers, text = await _request(port, "GET", "/static/css/app.css", cookie=cookie)
         _add(results, "app css is served", status == 200 and ".topbar" in text, f"status={status}")
 
@@ -151,11 +159,45 @@ async def _run_smoke(port: int) -> list[CheckResult]:
         payload = _json_body(text)
         snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
         identities = snapshot.get("identities") if isinstance(snapshot.get("identities"), list) else []
+        identity = identities[0] if identities else {}
         _add(
             results,
             "authenticated state exposes expected snapshot",
-            status == 200 and payload.get("ok") is True and bool(identities) and "passive_inbox" in snapshot,
+            status == 200 and payload.get("ok") is True and bool(identities) and "passive_inbox" in snapshot and "fishing" in identity,
             f"status={status} identities={len(identities)}",
+        )
+
+        status, _headers, text = await _request(
+            port,
+            "POST",
+            "/api/fishing-config",
+            body={
+                "send_as_id": 990001,
+                "pond": "青溪浅滩",
+                "bait": "灵米饵",
+                "auto_chum_enabled": True,
+                "chum_name": "灵草窝",
+                "auto_buy_bait_enabled": True,
+                "auto_probe_enabled": True,
+            },
+            cookie=cookie,
+        )
+        payload = _json_body(text)
+        snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
+        identities = snapshot.get("identities") if isinstance(snapshot.get("identities"), list) else []
+        fishing = (identities[0].get("fishing") if identities else {}) or {}
+        _add(
+            results,
+            "fishing config api persists and returns snapshot",
+            status == 200
+            and payload.get("ok") is True
+            and fishing.get("pond") == "青溪浅滩"
+            and fishing.get("bait") == "灵米饵"
+            and fishing.get("auto_chum_enabled") is True
+            and fishing.get("chum_name") == "灵草窝"
+            and fishing.get("auto_buy_bait_enabled") is True
+            and fishing.get("auto_probe_enabled") is True,
+            f"status={status}",
         )
 
         status, _headers, text = await _request(port, "GET", "/api/logs/days", cookie=cookie)
