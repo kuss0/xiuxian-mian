@@ -71,36 +71,41 @@ First fishing automation must fail closed for unproven or unavailable resources:
 - `.试探咬饵` is controlled by `auto_probe`; default is off because the benefit is still uncertain.
 - Parser/state work may observe `.渔具铺`, `.鱼篓`, `.买鱼饵`, `.钓鱼状态`, `.试探咬饵`, `.提竿`, `.开鱼`, and chum replies from local text only.
 
-Runtime chain after the 2026-06-23 fix:
+Runtime chain after the 2026-06-24 fix:
 
 1. Send `.钓鱼 <鱼塘> <鱼饵>`.
 2. Parse the start panel `预计 N秒 内会有鱼讯`.
 3. Schedule `.钓鱼状态` for that due time using the fishing short-window follow-up task.
 4. If status says `鱼讯已至`:
-   - with auto probe off, send `.提竿` immediately at event-burst priority;
-   - with auto probe on, send `.试探咬饵` immediately, then lift after `正口黑漂`.
-5. If lift succeeds, send only the `.开鱼 <鱼名>` command found in that same
-   success text. Sending `.开鱼` is non-blocking: a missing or late open-fish
-   settlement must not delay the next rod.
-6. If the reply is `你今日已垂钓 20/20 竿，神识已乏，明日再来。`, schedule the
-   next attempt for the next local day and do not retry the current rod.
+   - with auto probe off, schedule `.提竿` after a bounded human-like delay;
+   - with auto probe on, schedule `.试探咬饵` after a bounded delay, then
+     schedule `.提竿` after the `正口黑漂` reply.
+5. If lift succeeds, add that fish to `fishing_pending_open_fish` and schedule
+   the next rod after a post-rod delay. Do not open fish immediately.
+6. When the daily rod limit is reached and there is a pending fish queue, open
+   queued fish after a bounded delay with `.开鱼 <鱼名>`. Keep the queue until
+   a real `【剖鱼取机缘】` reply removes the opened count.
+7. If the reply is `你今日已垂钓 20/20 竿，神识已乏，明日再来。`, open pending
+   fish first if the queue is non-empty; otherwise schedule the next attempt
+   for the next local day and do not retry the current rod.
 
 Terminal/recovery rules after the live failure replay:
 
 - `【空竿】` is terminal; schedule the next rod after a short post-rod delay.
-- `【提竿成功】` is terminal for the rod; immediately send the prompted
-  `.开鱼 <鱼名>`, then allow the next rod without waiting for the open-fish
-  reply.
+- `【提竿成功】` is terminal for the rod; queue the prompted fish locally and
+  continue the rod cycle without sending `.开鱼` immediately.
 - `你已有一竿尚未收起` means the previous `.钓鱼` collided with an active rod;
   recover with `.钓鱼状态`, not another `.钓鱼`.
 - A swallowed reply or timed-out active rod recovers with `.钓鱼状态`.
-- Only `.钓鱼状态`, `.试探咬饵`, `.提竿`, and `.开鱼 <鱼名>` are short-window
-  whitelist commands. `.钓鱼`, `.买鱼饵`, and `.打窝` stay on the normal global
-  send gap.
+- `.钓鱼状态`, `.试探咬饵`, `.提竿`, and `.开鱼 <鱼名>` are short-window
+  whitelist commands, but they must be reached through the module's own
+  follow-up timing; no reply path should fire them synchronously. `.钓鱼`,
+  `.买鱼饵`, and `.打窝` stay on the normal global send gap.
 
-The scheduler must not auto-open `fishing_pending_open_fish` by itself. That
-field is only a runtime/UI record of the latest prompted fish; opening must be
-driven by the current `【提竿成功】` text.
+The scheduler may open `fishing_pending_open_fish` only after the configured
+daily rod limit has been reached or an explicit daily-limit reply arrives. The
+field is a JSON fish-count queue; legacy single-fish values are still accepted
+as one pending fish for recovery.
 
 ## UI Configuration Contract
 

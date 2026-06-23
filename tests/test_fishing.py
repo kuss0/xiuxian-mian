@@ -407,6 +407,24 @@ class FishingLabTests(unittest.TestCase):
         self.assertNotEqual(".开鱼 青鳞小鲫", effect.command)
         self.assertEqual(".钓鱼 青溪浅滩 凡饵", effect.command)
 
+    def test_fishing_behavior_scheduler_opens_pending_fish_after_daily_limit(self):
+        from model.features import fishing_behavior
+
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(1_700_000_000.0),
+            "fishing_daily_count": 20,
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".开鱼 银须灵鲢", effect.command)
+
     def test_fishing_behavior_scheduler_recovers_in_progress_rod_with_status(self):
         from model.features import fishing_behavior
 
@@ -444,7 +462,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual(".钓鱼 青溪浅滩 凡饵", effect.command)
 
-    def test_fishing_behavior_open_timeout_releases_next_rod(self):
+    def test_fishing_behavior_open_timeout_preserves_pending_queue(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
@@ -462,10 +480,10 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual("", effect.command)
         self.assertEqual("idle", effect.updates["fishing_phase"])
         self.assertEqual(0, effect.updates["fishing_reply_to_msg_id"])
-        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
-        self.assertEqual(now, effect.updates["next_fishing_time"])
+        self.assertNotIn("fishing_pending_open_fish", effect.updates)
+        self.assertEqual(now + fishing_behavior.FISHING_BLOCKED_RETRY_SEC, effect.updates["next_fishing_time"])
 
-    def test_fishing_behavior_open_send_success_does_not_wait_for_settlement(self):
+    def test_fishing_behavior_open_send_success_waits_for_settlement(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
@@ -478,12 +496,12 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual("idle", effect.updates["fishing_phase"])
-        self.assertEqual(0, effect.updates["fishing_reply_to_msg_id"])
-        self.assertEqual(0, effect.updates["fishing_reply_due_at"])
-        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
-        self.assertEqual(now, effect.updates["next_fishing_time"])
-        self.assertIn("不等待开鱼结算", effect.updates["fishing_last_result"])
+        self.assertEqual("opening", effect.updates["fishing_phase"])
+        self.assertEqual(22042, effect.updates["fishing_reply_to_msg_id"])
+        self.assertEqual(now + 90, effect.updates["fishing_reply_due_at"])
+        self.assertEqual("银须灵鲢", effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(now + 90, effect.updates["next_fishing_time"])
+        self.assertEqual("已发送：.开鱼 银须灵鲢", effect.updates["fishing_last_result"])
 
     def test_fishing_behavior_open_send_failure_does_not_block_next_rod(self):
         from model.features import fishing_behavior
@@ -494,9 +512,9 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual("idle", effect.updates["fishing_phase"])
         self.assertEqual(0, effect.updates["fishing_reply_to_msg_id"])
-        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
-        self.assertEqual(now, effect.updates["next_fishing_time"])
-        self.assertIn("不阻塞下一竿", effect.updates["fishing_last_error"])
+        self.assertNotIn("fishing_pending_open_fish", effect.updates)
+        self.assertEqual(now + fishing_behavior.FISHING_BLOCKED_RETRY_SEC, effect.updates["next_fishing_time"])
+        self.assertIn("保留待开队列", effect.updates["fishing_last_error"])
 
     def test_fishing_behavior_reply_in_progress_checks_status_not_new_rod(self):
         from model.features import fishing_behavior
@@ -509,8 +527,9 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual((".钓鱼状态",), effect.immediate_commands)
+        self.assertEqual((), effect.immediate_commands)
         self.assertEqual(".钓鱼状态", effect.updates["fishing_pending_action"])
+        self.assertGreater(effect.updates["next_fishing_time"], 1_700_000_000.0)
 
     def test_fishing_behavior_no_active_fishing_reply_releases_chain(self):
         from model.features import fishing_behavior
@@ -580,7 +599,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual({"妖血饵": -2, "一阶妖丹": -3, "灵石": -200}, effect.storage_deltas)
 
-    def test_fishing_behavior_bite_emits_immediate_lift(self):
+    def test_fishing_behavior_bite_schedules_lift_after_delay(self):
         from model.features import fishing_behavior
 
         effect = fishing_behavior.decide_reply(
@@ -591,10 +610,11 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual((".提竿",), effect.immediate_commands)
-        self.assertEqual("", effect.updates["fishing_pending_action"])
+        self.assertEqual((), effect.immediate_commands)
+        self.assertEqual(".提竿", effect.updates["fishing_pending_action"])
+        self.assertGreater(effect.updates["next_fishing_time"], 1_700_000_000.0)
 
-    def test_fishing_behavior_catch_opens_only_prompted_fish_immediately(self):
+    def test_fishing_behavior_catch_queues_fish_without_immediate_open(self):
         from model.features import fishing_behavior
 
         effect = fishing_behavior.decide_reply(
@@ -605,8 +625,9 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual((".开鱼 银须灵鲢",), effect.immediate_commands)
-        self.assertEqual("银须灵鲢", effect.updates["fishing_pending_open_fish"])
+        self.assertEqual((), effect.immediate_commands)
+        self.assertEqual('{"银须灵鲢": 1}', effect.updates["fishing_pending_open_fish"])
+        self.assertGreater(effect.updates["next_fishing_time"], 1_700_000_000.0)
 
     def test_fishing_behavior_empty_rod_is_terminal_without_opening(self):
         from model.features import fishing_behavior
@@ -622,7 +643,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual((), effect.immediate_commands)
         self.assertEqual("idle", effect.updates["fishing_phase"])
-        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
+        self.assertNotIn("fishing_pending_open_fish", effect.updates)
         self.assertEqual(1_700_000_030.0, effect.updates["next_fishing_time"])
 
     def test_fishing_behavior_open_reply_does_not_block_next_rod(self):
@@ -683,6 +704,22 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(20, effect.updates["fishing_daily_count"])
         self.assertEqual(20, effect.updates["fishing_daily_limit"])
         self.assertGreater(effect.updates["next_fishing_time"], now + 3600)
+
+    def test_fishing_behavior_daily_limit_text_opens_pending_queue_first(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True, "fishing_pending_open_fish": '{"银须灵鲢": 2}'},
+            "你今日已垂钓 20/20 竿，神识已乏，明日再来。",
+            now,
+            result_msg_id=22033,
+            action_delay_sec=8,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".开鱼 银须灵鲢", effect.updates["fishing_pending_action"])
+        self.assertEqual(now + 8, effect.updates["next_fishing_time"])
 
 
 if __name__ == "__main__":

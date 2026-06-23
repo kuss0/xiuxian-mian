@@ -28,15 +28,15 @@ from .storage_bag import apply_storage_bag_item_deltas
 
 
 FISHING_REPLY_TIMEOUT_SEC = 90
-FISHING_FAST_REPLY_TIMEOUT_SEC = 8
-FISHING_ACTION_REPLY_TIMEOUT_SEC = 12
+FISHING_FAST_REPLY_TIMEOUT_SEC = 14
+FISHING_ACTION_REPLY_TIMEOUT_SEC = 20
 FISHING_SETUP_REPLY_TIMEOUT_SEC = 20
-FISHING_ACTION_DELAY_MIN_SEC = 2
-FISHING_ACTION_DELAY_MAX_SEC = 5
+FISHING_ACTION_DELAY_MIN_SEC = 5
+FISHING_ACTION_DELAY_MAX_SEC = 12
 FISHING_RECOVERY_MIN_SEC = 60
 FISHING_RECOVERY_MAX_SEC = 180
-FISHING_POST_ROD_DELAY_MIN_SEC = 30
-FISHING_POST_ROD_DELAY_MAX_SEC = 90
+FISHING_POST_ROD_DELAY_MIN_SEC = 45
+FISHING_POST_ROD_DELAY_MAX_SEC = 120
 FISHING_NEXT_DAY_MIN_SEC = 5 * 60
 FISHING_NEXT_DAY_MAX_SEC = 75 * 60
 _FOLLOWUP_TASKS = {}
@@ -282,7 +282,7 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
             config_values[key] = state.get(key)
     updates = {
         "next_fishing_time": 0,
-        **fishing_behavior.clear_pending_updates(),
+        **fishing_behavior.clear_pending_updates(keep_open_fish=False),
         "fishing_forced_buy_bait": "",
         "fishing_forced_buy_count": 0,
         "fishing_started_at": 0,

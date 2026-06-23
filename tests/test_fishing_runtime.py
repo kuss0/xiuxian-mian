@@ -237,7 +237,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
-    async def test_scheduler_releases_open_timeout_without_status_loop(self):
+    async def test_scheduler_preserves_open_queue_on_timeout_without_status_loop(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -256,8 +256,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
             self.assertEqual("idle", state_module.state["fishing_phase"])
-            self.assertEqual("", state_module.state["fishing_pending_open_fish"])
-            self.assertEqual(now, state_module.state["next_fishing_time"])
+            self.assertEqual("银须灵鲢", state_module.state["fishing_pending_open_fish"])
+            self.assertEqual(now + 3600, state_module.state["next_fishing_time"])
 
     async def test_start_status_counts_confirmed_rod_once_and_schedules_status(self):
         identity_id = self._prepare_identity()
@@ -296,10 +296,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_enabled"] = True
             state_module.state["fishing_reply_to_msg_id"] = 22027
             state_module.state["fishing_reply_due_at"] = now + 60
-            fake_msg = SimpleNamespace(id=22040, sent_at=now + 1)
             with (
                 patch.object(fishing_runtime, "save_state"),
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "_schedule_fishing_followup", return_value=True) as followup_mock,
             ):
                 handled = await fishing_runtime.handle_fishing_reply(
                     FISHING_BITE_TEXT,
@@ -310,16 +309,16 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual("", state_module.state["fishing_pending_action"])
-            self.assertEqual("lifting", state_module.state["fishing_phase"])
+            followup_mock.assert_called_once()
+            self.assertEqual(".提竿", followup_mock.call_args.args[1])
+            self.assertEqual(".提竿", state_module.state["fishing_pending_action"])
+            self.assertEqual("waiting", state_module.state["fishing_phase"])
 
             state_module.state["fishing_reply_to_msg_id"] = 22032
             state_module.state["fishing_auto_probe_enabled"] = True
-            fake_probe_msg = SimpleNamespace(id=22041, sent_at=now + 2)
             with (
                 patch.object(fishing_runtime, "save_state"),
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_probe_msg)) as probe_send_mock,
+                patch.object(fishing_runtime, "_schedule_fishing_followup", return_value=True) as probe_followup_mock,
             ):
                 await fishing_runtime.handle_fishing_reply(
                     FISHING_BITE_TEXT,
@@ -329,21 +328,21 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                     result_msg_id=22033,
                 )
 
-            probe_send_mock.assert_awaited_once_with(".试探咬饵", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
-            self.assertEqual("", state_module.state["fishing_pending_action"])
-            self.assertEqual("probing", state_module.state["fishing_phase"])
+            probe_followup_mock.assert_called_once()
+            self.assertEqual(".试探咬饵", probe_followup_mock.call_args.args[1])
+            self.assertEqual(".试探咬饵", state_module.state["fishing_pending_action"])
+            self.assertEqual("waiting", state_module.state["fishing_phase"])
 
-    async def test_catch_opens_fish_from_current_prompt_before_next_rod(self):
+    async def test_catch_queues_fish_before_next_rod_without_opening(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
             state_module.state["fishing_enabled"] = True
             state_module.state["fishing_reply_to_msg_id"] = 22027
             state_module.state["fishing_reply_due_at"] = now + 60
-            fake_open_msg = SimpleNamespace(id=22042, sent_at=now + 1)
             with (
                 patch.object(fishing_runtime, "save_state"),
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_open_msg)) as send_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
             ):
                 handled = await fishing_runtime.handle_fishing_reply(
                     FISHING_CATCH_TEXT,
@@ -354,13 +353,13 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".开鱼 银须灵鲢", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
+            send_mock.assert_not_awaited()
             self.assertEqual("idle", state_module.state["fishing_phase"])
-            self.assertEqual("", state_module.state["fishing_pending_open_fish"])
+            self.assertEqual('{"银须灵鲢": 1}', state_module.state["fishing_pending_open_fish"])
             self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["fishing_reply_due_at"])
-            self.assertEqual(fake_open_msg.sent_at, state_module.state["next_fishing_time"])
-            self.assertIn("不等待开鱼结算", state_module.state["fishing_last_result"])
+            self.assertGreater(state_module.state["next_fishing_time"], now)
+            self.assertIn("钓获：银须灵鲢", state_module.state["fishing_last_result"])
 
     async def test_other_angler_catch_does_not_open_fish_for_current_identity(self):
         identity_id = self._prepare_identity()
@@ -440,10 +439,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_enabled"] = True
             state_module.state["fishing_reply_to_msg_id"] = 22027
             state_module.state["fishing_reply_due_at"] = now + 60
-            fake_msg = SimpleNamespace(id=22043, sent_at=now + 1)
             with (
                 patch.object(fishing_runtime, "save_state"),
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "_schedule_fishing_followup", return_value=True) as followup_mock,
             ):
                 handled = await fishing_runtime.handle_fishing_reply(
                     "你已有一竿尚未收起。可用 .钓鱼状态 查看，或 .收竿 放弃。",
@@ -454,7 +452,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            send_mock.assert_awaited_once_with(".钓鱼状态", track=False, priority="urgent_reactive", max_retry=0, source_module="灵溪垂钓")
+            followup_mock.assert_called_once()
+            self.assertEqual(".钓鱼状态", followup_mock.call_args.args[1])
 
     async def test_no_active_fishing_reply_clears_recovery_chain(self):
         identity_id = self._prepare_identity()
@@ -515,10 +514,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_last_msg_id"] = 999
             state_module.state["fishing_reply_to_msg_id"] = 888
             state_module.state["fishing_reply_due_at"] = now + 60
-            fake_open_msg = SimpleNamespace(id=22042, sent_at=now + 1)
             with (
                 patch.object(fishing_runtime, "save_state"),
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_open_msg)),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
             ):
                 handled = await fishing_runtime.handle_fishing_reply(
                     FISHING_CATCH_TEXT,
@@ -529,6 +527,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
+            send_mock.assert_not_awaited()
 
     async def test_swallowed_fishing_reply_without_reply_to_is_accepted_when_pending(self):
         identity_id = self._prepare_identity()
