@@ -226,6 +226,33 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(22028, state_module.state["fishing_reply_to_msg_id"])
             self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
 
+    async def test_duplicate_lift_is_suppressed_before_message_id_returns(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        sent_commands = []
+
+        async def fake_send(command, **_kwargs):
+            sent_commands.append(command)
+            duplicate_sent = await fishing_runtime._send_fishing_command(".提竿", now + 0.1)
+            self.assertFalse(duplicate_sent)
+            return SimpleNamespace(id=22028, sent_at=now)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now - 1
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=fake_send),
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                sent = await fishing_runtime._send_fishing_command(".提竿", now)
+
+            self.assertTrue(sent)
+            self.assertEqual([".提竿"], sent_commands)
+            self.assertEqual("lifting", state_module.state["fishing_phase"])
+            self.assertEqual(22028, state_module.state["fishing_reply_to_msg_id"])
+
     async def test_new_fishing_command_waits_when_two_other_rods_active(self):
         identity_id = self._prepare_identity()
         active_a = self._prepare_identity(10001)

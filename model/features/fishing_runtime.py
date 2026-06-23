@@ -504,8 +504,13 @@ async def _send_fishing_command(command, now):
     if (
         phase != "idle"
         and str(state.get("fishing_phase") or "").strip() == phase
-        and _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
-        and float(state.get("fishing_reply_due_at", 0) or 0) > float(now)
+        and (
+            (
+                _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
+                and float(state.get("fishing_reply_due_at", 0) or 0) > float(now)
+            )
+            or float(state.get("next_fishing_time", 0) or 0) > float(now)
+        )
     ):
         return False
     priority = _priority_for_fishing_command(command)
