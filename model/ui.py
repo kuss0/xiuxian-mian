@@ -2321,6 +2321,13 @@ def _format_fishing_command_plan(plan):
     commands = list(plan.commands or ())
     if commands:
         return " -> ".join(commands)
+    missing_resources = [
+        f"{item.item_name}x{int(item.missing_count or 0)}"
+        for item in plan.resource_requirements or ()
+        if int(item.missing_count or 0) > 0
+    ]
+    if missing_resources:
+        return "资源不足：" + "、".join(missing_resources)
     if plan.purchase_commands:
         return "需先补鱼饵：" + " -> ".join(plan.purchase_commands)
     return plan.blocked_reason or "未生成"
@@ -2370,6 +2377,14 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
             "available_count": requirement.available_count,
             "missing_count": int(requirement.missing_count or 0),
         })
+    resource_requirements = []
+    for requirement in plan.resource_requirements or ():
+        resource_requirements.append({
+            "item_name": requirement.item_name,
+            "required_count": int(requirement.required_count or 0),
+            "available_count": requirement.available_count,
+            "missing_count": int(requirement.missing_count or 0),
+        })
     return {
         "pond": config.pond,
         "bait": config.bait,
@@ -2395,6 +2410,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
             "blocked_reason": plan.blocked_reason or "",
             "summary": _format_fishing_command_plan(plan),
             "requirements": requirements,
+            "resource_requirements": resource_requirements,
         },
     }
 

@@ -159,9 +159,6 @@ async def _run_fishing_followup(send_as_id, command, due_at):
             return
         if _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0 and float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
             return
-        state["fishing_pending_action"] = ""
-        state["next_fishing_time"] = 0
-        mark_dirty()
         await _send_fishing_command(command, time.time())
 
 

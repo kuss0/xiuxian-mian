@@ -227,6 +227,13 @@ SEND_PRIORITY_PROBE = "probe"
 SEND_PRIORITY_NORMAL = "normal"
 
 P0_COMMAND_PREFIXES = (".验证", CMD_TIANDAO_JUDGEMENT_PROVE, CMD_QUIZ_ANSWER)
+SEND_GAP_WHITELIST_PREFIXES = (
+    CMD_FISHING_STATUS,
+    CMD_FISHING_PROBE,
+    CMD_FISHING_LIFT,
+    CMD_FISHING_OPEN,
+)
+SEND_GAP_WHITELIST_MODULES = {"灵溪垂钓"}
 
 P0_SEND_GAP_MIN_SEC = 20.0
 P0_SEND_GAP_MAX_SEC = 30.0
@@ -518,6 +525,17 @@ def _get_send_gap_range(priority):
     return NORMAL_SEND_GAP_MIN_SEC, NORMAL_SEND_GAP_MAX_SEC
 
 
+def _send_gap_whitelist_allows(priority, command, intent=None):
+    priority = _normalize_send_priority(command, priority=priority)
+    if priority not in {SEND_PRIORITY_URGENT_REACTIVE, SEND_PRIORITY_EVENT_BURST}:
+        return False
+    raw = str(command or "").strip()
+    if not any(raw == prefix or raw.startswith(f"{prefix} ") for prefix in SEND_GAP_WHITELIST_PREFIXES):
+        return False
+    compact_intent = _compact_send_intent(intent)
+    return compact_intent.get("source_module") in SEND_GAP_WHITELIST_MODULES
+
+
 def _build_send_not_before(priority):
     min_gap, max_gap = _get_send_gap_range(priority)
     now_mono = time.monotonic()
@@ -552,9 +570,10 @@ def get_game_send_queue_snapshot():
 
 
 @asynccontextmanager
-async def _send_slot(priority, command=None, send_as_id=None):
+async def _send_slot(priority, command=None, send_as_id=None, intent=None):
     global _GAME_LAST_SEND_AT, _GAME_SEND_QUEUE_SEQ
-    min_gap, max_gap = _get_send_gap_range(priority)
+    bypass_gap = _send_gap_whitelist_allows(priority, command, intent=intent)
+    min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
     slot_anchor = None
     not_before = 0.0
     _GAME_SEND_QUEUE_SEQ += 1
@@ -582,7 +601,8 @@ async def _send_slot(priority, command=None, send_as_id=None):
                 try:
                     yield
                 finally:
-                    _GAME_LAST_SEND_AT = time.monotonic()
+                    if not bypass_gap:
+                        _GAME_LAST_SEND_AT = time.monotonic()
                     _GAME_SEND_LOCK.release()
                 return
             _GAME_SEND_LOCK.release()
@@ -2557,7 +2577,7 @@ async def send_game_command(
                 )
             return None
 
-        async with _send_slot(send_priority, command=command, send_as_id=send_as_id):
+        async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent):
             if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
                 return None
 

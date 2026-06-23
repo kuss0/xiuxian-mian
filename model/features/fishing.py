@@ -46,6 +46,8 @@ _START_BAIT_RE = re.compile(r"你挂上 【(?P<bait>[^】]+)】")
 _CHUM_SUCCESS_RE = re.compile(r"【打窝已成】\s*你在.*?撒下 【(?P<chum>[^】]+)】.*?接下来\s*(?P<rods>\d+)\s*竿", re.S)
 _NO_ROD_RE = re.compile(r"你尚无【青竹钓竿】")
 _NO_FISH_RE = re.compile(r"你的鱼篓中只有【(?P<fish>[^】]+)】x0。")
+_FISHING_IN_PROGRESS_RE = re.compile(r"你已有一竿尚未收起。可用 \.钓鱼状态 查看，或 \.收竿 放弃。")
+_NO_ACTIVE_FISHING_RE = re.compile(r"你当前没有正在进行的垂钓。")
 _DAILY_LIMIT_RE = re.compile(r"你今日已垂钓\s*(?P<used>\d+)\s*/\s*(?P<limit>\d+)\s*竿，神识已乏，明日再来。")
 _CATCH_OPEN_COMMAND_RE = re.compile(r"可用\s*(?P<command>\.开鱼\s+[^\s]+)\s+查看鱼腹机缘")
 _RAISE_SUCCESS_RE = re.compile(
@@ -67,6 +69,7 @@ class FishingResourceCost:
     item_key: str
     count: int
     evidence: str
+    item_costs: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,7 @@ class FishingCommandPlan:
     commands: tuple = ()
     purchase_commands: tuple = ()
     bait_requirements: tuple = ()
+    resource_requirements: tuple = ()
     blocked_reason: str = ""
     config: FishingAutomationConfig | None = None
     chum_decision: FishingChumDecision | None = None
@@ -125,6 +129,14 @@ class FishingStatus:
 class FishingBaitRequirement:
     bait: str
     item_key: str
+    required_count: int
+    available_count: int | None = None
+    missing_count: int = 0
+
+
+@dataclass(frozen=True)
+class FishingResourceRequirement:
+    item_name: str
     required_count: int
     available_count: int | None = None
     missing_count: int = 0
@@ -183,18 +195,29 @@ KNOWN_CHUM_COSTS = {
     "米糠小窝": FishingResourceCost(
         item_key="item_fishing_bait_plain",
         count=2,
-        evidence="data/messages/2026-06-23.log:6695",
+        evidence="data/messages/2026-06-23.log:57544",
+        item_costs=(("灵石", 30),),
     ),
     "灵草窝": FishingResourceCost(
         item_key="item_fishing_bait_spirit_rice",
         count=3,
-        evidence="data/messages/2026-06-23.log:6648",
+        evidence="data/messages/2026-06-23.log:57544",
+        item_costs=(("凝血草", 5),),
     ),
     "妖腥窝": FishingResourceCost(
         item_key="item_fishing_bait_demon_blood",
         count=2,
-        evidence="data/messages/2026-06-23.log:6698",
+        evidence="data/messages/2026-06-23.log:57544",
+        item_costs=(("一阶妖丹", 3), ("灵石", 200)),
     ),
+}
+
+FISHING_BAIT_COSTS = {
+    "凡饵": (("灵石", 12),),
+    "灵米饵": (("灵石", 35),),
+    "灵虫饵": (("灵石", 90), ("凝血草", 2)),
+    "妖血饵": (("灵石", 220), ("一阶妖丹", 1)),
+    "月华饵": (("灵石", 650), ("二级妖丹", 1)),
 }
 
 
@@ -381,6 +404,14 @@ def parse_no_fish_reply(text):
     return match.group("fish").strip() if match else ""
 
 
+def parse_fishing_in_progress_reply(text):
+    return bool(_FISHING_IN_PROGRESS_RE.search(str(text or "")))
+
+
+def parse_no_active_fishing_reply(text):
+    return bool(_NO_ACTIVE_FISHING_RE.search(str(text or "")))
+
+
 def parse_fishing_daily_limit_reached(text):
     match = _DAILY_LIMIT_RE.search(str(text or ""))
     if not match:
@@ -492,26 +523,66 @@ def normalize_fishing_config(
     )
 
 
-def _normalize_bait_inventory(bait_inventory):
-    if bait_inventory is None:
+def _normalize_inventory(inventory):
+    if inventory is None:
         return None
-    if isinstance(bait_inventory, FishingBasket):
-        return dict(bait_inventory.baits)
-    if isinstance(bait_inventory, dict):
-        source = bait_inventory.get("baits") if isinstance(bait_inventory.get("baits"), dict) else bait_inventory
+    if isinstance(inventory, FishingBasket):
+        source = {}
+        source.update(inventory.baits)
+        source.update(inventory.fish)
+    elif isinstance(inventory, dict):
+        source = inventory.get("baits") if isinstance(inventory.get("baits"), dict) else inventory
         if isinstance(source.get("items"), dict):
             source = source.get("items")
-        normalized = {}
-        for raw_name, raw_count in source.items():
-            bait_name = fishing_bait_name_for_item_key(raw_name) or str(raw_name or "").strip()
-            try:
-                count = int(raw_count or 0)
-            except (TypeError, ValueError):
-                count = 0
-            if bait_name:
-                normalized[bait_name] = normalized.get(bait_name, 0) + max(0, count)
-        return normalized
-    return {}
+    else:
+        return {}
+    normalized = {}
+    for raw_name, raw_count in source.items():
+        item_name = fishing_bait_name_for_item_key(raw_name) or str(raw_name or "").strip()
+        try:
+            count = int(raw_count or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if item_name:
+            normalized[item_name] = normalized.get(item_name, 0) + max(0, count)
+    return normalized
+
+
+def _normalize_bait_inventory(bait_inventory):
+    inventory = _normalize_inventory(bait_inventory)
+    if inventory is None:
+        return None
+    return {bait: int(inventory.get(bait, 0) or 0) for bait in FISHING_BAITS if bait in inventory}
+
+
+def _add_item_costs(target, item_costs, multiplier=1):
+    multiplier = max(0, int(multiplier or 0))
+    for item_name, count in item_costs or ():
+        name = str(item_name or "").strip()
+        if not name:
+            continue
+        target[name] = target.get(name, 0) + int(count or 0) * multiplier
+
+
+def _build_resource_requirements(resource_costs, inventory):
+    normalized_inventory = _normalize_inventory(inventory)
+    requirements = []
+    for item_name, required_count in sorted((resource_costs or {}).items()):
+        required = int(required_count or 0)
+        available = None if normalized_inventory is None else int(normalized_inventory.get(item_name, 0) or 0)
+        missing = 0 if available is None else max(0, required - available)
+        requirements.append(FishingResourceRequirement(
+            item_name=item_name,
+            required_count=required,
+            available_count=available,
+            missing_count=missing,
+        ))
+    return tuple(requirements)
+
+
+def _format_missing_resources(requirements):
+    parts = [f"{item.item_name}x{item.missing_count}" for item in requirements or () if int(item.missing_count or 0) > 0]
+    return "、".join(parts)
 
 
 def _build_bait_requirements(config, bait_inventory, *, include_chum=True):
@@ -575,6 +646,7 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
     inventory_unknown = bait_inventory is None
     bait_requirements = _build_bait_requirements(config, bait_inventory, include_chum=not has_active_chum)
     purchase_commands = []
+    planned_purchase_counts = {}
     for requirement in bait_requirements:
         should_buy = requirement.missing_count > 0 or (inventory_unknown and config.auto_buy_bait_enabled)
         if not should_buy:
@@ -582,6 +654,7 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
         missing_count = max(1, int(requirement.missing_count or requirement.required_count or 1))
         buy_count = max(missing_count, int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT))
         purchase_commands.append(f".买鱼饵 {requirement.bait} {buy_count}")
+        planned_purchase_counts[requirement.bait] = planned_purchase_counts.get(requirement.bait, 0) + buy_count
     purchase_commands = tuple(purchase_commands)
     if purchase_commands:
         if not config.auto_buy_bait_enabled:
@@ -595,11 +668,31 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
                 chum_decision=chum_decision,
             )
         commands = list(purchase_commands) + commands
+
+    resource_costs = {}
+    if config.auto_chum_enabled and not has_active_chum and chum_decision and chum_decision.cost:
+        _add_item_costs(resource_costs, chum_decision.cost.item_costs, 1)
+    for bait_name, buy_count in planned_purchase_counts.items():
+        _add_item_costs(resource_costs, FISHING_BAIT_COSTS.get(bait_name, ()), buy_count)
+    resource_requirements = _build_resource_requirements(resource_costs, bait_inventory)
+    missing_resources = _format_missing_resources(resource_requirements)
+    if missing_resources:
+        return FishingCommandPlan(
+            allow_start=False,
+            commands=(),
+            purchase_commands=purchase_commands,
+            bait_requirements=bait_requirements,
+            resource_requirements=resource_requirements,
+            blocked_reason=f"insufficient_resources:{missing_resources}",
+            config=config,
+            chum_decision=chum_decision,
+        )
     return FishingCommandPlan(
         allow_start=True,
         commands=tuple(commands),
         purchase_commands=purchase_commands,
         bait_requirements=bait_requirements,
+        resource_requirements=resource_requirements,
         config=config,
         chum_decision=chum_decision,
     )

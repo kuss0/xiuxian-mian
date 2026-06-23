@@ -134,6 +134,15 @@ WORLD_BOSS_ACTION_COMMANDS = {
 }
 WORLD_BOSS_MAX_ACTIONS_PER_IDENTITY_45M = 5
 WORLD_BOSS_MAX_TRIES_PER_ACTION = 3
+FISHING_SOURCE_MODULE = "灵溪垂钓"
+FISHING_FAMILY = "fishing"
+FISHING_SHORT_WINDOW_PREFIXES = (
+    ".钓鱼状态",
+    ".试探咬饵",
+    ".提竿",
+    ".开鱼",
+)
+FISHING_SHORT_WINDOW_PRIORITIES = {"urgent_reactive", "event_burst"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
@@ -755,6 +764,22 @@ def is_world_boss_action_event(item: dict, text: str | None = None) -> bool:
     return is_world_boss_event(item, text)
 
 
+def is_fishing_short_window_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return any(raw == prefix or raw.startswith(prefix + " ") for prefix in FISHING_SHORT_WINDOW_PREFIXES)
+
+
+def is_fishing_short_window_event(item: dict) -> bool:
+    if not is_fishing_short_window_command(str(item.get("text") or "")):
+        return False
+    if str(item.get("priority") or "").strip().lower() not in FISHING_SHORT_WINDOW_PRIORITIES:
+        return False
+    return (
+        str(item.get("source_module") or "").strip() == FISHING_SOURCE_MODULE
+        or str(item.get("family") or "").strip() == FISHING_FAMILY
+    )
+
+
 def parse_world_boss_action_op(item: dict) -> tuple[str, int, str, int, int] | None:
     if not is_world_boss_action_event(item):
         return None
@@ -830,6 +855,7 @@ def is_send_burst_exempt_event(item: dict) -> bool:
     return (
         is_dungeon_fast_chain_command(text)
         or is_verified_world_boss_action_event(item)
+        or is_fishing_short_window_event(item)
     )
 
 
@@ -935,7 +961,12 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         if breach:
             return breach
 
-    recent_gap_sent = [item for item in sent if float(item["_epoch"]) >= now - 30 * 60]
+    recent_gap_sent = [
+        item
+        for item in sent
+        if float(item["_epoch"]) >= now - 30 * 60
+        and not is_fishing_short_window_event(item)
+    ]
     for prev, cur in zip(recent_gap_sent, recent_gap_sent[1:]):
         gap = float(cur["_epoch"]) - float(prev["_epoch"])
         if is_safe_global_gap_pair(prev, cur):
@@ -967,7 +998,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         replica_choice = all(is_replica_choice_event(item, text) for item in items)
         divination_daily_query_chain = is_safe_divination_daily_query_chain(items, text)
         world_boss_action_chain = all(is_world_boss_action_event(item, text) for item in items)
-        if sect_teach or heart_choice or marked_heart_choice_sequence or world_boss_action_chain:
+        fishing_short_window_chain = all(is_fishing_short_window_event(item) for item in items)
+        if sect_teach or heart_choice or marked_heart_choice_sequence or world_boss_action_chain or fishing_short_window_chain:
             min_gap = 0
         elif divination_daily_query_chain:
             min_gap = DIVINATION_DAILY_QUERY_MIN_GAP_SEC

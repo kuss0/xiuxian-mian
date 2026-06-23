@@ -764,6 +764,89 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("send burst", breach)
 
+    def test_marked_fishing_short_window_chain_is_not_send_burst_or_gap(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        cfg.min_any_gap_sec = 12
+        sender_id = 8659059191
+        events = [
+            _event(
+                now - 3,
+                sender_id,
+                ".钓鱼状态",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="urgent_reactive",
+            ),
+            _event(
+                now - 2,
+                sender_id,
+                ".试探咬饵",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+            _event(
+                now - 1,
+                sender_id,
+                ".提竿",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".开鱼 银须灵鲢",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_unmarked_fishing_short_gap_still_global_fuses(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(now - 1, 8659059191, ".钓鱼状态", priority="urgent_reactive"),
+            _event(now, 8659059191, ".提竿", priority="event_burst"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("global lock breach", breach)
+
+    def test_fishing_start_command_is_not_short_window_exempt(self):
+        now = time.time()
+        cfg = self._config()
+        cfg.min_any_gap_sec = 12
+        events = [
+            _event(
+                now - 1,
+                8659059191,
+                ".灵树状态",
+                family="tree_panel",
+                source_module="灵树",
+                priority="normal",
+            ),
+            _event(
+                now,
+                8659059191,
+                ".钓鱼 青溪浅滩 灵米饵",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("global lock breach", breach)
+
     def test_world_boss_same_action_allows_try0_try1_try2(self):
         now = time.time()
         sender_id = 301299112

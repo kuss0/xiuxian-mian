@@ -23,6 +23,7 @@ from ..timing import cd_blocks, get_day_key
 from .fishing import (
     FISHING_DEFAULT_BUY_BAIT_COUNT,
     FISHING_DEFAULT_DAILY_LIMIT,
+    FISHING_BAIT_COSTS,
     FISHING_MAX_DAILY_LIMIT,
     clamp_fishing_buy_bait_count,
     clamp_fishing_daily_limit,
@@ -36,8 +37,10 @@ from .fishing import (
     parse_empty_fishing_result,
     parse_fishing_catch,
     parse_fishing_daily_limit_reached,
+    parse_fishing_in_progress_reply,
     parse_fishing_status,
     parse_missing_bait_reply,
+    parse_no_active_fishing_reply,
     parse_no_fish_reply,
     parse_no_rod_reply,
     parse_open_fish_result,
@@ -108,6 +111,15 @@ def active_fishing_anchor_ids(snapshot):
     }
 
 
+def _apply_item_cost_deltas(deltas, item_costs, multiplier=1):
+    multiplier = max(0, int(multiplier or 0))
+    for item_name, count in item_costs or ():
+        name = str(item_name or "").strip()
+        if name:
+            deltas[name] = deltas.get(name, 0) - int(count or 0) * multiplier
+    return deltas
+
+
 def is_fishing_reply_text(text):
     raw = str(text or "").strip()
     return (
@@ -116,10 +128,13 @@ def is_fishing_reply_text(text):
         or raw.startswith("【提竿成功】")
         or raw.startswith("【空竿】")
         or raw.startswith("【剖鱼取机缘】")
+        or parse_open_fish_result(raw) is not None
         or raw.startswith("【渔具铺】")
         or raw.startswith("【打窝已成】")
         or raw.startswith("打窝失败，资源不足：")
         or ("你今日已垂钓" in raw and "明日再来" in raw)
+        or "你已有一竿尚未收起" in raw
+        or "你当前没有正在进行的垂钓" in raw
         or parse_generic_resource_shortage(raw) is not None
         or "你的鱼篓中没有【" in raw
         or "你尚无【青竹钓竿】" in raw
@@ -226,6 +241,25 @@ def command_phase(command):
     return "idle"
 
 
+def is_rod_in_progress(snapshot):
+    phase = str(snapshot.get("fishing_phase") or "idle").strip()
+    if phase in {"fishing", "waiting", "checking", "probing", "lifting"}:
+        return True
+    pending_action = str(snapshot.get("fishing_pending_action") or "").strip()
+    if pending_action in {CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT}:
+        return True
+    return False
+
+
+def is_nonblocking_open_timeout(snapshot):
+    return str(snapshot.get("fishing_phase") or "").strip() == "opening"
+
+
+def should_preserve_current_flow_for_open_reply(snapshot):
+    phase = str(snapshot.get("fishing_phase") or "idle").strip()
+    return is_rod_in_progress(snapshot) or phase in {"buying", "chumming"}
+
+
 def build_send_success_effect(snapshot, command, *, sent_at, msg_id, reply_timeout_sec):
     phase = command_phase(command)
     reply_due_at = float(sent_at) + float(reply_timeout_sec)
@@ -236,16 +270,40 @@ def build_send_success_effect(snapshot, command, *, sent_at, msg_id, reply_timeo
         "fishing_last_msg_id": int(msg_id or 0),
         "fishing_last_result": f"已发送：{command}",
         "fishing_last_error": "",
+        "fishing_pending_action": "",
         "next_fishing_time": reply_due_at,
     }
     if phase == "fishing":
         updates["fishing_started_at"] = float(sent_at)
+        updates["fishing_pending_open_fish"] = ""
+    elif phase == "opening":
+        updates.update({
+            "fishing_reply_to_msg_id": 0,
+            "fishing_reply_due_at": 0,
+            "fishing_phase": "idle",
+            "fishing_pending_open_fish": "",
+            "fishing_last_result": f"已发送：{command}，不等待开鱼结算",
+            "next_fishing_time": float(sent_at),
+        })
+        updates["fishing_started_at"] = snapshot.get("fishing_started_at", 0)
     else:
         updates["fishing_started_at"] = snapshot.get("fishing_started_at", 0)
     return FishingEffect(handled=True, updates=updates)
 
 
 def build_send_failure_effect(command, now):
+    if command_phase(command) == "opening":
+        updates = clear_pending_updates()
+        updates.update({
+            "fishing_last_error": f"发送失败：{command}，不阻塞下一竿",
+            "fishing_last_result": "开鱼发送失败，继续下一竿",
+            "next_fishing_time": float(now),
+        })
+        return FishingEffect(
+            handled=True,
+            updates=updates,
+            audit_messages=(f"❌ 灵溪垂钓开鱼发送失败：{command}，已放行下一竿。",),
+        )
     return FishingEffect(
         handled=True,
         updates=_with_next_delay({"fishing_last_error": f"发送失败：{command}"}, now, RETRY_MAX_SEC),
@@ -262,6 +320,31 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     if reply_to_msg_id > 0:
         if reply_due_at > now:
             return FishingEffect()
+        if is_rod_in_progress(snapshot):
+            return FishingEffect(
+                handled=True,
+                command=CMD_FISHING_STATUS,
+                updates={
+                    "fishing_reply_to_msg_id": 0,
+                    "fishing_reply_due_at": 0,
+                    "fishing_pending_action": "",
+                    "fishing_phase": "checking",
+                    "fishing_last_error": f"钓鱼回复超时：{reply_to_msg_id}，改查状态推进",
+                },
+                audit_messages=(f"⚠️ 灵溪垂钓回复超时，消息ID={reply_to_msg_id}，改用钓鱼状态恢复。",),
+            )
+        if is_nonblocking_open_timeout(snapshot):
+            updates = clear_pending_updates()
+            updates.update({
+                "fishing_last_error": f"开鱼回复超时：{reply_to_msg_id}，不阻塞下一竿",
+                "fishing_last_result": "开鱼回复超时，继续下一竿",
+                "next_fishing_time": float(now),
+            })
+            return FishingEffect(
+                handled=True,
+                updates=updates,
+                audit_messages=(f"⚠️ 灵溪垂钓开鱼回复超时，消息ID={reply_to_msg_id}，已放行下一竿。",),
+            )
         updates = clear_pending_updates()
         updates["fishing_last_error"] = f"回复超时：{reply_to_msg_id}"
         return FishingEffect(
@@ -276,6 +359,13 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     pending_action = str(snapshot.get("fishing_pending_action") or "").strip()
     if pending_action:
         return FishingEffect(handled=True, command=pending_action, updates={"fishing_pending_action": ""})
+
+    if is_rod_in_progress(snapshot):
+        return FishingEffect(
+            handled=True,
+            command=CMD_FISHING_STATUS,
+            updates={"fishing_phase": "checking", "fishing_last_error": "钓鱼一竿进行中，改查状态推进"},
+        )
 
     _day_key, count, limit, daily_updates = normalize_daily_counter(snapshot, now)
     if count >= limit:
@@ -311,10 +401,12 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             "fishing_last_result": f"买饵：{buy_result.bait}x{buy_result.count}",
             "fishing_last_error": "",
         })
+        deltas = {buy_result.bait: int(buy_result.count or 0)}
+        _apply_item_cost_deltas(deltas, FISHING_BAIT_COSTS.get(buy_result.bait, ()), buy_result.count)
         return FishingEffect(
             handled=True,
             updates=_with_next_delay(updates, now, action_delay_sec),
-            storage_deltas={buy_result.bait: int(buy_result.count or 0)},
+            storage_deltas=deltas,
         )
 
     missing_bait = parse_missing_bait_reply(raw_text)
@@ -389,6 +481,8 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
         cost = get_known_chum_cost(chum_success.chum)
         bait = fishing_bait_name_for_item_key(cost.item_key) if cost else ""
         deltas = {bait: -int(cost.count or 0)} if bait else {}
+        if cost:
+            _apply_item_cost_deltas(deltas, cost.item_costs, 1)
         return FishingEffect(
             handled=True,
             updates=_with_next_delay(updates, now, action_delay_sec),
@@ -407,6 +501,30 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             updates=_with_next_delay(updates, now, FISHING_NO_ROD_RETRY_SEC),
             audit_messages=("🎣 灵溪垂钓暂停：缺少青竹钓竿，需要手动购买。",),
         )
+
+    if parse_fishing_in_progress_reply(raw_text):
+        updates = clear_pending_updates()
+        updates.update({
+            "fishing_phase": "waiting",
+            "fishing_pending_action": CMD_FISHING_STATUS,
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": "一竿尚未收起，改查钓鱼状态",
+            "fishing_last_error": "",
+        })
+        return FishingEffect(
+            handled=True,
+            immediate_commands=_urgent_action_tuple(CMD_FISHING_STATUS),
+            updates=updates,
+        )
+
+    if parse_no_active_fishing_reply(raw_text):
+        updates = clear_pending_updates()
+        updates.update({
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": "当前没有正在进行的垂钓",
+            "fishing_last_error": "",
+        })
+        return FishingEffect(handled=True, updates=_with_next_delay(updates, now, post_rod_delay_sec))
 
     daily_limit = parse_fishing_daily_limit_reached(raw_text)
     if daily_limit:
@@ -488,7 +606,13 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
 
     open_result = parse_open_fish_result(raw_text)
     if open_result:
-        updates = clear_pending_updates()
+        if should_preserve_current_flow_for_open_reply(snapshot):
+            updates = {
+                "fishing_pending_open_fish": "",
+            }
+        else:
+            updates = clear_pending_updates()
+            updates["next_fishing_time"] = float(now)
         updates.update({
             "fishing_pending_open_fish": "",
             "fishing_last_msg_id": result_msg_id,
@@ -500,19 +624,25 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             deltas[item_name] = deltas.get(item_name, 0) + int(count or 0)
         return FishingEffect(
             handled=True,
-            updates=_with_next_delay(updates, now, post_rod_delay_sec),
+            updates=updates,
             storage_deltas=deltas,
         )
 
     no_fish = parse_no_fish_reply(raw_text)
     if no_fish:
-        updates = clear_pending_updates()
+        if should_preserve_current_flow_for_open_reply(snapshot):
+            updates = {
+                "fishing_pending_open_fish": "",
+            }
+        else:
+            updates = clear_pending_updates()
+            updates["next_fishing_time"] = float(now)
         updates.update({
             "fishing_pending_open_fish": "",
             "fishing_last_msg_id": result_msg_id,
             "fishing_last_result": f"无可开鱼获：{no_fish}",
             "fishing_last_error": "",
         })
-        return FishingEffect(handled=True, updates=_with_next_delay(updates, now, post_rod_delay_sec))
+        return FishingEffect(handled=True, updates=updates)
 
     return FishingEffect()

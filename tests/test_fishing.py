@@ -136,6 +136,12 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(20, result.used)
         self.assertEqual(20, result.limit)
 
+    def test_parse_in_progress_text(self):
+        self.assertTrue(fishing.parse_fishing_in_progress_reply("你已有一竿尚未收起。可用 .钓鱼状态 查看，或 .收竿 放弃。"))
+
+    def test_parse_no_active_fishing_text(self):
+        self.assertTrue(fishing.parse_no_active_fishing_reply("你当前没有正在进行的垂钓。"))
+
     def test_parse_open_fish_rewards(self):
         result = fishing.parse_open_fish_result(OPEN_FISH_TEXT)
 
@@ -251,7 +257,7 @@ class FishingLabTests(unittest.TestCase):
             chum_name="灵草窝",
             auto_buy_bait_enabled=True,
         )
-        plan = fishing.plan_fishing_commands(config, bait_inventory={"灵米饵": 1})
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"灵米饵": 1, "灵石": 280, "凝血草": 5})
 
         self.assertTrue(plan.allow_start)
         self.assertEqual((".买鱼饵 灵米饵 8",), plan.purchase_commands)
@@ -299,11 +305,39 @@ class FishingLabTests(unittest.TestCase):
             auto_chum_enabled=True,
             chum_name="米糠小窝",
         )
-        plan = fishing.plan_fishing_commands(config, bait_inventory={"item_fishing_bait_plain": 3})
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"item_fishing_bait_plain": 3, "灵石": 30})
 
         self.assertTrue(plan.allow_start)
         self.assertEqual((), plan.purchase_commands)
         self.assertEqual((".打窝 米糠小窝", ".钓鱼 青溪浅滩 凡饵"), plan.commands)
+
+    def test_fishing_plan_blocks_known_resource_shortage_before_sending(self):
+        config = fishing.normalize_fishing_config(
+            "青溪浅滩",
+            "凡饵",
+            auto_chum_enabled=True,
+            chum_name="米糠小窝",
+        )
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"凡饵": 3, "灵石": 12})
+
+        self.assertFalse(plan.allow_start)
+        self.assertEqual((), plan.commands)
+        self.assertEqual("灵石", plan.resource_requirements[0].item_name)
+        self.assertEqual(18, plan.resource_requirements[0].missing_count)
+        self.assertIn("insufficient_resources", plan.blocked_reason)
+
+    def test_fishing_plan_blocks_bait_purchase_when_resource_shortage_is_known(self):
+        config = fishing.normalize_fishing_config(
+            "青溪浅滩",
+            "妖血饵",
+            auto_buy_bait_enabled=True,
+            auto_buy_bait_count=8,
+        )
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"妖血饵": 0, "灵石": 1000, "一阶妖丹": 0})
+
+        self.assertFalse(plan.allow_start)
+        self.assertEqual((".买鱼饵 妖血饵 8",), plan.purchase_commands)
+        self.assertIn("一阶妖丹x8", plan.blocked_reason)
 
     def test_fishing_plan_allows_no_chum_choice(self):
         config = fishing.normalize_fishing_config(
@@ -373,6 +407,127 @@ class FishingLabTests(unittest.TestCase):
         self.assertNotEqual(".开鱼 青鳞小鲫", effect.command)
         self.assertEqual(".钓鱼 青溪浅滩 凡饵", effect.command)
 
+    def test_fishing_behavior_scheduler_recovers_in_progress_rod_with_status(self):
+        from model.features import fishing_behavior
+
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": "",
+            "fishing_daily_count": 1,
+            "fishing_phase": "waiting",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".钓鱼状态", effect.command)
+
+    def test_fishing_behavior_scheduler_does_not_treat_opening_as_active_rod(self):
+        from model.features import fishing_behavior
+
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": "",
+            "fishing_daily_count": 1,
+            "fishing_phase": "opening",
+            "fishing_pending_open_fish": "银须灵鲢",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".钓鱼 青溪浅滩 凡饵", effect.command)
+
+    def test_fishing_behavior_open_timeout_releases_next_rod(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "fishing_phase": "opening",
+            "fishing_reply_to_msg_id": 22042,
+            "fishing_reply_due_at": now - 1,
+            "next_fishing_time": now - 1,
+            "fishing_pending_open_fish": "银须灵鲢",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertEqual("idle", effect.updates["fishing_phase"])
+        self.assertEqual(0, effect.updates["fishing_reply_to_msg_id"])
+        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(now, effect.updates["next_fishing_time"])
+
+    def test_fishing_behavior_open_send_success_does_not_wait_for_settlement(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.build_send_success_effect(
+            {"fishing_started_at": now - 60, "fishing_pending_open_fish": "银须灵鲢"},
+            ".开鱼 银须灵鲢",
+            sent_at=now,
+            msg_id=22042,
+            reply_timeout_sec=90,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("idle", effect.updates["fishing_phase"])
+        self.assertEqual(0, effect.updates["fishing_reply_to_msg_id"])
+        self.assertEqual(0, effect.updates["fishing_reply_due_at"])
+        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(now, effect.updates["next_fishing_time"])
+        self.assertIn("不等待开鱼结算", effect.updates["fishing_last_result"])
+
+    def test_fishing_behavior_open_send_failure_does_not_block_next_rod(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.build_send_failure_effect(".开鱼 银须灵鲢", now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("idle", effect.updates["fishing_phase"])
+        self.assertEqual(0, effect.updates["fishing_reply_to_msg_id"])
+        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(now, effect.updates["next_fishing_time"])
+        self.assertIn("不阻塞下一竿", effect.updates["fishing_last_error"])
+
+    def test_fishing_behavior_reply_in_progress_checks_status_not_new_rod(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True},
+            "你已有一竿尚未收起。可用 .钓鱼状态 查看，或 .收竿 放弃。",
+            1_700_000_000.0,
+            result_msg_id=22034,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual((".钓鱼状态",), effect.immediate_commands)
+        self.assertEqual(".钓鱼状态", effect.updates["fishing_pending_action"])
+
+    def test_fishing_behavior_no_active_fishing_reply_releases_chain(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True, "fishing_phase": "checking"},
+            "你当前没有正在进行的垂钓。",
+            1_700_000_000.0,
+            result_msg_id=22035,
+            post_rod_delay_sec=30,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("idle", effect.updates["fishing_phase"])
+        self.assertEqual("", effect.updates["fishing_pending_action"])
+        self.assertEqual("当前没有正在进行的垂钓", effect.updates["fishing_last_result"])
+
     def test_fishing_behavior_reply_returns_patch_and_storage_delta(self):
         from model.features import fishing_behavior
 
@@ -398,6 +553,32 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(".钓鱼状态", effect.updates["fishing_pending_action"])
         self.assertEqual(1, effect.updates["fishing_daily_count"])
         self.assertEqual({"灵米饵": -1}, effect.storage_deltas)
+
+    def test_fishing_behavior_buy_bait_updates_resource_deltas(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True},
+            "【渔具铺】\n你购得 【妖血饵】x2。",
+            1_700_000_000.0,
+            result_msg_id=22031,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual({"妖血饵": 2, "灵石": -440, "一阶妖丹": -2}, effect.storage_deltas)
+
+    def test_fishing_behavior_chum_success_updates_full_resource_deltas(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True},
+            "【打窝已成】\n你在乱星海礁边撒下 【妖腥窝】，接下来 6 竿会受其牵引。",
+            1_700_000_000.0,
+            result_msg_id=22032,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual({"妖血饵": -2, "一阶妖丹": -3, "灵石": -200}, effect.storage_deltas)
 
     def test_fishing_behavior_bite_emits_immediate_lift(self):
         from model.features import fishing_behavior
@@ -426,6 +607,65 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual((".开鱼 银须灵鲢",), effect.immediate_commands)
         self.assertEqual("银须灵鲢", effect.updates["fishing_pending_open_fish"])
+
+    def test_fishing_behavior_empty_rod_is_terminal_without_opening(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True, "fishing_phase": "lifting"},
+            "【空竿】\n浮漂猛地一沉，又迅速归于平静。你迟疑片刻，那鱼已叼饵而去。\n\n钓术：Lv.0 凡竿 (+1)\n连续空军：1",
+            1_700_000_000.0,
+            result_msg_id=22036,
+            post_rod_delay_sec=30,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual((), effect.immediate_commands)
+        self.assertEqual("idle", effect.updates["fishing_phase"])
+        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(1_700_000_030.0, effect.updates["next_fishing_time"])
+
+    def test_fishing_behavior_open_reply_does_not_block_next_rod(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True, "fishing_phase": "idle"},
+            OPEN_FISH_TEXT,
+            now,
+            result_msg_id=22037,
+            post_rod_delay_sec=30,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("idle", effect.updates["fishing_phase"])
+        self.assertEqual(now, effect.updates["next_fishing_time"])
+        self.assertEqual({"银须灵鲢": -1, "灵石": 28, "灵鱼肉": 1, "灵鱼鳞": 1, "清灵草": 1}, effect.storage_deltas)
+
+    def test_fishing_behavior_late_open_reply_preserves_active_rod(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "fishing_phase": "waiting",
+                "fishing_reply_to_msg_id": 22050,
+                "fishing_reply_due_at": now + 30,
+                "fishing_pending_action": ".钓鱼状态",
+                "next_fishing_time": now + 20,
+            },
+            OPEN_FISH_TEXT,
+            now,
+            result_msg_id=22051,
+            post_rod_delay_sec=30,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertNotIn("fishing_phase", effect.updates)
+        self.assertNotIn("fishing_reply_to_msg_id", effect.updates)
+        self.assertNotIn("next_fishing_time", effect.updates)
+        self.assertEqual("", effect.updates["fishing_pending_open_fish"])
 
     def test_fishing_behavior_daily_limit_text_waits_until_next_day(self):
         from model.features import fishing_behavior

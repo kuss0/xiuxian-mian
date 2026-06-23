@@ -62,6 +62,19 @@
     }).join('');
   }
 
+  function resourceRequirementHtml(plan){
+    var requirements = plan && Array.isArray(plan.resource_requirements) ? plan.resource_requirements : [];
+    if(!requirements.length){
+      return '<span class="fishing-muted">无额外消耗</span>';
+    }
+    return requirements.map(function(item){
+      var available = item.available_count == null ? '未知' : item.available_count;
+      var missing = Number(item.missing_count || 0);
+      var cls = missing > 0 ? ' fishing-need-missing' : '';
+      return '<span class="fishing-need'+cls+'">'+esc(item.item_name)+' '+esc(available)+'/'+esc(item.required_count)+'</span>';
+    }).join('');
+  }
+
   function renderFishingConfigPanel(){
     var identity = getIdentity();
     var card = findFishingCard();
@@ -97,6 +110,7 @@
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
       '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
       '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
+      '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+
       '<div class="fishing-plan fishing-plan-wide"><span>计划</span><div>'+esc(plan.summary || '未生成')+'</div></div>'+
       '<div class="fishing-actions"><button type="submit" class="btn btn-secondary">保存</button></div>'+
       '</form>'+

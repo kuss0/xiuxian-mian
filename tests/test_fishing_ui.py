@@ -42,7 +42,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
 
     async def test_set_fishing_config_persists_choices_and_plans_missing_bait_purchase(self):
-        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1}, "sections": {}}})
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 385, "凝血草": 5}, "sections": {}}})
 
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()) as audit_mock:
             ok, message = await ui.ui_set_fishing_config(
@@ -77,6 +77,32 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(7, snapshot["fishing"]["daily_limit"])
         self.assertEqual(11, snapshot["fishing"]["auto_buy_bait_count"])
         self.assertTrue(snapshot["fishing"]["plan"]["allow_start"])
+        self.assertEqual([], [item for item in snapshot["fishing"]["plan"]["resource_requirements"] if item["missing_count"]])
+
+    async def test_set_fishing_config_shows_resource_shortage_in_plan(self):
+        state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 35, "凝血草": 0}, "sections": {}}})
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message = await ui.ui_set_fishing_config(
+                self.identity_id,
+                {
+                    "pond": "青溪浅滩",
+                    "bait": "灵米饵",
+                    "auto_chum_enabled": True,
+                    "chum_name": "灵草窝",
+                    "auto_buy_bait_enabled": True,
+                    "auto_buy_bait_count": 11,
+                },
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("资源不足：", message)
+        snapshot = ui.get_identity_ui_snapshot(self.identity_id)
+        self.assertFalse(snapshot["fishing"]["plan"]["allow_start"])
+        self.assertIn("凝血草x5", snapshot["fishing"]["plan"]["blocked_reason"])
+        self.assertEqual([".买鱼饵 灵米饵 11"], snapshot["fishing"]["plan"]["purchase_commands"])
+        missing_resources = {item["item_name"]: item["missing_count"] for item in snapshot["fishing"]["plan"]["resource_requirements"]}
+        self.assertEqual(5, missing_resources["凝血草"])
 
     async def test_set_fishing_config_clamps_daily_limit(self):
         with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
@@ -111,6 +137,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fishing-config-panel", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
+        self.assertIn("resourceRequirementHtml", script)
         self.assertIn("findFishingCard", script)
         self.assertIn("card.appendChild(panel)", script)
         self.assertNotIn("grid.parentNode.insertBefore(panel, grid.nextSibling)", script)
