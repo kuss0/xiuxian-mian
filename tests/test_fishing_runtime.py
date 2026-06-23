@@ -155,7 +155,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
-    async def test_daily_limit_blocks_only_new_fishing_commands(self):
+    async def test_daily_limit_queries_basket_before_opening(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -164,14 +164,16 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
             state_module.state["fishing_daily_count"] = 1
             state_module.state["next_fishing_time"] = now - 1
+            basket_msg = SimpleNamespace(id=22044, sent_at=now)
             with (
-                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=basket_msg)) as send_mock,
                 patch.object(fishing_runtime, "save_state"),
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
-            send_mock.assert_not_awaited()
-            self.assertIn("今日钓鱼次数已达上限：1/1", state_module.state["fishing_last_error"])
+            send_mock.assert_awaited_once_with(".鱼篓", track=False, max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual("basket", state_module.state["fishing_phase"])
+            self.assertEqual(22044, state_module.state["fishing_reply_to_msg_id"])
             self.assertGreater(state_module.state["next_fishing_time"], now)
 
     async def test_pending_lift_is_not_blocked_by_daily_limit(self):
@@ -569,6 +571,33 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 30, state_module.state["next_fishing_time"])
             self.assertIn("开鱼：银须灵鲢", state_module.state["fishing_last_result"])
 
+    async def test_open_only_reply_calibrates_pending_count(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "opening"
+            state_module.state["fishing_reply_to_msg_id"] = 22042
+            state_module.state["fishing_reply_due_at"] = now + 60
+            state_module.state["fishing_pending_open_fish"] = '{"赤尾火鲤": 7}'
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "_schedule_fishing_followup", return_value=True) as followup_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    "你的鱼篓中只有【赤尾火鲤】x6。",
+                    now,
+                    reply_to=SimpleNamespace(id=22042, raw_text=".开鱼 赤尾火鲤 7"),
+                    matched_family="fishing",
+                    result_msg_id=22043,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual('{"赤尾火鲤": 6}', state_module.state["fishing_pending_open_fish"])
+            self.assertEqual(".开鱼 赤尾火鲤 6", state_module.state["fishing_pending_action"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            followup_mock.assert_called_once()
+
     async def test_in_progress_reply_checks_status_instead_of_starting_new_rod(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -618,7 +647,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["fishing_pending_action"])
             self.assertIn("当前没有正在进行的垂钓", state_module.state["fishing_last_result"])
 
-    async def test_daily_limit_reply_schedules_next_day_without_send(self):
+    async def test_daily_limit_reply_schedules_basket_without_immediate_send(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -641,7 +670,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertEqual(20, state_module.state["fishing_daily_count"])
             self.assertIn("今日钓鱼次数已达上限：20/20", state_module.state["fishing_last_error"])
-            self.assertGreater(state_module.state["next_fishing_time"], now + 3600)
+            self.assertEqual(".鱼篓", state_module.state["fishing_pending_action"])
+            self.assertGreater(state_module.state["next_fishing_time"], now)
+            self.assertLess(state_module.state["next_fishing_time"], now + 30)
 
     async def test_routed_terminal_reply_accepts_stale_anchor(self):
         identity_id = self._prepare_identity()

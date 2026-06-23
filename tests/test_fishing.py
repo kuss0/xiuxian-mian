@@ -494,6 +494,25 @@ class FishingLabTests(unittest.TestCase):
         effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
 
         self.assertTrue(effect.handled)
+        self.assertEqual(".鱼篓", effect.command)
+
+    def test_fishing_behavior_scheduler_opens_after_basket_calibration(self):
+        from model.features import fishing_behavior
+
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(1_700_000_000.0),
+            "fishing_daily_count": 20,
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+            "fishing_last_result": "鱼篓校准",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+
+        self.assertTrue(effect.handled)
         self.assertEqual(".开鱼 银须灵鲢 2", effect.command)
 
     def test_fishing_behavior_scheduler_recovers_in_progress_rod_with_status(self):
@@ -884,6 +903,27 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(now, effect.updates["next_fishing_time"])
         self.assertEqual({"银须灵鲢": -1, "灵石": 28, "灵鱼肉": 1, "灵鱼鳞": 1, "清灵草": 1}, effect.storage_deltas)
 
+    def test_fishing_behavior_open_only_reply_calibrates_count_and_retries(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "fishing_phase": "opening",
+                "fishing_pending_open_fish": '{"赤尾火鲤": 7}',
+            },
+            "你的鱼篓中只有【赤尾火鲤】x6。",
+            now,
+            result_msg_id=22038,
+            action_delay_sec=3,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual('{"赤尾火鲤": 6}', effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(".开鱼 赤尾火鲤 6", effect.updates["fishing_pending_action"])
+        self.assertEqual(now + 3, effect.updates["next_fishing_time"])
+
     def test_fishing_behavior_late_open_reply_preserves_active_rod(self):
         from model.features import fishing_behavior
 
@@ -909,7 +949,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertNotIn("next_fishing_time", effect.updates)
         self.assertEqual("", effect.updates["fishing_pending_open_fish"])
 
-    def test_fishing_behavior_daily_limit_text_waits_until_next_day(self):
+    def test_fishing_behavior_daily_limit_text_queries_basket(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
@@ -924,7 +964,8 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual(20, effect.updates["fishing_daily_count"])
         self.assertEqual(20, effect.updates["fishing_daily_limit"])
-        self.assertGreater(effect.updates["next_fishing_time"], now + 3600)
+        self.assertEqual(".鱼篓", effect.updates["fishing_pending_action"])
+        self.assertEqual(now + 300, effect.updates["next_fishing_time"])
 
     def test_fishing_behavior_daily_limit_text_opens_pending_queue_first(self):
         from model.features import fishing_behavior
@@ -939,7 +980,7 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual(".开鱼 银须灵鲢 2", effect.updates["fishing_pending_action"])
+        self.assertEqual(".鱼篓", effect.updates["fishing_pending_action"])
         self.assertEqual(now + 8, effect.updates["next_fishing_time"])
 
 

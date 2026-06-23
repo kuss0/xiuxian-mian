@@ -54,6 +54,7 @@ _CHUM_SUCCESS_RE = re.compile(r"【打窝已成】\s*你在.*?撒下 【(?P<chum
 _CHUM_DUPLICATE_ACTIVE_RE = re.compile(r"你已打下【(?P<chum>[^】]+)】，还可影响\s*(?P<rods>\d+)\s*竿，不可重复叠加。")
 _CHUM_DAILY_LIMIT_TEXT = "今日此类窝料已经用尽"
 _NO_ROD_RE = re.compile(r"你尚无【青竹钓竿】")
+_FISH_ONLY_RE = re.compile(r"你的鱼篓中只有【(?P<fish>[^】]+)】x(?P<count>\d+)。")
 _NO_FISH_RE = re.compile(r"你的鱼篓中只有【(?P<fish>[^】]+)】x0。")
 _FISHING_IN_PROGRESS_RE = re.compile(r"你已有一竿尚未收起。可用 \.钓鱼状态 查看，或 \.收竿 放弃。")
 _NO_ACTIVE_FISHING_RE = re.compile(r"你当前没有正在进行的垂钓。")
@@ -187,6 +188,12 @@ class OpenFishResult:
     count: int
     items: dict
     xiuwei_gain: int = 0
+
+
+@dataclass(frozen=True)
+class OpenFishOnlyResult:
+    fish: str
+    count: int
 
 
 @dataclass(frozen=True)
@@ -426,6 +433,16 @@ def parse_no_rod_reply(text):
 def parse_no_fish_reply(text):
     match = _NO_FISH_RE.search(str(text or ""))
     return match.group("fish").strip() if match else ""
+
+
+def parse_open_fish_only_reply(text):
+    match = _FISH_ONLY_RE.search(str(text or ""))
+    if not match:
+        return None
+    return OpenFishOnlyResult(
+        fish=match.group("fish").strip(),
+        count=int(match.group("count")),
+    )
 
 
 def parse_fishing_in_progress_reply(text):

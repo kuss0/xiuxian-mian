@@ -51,6 +51,7 @@ from .fishing import (
     parse_no_active_fishing_reply,
     parse_no_fish_reply,
     parse_no_rod_reply,
+    parse_open_fish_only_reply,
     parse_open_fish_result,
     plan_fishing_commands,
 )
@@ -235,6 +236,18 @@ def remove_pending_open_fish(value, fish, count=1):
     if name in queue:
         queue[name] = max(0, int(queue.get(name, 0) or 0) - max(1, int(count or 1)))
         if queue[name] <= 0:
+            queue.pop(name, None)
+    return format_pending_open_fish(queue)
+
+
+def set_pending_open_fish_count(value, fish, count):
+    queue = parse_pending_open_fish(value)
+    name = str(fish or "").strip()
+    if name:
+        parsed_count = max(0, int(count or 0))
+        if parsed_count > 0:
+            queue[name] = parsed_count
+        else:
             queue.pop(name, None)
     return format_pending_open_fish(queue)
 
@@ -567,6 +580,9 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates)
     if count >= limit:
+        basket_calibrated = str(snapshot.get("fishing_last_result") or "").startswith("鱼篓校准")
+        if not basket_calibrated:
+            return FishingEffect(handled=True, command=CMD_FISHING_BASKET, updates=daily_updates)
         pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))
         if pending_open_command:
             return FishingEffect(handled=True, command=pending_open_command, updates=daily_updates)
@@ -809,10 +825,8 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             "fishing_last_error": f"今日钓鱼次数已达上限：{daily_limit.used}/{daily_limit.limit}",
             "next_fishing_time": next_fishing_day_timestamp(now, action_delay_sec),
         })
-        pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))
-        if pending_open_command:
-            updates["fishing_pending_action"] = pending_open_command
-            updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
+        updates["fishing_pending_action"] = CMD_FISHING_BASKET
+        updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
         return FishingEffect(handled=True, updates=updates)
 
     status = parse_fishing_status(raw_text, auto_probe_enabled=bool(snapshot.get("fishing_auto_probe_enabled")))
@@ -863,7 +877,7 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             "fishing_last_error": "",
         })
         if count >= limit:
-            updates["fishing_pending_action"] = next_pending_open_command(pending_open_fish)
+            updates["fishing_pending_action"] = CMD_FISHING_BASKET
             return FishingEffect(handled=True, updates=_with_next_delay(updates, now, action_delay_sec), storage_deltas={catch.fish: 1})
         return FishingEffect(handled=True, updates=_with_next_delay(updates, now, post_rod_delay_sec), storage_deltas={catch.fish: 1})
 
@@ -906,6 +920,33 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             updates=updates,
             storage_deltas=deltas,
         )
+
+    only_fish = parse_open_fish_only_reply(raw_text)
+    if only_fish:
+        pending_open_fish = set_pending_open_fish_count(
+            snapshot.get("fishing_pending_open_fish"),
+            only_fish.fish,
+            only_fish.count,
+        )
+        preserve_current_flow = should_preserve_current_flow_for_open_reply(snapshot)
+        if preserve_current_flow:
+            updates = {
+                "fishing_pending_open_fish": pending_open_fish,
+            }
+        else:
+            updates = clear_pending_updates()
+            updates["next_fishing_time"] = float(now)
+        updates.update({
+            "fishing_pending_open_fish": pending_open_fish,
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": f"开鱼数量校准：{only_fish.fish}x{only_fish.count}",
+            "fishing_last_error": "",
+        })
+        next_open = next_pending_open_command(pending_open_fish)
+        if next_open and not preserve_current_flow:
+            updates["fishing_pending_action"] = next_open
+            updates["next_fishing_time"] = float(now + max(1, float(action_delay_sec or 0)))
+        return FishingEffect(handled=True, updates=updates)
 
     no_fish = parse_no_fish_reply(raw_text)
     if no_fish:
