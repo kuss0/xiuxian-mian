@@ -21,7 +21,16 @@ from ..runtime import (
     send_audit_log,
     send_game_command,
 )
-from ..state import get_current_identity_id, get_send_as_profile, get_storage_bag_records, state, use_identity
+from ..state import (
+    get_current_identity_id,
+    get_identity_enabled,
+    get_identity_ids,
+    get_identity_state,
+    get_send_as_profile,
+    get_storage_bag_records,
+    state,
+    use_identity,
+)
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
 from .fishing import plan_fishing_commands
@@ -40,6 +49,9 @@ FISHING_POST_ROD_DELAY_MIN_SEC = 3
 FISHING_POST_ROD_DELAY_MAX_SEC = 5
 FISHING_NEXT_DAY_MIN_SEC = 5 * 60
 FISHING_NEXT_DAY_MAX_SEC = 75 * 60
+FISHING_MAX_ACTIVE_IDENTITIES = 2
+FISHING_QUEUE_DELAY_MIN_SEC = 3
+FISHING_QUEUE_DELAY_MAX_SEC = 5
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 
@@ -85,6 +97,40 @@ def _get_bait_inventory_from_storage(send_as_id=None):
     if not isinstance(items, dict):
         return None
     return {str(name): _parse_int(count) for name, count in items.items() if str(name or "").strip()}
+
+
+def _active_fishing_identity_ids(exclude_identity_id=None):
+    excluded = int(exclude_identity_id or 0)
+    active_ids = []
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or identity_id == excluded:
+            continue
+        if not get_identity_enabled(identity_id):
+            continue
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if fishing_behavior.is_rod_in_progress(identity_state):
+            active_ids.append(identity_id)
+    return active_ids
+
+
+def _new_fishing_command_is_capacity_limited(command):
+    return fishing_behavior.command_phase(command) == "fishing"
+
+
+def _defer_new_fishing_for_capacity(now, command):
+    if not _new_fishing_command_is_capacity_limited(command):
+        return False
+    active_ids = _active_fishing_identity_ids(exclude_identity_id=get_current_identity_id())
+    if len(active_ids) < FISHING_MAX_ACTIVE_IDENTITIES:
+        return False
+    state["next_fishing_time"] = float(now + random.uniform(FISHING_QUEUE_DELAY_MIN_SEC, FISHING_QUEUE_DELAY_MAX_SEC))
+    state["fishing_last_error"] = f"钓鱼排队中：已有 {len(active_ids)} 个身份正在垂钓"
+    mark_dirty()
+    return True
 
 
 def _is_fishing_reply(reply_to=None, matched_family=None):
@@ -279,6 +325,7 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
             "fishing_daily_limit",
             "fishing_auto_chum_enabled",
             "fishing_chum_name",
+            "fishing_chum_names",
             "fishing_auto_buy_bait_enabled",
             "fishing_auto_buy_bait_count",
             "fishing_auto_probe_enabled",
@@ -322,13 +369,14 @@ def get_fishing_status_text():
     )
     plan_summary = " -> ".join(plan.commands or ()) if plan.commands else (plan.blocked_reason or "未生成")
     active_chum = state.get("fishing_active_chum_name") or "无"
+    configured_chums = ",".join(config.chum_names or ()) or "无"
     chum_rods = _parse_int(state.get("fishing_chum_rods_remaining", 0))
     lines = [
         "🎣 灵溪垂钓",
         f"- 已启用：{'是' if state.get('fishing_enabled') else '否'}",
         f"- 鱼塘/鱼饵：{config.pond}/{config.bait}",
         f"- 今日竿数：{daily_count}/{daily_limit}",
-        f"- 自动打窝：{config.chum_name or '无'}",
+        f"- 自动打窝：{configured_chums}",
         f"- 当前窝料：{active_chum}（剩余 {chum_rods} 竿）",
         f"- 缺饵购买：{'开' if config.auto_buy_bait_enabled else '关'}",
         f"- 试饵：{'开' if config.auto_probe_enabled else '关'}",
@@ -508,6 +556,8 @@ async def run_fishing_scheduler(now):
         return
 
     if effect.command:
+        if _defer_new_fishing_for_capacity(now, effect.command):
+            return
         if _priority_for_fishing_command(effect.command) and _has_fishing_followup(get_current_identity_id()):
             return
         _apply_effect(effect, persist=False)

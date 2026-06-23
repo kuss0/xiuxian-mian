@@ -89,6 +89,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             state_module.state["fishing_enabled"] = True
             state_module.state["fishing_bait"] = "凡饵"
+            state_module.state["fishing_auto_chum_enabled"] = False
+            state_module.state["fishing_auto_buy_bait_enabled"] = False
             state_module.state["next_fishing_time"] = now - 1
             fake_msg = SimpleNamespace(id=22027, sent_at=now)
             with (
@@ -202,6 +204,60 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["fishing_pending_action"])
             self.assertEqual(22028, state_module.state["fishing_reply_to_msg_id"])
             self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+
+    async def test_new_fishing_command_waits_when_two_other_rods_active(self):
+        identity_id = self._prepare_identity()
+        active_a = self._prepare_identity(10001)
+        active_b = self._prepare_identity(10002)
+        now = 1_700_000_000.0
+        with state_module.use_identity(active_a):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+        with state_module.use_identity(active_b):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "lifting"
+            state_module.state["fishing_reply_to_msg_id"] = 22020
+            state_module.state["fishing_reply_due_at"] = now + 10
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_bait"] = "凡饵"
+            state_module.state["fishing_auto_chum_enabled"] = False
+            state_module.state["fishing_auto_buy_bait_enabled"] = False
+            state_module.state["next_fishing_time"] = now - 1
+            with (
+                patch.object(fishing_runtime.random, "uniform", return_value=4),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + 4, state_module.state["next_fishing_time"])
+            self.assertIn("钓鱼排队中", state_module.state["fishing_last_error"])
+
+    async def test_pending_lift_ignores_new_rod_capacity_limit(self):
+        identity_id = self._prepare_identity()
+        active_a = self._prepare_identity(10001)
+        active_b = self._prepare_identity(10002)
+        now = 1_700_000_000.0
+        for active_id in (active_a, active_b):
+            with state_module.use_identity(active_id):
+                state_module.state["fishing_enabled"] = True
+                state_module.state["fishing_phase"] = "waiting"
+                state_module.state["fishing_pending_action"] = ".钓鱼状态"
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now - 1
+            fake_msg = SimpleNamespace(id=22028, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
 
     async def test_followup_keeps_pending_until_command_is_sent(self):
         identity_id = self._prepare_identity()
@@ -834,6 +890,19 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 ".提竿",
                 intent={"source_module": "自动副本"},
             )
+        )
+
+    def test_runtime_module_gap_enforces_fishing_minimum(self):
+        runtime_module._MODULE_LAST_SEND_AT.clear()
+        runtime_module._MODULE_LAST_SEND_AT["灵溪垂钓"] = 100.0
+
+        self.assertEqual(
+            102.0,
+            runtime_module._module_send_gap_ready_at({"source_module": "灵溪垂钓"}, now_mono=100.5),
+        )
+        self.assertEqual(
+            0.0,
+            runtime_module._module_send_gap_ready_at({"source_module": "自动副本"}, now_mono=100.5),
         )
 
 

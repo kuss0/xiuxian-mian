@@ -241,7 +241,7 @@ class FishingLabTests(unittest.TestCase):
             auto_chum_enabled=True,
             chum_name="米糠小窝",
         )
-        plan = fishing.plan_fishing_commands(config)
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"灵虫饵": 1, "凡饵": 2, "灵石": 30})
 
         self.assertEqual("灵眼寒潭", config.pond)
         self.assertEqual("灵虫饵", config.bait)
@@ -257,11 +257,11 @@ class FishingLabTests(unittest.TestCase):
             chum_name="灵草窝",
             auto_buy_bait_enabled=True,
         )
-        plan = fishing.plan_fishing_commands(config, bait_inventory={"灵米饵": 1, "灵石": 280, "凝血草": 5})
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"灵米饵": 1, "灵石": 1000, "凝血草": 5})
 
         self.assertTrue(plan.allow_start)
-        self.assertEqual((".买鱼饵 灵米饵 8",), plan.purchase_commands)
-        self.assertEqual((".买鱼饵 灵米饵 8", ".打窝 灵草窝", ".钓鱼 青溪浅滩 灵米饵"), plan.commands)
+        self.assertEqual((".买鱼饵 灵米饵 20",), plan.purchase_commands)
+        self.assertEqual((".买鱼饵 灵米饵 20", ".打窝 灵草窝", ".钓鱼 青溪浅滩 灵米饵"), plan.commands)
 
     def test_fishing_plan_can_buy_different_fishing_and_chum_baits(self):
         config = fishing.normalize_fishing_config(
@@ -273,13 +273,13 @@ class FishingLabTests(unittest.TestCase):
         )
         plan = fishing.plan_fishing_commands(
             config,
-            bait_inventory={"灵虫饵": 0, "灵米饵": 0, "灵石": 1000, "凝血草": 25},
+            bait_inventory={"灵虫饵": 0, "灵米饵": 0, "灵石": 3000, "凝血草": 50},
         )
 
         self.assertTrue(plan.allow_start)
-        self.assertEqual((".买鱼饵 灵虫饵 8", ".买鱼饵 灵米饵 8"), plan.purchase_commands)
+        self.assertEqual((".买鱼饵 灵虫饵 20", ".买鱼饵 灵米饵 20"), plan.purchase_commands)
         self.assertEqual(
-            (".买鱼饵 灵虫饵 8", ".买鱼饵 灵米饵 8", ".打窝 灵草窝", ".钓鱼 灵眼寒潭 灵虫饵"),
+            (".买鱼饵 灵虫饵 20", ".买鱼饵 灵米饵 20", ".打窝 灵草窝", ".钓鱼 灵眼寒潭 灵虫饵"),
             plan.commands,
         )
 
@@ -302,10 +302,33 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual((".钓鱼 青溪浅滩 凡饵",), plan.commands)
         self.assertEqual(1, plan.bait_requirements[0].required_count)
 
+    def test_fishing_plan_uses_selected_chums_in_daily_sequence_one_at_a_time(self):
+        config = fishing.normalize_fishing_config(
+            "青溪浅滩",
+            "凡饵",
+            auto_chum_enabled=True,
+            chum_names=["米糠小窝", "灵草窝", "妖腥窝"],
+            auto_buy_bait_enabled=True,
+        )
+        inventory = {"凡饵": 99, "灵米饵": 99, "妖血饵": 99, "灵石": 10000, "凝血草": 99, "一阶妖丹": 99}
+
+        first = fishing.plan_fishing_commands(config, bait_inventory=inventory, chum_usage_counts={})
+        second_mikang = fishing.plan_fishing_commands(config, bait_inventory=inventory, chum_usage_counts={"米糠小窝": 1})
+        first_lingcao = fishing.plan_fishing_commands(config, bait_inventory=inventory, chum_usage_counts={"米糠小窝": 2})
+        first_yaoxing = fishing.plan_fishing_commands(config, bait_inventory=inventory, chum_usage_counts={"米糠小窝": 2, "灵草窝": 2})
+        exhausted = fishing.plan_fishing_commands(config, bait_inventory=inventory, chum_usage_counts={"米糠小窝": 2, "灵草窝": 2, "妖腥窝": 1})
+
+        self.assertEqual(".打窝 米糠小窝", first.commands[0])
+        self.assertEqual(".打窝 米糠小窝", second_mikang.commands[0])
+        self.assertEqual(".打窝 灵草窝", first_lingcao.commands[0])
+        self.assertEqual(".打窝 妖腥窝", first_yaoxing.commands[0])
+        self.assertEqual((".钓鱼 青溪浅滩 凡饵",), exhausted.commands)
+
     def test_fishing_plan_uses_custom_buy_count_and_never_underbuys_missing_amount(self):
         config = fishing.normalize_fishing_config(
             "青溪浅滩",
             "灵米饵",
+            auto_chum_enabled=False,
             auto_buy_bait_enabled=True,
             auto_buy_bait_count=12,
         )
@@ -329,12 +352,13 @@ class FishingLabTests(unittest.TestCase):
             "灵米饵",
             auto_chum_enabled=True,
             chum_name="灵草窝",
+            auto_buy_bait_enabled=False,
         )
         plan = fishing.plan_fishing_commands(config, bait_inventory={"灵米饵": 1})
 
         self.assertFalse(plan.allow_start)
         self.assertEqual((), plan.commands)
-        self.assertEqual((".买鱼饵 灵米饵 8",), plan.purchase_commands)
+        self.assertEqual((".买鱼饵 灵米饵 20",), plan.purchase_commands)
         self.assertEqual("insufficient_bait", plan.blocked_reason)
 
     def test_fishing_plan_accepts_internal_api_item_keys_as_inventory(self):
@@ -369,6 +393,7 @@ class FishingLabTests(unittest.TestCase):
         config = fishing.normalize_fishing_config(
             "青溪浅滩",
             "妖血饵",
+            auto_chum_enabled=False,
             auto_buy_bait_enabled=True,
             auto_buy_bait_count=8,
         )
@@ -385,7 +410,7 @@ class FishingLabTests(unittest.TestCase):
             auto_chum_enabled=True,
             chum_name="无",
         )
-        plan = fishing.plan_fishing_commands(config)
+        plan = fishing.plan_fishing_commands(config, bait_inventory={"灵米饵": 1})
 
         self.assertFalse(config.auto_chum_enabled)
         self.assertEqual("", config.chum_name)

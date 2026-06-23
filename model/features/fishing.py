@@ -1,6 +1,7 @@
 """Pure parsers and command planning for the fishing module."""
 
 from dataclasses import dataclass
+import json
 import re
 
 from ..config import (
@@ -19,9 +20,10 @@ FISHING_CHUM_DAILY_LIMITS = {
     "妖腥窝": 1,
 }
 FISHING_DEFAULT_DAILY_LIMIT = 20
-FISHING_DEFAULT_BUY_BAIT_COUNT = 8
+FISHING_DEFAULT_BUY_BAIT_COUNT = 20
 FISHING_MAX_DAILY_LIMIT = 20
 FISHING_MAX_BUY_BAIT_COUNT = 99
+FISHING_DEFAULT_CHUM_NAMES = ("米糠小窝",)
 FISHING_BAIT_ITEM_KEYS = {
     "凡饵": "item_fishing_bait_plain",
     "灵米饵": "item_fishing_bait_spirit_rice",
@@ -96,9 +98,10 @@ class FishingChumDecision:
 class FishingAutomationConfig:
     pond: str = "青溪浅滩"
     bait: str = "凡饵"
-    auto_chum_enabled: bool = False
-    chum_name: str = ""
-    auto_buy_bait_enabled: bool = False
+    auto_chum_enabled: bool = True
+    chum_name: str = "米糠小窝"
+    chum_names: tuple = FISHING_DEFAULT_CHUM_NAMES
+    auto_buy_bait_enabled: bool = True
     auto_buy_bait_count: int = FISHING_DEFAULT_BUY_BAIT_COUNT
     auto_probe_enabled: bool = False
 
@@ -495,33 +498,69 @@ def clamp_fishing_buy_bait_count(value):
     return max(1, min(FISHING_MAX_BUY_BAIT_COUNT, parsed))
 
 
+def normalize_fishing_chum_names(chum_names=None, fallback_chum_name=""):
+    candidates = []
+    if isinstance(chum_names, str):
+        raw = chum_names.strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = re.split(r"[,\s，、]+", raw)
+            if isinstance(parsed, (list, tuple)):
+                candidates.extend(parsed)
+            elif parsed:
+                candidates.append(parsed)
+    elif isinstance(chum_names, (list, tuple, set)):
+        candidates.extend(chum_names)
+    if not candidates and fallback_chum_name:
+        candidates.append(fallback_chum_name)
+    selected = []
+    for chum in candidates:
+        name = str(chum or "").strip()
+        if not name or name == "无":
+            continue
+        if name not in FISHING_CHUMS:
+            raise ValueError(f"unsupported_fishing_chum:{name}")
+        if name not in selected:
+            selected.append(name)
+    return tuple(chum for chum in FISHING_CHUMS if chum in selected)
+
+
+def format_fishing_chum_names(chum_names):
+    normalized = normalize_fishing_chum_names(chum_names)
+    return json.dumps(list(normalized), ensure_ascii=False)
+
+
 def normalize_fishing_config(
     pond="青溪浅滩",
     bait="凡饵",
     *,
-    auto_chum_enabled=False,
-    chum_name="",
-    auto_buy_bait_enabled=False,
+    auto_chum_enabled=True,
+    chum_name="米糠小窝",
+    chum_names=None,
+    auto_buy_bait_enabled=True,
     auto_buy_bait_count=FISHING_DEFAULT_BUY_BAIT_COUNT,
     auto_probe_enabled=False,
 ):
     """Normalize operator/UI choices without connecting them to runtime sends."""
     normalized_pond = str(pond or "").strip()
     normalized_bait = str(bait or "").strip()
-    normalized_chum = str(chum_name or "").strip()
-    if normalized_chum == "无":
-        normalized_chum = ""
+    normalized_chums = normalize_fishing_chum_names(
+        FISHING_DEFAULT_CHUM_NAMES if chum_names is None and chum_name is None else chum_names,
+        fallback_chum_name=chum_name or "",
+    )
     if normalized_pond not in FISHING_PONDS:
         raise ValueError(f"unsupported_fishing_pond:{normalized_pond}")
     if normalized_bait not in FISHING_BAITS:
         raise ValueError(f"unsupported_fishing_bait:{normalized_bait}")
-    if normalized_chum and normalized_chum not in FISHING_CHUMS:
-        raise ValueError(f"unsupported_fishing_chum:{normalized_chum}")
+    enabled = bool(auto_chum_enabled and normalized_chums)
     return FishingAutomationConfig(
         pond=normalized_pond,
         bait=normalized_bait,
-        auto_chum_enabled=bool(auto_chum_enabled and normalized_chum),
-        chum_name=normalized_chum,
+        auto_chum_enabled=enabled,
+        chum_name=normalized_chums[0] if normalized_chums else "",
+        chum_names=normalized_chums,
         auto_buy_bait_enabled=bool(auto_buy_bait_enabled),
         auto_buy_bait_count=clamp_fishing_buy_bait_count(auto_buy_bait_count),
         auto_probe_enabled=bool(auto_probe_enabled),
@@ -590,10 +629,26 @@ def _format_missing_resources(requirements):
     return "、".join(parts)
 
 
-def _build_bait_requirements(config, bait_inventory, *, include_chum=True):
+def _selected_chum_names(config):
+    return tuple(getattr(config, "chum_names", ()) or ((config.chum_name,) if getattr(config, "chum_name", "") else ()))
+
+
+def _next_chum_name(config, usage_counts):
+    if not config.auto_chum_enabled:
+        return ""
+    usage_counts = _normalize_inventory(usage_counts) or {}
+    for chum_name in _selected_chum_names(config):
+        limit = FISHING_CHUM_DAILY_LIMITS.get(chum_name)
+        used = int(usage_counts.get(chum_name, 0) or 0)
+        if limit is None or used < int(limit or 0):
+            return chum_name
+    return ""
+
+
+def _build_bait_requirements(config, bait_inventory, *, chum_name=""):
     required = {config.bait: 1}
-    if config.auto_chum_enabled and include_chum:
-        cost = get_known_chum_cost(config.chum_name)
+    if config.auto_chum_enabled and chum_name:
+        cost = get_known_chum_cost(chum_name)
         bait_name = fishing_bait_name_for_item_key(cost.item_key) if cost else ""
         if bait_name:
             required[bait_name] = required.get(bait_name, 0) + int(cost.count or 0)
@@ -621,6 +676,7 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
             getattr(config, "bait", "凡饵") if config is not None else "凡饵",
             auto_chum_enabled=getattr(config, "auto_chum_enabled", False) if config is not None else False,
             chum_name=getattr(config, "chum_name", "") if config is not None else "",
+            chum_names=getattr(config, "chum_names", None) if config is not None else None,
             auto_buy_bait_enabled=getattr(config, "auto_buy_bait_enabled", False) if config is not None else False,
             auto_buy_bait_count=getattr(config, "auto_buy_bait_count", FISHING_DEFAULT_BUY_BAIT_COUNT) if config is not None else FISHING_DEFAULT_BUY_BAIT_COUNT,
             auto_probe_enabled=getattr(config, "auto_probe_enabled", False) if config is not None else False,
@@ -630,17 +686,12 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
     chum_decision = None
     has_active_chum = (
         config.auto_chum_enabled
-        and str(active_chum_name or "").strip() == config.chum_name
+        and str(active_chum_name or "").strip()
         and int(active_chum_rods_remaining or 0) > 0
     )
-    chum_daily_exhausted = False
-    if config.auto_chum_enabled and not has_active_chum:
-        usage_counts = _normalize_inventory(chum_usage_counts) or {}
-        limit = FISHING_CHUM_DAILY_LIMITS.get(config.chum_name)
-        used = int(usage_counts.get(config.chum_name, 0) or 0)
-        chum_daily_exhausted = limit is not None and used >= int(limit or 0)
-    if config.auto_chum_enabled and not has_active_chum and not chum_daily_exhausted:
-        chum_decision = decide_chum_send(config.chum_name, auto_chum_enabled=True)
+    target_chum = "" if has_active_chum else _next_chum_name(config, chum_usage_counts)
+    if target_chum:
+        chum_decision = decide_chum_send(target_chum, auto_chum_enabled=True)
         if not chum_decision.allow_send:
             return FishingCommandPlan(
                 allow_start=False,
@@ -651,11 +702,11 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
                 config=config,
                 chum_decision=chum_decision,
             )
-        commands.append(f".打窝 {config.chum_name}")
+        commands.append(f".打窝 {target_chum}")
 
     commands.append(f".钓鱼 {config.pond} {config.bait}")
     inventory_unknown = bait_inventory is None
-    bait_requirements = _build_bait_requirements(config, bait_inventory, include_chum=not has_active_chum and not chum_daily_exhausted)
+    bait_requirements = _build_bait_requirements(config, bait_inventory, chum_name=target_chum)
     purchase_commands = []
     planned_purchase_counts = {}
     for requirement in bait_requirements:
@@ -681,7 +732,7 @@ def plan_fishing_commands(config, *, bait_inventory=None, active_chum_name="", a
         commands = list(purchase_commands) + commands
 
     resource_costs = {}
-    if config.auto_chum_enabled and not has_active_chum and not chum_daily_exhausted and chum_decision and chum_decision.cost:
+    if target_chum and chum_decision and chum_decision.cost:
         _add_item_costs(resource_costs, chum_decision.cost.item_costs, 1)
     for bait_name, buy_count in planned_purchase_counts.items():
         _add_item_costs(resource_costs, FISHING_BAIT_COSTS.get(bait_name, ()), buy_count)

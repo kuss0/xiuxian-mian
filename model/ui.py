@@ -89,9 +89,11 @@ from .features.duel import apply_duel_config, normalize_duel_target
 from .features.fishing import (
     FISHING_BAITS,
     FISHING_CHUMS,
+    FISHING_DEFAULT_BUY_BAIT_COUNT,
     FISHING_PONDS,
     clamp_fishing_buy_bait_count,
     clamp_fishing_daily_limit,
+    format_fishing_chum_names,
     normalize_fishing_config,
     plan_fishing_commands,
 )
@@ -2340,8 +2342,9 @@ def _get_fishing_ui_config(identity_state):
         identity_state.get("fishing_bait") or "凡饵",
         auto_chum_enabled=bool(identity_state.get("fishing_auto_chum_enabled")),
         chum_name=identity_state.get("fishing_chum_name") or "",
+        chum_names=identity_state.get("fishing_chum_names") or None,
         auto_buy_bait_enabled=bool(identity_state.get("fishing_auto_buy_bait_enabled")),
-        auto_buy_bait_count=identity_state.get("fishing_auto_buy_bait_count", 8),
+        auto_buy_bait_count=identity_state.get("fishing_auto_buy_bait_count", FISHING_DEFAULT_BUY_BAIT_COUNT),
         auto_probe_enabled=bool(identity_state.get("fishing_auto_probe_enabled")),
     )
     return config
@@ -2395,8 +2398,9 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "daily_count": int(identity_state.get("fishing_daily_count", 0) or 0),
         "auto_chum_enabled": bool(config.auto_chum_enabled),
         "chum_name": config.chum_name,
+        "chum_names": list(config.chum_names or ()),
         "auto_buy_bait_enabled": bool(config.auto_buy_bait_enabled),
-        "auto_buy_bait_count": int(config.auto_buy_bait_count or 8),
+        "auto_buy_bait_count": int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT),
         "auto_probe_enabled": bool(config.auto_probe_enabled),
         "active_chum_name": identity_state.get("fishing_active_chum_name") or "",
         "chum_rods_remaining": int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
@@ -2404,7 +2408,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "chum_counts": parse_chum_usage_counts(identity_state.get("fishing_chum_counts")),
         "pond_choices": list(FISHING_PONDS),
         "bait_choices": list(FISHING_BAITS),
-        "chum_choices": ["无", *FISHING_CHUMS],
+        "chum_choices": list(FISHING_CHUMS),
         "bait_inventory": bait_inventory if bait_inventory is not None else {},
         "bait_inventory_known": bait_inventory is not None,
         "plan": {
@@ -3581,6 +3585,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
     pond = payload.get("pond")
     bait = payload.get("bait")
     chum_name = payload.get("chum_name")
+    chum_names = payload.get("chum_names")
     daily_limit = _coerce_fishing_daily_limit(payload.get("daily_limit"))
     auto_buy_bait_count = _coerce_fishing_buy_bait_count(payload.get("auto_buy_bait_count"))
     auto_chum_enabled = _coerce_ui_bool(payload.get("auto_chum_enabled"))
@@ -3592,6 +3597,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
             bait or "凡饵",
             auto_chum_enabled=auto_chum_enabled,
             chum_name=chum_name or "",
+            chum_names=chum_names,
             auto_buy_bait_enabled=auto_buy_bait_enabled,
             auto_buy_bait_count=auto_buy_bait_count,
             auto_probe_enabled=auto_probe_enabled,
@@ -3604,8 +3610,9 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_daily_limit"] = daily_limit
         state["fishing_auto_chum_enabled"] = bool(config.auto_chum_enabled)
         state["fishing_chum_name"] = config.chum_name
+        state["fishing_chum_names"] = format_fishing_chum_names(config.chum_names)
         state["fishing_auto_buy_bait_enabled"] = bool(config.auto_buy_bait_enabled)
-        state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or 8)
+        state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT)
         state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
         save_state()
         saved_identity_state = dict(state.items())
@@ -3620,7 +3627,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         "🎣 已更新灵溪垂钓配置："
         f"{config.pond}/{config.bait}｜"
         f"次数={daily_limit}/日｜"
-        f"打窝={config.chum_name or '无'}｜"
+        f"打窝={','.join(config.chum_names or ()) or '无'}｜"
         f"买饵={'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}｜"
         f"试饵={'开' if config.auto_probe_enabled else '关'}｜"
         f"计划={_format_fishing_command_plan(plan)}",

@@ -235,6 +235,9 @@ SEND_GAP_WHITELIST_PREFIXES = (
     CMD_FISHING_OPEN,
 )
 SEND_GAP_WHITELIST_MODULES = {"灵溪垂钓"}
+MODULE_SEND_GAP_MIN_SEC = {
+    "灵溪垂钓": 2.0,
+}
 
 P0_SEND_GAP_MIN_SEC = 20.0
 P0_SEND_GAP_MAX_SEC = 30.0
@@ -253,6 +256,7 @@ NORMAL_SEND_GAP_MAX_SEC = 40.0
 
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
+_MODULE_LAST_SEND_AT = {}
 _GAME_SEND_QUEUE_SEQ = 0
 _GAME_SEND_QUEUE_ITEMS = {}
 _GAME_COMMAND_SENT_OBSERVERS = []
@@ -537,6 +541,23 @@ def _send_gap_whitelist_allows(priority, command, intent=None):
     return compact_intent.get("source_module") in SEND_GAP_WHITELIST_MODULES
 
 
+def _module_send_gap_min_sec(intent=None):
+    module = str(_compact_send_intent(intent).get("source_module") or "").strip()
+    return float(MODULE_SEND_GAP_MIN_SEC.get(module, 0.0) or 0.0)
+
+
+def _module_send_gap_ready_at(intent=None, now_mono=None):
+    min_gap = _module_send_gap_min_sec(intent)
+    if min_gap <= 0:
+        return 0.0
+    module = str(_compact_send_intent(intent).get("source_module") or "").strip()
+    last_at = float(_MODULE_LAST_SEND_AT.get(module, 0.0) or 0.0)
+    if last_at <= 0:
+        return 0.0
+    now_mono = time.monotonic() if now_mono is None else float(now_mono)
+    return max(now_mono, last_at + min_gap)
+
+
 def _build_send_not_before(priority):
     min_gap, max_gap = _get_send_gap_range(priority)
     now_mono = time.monotonic()
@@ -575,7 +596,10 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
     global _GAME_LAST_SEND_AT, _GAME_SEND_QUEUE_SEQ
     bypass_gap = _send_gap_whitelist_allows(priority, command, intent=intent)
     min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
+    module_gap = _module_send_gap_min_sec(intent)
+    module_name = str(_compact_send_intent(intent).get("source_module") or "").strip()
     slot_anchor = None
+    module_anchor = None
     not_before = 0.0
     _GAME_SEND_QUEUE_SEQ += 1
     queue_token = _GAME_SEND_QUEUE_SEQ
@@ -591,9 +615,13 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
         while True:
             await _GAME_SEND_LOCK.acquire()
             now_mono = time.monotonic()
-            if not_before <= 0 or slot_anchor != _GAME_LAST_SEND_AT:
+            current_module_last = float(_MODULE_LAST_SEND_AT.get(module_name, 0.0) or 0.0) if module_name else 0.0
+            if not_before <= 0 or slot_anchor != _GAME_LAST_SEND_AT or module_anchor != current_module_last:
                 slot_anchor = _GAME_LAST_SEND_AT
+                module_anchor = current_module_last
                 not_before = max(now_mono, _GAME_LAST_SEND_AT) + random.uniform(min_gap, max_gap)
+                if module_gap > 0 and current_module_last > 0:
+                    not_before = max(not_before, current_module_last + module_gap)
             ready_at = not_before
             _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["not_before_mono"] = ready_at
             wait = ready_at - now_mono
@@ -604,6 +632,8 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
                 finally:
                     if not bypass_gap:
                         _GAME_LAST_SEND_AT = time.monotonic()
+                    if module_gap > 0 and module_name:
+                        _MODULE_LAST_SEND_AT[module_name] = time.monotonic()
                     _GAME_SEND_LOCK.release()
                 return
             _GAME_SEND_LOCK.release()

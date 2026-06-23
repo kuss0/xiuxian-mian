@@ -34,12 +34,14 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("青溪浅滩", fishing["pond"])
         self.assertEqual("凡饵", fishing["bait"])
         self.assertEqual(20, fishing["daily_limit"])
-        self.assertEqual(8, fishing["auto_buy_bait_count"])
+        self.assertEqual(20, fishing["auto_buy_bait_count"])
         self.assertEqual(0, fishing["daily_count"])
-        self.assertFalse(fishing["auto_chum_enabled"])
+        self.assertTrue(fishing["auto_chum_enabled"])
+        self.assertEqual(["米糠小窝"], fishing["chum_names"])
+        self.assertTrue(fishing["auto_buy_bait_enabled"])
         self.assertFalse(fishing["bait_inventory_known"])
         self.assertTrue(fishing["plan"]["allow_start"])
-        self.assertEqual([".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
+        self.assertEqual([".买鱼饵 凡饵 20", ".打窝 米糠小窝", ".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
 
     async def test_set_fishing_config_persists_choices_and_plans_missing_bait_purchase(self):
         state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 385, "凝血草": 5}, "sections": {}}})
@@ -52,7 +54,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
                     "bait": "灵米饵",
                     "daily_limit": 7,
                     "auto_chum_enabled": True,
-                    "chum_name": "灵草窝",
+                    "chum_names": ["灵草窝"],
                     "auto_buy_bait_enabled": True,
                     "auto_buy_bait_count": 11,
                     "auto_probe_enabled": True,
@@ -67,6 +69,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(7, identity_state["fishing_daily_limit"])
         self.assertTrue(identity_state["fishing_auto_chum_enabled"])
         self.assertEqual("灵草窝", identity_state["fishing_chum_name"])
+        self.assertEqual('["灵草窝"]', identity_state["fishing_chum_names"])
         self.assertTrue(identity_state["fishing_auto_buy_bait_enabled"])
         self.assertEqual(11, identity_state["fishing_auto_buy_bait_count"])
         self.assertTrue(identity_state["fishing_auto_probe_enabled"])
@@ -89,7 +92,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
                     "pond": "青溪浅滩",
                     "bait": "灵米饵",
                     "auto_chum_enabled": True,
-                    "chum_name": "灵草窝",
+                    "chum_names": ["灵草窝"],
                     "auto_buy_bait_enabled": True,
                     "auto_buy_bait_count": 11,
                 },
@@ -122,7 +125,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
                     "pond": "青溪浅滩",
                     "bait": "灵米饵",
                     "auto_chum_enabled": True,
-                    "chum_name": "灵草窝",
+                    "chum_names": ["灵草窝"],
                     "auto_buy_bait_enabled": True,
                     "auto_buy_bait_count": 8,
                 },
@@ -166,6 +169,8 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fishing-config-panel", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
+        self.assertIn('name="chum_names"', script)
+        self.assertNotIn('select[name="chum_name"]', script)
         self.assertIn("resourceRequirementHtml", script)
         self.assertIn("findFishingCard", script)
         self.assertIn("card.appendChild(panel)", script)

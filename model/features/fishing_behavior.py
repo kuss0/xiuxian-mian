@@ -306,6 +306,7 @@ def current_fishing_config(snapshot):
         snapshot.get("fishing_bait") or "凡饵",
         auto_chum_enabled=bool(snapshot.get("fishing_auto_chum_enabled")),
         chum_name=snapshot.get("fishing_chum_name") or "",
+        chum_names=snapshot.get("fishing_chum_names") or None,
         auto_buy_bait_enabled=bool(snapshot.get("fishing_auto_buy_bait_enabled")),
         auto_buy_bait_count=clamp_fishing_buy_bait_count(snapshot.get("fishing_auto_buy_bait_count", FISHING_DEFAULT_BUY_BAIT_COUNT)),
         auto_probe_enabled=bool(snapshot.get("fishing_auto_probe_enabled")),
