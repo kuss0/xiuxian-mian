@@ -632,6 +632,53 @@ def apply_storage_bag_item_deltas(identity_id, item_deltas):
     return changed
 
 
+def apply_storage_bag_item_counts(identity_id, item_counts):
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0 or not isinstance(item_counts, dict):
+        return False
+    records = get_storage_bag_records()
+    key = str(identity_id)
+    record = records.setdefault(
+        key,
+        {
+            "identity_id": identity_id,
+            "label": _get_storage_bag_identity_label(identity_id, {}),
+            "owner": "",
+            "owner_username": "",
+            "updated_at": 0,
+            "updated_at_text": "",
+            "items": {},
+            "sections": {},
+            "empty": False,
+        },
+    )
+    items = record.setdefault("items", {})
+    sections = record.setdefault("sections", {})
+    changed = False
+    for item_name, raw_count in item_counts.items():
+        item_name = str(item_name or "").strip()
+        if not item_name:
+            continue
+        try:
+            count = max(0, int(raw_count or 0))
+        except (TypeError, ValueError):
+            count = 0
+        old_value = int(items.get(item_name, 0) or 0)
+        if count == old_value:
+            continue
+        if count > 0:
+            items[item_name] = count
+        else:
+            items.pop(item_name, None)
+        _adjust_storage_bag_section_item(sections, item_name, count)
+        changed = True
+    if changed:
+        record["empty"] = not bool(items)
+        set_storage_bag_records(records)
+        save_state()
+    return changed
+
+
 def _storage_transfer_item_names_for_rule_update(raw_text="", *, fallback_all=True):
     listing_item = str(_storage_bag_transfer_state.get("listing_item") or "").strip()
     names = {listing_item}
@@ -1643,6 +1690,7 @@ __all__ = [
     "CMD_STORAGE_BAG_LISTING",
     "STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX",
     "apply_storage_bag_gift_success",
+    "apply_storage_bag_item_counts",
     "apply_storage_bag_item_deltas",
     "apply_storage_bag_item_text_delta",
     "cancel_storage_bag_transfer_task",

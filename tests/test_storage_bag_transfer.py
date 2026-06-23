@@ -46,6 +46,7 @@ from model import ui
 from model.features import storage_bag, workflow_log
 from model.verified_event import VerifiedGameEvent
 from model.features.storage_bag import (
+    apply_storage_bag_item_counts,
     apply_storage_bag_item_deltas,
     cancel_storage_bag_transfer_task,
     handle_storage_bag_transfer_reply,
@@ -348,6 +349,16 @@ class StorageBagTransferTests(unittest.TestCase):
         record = state_module.get_storage_bag_records()[str(self.source_id)]
         self.assertNotIn("木髓", record["items"])
         self.assertFalse(any("木髓" in section for section in (record.get("sections") or {}).values()))
+
+    def test_apply_item_counts_calibrates_specific_items_without_touching_others(self):
+        changed = apply_storage_bag_item_counts(self.source_id, {"妖丹": 2, "木髓": 0})
+
+        self.assertTrue(changed)
+        record = state_module.get_storage_bag_records()[str(self.source_id)]
+        self.assertEqual(2, record["items"]["妖丹"])
+        self.assertNotIn("木髓", record["items"])
+        self.assertEqual(1, record["items"]["绑定物"])
+        self.assertEqual(1000, record["updated_at"])
 
     def test_manual_gift_success_syncs_local_storage_records(self):
         state_module.set_storage_bag_records({

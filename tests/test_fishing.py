@@ -263,6 +263,26 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual((".买鱼饵 灵米饵 8",), plan.purchase_commands)
         self.assertEqual((".买鱼饵 灵米饵 8", ".打窝 灵草窝", ".钓鱼 青溪浅滩 灵米饵"), plan.commands)
 
+    def test_fishing_plan_can_buy_different_fishing_and_chum_baits(self):
+        config = fishing.normalize_fishing_config(
+            "灵眼寒潭",
+            "灵虫饵",
+            auto_chum_enabled=True,
+            chum_name="灵草窝",
+            auto_buy_bait_enabled=True,
+        )
+        plan = fishing.plan_fishing_commands(
+            config,
+            bait_inventory={"灵虫饵": 0, "灵米饵": 0, "灵石": 1000, "凝血草": 25},
+        )
+
+        self.assertTrue(plan.allow_start)
+        self.assertEqual((".买鱼饵 灵虫饵 8", ".买鱼饵 灵米饵 8"), plan.purchase_commands)
+        self.assertEqual(
+            (".买鱼饵 灵虫饵 8", ".买鱼饵 灵米饵 8", ".打窝 灵草窝", ".钓鱼 灵眼寒潭 灵虫饵"),
+            plan.commands,
+        )
+
     def test_fishing_plan_uses_custom_buy_count_and_never_underbuys_missing_amount(self):
         config = fishing.normalize_fishing_config(
             "青溪浅滩",
@@ -423,7 +443,7 @@ class FishingLabTests(unittest.TestCase):
         effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
 
         self.assertTrue(effect.handled)
-        self.assertEqual(".开鱼 银须灵鲢", effect.command)
+        self.assertEqual(".开鱼 银须灵鲢 2", effect.command)
 
     def test_fishing_behavior_scheduler_recovers_in_progress_rod_with_status(self):
         from model.features import fishing_behavior
@@ -586,6 +606,35 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual({"妖血饵": 2, "灵石": -440, "一阶妖丹": -2}, effect.storage_deltas)
 
+    def test_fishing_behavior_basket_calibrates_baits_fish_and_chum(self):
+        from model.features import fishing_behavior
+
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True, "fishing_pending_open_fish": '{"旧鱼": 1}'},
+            "【鱼篓】\n"
+            "青竹钓竿：已持有\n"
+            "钓术：Lv.1 垂纶（111熟练度）\n"
+            "今日竿数：9/20\n"
+            "当前窝料：灵草窝（剩余 4 竿）\n\n"
+            "鱼饵\n"
+            "- 灵米饵 x3\n\n"
+            "鱼获\n"
+            "- 银须灵鲢 x2\n\n"
+            "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+            1_700_000_000.0,
+            result_msg_id=22039,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(9, effect.updates["fishing_daily_count"])
+        self.assertEqual(20, effect.updates["fishing_daily_limit"])
+        self.assertEqual("灵草窝", effect.updates["fishing_active_chum_name"])
+        self.assertEqual(4, effect.updates["fishing_chum_rods_remaining"])
+        self.assertEqual('{"银须灵鲢": 2}', effect.updates["fishing_pending_open_fish"])
+        self.assertEqual(3, effect.storage_counts["灵米饵"])
+        self.assertEqual(0, effect.storage_counts["凡饵"])
+        self.assertEqual(2, effect.storage_counts["银须灵鲢"])
+
     def test_fishing_behavior_chum_success_updates_full_resource_deltas(self):
         from model.features import fishing_behavior
 
@@ -718,7 +767,7 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual(".开鱼 银须灵鲢", effect.updates["fishing_pending_action"])
+        self.assertEqual(".开鱼 银须灵鲢 2", effect.updates["fishing_pending_action"])
         self.assertEqual(now + 8, effect.updates["next_fishing_time"])
 
 

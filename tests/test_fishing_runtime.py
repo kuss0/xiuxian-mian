@@ -113,6 +113,27 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 30, due_at)
             self.assertEqual(now + 30, state_module.state["next_fishing_time"])
 
+    async def test_initial_check_preserves_pending_open_reply_after_restart(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "opening"
+            state_module.state["fishing_reply_to_msg_id"] = 22042
+            state_module.state["fishing_reply_due_at"] = now + 60
+            state_module.state["fishing_pending_open_fish"] = '{"青鳞小鲫": 2}'
+
+            due_at = fishing_runtime.schedule_fishing_initial_check(now, persist=False)
+
+            self.assertEqual(now + 60, due_at)
+            self.assertEqual("opening", state_module.state["fishing_phase"])
+            self.assertEqual(22042, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual('{"青鳞小鲫": 2}', state_module.state["fishing_pending_open_fish"])
+            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock:
+                await fishing_runtime.run_fishing_scheduler(now + 10)
+
+            send_mock.assert_not_awaited()
+
     async def test_daily_limit_blocks_only_new_fishing_commands(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -631,6 +652,115 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual("灵米饵", state_module.state["fishing_forced_buy_bait"])
             self.assertEqual(8, state_module.state["fishing_forced_buy_count"])
+
+    async def test_routed_manual_buy_updates_storage_when_module_disabled(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.set_storage_bag_records({
+                str(identity_id): {"items": {"灵石": 1000}, "sections": {"材料": {"灵石": 1000}}},
+            })
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    "【渔具铺】\n你购得 【灵米饵】x2。",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".买鱼饵 灵米饵 2"),
+                    matched_family="fishing",
+                    result_msg_id=22031,
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            items = state_module.get_storage_bag_records()[str(identity_id)]["items"]
+            self.assertEqual(2, items["灵米饵"])
+            self.assertEqual(930, items["灵石"])
+
+    async def test_routed_basket_calibrates_storage_when_module_disabled(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.set_storage_bag_records({
+                str(identity_id): {
+                    "items": {"凡饵": 5, "灵米饵": 1, "旧物": 7},
+                    "sections": {"材料": {"凡饵": 5, "灵米饵": 1, "旧物": 7}},
+                },
+            })
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    "【鱼篓】\n"
+                    "青竹钓竿：已持有\n"
+                    "钓术：Lv.1 垂纶（111熟练度）\n"
+                    "今日竿数：10/20\n"
+                    "当前窝料：无\n\n"
+                    "鱼饵\n"
+                    "- 灵米饵 x3\n\n"
+                    "鱼获\n"
+                    "- 银须灵鲢 x1\n\n"
+                    "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+                    now,
+                    reply_to=SimpleNamespace(id=22028, raw_text=".鱼篓"),
+                    matched_family="fishing",
+                    result_msg_id=22032,
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            items = state_module.get_storage_bag_records()[str(identity_id)]["items"]
+            self.assertNotIn("凡饵", items)
+            self.assertEqual(3, items["灵米饵"])
+            self.assertEqual(1, items["银须灵鲢"])
+            self.assertEqual(7, items["旧物"])
+            self.assertEqual(10, state_module.state["fishing_daily_count"])
+            self.assertEqual(20, state_module.state["fishing_daily_limit"])
+            self.assertEqual("", state_module.state["fishing_active_chum_name"])
+            self.assertEqual(0, state_module.state["fishing_chum_rods_remaining"])
+
+    async def test_routed_basket_calibration_does_not_break_active_rod(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_reply_to_msg_id"] = 22050
+            state_module.state["fishing_reply_due_at"] = now + 30
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+            state_module.state["next_fishing_time"] = now + 20
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "_schedule_fishing_followup", return_value=True) as followup_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    "【鱼篓】\n"
+                    "青竹钓竿：已持有\n"
+                    "钓术：Lv.1 垂纶（111熟练度）\n"
+                    "今日竿数：10/20\n"
+                    "当前窝料：无\n\n"
+                    "鱼饵\n"
+                    "- 灵米饵 x3\n\n"
+                    "鱼获\n"
+                    "- 银须灵鲢 x1\n\n"
+                    "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+                    now,
+                    reply_to=SimpleNamespace(id=22028, raw_text=".鱼篓"),
+                    matched_family="fishing",
+                    result_msg_id=22032,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("waiting", state_module.state["fishing_phase"])
+            self.assertEqual(22050, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + 30, state_module.state["fishing_reply_due_at"])
+            self.assertEqual(".钓鱼状态", state_module.state["fishing_pending_action"])
+            self.assertEqual(now + 20, state_module.state["next_fishing_time"])
+            followup_mock.assert_called_once()
 
     def test_runtime_send_gap_whitelist_is_fishing_short_window_only(self):
         self.assertTrue(

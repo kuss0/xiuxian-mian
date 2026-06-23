@@ -4,6 +4,7 @@ import time
 
 from ..config import (
     CMD_FISHING,
+    CMD_FISHING_BASKET,
     CMD_FISHING_BUY_BAIT,
     CMD_FISHING_CHUM,
     CMD_FISHING_LIFT,
@@ -24,7 +25,7 @@ from ..state import get_current_identity_id, get_send_as_profile, get_storage_ba
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
 from .fishing import plan_fishing_commands
-from .storage_bag import apply_storage_bag_item_deltas
+from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas
 
 
 FISHING_REPLY_TIMEOUT_SEC = 90
@@ -35,8 +36,8 @@ FISHING_ACTION_DELAY_MIN_SEC = 5
 FISHING_ACTION_DELAY_MAX_SEC = 12
 FISHING_RECOVERY_MIN_SEC = 15
 FISHING_RECOVERY_MAX_SEC = 45
-FISHING_POST_ROD_DELAY_MIN_SEC = 15
-FISHING_POST_ROD_DELAY_MAX_SEC = 45
+FISHING_POST_ROD_DELAY_MIN_SEC = 3
+FISHING_POST_ROD_DELAY_MAX_SEC = 5
 FISHING_NEXT_DAY_MIN_SEC = 5 * 60
 FISHING_NEXT_DAY_MAX_SEC = 75 * 60
 _FOLLOWUP_TASKS = {}
@@ -65,6 +66,8 @@ def _apply_effect(effect, *, persist=True):
     _apply_updates(effect.updates)
     if effect.storage_deltas:
         apply_storage_bag_item_deltas(get_current_identity_id(), dict(effect.storage_deltas))
+    if effect.storage_counts:
+        apply_storage_bag_item_counts(get_current_identity_id(), dict(effect.storage_counts))
     if persist:
         save_state()
     elif effect.updates:
@@ -93,6 +96,7 @@ def _is_fishing_reply(reply_to=None, matched_family=None):
         CMD_FISHING_STATUS,
         CMD_FISHING_PROBE,
         CMD_FISHING_LIFT,
+        CMD_FISHING_BASKET,
     } or orig_cmd.startswith((
         f"{CMD_FISHING} ",
         f"{CMD_FISHING_BUY_BAIT} ",
@@ -364,16 +368,41 @@ def _maybe_schedule_pending_fishing_action():
 
 
 async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0):
-    if not state.get("fishing_enabled"):
-        return False
     raw_text = str(text or "").strip()
+    is_routed_fishing = _is_fishing_reply(reply_to, matched_family=matched_family)
+    if not state.get("fishing_enabled"):
+        # Manual bait/chum/basket commands should still keep the local bag mirror fresh
+        # when their replies are routed by reply_to context.
+        if not is_routed_fishing:
+            return False
+        if not (
+            fishing_behavior.parse_buy_bait_result(raw_text)
+            or fishing_behavior.parse_fishing_basket(raw_text)
+            or fishing_behavior.parse_chum_success_detail(raw_text)
+            or fishing_behavior.parse_generic_resource_shortage(raw_text)
+            or fishing_behavior.parse_chum_shortage(raw_text)
+        ):
+            return False
+        effect = fishing_behavior.decide_reply(
+            _state_snapshot(),
+            raw_text,
+            now,
+            result_msg_id=int(result_msg_id or _parse_int(getattr(reply_to, "id", 0)) or 0),
+            action_delay_sec=random.uniform(FISHING_ACTION_DELAY_MIN_SEC, FISHING_ACTION_DELAY_MAX_SEC),
+            post_rod_delay_sec=random.uniform(FISHING_POST_ROD_DELAY_MIN_SEC, FISHING_POST_ROD_DELAY_MAX_SEC),
+        )
+        if not effect.handled:
+            return False
+        _apply_effect(effect)
+        await _emit_effect_audits(effect)
+        return True
+
     snapshot = _state_snapshot()
     looks_like_fishing = fishing_behavior.is_fishing_reply_text(raw_text)
     active_pending = (
         _parse_int(snapshot.get("fishing_reply_to_msg_id", 0)) > 0
         and float(snapshot.get("fishing_reply_due_at", 0) or 0) >= float(now)
     )
-    is_routed_fishing = _is_fishing_reply(reply_to, matched_family=matched_family)
     if not is_routed_fishing and not (looks_like_fishing and active_pending):
         return False
 
@@ -387,7 +416,8 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
         return False
     allow_routed_by_angler = matched_family == "fishing" and looks_like_fishing and explicit_angler_matches
     allow_open_reply = matched_family == "fishing" and _is_open_fish_reply_to_command(reply_to)
-    if active_ids and reply_to_msg_id not in active_ids and not swallowed_reply and not allow_routed_by_angler and not allow_open_reply:
+    allow_basket_reply = matched_family == "fishing" and fishing_behavior.parse_fishing_basket(raw_text)
+    if active_ids and reply_to_msg_id not in active_ids and not swallowed_reply and not allow_routed_by_angler and not allow_open_reply and not allow_basket_reply:
         return False
 
     result_msg_id = int(result_msg_id or reply_to_msg_id or 0)
@@ -482,6 +512,16 @@ async def run_fishing_scheduler(now):
 
 def schedule_fishing_initial_check(now, *, persist=False, keep_last_error=True):
     last_error = state.get("fishing_last_error") if keep_last_error else ""
+    reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
+    if reply_to_msg_id > 0:
+        reply_due_at = float(state.get("fishing_reply_due_at", 0) or 0)
+        state["fishing_last_error"] = last_error or ""
+        state["next_fishing_time"] = float(reply_due_at if reply_due_at > now else now)
+        if persist:
+            save_state()
+        else:
+            mark_dirty()
+        return state["next_fishing_time"]
     updates = fishing_behavior.clear_pending_updates()
     updates["fishing_last_error"] = last_error or ""
     updates["next_fishing_time"] = float(now + random.uniform(FISHING_RECOVERY_MIN_SEC, FISHING_RECOVERY_MAX_SEC))

@@ -8,6 +8,7 @@ adapter applies those effects and owns sending/persistence.
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import json
+import re
 
 from ..config import (
     CMD_FISHING,
@@ -22,6 +23,7 @@ from ..config import (
 )
 from ..timing import cd_blocks, get_day_key
 from .fishing import (
+    FISHING_BAITS,
     FISHING_DEFAULT_BUY_BAIT_COUNT,
     FISHING_DEFAULT_DAILY_LIMIT,
     FISHING_BAIT_COSTS,
@@ -37,6 +39,7 @@ from .fishing import (
     parse_chum_success_detail,
     parse_empty_fishing_result,
     parse_fishing_catch,
+    parse_fishing_basket,
     parse_fishing_daily_limit_reached,
     parse_fishing_in_progress_reply,
     parse_fishing_status,
@@ -62,6 +65,7 @@ class FishingEffect:
     immediate_commands: tuple = ()
     updates: dict = field(default_factory=dict)
     storage_deltas: dict = field(default_factory=dict)
+    storage_counts: dict = field(default_factory=dict)
     audit_messages: tuple = ()
 
 
@@ -132,6 +136,25 @@ def format_pending_open_fish(queue):
     return json.dumps(cleaned, ensure_ascii=False, sort_keys=True)
 
 
+def _parse_basket_chum(current_chum):
+    raw = str(current_chum or "").strip()
+    if not raw or raw == "无":
+        return "", 0
+    match = re.search(r"(?P<name>[^（(]+)[（(]\s*剩余\s*(?P<rods>\d+)\s*竿\s*[）)]", raw)
+    if match:
+        return match.group("name").strip(), max(0, int(match.group("rods") or 0))
+    return raw, 0
+
+
+def _basket_storage_counts(basket):
+    counts = {bait: int((basket.baits or {}).get(bait, 0) or 0) for bait in FISHING_BAITS}
+    for fish, count in (basket.fish or {}).items():
+        name = str(fish or "").strip()
+        if name:
+            counts[name] = max(0, int(count or 0))
+    return counts
+
+
 def add_pending_open_fish(value, fish, count=1):
     queue = parse_pending_open_fish(value)
     name = str(fish or "").strip()
@@ -158,6 +181,8 @@ def next_pending_open_command(value):
     count = int(queue.get(fish, 0) or 0)
     if count <= 0:
         return ""
+    if count > 1:
+        return f"{CMD_FISHING_OPEN} {fish} {count}"
     return f"{CMD_FISHING_OPEN} {fish}"
 
 
@@ -212,6 +237,7 @@ def is_fishing_reply_text(text):
         or parse_open_fish_result(raw) is not None
         or raw.startswith("【渔具铺】")
         or raw.startswith("【打窝已成】")
+        or raw.startswith("【鱼篓】")
         or raw.startswith("打窝失败，资源不足：")
         or ("你今日已垂钓" in raw and "明日再来" in raw)
         or "你已有一竿尚未收起" in raw
@@ -480,6 +506,28 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
     result_msg_id = int(result_msg_id or 0)
     if not is_fishing_reply_text(raw_text):
         return FishingEffect()
+
+    basket = parse_fishing_basket(raw_text)
+    if basket:
+        chum_name, chum_rods = _parse_basket_chum(basket.current_chum)
+        updates = {
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": "鱼篓校准",
+            "fishing_last_error": "",
+            "fishing_pending_open_fish": format_pending_open_fish(basket.fish),
+        }
+        if basket.daily_rods_used is not None:
+            updates["fishing_daily_day"] = get_day_key(now)
+            updates["fishing_daily_count"] = max(0, int(basket.daily_rods_used or 0))
+        if basket.daily_rods_limit is not None:
+            updates["fishing_daily_limit"] = clamp_fishing_daily_limit(basket.daily_rods_limit)
+        updates["fishing_active_chum_name"] = chum_name
+        updates["fishing_chum_rods_remaining"] = chum_rods
+        return FishingEffect(
+            handled=True,
+            updates=updates,
+            storage_counts=_basket_storage_counts(basket),
+        )
 
     buy_result = parse_buy_bait_result(raw_text)
     if buy_result:
