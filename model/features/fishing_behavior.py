@@ -60,6 +60,7 @@ FISHING_NO_ROD_RETRY_SEC = 6 * 3600
 FISHING_BLOCKED_RETRY_SEC = 3600
 FISHING_RESOURCE_SHORTAGE_RETRY_SEC = 6 * 3600
 FISHING_ACTION_DEADLINE_BUFFER_SEC = 4
+FISHING_STATUS_ACTION_DELAY_SEC = 1
 
 
 @dataclass(frozen=True)
@@ -836,7 +837,7 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
         })
         if status.suggested_command:
             updates["fishing_pending_action"] = status.suggested_command
-            delay = _bounded_action_delay(action_delay_sec, status.lift_seconds)
+            delay = _bounded_action_delay(FISHING_STATUS_ACTION_DELAY_SEC, status.lift_seconds)
             immediate_commands = ()
         else:
             wait_sec = status.wait_seconds if status.wait_seconds is not None else status.expected_wait_seconds

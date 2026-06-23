@@ -104,6 +104,25 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + fishing_runtime.FISHING_FAST_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
             self.assertEqual("fishing", state_module.state["fishing_phase"])
 
+    async def test_status_command_uses_short_reply_timeout(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["next_fishing_time"] = now - 1
+            state_module.state["fishing_pending_action"] = ".钓鱼状态"
+            fake_msg = SimpleNamespace(id=22028, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".钓鱼状态", track=False, priority="urgent_reactive", max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual(now + fishing_runtime.FISHING_STATUS_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+            self.assertEqual("checking", state_module.state["fishing_phase"])
+
     async def test_initial_check_uses_short_human_delay(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

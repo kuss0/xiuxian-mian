@@ -833,7 +833,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual((), effect.immediate_commands)
         self.assertEqual(".提竿", effect.updates["fishing_pending_action"])
-        self.assertGreater(effect.updates["next_fishing_time"], 1_700_000_000.0)
+        self.assertEqual(1_700_000_001.0, effect.updates["next_fishing_time"])
 
     def test_fishing_behavior_catch_queues_fish_without_immediate_open(self):
         from model.features import fishing_behavior

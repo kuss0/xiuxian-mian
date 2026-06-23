@@ -39,6 +39,7 @@ from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_d
 
 FISHING_REPLY_TIMEOUT_SEC = 90
 FISHING_FAST_REPLY_TIMEOUT_SEC = 14
+FISHING_STATUS_REPLY_TIMEOUT_SEC = 5
 FISHING_ACTION_REPLY_TIMEOUT_SEC = 20
 FISHING_SETUP_REPLY_TIMEOUT_SEC = 20
 FISHING_ACTION_DELAY_MIN_SEC = 5
@@ -191,7 +192,9 @@ def _priority_for_fishing_command(command):
 
 def _reply_timeout_for_fishing_command(command):
     raw = str(command or "").strip()
-    if raw.startswith((CMD_FISHING, CMD_FISHING_STATUS, CMD_FISHING_PROBE)):
+    if raw.startswith((CMD_FISHING_STATUS, CMD_FISHING_PROBE)):
+        return FISHING_STATUS_REPLY_TIMEOUT_SEC
+    if raw.startswith(CMD_FISHING):
         return FISHING_FAST_REPLY_TIMEOUT_SEC
     if raw.startswith(CMD_FISHING_LIFT):
         return FISHING_ACTION_REPLY_TIMEOUT_SEC
