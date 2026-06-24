@@ -821,7 +821,7 @@ def get_tree_status_text():
                 f"- 进度：{progress:.2f}%",
                 f"- 今日定脉：{daily_used}/{daily_limit or '?'}",
                 f"- 脉象：主 {main} / 辅 {aux} / 逆 {reverse}",
-                f"- 脉稳/浊息：{stability}/{stability_max or '?'} | {turbidity}/{turbidity_max or '?'}",
+                f"- 脉稳：{stability}/{stability_max or '?'}；浊息/紊乱：{turbidity}/{turbidity_max or '?'}",
                 f"- 下次定脉：{fmt_abs_ts(state['next_irr_time'])}（{fmt_remaining(state['next_irr_time'])}）",
             ])
             last_error = str(state.get("tree_pulse_last_error") or "").strip()

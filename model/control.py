@@ -349,6 +349,8 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_taiyi_cycle_time",
 )
 
+TREE_HARVESTED_MATURING_STALE_SEC = 30 * 3600
+
 _message_box_shadow_payload_provider = None
 
 
@@ -2636,6 +2638,20 @@ def _restore_tree_runtime(now):
     state["tree_bootstrap_check_needed"] = False
     state["tree_bootstrap_check_due_at"] = 0
     if state["is_maturing"]:
+        last_status_at = float(state.get("last_tree_status_sent_at", 0) or 0)
+        stale_harvested_maturing = (
+            state["is_harvested"]
+            and last_status_at > 0
+            and now - last_status_at > TREE_HARVESTED_MATURING_STALE_SEC
+        )
+        if stale_harvested_maturing:
+            state["is_maturing"] = False
+            state["is_harvested"] = False
+            state["tree_harvest_followup_due_at"] = 0
+            state["tree_harvest_inflight_until"] = 0
+            state["tree_maturing_logged"] = False
+            state["next_irr_time"] = now
+            return
         if not state["is_harvested"] and float(state.get("tree_harvest_inflight_until", 0) or 0) <= now:
             request_tree_bootstrap_check(
                 now,

@@ -462,6 +462,55 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("火", state_module.state["tree_pulse_reverse"])
             self.assertEqual("土/金", state_module.state["tree_pulse_neutral"])
 
+    async def test_tree_pulse_panel_accepts_current_panel_wording(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        panel = (
+            "【落云宗 · 灵树玩法】\n"
+            "⚙️ 当前玩法: 云梦灵眼定脉\n"
+            "🌲 进度:\n"
+            "🟩🟩⬜⬜⬜⬜⬜⬜⬜⬜⬜⬜ 20.63%\n"
+            "当前管理员关闭旧版【灵树灌溉】，本轮成长改由【云梦灵眼定脉】推进。\n"
+            "🌀 定脉玩法: 云梦灵眼定脉\n"
+            "🧭 今日脉象: 主脉【水】 / 辅脉【土】 / 逆脉【金】 / 平脉【木/火】\n"
+            "🧷 脉稳: 63/100 (脉象平稳) | ☁️ 浊息/紊乱: 26/16\n"
+            "📜 今日定脉令: 6/6 | 冲脉 0/2\n"
+            "指令: .定脉 注灵 木 / .定脉 固脉 土 / .定脉 净浊 / .定脉 冲脉 火"
+        )
+        parsed = tree.parse_tree_pulse_panel(panel)
+
+        self.assertIsNotNone(parsed)
+        self.assertEqual(20.63, parsed["progress"])
+        self.assertEqual("水", parsed["main"])
+        self.assertEqual("土", parsed["aux"])
+        self.assertEqual("金", parsed["reverse"])
+        self.assertEqual(["木", "火"], parsed["neutral_elements"])
+        self.assertEqual(63, parsed["stability"])
+        self.assertEqual(100, parsed["stability_max"])
+        self.assertEqual(26, parsed["turbidity"])
+        self.assertEqual(16, parsed["turbidity_max"])
+        self.assertEqual(6, parsed["daily_used"])
+        self.assertEqual(6, parsed["daily_limit"])
+
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            with (
+                patch.object(tree, "send_audit_log", new=AsyncMock()),
+                patch.object(tree, "save_state"),
+            ):
+                handled = await tree.handle_tree_panel(panel, now, True)
+
+            self.assertTrue(handled)
+            self.assertEqual("今日定脉令已满", state_module.state["tree_pulse_last_error"])
+            status_text = tree.get_tree_status_text()
+
+        self.assertIn("当前玩法：云梦灵眼定脉", status_text)
+        self.assertIn("进度：20.63%", status_text)
+        self.assertIn("今日定脉：6/6", status_text)
+        self.assertIn("脉稳：63/100；浊息/紊乱：26/16", status_text)
+
     async def test_irrigation_success_reply_confirms_next_time_from_real_receipt(self):
         now = 2000.0
         identity_id = 3800619925

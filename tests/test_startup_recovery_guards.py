@@ -399,6 +399,30 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["tree_bootstrap_check_due_at"])
             self.assertEqual(now + 3600, state_module.state["next_irr_time"])
 
+    def test_tree_recovery_releases_stale_harvested_maturing_state(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = True
+            state_module.state["is_harvested"] = True
+            state_module.state["tree_maturing_logged"] = True
+            state_module.state["tree_harvest_followup_due_at"] = now + 3600
+            state_module.state["tree_harvest_inflight_until"] = now + 1800
+            state_module.state["last_tree_status_sent_at"] = now - control.TREE_HARVESTED_MATURING_STALE_SEC - 1
+            state_module.state["next_irr_time"] = now + 115 * 24 * 3600
+
+        control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["is_maturing"])
+            self.assertFalse(state_module.state["is_harvested"])
+            self.assertFalse(state_module.state["tree_maturing_logged"])
+            self.assertEqual(0, state_module.state["tree_harvest_followup_due_at"])
+            self.assertEqual(0, state_module.state["tree_harvest_inflight_until"])
+            self.assertEqual(now, state_module.state["next_irr_time"])
+
     def test_tree_recovery_keeps_invasion_status_probe(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

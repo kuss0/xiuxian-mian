@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import app
 from model import persistence
 from model import state as state_module
+from model.features import tree
 
 
 class RuntimeLogFlagPersistenceTests(unittest.TestCase):
@@ -471,6 +472,58 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
 
                 with state_module.use_identity(identity_id):
                     self.assertEqual("ok", state_module.state["ranch_last_result"])
+
+    def test_tree_pulse_panel_state_persists_for_ui_status(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990341
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="treepulse")
+                state_module._meta_state["identity_membership_initialized"] = True
+                with state_module.use_identity(identity_id):
+                    state_module.state["tree_enabled"] = True
+                    state_module.state["next_irr_time"] = 1_700_000_600.0
+                    state_module.state["tree_pulse_mode_seen"] = True
+                    state_module.state["tree_pulse_last_panel_at"] = 1_700_000_000.0
+                    state_module.state["tree_pulse_progress"] = 72.5
+                    state_module.state["tree_pulse_main"] = "木"
+                    state_module.state["tree_pulse_aux"] = "水"
+                    state_module.state["tree_pulse_reverse"] = "火"
+                    state_module.state["tree_pulse_neutral"] = "土/金"
+                    state_module.state["tree_pulse_stability"] = 62
+                    state_module.state["tree_pulse_stability_max"] = 100
+                    state_module.state["tree_pulse_turbidity"] = 3
+                    state_module.state["tree_pulse_turbidity_max"] = 165
+                    state_module.state["tree_pulse_daily_used"] = 1
+                    state_module.state["tree_pulse_daily_limit"] = 6
+                    state_module.state["tree_pulse_rush_used"] = 0
+                    state_module.state["tree_pulse_rush_limit"] = 2
+                    state_module.state["tree_pulse_last_action"] = ".定脉 固脉 土"
+                    state_module.state["tree_pulse_last_error"] = "脉稳偏低"
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+                self.assertIn("tree_pulse_mode_seen", columns)
+                self.assertIn("tree_pulse_last_error", columns)
+
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+
+                with state_module.use_identity(identity_id):
+                    self.assertTrue(state_module.state["tree_pulse_mode_seen"])
+                    self.assertEqual("木", state_module.state["tree_pulse_main"])
+                    self.assertEqual(62, state_module.state["tree_pulse_stability"])
+                    self.assertEqual("脉稳偏低", state_module.state["tree_pulse_last_error"])
+                    status_text = tree.get_tree_status_text()
+
+                self.assertIn("当前玩法：云梦灵眼定脉", status_text)
+                self.assertIn("进度：72.50%", status_text)
+                self.assertIn("今日定脉：1/6", status_text)
+                self.assertIn("脉稳：62/100；浊息/紊乱：3/165", status_text)
 
     def test_save_state_migrates_existing_runtime_table_before_upsert(self):
         with tempfile.TemporaryDirectory() as tmpdir:

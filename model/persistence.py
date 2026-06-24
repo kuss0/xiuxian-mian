@@ -364,6 +364,42 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0")
     if "last_tree_status_sent_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tree_status_sent_at REAL NOT NULL DEFAULT 0")
+    if "tree_pulse_mode_seen" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_mode_seen INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_last_panel_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_last_panel_at REAL NOT NULL DEFAULT 0")
+    if "tree_pulse_progress" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_progress REAL NOT NULL DEFAULT 0")
+    if "tree_pulse_main" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_main TEXT NOT NULL DEFAULT ''")
+    if "tree_pulse_aux" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_aux TEXT NOT NULL DEFAULT ''")
+    if "tree_pulse_reverse" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_reverse TEXT NOT NULL DEFAULT ''")
+    if "tree_pulse_neutral" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_neutral TEXT NOT NULL DEFAULT ''")
+    if "tree_pulse_stability" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_stability INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_stability_max" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_stability_max INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_turbidity" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_turbidity INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_turbidity_max" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_turbidity_max INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_daily_used" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_daily_used INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_daily_limit" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_daily_limit INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_rush_used" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_rush_used INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_rush_limit" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_rush_limit INTEGER NOT NULL DEFAULT 0")
+    if "tree_pulse_last_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_last_action TEXT NOT NULL DEFAULT ''")
+    if "tree_pulse_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_last_error TEXT NOT NULL DEFAULT ''")
+    if "tree_pulse_blocked_until" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tree_pulse_blocked_until REAL NOT NULL DEFAULT 0")
     if "last_tower_command_sent_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN last_tower_command_sent_at REAL NOT NULL DEFAULT 0")
     if "tower_reply_due_at" not in runtime_columns:
@@ -1181,6 +1217,24 @@ def init_db():
             tree_last_harvest_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             tree_bootstrap_check_due_at REAL NOT NULL DEFAULT 0,
             last_tree_status_sent_at REAL NOT NULL DEFAULT 0,
+            tree_pulse_mode_seen INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_last_panel_at REAL NOT NULL DEFAULT 0,
+            tree_pulse_progress REAL NOT NULL DEFAULT 0,
+            tree_pulse_main TEXT NOT NULL DEFAULT '',
+            tree_pulse_aux TEXT NOT NULL DEFAULT '',
+            tree_pulse_reverse TEXT NOT NULL DEFAULT '',
+            tree_pulse_neutral TEXT NOT NULL DEFAULT '',
+            tree_pulse_stability INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_stability_max INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_turbidity INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_turbidity_max INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_daily_used INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_daily_limit INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_rush_used INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_rush_limit INTEGER NOT NULL DEFAULT 0,
+            tree_pulse_last_action TEXT NOT NULL DEFAULT '',
+            tree_pulse_last_error TEXT NOT NULL DEFAULT '',
+            tree_pulse_blocked_until REAL NOT NULL DEFAULT 0,
             last_tower_msg_id INTEGER NOT NULL,
             last_tower_command_sent_at REAL NOT NULL DEFAULT 0,
             tower_reply_due_at REAL NOT NULL DEFAULT 0,
