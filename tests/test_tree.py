@@ -363,12 +363,37 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 await tree.run_tree_scheduler(now)
 
             send_mock.assert_awaited_once_with(
-                ".定脉 注灵 木",
+                ".定脉 固脉 土",
                 max_retry=0,
                 reply_timeout=tree.TREE_PULSE_REPLY_TIMEOUT_SEC,
                 source_module="灵树",
             )
             self.assertEqual(now + 2 + 10 * 60, state_module.state["next_irr_time"])
+
+    async def test_tree_pulse_strategy_prefers_turbidity_then_stability_then_rush(self):
+        high_turbidity = {
+            "progress": 50.0,
+            "main": "木",
+            "aux": "水",
+            "reverse": "火",
+            "neutral_elements": ["土", "金"],
+            "stability": 90,
+            "turbidity": 60,
+            "daily_used": 0,
+            "daily_limit": 6,
+            "rush_used": 0,
+            "rush_limit": 2,
+        }
+        self.assertEqual((".定脉 净浊", "浊息过高"), tree._choose_tree_pulse_command(high_turbidity))
+
+        low_stability = dict(high_turbidity, turbidity=0, stability=84)
+        self.assertEqual((".定脉 固脉 土", "脉稳偏低"), tree._choose_tree_pulse_command(low_stability))
+
+        stable = dict(high_turbidity, turbidity=0, stability=90)
+        self.assertEqual((".定脉 冲脉 木", "冲脉次数可用"), tree._choose_tree_pulse_command(stable))
+
+        rush_exhausted = dict(stable, rush_used=2, rush_limit=2)
+        self.assertEqual((".定脉 注灵 木", "主脉注灵"), tree._choose_tree_pulse_command(rush_exhausted))
 
     async def test_tree_pulse_full_progress_stops_actions(self):
         now = 1000.0

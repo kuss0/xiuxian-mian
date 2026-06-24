@@ -185,7 +185,7 @@ def _priority_for_fishing_command(command):
     raw = str(command or "").strip()
     if raw.startswith(CMD_FISHING_STATUS):
         return SEND_PRIORITY_URGENT_REACTIVE
-    if raw.startswith((CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_OPEN)):
+    if raw.startswith((CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_OPEN, CMD_FISHING_BASKET)):
         return SEND_PRIORITY_EVENT_BURST
     return None
 

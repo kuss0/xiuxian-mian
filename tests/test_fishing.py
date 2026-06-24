@@ -1,5 +1,6 @@
 import sys
 import unittest
+import json
 from pathlib import Path
 
 
@@ -499,21 +500,48 @@ class FishingLabTests(unittest.TestCase):
     def test_fishing_behavior_scheduler_opens_after_basket_calibration(self):
         from model.features import fishing_behavior
 
+        now = 1_700_000_000.0
         snapshot = {
             "fishing_enabled": True,
             "next_fishing_time": 0,
             "fishing_pond": "青溪浅滩",
             "fishing_bait": "凡饵",
             "fishing_daily_limit": 20,
-            "fishing_daily_day": fishing_behavior.get_day_key(1_700_000_000.0),
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
             "fishing_daily_count": 20,
             "fishing_pending_open_fish": '{"银须灵鲢": 2}',
-            "fishing_last_result": "鱼篓校准",
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
+            "fishing_last_result": "开鱼：青鳞小鲫，修为+39",
         }
-        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
 
         self.assertTrue(effect.handled)
         self.assertEqual(".开鱼 银须灵鲢 2", effect.command)
+
+    def test_fishing_behavior_basket_reply_marks_calibrated_day(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {"fishing_enabled": True},
+            "【鱼篓】\n"
+            "青竹钓竿：已持有\n"
+            "钓术：Lv.0 凡竿（56熟练度）\n"
+            "今日竿数：20/20\n"
+            "当前窝料：无\n\n"
+            "鱼饵\n"
+            "- 凡饵 x20\n\n"
+            "鱼获\n"
+            "- 青鳞小鲫 x1\n"
+            "- 银须灵鲢 x6\n\n"
+            "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+            now,
+            result_msg_id=22032,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(fishing_behavior.get_day_key(now), effect.updates["fishing_basket_calibrated_day"])
+        self.assertEqual({"青鳞小鲫": 1, "银须灵鲢": 6}, json.loads(effect.updates["fishing_pending_open_fish"]))
 
     def test_fishing_behavior_scheduler_recovers_in_progress_rod_with_status(self):
         from model.features import fishing_behavior

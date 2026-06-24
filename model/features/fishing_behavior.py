@@ -580,7 +580,11 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates)
     if count >= limit:
-        basket_calibrated = str(snapshot.get("fishing_last_result") or "").startswith("鱼篓校准")
+        last_result = str(snapshot.get("fishing_last_result") or "")
+        basket_calibrated = (
+            str(planning_snapshot.get("fishing_basket_calibrated_day") or "") == _day_key
+            or last_result.startswith("鱼篓校准")
+        )
         if not basket_calibrated:
             return FishingEffect(handled=True, command=CMD_FISHING_BASKET, updates=daily_updates)
         pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))
@@ -612,14 +616,16 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
     if basket:
         chum_name, chum_rods = _parse_basket_chum(basket.current_chum)
         pending_open_fish = format_pending_open_fish(basket.fish)
+        day_key = get_day_key(now)
         updates = {
             "fishing_last_msg_id": result_msg_id,
             "fishing_last_result": "鱼篓校准",
             "fishing_last_error": "",
             "fishing_pending_open_fish": pending_open_fish,
+            "fishing_basket_calibrated_day": day_key,
         }
         if basket.daily_rods_used is not None:
-            updates["fishing_daily_day"] = get_day_key(now)
+            updates["fishing_daily_day"] = day_key
             updates["fishing_daily_count"] = max(0, int(basket.daily_rods_used or 0))
         if basket.daily_rods_limit is not None:
             updates["fishing_daily_limit"] = clamp_fishing_daily_limit(basket.daily_rods_limit)

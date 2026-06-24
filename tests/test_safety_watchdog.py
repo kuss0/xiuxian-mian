@@ -807,6 +807,60 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
 
+    def test_marked_fishing_basket_open_chain_does_not_fuse_same_command_repeat(self):
+        now = time.time()
+        cfg = self._config()
+        sender_id = 3820064579
+        events = [
+            _event(
+                now - 56,
+                sender_id,
+                ".鱼篓",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+            _event(
+                now - 45,
+                sender_id,
+                ".开鱼 银须灵鲢 5",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+            _event(
+                now - 36,
+                sender_id,
+                ".开鱼 青鳞小鲫 13",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".鱼篓",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_unmarked_fishing_basket_repeat_still_fuses(self):
+        now = time.time()
+        cfg = self._config()
+        sender_id = 3820064579
+        events = [
+            _event(now - 56, sender_id, ".鱼篓", priority="event_burst"),
+            _event(now, sender_id, ".鱼篓", priority="event_burst"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("same command repeat", breach)
+
     def test_unmarked_fishing_short_gap_still_global_fuses(self):
         now = time.time()
         cfg = self._config()

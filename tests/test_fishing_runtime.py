@@ -171,7 +171,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await fishing_runtime.run_fishing_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".鱼篓", track=False, max_retry=0, source_module="灵溪垂钓")
+            send_mock.assert_awaited_once_with(".鱼篓", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
             self.assertEqual("basket", state_module.state["fishing_phase"])
             self.assertEqual(22044, state_module.state["fishing_reply_to_msg_id"])
             self.assertGreater(state_module.state["next_fishing_time"], now)
@@ -944,6 +944,13 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_EVENT_BURST,
                 ".开鱼 银须灵鲢",
+                intent={"source_module": "灵溪垂钓"},
+            )
+        )
+        self.assertTrue(
+            runtime_module._send_gap_whitelist_allows(
+                runtime_module.SEND_PRIORITY_EVENT_BURST,
+                ".鱼篓",
                 intent={"source_module": "灵溪垂钓"},
             )
         )

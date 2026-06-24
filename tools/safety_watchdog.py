@@ -140,6 +140,7 @@ FISHING_SHORT_WINDOW_PREFIXES = (
     ".试探咬饵",
     ".提竿",
     ".开鱼",
+    ".鱼篓",
 )
 FISHING_SHORT_WINDOW_PRIORITIES = {"urgent_reactive", "event_burst"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

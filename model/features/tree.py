@@ -61,7 +61,8 @@ TREE_PULSE_ACTION_FOLLOWUP_MIN_SEC = 75
 TREE_PULSE_ACTION_FOLLOWUP_MAX_SEC = 150
 TREE_PULSE_BLOCKED_CHECK_MIN_SEC = 30 * 60
 TREE_PULSE_BLOCKED_CHECK_MAX_SEC = 60 * 60
-TREE_PULSE_LOW_STABILITY_THRESHOLD = 45
+TREE_PULSE_LOW_STABILITY_THRESHOLD = 85
+TREE_PULSE_HIGH_TURBIDITY_THRESHOLD = 60
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 45 * 60
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MAX_SEC = 75 * 60
 TREE_IRRIGATION_RESOURCE_KEY = "tree_irrigation"
@@ -277,9 +278,13 @@ def _choose_tree_pulse_command(parsed):
     daily_limit = int(parsed.get("daily_limit", 0) or 0)
     daily_used = int(parsed.get("daily_used", 0) or 0)
     main = str(parsed.get("main") or "").strip()
+    aux = str(parsed.get("aux") or "").strip()
+    reverse = str(parsed.get("reverse") or "").strip()
     neutral_elements = list(parsed.get("neutral_elements") or [])
     stability = int(parsed.get("stability", 0) or 0)
     turbidity = int(parsed.get("turbidity", 0) or 0)
+    rush_used = int(parsed.get("rush_used", 0) or 0)
+    rush_limit = int(parsed.get("rush_limit", 0) or 0)
 
     if parsed.get("blocked") or progress >= 99.9:
         return "", "灵树已成熟或遭劫难"
@@ -287,11 +292,16 @@ def _choose_tree_pulse_command(parsed):
         return "", "今日定脉令已满"
     if not main:
         return "", "未识别主脉"
-    if turbidity > 0:
-        return _format_tree_pulse_command("净浊"), "浊息优先净化"
+    if turbidity >= TREE_PULSE_HIGH_TURBIDITY_THRESHOLD:
+        return _format_tree_pulse_command("净浊"), "浊息过高"
     if stability > 0 and stability < TREE_PULSE_LOW_STABILITY_THRESHOLD:
         element = "土" if "土" in neutral_elements else (neutral_elements[0] if neutral_elements else main)
         return _format_tree_pulse_command("固脉", element), "脉稳偏低"
+    element = main
+    if element == reverse and aux:
+        element = aux
+    if rush_limit <= 0 or rush_used < rush_limit:
+        return _format_tree_pulse_command("冲脉", element), "冲脉次数可用"
     return _format_tree_pulse_command("注灵", main), "主脉注灵"
 
 
