@@ -735,6 +735,31 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("manifest_pending 等待回复超时", state_module.state["small_world_last_error"])
 
+    async def test_god_action_send_is_module_managed_without_runtime_retry(self):
+        send_as_id = 8659059191
+        now = 3360.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7610, sent_at=now + 1))) as send_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_small_world_preach(now, "信仰维护")
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once_with(
+                small_world.CMD_SMALL_WORLD_PREACH,
+                track=True,
+                max_retry=0,
+                source_module="小世界",
+            )
+            self.assertEqual("preach_pending", state_module.state["small_world_phase"])
+            self.assertEqual(7610, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual(now + 1 + small_world.SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC, state_module.state["next_small_world_time"])
+
     async def test_harvest_timeout_rechecks_panel_instead_of_refining_from_local_stock(self):
         send_as_id = 8659059296
         now = 3300.0

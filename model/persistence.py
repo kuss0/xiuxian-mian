@@ -889,6 +889,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 20")
     if "fishing_auto_probe_enabled" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0")
+    if "fishing_auto_open_fish_enabled" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_open_fish_enabled INTEGER NOT NULL DEFAULT 1")
     if "fishing_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_phase TEXT NOT NULL DEFAULT 'idle'")
     if "fishing_reply_to_msg_id" not in runtime_columns:
@@ -1493,6 +1495,7 @@ def init_db():
             fishing_auto_buy_bait_enabled INTEGER NOT NULL DEFAULT 1,
             fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 20,
             fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0,
+            fishing_auto_open_fish_enabled INTEGER NOT NULL DEFAULT 1,
             fishing_phase TEXT NOT NULL DEFAULT 'idle',
             fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             fishing_reply_due_at REAL NOT NULL DEFAULT 0,

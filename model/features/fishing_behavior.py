@@ -386,6 +386,10 @@ def fishing_buy_bait_count(snapshot):
     return clamp_fishing_buy_bait_count(snapshot.get("fishing_auto_buy_bait_count", FISHING_DEFAULT_BUY_BAIT_COUNT))
 
 
+def auto_open_fish_enabled(snapshot):
+    return bool(snapshot.get("fishing_auto_open_fish_enabled", True))
+
+
 def normalize_daily_counter(snapshot, now):
     day_key = get_day_key(now)
     updates = {}
@@ -580,11 +584,15 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates)
     if count >= limit:
+        if not auto_open_fish_enabled(planning_snapshot):
+            updates = clear_pending_updates()
+            updates.update(daily_updates)
+            updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}"
+            updates["fishing_last_result"] = "今日垂钓已满，自动开鱼关闭"
+            updates["next_fishing_time"] = next_fishing_day_timestamp(now, next_day_jitter_sec)
+            return FishingEffect(handled=True, updates=updates)
         last_result = str(snapshot.get("fishing_last_result") or "")
-        basket_calibrated = (
-            str(planning_snapshot.get("fishing_basket_calibrated_day") or "") == _day_key
-            or last_result.startswith("鱼篓校准")
-        )
+        basket_calibrated = last_result.startswith("鱼篓校准")
         if not basket_calibrated:
             return FishingEffect(handled=True, command=CMD_FISHING_BASKET, updates=daily_updates)
         pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))
@@ -638,12 +646,18 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
                 updates.update(clear_pending_updates(keep_open_fish=True))
                 updates["fishing_pending_open_fish"] = pending_open_fish
                 if int(count or 0) >= int(limit or 0):
-                    pending_open_command = next_pending_open_command(pending_open_fish)
-                    if pending_open_command:
-                        updates["fishing_pending_action"] = pending_open_command
-                        updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
+                    if auto_open_fish_enabled(snapshot):
+                        pending_open_command = next_pending_open_command(pending_open_fish)
+                        if pending_open_command:
+                            updates["fishing_pending_action"] = pending_open_command
+                            updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
+                        else:
+                            updates["next_fishing_time"] = next_fishing_day_timestamp(now, action_delay_sec)
+                            updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}"
                     else:
+                        updates["fishing_pending_action"] = ""
                         updates["next_fishing_time"] = next_fishing_day_timestamp(now, action_delay_sec)
+                        updates["fishing_last_result"] = "鱼篓校准，自动开鱼关闭"
                         updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}"
                 else:
                     updates["next_fishing_time"] = float(now + _bounded_action_delay(post_rod_delay_sec))
@@ -822,6 +836,7 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
     daily_limit = parse_fishing_daily_limit_reached(raw_text)
     if daily_limit:
         updates = clear_pending_updates()
+        auto_open = auto_open_fish_enabled(snapshot)
         updates.update({
             "fishing_daily_day": get_day_key(now),
             "fishing_daily_count": max(0, int(daily_limit.used or 0)),
@@ -831,8 +846,11 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             "fishing_last_error": f"今日钓鱼次数已达上限：{daily_limit.used}/{daily_limit.limit}",
             "next_fishing_time": next_fishing_day_timestamp(now, action_delay_sec),
         })
-        updates["fishing_pending_action"] = CMD_FISHING_BASKET
-        updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
+        if auto_open:
+            updates["fishing_pending_action"] = CMD_FISHING_BASKET
+            updates["next_fishing_time"] = float(now + _bounded_action_delay(action_delay_sec))
+        else:
+            updates["fishing_last_result"] = f"今日垂钓已满：{daily_limit.used}/{daily_limit.limit}，自动开鱼关闭"
         return FishingEffect(handled=True, updates=updates)
 
     status = parse_fishing_status(raw_text, auto_probe_enabled=bool(snapshot.get("fishing_auto_probe_enabled")))
@@ -874,17 +892,19 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
     catch = parse_fishing_catch(raw_text)
     if catch:
         updates = clear_pending_updates()
-        pending_open_fish = add_pending_open_fish(snapshot.get("fishing_pending_open_fish"), catch.fish, 1)
         _day_key, count, limit, _daily_updates = normalize_daily_counter(snapshot, now)
         updates.update({
-            "fishing_pending_open_fish": pending_open_fish,
             "fishing_last_msg_id": result_msg_id,
             "fishing_last_result": f"钓获：{catch.fish} {catch.weight_jin:.2f}斤",
             "fishing_last_error": "",
         })
         if count >= limit:
-            updates["fishing_pending_action"] = CMD_FISHING_BASKET
-            return FishingEffect(handled=True, updates=_with_next_delay(updates, now, action_delay_sec), storage_deltas={catch.fish: 1})
+            if auto_open_fish_enabled(snapshot):
+                updates["fishing_pending_action"] = CMD_FISHING_BASKET
+                return FishingEffect(handled=True, updates=_with_next_delay(updates, now, action_delay_sec), storage_deltas={catch.fish: 1})
+            updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}"
+            updates["next_fishing_time"] = next_fishing_day_timestamp(now, action_delay_sec)
+            return FishingEffect(handled=True, updates=updates, storage_deltas={catch.fish: 1})
         return FishingEffect(handled=True, updates=_with_next_delay(updates, now, post_rod_delay_sec), storage_deltas={catch.fish: 1})
 
     empty_summary = parse_empty_fishing_result(raw_text)

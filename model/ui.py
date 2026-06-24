@@ -2402,6 +2402,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "auto_buy_bait_enabled": bool(config.auto_buy_bait_enabled),
         "auto_buy_bait_count": int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT),
         "auto_probe_enabled": bool(config.auto_probe_enabled),
+        "auto_open_fish_enabled": bool(identity_state.get("fishing_auto_open_fish_enabled", True)),
         "active_chum_name": identity_state.get("fishing_active_chum_name") or "",
         "chum_rods_remaining": int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
         "chum_day": identity_state.get("fishing_chum_day") or "",
@@ -3605,6 +3606,10 @@ async def ui_set_fishing_config(send_as_id, payload=None):
     except ValueError as exc:
         return False, f"无效的钓鱼配置：{exc}"
     with use_identity(send_as_id):
+        auto_open_fish_enabled = _coerce_ui_bool(
+            payload.get("auto_open_fish_enabled"),
+            default=state.get("fishing_auto_open_fish_enabled", True),
+        )
         state["fishing_pond"] = config.pond
         state["fishing_bait"] = config.bait
         state["fishing_daily_limit"] = daily_limit
@@ -3614,6 +3619,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_auto_buy_bait_enabled"] = bool(config.auto_buy_bait_enabled)
         state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT)
         state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
+        state["fishing_auto_open_fish_enabled"] = bool(auto_open_fish_enabled)
         save_state()
         saved_identity_state = dict(state.items())
     plan = plan_fishing_commands(
@@ -3630,6 +3636,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         f"打窝={','.join(config.chum_names or ()) or '无'}｜"
         f"买饵={'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}｜"
         f"试饵={'开' if config.auto_probe_enabled else '关'}｜"
+        f"开鱼={'开' if auto_open_fish_enabled else '关'}｜"
         f"计划={_format_fishing_command_plan(plan)}",
         scope="identity",
         send_as_id=send_as_id,

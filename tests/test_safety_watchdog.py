@@ -35,6 +35,10 @@ def _world_boss_action_op_id(event_key, identity_id, action, action_seq, try_no)
     return f"world_boss:{event_key}:action:{identity_id}:{action}:{action_seq}:try{try_no}"
 
 
+def _world_boss_status_op_id(event_key, identity_id, try_no, sent_ts):
+    return f"world_boss:{event_key}:status:{identity_id}:try{try_no}:{int(sent_ts)}"
+
+
 class SafetyWatchdogTests(unittest.TestCase):
     def _config(self):
         return safety_watchdog.WatchdogConfig(
@@ -994,6 +998,109 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("world boss over attempts", breach)
 
+    def test_marked_world_boss_status_retry_chain_does_not_same_command_fuse(self):
+        now = int(time.time())
+        sender_id = 301299112
+        event_key = "test-status"
+        events = [
+            _event(
+                now - 12,
+                sender_id,
+                ".世界boss 查看战况",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst",
+                op_id=_world_boss_status_op_id(event_key, sender_id, 0, now - 12),
+                chain_id=f"world_boss:{event_key}",
+            ),
+            _event(
+                now - 6,
+                sender_id,
+                ".世界boss 查看战况",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="retry",
+                op_id=_world_boss_status_op_id(event_key, sender_id, 1, now - 6),
+                chain_id=f"world_boss:{event_key}",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".世界boss 查看战况",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="retry",
+                op_id=_world_boss_status_op_id(event_key, sender_id, 2, now),
+                chain_id=f"world_boss:{event_key}",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_marked_world_boss_status_retry_chain_does_not_send_burst(self):
+        now = int(time.time())
+        cfg = self._config()
+        cfg.total_2m_limit = 5
+        sender_id = 301299112
+        event_key = "test-status"
+        events = [
+            _event(
+                now - (7 - try_no) * 5,
+                sender_id,
+                ".世界boss 查看战况",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst" if try_no == 0 else "retry",
+                op_id=_world_boss_status_op_id(event_key, sender_id, try_no, now - (7 - try_no) * 5),
+                chain_id=f"world_boss:{event_key}",
+            )
+            for try_no in range(8)
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_cross_day_world_boss_status_retry_still_fuses(self):
+        now = int(safety_watchdog.datetime(2026, 6, 25, 7, 20, 0, tzinfo=safety_watchdog.TZ_LOCAL).timestamp())
+        sender_id = 301299112
+        events = [
+            _event(
+                now - 6,
+                sender_id,
+                ".世界boss 查看战况",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst",
+                op_id=_world_boss_status_op_id("2026-06-23:10796803", sender_id, 0, now - 6),
+                chain_id="world_boss:2026-06-23:10796803",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".世界boss 查看战况",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="retry",
+                op_id=_world_boss_status_op_id("2026-06-23:10796803", sender_id, 1, now),
+                chain_id="world_boss:2026-06-23:10796803",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("invalid world boss status retry", breach)
+
+    def test_unmarked_world_boss_status_retry_still_fuses(self):
+        now = time.time()
+        sender_id = 301299112
+        events = [
+            _event(now - 6, sender_id, ".世界boss 查看战况", family="world_boss", source_module="真仙试锋", priority="event_burst"),
+            _event(now, sender_id, ".世界boss 查看战况", family="world_boss", source_module="真仙试锋", priority="retry"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("invalid world boss status retry", breach)
+
     def test_marked_world_boss_status_burst_still_fuses(self):
         now = time.time()
         cfg = self._config()
@@ -1006,7 +1113,7 @@ class SafetyWatchdogTests(unittest.TestCase):
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
-                op_id=f"world_boss:test:status:{3000 + index}:{int(now)}",
+                op_id=_world_boss_status_op_id("test", 3000 + index, 0, now - (5 - index)),
                 chain_id="world_boss:test",
             )
             for index in range(6)
@@ -1029,7 +1136,7 @@ class SafetyWatchdogTests(unittest.TestCase):
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
-                op_id=f"world_boss:test:status:1002:{int(now)}",
+                op_id=_world_boss_status_op_id("test", 1002, 0, now),
                 chain_id="world_boss:test",
             ),
         ]

@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 
@@ -144,6 +144,7 @@ FISHING_SHORT_WINDOW_PREFIXES = (
 )
 FISHING_SHORT_WINDOW_PRIORITIES = {"urgent_reactive", "event_burst"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TZ_LOCAL = timezone(timedelta(hours=8))
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
     "TG FloodWait",
@@ -310,6 +311,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_dungeon_fast_chain_command(str(cur.get("text") or ""))
         or is_verified_world_boss_action_event(cur)
         or is_verified_world_boss_action_event(prev)
+        or is_safe_world_boss_status_gap_pair(prev, cur)
         or is_controlled_retry_event(cur)
         or is_marked_heart_choice_event(cur)
         or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
@@ -763,6 +765,12 @@ def is_world_boss_action_event(item: dict, text: str | None = None) -> bool:
     return is_world_boss_event(item, text)
 
 
+def is_world_boss_status_event(item: dict, text: str | None = None) -> bool:
+    if command_key(str(text if text is not None else item.get("text") or "")) != ".世界boss 查看战况":
+        return False
+    return is_world_boss_event(item, text)
+
+
 def is_fishing_short_window_command(text: str) -> bool:
     raw = str(text or "").strip()
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in FISHING_SHORT_WINDOW_PREFIXES)
@@ -806,11 +814,120 @@ def parse_world_boss_action_op(item: dict) -> tuple[str, int, str, int, int] | N
         return None
     if command_key(str(item.get("text") or "")) != f".讨伐青元子 {action}":
         return None
+    if not _world_boss_chain_day_matches_item(chain_id, item):
+        return None
     return chain_id, identity_id, action, action_seq, try_no
 
 
 def is_verified_world_boss_action_event(item: dict) -> bool:
     return parse_world_boss_action_op(item) is not None
+
+
+def parse_world_boss_status_op(item: dict) -> tuple[str, int, int, int] | None:
+    if not is_world_boss_status_event(item):
+        return None
+    op_id = str(item.get("op_id") or "").strip()
+    chain_id = str(item.get("chain_id") or "").strip()
+    prefix = f"{chain_id}:status:"
+    if not chain_id.startswith("world_boss:") or not op_id.startswith(prefix):
+        return None
+    tail = op_id[len(prefix):]
+    parts = tail.rsplit(":", 2)
+    if len(parts) != 3:
+        return None
+    identity_text, try_token, ts_text = parts
+    if not try_token.startswith("try"):
+        return None
+    try:
+        identity_id = int(identity_text)
+        try_no = int(try_token.removeprefix("try"))
+        sent_ts = int(ts_text)
+    except (TypeError, ValueError):
+        return None
+    if identity_id <= 0 or try_no < 0 or sent_ts <= 0:
+        return None
+    if int(item.get("sender_id", 0) or 0) != identity_id:
+        return None
+    if not _world_boss_chain_day_matches_item(chain_id, item):
+        return None
+    return chain_id, identity_id, try_no, sent_ts
+
+
+def is_verified_world_boss_status_event(item: dict) -> bool:
+    return parse_world_boss_status_op(item) is not None
+
+
+def is_safe_world_boss_status_repeat(items: list[dict], sender_id: int) -> bool:
+    parsed_items = []
+    for item in sorted(items, key=lambda payload: float(payload.get("_epoch", 0) or 0)):
+        parsed = parse_world_boss_status_op(item)
+        if not parsed:
+            return False
+        parsed_items.append((item, parsed))
+    if not parsed_items:
+        return False
+    chains = {parsed[0] for _item, parsed in parsed_items}
+    identities = {parsed[1] for _item, parsed in parsed_items}
+    if len(chains) != 1 or identities != {int(sender_id)}:
+        return False
+    previous_try = -1
+    previous_ts = 0
+    for item, (_chain_id, _identity_id, try_no, sent_ts) in parsed_items:
+        priority = str(item.get("priority") or "").strip().lower()
+        if try_no == 0:
+            if priority == "retry":
+                return False
+        elif priority != "retry":
+            return False
+        if try_no <= previous_try:
+            return False
+        if sent_ts < previous_ts:
+            return False
+        previous_try = try_no
+        previous_ts = sent_ts
+    return True
+
+
+def is_safe_world_boss_status_gap_pair(prev: dict, cur: dict) -> bool:
+    sender_id = int(cur.get("sender_id", 0) or 0)
+    if sender_id <= 0 or int(prev.get("sender_id", 0) or 0) != sender_id:
+        return False
+    prev_parsed = parse_world_boss_status_op(prev)
+    cur_parsed = parse_world_boss_status_op(cur)
+    if not prev_parsed or not cur_parsed:
+        return False
+    prev_chain, _prev_identity, prev_try, _prev_ts = prev_parsed
+    cur_chain, _cur_identity, cur_try, _cur_ts = cur_parsed
+    return prev_chain == cur_chain and cur_try == prev_try + 1 and is_safe_world_boss_status_repeat([prev, cur], sender_id)
+
+
+def _world_boss_chain_day(chain_id: str) -> str:
+    parts = str(chain_id or "").split(":")
+    if len(parts) < 3 or parts[0] != "world_boss":
+        return ""
+    candidate = parts[1]
+    if len(candidate) == 10 and candidate[4] == "-" and candidate[7] == "-":
+        return candidate
+    return ""
+
+
+def _item_local_day(item: dict) -> str:
+    epoch = float(item.get("_epoch", 0) or 0)
+    if epoch <= 0:
+        return ""
+    return datetime.fromtimestamp(epoch, TZ_LOCAL).strftime("%Y-%m-%d")
+
+
+def _world_boss_chain_day_matches_item(chain_id: str, item: dict) -> bool:
+    chain_day = _world_boss_chain_day(chain_id)
+    if not chain_day:
+        return True
+    item_day = _item_local_day(item)
+    return bool(item_day and item_day == chain_day)
+
+
+def has_world_boss_status_retry_marker(items: list[dict]) -> bool:
+    return any(str(item.get("priority") or "").strip().lower() == "retry" for item in items)
 
 
 def find_world_boss_attempt_breach(items: list[dict], sender_id: int) -> str:
@@ -915,15 +1032,35 @@ def get_marked_heart_choice_burst_exempt_ids(events: list[dict]) -> set[int]:
     return exempt_ids
 
 
+def get_world_boss_status_burst_exempt_ids(events: list[dict]) -> set[int]:
+    grouped: dict[tuple[int, str], list[dict]] = defaultdict(list)
+    for item in events:
+        parsed = parse_world_boss_status_op(item)
+        if not parsed:
+            continue
+        chain_id, identity_id, _try_no, _sent_ts = parsed
+        grouped[(identity_id, chain_id)].append(item)
+
+    exempt_ids: set[int] = set()
+    for (identity_id, _chain_id), items in grouped.items():
+        if len(items) < 2:
+            continue
+        if is_safe_world_boss_status_repeat(items, identity_id):
+            exempt_ids.update(id(item) for item in items)
+    return exempt_ids
+
+
 def count_non_burst_exempt_since(events: list[dict], now: float, seconds: float) -> int:
     start = now - float(seconds)
     recent = [item for item in events if float(item.get("_epoch", 0) or 0) >= start]
     marked_heart_choice_exempt_ids = get_marked_heart_choice_burst_exempt_ids(recent)
+    world_boss_status_exempt_ids = get_world_boss_status_burst_exempt_ids(recent)
     return sum(
         1
         for item in recent
         if not is_send_burst_exempt_event(item)
         and id(item) not in marked_heart_choice_exempt_ids
+        and id(item) not in world_boss_status_exempt_ids
     )
 
 
@@ -995,8 +1132,17 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         replica_choice = all(is_replica_choice_event(item, text) for item in items)
         divination_daily_query_chain = is_safe_divination_daily_query_chain(items, text)
         world_boss_action_chain = all(is_world_boss_action_event(item, text) for item in items)
+        world_boss_status_chain = all(is_world_boss_status_event(item, text) for item in items)
         fishing_short_window_chain = all(is_fishing_short_window_event(item) for item in items)
-        if sect_teach or heart_choice or marked_heart_choice_sequence or world_boss_action_chain or fishing_short_window_chain:
+        safe_world_boss_status_chain = world_boss_status_chain and is_safe_world_boss_status_repeat(items, sender_id)
+        if (
+            sect_teach
+            or heart_choice
+            or marked_heart_choice_sequence
+            or world_boss_action_chain
+            or safe_world_boss_status_chain
+            or fishing_short_window_chain
+        ):
             min_gap = 0
         elif divination_daily_query_chain:
             min_gap = DIVINATION_DAILY_QUERY_MIN_GAP_SEC
@@ -1026,6 +1172,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
                 continue
             if is_safe_replica_lightweight_retry_repeat(prev, cur, text):
                 continue
+            if safe_world_boss_status_chain:
+                continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"
 
@@ -1040,9 +1188,23 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             breach = find_world_boss_attempt_breach(items, sender_id)
             if breach:
                 return breach
-        if guarded and not replica_choice and not divination_daily_query_chain and len(items) > cfg.guarded_max_attempts_45m:
+        if world_boss_status_chain and has_world_boss_status_retry_marker(items) and not safe_world_boss_status_chain:
+            return f"same command repeat: {sender_id}:{text} invalid world boss status retry"
+        if (
+            guarded
+            and not replica_choice
+            and not divination_daily_query_chain
+            and not world_boss_status_chain
+            and len(items) > cfg.guarded_max_attempts_45m
+        ):
             return f"guarded command over attempts: {sender_id}:{text} {len(items)}/45m"
-        if guarded and not replica_choice and not divination_daily_query_chain and len(items) >= 4:
+        if (
+            guarded
+            and not replica_choice
+            and not divination_daily_query_chain
+            and not world_boss_status_chain
+            and len(items) >= 4
+        ):
             span = float(items[3]["_epoch"]) - float(items[0]["_epoch"])
             if span < cfg.guarded_fourth_min_span_sec:
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"

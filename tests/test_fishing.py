@@ -479,25 +479,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertNotEqual(".开鱼 青鳞小鲫", effect.command)
         self.assertEqual(".钓鱼 青溪浅滩 凡饵", effect.command)
 
-    def test_fishing_behavior_scheduler_opens_pending_fish_after_daily_limit(self):
-        from model.features import fishing_behavior
-
-        snapshot = {
-            "fishing_enabled": True,
-            "next_fishing_time": 0,
-            "fishing_pond": "青溪浅滩",
-            "fishing_bait": "凡饵",
-            "fishing_daily_limit": 20,
-            "fishing_daily_day": fishing_behavior.get_day_key(1_700_000_000.0),
-            "fishing_daily_count": 20,
-            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
-        }
-        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
-
-        self.assertTrue(effect.handled)
-        self.assertEqual(".鱼篓", effect.command)
-
-    def test_fishing_behavior_scheduler_opens_after_basket_calibration(self):
+    def test_fishing_behavior_scheduler_queries_basket_by_default_after_daily_limit(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
@@ -510,8 +492,69 @@ class FishingLabTests(unittest.TestCase):
             "fishing_daily_day": fishing_behavior.get_day_key(now),
             "fishing_daily_count": 20,
             "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".鱼篓", effect.command)
+
+    def test_fishing_behavior_scheduler_does_not_open_pending_fish_when_auto_open_disabled_after_daily_limit(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": False,
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertIn("自动开鱼关闭", effect.updates["fishing_last_result"])
+
+    def test_fishing_behavior_scheduler_queries_basket_when_auto_open_enabled_after_daily_limit(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": True,
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".鱼篓", effect.command)
+
+    def test_fishing_behavior_scheduler_opens_after_basket_calibration_when_enabled(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": True,
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
             "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
-            "fishing_last_result": "开鱼：青鳞小鲫，修为+39",
+            "fishing_last_result": "鱼篓校准",
         }
         effect = fishing_behavior.decide_scheduler(snapshot, now)
 
@@ -767,7 +810,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(now + 4, effect.updates["next_fishing_time"])
         self.assertEqual('{"银须灵鲢": 6, "青鳞小鲫": 1}', effect.updates["fishing_pending_open_fish"])
 
-    def test_fishing_behavior_basket_at_limit_queues_opening(self):
+    def test_fishing_behavior_basket_at_limit_queues_opening_by_default(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
@@ -776,6 +819,71 @@ class FishingLabTests(unittest.TestCase):
                 "fishing_enabled": True,
                 "next_fishing_time": now + 3600,
                 "fishing_pending_open_fish": "",
+            },
+            "【鱼篓】\n"
+            "青竹钓竿：已持有\n"
+            "钓术：Lv.0 凡竿（56熟练度）\n"
+            "今日竿数：20/20\n"
+            "当前窝料：无\n\n"
+            "鱼饵\n"
+            "- 凡饵 x20\n\n"
+            "鱼获\n"
+            "- 青鳞小鲫 x1\n"
+            "- 银须灵鲢 x6\n\n"
+            "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+            now,
+            result_msg_id=22040,
+            action_delay_sec=6,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(20, effect.updates["fishing_daily_count"])
+        self.assertEqual(".开鱼 银须灵鲢 6", effect.updates["fishing_pending_action"])
+        self.assertEqual(now + 6, effect.updates["next_fishing_time"])
+
+    def test_fishing_behavior_basket_at_limit_does_not_queue_opening_when_auto_open_disabled(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "next_fishing_time": now + 3600,
+                "fishing_pending_open_fish": "",
+                "fishing_auto_open_fish_enabled": False,
+            },
+            "【鱼篓】\n"
+            "青竹钓竿：已持有\n"
+            "钓术：Lv.0 凡竿（56熟练度）\n"
+            "今日竿数：20/20\n"
+            "当前窝料：无\n\n"
+            "鱼饵\n"
+            "- 凡饵 x20\n\n"
+            "鱼获\n"
+            "- 青鳞小鲫 x1\n"
+            "- 银须灵鲢 x6\n\n"
+            "可用 .开鱼 <鱼名> [数量] 查看鱼腹机缘。",
+            now,
+            result_msg_id=22040,
+            action_delay_sec=6,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(20, effect.updates["fishing_daily_count"])
+        self.assertEqual("", effect.updates["fishing_pending_action"])
+        self.assertIn("自动开鱼关闭", effect.updates["fishing_last_result"])
+        self.assertGreater(effect.updates["next_fishing_time"], now + 3600)
+
+    def test_fishing_behavior_basket_at_limit_queues_opening_when_enabled(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "next_fishing_time": now + 3600,
+                "fishing_pending_open_fish": "",
+                "fishing_auto_open_fish_enabled": True,
             },
             "【鱼篓】\n"
             "青竹钓竿：已持有\n"
@@ -894,7 +1002,7 @@ class FishingLabTests(unittest.TestCase):
 
         self.assertTrue(effect.handled)
         self.assertEqual((), effect.immediate_commands)
-        self.assertEqual('{"银须灵鲢": 1}', effect.updates["fishing_pending_open_fish"])
+        self.assertNotIn("fishing_pending_open_fish", effect.updates)
         self.assertGreater(effect.updates["next_fishing_time"], 1_700_000_000.0)
 
     def test_fishing_behavior_empty_rod_is_terminal_without_opening(self):
@@ -977,7 +1085,7 @@ class FishingLabTests(unittest.TestCase):
         self.assertNotIn("next_fishing_time", effect.updates)
         self.assertEqual("", effect.updates["fishing_pending_open_fish"])
 
-    def test_fishing_behavior_daily_limit_text_queries_basket(self):
+    def test_fishing_behavior_daily_limit_text_queries_basket_by_default(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
@@ -995,12 +1103,34 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(".鱼篓", effect.updates["fishing_pending_action"])
         self.assertEqual(now + 300, effect.updates["next_fishing_time"])
 
-    def test_fishing_behavior_daily_limit_text_opens_pending_queue_first(self):
+    def test_fishing_behavior_daily_limit_text_stops_when_auto_open_disabled(self):
         from model.features import fishing_behavior
 
         now = 1_700_000_000.0
         effect = fishing_behavior.decide_reply(
-            {"fishing_enabled": True, "fishing_pending_open_fish": '{"银须灵鲢": 2}'},
+            {"fishing_enabled": True, "fishing_auto_open_fish_enabled": False},
+            "你今日已垂钓 20/20 竿，神识已乏，明日再来。",
+            now,
+            result_msg_id=22033,
+            action_delay_sec=300,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(20, effect.updates["fishing_daily_count"])
+        self.assertEqual(20, effect.updates["fishing_daily_limit"])
+        self.assertEqual("", effect.updates["fishing_pending_action"])
+        self.assertGreater(effect.updates["next_fishing_time"], now + 3600)
+
+    def test_fishing_behavior_daily_limit_text_queries_basket_when_auto_open_enabled(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "fishing_auto_open_fish_enabled": True,
+                "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+            },
             "你今日已垂钓 20/20 竿，神识已乏，明日再来。",
             now,
             result_msg_id=22033,

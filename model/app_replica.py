@@ -215,6 +215,9 @@ _REPLICA_BUTTON_EXCLUSIVE_MAX = 500
 _REPLICA_BUTTON_CALLBACK_PREFIX = "rp:"
 _CANGKUN_STAGE_GUARD_TTL_SEC = 30 * 60
 _CANGKUN_STAGE_GUARD_MAX = 100
+_CANGKUN_TEAM_DECISION_REMINDER_DELAY_SEC = 75.0
+_CANGKUN_TEAM_DECISION_REMINDER_TTL_SEC = 30 * 60
+_CANGKUN_TEAM_DECISION_REMINDER_MAX = 100
 _REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_SEC = 30
 _REPLICA_LIGHTWEIGHT_NOTICE_DEDUPE_MAX = 200
 _XUTIAN_DECISION_NOTICE_TTL_SEC = 30 * 60
@@ -753,6 +756,121 @@ def _is_cangkun_stage_guard_current(scope, stage_key, now=None):
         return True
     current_key = str(item.get("stage_key") or "").strip()
     return not current_key or current_key == stage_key
+
+
+def _cleanup_cangkun_team_decision_reminder_records(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("cangkun_team_decision_reminders")
+    if not isinstance(records, dict):
+        records = {}
+    changed = False
+    for key, item in list(records.items()):
+        if not isinstance(item, dict):
+            records.pop(key, None)
+            changed = True
+            continue
+        created_at = float(item.get("created_at") or 0)
+        if created_at <= 0 or now >= created_at + _CANGKUN_TEAM_DECISION_REMINDER_TTL_SEC:
+            records.pop(key, None)
+            changed = True
+    if len(records) > _CANGKUN_TEAM_DECISION_REMINDER_MAX:
+        keep = {
+            key
+            for key, item in sorted(
+                records.items(),
+                key=lambda pair: float((pair[1] or {}).get("created_at") or 0),
+                reverse=True,
+            )[:_CANGKUN_TEAM_DECISION_REMINDER_MAX]
+        }
+        for key in list(records):
+            if key not in keep:
+                records.pop(key, None)
+                changed = True
+    run_state["cangkun_team_decision_reminders"] = records
+    if changed:
+        _save_replica_run_state_dict(run_state)
+    return records
+
+
+def _mark_cangkun_team_decision_reminder_scheduled(notice_key, payload, now=None):
+    notice_key = str(notice_key or "").strip()
+    if not notice_key:
+        return False
+    now = float(now or time.time())
+    records = _cleanup_cangkun_team_decision_reminder_records(now)
+    item = records.get(notice_key)
+    if isinstance(item, dict) and (item.get("scheduled") or item.get("sent")):
+        return False
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("cangkun_team_decision_reminders")
+    if not isinstance(records, dict):
+        records = {}
+    records[notice_key] = dict(payload or {})
+    records[notice_key].update({"created_at": now, "scheduled": True, "sent": False})
+    run_state["cangkun_team_decision_reminders"] = records
+    _save_replica_run_state_dict(run_state)
+    return True
+
+
+def _mark_cangkun_team_decision_reminder_sent(notice_key, now=None):
+    notice_key = str(notice_key or "").strip()
+    if not notice_key:
+        return False
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_cangkun_team_decision_reminder_records(now)
+    item = records.get(notice_key)
+    if not isinstance(item, dict):
+        return False
+    item["sent"] = True
+    item["sent_at"] = now
+    records[notice_key] = item
+    run_state["cangkun_team_decision_reminders"] = records
+    _save_replica_run_state_dict(run_state)
+    return True
+
+
+async def _send_cangkun_team_decision_reminder(payload, now=None):
+    payload = payload if isinstance(payload, dict) else {}
+    notice_key = str(payload.get("notice_key") or "").strip()
+    stage_scope = str(payload.get("stage_scope") or "").strip()
+    if not notice_key or not _is_cangkun_stage_guard_current(stage_scope, notice_key, now=now):
+        return False
+    buttons = payload.get("buttons") if isinstance(payload.get("buttons"), list) else []
+    notice_text = str(payload.get("notice_text") or "").strip()
+    if not notice_text:
+        return False
+    reminder_text = (
+        "⚠️ 苍坤第四幕仍未进入下一阶段，可能有人未表态或游戏回复被吞。\n"
+        "不要重复点击已成功表态的身份；只补没点过的号。\n\n"
+        + notice_text
+    )
+    sent = await _send_replica_kind_notice(
+        _REPLICA_KIND_CANGKUN,
+        reminder_text,
+        float(now or time.time()),
+        html=True,
+        buttons=buttons,
+    )
+    if sent:
+        _mark_cangkun_team_decision_reminder_sent(notice_key, now=now)
+    return sent
+
+
+async def _run_cangkun_team_decision_reminder(payload, delay_sec=None):
+    delay_sec = _CANGKUN_TEAM_DECISION_REMINDER_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    return await _send_cangkun_team_decision_reminder(payload, now=time.time())
+
+
+def _schedule_cangkun_team_decision_reminder(payload, now=None):
+    payload = payload if isinstance(payload, dict) else {}
+    notice_key = str(payload.get("notice_key") or "").strip()
+    if not _mark_cangkun_team_decision_reminder_scheduled(notice_key, payload, now=now):
+        return False
+    _fire_and_forget(_run_cangkun_team_decision_reminder(dict(payload)))
+    return True
 
 
 def _cleanup_zhuimo_progress_ack_records(now=None):
@@ -1539,15 +1657,26 @@ async def _maybe_send_cangkun_decision_notice(event, text, now):
         + f"请选择一个按钮；兜底命令：\n"
         + commands_text
     )
-    if await _send_replica_kind_notice(
+    sent = await _send_replica_kind_notice(
         _REPLICA_KIND_CANGKUN,
         notice_text,
         now,
         html=True,
         buttons=buttons,
-    ):
+    )
+    if sent:
+        if stage_info.get("audience") == "team":
+            _schedule_cangkun_team_decision_reminder(
+                {
+                    "notice_key": notice_key,
+                    "stage_scope": stage_scope,
+                    "notice_text": notice_text,
+                    "buttons": buttons,
+                },
+                now=now,
+            )
         return True
-    return await send_audit_log(
+    fallback_sent = await send_audit_log(
         notice_text,
         scope="identity",
         send_as_id=leader_identity_id,
@@ -1555,6 +1684,17 @@ async def _maybe_send_cangkun_decision_notice(event, text, now):
         limit=700,
         buttons=buttons,
     )
+    if fallback_sent and stage_info.get("audience") == "team":
+        _schedule_cangkun_team_decision_reminder(
+            {
+                "notice_key": notice_key,
+                "stage_scope": stage_scope,
+                "notice_text": notice_text,
+                "buttons": buttons,
+            },
+            now=now,
+        )
+    return fallback_sent
 
 
 def _parse_cangkun_success_kind(text):

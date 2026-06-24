@@ -762,6 +762,76 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("event_burst", send_mock.await_args.kwargs["priority"])
         self.assertEqual("真仙试锋", send_mock.await_args.kwargs["source_module"])
 
+    async def test_status_query_no_reply_retries_after_five_seconds_with_retry_marker(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 13, 13, 30, tzinfo=world_boss.TZ_LOCAL).timestamp()
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "clear_pending_tasks_by_commands") as clear_mock,
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(side_effect=[
+                    SimpleNamespace(id=9101, sent_at=now + 1),
+                    SimpleNamespace(id=9102, sent_at=now + 6),
+                ]),
+            ) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+            await world_boss.run_world_boss_scheduler(now + world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC + 1)
+
+        self.assertEqual(2, send_mock.await_count)
+        first_call, retry_call = send_mock.await_args_list
+        self.assertEqual(".世界boss 查看战况", first_call.args[0])
+        self.assertEqual("event_burst", first_call.kwargs["priority"])
+        self.assertTrue(first_call.kwargs["op_id"].endswith(f":status:{identity_id}:try0:{int(now)}"))
+        self.assertEqual(".世界boss 查看战况", retry_call.args[0])
+        self.assertEqual("retry", retry_call.kwargs["priority"])
+        self.assertTrue(retry_call.kwargs["op_id"].endswith(f":status:{identity_id}:try1:{int(now + world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC + 1)}"))
+        clear_mock.assert_called_with({".世界boss 查看战况"}, send_as_id=identity_id)
+        self.assertEqual(9102, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("status", identity_state["world_boss_pending_action"])
+        self.assertEqual(1, identity_state["world_boss_pending_retry_count"])
+
+    async def test_scheduler_clears_stale_status_pending_without_resending(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 25, 7, 20, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        identity_state["world_boss_pending_msg_id"] = 10887401
+        identity_state["world_boss_pending_action"] = "status"
+        identity_state["world_boss_pending_since"] = now - 10
+        identity_state["world_boss_pending_retry_count"] = 14
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-23:10796803",
+                "opened_at": now - world_boss.WORLD_BOSS_EVENT_TTL_SEC - 3600,
+                "last_status_at": now - 3600,
+                "next_action_at": now - 10,
+                "next_status_query_at": now - 10,
+                "summary": {"镇魂": 1, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "clear_pending_tasks_by_commands") as clear_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS)
+        run_state = state_module.get_world_boss_run_state()
+        self.assertFalse(run_state["active"])
+        self.assertEqual("超时结束", run_state["last_result"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
+        self.assertEqual(0, identity_state["world_boss_pending_since"])
+        self.assertEqual(0, identity_state["world_boss_pending_retry_count"])
+
     async def test_conclusion_log_is_deduped_by_event_text(self):
         now = 1_781_319_000.0
         self._register(8659059191, label="WalterWA2000", world_boss_enabled=True)

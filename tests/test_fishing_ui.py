@@ -39,6 +39,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fishing["auto_chum_enabled"])
         self.assertEqual(["米糠小窝"], fishing["chum_names"])
         self.assertTrue(fishing["auto_buy_bait_enabled"])
+        self.assertTrue(fishing["auto_open_fish_enabled"])
         self.assertFalse(fishing["bait_inventory_known"])
         self.assertTrue(fishing["plan"]["allow_start"])
         self.assertEqual([".买鱼饵 凡饵 20", ".打窝 米糠小窝", ".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
@@ -58,6 +59,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
                     "auto_buy_bait_enabled": True,
                     "auto_buy_bait_count": 11,
                     "auto_probe_enabled": True,
+                    "auto_open_fish_enabled": True,
                 },
             )
 
@@ -73,12 +75,14 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(identity_state["fishing_auto_buy_bait_enabled"])
         self.assertEqual(11, identity_state["fishing_auto_buy_bait_count"])
         self.assertTrue(identity_state["fishing_auto_probe_enabled"])
+        self.assertTrue(identity_state["fishing_auto_open_fish_enabled"])
         audit_mock.assert_awaited_once()
 
         snapshot = ui.get_identity_ui_snapshot(self.identity_id)
         self.assertEqual([".买鱼饵 灵米饵 11"], snapshot["fishing"]["plan"]["purchase_commands"])
         self.assertEqual(7, snapshot["fishing"]["daily_limit"])
         self.assertEqual(11, snapshot["fishing"]["auto_buy_bait_count"])
+        self.assertTrue(snapshot["fishing"]["auto_open_fish_enabled"])
         self.assertTrue(snapshot["fishing"]["plan"]["allow_start"])
         self.assertEqual([], [item for item in snapshot["fishing"]["plan"]["resource_requirements"] if item["missing_count"]])
 
@@ -173,6 +177,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
         self.assertIn('name="chum_names"', script)
+        self.assertIn('name="auto_open_fish_enabled"', script)
         self.assertNotIn('select[name="chum_name"]', script)
         self.assertIn("resourceRequirementHtml", script)
         self.assertIn("findFishingCard", script)

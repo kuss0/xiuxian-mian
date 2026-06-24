@@ -1944,9 +1944,9 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, snapshot["skip_reasons"].get("reply_context_no_identity"))
 
     def test_heart_choice_delay_is_fast_enough_for_edited_prompt(self):
-        with patch.object(concubine.random, "uniform", return_value=2) as mock_uniform:
-            self.assertEqual(2, concubine._heart_next_choice_delay())
-        mock_uniform.assert_called_once_with(1, 3)
+        with patch.object(concubine.random, "uniform", return_value=7.5) as mock_uniform:
+            self.assertEqual(7.5, concubine._heart_next_choice_delay())
+        mock_uniform.assert_called_once_with(6, 9)
 
     async def test_scheduler_defers_heart_start_after_recent_global_heart_log(self):
         now = 1_700_000_000.0

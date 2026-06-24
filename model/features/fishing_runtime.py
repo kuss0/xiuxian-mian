@@ -53,11 +53,9 @@ FISHING_NEXT_DAY_MAX_SEC = 75 * 60
 FISHING_MAX_ACTIVE_IDENTITIES = 2
 FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
-FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 8
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
-_LAST_COMMAND_SENT_AT = {}
 
 
 def _parse_int(value, default=0):
@@ -236,23 +234,6 @@ def _fishing_send_lock(send_as_id):
     return lock
 
 
-def _recent_fishing_command_key(send_as_id, command):
-    return int(send_as_id or 0), str(command or "").strip()
-
-
-def _recent_fishing_command_blocks(send_as_id, command, now):
-    key = _recent_fishing_command_key(send_as_id, command)
-    last_sent_at = float(_LAST_COMMAND_SENT_AT.get(key, 0) or 0)
-    if last_sent_at <= 0:
-        return False
-    return float(now or 0) - last_sent_at < FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC
-
-
-def _mark_recent_fishing_command_sent(send_as_id, command, sent_at):
-    key = _recent_fishing_command_key(send_as_id, command)
-    _LAST_COMMAND_SENT_AT[key] = float(sent_at or time.time())
-
-
 def _schedule_fishing_followup(send_as_id, command, due_at):
     command = str(command or "").strip()
     if not command:
@@ -361,6 +342,7 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
             "fishing_auto_buy_bait_enabled",
             "fishing_auto_buy_bait_count",
             "fishing_auto_probe_enabled",
+            "fishing_auto_open_fish_enabled",
         ):
             config_values[key] = state.get(key)
     updates = {
@@ -412,6 +394,7 @@ def get_fishing_status_text():
         f"- 当前窝料：{active_chum}（剩余 {chum_rods} 竿）",
         f"- 缺饵购买：{'开' if config.auto_buy_bait_enabled else '关'}",
         f"- 试饵：{'开' if config.auto_probe_enabled else '关'}",
+        f"- 自动开鱼：{'开' if state.get('fishing_auto_open_fish_enabled') else '关'}",
         f"- 阶段：{state.get('fishing_phase') or 'idle'}",
         f"- 下次动作：{fmt_abs_ts(state.get('next_fishing_time', 0))}（{fmt_remaining(state.get('next_fishing_time', 0))}）",
         f"- 待回复命令ID：{int(state.get('fishing_reply_to_msg_id', 0) or 0) or '无'}",
@@ -539,11 +522,6 @@ async def _send_fishing_command(command, now):
 
 
 async def _send_fishing_command_locked(command, now):
-    send_as_id = get_current_identity_id()
-    if _recent_fishing_command_blocks(send_as_id, command, now):
-        state["fishing_last_error"] = f"短窗口重复指令已抑制：{command}"
-        mark_dirty()
-        return False
     phase = fishing_behavior.command_phase(command)
     if (
         phase != "idle"
@@ -581,7 +559,6 @@ async def _send_fishing_command_locked(command, now):
 
     sent_at = float(getattr(msg, "sent_at", 0) or time.time())
     msg_id = int(getattr(msg, "id", 0) or 0)
-    _mark_recent_fishing_command_sent(send_as_id, command, sent_at)
     effect = fishing_behavior.build_send_success_effect(
         _state_snapshot(),
         command,

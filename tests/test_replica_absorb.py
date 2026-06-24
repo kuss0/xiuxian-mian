@@ -190,6 +190,12 @@ class ReplicaAbsorbTests(unittest.TestCase):
     def _close_scheduled(self, coro):
         coro.close()
 
+    def _capture_scheduled(self, bucket):
+        def capture(coro):
+            bucket.append(coro)
+            coro.close()
+        return capture
+
     def _button_payload_by_text(self, buttons, text):
         for row in buttons or []:
             row_items = row if isinstance(row, (list, tuple)) else [row]
@@ -3314,15 +3320,21 @@ class ReplicaAbsorbTests(unittest.TestCase):
         event = SimpleNamespace(id=8806, chat_id=-100123, raw_text=text)
 
         async def run_test():
-            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+            scheduled = []
+            with (
+                patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock,
+                patch("model.app_replica._fire_and_forget", side_effect=self._capture_scheduled(scheduled)) as schedule_mock,
+            ):
                 progress_handled = await app_replica._handle_replica_progress_event(event, now)
                 buttons = notice_mock.await_args.kwargs["buttons"]
-                return progress_handled, notice_mock.await_args.args[1], buttons
+                return progress_handled, notice_mock.await_args.args[1], buttons, schedule_mock.call_count, scheduled
 
-        progress_handled, notice_text, buttons = asyncio.run(run_test())
+        progress_handled, notice_text, buttons, schedule_count, scheduled = asyncio.run(run_test())
         self.assertTrue(progress_handled)
         self.assertIn("苍坤全员表态：第四幕·玉矶阁反目", notice_text)
         self.assertIn("建议：全员各点一次即可", notice_text)
+        self.assertEqual(1, schedule_count)
+        self.assertEqual(1, len(scheduled))
         payloads = [
             app_replica._get_replica_button_action(button["callback_data"])[1]["payload"]
             for row in buttons
@@ -3474,15 +3486,42 @@ class ReplicaAbsorbTests(unittest.TestCase):
         )
 
         async def run_test():
-            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+            scheduled = []
+            with (
+                patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock,
+                patch("model.app_replica._fire_and_forget", side_effect=self._capture_scheduled(scheduled)) as schedule_mock,
+            ):
                 first = await app_replica._handle_replica_progress_event(SimpleNamespace(id=8806, chat_id=-100123, raw_text=text), now)
                 second = await app_replica._handle_replica_progress_event(SimpleNamespace(id=8807, chat_id=-100123, raw_text=text), now + 1)
-                return first, second, notice_mock.await_count
+                return first, second, notice_mock.await_count, schedule_mock.call_count
 
-        first, second, notice_count = asyncio.run(run_test())
+        first, second, notice_count, schedule_count = asyncio.run(run_test())
         self.assertTrue(first)
         self.assertFalse(second)
         self.assertEqual(1, notice_count)
+        self.assertEqual(1, schedule_count)
+
+    def test_cangkun_team_stage_reminder_skips_after_stage_advances(self):
+        now = 2000.0
+        notice_key = "cangkun:room:47:team:cangkun-old:abcd"
+        stage_scope = "cangkun:room:47"
+        app_replica._set_cangkun_stage_guard_current(stage_scope, notice_key, now)
+        app_replica._set_cangkun_stage_guard_current(stage_scope, "cangkun:room:47:leader:cangkun-new:efgh", now + 30)
+        payload = {
+            "notice_key": notice_key,
+            "stage_scope": stage_scope,
+            "notice_text": "苍坤全员表态：第四幕·玉矶阁反目｜队长 <code>@gyurihero</code>",
+            "buttons": [[{"text": "@gyurihero 选1", "callback_data": "rp:test"}]],
+        }
+
+        async def run_test():
+            with patch("model.app_replica._send_replica_kind_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                sent = await app_replica._send_cangkun_team_decision_reminder(payload, now=now + 75)
+                return sent, notice_mock.await_count
+
+        sent, notice_count = asyncio.run(run_test())
+        self.assertFalse(sent)
+        self.assertEqual(0, notice_count)
 
     def test_cangkun_old_stage_button_is_blocked_after_stage_advances(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")

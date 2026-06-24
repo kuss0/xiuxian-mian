@@ -106,6 +106,7 @@
     bits.push(esc(fishing.pond || '青溪浅滩')+'/'+esc(fishing.bait || '凡饵'));
     bits.push('竿 '+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit)));
     bits.push('买饵 '+(fishing.auto_buy_bait_enabled ? '开' : '关')+'x'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count)));
+    bits.push('开鱼 '+(fishing.auto_open_fish_enabled ? '开' : '关'));
     if(fishing.auto_chum_enabled){
       bits.push('窝 '+esc((Array.isArray(fishing.chum_names) && fishing.chum_names.length ? fishing.chum_names : [fishing.chum_name || '无']).join(',')));
     }
@@ -126,6 +127,7 @@
       '<div class="fishing-plan fishing-chum-plan"><span>窝料顺序</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_buy_bait_enabled" '+(fishing.auto_buy_bait_enabled ? 'checked' : '')+' /><span>缺饵购买</span></label>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
+      '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_open_fish_enabled" '+(fishing.auto_open_fish_enabled ? 'checked' : '')+' /><span>自动开鱼</span></label>'+
       '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
       '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
       '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+
@@ -238,7 +240,8 @@
       chum_names: chumEnabled ? chumNames : [],
       chum_name: chumEnabled && chumNames.length ? chumNames[0] : '无',
       auto_buy_bait_enabled: !!form.querySelector('input[name="auto_buy_bait_enabled"]').checked,
-      auto_probe_enabled: !!form.querySelector('input[name="auto_probe_enabled"]').checked
+      auto_probe_enabled: !!form.querySelector('input[name="auto_probe_enabled"]').checked,
+      auto_open_fish_enabled: !!form.querySelector('input[name="auto_open_fish_enabled"]').checked
     };
     try{
       var data = await postJson('/api/fishing-config', payload);

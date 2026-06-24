@@ -726,7 +726,7 @@ async def _disable_for_realm(raw_text):
 async def _send_small_world_god_action(now, command, reason):
     command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
     action_name = "赈灾" if command == CMD_SMALL_WORLD_RELIEF else "布道"
-    sent_msg = await send_game_command(command, track=True, max_retry=1, source_module="小世界")
+    sent_msg = await send_game_command(command, track=True, max_retry=0, source_module="小世界")
     sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
     if not sent_msg:
         state["small_world_last_error"] = f"神迹{action_name}指令发送失败"
