@@ -53,8 +53,11 @@ FISHING_NEXT_DAY_MAX_SEC = 75 * 60
 FISHING_MAX_ACTIVE_IDENTITIES = 2
 FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
+FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 8
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
+_SEND_LOCKS = {}
+_LAST_COMMAND_SENT_AT = {}
 
 
 def _parse_int(value, default=0):
@@ -222,6 +225,32 @@ def _cancel_fishing_recovery(send_as_id):
 def _has_fishing_followup(send_as_id):
     task = _FOLLOWUP_TASKS.get(_fishing_followup_key(send_as_id))
     return bool(task and not task.done())
+
+
+def _fishing_send_lock(send_as_id):
+    key = _fishing_followup_key(send_as_id)
+    lock = _SEND_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SEND_LOCKS[key] = lock
+    return lock
+
+
+def _recent_fishing_command_key(send_as_id, command):
+    return int(send_as_id or 0), str(command or "").strip()
+
+
+def _recent_fishing_command_blocks(send_as_id, command, now):
+    key = _recent_fishing_command_key(send_as_id, command)
+    last_sent_at = float(_LAST_COMMAND_SENT_AT.get(key, 0) or 0)
+    if last_sent_at <= 0:
+        return False
+    return float(now or 0) - last_sent_at < FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC
+
+
+def _mark_recent_fishing_command_sent(send_as_id, command, sent_at):
+    key = _recent_fishing_command_key(send_as_id, command)
+    _LAST_COMMAND_SENT_AT[key] = float(sent_at or time.time())
 
 
 def _schedule_fishing_followup(send_as_id, command, due_at):
@@ -500,6 +529,21 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
 
 
 async def _send_fishing_command(command, now):
+    lock = _fishing_send_lock(get_current_identity_id())
+    if lock.locked():
+        state["fishing_last_error"] = f"发送中重复指令已抑制：{command}"
+        mark_dirty()
+        return False
+    async with lock:
+        return await _send_fishing_command_locked(command, now)
+
+
+async def _send_fishing_command_locked(command, now):
+    send_as_id = get_current_identity_id()
+    if _recent_fishing_command_blocks(send_as_id, command, now):
+        state["fishing_last_error"] = f"短窗口重复指令已抑制：{command}"
+        mark_dirty()
+        return False
     phase = fishing_behavior.command_phase(command)
     if (
         phase != "idle"
@@ -537,6 +581,7 @@ async def _send_fishing_command(command, now):
 
     sent_at = float(getattr(msg, "sent_at", 0) or time.time())
     msg_id = int(getattr(msg, "id", 0) or 0)
+    _mark_recent_fishing_command_sent(send_as_id, command, sent_at)
     effect = fishing_behavior.build_send_success_effect(
         _state_snapshot(),
         command,

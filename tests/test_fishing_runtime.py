@@ -74,6 +74,8 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             if task and not task.done():
                 task.cancel()
         fishing_runtime._RECOVERY_TASKS.clear()
+        fishing_runtime._SEND_LOCKS.clear()
+        fishing_runtime._LAST_COMMAND_SENT_AT.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -252,6 +254,37 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([".提竿"], sent_commands)
             self.assertEqual("lifting", state_module.state["fishing_phase"])
             self.assertEqual(22028, state_module.state["fishing_reply_to_msg_id"])
+
+    async def test_recent_duplicate_lift_is_suppressed_after_state_clears(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        sent_commands = []
+
+        async def fake_send(command, **_kwargs):
+            sent_commands.append(command)
+            return SimpleNamespace(id=22028 + len(sent_commands), sent_at=now + len(sent_commands) - 1)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now - 1
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=fake_send),
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                first_sent = await fishing_runtime._send_fishing_command(".提竿", now)
+
+                state_module.state["fishing_phase"] = "waiting"
+                state_module.state["fishing_reply_to_msg_id"] = 0
+                state_module.state["fishing_reply_due_at"] = 0
+                state_module.state["next_fishing_time"] = now + 3
+                duplicate_sent = await fishing_runtime._send_fishing_command(".提竿", now + 3)
+
+            self.assertTrue(first_sent)
+            self.assertFalse(duplicate_sent)
+            self.assertEqual([".提竿"], sent_commands)
+            self.assertIn("短窗口重复指令已抑制", state_module.state["fishing_last_error"])
 
     async def test_new_fishing_command_waits_when_two_other_rods_active(self):
         identity_id = self._prepare_identity()
