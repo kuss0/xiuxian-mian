@@ -148,7 +148,7 @@ from .config import (
 from .features.checkin import get_checkin_status_text, get_sect_teach_status_text
 from .features.concubine import clear_concubine_state, clear_concubine_tianji_state, get_concubine_status_text, restore_concubine_runtime
 from .features.deep_retreat import get_deep_retreat_status_detail_text
-from .features.divination import get_divination_status_text
+from .features.divination import get_divination_pending_health_lines, get_divination_status_text
 from .features.formation import clear_formation_state, get_formation_status_text
 from .features.guanxing import (
     clear_guanxing_identity_runtime,
@@ -2420,6 +2420,11 @@ def _format_runtime_health_text():
     if pending_rows:
         lines.extend(["", "pending 样本:"])
         lines.extend(pending_rows[:10])
+
+    divination_pending_lines = get_divination_pending_health_lines(now, limit=8)
+    if divination_pending_lines:
+        lines.extend(["", "卜筮问天待回复检查:"])
+        lines.extend(divination_pending_lines)
 
     if queue_items:
         lines.extend(["", "发送队列前 8:"])

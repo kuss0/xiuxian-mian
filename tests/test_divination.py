@@ -588,6 +588,16 @@ class DivinationTests(unittest.TestCase):
                 "pending_count_recorded": False,
             }
         })
+        state_module.get_identity_state(identity_id)["pending_tasks"] = {
+            9001: {
+                "cmd": ".卜筮问天",
+                "sent_at": now - 181,
+                "retry": 0,
+                "timeout": 180,
+                "max_retry": 0,
+                "source_module": "卜筮问天",
+            }
+        }
 
         async def run_test():
             with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
@@ -600,6 +610,7 @@ class DivinationTests(unittest.TestCase):
             self.assertEqual("idle", after_timeout["phase"])
             self.assertEqual(now + 60, after_timeout["next_query_at"])
             self.assertIn("中间态超时", after_timeout["last_error"])
+            self.assertEqual({}, state_module.get_identity_state(identity_id)["pending_tasks"])
 
             with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
                     patch("model.features.divination.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9002))) as retry_send, \
@@ -614,6 +625,80 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(5, record["count"])
         self.assertEqual(2, record["sent_attempts"])
         self.assertEqual("waiting_intermediate", record["phase"])
+
+    def test_pending_health_marks_orphan_divination_pending(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 2000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {
+                "day_key": get_day_key(now),
+                "phase": "idle",
+                "count": 1,
+                "next_query_at": now + 60,
+                "pending_query_msg_id": 0,
+            }
+        })
+        state_module.get_identity_state(identity_id)["pending_tasks"] = {
+            9001: {
+                "cmd": ".卜筮问天",
+                "sent_at": now - 300,
+                "retry": 0,
+                "timeout": 180,
+                "max_retry": 0,
+                "source_module": "卜筮问天",
+            }
+        }
+
+        lines = divination.get_divination_pending_health_lines(now, limit=3)
+
+        text = "\n".join(lines)
+        self.assertIn("pending_tasks: 1", text)
+        self.assertIn("已超时: 1", text)
+        self.assertIn("orphan: 1", text)
+        self.assertIn("msg=9001", text)
+
+    def test_scheduler_cleans_stale_orphan_divination_pending(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 2000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {
+                "day_key": get_day_key(now),
+                "phase": "idle",
+                "count": 1,
+                "next_query_at": now + 60,
+                "pending_query_msg_id": 0,
+            }
+        })
+        state_module.get_identity_state(identity_id)["pending_tasks"] = {
+            9001: {
+                "cmd": ".卜筮问天",
+                "sent_at": now - 300,
+                "retry": 0,
+                "timeout": 180,
+                "max_retry": 0,
+                "source_module": "卜筮问天",
+            },
+            9002: {
+                "cmd": ".卜筮问天",
+                "sent_at": now - 30,
+                "retry": 0,
+                "timeout": 180,
+                "max_retry": 0,
+                "source_module": "卜筮问天",
+            },
+        }
+
+        async def run_test():
+            with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
+                    patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock:
+                await divination.run_divination_scheduler(now)
+                send_mock.assert_not_awaited()
+
+        asyncio.run(run_test())
+
+        pending_tasks = state_module.get_identity_state(identity_id)["pending_tasks"]
+        self.assertNotIn(9001, pending_tasks)
+        self.assertIn(9002, pending_tasks)
 
     def test_intermediate_reply_records_daily_count_and_waits_final_edit(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)

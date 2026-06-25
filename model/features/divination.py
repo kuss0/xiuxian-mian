@@ -11,7 +11,7 @@ from ..action_guard import close_by_family as close_action_guard_by_family
 from ..config import CMD_DIVINATION, CMD_DIVINATION_EXCHANGE, MESSAGES_DIR, PROJECT_ROOT_DIR, TZ_LOCAL
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
-from ..runtime import mono, send_audit_log, send_game_command
+from ..runtime import clear_pending_by_reply, mono, send_audit_log, send_game_command
 from ..state import (
     get_divination_daily_limit,
     get_divination_pending_exchanges,
@@ -363,6 +363,24 @@ def _record_observed_daily_count(record, observed_count, limit, now):
         record["last_observed_at"] = float(now or time.time())
         record["last_error"] = ""
     return changed
+
+
+def _clear_query_pending_task(identity_id, msg_id):
+    try:
+        identity_id = int(identity_id or 0)
+        msg_id = int(msg_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if identity_id <= 0 or msg_id <= 0:
+        return False
+    result = clear_pending_by_reply(
+        reply_context={
+            "send_as_id": identity_id,
+            "reply_to_msg_id": msg_id,
+            "family": "",
+        }
+    )
+    return bool((result or {}).get("removed_ids"))
 
 
 def _mark_exchange_success_today(identity_id, now, target_item):
@@ -1498,6 +1516,7 @@ async def _run_divination_query_scheduler(now):
         pending_until = float(record.get("pending_until") or 0)
         if pending_query_msg_id > 0:
             if pending_until > 0 and now >= pending_until:
+                timed_out_query_msg_id = pending_query_msg_id
                 close_action_guard_by_family("divination", send_as_id=identity_id, reason="timeout", now=now)
                 phase = _coerce_phase(record.get("phase"), record)
                 if phase == DIVINATION_PHASE_WAITING_INTERMEDIATE or not record.get("pending_count_recorded"):
@@ -1506,6 +1525,7 @@ async def _run_divination_query_scheduler(now):
                     timeout_error = "等待问天最终结果超时"
                 _schedule_after_round(record, now, limit)
                 record["last_error"] = timeout_error
+                _clear_query_pending_task(identity_id, timed_out_query_msg_id)
                 records[key] = record
                 changed = True
             continue
@@ -1546,8 +1566,130 @@ async def _run_divination_query_scheduler(now):
 
 async def run_divination_scheduler(now):
     now = float(now or time.time())
+    _cleanup_stale_divination_pending_tasks(now)
     await _run_divination_exchange_scheduler(now)
     await _run_divination_query_scheduler(now)
+
+
+def get_divination_pending_health_lines(now=None, *, limit=8):
+    now = float(now or time.time())
+    records = _run_records()
+    rows = []
+    run_waiting_without_pending = 0
+    for identity_id in get_identity_ids():
+        try:
+            identity_id = int(identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id <= 0:
+            continue
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        record = records.get(_run_key(identity_id))
+        record = record if isinstance(record, dict) else {}
+        phase = _coerce_phase(record.get("phase"), record)
+        active_query_msg_id = int(record.get("pending_query_msg_id") or 0)
+        pending_tasks = identity_state.get("pending_tasks") or {}
+        pending_msg_ids = set()
+        for msg_id, pending in pending_tasks.items():
+            if not isinstance(pending, dict):
+                continue
+            cmd = str(pending.get("cmd") or pending.get("command") or "").strip()
+            source_module = str(pending.get("source_module") or "").strip()
+            if cmd != CMD_DIVINATION and source_module != "卜筮问天":
+                continue
+            try:
+                msg_id = int(msg_id or pending.get("msg_id") or 0)
+                sent_at = float(pending.get("sent_at") or 0)
+                timeout = float(pending.get("timeout") or 0)
+            except (TypeError, ValueError):
+                continue
+            if msg_id <= 0:
+                continue
+            pending_msg_ids.add(msg_id)
+            age = max(0, int(now - sent_at)) if sent_at > 0 else 0
+            overdue = bool(timeout > 0 and sent_at > 0 and now >= sent_at + timeout)
+            if active_query_msg_id == msg_id:
+                state_label = f"模块等待中({phase})"
+            elif overdue:
+                state_label = "orphan:模块已不等此消息"
+            else:
+                state_label = "队列中/待模块确认"
+            rows.append(
+                {
+                    "identity": _format_identity(identity_id),
+                    "msg_id": msg_id,
+                    "age": age,
+                    "timeout": int(timeout),
+                    "overdue": overdue,
+                    "state_label": state_label,
+                    "retry": int(pending.get("retry") or 0),
+                    "max_retry": int(pending.get("max_retry") or 0),
+                }
+            )
+        if active_query_msg_id > 0 and active_query_msg_id not in pending_msg_ids:
+            run_waiting_without_pending += 1
+
+    if not rows and run_waiting_without_pending <= 0:
+        return ["- pending_tasks: 无；run_state 等待态: 无"]
+
+    overdue_count = sum(1 for row in rows if row["overdue"])
+    orphan_count = sum(1 for row in rows if str(row["state_label"]).startswith("orphan:"))
+    lines = [
+        f"- pending_tasks: {len(rows)}；已超时: {overdue_count}；orphan: {orphan_count}；仅 run_state 等待: {run_waiting_without_pending}"
+    ]
+    rows.sort(key=lambda row: (-int(row["overdue"]), -int(row["age"]), str(row["identity"])))
+    for row in rows[: max(1, int(limit or 8))]:
+        age_text = f"{row['age']}s"
+        timeout_text = f"{row['timeout']}s" if row["timeout"] > 0 else "-"
+        retry_text = f"{row['retry']}/{row['max_retry']}"
+        lines.append(
+            f"- {row['identity']}: msg={row['msg_id']} age={age_text} timeout={timeout_text} retry={retry_text}｜{row['state_label']}"
+        )
+    return lines
+
+
+def _cleanup_stale_divination_pending_tasks(now=None):
+    now = float(now or time.time())
+    records = _run_records()
+    removed = 0
+    for identity_id in get_identity_ids():
+        try:
+            identity_id = int(identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id <= 0:
+            continue
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        record = records.get(_run_key(identity_id))
+        record = record if isinstance(record, dict) else {}
+        active_query_msg_id = int(record.get("pending_query_msg_id") or 0)
+        for msg_id, pending in list((identity_state.get("pending_tasks") or {}).items()):
+            if not isinstance(pending, dict):
+                continue
+            cmd = str(pending.get("cmd") or pending.get("command") or "").strip()
+            source_module = str(pending.get("source_module") or "").strip()
+            if cmd != CMD_DIVINATION and source_module != "卜筮问天":
+                continue
+            try:
+                msg_id = int(msg_id or pending.get("msg_id") or 0)
+                sent_at = float(pending.get("sent_at") or 0)
+                timeout = float(pending.get("timeout") or 0)
+                max_retry = int(pending.get("max_retry") or 0)
+            except (TypeError, ValueError):
+                continue
+            if msg_id <= 0 or msg_id == active_query_msg_id:
+                continue
+            if max_retry > 0 or sent_at <= 0 or timeout <= 0 or now < sent_at + timeout:
+                continue
+            if _clear_query_pending_task(identity_id, msg_id):
+                removed += 1
+    return removed
 
 
 def get_divination_status_text(send_as_id=None):
@@ -1615,6 +1757,7 @@ def get_divination_status_text(send_as_id=None):
 
 
 __all__ = [
+    "get_divination_pending_health_lines",
     "get_divination_status_text",
     "handle_divination_exchange_reply",
     "handle_divination_reply",
