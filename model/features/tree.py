@@ -436,10 +436,19 @@ def _tree_final_board_unclaimed_identity_ids(text):
     return matched_ids
 
 
+def _tree_command_matches(pending_command, command_set):
+    pending_command = str(pending_command or "").strip()
+    if not pending_command:
+        return False
+    if pending_command in command_set:
+        return True
+    return CMD_TREE_PULSE in command_set and pending_command.startswith(f"{CMD_TREE_PULSE} ")
+
+
 def _has_pending_tree_command(*commands):
     command_set = {str(command or "").strip() for command in commands if str(command or "").strip()}
     for pending in state.get("pending_tasks", {}).values():
-        if get_pending_command(pending) in command_set:
+        if _tree_command_matches(get_pending_command(pending), command_set):
             return True
     return False
 
@@ -454,6 +463,33 @@ def _clear_pending_tree_status(*, persist=False):
     if remove_ids and persist:
         save_state()
     return bool(remove_ids)
+
+
+def _clear_pending_tree_pulse_commands():
+    remove_ids = [
+        msg_id for msg_id, pending in state.get("pending_tasks", {}).items()
+        if _tree_command_matches(get_pending_command(pending), {CMD_TREE_PULSE_STATUS, CMD_TREE_PULSE})
+    ]
+    for msg_id in remove_ids:
+        state["pending_tasks"].pop(msg_id, None)
+    return remove_ids
+
+
+def _defer_tree_pulse_for_invasion(now):
+    removed_ids = _clear_pending_tree_pulse_commands()
+    changed = bool(removed_ids)
+    if removed_ids or float(state.get("next_irr_time", 0) or 0) <= float(now or 0):
+        if not state.get("pending_irrigation"):
+            state["pending_irrigation"] = True
+            changed = True
+        target_time = float(now or time.time()) + FREEZE_CD
+        if float(state.get("next_irr_time", 0) or 0) < target_time:
+            state["next_irr_time"] = target_time
+            changed = True
+    if state.get("tree_pulse_last_error") != "灵树入侵中，暂停定脉":
+        state["tree_pulse_last_error"] = "灵树入侵中，暂停定脉"
+        changed = True
+    return changed
 
 
 def _has_tree_harvest_inflight(now=None):
@@ -853,6 +889,7 @@ async def handle_tree_invasion_start(text, now):
             selected_ids = _tree_guard_selected_ids(now)
             is_selected = int(current_identity_id or 0) in selected_ids
             state["is_invading"] = True
+            _defer_tree_pulse_for_invasion(now)
             if is_selected:
                 delay = _tree_guard_initial_delay(now, current_identity_id)
                 state["next_guard_time"] = now + delay
@@ -1375,20 +1412,46 @@ async def run_tree_scheduler(now):
     )
 
     if not state["is_maturing"] and now >= state["next_irr_time"]:
-        if has_pending_tree_action:
-            return
         if state["is_invading"]:
-            if not state["pending_irrigation"]:
-                state["pending_irrigation"] = True
-                state["next_irr_time"] = now + FREEZE_CD
+            if _defer_tree_pulse_for_invasion(now):
                 save_state()
                 await send_audit_log("⏳ 入侵中，灵树定脉已暂停。")
+        elif has_pending_tree_action:
+            return
+        elif not _tree_pulse_panel_is_recent(now):
+            msg = await send_game_command(
+                CMD_TREE_PULSE_STATUS,
+                track=False,
+                max_retry=0,
+                source_module="灵树",
+            )
+            sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+            if not msg:
+                state["next_irr_time"] = sent_at + RETRY_MAX_SEC
+                save_state()
+            else:
+                state["last_tree_status_sent_at"] = sent_at
+                _schedule_tree_pulse_status_spread(sent_at)
+                save_state()
         else:
-            if not _tree_pulse_panel_is_recent(now):
+            snapshot = _tree_pulse_snapshot_from_state()
+            command, reason = _choose_tree_pulse_command(snapshot)
+            if not command:
+                if reason == "今日定脉令已满":
+                    delay = _tree_pulse_next_day_delay(now)
+                    state["next_irr_time"] = now + delay
+                elif reason == "灵树已成熟或遭劫难":
+                    state["is_maturing"] = True
+                    state["next_irr_time"] = now + FREEZE_CD
+                else:
+                    _schedule_tree_pulse_blocked_check(now)
+                state["tree_pulse_last_error"] = reason
+                save_state()
+            else:
                 msg = await send_game_command(
-                    CMD_TREE_PULSE_STATUS,
-                    track=False,
+                    command,
                     max_retry=0,
+                    reply_timeout=TREE_PULSE_REPLY_TIMEOUT_SEC,
                     source_module="灵树",
                 )
                 sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
@@ -1396,39 +1459,20 @@ async def run_tree_scheduler(now):
                     state["next_irr_time"] = sent_at + RETRY_MAX_SEC
                     save_state()
                 else:
-                    state["last_tree_status_sent_at"] = sent_at
-                    _schedule_tree_pulse_status_spread(sent_at)
-                    save_state()
-            else:
-                snapshot = _tree_pulse_snapshot_from_state()
-                command, reason = _choose_tree_pulse_command(snapshot)
-                if not command:
-                    if reason == "今日定脉令已满":
-                        delay = _tree_pulse_next_day_delay(now)
-                        state["next_irr_time"] = now + delay
-                    elif reason == "灵树已成熟或遭劫难":
-                        state["is_maturing"] = True
-                        state["next_irr_time"] = now + FREEZE_CD
-                    else:
-                        _schedule_tree_pulse_blocked_check(now)
+                    state["tree_pulse_last_action"] = command
                     state["tree_pulse_last_error"] = reason
+                    state["next_irr_time"] = sent_at + 10 * 60
                     save_state()
-                else:
-                    msg = await send_game_command(
-                        command,
-                        max_retry=0,
-                        reply_timeout=TREE_PULSE_REPLY_TIMEOUT_SEC,
-                        source_module="灵树",
-                    )
-                    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-                    if not msg:
-                        state["next_irr_time"] = sent_at + RETRY_MAX_SEC
-                        save_state()
-                    else:
-                        state["tree_pulse_last_action"] = command
-                        state["tree_pulse_last_error"] = reason
-                        state["next_irr_time"] = sent_at + 10 * 60
-                        save_state()
+
+    if state["is_invading"]:
+        has_pending_tree_action = _has_pending_tree_command(
+            CMD_TREE_WATER,
+            CMD_TREE_GUARD,
+            CMD_TREE_STATUS,
+            CMD_TREE_PULSE_STATUS,
+            CMD_TREE_PULSE,
+            CMD_TREE_HARVEST,
+        )
 
     if state["is_invading"] and now >= state["next_guard_time"]:
         if has_pending_tree_action:

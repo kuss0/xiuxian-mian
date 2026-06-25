@@ -548,6 +548,23 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 90, state_module.state["next_concubine_time"])
         self.assertIn("入梦寻图等待闭关/元婴结算", state_module.state["concubine_last_error"])
 
+    async def test_scheduler_calibrates_status_after_dream_pending_timeout_before_retry(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now + 3600)
+        sent_msg = SimpleNamespace(id=992, sent_at=now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_error"] = "dream_pending 等待回复超时，已转状态校准"
+            identity_state["next_concubine_time"] = now - 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(992, state_module.state["concubine_status_msg_id"])
+
     async def test_scheduler_defers_tianji_command_during_phaseful_summary_window(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now - 1)

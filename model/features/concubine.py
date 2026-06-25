@@ -2533,6 +2533,10 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
+    if state.get("concubine_enabled") and _has_main_due_action(now):
+        last_error = str(state.get("concubine_last_error") or "")
+        if "dream_pending 等待回复超时" in last_error or "入梦寻图等待回复超时" in last_error:
+            return True
     if _has_heart_due_action(now):
         return not bool(_resolve_heart_panel_anchor(now))
     return False

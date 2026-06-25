@@ -370,6 +370,66 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(now + 2 + 10 * 60, state_module.state["next_irr_time"])
 
+    async def test_tree_scheduler_treats_parameterized_pulse_action_as_pending(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["next_irr_time"] = now - 1
+            state_module.state["tree_pulse_last_panel_at"] = now - 60
+            state_module.state["tree_pulse_progress"] = 50.0
+            state_module.state["tree_pulse_main"] = "木"
+            state_module.state["tree_pulse_stability"] = 62
+            state_module.state["tree_pulse_daily_used"] = 0
+            state_module.state["tree_pulse_daily_limit"] = 6
+            state_module.state["pending_tasks"][9911629] = {
+                "cmd": ".定脉 固脉 土",
+                "sent_at": now - 10,
+                "retry": 0,
+                "timeout": tree.TREE_PULSE_REPLY_TIMEOUT_SEC,
+            }
+
+            with patch.object(tree, "send_game_command", new=AsyncMock()) as send_mock:
+                await tree.run_tree_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertIn(9911629, state_module.state["pending_tasks"])
+
+    async def test_tree_invasion_clears_pending_pulse_action_before_guard(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = True
+            state_module.state["pending_irrigation"] = False
+            state_module.state["next_irr_time"] = now - 1
+            state_module.state["next_guard_time"] = now - 1
+            state_module.state["pending_tasks"][9911629] = {
+                "cmd": ".定脉 固脉 土",
+                "sent_at": now - 10,
+                "retry": 0,
+                "timeout": tree.TREE_PULSE_REPLY_TIMEOUT_SEC,
+            }
+
+            with (
+                patch.object(tree, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9911630, sent_at=now + 2))) as send_mock,
+                patch.object(tree, "send_audit_log", new=AsyncMock()),
+                patch.object(tree, "save_state"),
+            ):
+                await tree.run_tree_scheduler(now)
+
+            self.assertNotIn(9911629, state_module.state["pending_tasks"])
+            self.assertTrue(state_module.state["pending_irrigation"])
+            self.assertEqual("灵树入侵中，暂停定脉", state_module.state["tree_pulse_last_error"])
+            send_mock.assert_awaited_once_with(tree.CMD_TREE_GUARD, max_retry=0)
+
     async def test_tree_pulse_strategy_prefers_turbidity_then_stability_then_rush(self):
         high_turbidity = {
             "progress": 50.0,
