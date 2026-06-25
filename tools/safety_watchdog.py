@@ -59,6 +59,8 @@ SMALL_WORLD_TOOL_PREFIXES = (
     ".收割香火",
     ".神识淬炼",
 )
+SMALL_WORLD_SOURCE_MODULE = "小世界"
+SMALL_WORLD_QUERY_FAMILY = "small_world_query"
 
 DUNGEON_JOIN_PREFIXES = (".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山", ".加入落云秘圃")
 DUNGEON_FAST_CHAIN_PREFIXES = (
@@ -749,6 +751,16 @@ def is_small_world_tool_command(text: str) -> bool:
     return any(raw == prefix or raw.startswith(prefix + " ") for prefix in SMALL_WORLD_TOOL_PREFIXES)
 
 
+def is_marked_small_world_refresh_event(item: dict) -> bool:
+    if command_key(str(item.get("text") or "")) != ".小世界":
+        return False
+    return (
+        str(item.get("family") or "").strip() == SMALL_WORLD_QUERY_FAMILY
+        and str(item.get("source_module") or "").strip() == SMALL_WORLD_SOURCE_MODULE
+        and str(item.get("priority") or "").strip().lower() == "chain"
+    )
+
+
 def is_world_boss_event(item: dict, text: str | None = None) -> bool:
     raw = command_key(str(text if text is not None else item.get("text") or ""))
     if raw not in WORLD_BOSS_EVENT_COMMANDS:
@@ -1135,6 +1147,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         world_boss_status_chain = all(is_world_boss_status_event(item, text) for item in items)
         fishing_short_window_chain = all(is_fishing_short_window_event(item) for item in items)
         safe_world_boss_status_chain = world_boss_status_chain and is_safe_world_boss_status_repeat(items, sender_id)
+        marked_small_world_refresh_chain = refresh and all(is_marked_small_world_refresh_event(item) for item in items)
         if (
             sect_teach
             or heart_choice
@@ -1142,6 +1155,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             or world_boss_action_chain
             or safe_world_boss_status_chain
             or fishing_short_window_chain
+            or marked_small_world_refresh_chain
         ):
             min_gap = 0
         elif divination_daily_query_chain:

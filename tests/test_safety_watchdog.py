@@ -83,6 +83,34 @@ class SafetyWatchdogTests(unittest.TestCase):
         breach = safety_watchdog.find_send_breach(events, now, self._config())
         self.assertIn("same command repeat", breach)
 
+    def test_marked_small_world_refresh_chain_allows_short_repeat(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 90, sender_id, ".小世界", family="small_world_query", source_module="小世界", priority="chain"),
+            _event(now, sender_id, ".小世界", family="small_world_query", source_module="小世界", priority="chain"),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_marked_small_world_refresh_chain_still_caps_attempts(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(
+                now - index * 60,
+                sender_id,
+                ".小世界",
+                family="small_world_query",
+                source_module="小世界",
+                priority="chain",
+            )
+            for index in range(11)
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+        self.assertIn("refresh command over attempts", breach)
+
     def test_reset_marker_filters_old_sent_events(self):
         now = time.time()
         sender_id = 8659059191

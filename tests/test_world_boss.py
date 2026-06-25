@@ -333,7 +333,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         state_module.set_world_boss_run_state(
             {
                 "active": True,
-                "event_key": "2026-06-13:test",
+                "event_key": f"{world_boss.get_day_key(now)}:test",
                 "opened_at": now - 60,
                 "phase": "第一阶段·万火归源",
                 "hp_percent": 100,
@@ -598,7 +598,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         state_module.set_world_boss_run_state(
             {
                 "active": True,
-                "event_key": "2026-06-13:test",
+                "event_key": f"{world_boss.get_day_key(now)}:test",
                 "opened_at": now - 60,
                 "phase": "第一阶段·万火归源",
                 "hp_percent": 100,
@@ -831,6 +831,79 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", identity_state["world_boss_pending_action"])
         self.assertEqual(0, identity_state["world_boss_pending_since"])
         self.assertEqual(0, identity_state["world_boss_pending_retry_count"])
+
+    async def test_scheduler_archives_inactive_old_event_pending_without_resending(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 25, 7, 20, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        identity_state["world_boss_pending_msg_id"] = 10887188
+        identity_state["world_boss_pending_action"] = "status"
+        identity_state["world_boss_pending_since"] = now - 2 * 86400
+        identity_state["world_boss_pending_retry_count"] = 14
+        state_module.set_world_boss_run_state(
+            {
+                "active": False,
+                "event_key": "2026-06-23:10796803",
+                "opened_at": now - 2 * 86400,
+                "closed_at": now - 2 * 86400 + 1800,
+                "last_result": "等待结算",
+                "last_status_at": now - 2 * 86400,
+                "next_action_at": now - 1,
+                "next_status_query_at": now - 1,
+                "summary": {"镇魂": 22, "护阵": 0, "强攻": 0, "破幡": 0},
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "clear_pending_tasks_by_commands") as clear_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS)
+        run_state = state_module.get_world_boss_run_state()
+        self.assertFalse(run_state["active"])
+        self.assertEqual("", run_state["event_key"])
+        self.assertEqual(0, run_state["opened_at"])
+        self.assertEqual(0, run_state["next_action_at"])
+        self.assertEqual(0, run_state["next_status_query_at"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
+        self.assertEqual("事件已过期", identity_state["world_boss_last_error"])
+
+    async def test_status_retry_blocked_when_event_key_is_from_previous_day(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 25, 7, 20, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        identity_state["world_boss_pending_msg_id"] = 10887188
+        identity_state["world_boss_pending_action"] = "status"
+        identity_state["world_boss_pending_since"] = now - 10
+        identity_state["world_boss_pending_retry_count"] = 1
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-23:10796803",
+                "opened_at": 0,
+                "last_status_at": now - 3600,
+                "next_action_at": now - 1,
+                "next_status_query_at": now - 1,
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "clear_pending_tasks_by_commands") as clear_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        clear_mock.assert_called_with(world_boss.WORLD_BOSS_PENDING_COMMANDS)
+        self.assertFalse(state_module.get_world_boss_run_state()["active"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("事件已过期", identity_state["world_boss_last_error"])
 
     async def test_conclusion_log_is_deduped_by_event_text(self):
         now = 1_781_319_000.0

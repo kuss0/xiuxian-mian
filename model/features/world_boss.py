@@ -139,6 +139,14 @@ def _coerce_float(value, default=0.0):
         return float(default)
 
 
+def _event_day_from_key(run_state):
+    event_key = str((run_state or {}).get("event_key") or "").strip()
+    day_key = event_key.split(":", 1)[0].strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day_key):
+        return day_key
+    return ""
+
+
 def _normalize_summary(value):
     summary = _empty_summary()
     if isinstance(value, dict):
@@ -176,6 +184,10 @@ def _normalize_run_state(raw=None, now=None):
         record["active"] = False
         record["closed_at"] = record["closed_at"] or now
         record["last_result"] = record["last_result"] or "超时结束"
+    elif record["active"] and _event_day_from_key(record) and _event_day_from_key(record) != get_day_key(now):
+        record["active"] = False
+        record["closed_at"] = record["closed_at"] or now
+        record["last_result"] = record["last_result"] or "跨日过期"
     return record
 
 
@@ -392,9 +404,35 @@ def _clear_world_boss_pending_action(identity_state):
 def _is_closed_event_state(run_state):
     return (
         not bool(run_state.get("active"))
-        and _coerce_float(run_state.get("opened_at"), 0) > 0
         and bool(str(run_state.get("event_key") or "").strip())
     )
+
+
+def _inactive_event_expired(run_state, now):
+    if not _is_closed_event_state(run_state):
+        return False
+    event_day = _event_day_from_key(run_state)
+    if event_day and event_day != get_day_key(now):
+        return True
+    closed_at = _coerce_float(run_state.get("closed_at"), 0)
+    opened_at = _coerce_float(run_state.get("opened_at"), 0)
+    reference_at = closed_at or opened_at
+    return reference_at > 0 and float(now) - reference_at > WORLD_BOSS_EVENT_TTL_SEC
+
+
+def _archive_inactive_event_state(run_state, now, reason):
+    last_result = str(run_state.get("last_result") or reason or "事件已过期").strip()
+    last_conclusion_key = str(run_state.get("last_conclusion_key") or "").strip()
+    last_conclusion_at = _coerce_float(run_state.get("last_conclusion_at"), 0)
+    participants = _coerce_int(run_state.get("participants"), 0)
+    fallback_status_day = str(run_state.get("fallback_status_day") or "").strip()
+    run_state.clear()
+    run_state.update(_blank_run_state(now))
+    run_state["last_result"] = last_result
+    run_state["last_conclusion_key"] = last_conclusion_key
+    run_state["last_conclusion_at"] = last_conclusion_at
+    run_state["participants"] = participants
+    run_state["fallback_status_day"] = fallback_status_day
 
 
 def _fallback_status_retry_allowed(run_state, now):
@@ -409,6 +447,9 @@ def _fallback_status_retry_allowed(run_state, now):
 
 
 def _status_retry_allowed(run_state, now):
+    event_day = _event_day_from_key(run_state)
+    if event_day and event_day != get_day_key(now):
+        return False
     if bool(run_state.get("active")):
         opened_at = _coerce_float(run_state.get("opened_at"), 0)
         if opened_at <= 0:
@@ -438,7 +479,18 @@ def _clear_all_world_boss_pending(reason=""):
 def _clear_stale_inactive_event_pending(run_state, now):
     if not _is_closed_event_state(run_state):
         return False
-    cleared = _clear_all_world_boss_pending(run_state.get("last_result") or "事件已结束")
+    expired = _inactive_event_expired(run_state, now)
+    reason = "事件已过期" if expired else (run_state.get("last_result") or "事件已结束")
+    cleared = _clear_all_world_boss_pending(reason)
+    if expired:
+        _archive_inactive_event_state(run_state, now, reason)
+        _set_run_state(run_state, persist=False)
+        console_log(
+            "🗡 真仙试锋已归档过期事件状态。",
+            scope="global",
+            limit=180,
+        )
+        return cleared
     if cleared:
         run_state["next_action_at"] = 0
         run_state["next_status_query_at"] = 0
