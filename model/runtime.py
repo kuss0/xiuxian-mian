@@ -268,6 +268,7 @@ LOG_BOT_TOTAL_TIMEOUT_SEC = 12
 LOG_BOT_POLL_READ_TIMEOUT_SEC = 35
 LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
+GAME_SEND_RPC_TIMEOUT_SEC = 25
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
 WEAKNESS_BLOCK_AUDIT_INTERVAL_SEC = 5 * 60
@@ -2657,7 +2658,7 @@ async def send_game_command(
                     )
                     return None
                 try:
-                    await _ensure_account_client_ready(active_client)
+                    await asyncio.wait_for(_ensure_account_client_ready(active_client), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
                 except Exception as e:
                     reason = _compact_account_error(e)
                     if _is_account_session_error(e):
@@ -2686,11 +2687,11 @@ async def send_game_command(
             if not game_group_id:
                 raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
             try:
-                peer = await active_client.get_input_entity(game_group_id)
+                peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
             except ValueError:
-                await active_client.get_dialogs()
-                peer = await active_client.get_input_entity(game_group_id)
-            send_as_peer = await active_client.get_input_entity(send_as_id)
+                await asyncio.wait_for(active_client.get_dialogs(), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+                peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+            send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
             reply_to_spec = None
             if reply_to:
                 reply_to_spec = types.InputReplyToMessage(
@@ -2700,13 +2701,16 @@ async def send_game_command(
             elif topic_id > 0:
                 reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
             try:
-                result = await active_client(
-                    functions.messages.SendMessageRequest(
-                        peer=peer,
-                        message=command,
-                        reply_to=reply_to_spec,
-                        send_as=send_as_peer,
-                    )
+                result = await asyncio.wait_for(
+                    active_client(
+                        functions.messages.SendMessageRequest(
+                            peer=peer,
+                            message=command,
+                            reply_to=reply_to_spec,
+                            send_as=send_as_peer,
+                        )
+                    ),
+                    timeout=GAME_SEND_RPC_TIMEOUT_SEC,
                 )
             except FloodWaitError as flood_err:
                 mark_bot_health_suspect(
@@ -2716,6 +2720,18 @@ async def send_game_command(
                 await send_audit_log(
                     f"⏸ TG FloodWait {int(flood_err.seconds)}s，普通指令已暂停等待恢复：{_truncate_log_text(command, limit=24)}",
                     scope="identity", send_as_id=send_as_id, limit=220,
+                )
+                return None
+            except asyncio.TimeoutError:
+                await send_audit_log(
+                    (
+                        f"❌ 指令发送超时：{_truncate_log_text(command, limit=48)} | "
+                        f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
+                        f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                    ),
+                    scope="identity",
+                    send_as_id=send_as_id,
+                    limit=240,
                 )
                 return None
             msg_id = _extract_sent_message_id(result)
@@ -2776,6 +2792,18 @@ async def send_game_command(
                 **send_intent,
             )
             return msg
+    except asyncio.TimeoutError:
+        await send_audit_log(
+            (
+                f"❌ 指令发送超时：{_truncate_log_text(command, limit=48)} | "
+                f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
+                f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+            ),
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=240,
+        )
+        return None
     except Exception as e:
         if account_id and _is_account_session_error(e):
             reason = _compact_account_error(e)

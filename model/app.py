@@ -210,6 +210,7 @@ _identity_scheduler_task = None
 _identity_scheduler_started_at = 0.0
 _identity_scheduler_last_warn_at = 0.0
 _log_bot_callback_task = None
+_phaseful_scheduler_task = None
 _suspected_game_bot_hits = {}
 _MESSAGE_BOX_SHADOW_CAP = 10000
 _message_box_shadow = MessageBox(cap=_MESSAGE_BOX_SHADOW_CAP)
@@ -986,16 +987,7 @@ async def _dispatch_message_edited_broadcasts(event, text, now, handlers, *, rep
 
 
 async def _run_identity_schedulers(now):
-    for identity_id in get_identity_ids():
-        if not get_identity_enabled(identity_id):
-            continue
-        if _is_identity_account_offline(identity_id):
-            continue
-        with use_identity(identity_id):
-            if is_identity_weak(identity_id, now):
-                continue
-            for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
-                await scheduler(now)
+    await _run_phaseful_identity_schedulers(now)
 
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
@@ -1003,14 +995,52 @@ async def _run_identity_schedulers(now):
         if _is_identity_account_offline(identity_id):
             continue
         with use_identity(identity_id):
-            if is_identity_weak(identity_id, now):
+            identity_now = time.time()
+            if is_identity_weak(identity_id, identity_now):
                 continue
-            if has_phaseful_summary_block(now):
+            for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
+                await scheduler(identity_now)
+            if has_phaseful_summary_block(identity_now):
                 for scheduler in _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS:
-                    await scheduler(now)
+                    await scheduler(identity_now)
                 continue
             for scheduler in _ORDINARY_IDENTITY_SCHEDULERS:
-                await scheduler(now)
+                await scheduler(identity_now)
+
+
+async def _run_phaseful_identity_schedulers(now):
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            identity_now = time.time()
+            scheduler_now = max(float(now or 0), identity_now)
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
+                await scheduler(scheduler_now)
+
+
+async def _run_phaseful_scheduler_loop(stop_event):
+    while not stop_event.is_set():
+        try:
+            if get_global_enabled():
+                await _run_phaseful_identity_schedulers(time.time())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print("phaseful scheduler loop crashed:")
+            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+            _fire_and_forget(
+                send_audit_log(
+                    f"❌ 结算续轮后台异常：{str(exc)[:180]}",
+                    scope="global",
+                    limit=300,
+                )
+            )
+        await _sleep_or_stop(stop_event, 5)
 
 
 async def _run_global_schedulers(now):
@@ -1737,16 +1767,18 @@ async def main_loop(stop_event=None):
             await _sleep_or_stop(stop_event, 5)
             continue
 
+        await _run_phaseful_identity_schedulers(time.time())
         await _run_global_schedulers(now)
         await run_quiz_learning_scheduler(now)
         await run_retry_scheduler(now)
         await run_identity_info_followup_scheduler(now)
+        await _run_phaseful_identity_schedulers(time.time())
         _start_identity_schedulers_if_idle(now)
         await _sleep_or_stop(stop_event, 5)
 
 
 async def main():
-    global _log_bot_callback_task
+    global _log_bot_callback_task, _phaseful_scheduler_task
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
@@ -1764,14 +1796,22 @@ async def main():
         _log_bot_callback_task = asyncio.create_task(
             run_log_bot_callback_poller(handle_replica_button_callback, stop_event)
         )
+        _phaseful_scheduler_task = asyncio.create_task(_run_phaseful_scheduler_loop(stop_event))
         await main_loop(stop_event)
     finally:
         await shutdown()
 
 
 async def shutdown():
-    global _log_bot_callback_task
+    global _log_bot_callback_task, _phaseful_scheduler_task
     _cancel_identity_schedulers()
+    if _phaseful_scheduler_task and not _phaseful_scheduler_task.done():
+        _phaseful_scheduler_task.cancel()
+        try:
+            await _phaseful_scheduler_task
+        except asyncio.CancelledError:
+            pass
+    _phaseful_scheduler_task = None
     if _log_bot_callback_task and not _log_bot_callback_task.done():
         _log_bot_callback_task.cancel()
         try:

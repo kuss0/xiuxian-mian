@@ -1,4 +1,5 @@
 import copy
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -267,10 +268,111 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app, "has_phaseful_summary_block", return_value=True),
             patch.object(app, "_is_identity_account_offline", return_value=False),
             patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app.time, "time", return_value=now),
         ):
             await app._run_identity_schedulers(now)
 
         self.assertEqual([("cleanup", identity_id, now)], seen)
+
+    async def test_phaseful_catchup_runs_before_ordinary_when_due_during_long_cycle(self):
+        identity_id = 991779
+        state_module.ensure_identity_registered(identity_id)
+        seen = []
+
+        async def fake_phaseful(now):
+            seen.append(("phaseful", state_module.get_current_identity_id(), now))
+
+        async def fake_cleanup(now):
+            seen.append(("cleanup", state_module.get_current_identity_id(), now))
+
+        async def fake_ordinary(now):
+            seen.append(("ordinary", state_module.get_current_identity_id(), now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", (fake_phaseful,)),
+            patch.object(app, "_PHASEFUL_BLOCK_CLEANUP_SCHEDULERS", (fake_cleanup,)),
+            patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (fake_ordinary,)),
+            patch.object(app, "has_phaseful_summary_block", side_effect=lambda scheduler_now: scheduler_now >= 120.0),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app.time, "time", return_value=130.0),
+        ):
+            await app._run_identity_schedulers(100.0)
+
+        self.assertEqual(
+            [
+                ("phaseful", identity_id, 130.0),
+                ("phaseful", identity_id, 130.0),
+                ("cleanup", identity_id, 130.0),
+            ],
+            seen,
+        )
+
+    async def test_main_loop_runs_phaseful_pass_even_when_identity_background_is_separate(self):
+        stop_event = asyncio.Event()
+        seen = []
+
+        async def fake_sleep(loop_stop_event, delay):
+            seen.append(("sleep", delay))
+            loop_stop_event.set()
+
+        async def fake_phaseful(now):
+            seen.append(("phaseful", now))
+
+        def fake_start_identity(now):
+            seen.append(("start_identity", now))
+
+        async def noop_async(*_args, **_kwargs):
+            return None
+
+        with (
+            patch.object(app, "gc_my_msg_ids"),
+            patch.object(app, "gc_ui_login_tokens"),
+            patch.object(app, "gc_ui_sessions"),
+            patch.object(app, "flush_if_dirty", return_value=True),
+            patch.object(app, "has_persistence_write_failure", return_value=False),
+            patch.object(app, "check_bot_health_timeout"),
+            patch.object(app, "should_pause_for_bot_health", return_value=False),
+            patch.object(app, "get_global_enabled", return_value=True),
+            patch.object(app, "run_rare_daily_report_scheduler", new=AsyncMock()),
+            patch.object(app, "_run_global_schedulers", new=AsyncMock()),
+            patch.object(app, "run_quiz_learning_scheduler", new=AsyncMock()),
+            patch.object(app, "run_retry_scheduler", new=AsyncMock()),
+            patch.object(app, "run_identity_info_followup_scheduler", new=AsyncMock()),
+            patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock(side_effect=fake_phaseful)),
+            patch.object(app, "_start_identity_schedulers_if_idle", side_effect=fake_start_identity),
+            patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
+            patch.object(app.time, "time", return_value=200.0),
+        ):
+            await app.main_loop(stop_event)
+
+        self.assertEqual(
+            [("phaseful", 200.0), ("phaseful", 200.0), ("start_identity", 200.0), ("sleep", 5)],
+            seen,
+        )
+
+    async def test_phaseful_scheduler_loop_runs_independently(self):
+        stop_event = asyncio.Event()
+        seen = []
+
+        async def fake_phaseful(now):
+            seen.append(("phaseful", now))
+
+        async def fake_sleep(loop_stop_event, delay):
+            seen.append(("sleep", delay))
+            loop_stop_event.set()
+
+        with (
+            patch.object(app, "get_global_enabled", return_value=True),
+            patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock(side_effect=fake_phaseful)),
+            patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
+            patch.object(app.time, "time", return_value=300.0),
+        ):
+            await app._run_phaseful_scheduler_loop(stop_event)
+
+        self.assertEqual([("phaseful", 300.0), ("sleep", 5)], seen)
 
 
 if __name__ == "__main__":
