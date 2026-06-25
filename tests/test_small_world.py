@@ -758,7 +758,34 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual("preach_pending", state_module.state["small_world_phase"])
             self.assertEqual(7610, state_module.state["small_world_preach_reply_to_msg_id"])
+            self.assertEqual("preach", state_module.state["small_world_last_god_action"])
+            self.assertEqual(now + 1, state_module.state["small_world_last_god_sent_at"])
             self.assertEqual(now + 1 + small_world.SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC, state_module.state["next_small_world_time"])
+
+    async def test_recent_god_action_send_is_suppressed_even_if_reply_tracking_was_cleared(self):
+        send_as_id = 8659059191
+        now = 3600.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_last_god_action"] = "preach"
+            state_module.state["small_world_last_god_sent_at"] = now - 32
+            state_module.state["small_world_preach_reply_to_msg_id"] = 0
+            state_module.state["small_world_preach_due_at"] = 0
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(small_world, "save_state") as save_mock,
+            ):
+                sent = await small_world._send_small_world_preach(now, "信仰维护")
+
+            self.assertTrue(sent)
+            send_mock.assert_not_awaited()
+            save_mock.assert_called_once()
+            self.assertEqual(now - 32 + small_world.SMALL_WORLD_GOD_RESEND_GUARD_SEC, state_module.state["next_small_world_time"])
+            self.assertIn("跳过重复发送", state_module.state["small_world_last_error"])
 
     async def test_harvest_timeout_rechecks_panel_instead_of_refining_from_local_stock(self):
         send_as_id = 8659059296

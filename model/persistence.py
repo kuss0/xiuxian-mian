@@ -791,6 +791,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_priority INTEGER NOT NULL DEFAULT 0")
     if "small_world_pending_god_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_pending_god_at REAL NOT NULL DEFAULT 0")
+    if "small_world_last_god_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_god_action TEXT NOT NULL DEFAULT ''")
+    if "small_world_last_god_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_god_sent_at REAL NOT NULL DEFAULT 0")
     if "small_world_last_disaster_wave_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0")
     if "small_world_phase" not in runtime_columns:
@@ -1429,6 +1433,8 @@ def init_db():
             small_world_pending_god_reason TEXT NOT NULL DEFAULT '',
             small_world_pending_god_priority INTEGER NOT NULL DEFAULT 0,
             small_world_pending_god_at REAL NOT NULL DEFAULT 0,
+            small_world_last_god_action TEXT NOT NULL DEFAULT '',
+            small_world_last_god_sent_at REAL NOT NULL DEFAULT 0,
             small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0,
             small_world_phase TEXT NOT NULL DEFAULT 'idle',
             small_world_query_msg_id INTEGER NOT NULL DEFAULT 0,

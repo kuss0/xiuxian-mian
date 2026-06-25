@@ -46,6 +46,7 @@ SMALL_WORLD_THEFT_CALIBRATION_MAX_SEC = 90
 SMALL_WORLD_MIN_HARVEST_INCENSE = 10.0
 SMALL_WORLD_DEFAULT_STATUS_MAX = 100
 SMALL_WORLD_GOD_FOLLOWUP_SEC = 3 * 3600
+SMALL_WORLD_GOD_RESEND_GUARD_SEC = 5 * 60
 SMALL_WORLD_GOD_PRIORITY_MAINTENANCE = 10
 SMALL_WORLD_GOD_PRIORITY_DISASTER = 100
 SMALL_WORLD_DISASTER_WAVE_INTERVAL_SEC = 3 * 3600
@@ -143,6 +144,26 @@ def _clear_maintenance_god_action():
 
 def _clear_god_pending_tasks():
     clear_pending_tasks_by_commands(SMALL_WORLD_GOD_COMMANDS, send_as_id=get_current_identity_id())
+
+
+def _command_god_action(command):
+    return "relief" if command == CMD_SMALL_WORLD_RELIEF else "preach"
+
+
+def _god_action_name(action):
+    return "赈灾" if action == "relief" else "布道"
+
+
+def _recent_god_send_guard_until(command, now):
+    action = _command_god_action(command)
+    last_action = str(state.get("small_world_last_god_action") or "")
+    last_sent_at = float(state.get("small_world_last_god_sent_at", 0) or 0)
+    if last_action != action or last_sent_at <= 0:
+        return 0
+    guard_until = last_sent_at + SMALL_WORLD_GOD_RESEND_GUARD_SEC
+    if guard_until <= float(now or time.time()):
+        return 0
+    return guard_until
 
 
 def _clear_chain_pending():
@@ -725,7 +746,15 @@ async def _disable_for_realm(raw_text):
 
 async def _send_small_world_god_action(now, command, reason):
     command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
-    action_name = "赈灾" if command == CMD_SMALL_WORLD_RELIEF else "布道"
+    action = _command_god_action(command)
+    action_name = _god_action_name(action)
+    guard_until = _recent_god_send_guard_until(command, now)
+    if guard_until > 0:
+        state["next_small_world_time"] = guard_until
+        state["small_world_last_error"] = f"神迹{action_name}等待回执，跳过重复发送"
+        save_state()
+        return True
+
     sent_msg = await send_game_command(command, track=True, max_retry=0, source_module="小世界")
     sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
     if not sent_msg:
@@ -738,6 +767,8 @@ async def _send_small_world_god_action(now, command, reason):
     _set_phase("preach_pending")
     state["small_world_preach_reply_to_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
     state["small_world_preach_due_at"] = float(sent_at + SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC)
+    state["small_world_last_god_action"] = action
+    state["small_world_last_god_sent_at"] = sent_at
     state["next_small_world_time"] = state["small_world_preach_due_at"]
     state["small_world_last_error"] = ""
     save_state()
