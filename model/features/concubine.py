@@ -2533,6 +2533,10 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
+    if _has_tianji_due_action(now):
+        last_error = str(state.get("concubine_tianji_last_error") or "")
+        if "tianji_pending 等待回复超时" in last_error or "天机代卜等待回复超时" in last_error:
+            return True
     if state.get("concubine_enabled") and _has_main_due_action(now):
         last_error = str(state.get("concubine_last_error") or "")
         if "dream_pending 等待回复超时" in last_error or "入梦寻图等待回复超时" in last_error:
@@ -2543,10 +2547,10 @@ def _needs_active_status_calibration(now):
 
 
 def _active_status_calibration_context(now):
-    if state.get("concubine_enabled") and _has_main_due_action(now):
-        return "入梦寻图", "concubine_last_error"
     if _has_tianji_due_action(now):
         return "天机代卜", "concubine_tianji_last_error"
+    if state.get("concubine_enabled") and _has_main_due_action(now):
+        return "入梦寻图", "concubine_last_error"
     if _has_heart_due_action(now):
         return "共历心劫", "concubine_heart_last_error"
     return "侍妾状态校准", "concubine_last_error"
@@ -4678,7 +4682,13 @@ async def _run_concubine_scheduler(now):
         if await _recover_concubine_pending_from_message_log(now, phase):
             return
         await _audit_pending_timeout_candidates(now, phase)
-        state["concubine_last_error"] = f"{phase} 等待回复超时，已转状态校准" if phase != "status_pending" else "侍妾状态查询等待回复超时"
+        timeout_error = f"{phase} 等待回复超时，已转状态校准" if phase != "status_pending" else "侍妾状态查询等待回复超时"
+        if phase == "tianji_pending":
+            state["concubine_tianji_last_error"] = timeout_error
+        elif phase in CONCUBINE_HEART_ACTIVE_PHASES:
+            state["concubine_heart_last_error"] = timeout_error
+        else:
+            state["concubine_last_error"] = timeout_error
         if _has_available_partner():
             _set_phase("idle")
         elif state.get("concubine_availability") == "no_partner":
@@ -4798,12 +4808,6 @@ async def _run_concubine_scheduler(now):
         await _send_status_command(now)
         return
 
-    if state.get("concubine_enabled"):
-        dream_due_at = float(state.get("concubine_dream_due_at", 0) or 0)
-        if dream_due_at <= now:
-            await _send_dream_command(now)
-            return
-
     if state.get("concubine_tianji_enabled"):
         if _is_tianji_affinity_blocked():
             affinity = int(state.get("concubine_affinity", 0) or 0)
@@ -4813,6 +4817,12 @@ async def _run_concubine_scheduler(now):
         tianji_due_at = float(state.get("concubine_tianji_due_at", 0) or 0)
         if tianji_due_at <= now:
             await _send_tianji_command(now)
+            return
+
+    if state.get("concubine_enabled"):
+        dream_due_at = float(state.get("concubine_dream_due_at", 0) or 0)
+        if dream_due_at <= now:
+            await _send_dream_command(now)
             return
 
     if state.get("concubine_heart_enabled"):
