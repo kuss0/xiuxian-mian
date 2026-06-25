@@ -593,6 +593,40 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1, state_module.state["small_world_refresh_count"])
             self.assertEqual(now + 60, state_module.state["next_small_world_time"])
 
+    async def test_manifest_refresh_round_pauses_five_minutes_then_continues(self):
+        send_as_id = 8659059195
+        now = 3055.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【清源子的小世界】\n\n"
+            "🙏 信仰: 100 / 100\n"
+            "☁️ 待收香火: 4.92\n"
+            "🏺 香火库存: 80703\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_refresh_count"] = small_world.SMALL_WORLD_MAX_REFRESH_ATTEMPTS
+            with (
+                patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            audit_mock.assert_awaited_once()
+            self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
+            self.assertEqual(1, state_module.state["small_world_refresh_count"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC,
+                state_module.state["next_small_world_time"],
+            )
+            self.assertIn("5 分钟后继续刷新", state_module.state["small_world_last_error"])
+
     async def test_manifest_refresh_preempts_daily_preach_maintenance(self):
         send_as_id = 8659059196
         now = 3060.0
@@ -1261,6 +1295,28 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
 
             relief_mock.assert_awaited_once_with(now, "灾害: 地脉翻身，赈灾安抚")
             query_mock.assert_not_awaited()
+
+    async def test_scheduler_sends_next_refresh_round_after_five_minute_pause(self):
+        send_as_id = 8659059316
+        now = 4275.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_phase"] = "refresh_wait"
+            state_module.state["small_world_refresh_count"] = 1
+            state_module.state["next_small_world_time"] = now - 1
+
+            with patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock:
+                await small_world.run_small_world_scheduler(now)
+
+            query_mock.assert_awaited_once_with(
+                now,
+                f"祈愿刷新 1/{small_world.SMALL_WORLD_MAX_REFRESH_ATTEMPTS}",
+                refresh_attempt=1,
+            )
 
     async def test_due_disaster_god_action_preempts_chain_pending_phase(self):
         send_as_id = 8659059311

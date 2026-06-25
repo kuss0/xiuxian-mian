@@ -310,6 +310,45 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             seen,
         )
 
+    async def test_small_world_identity_scheduler_runs_only_small_world_in_identity_context(self):
+        identity_id = 991780
+        state_module.ensure_identity_registered(identity_id)
+        seen = []
+
+        async def fake_small_world(now):
+            seen.append(("small_world", state_module.get_current_identity_id(), now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_small_world_scheduler", new=AsyncMock(side_effect=fake_small_world)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=130.0),
+        ):
+            await app._run_small_world_identity_schedulers(100.0)
+
+        scheduler_mock.assert_awaited_once_with(130.0)
+        self.assertEqual([("small_world", identity_id, 130.0)], seen)
+
+    async def test_small_world_identity_scheduler_skips_phaseful_block(self):
+        identity_id = 991781
+        state_module.ensure_identity_registered(identity_id)
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=True),
+            patch.object(app, "run_small_world_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app.time, "time", return_value=130.0),
+        ):
+            await app._run_small_world_identity_schedulers(100.0)
+
+        scheduler_mock.assert_not_awaited()
+
     async def test_main_loop_runs_phaseful_pass_even_when_identity_background_is_separate(self):
         stop_event = asyncio.Event()
         seen = []
@@ -373,6 +412,46 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             await app._run_phaseful_scheduler_loop(stop_event)
 
         self.assertEqual([("phaseful", 300.0), ("sleep", 5)], seen)
+
+    async def test_small_world_scheduler_loop_runs_independently(self):
+        stop_event = asyncio.Event()
+        seen = []
+
+        async def fake_small_world(now):
+            seen.append(("small_world", now))
+
+        async def fake_sleep(loop_stop_event, delay):
+            seen.append(("sleep", delay))
+            loop_stop_event.set()
+
+        with (
+            patch.object(app, "get_global_enabled", return_value=True),
+            patch.object(app, "_run_small_world_identity_schedulers", new=AsyncMock(side_effect=fake_small_world)),
+            patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
+            patch.object(app.time, "time", return_value=300.0),
+        ):
+            await app._run_small_world_scheduler_loop(stop_event)
+
+        self.assertEqual([("small_world", 300.0), ("sleep", 10)], seen)
+
+    async def test_small_world_scheduler_loop_respects_global_disabled(self):
+        stop_event = asyncio.Event()
+        seen = []
+
+        async def fake_sleep(loop_stop_event, delay):
+            seen.append(("sleep", delay))
+            loop_stop_event.set()
+
+        with (
+            patch.object(app, "get_global_enabled", return_value=False),
+            patch.object(app, "_run_small_world_identity_schedulers", new=AsyncMock()) as scheduler_mock,
+            patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
+            patch.object(app.time, "time", return_value=300.0),
+        ):
+            await app._run_small_world_scheduler_loop(stop_event)
+
+        scheduler_mock.assert_not_awaited()
+        self.assertEqual([("sleep", 10)], seen)
 
 
 if __name__ == "__main__":
