@@ -77,6 +77,7 @@ from .state import (
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
     get_replica_run_state,
+    get_replica_success_cooldown_hours,
     get_send_as_profile,
     get_storage_bag_records,
     get_tianjige_dao_path_records,
@@ -97,6 +98,12 @@ _REPLICA_KINDS = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_ZHUIMO, _REPLICA_KIN
 
 def _get_replica_success_cooldown_sec(replica_kind):
     if replica_kind == _REPLICA_KIND_CANGKUN:
+        try:
+            hours = float(get_replica_success_cooldown_hours().get(_REPLICA_KIND_CANGKUN) or 0)
+        except (TypeError, ValueError):
+            hours = 0
+        if hours > 0:
+            return int(hours * 3600)
         return REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC

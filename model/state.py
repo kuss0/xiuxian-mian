@@ -84,7 +84,10 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS = {
+    "cangkun": 2.5,
+}
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
     "label": "",
@@ -728,6 +731,7 @@ GLOBAL_STATE_DEFAULTS = {
     "replica_run_state": {},
     "replica_virtual_hall_match_enabled_map": {},
     "replica_query_aggregator_config": {},
+    "replica_success_cooldown_hours": copy.deepcopy(REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS),
     "storage_bag_api_config": {},
     "storage_bag_records": {},
     "storage_bag_item_rules": {},
@@ -1502,6 +1506,29 @@ def is_replica_query_aggregator_configured():
     return bool(config.get("base_url") and config.get("client_id") and config.get("secret"))
 
 
+def _normalize_replica_success_cooldown_hours(config):
+    source = config if isinstance(config, dict) else {}
+    normalized = copy.deepcopy(REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS)
+    for kind in REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS:
+        try:
+            hours = float(source.get(kind, normalized[kind]))
+        except (TypeError, ValueError):
+            hours = float(normalized[kind])
+        normalized[kind] = round(max(0.25, min(24.0, hours)), 2)
+    return normalized
+
+
+def get_replica_success_cooldown_hours():
+    normalized = _normalize_replica_success_cooldown_hours(_meta_state.get("replica_success_cooldown_hours") or {})
+    _meta_state["replica_success_cooldown_hours"] = normalized
+    return copy.deepcopy(normalized)
+
+
+def set_replica_success_cooldown_hours(config):
+    _meta_state["replica_success_cooldown_hours"] = _normalize_replica_success_cooldown_hours(config)
+    return get_replica_success_cooldown_hours()
+
+
 def get_send_as_label(send_as_id=None):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
@@ -2224,6 +2251,7 @@ __all__ = [
     "get_replica_dispatch_participant_identity_ids",
     "get_replica_query_aggregator_config",
     "get_replica_run_state",
+    "get_replica_success_cooldown_hours",
     "get_replica_virtual_hall_match_enabled_map",
     "infer_replica_professions",
     "is_replica_gold_dps_allowed",
@@ -2276,6 +2304,7 @@ __all__ = [
     "set_replica_dispatch_participant_identity_ids",
     "set_replica_query_aggregator_config",
     "set_replica_run_state",
+    "set_replica_success_cooldown_hours",
     "set_replica_virtual_hall_match_enabled",
     "set_replica_virtual_hall_match_enabled_map",
     "set_forum_topics",

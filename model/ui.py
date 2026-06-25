@@ -137,6 +137,7 @@ from .state import (
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
+    get_replica_success_cooldown_hours,
     get_replica_virtual_hall_match_enabled_map,
     get_tiandao_judgement_enabled,
     get_guanxing_monitor_enabled,
@@ -193,6 +194,7 @@ from .state import (
     set_replica_listener_account_map,
     set_replica_participant_identity_ids,
     set_replica_query_aggregator_config,
+    set_replica_success_cooldown_hours,
     set_replica_virtual_hall_match_enabled_map,
     set_storage_bag_api_config,
     set_storage_bag_item_rules,
@@ -2647,6 +2649,7 @@ def get_replica_config_snapshot():
     participant_ids = get_replica_participant_identity_ids()
     dispatch_participant_ids = get_replica_dispatch_participant_identity_ids()
     match_map = get_replica_virtual_hall_match_enabled_map()
+    success_cooldown_hours = get_replica_success_cooldown_hours()
     storage_records = get_storage_bag_records()
     identity_options = []
     participant_set = {int(identity_id) for identity_id in participant_ids}
@@ -2704,6 +2707,7 @@ def get_replica_config_snapshot():
         "participant_identity_ids": participant_ids,
         "dispatch_participant_identity_ids": dispatch_participant_ids,
         "virtual_hall_match_enabled_map": {str(group_id): bool(match_map.get(str(group_id), False)) for group_id in group_ids},
+        "success_cooldown_hours": success_cooldown_hours,
         "account_options": _get_replica_account_options(),
         "identity_options": identity_options,
         "commands": [
@@ -2765,6 +2769,9 @@ def ui_set_replica_config(payload):
             "client_id": query_aggregator_input.get("client_id"),
             "secret": next_secret,
         })
+    success_cooldown_input = payload.get("success_cooldown_hours")
+    if isinstance(success_cooldown_input, dict):
+        set_replica_success_cooldown_hours(success_cooldown_input)
 
     set_replica_group_ids(group_ids)
     set_replica_listener_account_map(listener_map)

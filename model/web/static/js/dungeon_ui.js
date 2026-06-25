@@ -180,6 +180,8 @@ function renderReplicaConfig(replica) {
   const groupIds = Array.isArray(replica.group_ids) ? replica.group_ids : [];
   const dispatchGroupIds = Array.isArray(replica.dispatch_group_ids) ? replica.dispatch_group_ids : [];
   const aggregator = replica.query_aggregator_config || {};
+  const cooldownHours = replica.success_cooldown_hours || {};
+  const cangkunCooldownHours = Number(cooldownHours.cangkun || 2.5);
   const secretPlaceholder = aggregator.secret_configured ? '已配置，留空保留' : '未配置';
   return '<form id="replica-config-form" class="replica-config-form">'
     + '<div class="replica-config-grid">'
@@ -207,6 +209,12 @@ function renderReplicaConfig(replica) {
     + '<label class="form-label">Base URL<input class="text-input" name="replica_query_aggregator_base_url" value="' + escapeHtml(aggregator.base_url || '') + '" autocomplete="off" /></label>'
     + '<label class="form-label">Client ID<input class="text-input" name="replica_query_aggregator_client_id" value="' + escapeHtml(aggregator.client_id || '') + '" autocomplete="off" /></label>'
     + '<label class="form-label">Secret<input class="text-input" name="replica_query_aggregator_secret" type="password" placeholder="' + escapeHtml(secretPlaceholder) + '" autocomplete="new-password" /></label>'
+    + '</div>'
+    + '</div>'
+    + '<div class="dungeon-section">'
+    + '<div class="queue-section-title">副本冷却</div>'
+    + '<div class="replica-config-grid">'
+    + '<label class="form-label">苍坤成功冷却（小时）<input class="text-input" name="replica_cangkun_success_cooldown_hours" type="number" min="0.25" max="24" step="0.25" value="' + escapeHtml(cangkunCooldownHours) + '" /></label>'
     + '</div>'
     + '</div>'
     + '<div class="dungeon-section">'
@@ -360,6 +368,7 @@ function collectReplicaConfigPayload() {
     client_id: (form.querySelector('input[name="replica_query_aggregator_client_id"]')?.value || '').trim(),
     secret: (form.querySelector('input[name="replica_query_aggregator_secret"]')?.value || '').trim()
   };
+  const cangkunCooldown = (form.querySelector('input[name="replica_cangkun_success_cooldown_hours"]')?.value || '').trim();
   const participantIds = Array.from(form.querySelectorAll('[data-replica-participant]:checked')).map(function(input) {
     return input.getAttribute('data-replica-participant');
   });
@@ -372,6 +381,7 @@ function collectReplicaConfigPayload() {
     dispatch_group_ids: dispatchGroupIds,
     dispatch_listener_account_map: dispatchListenerMap,
     query_aggregator_config: queryAggregatorConfig,
+    success_cooldown_hours: {cangkun: cangkunCooldown},
     participant_identity_ids: participantIds,
     dispatch_participant_identity_ids: dispatchParticipantIds,
     virtual_hall_match_enabled_map: {}

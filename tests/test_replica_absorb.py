@@ -796,6 +796,24 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("lobby_until", state_item)
         self.assertNotIn("lobby_status", state_item)
 
+    def test_cangkun_success_cooldown_uses_configured_hours(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        state_module.set_replica_success_cooldown_hours({"cangkun": 3.25})
+        now = 1000.0
+
+        app_replica._mark_replica_success_cooldown(
+            [leader_id],
+            now,
+            source_msg_id=9940101,
+            replica_kind=app_replica._REPLICA_KIND_CANGKUN,
+        )
+
+        record = state_module.get_replica_run_state()["by_identity"][str(leader_id)]
+        state_item = record["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
+        self.assertEqual(now + int(3.25 * 3600), state_item["cooldown_until"])
+        self.assertEqual("success_cooldown", record["last_join_result"])
+
     def test_cleanup_clears_inactive_cangkun_room_id_without_clearing_active_cd(self):
         expired_id = self._register_replica_identity(991201, "expired", professions="灵医")
         cooldown_id = self._register_replica_identity(991202, "cooldown", professions="破军")

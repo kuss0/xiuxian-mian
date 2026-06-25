@@ -321,6 +321,23 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertTrue(snapshot["secret_configured"])
         self.assertNotIn("secret", snapshot)
 
+    def test_replica_config_saves_cangkun_success_cooldown_hours(self):
+        self.assertEqual(2.5, ui.get_replica_config_snapshot()["success_cooldown_hours"]["cangkun"])
+        payload = {
+            "group_ids": "-100777",
+            "listener_account_map": {"-100777": "9001"},
+            "participant_identity_ids": [],
+            "virtual_hall_match_enabled_map": {},
+            "success_cooldown_hours": {"cangkun": "3.25"},
+        }
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config(payload)
+
+        self.assertTrue(ok, message)
+        self.assertEqual({"cangkun": 3.25}, state_module.get_replica_success_cooldown_hours())
+        self.assertEqual(3.25, ui.get_replica_config_snapshot()["success_cooldown_hours"]["cangkun"])
+
     def test_replica_config_ignores_dispatch_group_overlaps(self):
         state_module.set_game_group_id(-100999)
         payload = {
