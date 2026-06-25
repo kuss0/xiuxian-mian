@@ -1,7 +1,9 @@
 import atexit
 import asyncio
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,6 +160,85 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("收到玄骨考校超时结果，停止重试", state_module.state["quiz_last_error"])
         send_answer_mock.assert_not_awaited()
         self.assertIn("题库内超时未作答", audit_mock.await_args.args[0])
+
+
+class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+        quiz._reset_quiz_bank_cache()
+
+    def tearDown(self):
+        quiz._reset_quiz_bank_cache()
+        state_module._meta_state.clear()
+        state_module._meta_state.update(self._meta_state_snapshot)
+        super().tearDown()
+
+    async def test_external_wrong_result_records_correct_answer(self):
+        prompt = (
+            "【玄骨考校】\n"
+            "@outerdao 你有 300 秒作答。\n"
+            "玄骨上人问：“韩立在内殿对付玄骨时，最能克制魔修的手段是什么？”\n"
+            "A. 青竹蜂云剑\n"
+            "B. 辟邪神雷\n"
+            "C. 乾蓝冰焰\n"
+            "D. 啼魂兽\n"
+            "回复本消息并使用 .作答 <选项>"
+        )
+        result = "【玄骨考校·答错】\n@outerdao 的答案 A 错了（正确答案：B）"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bank_path = Path(tmpdir) / "quiz_bank.json"
+            bank_path.write_text("[]\n", encoding="utf-8")
+            with (
+                patch.object(quiz, "QUIZ_BANK_FILE", str(bank_path)),
+                patch.object(quiz, "save_quiz_learning_watchers_state"),
+                patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                self.assertTrue(await quiz.handle_quiz_learning_prompt(prompt, 1_700_000_000.0))
+                self.assertIn("outerdao", state_module.get_quiz_learning_watchers())
+
+                handled = await quiz.handle_quiz_result_broadcast(result, now=1_700_000_020.0)
+
+            self.assertTrue(handled)
+            self.assertEqual({}, state_module.get_quiz_learning_watchers())
+            items = json.loads(bank_path.read_text(encoding="utf-8"))
+            self.assertEqual(1, len(items))
+            self.assertEqual("韩立在内殿对付玄骨时，最能克制魔修的手段是什么？", items[0]["question"])
+            self.assertEqual("B", items[0]["answer"])
+            self.assertIn("已记录新题", audit_mock.await_args.args[0])
+
+    async def test_external_correct_result_records_answer(self):
+        prompt = (
+            "【玄骨考校】\n"
+            "@outerdao 你有 300 秒作答。\n"
+            "玄骨上人问：“按原著路线，乾蓝冰焰何时才适合开始从虚天鼎上缓慢炼出？”\n"
+            "A. 结丹初期\n"
+            "B. 结丹后期\n"
+            "C. 元婴期\n"
+            "D. 化神期\n"
+            "回复本消息并使用 .作答 <选项>"
+        )
+        result = "【玄骨考校·答对】\n@outerdao 的答案 C 完全正确"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bank_path = Path(tmpdir) / "quiz_bank.json"
+            bank_path.write_text("[]\n", encoding="utf-8")
+            with (
+                patch.object(quiz, "QUIZ_BANK_FILE", str(bank_path)),
+                patch.object(quiz, "save_quiz_learning_watchers_state"),
+                patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                self.assertTrue(await quiz.handle_quiz_learning_prompt(prompt, 1_700_000_000.0))
+                handled = await quiz.handle_quiz_result_broadcast(result, now=1_700_000_020.0)
+
+            self.assertTrue(handled)
+            items = json.loads(bank_path.read_text(encoding="utf-8"))
+            self.assertEqual(1, len(items))
+            self.assertEqual("C", items[0]["answer"])
+            self.assertIn("已记录新题", audit_mock.await_args.args[0])
 
 
 if __name__ == "__main__":
