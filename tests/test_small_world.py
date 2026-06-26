@@ -1,4 +1,5 @@
 import atexit
+import asyncio
 import copy
 import sys
 import unittest
@@ -737,6 +738,33 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(7605, state_module.state["small_world_manifest_msg_id"])
             self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
 
+    async def test_send_query_does_not_enter_generic_retry_resend(self):
+        send_as_id = 8659059299
+        now = 3260.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7607, sent_at=now + 1))) as send_mock,
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "console_log"),
+            ):
+                sent = await small_world._send_query(now, "周期自查")
+
+            self.assertTrue(sent)
+            send_mock.assert_awaited_once_with(
+                small_world.CMD_SMALL_WORLD_QUERY,
+                track=True,
+                max_retry=0,
+                priority="chain",
+                source_module="小世界",
+            )
+            self.assertEqual("query_pending", state_module.state["small_world_phase"])
+            self.assertEqual(7607, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
+
     async def test_manifest_timeout_closes_chain_without_resending(self):
         send_as_id = 8659059300
         now = 3350.0
@@ -819,6 +847,40 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             save_mock.assert_called_once()
             self.assertEqual(now - 32 + small_world.SMALL_WORLD_GOD_RESEND_GUARD_SEC, state_module.state["next_small_world_time"])
+            self.assertIn("跳过重复发送", state_module.state["small_world_last_error"])
+
+    async def test_concurrent_god_action_send_is_suppressed_by_optimistic_guard(self):
+        send_as_id = 8659059191
+        now = 3700.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        async def slow_send(*_args, **_kwargs):
+            await asyncio.sleep(0)
+            return SimpleNamespace(id=7611, sent_at=now + 1)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_preach_enabled"] = True
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(side_effect=slow_send)) as send_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                first, second = await asyncio.gather(
+                    small_world._send_small_world_preach(now, "灾害: 邪神蛊惑，布道安抚"),
+                    small_world._send_small_world_preach(now + 30, "灾害: 邪神蛊惑，布道安抚"),
+                )
+
+            self.assertTrue(first)
+            self.assertTrue(second)
+            send_mock.assert_awaited_once_with(
+                small_world.CMD_SMALL_WORLD_PREACH,
+                track=True,
+                max_retry=0,
+                source_module="小世界",
+            )
+            self.assertEqual("preach", state_module.state["small_world_last_god_action"])
+            self.assertEqual(now + 1, state_module.state["small_world_last_god_sent_at"])
+            self.assertEqual(now + 1 + small_world.SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC, state_module.state["next_small_world_time"])
             self.assertIn("跳过重复发送", state_module.state["small_world_last_error"])
 
     async def test_harvest_timeout_rechecks_panel_instead_of_refining_from_local_stock(self):

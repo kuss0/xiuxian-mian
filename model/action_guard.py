@@ -530,9 +530,9 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
     if action_key == "concubine_heart":
         return _phase_is(identity_state, "concubine_phase", {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}) or _int_state(identity_state, "concubine_heart_prompt_msg_id") > 0
     if action_key == "deep_retreat":
-        return _phase_is(identity_state, "deep_retreat_phase", {"launching", "running"})
+        return _phase_is(identity_state, "deep_retreat_phase", {"launching", "running", "observing_summary", "waiting_summary"})
     if action_key == "yuanying_launch":
-        return _phase_is(identity_state, "yuanying_phase", {"launching", "running"})
+        return _phase_is(identity_state, "yuanying_phase", {"launching", "running", "observing_summary", "waiting_summary"})
     if action_key == "second_soul_train":
         return _phase_is(identity_state, "second_soul_phase", {"train_pending"}) and _int_state(identity_state, "second_soul_train_msg_id") > 0
     if action_key == "small_world_preach":

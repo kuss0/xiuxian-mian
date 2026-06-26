@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import action_guard, config, control
 from model import state as state_module
-from model.features import concubine, explore_rift, wild_training
+from model.features import concubine, explore_rift, small_world, wild_training
 
 
 class StartupRecoveryGuardTests(unittest.TestCase):
@@ -177,6 +177,36 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual({}, state_module.state["action_guard_sessions"])
 
+    def test_startup_recovery_clears_orphan_small_world_query_guard(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 10976313
+            state_module.state["next_small_world_time"] = now + 180
+            state_module.state["pending_tasks"] = {}
+            state_module.state["action_guard_sessions"] = {
+                "small_world_query": {
+                    "action_key": "small_world_query",
+                    "attempt": 1,
+                    "last_sent_at": now - 600,
+                    "last_msg_id": 10976313,
+                    "last_command": config.CMD_SMALL_WORLD_QUERY,
+                }
+            }
+
+        with patch.object(small_world.random, "uniform", return_value=600):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertNotIn("small_world_query", state_module.state["action_guard_sessions"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
+            self.assertIn("遗留等待已恢复清理", state_module.state["small_world_last_error"])
+
     def test_action_guard_keeps_live_reply_wait_but_allows_after_module_timeout(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
@@ -234,6 +264,22 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         self.assertIn("等待游戏回复", reason)
 
         with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+
+        allowed, reason = action_guard.before_send(config.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_phase"] = "observing_summary"
+
+        allowed, reason = action_guard.before_send(config.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+
+        with state_module.use_identity(send_as_id):
             state_module.state["deep_retreat_phase"] = "idle"
             state_module.state["yuanying_phase"] = "queued_launch"
 
@@ -243,6 +289,14 @@ class StartupRecoveryGuardTests(unittest.TestCase):
 
         with state_module.use_identity(send_as_id):
             state_module.state["yuanying_phase"] = "running"
+
+        allowed, reason = action_guard.before_send(config.CMD_YUANYING, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_phase"] = "waiting_summary"
 
         allowed, reason = action_guard.before_send(config.CMD_YUANYING, send_as_id=send_as_id, now=now)
 
@@ -477,6 +531,28 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(0, state_module.state["yuanying_summary_sent_at"])
             self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
             self.assertEqual(now + 90, state_module.state["next_yuanying_time"])
+
+    def test_phaseful_waiting_recovery_uses_phaseful_spread(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["last_deep_retreat_summary_msg_id"] = 123
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+        with patch.object(control.random, "uniform", return_value=120) as uniform_mock:
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
+        uniform_mock.assert_any_call(
+            control.RECOVERY_PHASEFUL_IDLE_MIN_SEC,
+            control.RECOVERY_PHASEFUL_IDLE_MAX_SEC,
+        )
 
     def test_taiyi_yindao_presend_restart_schedules_short_retry(self):
         now = 1_700_000_000.0

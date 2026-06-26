@@ -286,7 +286,7 @@ async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=
 
     set_deep_retreat_phase("running")
     estimated_next_time = float(state.get("next_deep_retreat_time", 0) or 0)
-    if estimated_next_time <= now + CD_BUFFER_SEC:
+    if estimated_next_time <= now + DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC:
         estimated_next_time = None
     _record_deep_retreat_event(
         "已在闭关中",

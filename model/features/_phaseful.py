@@ -84,6 +84,8 @@ SUMMARY_REPLAY_DELAY_MIN_SEC = 9
 SUMMARY_REPLAY_DELAY_MAX_SEC = 18
 SUMMARY_REPLAY_TREE_SKIP_GRACE_SEC = 60
 
+_PHASEFUL_LAUNCH_LOCKS = {}
+
 
 def _summary_replay_intent(send_as_id, msg_id, command):
     chain_id = f"phaseful_replay:{int(send_as_id or 0)}:{int(msg_id or 0)}"
@@ -690,25 +692,51 @@ async def _send_summary_trigger(spec, console_message):
     return True
 
 
-async def _send_summary_launch(spec, launch_command, console_message):
-    await delete_summary_trigger_msg(spec)
-    console_log(console_message)
-    msg = await send_game_command(
-        launch_command,
-        track=False,
-        priority="chain",
-        source_module=spec.source_module or None,
-    )
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
-    if not msg:
-        _schedule_summary_trigger_retry(spec, sent_at)
-        await send_audit_log(f"{spec.title} 续轮指令未发出，已延后重试。")
-        return False
+def _get_phaseful_launch_lock(spec):
+    key = (int(get_current_identity_id() or 0), str(spec.phase_key))
+    lock = _PHASEFUL_LAUNCH_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _PHASEFUL_LAUNCH_LOCKS[key] = lock
+    return lock
 
-    begin_summary_wait(spec, sent_at, launch_probe=True)
-    state[spec.last_summary_msg_id_key] = int(msg.id)
-    save_state()
-    return True
+
+async def _send_summary_launch(spec, launch_command, console_message, now=None):
+    async with _get_phaseful_launch_lock(spec):
+        now = float(now if now is not None else time.time())
+        previous_phase = _phase(spec)
+        if previous_phase not in {"summary_due", "post_summary_wait"}:
+            return False
+
+        previous_summary_started_at = float(state.get(spec.summary_sent_at_key, 0) or 0)
+        await delete_summary_trigger_msg(spec)
+        begin_queued_launch(spec, now)
+        console_log(console_message)
+        msg = await send_game_command(
+            launch_command,
+            track=False,
+            priority="chain",
+            source_module=spec.source_module or None,
+        )
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+        if not msg:
+            if previous_phase == "post_summary_wait":
+                delay = random.uniform(spec.timeout_relaunch_min_sec, spec.timeout_relaunch_max_sec)
+                begin_post_summary_wait(spec, sent_at, delay=delay, confirmed=True)
+            else:
+                if previous_summary_started_at > 0:
+                    state[spec.summary_sent_at_key] = previous_summary_started_at
+                _schedule_summary_trigger_retry(spec, sent_at, preserve_started_at=True)
+            await send_audit_log(f"{spec.title} 续轮指令未发出，已延后重试。")
+            return False
+
+        if previous_phase == "post_summary_wait":
+            mark_launch_command_sent(spec, sent_at)
+        else:
+            begin_summary_wait(spec, sent_at, launch_probe=True)
+            state[spec.last_summary_msg_id_key] = int(msg.id)
+            save_state()
+        return True
 
 
 async def _send_active_summary_query(spec, now):
@@ -860,7 +888,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
             await _extend_summary_due_wait(spec, now)
             return
         if spec.summary_due_timeout_action == "wait_passive":
-            await _send_summary_launch(spec, launch_command, spec.cd_due_console)
+            await _send_summary_launch(spec, launch_command, spec.cd_due_console, now=now)
             return
         await _send_summary_trigger(spec, spec.cd_due_console)
         return
@@ -870,20 +898,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         if now < state[spec.next_time_key]:
             return
 
-        console_log(spec.post_wait_console)
-        begin_queued_launch(spec, now)
-        msg = await send_game_command(
-            launch_command,
-            track=False,
-            priority="chain",
-            source_module=spec.source_module or None,
-        )
-        if msg:
-            sent_at = float(getattr(msg, "sent_at", 0) or time.time())
-            mark_launch_command_sent(spec, sent_at)
-        else:
-            set_phase(spec, "idle")
-            save_state()
+        await _send_summary_launch(spec, launch_command, spec.post_wait_console, now=now)
         return
 
     if _phase(spec) == "running" and state[spec.next_time_key] > 0 and now >= state[spec.next_time_key]:

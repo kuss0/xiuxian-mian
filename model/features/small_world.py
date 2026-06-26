@@ -56,6 +56,8 @@ SMALL_WORLD_DISASTER_GUARD_AFTER_SEC = 25 * 60
 SMALL_WORLD_RELIEF_POPULATION_RATIO_TRIGGER = 0.95
 SMALL_WORLD_RELIEF_STABILITY_RATIO_TRIGGER = 0.80
 
+_SMALL_WORLD_GOD_ACTION_LOCK = asyncio.Lock()
+
 RE_SMALL_WORLD_DISASTER = re.compile(r"【小世界·天降浩劫】")
 RE_SMALL_WORLD_TARGET_TAG = re.compile(rf"道友\s*@({SMALL_WORLD_TARGET_TAG_PATTERN})\s*的小世界遭遇\s*【([^】]+)】")
 RE_SMALL_WORLD_FAITH_DAMAGE = re.compile(r"惨重代价\s*[:：]\s*信仰(?:崩塌|动摇)\s*-\s*\d+\s*点")
@@ -746,35 +748,58 @@ async def _disable_for_realm(raw_text):
 
 
 async def _send_small_world_god_action(now, command, reason):
-    command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
-    action = _command_god_action(command)
-    action_name = _god_action_name(action)
-    guard_until = _recent_god_send_guard_until(command, now)
-    if guard_until > 0:
-        state["next_small_world_time"] = guard_until
-        state["small_world_last_error"] = f"神迹{action_name}等待回执，跳过重复发送"
+    async with _SMALL_WORLD_GOD_ACTION_LOCK:
+        command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
+        action = _command_god_action(command)
+        action_name = _god_action_name(action)
+
+        preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
+        preach_deadline = _get_preach_deadline()
+        if preach_msg_id > 0 and preach_deadline > float(now or time.time()):
+            state["next_small_world_time"] = preach_deadline
+            state["small_world_last_error"] = f"神迹{action_name}等待回执，跳过重复发送"
+            save_state()
+            return True
+
+        guard_until = _recent_god_send_guard_until(command, now)
+        if guard_until > 0:
+            state["next_small_world_time"] = guard_until
+            state["small_world_last_error"] = f"神迹{action_name}等待回执，跳过重复发送"
+            save_state()
+            return True
+
+        previous_action = str(state.get("small_world_last_god_action") or "")
+        previous_sent_at = float(state.get("small_world_last_god_sent_at", 0) or 0)
+        optimistic_sent_at = float(now or time.time())
+        state["small_world_last_god_action"] = action
+        state["small_world_last_god_sent_at"] = optimistic_sent_at
         save_state()
+
+        sent_msg = await send_game_command(command, track=True, max_retry=0, source_module="小世界")
+        sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
+        if not sent_msg:
+            if (
+                str(state.get("small_world_last_god_action") or "") == action
+                and float(state.get("small_world_last_god_sent_at", 0) or 0) == optimistic_sent_at
+            ):
+                state["small_world_last_god_action"] = previous_action
+                state["small_world_last_god_sent_at"] = previous_sent_at
+            state["small_world_last_error"] = f"神迹{action_name}指令发送失败"
+            _schedule_short_retry(sent_at)
+            save_state()
+            await send_audit_log(f"❌ 小世界{action_name}发送失败，稍后重试。", scope="identity")
+            return False
+
+        _set_phase("preach_pending")
+        state["small_world_preach_reply_to_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
+        state["small_world_preach_due_at"] = float(sent_at + SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC)
+        state["small_world_last_god_action"] = action
+        state["small_world_last_god_sent_at"] = sent_at
+        state["next_small_world_time"] = state["small_world_preach_due_at"]
+        state["small_world_last_error"] = ""
+        save_state()
+        console_log(f"🌍 小世界{reason}，已发送神迹{action_name}。")
         return True
-
-    sent_msg = await send_game_command(command, track=True, max_retry=0, source_module="小世界")
-    sent_at = float(getattr(sent_msg, "sent_at", 0) or time.time()) if sent_msg else time.time()
-    if not sent_msg:
-        state["small_world_last_error"] = f"神迹{action_name}指令发送失败"
-        _schedule_short_retry(sent_at)
-        save_state()
-        await send_audit_log(f"❌ 小世界{action_name}发送失败，稍后重试。", scope="identity")
-        return False
-
-    _set_phase("preach_pending")
-    state["small_world_preach_reply_to_msg_id"] = int(getattr(sent_msg, "id", 0) or 0)
-    state["small_world_preach_due_at"] = float(sent_at + SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC)
-    state["small_world_last_god_action"] = action
-    state["small_world_last_god_sent_at"] = sent_at
-    state["next_small_world_time"] = state["small_world_preach_due_at"]
-    state["small_world_last_error"] = ""
-    save_state()
-    console_log(f"🌍 小世界{reason}，已发送神迹{action_name}。")
-    return True
 
 
 async def _send_small_world_preach(now, reason):
@@ -786,7 +811,7 @@ async def _send_small_world_relief(now, reason):
 
 
 async def _send_query(now, reason, *, refresh_attempt=None):
-    msg = await send_game_command(CMD_SMALL_WORLD_QUERY, track=True, max_retry=1, priority="chain")
+    msg = await send_game_command(CMD_SMALL_WORLD_QUERY, track=True, max_retry=0, priority="chain", source_module="小世界")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["small_world_last_error"] = f"{reason}发送 .小世界 失败"
@@ -1109,6 +1134,33 @@ def schedule_small_world_initial_check(now, *, persist=False, keep_last_error=Tr
     else:
         mark_dirty()
     return state["next_small_world_time"]
+
+
+def restore_small_world_runtime(now, *, persist=False):
+    now = float(now or time.time())
+    phase = _phase()
+    pending_tasks = state.get("pending_tasks")
+    if not isinstance(pending_tasks, dict):
+        pending_tasks = {}
+
+    query_msg_id = int(state.get("small_world_query_msg_id", 0) or 0)
+    if phase == "query_pending" and query_msg_id > 0 and query_msg_id not in pending_tasks:
+        _clear_chain_pending()
+        sessions = state.get("action_guard_sessions")
+        if isinstance(sessions, dict):
+            sessions.pop("small_world_query", None)
+        state["small_world_last_error"] = f"{phase} 遗留等待已恢复清理"
+        _schedule_short_retry(now)
+        if persist:
+            save_state()
+        else:
+            mark_dirty()
+        return True
+
+    if float(state.get("next_small_world_time", 0) or 0) <= 0:
+        schedule_small_world_initial_check(now, persist=persist, keep_last_error=True)
+        return True
+    return False
 
 
 def _disaster_kind(raw_text):
@@ -1529,5 +1581,6 @@ __all__ = [
     "handle_small_world_query_reply",
     "handle_small_world_refine_reply",
     "run_small_world_scheduler",
+    "restore_small_world_runtime",
     "schedule_small_world_initial_check",
 ]

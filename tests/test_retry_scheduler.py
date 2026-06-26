@@ -383,6 +383,37 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         with state_module.use_identity(send_as_id) as identity_state:
             self.assertEqual({}, identity_state["pending_tasks"])
 
+    def test_small_world_query_zero_retry_timeout_is_module_managed_without_resend(self):
+        send_as_id = 971010
+        now = 8300.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                404: {
+                    "cmd": config.CMD_SMALL_WORLD_QUERY,
+                    "sent_at": now - 400,
+                    "retry": 0,
+                    "timeout": 300,
+                    "reply_to_msg_id": 0,
+                    "priority": "chain",
+                    "max_retry": 0,
+                    "source_module": "小世界",
+                }
+            }
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(runtime, "console_log") as console_mock:
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_not_awaited()
+        self.assertIn("交由模块状态机继续", console_mock.call_args.args[0])
+        with state_module.use_identity(send_as_id) as identity_state:
+            self.assertEqual({}, identity_state["pending_tasks"])
+
     def test_retry_priority_gap_is_one_to_three_seconds(self):
         self.assertEqual((1.0, 3.0), runtime._get_send_gap_range(runtime.SEND_PRIORITY_RETRY))
 

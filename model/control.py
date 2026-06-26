@@ -172,7 +172,7 @@ from .message_contract import (
 from .features.pet import get_pet_status_text
 from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
-from .features.small_world import clear_small_world_state, get_small_world_status_text, schedule_small_world_initial_check
+from .features.small_world import clear_small_world_state, get_small_world_status_text, restore_small_world_runtime, schedule_small_world_initial_check
 from .features.stargazer import get_stargazer_status_text
 from .features.tianxing import execute_tianxing_manual_action, get_tianxing_status_text
 from .features.tianti import get_tianti_status_text
@@ -456,8 +456,8 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     phaseful_meta = phaseful_timer_meta.get(timer_key)
     if phaseful_meta and state.get(phaseful_meta[0]):
         phase = str(state.get(phaseful_meta[1]) or "idle")
-        if phase == "post_summary_wait":
-            return now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+        if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}:
+            return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         if phase == "idle":
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
 
@@ -2927,8 +2927,8 @@ def _restore_phaseful_runtime(module_name, now):
         recover_idle()
         return
     next_time = float(state.get(next_time_key, 0) or 0)
-    if phase == "post_summary_wait" and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
-        state[next_time_key] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
+    if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"} and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
+        state[next_time_key] = now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         return
     if phase == "idle" and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
         state[next_time_key] = now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
@@ -3022,8 +3022,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             _restore_taiyi_runtime(now)
         if state["concubine_enabled"] or state.get("concubine_tianji_enabled") or state.get("concubine_heart_enabled"):
             restore_concubine_runtime(now)
-        if state.get("small_world_enabled") and float(state.get("next_small_world_time", 0) or 0) <= 0:
-            schedule_small_world_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("small_world_enabled"):
+            restore_small_world_runtime(now, persist=False)
         reconcile_identity_sessions(send_as_id, now)
 
 

@@ -821,6 +821,71 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(902, state_module.state["last_deep_retreat_summary_msg_id"])
             self.assertTrue(state_module.state["deep_retreat_probe_pending"])
 
+    async def test_deep_retreat_summary_due_failed_launch_stays_in_summary_due(self):
+        send_as_id = 8659059202
+        now = 1_700_000_450.0
+        started_at = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec - 1
+        self._prepare_identity(send_as_id, "NoTaglessRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = started_at
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.time, "time", return_value=now),
+                patch.object(_phaseful.random, "uniform", return_value=300),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            audit_mock.assert_awaited_once()
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(started_at, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
+            self.assertFalse(state_module.state["deep_retreat_probe_pending"])
+
+    async def test_deep_retreat_post_summary_failed_launch_stays_in_post_wait(self):
+        send_as_id = 8659059202
+        now = 1_700_000_450.0
+        self._prepare_identity(send_as_id, "NoTaglessRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.time, "time", return_value=now),
+                patch.object(_phaseful.random, "uniform", return_value=120),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            audit_mock.assert_awaited_once()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
+            self.assertTrue(state_module.state["deep_retreat_probe_pending"])
+
     async def test_deep_retreat_summary_due_wait_log_is_once_per_wait(self):
         send_as_id = 8659059231
         now = 1_700_000_450.0
@@ -1184,6 +1249,37 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
             self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
+
+    async def test_deep_retreat_already_running_reply_resets_near_due_estimate(self):
+        send_as_id = 8659059214
+        now = 1_700_000_490.0
+        self._prepare_identity(send_as_id, "AlreadyRunningRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "launching"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now + 120
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=60),
+                patch.object(deep_retreat, "save_state"),
+                patch("model.features.passive_inbox.record_passive_inbox_event"),
+            ):
+                handled = await deep_retreat.handle_deep_retreat_running_reply(
+                    "你已在深度闭关之中。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=deep_retreat.CMD_DEEP_RETREAT, id=905),
+                    matched_family="deep_retreat",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("running", state_module.state["deep_retreat_phase"])
+            self.assertFalse(state_module.state["deep_retreat_probe_pending"])
+            self.assertEqual(
+                now + deep_retreat.DEEP_RETREAT_CD + deep_retreat.CD_BUFFER_SEC + 60,
+                state_module.state["next_deep_retreat_time"],
+            )
 
     async def test_yuanying_summary_due_waits_for_passive_trigger_before_grace_expires(self):
         send_as_id = 8659059203

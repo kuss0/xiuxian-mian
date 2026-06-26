@@ -1653,7 +1653,7 @@ _low_priority_audit_seq = 0
 
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
     source_module = str((item or {}).get("source_module") or "").strip()
-    return source_module in {"卜筮问天", "真仙试锋"} or str(family or "").strip() in {"divination", "world_boss"}
+    return source_module in {"卜筮问天", "真仙试锋", "小世界"} or str(family or "").strip() in {"divination", "world_boss", "small_world_query"}
 _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
 _recent_dungeon_quiet_send_blocks = {}
 
