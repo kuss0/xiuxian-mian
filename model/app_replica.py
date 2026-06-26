@@ -1720,14 +1720,32 @@ def _is_replica_settlement_text(text):
         or "【坠魔谷·封魔成功】" in raw_text
         or "【坠魔谷·封魔失败】" in raw_text
         or "【登顶昆吾山】" in raw_text
+        or _is_luoyun_settlement_text(raw_text)
         or ("【后殿冲关止步】" in raw_text and "结算所得早已锁定" in raw_text)
         or any(keyword in raw_text for keyword in ("挑战成功", "通关成功", "试炼成功", "探索完成"))
         or bool(_parse_cangkun_success_kind(raw_text))
     )
 
 
+def _is_luoyun_settlement_text(text):
+    raw_text = str(text or "")
+    if "【落云秘圃·" not in raw_text:
+        return False
+    return any(
+        marker in raw_text
+        for marker in (
+            "通关保底",
+            "树胚机缘",
+            "最终伤根值",
+            "树胚可用 .掌天瓶 养树",
+        )
+    )
+
+
 def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
+    if _is_luoyun_settlement_text(raw_text):
+        return _REPLICA_KIND_LUOYUN
     if "【坠魔谷·封魔成功】" in raw_text or "【坠魔谷·封魔失败】" in raw_text:
         return _REPLICA_KIND_ZHUIMO
     if "【登顶昆吾山】" in raw_text:
@@ -1763,9 +1781,11 @@ def _get_replica_settlement_title(replica_kind, text):
         return _get_cangkun_settlement_title(text)
     raw_text = str(text or "")
     match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|登顶昆吾山)[^】]*)】", raw_text)
+    if replica_kind == _REPLICA_KIND_LUOYUN and not match:
+        match = re.search(r"【(落云秘圃·[^】]+)】", raw_text)
     if match:
         title = match.group(1).strip()
-        title = re.sub(r"^(?:虚天殿|坠魔谷|黄龙山大战?|昆吾山)[·\s]*", "", title).strip()
+        title = re.sub(r"^(?:虚天殿|坠魔谷|黄龙山大战?|昆吾山|落云秘圃)[·\s]*", "", title).strip()
         return title or "已结算"
     return "已结算"
 
@@ -2372,12 +2392,15 @@ async def _maybe_send_zhuimo_decision_notice(event, text, now):
     )
 
 
-async def _maybe_send_luoyun_decision_notice(event, text, now):
+async def _maybe_send_luoyun_decision_notice(event, text, now, context=None):
     stage_info = _get_luoyun_decision_stage(text)
     if not stage_info:
         return False
+    context = context if isinstance(context, dict) else _resolve_luoyun_local_context(text, now)
+    if not context:
+        return False
     parsed_leader_username = _parse_replica_leader_username(text)
-    leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_LUOYUN, now=now)
+    leader_username = parsed_leader_username or _normalize_replica_username(context.get("leader_username") or "")
     leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
     if leader_identity_id <= 0:
         return False
@@ -3103,6 +3126,59 @@ def _get_latest_lightweight_room_for_kind(replica_kind="", now=None):
     return dict(candidates[0][1])
 
 
+def _find_lightweight_room_for_kind_by_usernames(replica_kind="", usernames=None, now=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    evidence_usernames = set(_normalize_replica_username_list(usernames or []))
+    if not replica_kind or not evidence_usernames:
+        return {}
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    candidates = []
+    for room in rooms.values():
+        if not isinstance(room, dict):
+            continue
+        if room.get("replica_kind") != replica_kind:
+            continue
+        if not _is_current_lightweight_room_for_display(room, now=now):
+            continue
+        room_usernames = set(_get_lightweight_room_usernames(room))
+        if room_usernames and evidence_usernames.intersection(room_usernames):
+            candidates.append((float(room.get("updated_at") or room.get("entered_at") or room.get("opened_at") or 0), room))
+    if not candidates:
+        return {}
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    return dict(candidates[0][1])
+
+
+def _resolve_luoyun_local_context(text, now=None):
+    now = float(now or time.time())
+    event_usernames = _extract_replica_usernames(text)
+    room = _find_lightweight_room_for_kind_by_usernames(_REPLICA_KIND_LUOYUN, event_usernames, now=now) if event_usernames else {}
+    identity_ids = _get_active_replica_team_identity_ids_for_usernames(
+        event_usernames,
+        now,
+        replica_kind=_REPLICA_KIND_LUOYUN,
+    ) if event_usernames else []
+    if event_usernames and not room and not identity_ids:
+        return {}
+    if not event_usernames:
+        room = _get_latest_lightweight_room_for_kind(_REPLICA_KIND_LUOYUN, now=now)
+        identity_ids = _get_active_replica_identity_ids(now, replica_kind=_REPLICA_KIND_LUOYUN)
+        if not room and not identity_ids:
+            return {}
+    leader_username = (
+        _parse_replica_leader_username(text)
+        or _normalize_replica_username((room or {}).get("leader_username") or "")
+        or _get_latest_replica_leader_username(_REPLICA_KIND_LUOYUN, now=now)
+    )
+    return {
+        "event_usernames": event_usernames,
+        "room": room,
+        "identity_ids": _normalize_replica_identity_ids(identity_ids),
+        "leader_username": leader_username,
+    }
+
+
 def _format_lightweight_existing_open_notice(flow, *, html=False):
     flow = flow if isinstance(flow, dict) else {}
     replica_kind = flow.get("replica_kind")
@@ -3388,7 +3464,7 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None, *, require_
     return dict(room)
 
 
-def _clear_latest_lightweight_room_for_kind(replica_kind="", now=None, *, usernames=None):
+def _clear_latest_lightweight_room_for_kind(replica_kind="", now=None, *, usernames=None, strict_usernames=False):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     if not replica_kind:
         return False
@@ -3409,7 +3485,7 @@ def _clear_latest_lightweight_room_for_kind(replica_kind="", now=None, *, userna
         if evidence_usernames and room_usernames and not evidence_usernames.intersection(room_usernames):
             continue
         candidates.append((str(chat_id), room))
-    if not candidates and evidence_usernames:
+    if not candidates and evidence_usernames and not strict_usernames:
         for chat_id, room in rooms.items():
             if isinstance(room, dict) and room.get("replica_kind") == replica_kind:
                 candidates.append((str(chat_id), room))
@@ -8837,6 +8913,13 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     replica_settlement_kind = _parse_replica_settlement_kind(text)
     if not replica_settlement_kind and _is_replica_settlement_text(text):
         replica_settlement_kind = _resolve_replica_kind_for_progress(text, now, usernames=_extract_replica_usernames(text))
+    luoyun_context = {}
+    if luoyun_decision_stage or replica_settlement_kind == _REPLICA_KIND_LUOYUN:
+        luoyun_context = _resolve_luoyun_local_context(text, now)
+        if not luoyun_context:
+            luoyun_decision_stage = {}
+            if replica_settlement_kind == _REPLICA_KIND_LUOYUN:
+                replica_settlement_kind = ""
     if (
         not xutian_decision_stage
         and not cangkun_decision_stage
@@ -8937,7 +9020,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     luoyun_notice_sent = False
     if luoyun_decision_stage:
         parsed_leader_username = _parse_replica_leader_username(text)
-        leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_LUOYUN, now=now)
+        leader_username = parsed_leader_username or _normalize_replica_username(luoyun_context.get("leader_username") or "")
         _mark_replica_team_entered(
             _REPLICA_KIND_LUOYUN,
             now,
@@ -8950,33 +9033,39 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             require_recent_enter_request=False,
             usernames=_extract_replica_usernames(text),
         )
-        luoyun_notice_sent = bool(await _maybe_send_luoyun_decision_notice(event, text, now))
+        luoyun_notice_sent = bool(await _maybe_send_luoyun_decision_notice(event, text, now, context=luoyun_context))
     if entered_kind:
         if _mark_replica_team_entered(entered_kind, now, source_msg_id=getattr(event, "id", 0)):
             return True
     if replica_settlement_kind:
         _note_replica_settlement_observed(now)
         event_usernames = _extract_replica_usernames(text)
-        settlement_room = _mark_latest_lightweight_room_entered(
-            replica_settlement_kind,
-            now=now,
-            require_recent_enter_request=False,
-            usernames=event_usernames,
-        )
-        if not settlement_room:
+        if replica_settlement_kind == _REPLICA_KIND_LUOYUN:
+            settlement_room = dict(luoyun_context.get("room") or {})
+        else:
+            settlement_room = _mark_latest_lightweight_room_entered(
+                replica_settlement_kind,
+                now=now,
+                require_recent_enter_request=False,
+                usernames=event_usernames,
+            )
+        if not settlement_room and replica_settlement_kind != _REPLICA_KIND_LUOYUN:
             settlement_room = _get_latest_lightweight_room_for_kind(replica_settlement_kind, now=now)
         room_usernames = _get_lightweight_room_usernames(settlement_room) if settlement_room else []
         team_usernames = room_usernames or event_usernames
-        settlement_notice_item = dict(settlement_room) if isinstance(settlement_room, dict) and settlement_room else _get_latest_lightweight_room_for_kind(replica_settlement_kind, now=now)
+        settlement_notice_item = dict(settlement_room) if isinstance(settlement_room, dict) and settlement_room else {}
+        if not settlement_notice_item and replica_settlement_kind != _REPLICA_KIND_LUOYUN:
+            settlement_notice_item = _get_latest_lightweight_room_for_kind(replica_settlement_kind, now=now)
         identity_ids = _get_active_replica_team_identity_ids_for_usernames(team_usernames, now, replica_kind=replica_settlement_kind)
         if not identity_ids:
             identity_ids = _map_replica_usernames_to_identity_ids(team_usernames)
-        if not identity_ids:
+        if not identity_ids and replica_settlement_kind != _REPLICA_KIND_LUOYUN:
             identity_ids = _get_active_replica_identity_ids(now, replica_kind=replica_settlement_kind)
         lightweight_room_finished = _clear_latest_lightweight_room_for_kind(
             replica_settlement_kind,
             now=now,
             usernames=team_usernames,
+            strict_usernames=replica_settlement_kind == _REPLICA_KIND_LUOYUN,
         )
         if identity_ids:
             leader_username = (

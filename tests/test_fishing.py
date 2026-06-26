@@ -1,6 +1,7 @@
 import sys
 import unittest
 import json
+from datetime import datetime
 from pathlib import Path
 
 
@@ -8,6 +9,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model.features import fishing
+
+
+def _local_ts(year, month, day, hour, minute, second=0):
+    from model.features import fishing_behavior
+
+    return datetime(year, month, day, hour, minute, second, tzinfo=fishing_behavior.TZ_LOCAL).timestamp()
 
 
 FISHING_START_TEXT = """【灵溪垂钓】
@@ -560,6 +567,92 @@ class FishingLabTests(unittest.TestCase):
 
         self.assertTrue(effect.handled)
         self.assertEqual(".开鱼 银须灵鲢 2", effect.command)
+
+    def test_fishing_behavior_daily_full_waits_for_2340_prep_before_reset(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 27, 20, 15)
+        prep = _local_ts(2026, 6, 27, 23, 40)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "灵米饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": False,
+            "fishing_auto_buy_bait_enabled": True,
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now, bait_inventory={"灵米饵": 0, "灵石": 1000})
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertEqual(prep, effect.updates["next_fishing_time"])
+
+    def test_fishing_behavior_daily_full_buys_missing_bait_in_2340_prep_window(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 27, 23, 40)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "灵米饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": False,
+            "fishing_auto_buy_bait_enabled": True,
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now, bait_inventory={"灵米饵": 0, "灵石": 1000})
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".买鱼饵 灵米饵 20", effect.command)
+        self.assertIn("日切备饵", effect.updates["fishing_last_result"])
+
+    def test_fishing_behavior_daily_full_waits_for_midnight_after_prep_when_bait_ready(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 27, 23, 45)
+        reset = _local_ts(2026, 6, 28, 0, 0)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "灵米饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": False,
+            "fishing_auto_buy_bait_enabled": True,
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now, bait_inventory={"灵米饵": 3, "灵石": 1000})
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertEqual(reset, effect.updates["next_fishing_time"])
+
+    def test_fishing_behavior_daily_counter_resets_at_midnight_and_starts(self):
+        from model.features import fishing_behavior
+
+        previous_day = _local_ts(2026, 6, 27, 23, 59, 30)
+        now = _local_ts(2026, 6, 28, 0, 0, 1)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "灵米饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(previous_day),
+            "fishing_daily_count": 20,
+            "fishing_auto_buy_bait_enabled": True,
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now, bait_inventory={"灵米饵": 3, "灵石": 1000})
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".钓鱼 青溪浅滩 灵米饵", effect.command)
+        self.assertEqual(0, effect.updates["fishing_daily_count"])
 
     def test_fishing_behavior_basket_reply_marks_calibrated_day(self):
         from model.features import fishing_behavior

@@ -64,6 +64,7 @@ from .config import (
     CMD_TIANXING_PREDICT,
     CMD_TIANXING_SET_STAR,
     CMD_SECT_TEACH,
+    CMD_SMALL_WORLD_BARRIER,
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
@@ -1248,13 +1249,13 @@ def _manual_enable_taiyi_module_state(now):
 def _disable_small_world_module_state():
     state["small_world_enabled"] = False
     clear_small_world_state(persist=False, keep_last_error=True)
-    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE, CMD_SMALL_WORLD_BARRIER})
 
 
 def _manual_disable_small_world_module_state():
     state["small_world_enabled"] = False
     clear_small_world_state(persist=False, keep_last_error=True)
-    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE})
+    _clear_pending_tasks_by_commands({CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF, CMD_SMALL_WORLD_QUERY, CMD_SMALL_WORLD_MANIFEST, CMD_SMALL_WORLD_HARVEST, CMD_SMALL_WORLD_REFINE, CMD_SMALL_WORLD_BARRIER})
 
 
 def _manual_enable_small_world_module_state(now):
@@ -1511,6 +1512,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_SMALL_WORLD_REFINE: "小世界",
     CMD_SMALL_WORLD_PREACH: "小世界",
     CMD_SMALL_WORLD_RELIEF: "小世界",
+    CMD_SMALL_WORLD_BARRIER: "小世界",
     CMD_WORLD_BOSS_STATUS: "真仙试锋",
     CMD_QINGYUANZI_BREAK: "真仙试锋",
     CMD_QINGYUANZI_SUPPRESS: "真仙试锋",

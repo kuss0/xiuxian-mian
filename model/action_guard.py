@@ -23,6 +23,7 @@ from .config import (
     CMD_WENDAO,
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_MANIFEST,
+    CMD_SMALL_WORLD_BARRIER,
     CMD_SMALL_WORLD_PREACH,
     CMD_SMALL_WORLD_QUERY,
     CMD_SMALL_WORLD_RELIEF,
@@ -209,6 +210,13 @@ ACTION_SPECS = {
         "kind": ACTION_KIND_HIGH_RISK,
         "label": "神识淬炼",
     },
+    "small_world_barrier": {
+        "commands": (CMD_SMALL_WORLD_BARRIER,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "小世界护界禁制",
+        "max_attempts": 1,
+        "ttl_sec": 30 * 60,
+    },
     "divination": {
         "commands": (CMD_DIVINATION,),
         "kind": ACTION_KIND_HIGH_RISK,
@@ -389,6 +397,7 @@ FAMILY_TO_ACTION_KEYS = {
     "small_world_manifest": ("small_world_manifest",),
     "small_world_harvest": ("small_world_harvest",),
     "small_world_refine": ("small_world_refine",),
+    "small_world_barrier": ("small_world_barrier",),
     "divination": ("divination",),
     "divination_exchange": ("divination_exchange",),
     "wendao": ("wendao",),
@@ -565,6 +574,8 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
         return _int_state(identity_state, "small_world_harvest_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"harvest_pending", "harvest_sent", "harvest_before_manifest_sent"})
     if action_key == "small_world_refine":
         return _int_state(identity_state, "small_world_refine_msg_id") > 0 and _phase_is(identity_state, "small_world_phase", {"refine_pending"})
+    if action_key == "small_world_barrier":
+        return _int_state(identity_state, "small_world_barrier_msg_id") > 0 and _float_state(identity_state, "small_world_barrier_due_at") > now
     if action_key == "wendao":
         return _int_state(identity_state, "wendao_reply_to_msg_id") > 0 and _float_state(identity_state, "wendao_reply_due_at") > now
     if action_key == "explore_rift":

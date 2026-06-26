@@ -5,6 +5,7 @@ import time
 
 from ..config import (
     CD_BUFFER_SEC,
+    CMD_SMALL_WORLD_BARRIER,
     CMD_SMALL_WORLD_HARVEST,
     CMD_SMALL_WORLD_MANIFEST,
     CMD_SMALL_WORLD_PREACH,
@@ -28,6 +29,7 @@ SMALL_WORLD_CHAIN_COMMANDS = {
     CMD_SMALL_WORLD_REFINE,
 }
 SMALL_WORLD_GOD_COMMANDS = {CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF}
+SMALL_WORLD_BARRIER_COMMANDS = {CMD_SMALL_WORLD_BARRIER}
 SMALL_WORLD_CHAIN_PENDING = {"query_pending", "manifest_pending", "harvest_pending", "refine_pending"}
 SMALL_WORLD_PENDING_TIMEOUT_SEC = 20 * 60
 SMALL_WORLD_REFRESH_MIN_SEC = 60
@@ -56,6 +58,13 @@ SMALL_WORLD_DISASTER_GUARD_BEFORE_SEC = 30 * 60
 SMALL_WORLD_DISASTER_GUARD_AFTER_SEC = 25 * 60
 SMALL_WORLD_RELIEF_POPULATION_RATIO_TRIGGER = 0.95
 SMALL_WORLD_RELIEF_STABILITY_RATIO_TRIGGER = 0.80
+SMALL_WORLD_BARRIER_REPLY_TIMEOUT_SEC = 10 * 60
+SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC = 6 * 3600
+SMALL_WORLD_BARRIER_COST_BY_LEVEL = {
+    1: 600,
+    3: 5400,
+    4: 9600,
+}
 
 _SMALL_WORLD_GOD_ACTION_LOCK = asyncio.Lock()
 
@@ -90,6 +99,7 @@ RE_MANIFEST_COST = re.compile(r"显灵消耗\s*[:：]\s*([^\n]+)")
 RE_MANIFEST_DELTA = re.compile(r"信仰\s*([+-]\d+).*?稳定\s*([+-]\d+).*?人口\s*([+-]\d+)", re.S)
 RE_HARVEST_STOCK = re.compile(r"当前香火库存\s*[:：]\s*(\d+)")
 RE_REFINE_BURNED = re.compile(r"燃烧了\s*(\d+)\s*点香火")
+RE_BARRIER_BURNED = re.compile(r"燃烧\s*(\d+)\s*香火")
 RE_STOCK_SHORTAGE = re.compile(r"香火库存不足\s*[(（]\s*拥有\s*[:：]\s*(\d+)\s*[)）]")
 RE_RESOURCE_NAME = re.compile(r"【([^】]+)】不足")
 
@@ -192,10 +202,16 @@ def _clear_chain_pending():
         _set_phase("idle")
 
 
+def _clear_barrier_pending():
+    state["small_world_barrier_msg_id"] = 0
+    state["small_world_barrier_due_at"] = 0
+
+
 def _clear_all_runtime_pending():
     _clear_preach_pending()
     _clear_pending_god_action()
     _clear_chain_pending()
+    _clear_barrier_pending()
     state["small_world_refresh_count"] = 0
 
 
@@ -273,6 +289,131 @@ def _disaster_guard_end_at(now):
     if next_wave - SMALL_WORLD_DISASTER_GUARD_BEFORE_SEC <= now <= next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC:
         return float(next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC)
     return 0
+
+
+def _coerce_int_state(key, default=0, *, min_value=None, max_value=None):
+    try:
+        value = int(float(state.get(key, default) or default))
+    except (TypeError, ValueError):
+        value = int(default or 0)
+    if min_value is not None:
+        value = max(int(min_value), value)
+    if max_value is not None:
+        value = min(int(max_value), value)
+    return value
+
+
+def _coerce_float_state(key, default=0.0, *, min_value=None, max_value=None):
+    try:
+        value = float(state.get(key, default) or default)
+    except (TypeError, ValueError):
+        value = float(default or 0)
+    if min_value is not None:
+        value = max(float(min_value), value)
+    if max_value is not None:
+        value = min(float(max_value), value)
+    return value
+
+
+def _barrier_guard_before_sec():
+    minutes = _coerce_int_state("small_world_barrier_guard_before_min", 30, min_value=5, max_value=180)
+    return minutes * 60
+
+
+def _barrier_min_stock():
+    return _coerce_int_state("small_world_barrier_min_stock", 130000, min_value=0, max_value=1000000)
+
+
+def _barrier_min_interval_sec():
+    hours = _coerce_float_state("small_world_barrier_min_interval_hours", 18, min_value=0, max_value=72)
+    return hours * 3600
+
+
+def _barrier_guard_window(now):
+    next_wave = _next_disaster_wave_at(now)
+    if next_wave <= 0:
+        return 0.0, 0.0
+    now = float(now or time.time())
+    if next_wave - _barrier_guard_before_sec() <= now <= next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC:
+        return float(next_wave), float(next_wave + SMALL_WORLD_DISASTER_GUARD_AFTER_SEC)
+    return float(next_wave), 0.0
+
+
+def _barrier_status_active(status):
+    text = str(status or "").strip()
+    if not text:
+        return False
+    inactive_markers = ("未开启", "未布", "无", "失效", "已散", "0秒")
+    return not any(marker in text for marker in inactive_markers)
+
+
+def _barrier_cost_for_panel(panel):
+    level = _panel_int(panel, "temple_level")
+    return int(SMALL_WORLD_BARRIER_COST_BY_LEVEL.get(level, 0) or 0)
+
+
+def _snapshot_for_barrier(now):
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict) or not snapshot:
+        return {}, "missing"
+    updated_at = float(snapshot.get("updated_at", 0) or state.get("small_world_last_panel_at", 0) or 0)
+    if updated_at <= 0 or float(now or time.time()) - updated_at > SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC:
+        return snapshot, "stale"
+    return snapshot, ""
+
+
+def _barrier_decision(now, panel=None, *, fresh_panel=False):
+    if not state.get("small_world_barrier_enabled", True):
+        return "skip", "护界禁制未开启"
+
+    next_wave_at, guard_end_at = _barrier_guard_window(now)
+    if guard_end_at <= 0:
+        return "skip", ""
+
+    if panel is None:
+        panel, panel_reason = _snapshot_for_barrier(now)
+        if panel_reason:
+            return "query", f"护界禁制临灾校准: {panel_reason}"
+    else:
+        panel_reason = ""
+
+    if not isinstance(panel, dict) or not panel:
+        return "query", "护界禁制临灾校准: missing"
+
+    if not fresh_panel and panel_reason:
+        return "query", f"护界禁制临灾校准: {panel_reason}"
+
+    if _barrier_status_active(panel.get("barrier_status")):
+        return "skip", "护界禁制已开启"
+
+    stock = _panel_int(panel, "stock")
+    min_stock = _barrier_min_stock()
+    if stock < min_stock:
+        return "skip", f"香火库存 {stock} 未达护界阈值 {min_stock}"
+
+    cost = _barrier_cost_for_panel(panel)
+    if cost <= 0:
+        level = _panel_int(panel, "temple_level")
+        return "skip", f"神庙 Lv.{level or '未知'} 护界成本未校准"
+    if stock < cost:
+        return "skip", f"香火库存 {stock} 不足护界成本 {cost}"
+
+    last_sent_at = float(state.get("small_world_last_barrier_sent_at", 0) or 0)
+    min_interval = _barrier_min_interval_sec()
+    if min_interval > 0 and last_sent_at > 0 and float(now or time.time()) - last_sent_at < min_interval:
+        return "skip", "护界禁制最小间隔保护中"
+
+    return "send", f"下一灾害波 {fmt_abs_ts(next_wave_at)}，库存 {stock}，成本约 {cost}"
+
+
+async def _maybe_send_barrier_or_query(now, panel=None, *, fresh_panel=False):
+    action, reason = _barrier_decision(now, panel, fresh_panel=fresh_panel)
+    if action == "send":
+        _clear_chain_pending()
+        return await _send_barrier(now, reason)
+    if action == "query":
+        return await _send_query(now, reason)
+    return False
 
 
 def _god_cooldown_until():
@@ -750,12 +891,24 @@ def _is_current_god_reply(reply_to, matched_family):
     return CMD_SMALL_WORLD_PREACH in orig_cmd or CMD_SMALL_WORLD_RELIEF in orig_cmd
 
 
+def _is_current_barrier_reply(reply_to, matched_family):
+    if matched_family == "small_world_barrier":
+        return True
+    if _is_reply_to_tracked_message(reply_to, "small_world_barrier_msg_id"):
+        return True
+    orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
+    return CMD_SMALL_WORLD_BARRIER in orig_cmd
+
+
 async def _disable_for_realm(raw_text):
     _clear_all_runtime_pending()
     state["small_world_enabled"] = False
     state["next_small_world_time"] = 0
     state["small_world_last_error"] = "境界不足，已关闭小世界模块"
-    clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | SMALL_WORLD_GOD_COMMANDS, send_as_id=get_current_identity_id())
+    clear_pending_tasks_by_commands(
+        SMALL_WORLD_CHAIN_COMMANDS | SMALL_WORLD_GOD_COMMANDS | SMALL_WORLD_BARRIER_COMMANDS,
+        send_as_id=get_current_identity_id(),
+    )
     save_state()
     await send_audit_log("⚠️ 小世界境界不足，已关闭该身份的小世界模块。", scope="identity")
     return True
@@ -919,6 +1072,26 @@ async def _send_refine(now, amount):
     return True
 
 
+async def _send_barrier(now, reason):
+    msg = await send_game_command(CMD_SMALL_WORLD_BARRIER, track=True, max_retry=0, priority="chain", source_module="小世界")
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    if not msg:
+        state["small_world_last_error"] = f"发送 .护界禁制 失败: {reason}"
+        _schedule_short_retry(sent_at)
+        save_state()
+        await send_audit_log("❌ 小世界护界禁制发送失败，稍后重试。", scope="identity")
+        return False
+
+    state["small_world_barrier_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    state["small_world_barrier_due_at"] = float(sent_at + SMALL_WORLD_BARRIER_REPLY_TIMEOUT_SEC)
+    state["small_world_last_barrier_sent_at"] = sent_at
+    state["next_small_world_time"] = state["small_world_barrier_due_at"]
+    state["small_world_last_error"] = ""
+    save_state()
+    console_log(f"🌍 小世界临灾护界，已发送禁制：{reason}。")
+    return True
+
+
 def _schedule_refresh(now):
     current_count = int(state.get("small_world_refresh_count", 0) or 0)
     if current_count >= SMALL_WORLD_MAX_REFRESH_ATTEMPTS:
@@ -971,6 +1144,9 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         return await _disable_for_realm("境界不足")
 
     _apply_small_world_panel_snapshot(now, panel)
+
+    if await _maybe_send_barrier_or_query(now, panel, fresh_panel=True):
+        return True
 
     if panel.get("has_prayer"):
         state["small_world_refresh_count"] = 0
@@ -1077,6 +1253,7 @@ def get_small_world_status_text():
         f"- 收割香火：{'开启' if state.get('small_world_harvest_enabled') else '关闭'}",
         f"- 神识淬炼：{'开启' if state.get('small_world_refine_enabled') else '关闭'}",
         f"- 祈愿刷新：{'开启' if state.get('small_world_refresh_enabled') else '关闭'}",
+        f"- 护界禁制：{'开启' if state.get('small_world_barrier_enabled', True) else '关闭'}｜阈值 {int(state.get('small_world_barrier_min_stock', 130000) or 130000)}｜提前 {int(state.get('small_world_barrier_guard_before_min', 30) or 30)} 分钟｜间隔 {float(state.get('small_world_barrier_min_interval_hours', 18) or 18):g} 小时",
         f"- 当前阶段：{_phase()}",
         f"- 当前信仰：{faith_value if faith_value > 0 else '未记录'}",
         f"- 待收香火：{state.get('small_world_pending_incense', 0) or 0}",
@@ -1131,7 +1308,12 @@ def clear_small_world_state(*, persist=False, keep_last_error=False):
     state["small_world_incense_stock"] = 0
     state["small_world_panel_snapshot"] = {}
     state["small_world_last_panel_at"] = 0
-    clear_pending_tasks_by_commands(SMALL_WORLD_CHAIN_COMMANDS | SMALL_WORLD_GOD_COMMANDS, send_as_id=get_current_identity_id())
+    state["small_world_barrier_msg_id"] = 0
+    state["small_world_barrier_due_at"] = 0
+    clear_pending_tasks_by_commands(
+        SMALL_WORLD_CHAIN_COMMANDS | SMALL_WORLD_GOD_COMMANDS | SMALL_WORLD_BARRIER_COMMANDS,
+        send_as_id=get_current_identity_id(),
+    )
     if not keep_last_error:
         state["small_world_last_error"] = ""
     if persist:
@@ -1321,10 +1503,73 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
     return True
 
 
+async def handle_small_world_barrier_reply(text, now, reply_to, matched_family=None):
+    if matched_family and matched_family != "small_world_barrier":
+        return False
+    if not state.get("small_world_enabled") or not state.get("small_world_barrier_enabled", True):
+        return False
+    if not _is_current_barrier_reply(reply_to, matched_family):
+        return False
+
+    raw_text = str(text or "")
+    if "境界不足" in raw_text and "紫府小世界" in raw_text:
+        return await _disable_for_realm(raw_text)
+
+    if _is_resource_shortage_text(raw_text) or "香火不足" in raw_text or "库存不足" in raw_text:
+        _clear_barrier_pending()
+        clear_pending_tasks_by_commands(SMALL_WORLD_BARRIER_COMMANDS, send_as_id=get_current_identity_id())
+        state["small_world_last_error"] = f"护界禁制资源不足: {_truncate(raw_text)}"
+        _schedule_next_cycle(now)
+        save_state()
+        await send_audit_log("⚠️ 小世界护界禁制资源不足，已停止本轮，约 8 小时后再查。", scope="identity")
+        return True
+
+    if "护界禁制" not in raw_text:
+        return False
+
+    burned_match = RE_BARRIER_BURNED.search(raw_text)
+    if burned_match:
+        burned = int(burned_match.group(1))
+        stock = max(0, int(state.get("small_world_incense_stock", 0) or 0) - burned)
+        state["small_world_incense_stock"] = stock
+        _update_snapshot_field("stock", stock)
+
+    if (
+        burned_match
+        or "不会遭受随机天灾" in raw_text
+        or "愿力金幕" in raw_text
+        or "已开启" in raw_text
+        or "尚未消散" in raw_text
+        or "仍在" in raw_text
+    ):
+        _clear_barrier_pending()
+        clear_pending_tasks_by_commands(SMALL_WORLD_BARRIER_COMMANDS, send_as_id=get_current_identity_id())
+        _update_snapshot_field("barrier_status", "已开启")
+        _update_snapshot_field("updated_at", float(now))
+        state["small_world_last_error"] = ""
+        _schedule_next_cycle(now)
+        save_state()
+        return True
+
+    if "尚未" in raw_text or "冷却" in raw_text or "稍后" in raw_text:
+        _clear_barrier_pending()
+        clear_pending_tasks_by_commands(SMALL_WORLD_BARRIER_COMMANDS, send_as_id=get_current_identity_id())
+        state["small_world_last_error"] = f"护界禁制暂不可用: {_truncate(raw_text)}"
+        _schedule_next_cycle(now)
+        save_state()
+        return True
+
+    state["small_world_last_error"] = f"未识别的护界禁制回复: {_truncate(raw_text)}"
+    _clear_barrier_pending()
+    _schedule_short_retry(now)
+    save_state()
+    return False
+
+
 async def handle_small_world_query_reply(text, now, reply_to, matched_family=None):
     if matched_family and matched_family != "small_world_query":
         return False
-    if not state.get("small_world_enabled") or not _chain_enabled():
+    if not state.get("small_world_enabled") or not (_chain_enabled() or state.get("small_world_barrier_enabled", True)):
         return False
 
     raw_text = text or ""
@@ -1515,6 +1760,18 @@ async def _run_small_world_scheduler(now):
     if not state.get("small_world_enabled"):
         return
 
+    barrier_msg_id = int(state.get("small_world_barrier_msg_id", 0) or 0)
+    barrier_deadline = float(state.get("small_world_barrier_due_at", 0) or 0)
+    if barrier_msg_id > 0 and barrier_deadline > 0:
+        if now >= barrier_deadline:
+            state["small_world_last_error"] = "小世界护界禁制回复超时"
+            _clear_barrier_pending()
+            clear_pending_tasks_by_commands(SMALL_WORLD_BARRIER_COMMANDS, send_as_id=get_current_identity_id())
+            _schedule_short_retry(now)
+            save_state()
+            await send_audit_log(f"⚠️ 小世界护界禁制回复超时，消息ID={barrier_msg_id}", scope="identity")
+        return
+
     preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
     preach_deadline = _get_preach_deadline()
     if preach_msg_id > 0 and preach_deadline > 0:
@@ -1578,6 +1835,9 @@ async def _run_small_world_scheduler(now):
         return
 
     next_time = float(state.get("next_small_world_time", 0) or 0)
+    if await _maybe_send_barrier_or_query(now):
+        return
+
     if next_time > 0 and now < next_time:
         return
 
@@ -1604,6 +1864,7 @@ async def _run_small_world_scheduler(now):
 __all__ = [
     "clear_small_world_state",
     "get_small_world_status_text",
+    "handle_small_world_barrier_reply",
     "handle_small_world_disaster_broadcast",
     "handle_small_world_harvest_reply",
     "handle_small_world_manifest_reply",

@@ -349,6 +349,138 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 45 * 60 + 60, state_module.state["next_small_world_time"])
             self.assertIn("让位下一波灾害", state_module.state["small_world_last_error"])
 
+    async def test_barrier_sends_near_disaster_wave_when_stock_is_high(self):
+        send_as_id = 8659059301
+        now = 30000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【WalterWA2000的小世界】\n\n"
+            "⛩️ 神庙: Lv.4【城隍法域】\n"
+            "🙏 信仰: 100 / 100\n"
+            "🏺 香火库存: 140000\n"
+            "🛡️ 护界禁制: 未开启\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = True
+            state_module.state["small_world_last_disaster_wave_at"] = now - (2 * 3600 + 40 * 60)
+            with (
+                patch.object(small_world, "_send_barrier", new=AsyncMock(return_value=True)) as barrier_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            barrier_mock.assert_awaited_once()
+            self.assertIn("成本约 9600", barrier_mock.await_args.args[1])
+
+    async def test_barrier_does_not_send_below_stock_threshold(self):
+        send_as_id = 8659059302
+        now = 30000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【WalterWA2000的小世界】\n\n"
+            "⛩️ 神庙: Lv.4【城隍法域】\n"
+            "🏺 香火库存: 120000\n"
+            "🛡️ 护界禁制: 未开启\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = True
+            state_module.state["small_world_last_disaster_wave_at"] = now - (2 * 3600 + 40 * 60)
+            with (
+                patch.object(small_world, "_send_barrier", new=AsyncMock()) as barrier_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            barrier_mock.assert_not_awaited()
+            self.assertGreater(state_module.state["next_small_world_time"], now)
+
+    async def test_barrier_does_not_send_when_already_active(self):
+        send_as_id = 8659059303
+        now = 30000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【WalterWA2000的小世界】\n\n"
+            "⛩️ 神庙: Lv.4【城隍法域】\n"
+            "🏺 香火库存: 150000\n"
+            "🛡️ 护界禁制: 剩余 6小时12分钟\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = True
+            state_module.state["small_world_last_disaster_wave_at"] = now - (2 * 3600 + 40 * 60)
+            with (
+                patch.object(small_world, "_send_barrier", new=AsyncMock()) as barrier_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            barrier_mock.assert_not_awaited()
+
+    async def test_barrier_uses_query_when_snapshot_is_stale_even_if_next_cycle_future(self):
+        send_as_id = 8659059304
+        now = 30000.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = True
+            state_module.state["small_world_last_disaster_wave_at"] = now - (2 * 3600 + 40 * 60)
+            state_module.state["next_small_world_time"] = now + 6 * 3600
+            state_module.state["small_world_panel_snapshot"] = {
+                "temple_level": 4,
+                "stock": 150000,
+                "barrier_status": "未开启",
+                "updated_at": now - small_world.SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC - 1,
+            }
+            with (
+                patch.object(small_world, "_send_query", new=AsyncMock(return_value=True)) as query_mock,
+                patch.object(small_world, "_send_barrier", new=AsyncMock()) as barrier_mock,
+            ):
+                await small_world._run_small_world_scheduler(now)
+
+            query_mock.assert_awaited_once()
+            self.assertIn("临灾校准", query_mock.await_args.args[1])
+            barrier_mock.assert_not_awaited()
+
+    async def test_barrier_skips_unknown_temple_level_cost(self):
+        send_as_id = 8659059305
+        now = 30000.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(
+            "【WalterWA2000的小世界】\n\n"
+            "⛩️ 神庙: Lv.2【乡土神庙】\n"
+            "🏺 香火库存: 150000\n"
+            "🛡️ 护界禁制: 未开启\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = True
+            state_module.state["small_world_last_disaster_wave_at"] = now - (2 * 3600 + 40 * 60)
+            with (
+                patch.object(small_world, "_send_barrier", new=AsyncMock()) as barrier_mock,
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            barrier_mock.assert_not_awaited()
+
     async def test_pending_maintenance_clears_answered_query_phase_before_waiting(self):
         send_as_id = 8659059203
         now = 21000.0

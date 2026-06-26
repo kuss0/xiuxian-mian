@@ -48,14 +48,16 @@ FISHING_RECOVERY_MIN_SEC = 15
 FISHING_RECOVERY_MAX_SEC = 45
 FISHING_POST_ROD_DELAY_MIN_SEC = 3
 FISHING_POST_ROD_DELAY_MAX_SEC = 5
-FISHING_NEXT_DAY_MIN_SEC = 5 * 60
-FISHING_NEXT_DAY_MAX_SEC = 75 * 60
+FISHING_RESET_JITTER_MIN_SEC = 0
+FISHING_RESET_JITTER_MAX_SEC = 0
 FISHING_MAX_ACTIVE_IDENTITIES = 2
 FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
+FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 8
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
+_RECENT_COMMANDS = {}
 
 
 def _parse_int(value, default=0):
@@ -232,6 +234,22 @@ def _fishing_send_lock(send_as_id):
         lock = asyncio.Lock()
         _SEND_LOCKS[key] = lock
     return lock
+
+
+def _recent_fishing_command_blocks(command, now):
+    recent = _RECENT_COMMANDS.get(_fishing_followup_key(get_current_identity_id())) or {}
+    if str(recent.get("command") or "").strip() != str(command or "").strip():
+        return False
+    sent_at = float(recent.get("sent_at") or 0)
+    return sent_at > 0 and float(now or 0) - sent_at < FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC
+
+
+def _remember_fishing_command(command, sent_at, msg_id):
+    _RECENT_COMMANDS[_fishing_followup_key(get_current_identity_id())] = {
+        "command": str(command or "").strip(),
+        "sent_at": float(sent_at or time.time()),
+        "msg_id": int(msg_id or 0),
+    }
 
 
 def _schedule_fishing_followup(send_as_id, command, due_at):
@@ -462,6 +480,7 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
         if not effect.handled:
             return False
         _apply_effect(effect)
+        _cancel_fishing_followup(get_current_identity_id())
         await _emit_effect_audits(effect)
         return True
 
@@ -501,10 +520,10 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
         return False
 
     _apply_effect(effect)
+    _cancel_fishing_followup(get_current_identity_id())
     _cancel_fishing_recovery(get_current_identity_id())
     await _emit_effect_audits(effect)
     if effect.immediate_commands:
-        _cancel_fishing_followup(get_current_identity_id())
         await _run_immediate_fishing_commands(effect.immediate_commands)
     else:
         _maybe_schedule_pending_fishing_action()
@@ -523,6 +542,10 @@ async def _send_fishing_command(command, now):
 
 async def _send_fishing_command_locked(command, now):
     phase = fishing_behavior.command_phase(command)
+    if _recent_fishing_command_blocks(command, now):
+        state["fishing_last_error"] = f"短窗重复指令已抑制：{command}"
+        mark_dirty()
+        return False
     if (
         phase != "idle"
         and str(state.get("fishing_phase") or "").strip() == phase
@@ -559,6 +582,7 @@ async def _send_fishing_command_locked(command, now):
 
     sent_at = float(getattr(msg, "sent_at", 0) or time.time())
     msg_id = int(getattr(msg, "id", 0) or 0)
+    _remember_fishing_command(command, sent_at, msg_id)
     effect = fishing_behavior.build_send_success_effect(
         _state_snapshot(),
         command,
@@ -582,7 +606,7 @@ async def run_fishing_scheduler(now):
         _state_snapshot(),
         now,
         bait_inventory=_get_bait_inventory_from_storage(),
-        next_day_jitter_sec=random.uniform(FISHING_NEXT_DAY_MIN_SEC, FISHING_NEXT_DAY_MAX_SEC),
+        next_day_jitter_sec=random.uniform(FISHING_RESET_JITTER_MIN_SEC, FISHING_RESET_JITTER_MAX_SEC),
     )
     if not effect.handled:
         return

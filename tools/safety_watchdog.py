@@ -145,6 +145,7 @@ FISHING_SHORT_WINDOW_PREFIXES = (
     ".鱼篓",
 )
 FISHING_SHORT_WINDOW_PRIORITIES = {"urgent_reactive", "event_burst"}
+FISHING_START_REPEAT_MIN_GAP_SEC = 30
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TZ_LOCAL = timezone(timedelta(hours=8))
 
@@ -799,6 +800,41 @@ def is_fishing_short_window_event(item: dict) -> bool:
     )
 
 
+def is_fishing_start_command(text: str) -> bool:
+    return str(text or "").strip().startswith(".钓鱼 ")
+
+
+def is_marked_fishing_event(item: dict) -> bool:
+    return (
+        str(item.get("source_module") or "").strip() == FISHING_SOURCE_MODULE
+        or str(item.get("family") or "").strip() == FISHING_FAMILY
+    )
+
+
+def is_marked_fishing_start_event(item: dict, text: str | None = None) -> bool:
+    return is_fishing_start_command(str(text if text is not None else item.get("text") or "")) and is_marked_fishing_event(item)
+
+
+def has_intervening_fishing_progress(sent: list[dict], sender_id: int, prev: dict, cur: dict) -> bool:
+    if not is_marked_fishing_start_event(prev) or not is_marked_fishing_start_event(cur):
+        return False
+    prev_epoch = float(prev.get("_epoch", 0) or 0)
+    cur_epoch = float(cur.get("_epoch", 0) or 0)
+    if cur_epoch - prev_epoch < FISHING_START_REPEAT_MIN_GAP_SEC:
+        return False
+    if prev_epoch <= 0 or cur_epoch <= prev_epoch:
+        return False
+    for item in sent:
+        if int(item.get("sender_id", 0) or 0) != int(sender_id or 0):
+            continue
+        epoch = float(item.get("_epoch", 0) or 0)
+        if not (prev_epoch < epoch < cur_epoch):
+            continue
+        if is_fishing_short_window_event(item):
+            return True
+    return False
+
+
 def parse_world_boss_action_op(item: dict) -> tuple[str, int, str, int, int] | None:
     if not is_world_boss_action_event(item):
         return None
@@ -1179,6 +1215,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             if is_safe_concubine_voyage_retry_repeat(prev, cur, text):
                 continue
             if is_safe_same_command_retry(prev, cur, text):
+                continue
+            if is_fishing_start_command(text) and has_intervening_fishing_progress(sent, sender_id, prev, cur):
                 continue
             if is_safe_phaseful_chain_relaunch(prev, cur, text, gap):
                 continue

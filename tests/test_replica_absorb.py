@@ -3223,6 +3223,146 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("落云后续抉择：第二幕·护根稳压", notice_text)
         self.assertEqual({"1 三才护根", "2 引傀离根", "3 瓶灵照脉"}, set(button_texts))
 
+    def test_luoyun_other_team_progress_does_not_use_latest_local_room(self):
+        leader_id = self._register_replica_identity(991201, "Shadow_Plus", realm="结丹后期", sect_name="落云宗")
+        member_id = self._register_replica_identity(991202, "ylc123")
+        group_event = self._prepare_replica_group([leader_id, member_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "91",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": group_event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@Shadow_Plus",
+            "join_requested_usernames": ["@ylc123"],
+            "team_usernames": ["@Shadow_Plus", "@ylc123"],
+            "opened_at": now,
+            "entered_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        other_text = (
+            "【落云秘圃·第一幕·破禁入圃】\n"
+            "队伍：@luomanying、@feiyu_ssddc、@huanxinshuimeng、@jianruyan_xs、@jianruyan\n"
+            "队伍战力：4511000958 / 4250000 | 可调神识：0 | 掌天瓶共鸣：无\n\n"
+            "1 · 温养阵眼：以木水灵力慢慢修复外层阵基，降低伤根值，收益更稳。\n"
+            "2 · 强破护傀：先击毁镇灵木傀开路，速度快，但会震伤侧根。\n"
+            "3 · 分探灵脉：分路探查外层灵脉，平衡速度与稳妥。\n\n"
+            "请队长使用 .落云抉择 1/2/3 做出本幕抉择。"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(id=10992149, chat_id=group_event.chat_id, raw_text=other_text),
+                    now + 10,
+                )
+                return handled, notice_mock.await_count
+
+        handled, notice_count = asyncio.run(run_test())
+
+        self.assertFalse(handled)
+        self.assertEqual(0, notice_count)
+        saved_room = app_replica._get_lightweight_last_room(group_event.chat_id, now=now + 10)
+        self.assertEqual("91", saved_room["room_id"])
+
+    def test_luoyun_settlement_for_other_team_does_not_clear_local_room(self):
+        leader_id = self._register_replica_identity(991201, "Shadow_Plus", realm="结丹后期", sect_name="落云宗")
+        member_id = self._register_replica_identity(991202, "ylc123")
+        group_event = self._prepare_replica_group([leader_id, member_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "91",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": group_event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@Shadow_Plus",
+            "join_requested_usernames": ["@ylc123"],
+            "team_usernames": ["@Shadow_Plus", "@ylc123"],
+            "opened_at": now,
+            "entered_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        other_settlement = (
+            "【落云秘圃·得获灵芽】\n"
+            "你们赶在禁制闭合前封住一枚尚可培育的灵眼树胚。\n\n"
+            "通关保底：每位队员获得 5200修为、360贡献。\n"
+            "树胚机缘：@feiyu_ssddc 获得 【灵眼树胚】x1。\n"
+            "幸运掉落：@luomanying 额外获得 【二级妖丹】x4。\n"
+            "最终伤根值：52 | 灵压稳定：65 | 判定分：78571\n"
+            "树胚可用 .掌天瓶 养树 培养成 【一截灵眼之树】。"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(id=10992170, chat_id=group_event.chat_id, raw_text=other_settlement),
+                    now + 10,
+                )
+                return handled, notice_mock.await_count
+
+        handled, notice_count = asyncio.run(run_test())
+
+        self.assertFalse(handled)
+        self.assertEqual(0, notice_count)
+        saved_room = app_replica._get_lightweight_last_room(group_event.chat_id, now=now + 10)
+        self.assertEqual("91", saved_room["room_id"])
+
+    def test_luoyun_local_settlement_is_reported_and_clears_room(self):
+        leader_id = self._register_replica_identity(991201, "Shadow_Plus", realm="结丹后期", sect_name="落云宗")
+        member_id = self._register_replica_identity(991202, "ylc123")
+        group_event = self._prepare_replica_group([leader_id, member_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "91",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": group_event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@Shadow_Plus",
+            "join_requested_usernames": ["@ylc123"],
+            "team_usernames": ["@Shadow_Plus", "@ylc123"],
+            "opened_at": now,
+            "entered_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        settlement = (
+            "【落云秘圃·得获灵芽】\n"
+            "你们以封灵玉盒承住新生树胚，又用木水灵力封住残余活脉。\n\n"
+            "通关保底：每位队员获得 5200修为、360贡献。\n"
+            "树胚机缘：@Shadow_Plus 获得 【灵眼树胚】x1。\n"
+            "幸运掉落：@ylc123 额外获得 【养魂木】x3。\n"
+            "最终伤根值：20 | 灵压稳定：100 | 判定分：8810\n"
+            "树胚可用 .掌天瓶 养树 培养成 【一截灵眼之树】。"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(id=10992305, chat_id=group_event.chat_id, raw_text=settlement),
+                    now + 10,
+                )
+                return handled, notice_mock.await_args.args[0], notice_mock.await_args.args[1]
+
+        handled, notice_item, notice_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual("91", notice_item["room_id"])
+        self.assertIn("落云秘圃结算：得获灵芽", notice_text)
+        self.assertIn("已清理轻量房间记录", notice_text)
+        self.assertIn("已记录 2 个身份 CD", notice_text)
+        self.assertIsNone(app_replica._get_lightweight_last_room(group_event.chat_id, now=now + 10))
+        records = state_module.get_replica_run_state()["by_identity"]
+        self.assertEqual("success_cooldown", records[str(leader_id)]["last_join_result"])
+        self.assertEqual("success_cooldown", records[str(member_id)]["last_join_result"])
+
     def test_cangkun_later_stage_without_dungeon_name_sends_decision_buttons(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")
         member_id = self._register_replica_identity(991202, "WalterWA2000", professions="破军")

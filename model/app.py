@@ -83,6 +83,7 @@ from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_
 from .features.yinluo import run_yinluo_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
 from .features.small_world import (
+    handle_small_world_barrier_reply,
     handle_small_world_disaster_broadcast,
     handle_small_world_harvest_reply,
     handle_small_world_manifest_reply,
@@ -425,6 +426,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "small_world_manifest": ("显灵", "祈愿", "清灵丹", "灵石", "小世界"),
     "small_world_harvest": ("收割香火", "香火", "库存", "小世界"),
     "small_world_refine": ("神识淬炼", "香火", "神识", "小世界"),
+    "small_world_barrier": ("护界禁制", "愿力金幕", "随机天灾", "香火"),
     "explore_rift": ("探寻成功", "激战得胜", "遭遇风暴", "不敌败退", "探寻裂缝", "满载而归", "法则碎片", "空间裂缝", "时空异兽"),
     "concubine_status": ("侍妾", "道侣", "红尘", "情缘", "残图"),
     "concubine_greet": ("侍妾", "情缘", "问安", "心意"),
@@ -1278,6 +1280,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_small_world_manifest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_harvest_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_small_world_refine_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_small_world_barrier_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_explore_rift_reply(text, now, reply_to, matched_family=matched_family, result_msg_id=event.id) or handled_any
             handled_any = await handle_divination_reply(
                 text,

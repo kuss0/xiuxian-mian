@@ -75,6 +75,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 task.cancel()
         fishing_runtime._RECOVERY_TASKS.clear()
         fishing_runtime._SEND_LOCKS.clear()
+        fishing_runtime._RECENT_COMMANDS.clear()
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
@@ -569,6 +570,74 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(sent)
             send_mock.assert_not_awaited()
             self.assertEqual(22040, state_module.state["fishing_reply_to_msg_id"])
+
+    async def test_duplicate_lift_is_suppressed_after_success_reply_clears_pending(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_pending_action"] = ".提竿"
+            state_module.state["next_fishing_time"] = now - 1
+            first_msg = SimpleNamespace(id=22040, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=first_msg)) as first_send_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                first_sent = await fishing_runtime._send_fishing_command(".提竿", now)
+
+            self.assertTrue(first_sent)
+            first_send_mock.assert_awaited_once()
+
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as reply_send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    FISHING_CATCH_TEXT,
+                    now + 2,
+                    reply_to=SimpleNamespace(id=22040, raw_text=".提竿"),
+                    matched_family="fishing",
+                    result_msg_id=22041,
+                )
+
+            self.assertTrue(handled)
+            reply_send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+
+            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as duplicate_send_mock:
+                duplicate_sent = await fishing_runtime._send_fishing_command(".提竿", now + 3)
+
+            self.assertFalse(duplicate_sent)
+            duplicate_send_mock.assert_not_awaited()
+            self.assertIn("短窗重复指令已抑制", state_module.state["fishing_last_error"])
+
+    async def test_handled_fishing_reply_cancels_stale_followup(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "lifting"
+            state_module.state["fishing_reply_to_msg_id"] = 22040
+            state_module.state["fishing_reply_due_at"] = now + 20
+            state_module.state["fishing_pending_action"] = ".提竿"
+            self.assertTrue(fishing_runtime._schedule_fishing_followup(identity_id, ".提竿", now + 30))
+            self.assertTrue(fishing_runtime._has_fishing_followup(identity_id))
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    FISHING_CATCH_TEXT,
+                    now + 2,
+                    reply_to=SimpleNamespace(id=22040, raw_text=".提竿"),
+                    matched_family="fishing",
+                    result_msg_id=22041,
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            self.assertFalse(fishing_runtime._has_fishing_followup(identity_id))
 
     async def test_late_open_fish_reply_preserves_new_active_rod(self):
         identity_id = self._prepare_identity()

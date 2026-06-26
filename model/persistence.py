@@ -220,6 +220,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refine_enabled INTEGER NOT NULL DEFAULT 0")
     if "small_world_refresh_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0")
+    if "small_world_barrier_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_enabled INTEGER NOT NULL DEFAULT 1")
+    if "small_world_barrier_min_stock" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_min_stock INTEGER NOT NULL DEFAULT 130000")
+    if "small_world_barrier_guard_before_min" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_guard_before_min INTEGER NOT NULL DEFAULT 30")
+    if "small_world_barrier_min_interval_hours" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN small_world_barrier_min_interval_hours REAL NOT NULL DEFAULT 18")
     if "divination_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN divination_enabled INTEGER NOT NULL DEFAULT 0")
     if "divination_daily_limit" not in module_columns:
@@ -799,6 +807,12 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_god_sent_at REAL NOT NULL DEFAULT 0")
     if "small_world_last_disaster_wave_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0")
+    if "small_world_barrier_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_barrier_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "small_world_barrier_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_barrier_due_at REAL NOT NULL DEFAULT 0")
+    if "small_world_last_barrier_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_last_barrier_sent_at REAL NOT NULL DEFAULT 0")
     if "small_world_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN small_world_phase TEXT NOT NULL DEFAULT 'idle'")
     if "small_world_query_msg_id" not in runtime_columns:
@@ -1149,6 +1163,10 @@ def init_db():
             small_world_harvest_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refine_enabled INTEGER NOT NULL DEFAULT 0,
             small_world_refresh_enabled INTEGER NOT NULL DEFAULT 0,
+            small_world_barrier_enabled INTEGER NOT NULL DEFAULT 1,
+            small_world_barrier_min_stock INTEGER NOT NULL DEFAULT 130000,
+            small_world_barrier_guard_before_min INTEGER NOT NULL DEFAULT 30,
+            small_world_barrier_min_interval_hours REAL NOT NULL DEFAULT 18,
             divination_enabled INTEGER NOT NULL DEFAULT 0,
             divination_daily_limit INTEGER NOT NULL DEFAULT 6,
             dungeon_join_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1438,6 +1456,9 @@ def init_db():
             small_world_last_god_action TEXT NOT NULL DEFAULT '',
             small_world_last_god_sent_at REAL NOT NULL DEFAULT 0,
             small_world_last_disaster_wave_at REAL NOT NULL DEFAULT 0,
+            small_world_barrier_msg_id INTEGER NOT NULL DEFAULT 0,
+            small_world_barrier_due_at REAL NOT NULL DEFAULT 0,
+            small_world_last_barrier_sent_at REAL NOT NULL DEFAULT 0,
             small_world_phase TEXT NOT NULL DEFAULT 'idle',
             small_world_query_msg_id INTEGER NOT NULL DEFAULT 0,
             small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0,

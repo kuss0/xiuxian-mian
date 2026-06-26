@@ -3345,6 +3345,10 @@ def get_identity_ui_snapshot(send_as_id):
             "small_world_harvest_enabled": bool(identity_state.get("small_world_harvest_enabled", False)),
             "small_world_refine_enabled": bool(identity_state.get("small_world_refine_enabled", False)),
             "small_world_refresh_enabled": bool(identity_state.get("small_world_refresh_enabled", False)),
+            "small_world_barrier_enabled": bool(identity_state.get("small_world_barrier_enabled", True)),
+            "small_world_barrier_min_stock": int(identity_state.get("small_world_barrier_min_stock", 130000) or 130000),
+            "small_world_barrier_guard_before_min": int(identity_state.get("small_world_barrier_guard_before_min", 30) or 30),
+            "small_world_barrier_min_interval_hours": float(identity_state.get("small_world_barrier_min_interval_hours", 18) or 18),
             "yinluo": get_yinluo_ui_state() if "阴罗宗" in available_module_names else {},
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),
@@ -3802,6 +3806,7 @@ async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
         "harvest": ("small_world_harvest_enabled", "收割香火"),
         "refine": ("small_world_refine_enabled", "神识淬炼"),
         "refresh": ("small_world_refresh_enabled", "祈愿刷新"),
+        "barrier": ("small_world_barrier_enabled", "护界禁制"),
     }
     field_name, display_name = feature_map.get(feature_name, ("", ""))
     if not field_name:
@@ -3817,6 +3822,55 @@ async def ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled):
         send_as_id=send_as_id,
     )
     return True, f"已{action_text}小世界{display_name}[{get_identity_display_name(send_as_id)}]"
+
+
+def _coerce_int_range(value, default, min_value, max_value):
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        parsed = int(default)
+    return max(int(min_value), min(int(max_value), parsed))
+
+
+def _coerce_float_range(value, default, min_value, max_value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = float(default)
+    return max(float(min_value), min(float(max_value), parsed))
+
+
+async def ui_set_small_world_barrier_config(
+    send_as_id,
+    *,
+    enabled=None,
+    min_stock=None,
+    guard_before_min=None,
+    min_interval_hours=None,
+):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    with use_identity(send_as_id):
+        if enabled is not None:
+            state["small_world_barrier_enabled"] = _coerce_ui_bool(enabled)
+        if min_stock is not None:
+            state["small_world_barrier_min_stock"] = _coerce_int_range(min_stock, 130000, 0, 1000000)
+        if guard_before_min is not None:
+            state["small_world_barrier_guard_before_min"] = _coerce_int_range(guard_before_min, 30, 5, 180)
+        if min_interval_hours is not None:
+            state["small_world_barrier_min_interval_hours"] = _coerce_float_range(min_interval_hours, 18, 0, 72)
+        enabled_text = "开启" if state.get("small_world_barrier_enabled", True) else "关闭"
+        min_stock_value = int(state.get("small_world_barrier_min_stock", 130000) or 130000)
+        guard_value = int(state.get("small_world_barrier_guard_before_min", 30) or 30)
+        interval_value = float(state.get("small_world_barrier_min_interval_hours", 18) or 18)
+        save_state()
+    await send_audit_log(
+        f"🌍 已更新小世界护界禁制：{enabled_text}，阈值={min_stock_value}，提前={guard_value}分钟，间隔={interval_value:g}小时",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已更新小世界护界禁制[{get_identity_display_name(send_as_id)}]"
 
 
 async def ui_set_divination_config(send_as_id, daily_limit=None):
@@ -5676,6 +5730,24 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_small_world_feature_enabled(send_as_id, feature_name, enabled)
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/small-world-barrier-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_small_world_barrier_config(
+                            send_as_id,
+                            enabled=payload.get("enabled"),
+                            min_stock=payload.get("min_stock"),
+                            guard_before_min=payload.get("guard_before_min"),
+                            min_interval_hours=payload.get("min_interval_hours"),
+                        )
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/divination-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -6012,6 +6084,7 @@ __all__ = [
     "ui_set_pet_name",
     "ui_set_duel_config",
     "ui_set_small_world_feature_enabled",
+    "ui_set_small_world_barrier_config",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",

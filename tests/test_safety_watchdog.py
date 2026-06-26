@@ -933,6 +933,87 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertIn("global lock breach", breach)
 
+    def test_marked_fishing_start_after_status_progress_does_not_same_command_fuse(self):
+        now = time.time()
+        cfg = self._config()
+        sender_id = 8659059191
+        events = [
+            _event(
+                now - 50,
+                sender_id,
+                ".钓鱼 青溪浅滩 灵米饵",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="normal",
+            ),
+            _event(
+                now - 35,
+                sender_id,
+                ".钓鱼状态",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="urgent_reactive",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".钓鱼 青溪浅滩 灵米饵",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="normal",
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_marked_fishing_start_without_progress_still_same_command_fuses(self):
+        now = time.time()
+        cfg = self._config()
+        sender_id = 8659059191
+        events = [
+            _event(
+                now - 50,
+                sender_id,
+                ".钓鱼 青溪浅滩 灵米饵",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="normal",
+            ),
+            _event(
+                now,
+                sender_id,
+                ".钓鱼 青溪浅滩 灵米饵",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="normal",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("same command repeat", breach)
+
+    def test_unmarked_fishing_start_after_status_still_same_command_fuses(self):
+        now = time.time()
+        cfg = self._config()
+        sender_id = 8659059191
+        events = [
+            _event(now - 50, sender_id, ".钓鱼 青溪浅滩 灵米饵"),
+            _event(
+                now - 35,
+                sender_id,
+                ".钓鱼状态",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="urgent_reactive",
+            ),
+            _event(now, sender_id, ".钓鱼 青溪浅滩 灵米饵"),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, cfg)
+
+        self.assertIn("same command repeat", breach)
+
     def test_world_boss_same_action_allows_try0_try1_try2(self):
         now = time.time()
         sender_id = 301299112
