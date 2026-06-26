@@ -69,6 +69,29 @@ class ControlBoolCoercionTests(unittest.TestCase):
             payload = json.loads(reset_marker.read_text(encoding="utf-8"))
             self.assertGreater(payload["reset_at_epoch"], 0)
 
+    def test_global_resume_spreads_near_future_recovery_timers(self):
+        now = 1_700_000_000.0
+        send_as_id = 990314
+        state_module.set_global_enabled(False)
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_tianji_enabled"] = True
+            state_module.state["concubine_phase"] = "idle"
+            state_module.state["next_concubine_time"] = 0
+
+        with (
+            patch.object(control.time, "time", return_value=now),
+            patch.object(control.random, "uniform", return_value=600),
+            patch.object(control, "save_state"),
+            patch.object(control, "send_audit_log", new=AsyncMock()),
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="test"))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(now + 600, state_module.state["next_concubine_time"])
+
     def test_direct_identity_module_toggle_treats_form_false_string_as_disabled(self):
         send_as_id = 990321
         state_module.ensure_identity_registered(send_as_id)

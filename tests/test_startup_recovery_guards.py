@@ -92,6 +92,21 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now - 1, state_module.state["next_fishing_time"])
 
+    def test_startup_spread_covers_near_future_recovery_timers(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["concubine_tianji_enabled"] = True
+            state_module.state["next_concubine_time"] = now + 90
+
+        with patch.object(control.random, "uniform", return_value=600):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(now + 600, state_module.state["next_concubine_time"])
+
     def test_initialize_wild_training_unknown_timer_uses_normal_cycle(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
@@ -543,12 +558,12 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             state_module.state["last_deep_retreat_summary_msg_id"] = 123
             state_module.state["next_deep_retreat_time"] = now - 1
 
-        with patch.object(control.random, "uniform", return_value=120) as uniform_mock:
+        with patch.object(control.random, "uniform", return_value=900) as uniform_mock:
             control.initialize_identity_runtime(send_as_id, now)
 
         with state_module.use_identity(send_as_id):
             self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
-            self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(now + 900, state_module.state["next_deep_retreat_time"])
         uniform_mock.assert_any_call(
             control.RECOVERY_PHASEFUL_IDLE_MIN_SEC,
             control.RECOVERY_PHASEFUL_IDLE_MAX_SEC,

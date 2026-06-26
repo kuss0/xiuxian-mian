@@ -312,10 +312,11 @@ _IMMEDIATE_ENABLE_RETRY_DELAY_SEC = 1
 RECOVERY_SPREAD_MIN_SEC = 60
 RECOVERY_SPREAD_MAX_SEC = 1200
 RECOVERY_SPREAD_DUE_GRACE_SEC = 2
+RECOVERY_SHORT_WINDOW_SEC = 180
 RECOVERY_READY_MIN_SEC = 30
 RECOVERY_READY_MAX_SEC = 90
-RECOVERY_PHASEFUL_IDLE_MIN_SEC = 60
-RECOVERY_PHASEFUL_IDLE_MAX_SEC = 180
+RECOVERY_PHASEFUL_IDLE_MIN_SEC = 10 * 60
+RECOVERY_PHASEFUL_IDLE_MAX_SEC = 30 * 60
 TIANTI_RECOVERY_STATUS_FRESH_SEC = 30 * 60
 TAIYI_PRESEND_RECOVERY_MAX_SEC = 300
 RECOVERY_SPREAD_TIMER_KEYS = (
@@ -559,12 +560,14 @@ def _schedule_module_immediate_retry(module_name, now):
     raise ValueError(f"未知模块: {module_name}")
 
 
-def spread_overdue_runtime_timers(now=None, *, reason="recovery"):
+def spread_overdue_runtime_timers(now=None, *, reason="recovery", window_sec=None):
     """启动/恢复时把已到期任务摊开，避免多身份集中发送。"""
     if now is None:
         now = time.time()
     now = float(now)
-    due_cutoff = now + RECOVERY_SPREAD_DUE_GRACE_SEC
+    if window_sec is None:
+        window_sec = RECOVERY_SHORT_WINDOW_SEC
+    due_cutoff = now + max(RECOVERY_SPREAD_DUE_GRACE_SEC, float(window_sec or 0))
     changed_count = 0
     affected_identity_ids = set()
     for identity_id in get_identity_ids():
