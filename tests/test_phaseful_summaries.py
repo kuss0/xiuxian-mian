@@ -553,6 +553,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["yuanying_enabled"] = True
             state_module.state["yuanying_phase"] = "launching"
             state_module.state["yuanying_probe_pending"] = False
+            state_module.state["next_yuanying_time"] = now + 8 * 60 * 60
 
             with (
                 patch.object(yuanying, "mark_dirty"),
@@ -569,6 +570,76 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("running", state_module.state["yuanying_phase"])
             self.assertTrue(state_module.state["yuanying_probe_pending"])
             probe_mock.assert_awaited_once()
+
+    async def test_yuanying_running_reply_with_stale_timer_reschedules_cd_before_probe(self):
+        send_as_id = 8659059202
+        now = 1_700_000_362.0
+        self._prepare_identity(send_as_id, "YuanyingStaleTimer")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "waiting_summary"
+            state_module.state["yuanying_probe_pending"] = False
+            state_module.state["yuanying_summary_sent_at"] = now - 120
+            state_module.state["last_yuanying_summary_msg_id"] = 901
+            state_module.state["next_yuanying_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=60),
+                patch.object(yuanying, "save_state"),
+                patch.object(yuanying, "mark_dirty"),
+                patch.object(yuanying, "schedule_yuanying_status_probe", new=AsyncMock()) as probe_mock,
+            ):
+                handled = await yuanying.handle_yuanying_running_reply(
+                    "你的元婴正在执行“元神出窍”任务，无法分身。请先使用 .元婴归窍 将其召回。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING),
+                    matched_family="yuanying",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(0, state_module.state["yuanying_summary_sent_at"])
+            self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
+            self.assertEqual(
+                now + yuanying.YUANYING_CD + yuanying.CD_BUFFER_SEC + 60,
+                state_module.state["next_yuanying_time"],
+            )
+            self.assertTrue(state_module.state["yuanying_probe_pending"])
+            probe_mock.assert_awaited_once()
+
+    async def test_yuanying_late_summary_does_not_clobber_new_running_cycle(self):
+        send_as_id = 8659059204
+        now = 1_700_000_363.0
+        next_time = now + 8 * 60 * 60
+        self._prepare_identity(send_as_id, "WalterWA2000")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "running"
+            state_module.state["next_yuanying_time"] = next_time
+            state_module.state["last_yuanying_command_time"] = now - 2
+
+        text = (
+            "📜 修士 @WalterWA2000 元神归窍总结\n"
+            "你的元婴在虚空中神游八小时，带回了以下收获：\n"
+            "元婴成长:\n - 获得了 800 点经验。"
+        )
+
+        with (
+            patch.object(yuanying, "save_state"),
+            patch.object(yuanying, "console_log"),
+            patch.object(yuanying, "send_audit_log", new=AsyncMock()),
+        ):
+            await yuanying.handle_yuanying_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": send_as_id, "family": "yuanying", "reply_to_msg_id": 10964022},
+            )
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(next_time, state_module.state["next_yuanying_time"])
 
     async def test_yuanying_success_reply_uses_observed_duration(self):
         send_as_id = 8659059235

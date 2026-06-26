@@ -186,7 +186,12 @@ async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None
     if not probe_hit:
         return False
 
-    set_yuanying_phase("running")
+    estimated_next_time = float(state.get("next_yuanying_time", 0) or 0)
+    if estimated_next_time <= now + CD_BUFFER_SEC:
+        mark_yuanying_success(now)
+    else:
+        set_yuanying_phase("running")
+        clear_yuanying_summary_flags()
     if state["yuanying_probe_pending"]:
         mark_dirty()
         return True
@@ -245,7 +250,7 @@ def _is_yuanying_summary_candidate_phase(now):
     next_time = float(state.get("next_yuanying_time", 0) or 0)
     due_while_running = phase == "running" and now > 0 and 0 < next_time <= now
     near_due_while_running = phase == "running" and now > 0 and next_time > now and next_time - now <= 10 * 60
-    return phase in ("summary_due", "observing_summary", "waiting_summary") or due_while_running or near_due_while_running or phase == "running"
+    return phase in ("summary_due", "observing_summary", "waiting_summary", "post_summary_wait") or due_while_running or near_due_while_running
 
 
 def _reply_context_identity(reply_context):
