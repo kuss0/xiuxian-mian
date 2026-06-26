@@ -97,6 +97,23 @@ class QuizAiVoteTests(unittest.TestCase):
         for forbidden in ("subprocess", "os.system", "Popen", ".codex", ".claude"):
             self.assertNotIn(forbidden, source)
 
+    def test_extract_model_items_supports_openai_and_claude_shapes(self):
+        openai_models = quiz_ai._extract_model_items({
+            "data": [
+                {"id": "gpt-5-mini"},
+                {"id": "gpt-5-mini"},
+                {"id": "gpt-5"},
+            ]
+        })
+        claude_models = quiz_ai._extract_model_items({
+            "data": [
+                {"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"},
+            ]
+        })
+
+        self.assertEqual(["gpt-5-mini", "gpt-5"], [item["id"] for item in openai_models])
+        self.assertEqual("Claude Sonnet 4.5", claude_models[0]["label"])
+
 
 class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -378,6 +395,7 @@ class QuizAiUiSnapshotTests(unittest.TestCase):
 
         self.assertTrue(snapshot["providers"][0]["api_key_configured"])
         self.assertNotIn("api_key", snapshot["providers"][0])
+        self.assertEqual(5, len(snapshot["providers"]))
 
     def test_ui_set_quiz_ai_config_preserves_and_clears_provider_keys(self):
         state_module.set_quiz_ai_config({
@@ -433,6 +451,66 @@ class QuizAiUiSnapshotTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual("", state_module.get_quiz_ai_config()["providers"][0]["api_key"])
+
+
+class QuizAiUiModelFetchTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(self._meta_state_snapshot)
+        super().tearDown()
+
+    async def test_ui_fetch_quiz_ai_models_preserves_saved_key_when_input_blank(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "providers": [
+                {
+                    "id": "ai1",
+                    "enabled": True,
+                    "label": "primary",
+                    "provider": "codex",
+                    "model": "old-model",
+                    "api_key": "secret-token",
+                    "timeout_sec": 10,
+                }
+            ],
+        })
+
+        async def fake_list_models(provider_config):
+            self.assertEqual("secret-token", provider_config["api_key"])
+            self.assertEqual("codex", provider_config["provider"])
+            return {
+                "ok": True,
+                "models": [{"id": "gpt-5-mini", "label": "gpt-5-mini"}],
+                "provider": "codex",
+                "label": "primary",
+                "elapsed_ms": 12,
+            }
+
+        with patch.object(ui, "list_quiz_ai_models", new=AsyncMock(side_effect=fake_list_models)):
+            ok, message, payload = await ui.ui_fetch_quiz_ai_models({
+                "index": 0,
+                "provider_config": {
+                    "id": "ai1",
+                    "enabled": True,
+                    "label": "primary",
+                    "provider": "codex",
+                    "model": "",
+                    "api_key": "",
+                    "clear_api_key": False,
+                    "timeout_sec": 10,
+                    "temperature": 0,
+                },
+            })
+
+        self.assertTrue(ok)
+        self.assertIn("已获取 1 个模型", message)
+        self.assertEqual("gpt-5-mini", payload["models"][0]["id"])
 
 
 class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):

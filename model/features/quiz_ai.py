@@ -82,6 +82,41 @@ def _post_json(url, headers, payload, timeout):
     return response.json()
 
 
+def _get_json(url, headers, timeout):
+    response = requests.get(url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def _extract_model_items(payload):
+    if isinstance(payload, list):
+        raw_items = payload
+    elif isinstance(payload, dict):
+        raw_items = payload.get("data")
+        if not isinstance(raw_items, list):
+            raw_items = payload.get("models")
+        if not isinstance(raw_items, list):
+            raw_items = payload.get("items")
+    else:
+        raw_items = []
+    models = []
+    seen = set()
+    for item in raw_items if isinstance(raw_items, list) else []:
+        if isinstance(item, str):
+            model_id = item.strip()
+            label = model_id
+        elif isinstance(item, dict):
+            model_id = str(item.get("id") or item.get("model") or item.get("name") or "").strip()
+            label = str(item.get("display_name") or item.get("label") or item.get("name") or model_id).strip()
+        else:
+            continue
+        if not model_id or model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append({"id": model_id, "label": label or model_id})
+    return models[:200]
+
+
 def _extract_codex_text(payload):
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not choices:
@@ -384,7 +419,50 @@ async def suggest_quiz_answer_multi(question, options, config, *, decision_timeo
     return selected
 
 
+async def list_quiz_ai_models(config):
+    started_at = time.time()
+    config = config if isinstance(config, dict) else {}
+    provider = _normal_provider(config.get("provider"))
+    timeout = max(3, min(30, int(config.get("timeout_sec") or 10)))
+    api_key = str(config.get("api_key") or "").strip()
+    headers = {"Content-Type": "application/json"}
+    if provider in {"claude", "anthropic"}:
+        base_url = str(config.get("base_url") or CLAUDE_DEFAULT_BASE_URL).strip().rstrip("/")
+        url = _join_url(base_url, "/v1/models")
+        headers["anthropic-version"] = CLAUDE_VERSION
+        if api_key:
+            headers["x-api-key"] = api_key
+    else:
+        base_url = str(config.get("base_url") or CODEX_DEFAULT_BASE_URL).strip().rstrip("/")
+        url = _join_url(base_url, "/models")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        payload = await asyncio.to_thread(_get_json, url, headers, timeout)
+        models = _extract_model_items(payload)
+        return {
+            "ok": True,
+            "models": models,
+            "provider": _provider_label(provider),
+            "label": _provider_display_label(config),
+            "elapsed_ms": int((time.time() - started_at) * 1000),
+        }
+    except requests.RequestException as exc:
+        error = f"模型列表请求失败: {exc}"
+    except Exception as exc:
+        error = f"模型列表解析失败: {exc}"
+    return {
+        "ok": False,
+        "models": [],
+        "provider": _provider_label(provider),
+        "label": _provider_display_label(config),
+        "error": error,
+        "elapsed_ms": int((time.time() - started_at) * 1000),
+    }
+
+
 __all__ = [
+    "list_quiz_ai_models",
     "suggest_quiz_answer_multi",
     "suggest_quiz_answer",
 ]

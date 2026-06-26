@@ -25,7 +25,21 @@
   function quizAiProviders(data) {
     const providers = Array.isArray(data.providers) ? data.providers.slice(0, 6) : [];
     if (providers.length) return providers;
-    return [{
+    return Array.from({ length: 5 }, function (_, index) {
+      if (index > 0) {
+        return {
+          id: `ai${index + 1}`,
+          enabled: false,
+          label: `AI ${index + 1}`,
+          provider: 'codex',
+          base_url: '',
+          model: '',
+          api_key_configured: false,
+          timeout_sec: data.timeout_sec || 20,
+          temperature: 0,
+        };
+      }
+      return {
       id: 'ai1',
       enabled: true,
       label: 'AI 1',
@@ -35,7 +49,8 @@
       api_key_configured: !!data.api_key_configured,
       timeout_sec: data.timeout_sec || 20,
       temperature: data.temperature == null ? 0 : data.temperature,
-    }];
+      };
+    });
   }
 
   function setFlash(message, isError) {
@@ -62,6 +77,13 @@
     const data = await response.json();
     if (!response.ok || data.ok === false) throw new Error(data.error || data.message || '请求失败');
     return data;
+  }
+
+  function setRowStatus(row, message, isError) {
+    const status = row ? row.querySelector('[data-quiz-ai-provider-status]') : null;
+    if (!status) return;
+    status.textContent = message || '';
+    status.classList.toggle('error', !!isError);
   }
 
   function injectQuizAiButton() {
@@ -129,6 +151,10 @@
             <label class="field-label">格式<select class="text-input" name="quiz_ai_provider_kind">${options}</select></label>
             <label class="field-label">Model<input class="text-input" name="quiz_ai_provider_model" value="${esc(provider.model || '')}" placeholder="例如 gpt-5-mini 或 claude-3-5-haiku-latest" /></label>
           </div>
+          <div class="form-grid form-grid-2">
+            <label class="field-label">模型列表<select class="text-input" name="quiz_ai_provider_model_select"><option value="">手动输入 / 先获取</option></select></label>
+            <button class="btn btn-secondary" type="button" data-fetch-quiz-ai-models>获取模型</button>
+          </div>
           <label class="field-label">Base URL<input class="text-input" name="quiz_ai_provider_base_url" value="${esc(provider.base_url || '')}" placeholder="留空使用格式默认地址" /></label>
           <div class="form-grid form-grid-2">
             <label class="field-label">API Key<input class="text-input" type="password" name="quiz_ai_provider_api_key" autocomplete="new-password" placeholder="${esc(configured)}" /></label>
@@ -138,6 +164,7 @@
             <label class="field-label">线路超时<input class="text-input" type="number" min="2" max="60" name="quiz_ai_provider_timeout_sec" value="${esc(provider.timeout_sec || data.timeout_sec || 20)}" /></label>
             <label class="field-label">Temperature<input class="text-input" type="number" step="0.1" min="0" max="2" name="quiz_ai_provider_temperature" value="${esc(provider.temperature == null ? 0 : provider.temperature)}" /></label>
           </div>
+          <div class="form-label form-label-inline" data-quiz-ai-provider-status></div>
         </div>
       `;
     }).join('');
@@ -164,11 +191,8 @@
     if (modal) modal.classList.remove('show');
   }
 
-  function collectPayload() {
-    const form = document.getElementById('quiz-ai-form');
-    if (!form) return {};
-    const providers = Array.from(form.querySelectorAll('.quiz-ai-provider-row')).map(function (row, index) {
-      return {
+  function collectProviderPayload(row, index) {
+    return {
         id: row.querySelector('input[name="quiz_ai_provider_id"]').value || `ai${index + 1}`,
         enabled: !!row.querySelector('input[name="quiz_ai_provider_enabled"]').checked,
         label: row.querySelector('input[name="quiz_ai_provider_label"]').value.trim(),
@@ -180,7 +204,12 @@
         timeout_sec: row.querySelector('input[name="quiz_ai_provider_timeout_sec"]').value,
         temperature: row.querySelector('input[name="quiz_ai_provider_temperature"]').value,
       };
-    });
+  }
+
+  function collectPayload() {
+    const form = document.getElementById('quiz-ai-form');
+    if (!form) return {};
+    const providers = Array.from(form.querySelectorAll('.quiz-ai-provider-row')).map(collectProviderPayload);
     return {
       enabled: !!form.querySelector('input[name="quiz_ai_enabled"]').checked,
       auto_answer_enabled: !!form.querySelector('input[name="quiz_ai_auto_answer_enabled"]').checked,
@@ -189,6 +218,38 @@
       answer_safety_margin_sec: form.querySelector('input[name="quiz_ai_answer_safety_margin_sec"]').value,
       providers,
     };
+  }
+
+  function populateModelSelect(row, models) {
+    const select = row.querySelector('select[name="quiz_ai_provider_model_select"]');
+    const input = row.querySelector('input[name="quiz_ai_provider_model"]');
+    if (!select || !input) return;
+    const current = input.value.trim();
+    const options = ['<option value="">手动输入</option>'].concat((models || []).map(function (model) {
+      const id = typeof model === 'string' ? model : model.id;
+      const label = typeof model === 'string' ? model : (model.label || model.id);
+      const selected = id && id === current ? ' selected' : '';
+      return `<option value="${esc(id || '')}"${selected}>${esc(label || id || '')}</option>`;
+    }));
+    select.innerHTML = options.join('');
+  }
+
+  async function fetchProviderModels(row) {
+    if (!row) return;
+    const index = Number(row.getAttribute('data-provider-index') || 0);
+    setRowStatus(row, '获取中...', false);
+    try {
+      const data = await post('/api/quiz-ai-models', {
+        index,
+        provider_config: collectProviderPayload(row, index),
+      });
+      const modelsPayload = data.models || {};
+      const models = Array.isArray(modelsPayload.models) ? modelsPayload.models : [];
+      populateModelSelect(row, models);
+      setRowStatus(row, data.message || `已获取 ${models.length} 个模型`, false);
+    } catch (error) {
+      setRowStatus(row, (error && error.message) || '获取模型失败', true);
+    }
   }
 
   async function saveQuizAiConfig(event) {
@@ -209,9 +270,21 @@
       openQuizAiModal();
       return;
     }
+    const fetchButton = event.target.closest('[data-fetch-quiz-ai-models]');
+    if (fetchButton) {
+      fetchProviderModels(fetchButton.closest('.quiz-ai-provider-row'));
+      return;
+    }
     if (event.target.getAttribute('data-close-modal') === 'quiz-ai' || event.target.id === 'quiz-ai-modal') {
       closeQuizAiModal();
     }
+  });
+
+  document.addEventListener('change', function (event) {
+    if (!event.target.matches('select[name="quiz_ai_provider_model_select"]')) return;
+    const row = event.target.closest('.quiz-ai-provider-row');
+    const input = row ? row.querySelector('input[name="quiz_ai_provider_model"]') : null;
+    if (input && event.target.value) input.value = event.target.value;
   });
 
   document.addEventListener('keydown', function (event) {

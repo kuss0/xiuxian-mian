@@ -80,6 +80,7 @@ from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.passive_inbox import get_passive_inbox_snapshot
+from .features.quiz_ai import list_quiz_ai_models
 from .features.stargazer import sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
@@ -529,7 +530,7 @@ def get_quiz_ai_snapshot():
             "timeout_sec": int(config.get("timeout_sec") or 20),
             "temperature": float(config.get("temperature") or 0),
         })
-    while len(providers) < 3:
+    while len(providers) < 5:
         index = len(providers)
         providers.append({
             "id": f"ai{index + 1}",
@@ -571,15 +572,41 @@ def get_quiz_ai_snapshot():
     }
 
 
-def ui_set_quiz_ai_config(payload):
-    payload = payload if isinstance(payload, dict) else {}
-    current = get_quiz_ai_config()
+def _resolve_quiz_ai_provider_payload(raw_provider, *, index=0, current=None):
+    raw_provider = raw_provider if isinstance(raw_provider, dict) else {}
+    current = current or get_quiz_ai_config()
     current_providers = current.get("providers") if isinstance(current.get("providers"), list) else []
     current_by_id = {
         str(provider.get("id") or "").strip(): provider
         for provider in current_providers
         if isinstance(provider, dict) and str(provider.get("id") or "").strip()
     }
+    provider_id = str(raw_provider.get("id") or f"ai{int(index or 0) + 1}").strip()
+    previous = current_by_id.get(provider_id)
+    if previous is None and 0 <= int(index or 0) < len(current_providers) and isinstance(current_providers[int(index or 0)], dict):
+        previous = current_providers[int(index or 0)]
+    previous = previous or {}
+    provider = str(raw_provider.get("provider") or previous.get("provider") or "codex").strip().lower()
+    if provider not in {"codex", "openai", "claude", "anthropic"}:
+        return None, f"{provider_id} AI provider 无效"
+    input_key = str(raw_provider.get("api_key") or "").strip()
+    clear_key = _coerce_ui_bool(raw_provider.get("clear_api_key"))
+    return {
+        "id": provider_id,
+        "enabled": _coerce_ui_bool(raw_provider.get("enabled")),
+        "label": str(raw_provider.get("label") or previous.get("label") or f"AI {int(index or 0) + 1}").strip(),
+        "provider": "claude" if provider in {"claude", "anthropic"} else "codex",
+        "base_url": str(raw_provider.get("base_url") or "").strip().rstrip("/"),
+        "model": str(raw_provider.get("model") or previous.get("model") or "").strip(),
+        "api_key": "" if clear_key else (input_key or previous.get("api_key") or ""),
+        "timeout_sec": raw_provider.get("timeout_sec", previous.get("timeout_sec", current.get("timeout_sec"))),
+        "temperature": raw_provider.get("temperature", previous.get("temperature", current.get("temperature"))),
+    }, ""
+
+
+def ui_set_quiz_ai_config(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    current = get_quiz_ai_config()
     raw_providers = payload.get("providers") if isinstance(payload.get("providers"), list) else None
     providers = []
     if raw_providers is not None:
@@ -590,44 +617,28 @@ def ui_set_quiz_ai_config(payload):
             provider_id = str(raw_provider.get("id") or f"ai{index + 1}").strip()
             if not provider_id or provider_id in seen_ids:
                 provider_id = f"ai{index + 1}"
+                raw_provider = {**raw_provider, "id": provider_id}
             seen_ids.add(provider_id)
-            previous = current_by_id.get(provider_id)
-            if previous is None and index < len(current_providers) and isinstance(current_providers[index], dict):
-                previous = current_providers[index]
-            previous = previous or {}
-            provider = str(raw_provider.get("provider") or previous.get("provider") or "codex").strip().lower()
-            if provider not in {"codex", "openai", "claude", "anthropic"}:
-                return False, f"{provider_id} AI provider 无效"
-            input_key = str(raw_provider.get("api_key") or "").strip()
-            clear_key = _coerce_ui_bool(raw_provider.get("clear_api_key"))
-            providers.append({
-                "id": provider_id,
-                "enabled": _coerce_ui_bool(raw_provider.get("enabled")),
-                "label": str(raw_provider.get("label") or previous.get("label") or f"AI {index + 1}").strip(),
-                "provider": "claude" if provider in {"claude", "anthropic"} else "codex",
-                "base_url": str(raw_provider.get("base_url") or "").strip().rstrip("/"),
-                "model": str(raw_provider.get("model") or "").strip(),
-                "api_key": "" if clear_key else (input_key or previous.get("api_key") or ""),
-                "timeout_sec": raw_provider.get("timeout_sec", previous.get("timeout_sec", current.get("timeout_sec"))),
-                "temperature": raw_provider.get("temperature", previous.get("temperature", current.get("temperature"))),
-            })
+            provider_config, error = _resolve_quiz_ai_provider_payload(raw_provider, index=index, current=current)
+            if error:
+                return False, error
+            providers.append(provider_config)
     else:
-        input_key = str(payload.get("api_key") or "").strip()
-        clear_key = _coerce_ui_bool(payload.get("clear_api_key"))
-        provider = str(payload.get("provider") or current.get("provider") or "codex").strip().lower()
-        if provider not in {"codex", "openai", "claude", "anthropic"}:
-            return False, "AI provider 无效"
-        providers.append({
+        provider_config, error = _resolve_quiz_ai_provider_payload({
             "id": "ai1",
             "enabled": True,
             "label": "AI 1",
-            "provider": "claude" if provider in {"claude", "anthropic"} else "codex",
-            "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
-            "model": str(payload.get("model") or "").strip(),
-            "api_key": "" if clear_key else (input_key or current.get("api_key") or ""),
+            "provider": payload.get("provider"),
+            "base_url": payload.get("base_url"),
+            "model": payload.get("model"),
+            "api_key": payload.get("api_key"),
+            "clear_api_key": payload.get("clear_api_key"),
             "timeout_sec": payload.get("timeout_sec", current.get("timeout_sec")),
             "temperature": payload.get("temperature", current.get("temperature")),
-        })
+        }, index=0, current=current)
+        if error:
+            return False, error
+        providers.append(provider_config)
     first_provider = providers[0] if providers else {}
     next_config = {
         **current,
@@ -647,6 +658,32 @@ def ui_set_quiz_ai_config(payload):
     set_quiz_ai_config(next_config)
     save_state()
     return True, "已更新玄骨 AI 辅助配置"
+
+
+async def ui_fetch_quiz_ai_models(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    raw_provider = payload.get("provider_config") if isinstance(payload.get("provider_config"), dict) else payload
+    try:
+        index = int(payload.get("index", raw_provider.get("index", 0)) or 0)
+    except (TypeError, ValueError):
+        index = 0
+    provider_config, error = _resolve_quiz_ai_provider_payload(raw_provider, index=index)
+    if error:
+        return False, error, None
+    result = await list_quiz_ai_models(provider_config)
+    if not result.get("ok"):
+        return False, result.get("error") or "获取模型失败", {
+            "models": [],
+            "provider": result.get("provider") or provider_config.get("provider") or "",
+            "label": result.get("label") or provider_config.get("label") or "",
+        }
+    models = result.get("models") if isinstance(result.get("models"), list) else []
+    return True, f"已获取 {len(models)} 个模型", {
+        "models": models,
+        "provider": result.get("provider") or provider_config.get("provider") or "",
+        "label": result.get("label") or provider_config.get("label") or "",
+        "elapsed_ms": int(result.get("elapsed_ms") or 0),
+    }
 
 
 def _storage_bag_api_identity_lookup():
@@ -5215,6 +5252,22 @@ async def handle_ui_http(reader, writer):
                 else:
                     ok, message = ui_set_quiz_ai_config(payload)
                     _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/quiz-ai-models":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, model_payload = await ui_fetch_quiz_ai_models(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"models": model_payload} if model_payload else None,
+                        include_snapshot=False,
+                    )
             elif path == "/api/storage-bag-api-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
