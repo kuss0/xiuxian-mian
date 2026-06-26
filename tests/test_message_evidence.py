@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import sys
 
@@ -14,7 +14,7 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import action_guard, message_contract, runtime
+from model import action_guard, app, message_contract, runtime
 from model import state as state_module
 from model.features import passive_event_ledger, passive_inbox, workflow_log
 from model.verified_event import from_telegram_event
@@ -703,6 +703,46 @@ class SentMessageEvidenceTests(unittest.TestCase):
 
                     self.assertTrue(action_guard.close_by_family(family, send_as_id=identity_id, now=1_780_000_010.0))
                     self.assertNotIn(action_guard.resolve_action_key(command), action_guard.get_action_guard_sessions(identity_id))
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_unhandled_routed_reply_keeps_action_guard_session(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990302
+        now = 1_780_000_000.0
+        reply_to_msg_id = 7001
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            action_guard.note_sent(".元婴出窍", identity_id, reply_to_msg_id, sent_at=now - 10)
+
+            event = SimpleNamespace(id=7002, chat_id=-1001680975844, sender_id=8325841058)
+            reply_to = SimpleNamespace(id=reply_to_msg_id, raw_text=".元婴出窍", sender_id=identity_id)
+            reply_context = {
+                "send_as_id": identity_id,
+                "family": "yuanying",
+                "reply_to_msg_id": reply_to_msg_id,
+                "root_msg_id": reply_to_msg_id,
+                "reply_to_sender_id": identity_id,
+            }
+
+            with patch.object(app, "schedule_cleanup", new_callable=AsyncMock), \
+                    patch.object(app, "record_unhandled_routed_reply", return_value=True) as unhandled_mock:
+                handled = asyncio.run(app._handle_routed_reply_event(
+                    event,
+                    "这是一条和元婴无关的回复文本",
+                    now,
+                    reply_to,
+                    reply_context,
+                    allow_tree_panel_claim=False,
+                ))
+
+            self.assertFalse(handled)
+            self.assertIn("yuanying_launch", action_guard.get_action_guard_sessions(identity_id))
+            unhandled_mock.assert_called_once()
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)

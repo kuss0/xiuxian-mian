@@ -192,6 +192,66 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual({}, state_module.state["action_guard_sessions"])
 
+    def test_startup_recovery_keeps_active_remote_action_guard_block(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "idle"
+            state_module.state["next_deep_retreat_time"] = now + 3600
+            state_module.state["action_guard_sessions"] = {
+                "deep_retreat": {
+                    "action_key": "deep_retreat",
+                    "attempt": 1,
+                    "last_sent_at": now - 120,
+                    "last_msg_id": 12,
+                    "last_command": ".深度闭关",
+                    "remote_block_until": now + 1800,
+                    "remote_block_reason": "游戏提示深度闭关执行中",
+                    "remote_block_kind": "running",
+                },
+            }
+
+        control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            session = state_module.state["action_guard_sessions"].get("deep_retreat") or {}
+            self.assertEqual(now + 1800, session.get("remote_block_until"))
+
+        allowed, reason = action_guard.before_send(config.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now + 60)
+        self.assertFalse(allowed)
+        self.assertIn("执行中", reason)
+
+    def test_action_guard_allows_after_remote_block_expires(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "idle"
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["action_guard_sessions"] = {
+                "deep_retreat": {
+                    "action_key": "deep_retreat",
+                    "attempt": 1,
+                    "last_sent_at": now - 120,
+                    "last_msg_id": 12,
+                    "last_command": ".深度闭关",
+                    "remote_block_until": now - 1,
+                    "remote_block_reason": "游戏提示深度闭关执行中",
+                    "remote_block_kind": "running",
+                },
+            }
+
+        allowed, reason = action_guard.before_send(config.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now)
+
+        self.assertTrue(allowed, reason)
+        with state_module.use_identity(send_as_id):
+            session = state_module.state["action_guard_sessions"].get("deep_retreat") or {}
+            self.assertEqual(0, int(session.get("attempt", 0) or 0))
+            self.assertEqual(0, float(session.get("remote_block_until", 0) or 0))
+
     def test_startup_recovery_clears_orphan_small_world_query_guard(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

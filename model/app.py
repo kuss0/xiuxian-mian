@@ -1172,8 +1172,6 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             root_msg_id = int(getattr(reply_to, "id", 0) or 0)
         if matched_family:
             track_reply_chain_message(event.id, routed_identity_id, matched_family, root_msg_id=root_msg_id)
-            if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
-                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply", now=now)
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
@@ -1315,6 +1313,8 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 handled_any = await handle_storage_bag_reply(text, now, reply_to, matched_family=matched_family) or handled_any
 
         if matched_family and handled_any and not already_consumed:
+            if matched_family != "concubine_heart" and not is_nonterminal_waiting_reply:
+                close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now)
             _mark_runtime_message_consumed(event, matched_family)
         elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:
             record_unhandled_routed_reply(

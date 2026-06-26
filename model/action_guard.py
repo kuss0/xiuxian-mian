@@ -472,6 +472,8 @@ def _next_retry_delay(spec, retry_index):
 
 
 def _is_expired(session, now, spec):
+    if _has_remote_block(session, now):
+        return False
     last_sent_at = float((session or {}).get("last_sent_at", 0) or 0)
     if last_sent_at <= 0:
         return True
@@ -505,6 +507,24 @@ def _session_has_send_evidence(session):
         or float(session.get("first_sent_at", 0) or 0) > 0
         or int(session.get("last_msg_id", 0) or 0) > 0
     )
+
+
+def _has_remote_block(session, now):
+    if not isinstance(session, dict):
+        return False
+    block_until = float(session.get("remote_block_until", 0) or 0)
+    return block_until > float(now or 0)
+
+
+def _remote_block_reason(session, action_key, now):
+    spec = _spec(action_key)
+    label = str(session.get("label") or spec.get("label") or action_key)
+    reason = str(session.get("remote_block_reason") or "").strip()
+    block_until = float(session.get("remote_block_until", 0) or 0)
+    wait_sec = int(max(1, block_until - float(now or 0)))
+    if reason:
+        return f"{label} {reason}，剩余约 {wait_sec}s"
+    return f"{label} 已有远端状态证据，剩余约 {wait_sec}s"
 
 
 def _runtime_has_inflight_action(action_key, identity_state, now):
@@ -567,6 +587,8 @@ def _session_should_close(action_key, session, identity_state, now):
     spec = _spec(action_key)
     if not spec:
         return True
+    if _has_remote_block(session, now):
+        return False
     if not _session_has_send_evidence(session):
         return True
     if _is_expired(session, now, spec):
@@ -640,6 +662,11 @@ def before_send(command, send_as_id=None, now=None):
             sessions[action_key] = session
             changed = True
 
+        if _has_remote_block(session, now):
+            if changed:
+                mark_dirty()
+            return False, _remote_block_reason(session, action_key, now)
+
         if _runtime_has_inflight_action(action_key, identity_state, now):
             if changed:
                 mark_dirty()
@@ -693,6 +720,35 @@ def note_sent(command, send_as_id, msg_id, sent_at=None):
         mark_dirty()
 
 
+def note_remote_block(action_key_or_command, send_as_id=None, *, block_until=0, reason="", kind="", now=None, command=None):
+    action_key = resolve_action_key(action_key_or_command)
+    if not action_key and str(action_key_or_command or "").strip() in ACTION_SPECS:
+        action_key = str(action_key_or_command or "").strip()
+    if not action_key or not has_identity(send_as_id):
+        return False
+    now = float(now if now is not None else time.time())
+    block_until = float(block_until or 0)
+    if block_until <= now:
+        return False
+    spec = _spec(action_key)
+    command = normalize_command(command or action_key_or_command)
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        session = sessions.get(action_key)
+        if not isinstance(session, dict):
+            session = _new_session(action_key, now, command)
+            sessions[action_key] = session
+        session["remote_block_until"] = block_until
+        session["remote_block_reason"] = str(reason or "").strip()
+        session["remote_block_kind"] = str(kind or "").strip()
+        session["remote_observed_at"] = now
+        session["label"] = spec.get("label") or session.get("label") or action_key
+        if command:
+            session["last_command"] = command
+        mark_dirty()
+    return True
+
+
 def get_next_allowed_at(command, send_as_id=None):
     action_key = resolve_action_key(command)
     if not action_key or not has_identity(send_as_id):
@@ -711,9 +767,17 @@ def close_action(action_key, send_as_id=None, reason="reply", now=None):
     now = float(now if now is not None else time.time())
     with use_identity(send_as_id) as identity_state:
         sessions = _get_sessions(identity_state)
-        if action_key not in sessions:
+        session = sessions.get(action_key)
+        if not isinstance(session, dict):
             return False
-        sessions.pop(action_key, None)
+        if _has_remote_block(session, now):
+            session["attempt"] = 0
+            session["last_msg_id"] = 0
+            session["next_allowed_at"] = 0
+            session["closed_at"] = now
+            session["close_reason"] = str(reason or "")
+        else:
+            sessions.pop(action_key, None)
         mark_dirty()
     return True
 

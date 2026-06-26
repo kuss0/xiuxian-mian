@@ -13,6 +13,7 @@ from ..config import (
     CMD_SMALL_WORLD_REFINE,
     SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC,
 )
+from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, state
@@ -169,6 +170,18 @@ def _recent_god_send_guard_until(command, now):
     return guard_until
 
 
+def _note_small_world_god_remote_block(command, now, block_until, reason, kind):
+    note_action_guard_remote_block(
+        "small_world_preach",
+        send_as_id=get_current_identity_id(),
+        block_until=block_until,
+        reason=reason,
+        kind=kind,
+        now=now,
+        command=command,
+    )
+
+
 def _clear_chain_pending():
     state["small_world_query_msg_id"] = 0
     state["small_world_manifest_msg_id"] = 0
@@ -226,7 +239,8 @@ def _schedule_panel_wait(now, wait_sec):
 
 
 def _schedule_god_followup(now):
-    state["small_world_god_cooldown_until"] = float(now + SMALL_WORLD_GOD_FOLLOWUP_SEC)
+    cooldown_until = float(now + SMALL_WORLD_GOD_FOLLOWUP_SEC)
+    state["small_world_god_cooldown_until"] = cooldown_until
     if state.get("small_world_pending_god_action"):
         return _schedule_pending_god_action(now)
     state["next_small_world_time"] = float(
@@ -765,6 +779,7 @@ async def _send_small_world_god_action(now, command, reason):
         if guard_until > 0:
             state["next_small_world_time"] = guard_until
             state["small_world_last_error"] = f"神迹{action_name}等待回执，跳过重复发送"
+            _note_small_world_god_remote_block(command, now, guard_until, "神迹短窗重复发送保护", "recent_send")
             save_state()
             return True
 
@@ -797,6 +812,7 @@ async def _send_small_world_god_action(now, command, reason):
         state["small_world_last_god_sent_at"] = sent_at
         state["next_small_world_time"] = state["small_world_preach_due_at"]
         state["small_world_last_error"] = ""
+        _note_small_world_god_remote_block(command, sent_at, state["small_world_preach_due_at"], "等待神迹回执", "pending_reply")
         save_state()
         console_log(f"🌍 小世界{reason}，已发送神迹{action_name}。")
         return True
@@ -1235,6 +1251,13 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
         _clear_god_pending_tasks()
         state["small_world_last_error"] = f"神迹冷却中: {wait_text}"
         state["small_world_god_cooldown_until"] = float(now + wait_sec + CD_BUFFER_SEC)
+        _note_small_world_god_remote_block(
+            CMD_SMALL_WORLD_RELIEF if matched_family == "small_world_relief" else CMD_SMALL_WORLD_PREACH,
+            now,
+            state["small_world_god_cooldown_until"],
+            "游戏提示神迹冷却",
+            "cooldown",
+        )
         if state.get("small_world_pending_god_action"):
             _schedule_pending_god_action(now)
         else:
@@ -1287,6 +1310,13 @@ async def handle_small_world_preach_reply(text, now, reply_to, matched_family=No
     if state.get("small_world_preach_enabled", False):
         _queue_maintenance_from_snapshot(now)
     _schedule_god_followup(now)
+    _note_small_world_god_remote_block(
+        CMD_SMALL_WORLD_RELIEF if is_relief else CMD_SMALL_WORLD_PREACH,
+        now,
+        state["small_world_god_cooldown_until"],
+        "神迹成功后的游戏冷却",
+        "success",
+    )
     save_state()
     return True
 

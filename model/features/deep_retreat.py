@@ -12,6 +12,7 @@ from ..config import (
     RE_WHITESPACE,
     SUMMARY_TIMEOUT_SEC,
 )
+from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
@@ -206,6 +207,18 @@ def clear_deep_retreat_summary_flags():
     clear_summary_flags(DEEP_RETREAT_SPEC)
 
 
+def _note_deep_retreat_remote_block(now, block_until, reason, kind):
+    note_action_guard_remote_block(
+        "deep_retreat",
+        send_as_id=get_current_identity_id(),
+        block_until=block_until,
+        reason=reason,
+        kind=kind,
+        now=now,
+        command=CMD_DEEP_RETREAT,
+    )
+
+
 def begin_deep_retreat_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC, *, confirmed=False):
     begin_post_summary_wait(DEEP_RETREAT_SPEC, now, delay=delay, confirmed=confirmed)
 
@@ -243,7 +256,9 @@ async def handle_deep_retreat_success_reply(text, now, reply_to, matched_family=
     if "你已进入深度闭关状态" in text and "神魂将自行吐纳" in text:
         wait_sec = parse_wait_time(text)
         if wait_sec > 0:
-            mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
+            next_time = now + wait_sec + CD_BUFFER_SEC
+            mark_deep_retreat_success(now, next_time)
+            _note_deep_retreat_remote_block(now, next_time, "执行中/CD未到", "success")
             _record_deep_retreat_event(
                 "闭关成功",
                 reply_to=reply_to,
@@ -255,6 +270,8 @@ async def handle_deep_retreat_success_reply(text, now, reply_to, matched_family=
             return True
 
         set_deep_retreat_phase("running")
+        next_time = float(state.get("next_deep_retreat_time", 0) or 0) or now + DEEP_RETREAT_CD + CD_BUFFER_SEC
+        _note_deep_retreat_remote_block(now, next_time, "游戏提示深度闭关执行中", "running")
         _record_deep_retreat_event(
             "闭关成功待状态查询",
             reply_to=reply_to,
@@ -299,6 +316,8 @@ async def handle_deep_retreat_running_reply(text, now, reply_to, matched_family=
         mark_dirty()
     else:
         mark_deep_retreat_success(now)
+        estimated_next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    _note_deep_retreat_remote_block(now, estimated_next_time, "游戏提示深度闭关执行中", "running")
     return True
 
 
@@ -327,6 +346,7 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         state["deep_retreat_probe_pending"] = False
         state["last_deep_retreat_command_time"] = now
         state["next_deep_retreat_time"] = now + wait_sec + CD_BUFFER_SEC
+        _note_deep_retreat_remote_block(now, state["next_deep_retreat_time"], "游戏提示短冷却", "cooldown")
         _record_deep_retreat_event(
             "短冷却",
             reply_to=reply_to,
@@ -343,7 +363,9 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
         wait_sec = parse_wait_time(text)
         if not has_wait_time(text):
             return False
-        mark_deep_retreat_success(now, now + wait_sec + CD_BUFFER_SEC)
+        next_time = now + wait_sec + CD_BUFFER_SEC
+        mark_deep_retreat_success(now, next_time)
+        _note_deep_retreat_remote_block(now, next_time, "游戏提示剩余闭关时间", "running")
         _record_deep_retreat_event(
             "闭关状态确认",
             reply_to=reply_to,

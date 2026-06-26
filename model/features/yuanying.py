@@ -14,9 +14,10 @@ from ..config import (
     YUANYING_CD,
     YUANYING_PROTECT_SEC,
 )
+from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -125,6 +126,18 @@ def clear_yuanying_summary_flags():
     clear_summary_flags(YUANYING_SPEC)
 
 
+def _note_yuanying_remote_block(now, block_until, reason, kind):
+    note_action_guard_remote_block(
+        "yuanying_launch",
+        send_as_id=get_current_identity_id(),
+        block_until=block_until,
+        reason=reason,
+        kind=kind,
+        now=now,
+        command=CMD_YUANYING,
+    )
+
+
 def begin_yuanying_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC, *, confirmed=False):
     begin_post_summary_wait(YUANYING_SPEC, now, delay=delay, confirmed=confirmed)
 
@@ -163,7 +176,9 @@ async def handle_yuanying_success_reply(text, now, reply_to, matched_family=None
     if "你心念一动" in text and "元婴化作一道流光飞出" in text:
         wait_sec = parse_wait_time(text)
         cd_sec = wait_sec if wait_sec > 0 else YUANYING_CD
-        mark_yuanying_success(now, now + cd_sec + CD_BUFFER_SEC)
+        next_time = now + cd_sec + CD_BUFFER_SEC
+        mark_yuanying_success(now, next_time)
+        _note_yuanying_remote_block(now, next_time, "执行中/CD未到", "success")
         target_time = fmt_time_after(cd_sec + CD_BUFFER_SEC)
         await send_audit_log(f"👶 元婴成功→{target_time}")
         return True
@@ -193,6 +208,7 @@ async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None
     else:
         set_yuanying_phase("running")
         clear_yuanying_summary_flags()
+    _note_yuanying_remote_block(now, float(state.get("next_yuanying_time", 0) or 0), "游戏提示元婴正在执行", "running")
     if state["yuanying_probe_pending"]:
         mark_dirty()
         return True
@@ -223,6 +239,7 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
             return False
 
         mark_yuanying_success(now, now + wait_sec + CD_BUFFER_SEC)
+        _note_yuanying_remote_block(now, now + wait_sec + CD_BUFFER_SEC, "游戏提示冷却/归来倒计时", "cooldown")
         target_time = fmt_time_after(wait_sec + CD_BUFFER_SEC)
         await send_audit_log(f"⏳ 元婴 CD→{target_time}")
         return True

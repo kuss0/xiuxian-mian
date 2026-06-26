@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model import control, runtime
+from model import action_guard, control, runtime
 from model.features import _phaseful, concubine, deep_retreat, tower, yuanying
 
 
@@ -383,6 +383,9 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 now + 5 + deep_retreat.CD_BUFFER_SEC,
                 state_module.state["next_deep_retreat_time"],
             )
+            allowed, reason = action_guard.before_send(deep_retreat.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now + 1)
+            self.assertFalse(allowed)
+            self.assertIn("短冷却", reason)
             audit_mock.assert_awaited_once()
             self.assertTrue(any(
                 call.kwargs.get("family") == "deep_retreat"
@@ -453,6 +456,9 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(handled)
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 8 * 60 * 60 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+            allowed, reason = action_guard.before_send(deep_retreat.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now + 10)
+            self.assertFalse(allowed)
+            self.assertIn("执行中", reason)
 
     async def test_deep_retreat_start_reply_uses_observed_long_duration(self):
         send_as_id = 8659059234
@@ -704,6 +710,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(handled)
             self.assertEqual("running", state_module.state["yuanying_phase"])
             self.assertEqual(now + 8 * 60 * 60 + yuanying.CD_BUFFER_SEC, state_module.state["next_yuanying_time"])
+
+            allowed, reason = action_guard.before_send(yuanying.CMD_YUANYING, send_as_id=send_as_id, now=now + 10)
+            self.assertFalse(allowed)
+            self.assertIn("执行中", reason)
 
     async def test_summary_timeout_falls_back_to_normal_cd_without_relaunch(self):
         send_as_id = 8659059196
@@ -1249,6 +1259,9 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("running", state_module.state["deep_retreat_phase"])
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
             self.assertEqual(next_time, state_module.state["next_deep_retreat_time"])
+            allowed, reason = action_guard.before_send(deep_retreat.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now + 10)
+            self.assertFalse(allowed)
+            self.assertIn("执行中", reason)
 
     async def test_deep_retreat_already_running_reply_resets_near_due_estimate(self):
         send_as_id = 8659059214

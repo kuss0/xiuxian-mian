@@ -37,6 +37,7 @@ if CREATED_ENV:
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import action_guard
 from model import state as state_module
 from model.features import passive_inbox, small_world, storage_bag
 
@@ -824,6 +825,10 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 1, state_module.state["small_world_last_god_sent_at"])
             self.assertEqual(now + 1 + small_world.SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC, state_module.state["next_small_world_time"])
 
+            allowed, reason = action_guard.before_send(small_world.CMD_SMALL_WORLD_PREACH, send_as_id=send_as_id, now=now + 2)
+            self.assertFalse(allowed)
+            self.assertIn("等待神迹回执", reason)
+
     async def test_recent_god_action_send_is_suppressed_even_if_reply_tracking_was_cleared(self):
         send_as_id = 8659059191
         now = 3600.0
@@ -848,6 +853,10 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             save_mock.assert_called_once()
             self.assertEqual(now - 32 + small_world.SMALL_WORLD_GOD_RESEND_GUARD_SEC, state_module.state["next_small_world_time"])
             self.assertIn("跳过重复发送", state_module.state["small_world_last_error"])
+
+            allowed, reason = action_guard.before_send(small_world.CMD_SMALL_WORLD_PREACH, send_as_id=send_as_id, now=now)
+            self.assertFalse(allowed)
+            self.assertIn("短窗", reason)
 
     async def test_concurrent_god_action_send_is_suppressed_by_optimistic_guard(self):
         send_as_id = 8659059191
