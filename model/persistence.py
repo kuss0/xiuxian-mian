@@ -40,6 +40,7 @@ from .state import (
     get_divination_pending_exchanges,
     get_divination_run_state,
     get_world_boss_run_state,
+    get_quiz_ai_config,
     get_replica_group_id,
     get_replica_group_ids,
     get_replica_dispatch_group_ids,
@@ -75,6 +76,7 @@ from .state import (
     set_guanxing_round_state,
     set_guanxing_shift_delay_sec,
     set_guanxing_shift_target,
+    set_quiz_ai_config,
     set_quiz_learning_watchers,
     set_replica_group_id,
     set_replica_group_ids,
@@ -1725,6 +1727,10 @@ def init_db():
     )
     conn.execute(
         "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+        ("quiz_ai_config", "{}"),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
         ("accounts", "{}"),
     )
     conn.execute(
@@ -2295,6 +2301,11 @@ _META_STATE_CODEC = {
         _encode_meta_json,
         lambda value: set_quiz_learning_watchers(_decode_meta_json(value, {})),
     ),
+    "quiz_ai_config": (
+        get_quiz_ai_config,
+        _encode_meta_json,
+        lambda value: set_quiz_ai_config(_decode_meta_json(value, {})),
+    ),
     "accounts": (
         get_accounts,
         _encode_meta_json,
@@ -2327,6 +2338,22 @@ def save_quiz_learning_watchers_state():
             (
                 "quiz_learning_watchers",
                 _META_STATE_CODEC["quiz_learning_watchers"][1](get_quiz_learning_watchers()),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        traceback.print_exc()
+
+
+def save_quiz_ai_config_state():
+    try:
+        init_db()
+        conn = get_db_conn()
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+            (
+                "quiz_ai_config",
+                _META_STATE_CODEC["quiz_ai_config"][1](get_quiz_ai_config()),
             ),
         )
         conn.commit()
@@ -2680,6 +2707,7 @@ __all__ = [
     "load_state",
     "delete_identity_from_db",
     "mark_dirty",
+    "save_quiz_ai_config_state",
     "save_quiz_learning_watchers_state",
     "save_state",
     "upsert_identity_to_db",

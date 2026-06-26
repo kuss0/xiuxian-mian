@@ -81,7 +81,7 @@ from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normaliz
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
 from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.stargazer import sync_stargazer_total_slots
-from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
@@ -156,6 +156,7 @@ from .state import (
     get_divination_daily_limit,
     get_module_window_hours_local,
     get_pending_command,
+    get_quiz_ai_config,
     get_realm_sort_key,
     get_send_as_profile,
     is_replica_gold_dps_allowed,
@@ -178,6 +179,7 @@ from .state import (
     set_guanxing_monitor_enabled,
     set_guanxing_monitor_targets,
     set_guanxing_shift_delay_sec,
+    set_quiz_ai_config,
     set_guanxing_shift_target,
     set_identity_account,
     set_identity_account_map,
@@ -491,6 +493,160 @@ def get_storage_bag_api_snapshot():
         "dao_path_updated_count": int(_storage_bag_api_state.get("dao_path_updated_count") or 0),
         "dao_path_skipped_count": int(_storage_bag_api_state.get("dao_path_skipped_count") or 0),
     }
+
+
+def get_quiz_ai_snapshot():
+    config = get_quiz_ai_config()
+    provider_choices = [
+        {"value": "codex", "label": "Codex / OpenAI"},
+        {"value": "claude", "label": "Claude / Anthropic"},
+    ]
+    providers = []
+    raw_providers = config.get("providers") if isinstance(config.get("providers"), list) else []
+    for index, provider in enumerate(raw_providers[:6]):
+        if not isinstance(provider, dict):
+            continue
+        providers.append({
+            "id": provider.get("id") or f"ai{index + 1}",
+            "enabled": bool(provider.get("enabled", True)),
+            "label": provider.get("label") or f"AI {index + 1}",
+            "provider": provider.get("provider") or "codex",
+            "base_url": provider.get("base_url") or "",
+            "model": provider.get("model") or "",
+            "api_key_configured": bool(provider.get("api_key")),
+            "timeout_sec": int(provider.get("timeout_sec") or config.get("timeout_sec") or 20),
+            "temperature": float(provider.get("temperature") or 0),
+        })
+    if not providers:
+        providers.append({
+            "id": "ai1",
+            "enabled": True,
+            "label": "AI 1",
+            "provider": config.get("provider") or "codex",
+            "base_url": config.get("base_url") or "",
+            "model": config.get("model") or "",
+            "api_key_configured": bool(config.get("api_key")),
+            "timeout_sec": int(config.get("timeout_sec") or 20),
+            "temperature": float(config.get("temperature") or 0),
+        })
+    while len(providers) < 3:
+        index = len(providers)
+        providers.append({
+            "id": f"ai{index + 1}",
+            "enabled": False,
+            "label": f"AI {index + 1}",
+            "provider": "codex",
+            "base_url": "",
+            "model": "",
+            "api_key_configured": False,
+            "timeout_sec": int(config.get("timeout_sec") or 20),
+            "temperature": 0.0,
+        })
+    return {
+        "enabled": bool(config.get("enabled")),
+        "auto_answer_enabled": bool(config.get("auto_answer_enabled")),
+        "provider": config.get("provider") or "codex",
+        "provider_choices": provider_choices,
+        "base_url": config.get("base_url") or "",
+        "model": config.get("model") or "",
+        "api_key_configured": bool(config.get("api_key")),
+        "confidence_threshold": float(config.get("confidence_threshold") or 0.8),
+        "timeout_sec": int(config.get("timeout_sec") or 20),
+        "decision_timeout_sec": float(config.get("decision_timeout_sec") or 20),
+        "answer_safety_margin_sec": float(config.get("answer_safety_margin_sec") or 12),
+        "temperature": float(config.get("temperature") or 0),
+        "providers": providers,
+        "last_question": config.get("last_question") or "",
+        "last_answer": config.get("last_answer") or "",
+        "last_confidence": float(config.get("last_confidence") or 0),
+        "last_reason": config.get("last_reason") or "",
+        "last_error": config.get("last_error") or "",
+        "last_provider": config.get("last_provider") or "",
+        "last_results": config.get("last_results") if isinstance(config.get("last_results"), list) else [],
+        "last_vote_summary": config.get("last_vote_summary") or "",
+        "last_provider_count": int(config.get("last_provider_count") or 0),
+        "last_valid_count": int(config.get("last_valid_count") or 0),
+        "last_decision_timeout_sec": float(config.get("last_decision_timeout_sec") or 0),
+        "last_updated_at": fmt_abs_ts(config.get("last_updated_at") or 0),
+    }
+
+
+def ui_set_quiz_ai_config(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    current = get_quiz_ai_config()
+    current_providers = current.get("providers") if isinstance(current.get("providers"), list) else []
+    current_by_id = {
+        str(provider.get("id") or "").strip(): provider
+        for provider in current_providers
+        if isinstance(provider, dict) and str(provider.get("id") or "").strip()
+    }
+    raw_providers = payload.get("providers") if isinstance(payload.get("providers"), list) else None
+    providers = []
+    if raw_providers is not None:
+        seen_ids = set()
+        for index, raw_provider in enumerate(raw_providers[:6]):
+            if not isinstance(raw_provider, dict):
+                continue
+            provider_id = str(raw_provider.get("id") or f"ai{index + 1}").strip()
+            if not provider_id or provider_id in seen_ids:
+                provider_id = f"ai{index + 1}"
+            seen_ids.add(provider_id)
+            previous = current_by_id.get(provider_id)
+            if previous is None and index < len(current_providers) and isinstance(current_providers[index], dict):
+                previous = current_providers[index]
+            previous = previous or {}
+            provider = str(raw_provider.get("provider") or previous.get("provider") or "codex").strip().lower()
+            if provider not in {"codex", "openai", "claude", "anthropic"}:
+                return False, f"{provider_id} AI provider 无效"
+            input_key = str(raw_provider.get("api_key") or "").strip()
+            clear_key = _coerce_ui_bool(raw_provider.get("clear_api_key"))
+            providers.append({
+                "id": provider_id,
+                "enabled": _coerce_ui_bool(raw_provider.get("enabled")),
+                "label": str(raw_provider.get("label") or previous.get("label") or f"AI {index + 1}").strip(),
+                "provider": "claude" if provider in {"claude", "anthropic"} else "codex",
+                "base_url": str(raw_provider.get("base_url") or "").strip().rstrip("/"),
+                "model": str(raw_provider.get("model") or "").strip(),
+                "api_key": "" if clear_key else (input_key or previous.get("api_key") or ""),
+                "timeout_sec": raw_provider.get("timeout_sec", previous.get("timeout_sec", current.get("timeout_sec"))),
+                "temperature": raw_provider.get("temperature", previous.get("temperature", current.get("temperature"))),
+            })
+    else:
+        input_key = str(payload.get("api_key") or "").strip()
+        clear_key = _coerce_ui_bool(payload.get("clear_api_key"))
+        provider = str(payload.get("provider") or current.get("provider") or "codex").strip().lower()
+        if provider not in {"codex", "openai", "claude", "anthropic"}:
+            return False, "AI provider 无效"
+        providers.append({
+            "id": "ai1",
+            "enabled": True,
+            "label": "AI 1",
+            "provider": "claude" if provider in {"claude", "anthropic"} else "codex",
+            "base_url": str(payload.get("base_url") or "").strip().rstrip("/"),
+            "model": str(payload.get("model") or "").strip(),
+            "api_key": "" if clear_key else (input_key or current.get("api_key") or ""),
+            "timeout_sec": payload.get("timeout_sec", current.get("timeout_sec")),
+            "temperature": payload.get("temperature", current.get("temperature")),
+        })
+    first_provider = providers[0] if providers else {}
+    next_config = {
+        **current,
+        "enabled": _coerce_ui_bool(payload.get("enabled")),
+        "auto_answer_enabled": _coerce_ui_bool(payload.get("auto_answer_enabled")),
+        "provider": first_provider.get("provider") or current.get("provider") or "codex",
+        "base_url": first_provider.get("base_url") or "",
+        "model": first_provider.get("model") or "",
+        "api_key": first_provider.get("api_key") or "",
+        "confidence_threshold": payload.get("confidence_threshold", current.get("confidence_threshold")),
+        "timeout_sec": first_provider.get("timeout_sec", payload.get("timeout_sec", current.get("timeout_sec"))),
+        "decision_timeout_sec": payload.get("decision_timeout_sec", current.get("decision_timeout_sec")),
+        "answer_safety_margin_sec": payload.get("answer_safety_margin_sec", current.get("answer_safety_margin_sec")),
+        "temperature": first_provider.get("temperature", payload.get("temperature", current.get("temperature"))),
+        "providers": providers,
+    }
+    set_quiz_ai_config(next_config)
+    save_state()
+    return True, "已更新玄骨 AI 辅助配置"
 
 
 def _storage_bag_api_identity_lookup():
@@ -1979,10 +2135,12 @@ def _resolve_storage_bag_batch_sources(payload, target_identity_id):
     ]
 
 
-def ui_preview_storage_bag_transfer(payload):
+def ui_preview_storage_bag_transfer(payload, *, operation="transfer"):
     payload = payload if isinstance(payload, dict) else {}
+    operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
+    is_gift_operation = operation == "gift"
     if payload.get("batch"):
-        return ui_preview_storage_bag_transfer_batch(payload)
+        return ui_preview_storage_bag_transfer_batch(payload, operation=operation)
     try:
         source_identity_id = int(payload.get("source_identity_id") or 0)
         target_identity_id = int(payload.get("target_identity_id") or 0)
@@ -2000,7 +2158,7 @@ def ui_preview_storage_bag_transfer(payload):
     rows = storage_bag.get("rows") or []
     selected_items = payload.get("items") if isinstance(payload.get("items"), list) else []
     if not selected_items:
-        return False, "请至少选择一个转移物品", None
+        return False, "请至少选择一个赠送物品" if is_gift_operation else "请至少选择一个转移物品", None
 
     normalized_items = []
     exchange_parts = []
@@ -2021,7 +2179,9 @@ def ui_preview_storage_bag_transfer(payload):
         rule = _get_storage_bag_item_rule(item_name)
         method = rule.get("method") or "unknown"
         if method == "blocked":
-            return False, f"{item_name} 不可转移", None
+            return False, f"{item_name} 不可赠送" if is_gift_operation else f"{item_name} 不可转移", None
+        if is_gift_operation:
+            method = "gift"
         if quantity <= 0:
             return False, f"{item_name} 数量必须大于 0", None
         if source_count <= 0:
@@ -2079,8 +2239,8 @@ def ui_preview_storage_bag_transfer(payload):
     if gift_items:
         commands.append({
             "identity_id": target_identity_id,
-            "command": "转移标记 <本次转移ID>",
-            "note": "目标身份先发送一条可回复的标记消息",
+            "command": "赠送标记 <本次赠送ID>" if is_gift_operation else "转移标记 <本次转移ID>",
+            "note": "目标身份先发送一条可回复的赠送定位消息" if is_gift_operation else "目标身份先发送一条可回复的标记消息",
         })
         for item in gift_items:
             commands.append({
@@ -2090,6 +2250,7 @@ def ui_preview_storage_bag_transfer(payload):
             })
 
     preview = {
+        "operation": operation,
         "source_identity_id": source_identity_id,
         "target_identity_id": target_identity_id,
         "listing_item": listing_item,
@@ -2099,9 +2260,9 @@ def ui_preview_storage_bag_transfer(payload):
         "items": normalized_items,
         "commands": commands,
         "warnings": warnings,
-        "summary": f"预览 {len(normalized_items)} 个物品，可手动开始执行",
+        "summary": f"赠送预览 {len(normalized_items)} 个物品，可手动开始执行" if is_gift_operation else f"预览 {len(normalized_items)} 个物品，可手动开始执行",
     }
-    return True, "已生成转移预览", preview
+    return True, "已生成赠送预览" if is_gift_operation else "已生成转移预览", preview
 
 
 async def ui_start_storage_bag_transfer(payload):
@@ -2141,8 +2302,42 @@ async def ui_start_storage_bag_transfer(payload):
     )
 
 
-def ui_preview_storage_bag_transfer_batch(payload):
+def ui_preview_storage_bag_gift(payload):
+    return ui_preview_storage_bag_transfer(payload, operation="gift")
+
+
+async def ui_start_storage_bag_gift(payload):
     payload = payload if isinstance(payload, dict) else {}
+    if _storage_bag_sync_state.get("running"):
+        return False, "储物袋同步正在进行中，暂不允许赠送", None
+    if payload.get("batch"):
+        return await ui_start_storage_bag_gift_batch(payload)
+    ok, message, preview = ui_preview_storage_bag_gift(payload)
+    if not ok:
+        return False, message, None
+    transfer_snapshot = get_storage_bag_transfer_snapshot()
+    transfer_batch = transfer_snapshot.get("batch") or {}
+    if transfer_snapshot.get("running") or transfer_batch.get("running"):
+        return await start_storage_bag_gift_batch(
+            [{
+                "source_identity_id": preview["source_identity_id"],
+                "target_identity_id": preview["target_identity_id"],
+                "items": preview.get("items") or [],
+            }],
+            target_identity_id=preview["target_identity_id"],
+            stop_on_error=True,
+        )
+    return await start_storage_bag_gift_task(
+        preview["source_identity_id"],
+        preview["target_identity_id"],
+        preview.get("items") or [],
+    )
+
+
+def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
+    payload = payload if isinstance(payload, dict) else {}
+    operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
+    is_gift_operation = operation == "gift"
     try:
         target_identity_id = int(payload.get("target_identity_id") or 0)
     except (TypeError, ValueError):
@@ -2152,7 +2347,7 @@ def ui_preview_storage_bag_transfer_batch(payload):
         return False, "目标身份无效", None
     requested_items = _normalize_storage_bag_batch_items(payload)
     if not requested_items:
-        return False, "请至少填写一个物品", None
+        return False, "请至少填写一个赠送物品" if is_gift_operation else "请至少填写一个物品", None
 
     sources = _resolve_storage_bag_batch_sources(payload, target_identity_id)
     if not sources:
@@ -2179,8 +2374,10 @@ def ui_preview_storage_bag_transfer_batch(payload):
             rule = _get_storage_bag_item_rule(item_name)
             method = rule.get("method") or "unknown"
             if method == "blocked":
-                warnings.append(f"{item_name} 不可转移，已跳过")
+                warnings.append(f"{item_name} 不可赠送，已跳过" if is_gift_operation else f"{item_name} 不可转移，已跳过")
                 continue
+            if is_gift_operation:
+                method = "gift"
             requested_quantity = int(request_item.get("quantity") or 0)
             quantity = source_count if mode == "all" or requested_quantity <= 0 else min(requested_quantity, source_count)
             if quantity <= 0:
@@ -2197,7 +2394,7 @@ def ui_preview_storage_bag_transfer_batch(payload):
         if not task_items:
             skipped.append(source_id)
             continue
-        if any(str(item.get("method") or "unknown") != "gift" for item in task_items) and not listing_item:
+        if not is_gift_operation and any(str(item.get("method") or "unknown") != "gift" for item in task_items) and not listing_item:
             return False, "请选择集中号用于上架的物品", None
         task_exchange_parts = [
             f"{item['item_name']}*{int(item['quantity'])}"
@@ -2211,7 +2408,7 @@ def ui_preview_storage_bag_transfer_batch(payload):
             "source_label": source_row.get("label") or source_row.get("display_name") or str(source_id),
             "target_identity_id": target_identity_id,
             "target_label": target_row.get("label") or target_row.get("display_name") or str(target_identity_id),
-            "listing_item": listing_item,
+            "listing_item": "" if is_gift_operation else listing_item,
             "listing_count": listing_count,
             "listing_syntax": listing_syntax,
             "listing_command": format_storage_bag_listing_command(
@@ -2219,7 +2416,8 @@ def ui_preview_storage_bag_transfer_batch(payload):
                 listing_count,
                 task_exchange_parts,
                 listing_syntax=listing_syntax,
-            ) if task_exchange_parts else "",
+            ) if task_exchange_parts and not is_gift_operation else "",
+            "operation": operation,
             "items": task_items,
         })
     if not tasks:
@@ -2227,17 +2425,18 @@ def ui_preview_storage_bag_transfer_batch(payload):
     total_items = sum(len(task.get("items") or []) for task in tasks)
     total_quantity = sum(int(item.get("quantity") or 0) for task in tasks for item in (task.get("items") or []))
     preview = {
+        "operation": operation,
         "target_identity_id": target_identity_id,
-        "listing_item": listing_item,
+        "listing_item": "" if is_gift_operation else listing_item,
         "listing_count": listing_count,
         "listing_syntax": listing_syntax,
         "mode": mode,
         "tasks": tasks,
         "skipped_source_ids": skipped,
         "warnings": sorted(set(warnings)),
-        "summary": f"批量预览 {len(tasks)} 个来源，{total_items} 个条目，合计 {total_quantity}",
+        "summary": f"批量赠送预览 {len(tasks)} 个来源，{total_items} 个条目，合计 {total_quantity}" if is_gift_operation else f"批量预览 {len(tasks)} 个来源，{total_items} 个条目，合计 {total_quantity}",
     }
-    return True, "已生成批量转移预览", preview
+    return True, "已生成批量赠送预览" if is_gift_operation else "已生成批量转移预览", preview
 
 
 async def ui_start_storage_bag_transfer_batch(payload):
@@ -2252,6 +2451,19 @@ async def ui_start_storage_bag_transfer_batch(payload):
         listing_item=preview.get("listing_item") or "",
         listing_count=preview.get("listing_count") or 1,
         listing_syntax=preview.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+        stop_on_error=not bool(payload.get("continue_on_error")),
+    )
+
+
+async def ui_start_storage_bag_gift_batch(payload):
+    if _storage_bag_sync_state.get("running"):
+        return False, "储物袋同步正在进行中，暂不允许赠送", None
+    ok, message, preview = ui_preview_storage_bag_transfer_batch(payload, operation="gift")
+    if not ok:
+        return False, message, None
+    return await start_storage_bag_gift_batch(
+        preview.get("tasks") or [],
+        target_identity_id=preview.get("target_identity_id") or 0,
         stop_on_error=not bool(payload.get("continue_on_error")),
     )
 
@@ -3198,6 +3410,7 @@ def get_ui_snapshot(session_token=None):
         "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
         "storage_bag_api": get_storage_bag_api_snapshot(),
+        "quiz_ai": get_quiz_ai_snapshot(),
         "tianjige_dao_path": get_tianjige_dao_path_snapshot(),
         "storage_bag_sync": get_storage_bag_sync_snapshot(),
         "storage_bag_transfer": get_storage_bag_transfer_snapshot(),
@@ -4994,6 +5207,14 @@ async def handle_ui_http(reader, writer):
                         snapshot=get_ui_snapshot(session_token=(session or {}).get("session_token")) if ok else None,
                     )
                     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=auth_headers)
+            elif path == "/api/quiz-ai-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message = ui_set_quiz_ai_config(payload)
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/storage-bag-api-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -5081,6 +5302,30 @@ async def handle_ui_http(reader, writer):
                     _write_method_not_allowed(writer)
                 else:
                     ok, message, transfer = await ui_start_storage_bag_transfer(payload)
+                    _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
+            elif path == "/api/storage-bag-gift-preview":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, preview = ui_preview_storage_bag_gift(payload)
+                    _write_json_result(
+                        writer,
+                        ok,
+                        message,
+                        session_token=(session or {}).get("session_token"),
+                        extra_headers=auth_headers,
+                        extra={"preview": preview} if preview else None,
+                        include_snapshot=False,
+                    )
+            elif path == "/api/storage-bag-gift-start":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    ok, message, transfer = await ui_start_storage_bag_gift(payload)
                     _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers, extra={"transfer": transfer} if transfer else None)
             elif path == "/api/storage-bag-transfer-cancel":
                 if session is None:

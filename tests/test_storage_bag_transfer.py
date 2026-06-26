@@ -222,6 +222,23 @@ class StorageBagTransferTests(unittest.TestCase):
             {"identity_id": self.source_id, "command": ".赠送 木髓*2", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
+    def test_gift_peer_preview_forces_gift_method_without_listing_item(self):
+        ok, message, preview = ui.ui_preview_storage_bag_gift({
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+            "items": [{"item_name": "妖丹", "quantity": 3}],
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual("已生成赠送预览", message)
+        self.assertEqual("gift", preview["operation"])
+        self.assertEqual("", preview["listing_item"])
+        self.assertEqual("gift", preview["items"][0]["method"])
+        self.assertEqual([
+            {"identity_id": self.target_id, "command": "赠送标记 <本次赠送ID>", "note": "目标身份先发送一条可回复的赠送定位消息"},
+            {"identity_id": self.source_id, "command": ".赠送 妖丹*3", "note": "来源身份回复目标身份标记消息发送"},
+        ], preview["commands"])
+
     def test_known_non_listing_items_use_gift_rules_from_base_file(self):
         state_module.set_storage_bag_item_rules({})
         state_module.set_storage_bag_records({
@@ -1297,6 +1314,30 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok, message)
         self.assertEqual("waiting_listing_reply", storage_bag._storage_bag_transfer_state["step"])
         self.assertEqual([".上架 灵石*1 换 妖丹*3"], [item[0] for item in sent])
+
+    async def test_gift_peer_task_forces_gift_method_and_skips_listing(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=900 + len(sent))
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.random.choice", return_value="稍等"), \
+                patch("model.features.storage_bag.send_audit_log"):
+            ok, message, transfer = await storage_bag.start_storage_bag_gift_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "妖丹", "quantity": 2, "method": "basic"}],
+            )
+
+        self.assertTrue(ok, message)
+        self.assertEqual("gift", transfer["operation"])
+        self.assertEqual("waiting_gift_reply", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual(["稍等", ".赠送 妖丹*2"], [item[0] for item in sent])
+        self.assertEqual(self.target_id, sent[0][1]["send_as_id"])
+        self.assertEqual(self.source_id, sent[1][1]["send_as_id"])
+        self.assertEqual(901, sent[1][1]["reply_to"])
 
     async def test_gift_transfer_sends_locator_and_gift_reply_then_syncs_tax(self):
         sent = []

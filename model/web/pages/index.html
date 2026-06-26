@@ -211,6 +211,7 @@
     </div>    <div class='storage-bag-body'>    <div class='form-label'>只展示已解析快照；同步需要手动勾选身份，保护账号不会被读取。</div>    <div class='storage-bag-actions'>
 <label class='checkbox-inline checkbox-inline-small'><input type='checkbox' id='storage-bag-select-all' /> 全选可同步身份</label>
 <button type='button' class='btn btn-secondary' id='storage-bag-transfer-open-btn'>转移</button>
+<button type='button' class='btn btn-secondary' id='storage-bag-gift-open-btn'>赠送</button>
 <button type='button' class='btn' id='storage-bag-sync-btn'>同步</button>
 <span id='storage-bag-sync-status' class='form-label form-label-inline'></span>
 </div>    <div id='storage-bag-toolbar' class='storage-bag-toolbar'>
@@ -221,12 +222,30 @@
 </div>    </div>  </div>
 </div>
 <div id='storage-bag-transfer-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide storage-bag-transfer-modal-card'>    <div class='modal-header'>
-<h3 class='modal-title'>储物袋转移</h3>
+<h3 id='storage-bag-transfer-title' class='modal-title'>储物袋转移</h3>
 <button class='icon-btn' type='button' data-close-modal='storage-bag-transfer'>×</button>
-</div>    <div class='form-label'>来源号提供物品，集中号上架小物；可用快照批量勾选，也可手填清单，快照只作辅助提示。</div>    <div id='storage-bag-transfer-panel' class='storage-bag-transfer-panel'>
+</div>    <div id='storage-bag-transfer-note' class='form-label'>来源号提供物品，集中号上架小物；可用快照批量勾选，也可手填清单，快照只作辅助提示。</div>    <div id='storage-bag-transfer-panel' class='storage-bag-transfer-panel'>
 </div>    <div class='modal-actions'>
 <button class='btn btn-secondary' type='button' data-close-modal='storage-bag-transfer'>关闭</button>
 </div>  </div>
+</div>
+<div id='quiz-ai-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide'>    <div class='modal-header'>
+<h3 class='modal-title'>玄骨 AI 辅助</h3>
+<button class='icon-btn' type='button' data-close-modal='quiz-ai'>×</button>
+</div>    <form id='quiz-ai-form'>      <div class='stack-12'>
+<label class='checkbox-inline checkbox-inline-small'><input type='checkbox' name='quiz_ai_enabled' /> 启用 AI 辅助</label>
+<label class='checkbox-inline checkbox-inline-small'><input type='checkbox' name='quiz_ai_auto_answer_enabled' /> 允许达标后自动作答</label>
+<div class='form-grid form-grid-2'>
+<label class='field-label'>自动作答阈值<input class='text-input' type='number' step='0.01' min='0' max='1' name='quiz_ai_confidence_threshold' /></label>
+<label class='field-label'>投票等待上限<input class='text-input' type='number' step='0.5' min='1' max='60' name='quiz_ai_decision_timeout_sec' /></label>
+</div>
+<label class='field-label'>作答安全余量<input class='text-input' type='number' step='0.5' min='3' max='60' name='quiz_ai_answer_safety_margin_sec' /></label>
+<div id='quiz-ai-provider-list' class='stack-12'></div>
+<div id='quiz-ai-status' class='form-label form-label-inline'></div>
+</div>      <div class='modal-actions'>
+<button class='btn btn-secondary' type='button' data-close-modal='quiz-ai'>取消</button>
+<button class='btn' type='submit'>保存</button>
+</div>    </form>  </div>
 </div>
 <div id='logs-modal' class='modal-backdrop'>  <div class='modal-card modal-card-wide logs-modal-card'>    <div class='modal-header'>
 <h3 class='modal-title'>消息日志</h3>
@@ -260,6 +279,7 @@
 <script src='/static/js/dungeon_ui.js'></script>
 <script src='/static/js/account_logout.js'></script>
 <script src='/static/js/storage_bag_ui.js'></script>
+<script src='/static/js/quiz_ai_ui.js'></script>
 <script src='/static/js/logs_ui.js'></script>
 </body>
 </html>

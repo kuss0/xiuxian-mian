@@ -40,7 +40,9 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
+from model import ui
 from model.features import quiz
+from model.features import quiz_ai
 
 
 class QuizResultParsingTests(unittest.TestCase):
@@ -55,6 +57,45 @@ class QuizResultParsingTests(unittest.TestCase):
         self.assertEqual("A", wrong["submitted_answer"])
         self.assertEqual("C", wrong["correct_answer"])
         self.assertIsNotNone(timeout)
+
+
+class QuizAiVoteTests(unittest.TestCase):
+    def test_single_usable_provider_wins(self):
+        result = quiz_ai._select_quiz_ai_vote([
+            {"ok": False, "error": "timeout", "elapsed_ms": 2000, "label": "slow"},
+            {"ok": True, "answer": "C", "confidence": 0.72, "elapsed_ms": 900, "label": "one"},
+        ])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("C", result["answer"])
+        self.assertEqual("C:1", result["vote_summary"])
+
+    def test_majority_wins_over_fastest_minor_answer(self):
+        result = quiz_ai._select_quiz_ai_vote([
+            {"ok": True, "answer": "A", "confidence": 0.86, "elapsed_ms": 1200, "label": "a1"},
+            {"ok": True, "answer": "B", "confidence": 0.99, "elapsed_ms": 200, "label": "b1"},
+            {"ok": True, "answer": "A", "confidence": 0.91, "elapsed_ms": 900, "label": "a2"},
+        ])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("A", result["answer"])
+        self.assertEqual("A:2/B:1", result["vote_summary"])
+        self.assertEqual(0.91, result["confidence"])
+
+    def test_tie_uses_fastest_usable_answer(self):
+        result = quiz_ai._select_quiz_ai_vote([
+            {"ok": True, "answer": "A", "confidence": 0.91, "elapsed_ms": 800, "label": "a1"},
+            {"ok": True, "answer": "B", "confidence": 0.89, "elapsed_ms": 300, "label": "b1"},
+        ])
+
+        self.assertTrue(result["ok"])
+        self.assertEqual("B", result["answer"])
+
+    def test_quiz_ai_is_http_only_and_does_not_use_local_ai_cli(self):
+        source = (PROJECT_ROOT / "model" / "features" / "quiz_ai.py").read_text(encoding="utf-8")
+
+        for forbidden in ("subprocess", "os.system", "Popen", ".codex", ".claude"):
+            self.assertNotIn(forbidden, source)
 
 
 class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
@@ -160,6 +201,238 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("收到玄骨考校超时结果，停止重试", state_module.state["quiz_last_error"])
         send_answer_mock.assert_not_awaited()
         self.assertIn("题库内超时未作答", audit_mock.await_args.args[0])
+
+
+class QuizAiAssistTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        super().setUp()
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+        self.identity_id = 10001
+        state_module.ensure_identity_registered(self.identity_id)
+        state_module.update_send_as_profile(self.identity_id, username="dao", enabled=True)
+        quiz._reset_quiz_bank_cache()
+
+    def tearDown(self):
+        quiz._reset_quiz_bank_cache()
+        state_module._meta_state.clear()
+        state_module._meta_state.update(self._meta_state_snapshot)
+        super().tearDown()
+
+    def _prompt(self):
+        return (
+            "一缕魔念直逼你识海中的乾蓝寒焰，玄骨上人的声音在 @dao 脑海中炸响：\n"
+            "“玄骨上人的化焰思路，核心在于先压住什么风险？”\n"
+            "A. 灵根反噬\n"
+            "B. 鼎焰反噬\n"
+            "C. 天劫锁定\n"
+            "D. 妖丹爆裂\n"
+            "小辈，你有 300秒 的时间，可直接点击下方按钮作答，也可回复本消息并使用 .作答 <选项> 给出你的答案。"
+        )
+
+    async def test_ai_shadow_mode_records_suggestion_without_queueing_answer(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "auto_answer_enabled": False,
+            "provider": "codex",
+            "model": "test-model",
+            "confidence_threshold": 0.8,
+        })
+        with state_module.use_identity(self.identity_id):
+            state_module.state["quiz_enabled"] = True
+            with (
+                patch.object(quiz, "_match_quiz_answer", return_value=("", "")),
+                patch.object(quiz, "suggest_quiz_answer_multi", new=AsyncMock(return_value={
+                    "ok": True,
+                    "answer": "B",
+                    "confidence": 0.91,
+                    "reason": "题面指向鼎焰",
+                    "provider": "codex",
+                })) as suggest_mock,
+                patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(quiz, "save_state"),
+                patch.object(quiz, "save_quiz_ai_config_state"),
+            ):
+                handled = await quiz.handle_quiz_prompt(self._prompt(), 1_700_000_000.0, SimpleNamespace(id=123, chat_id=-100))
+
+            self.assertTrue(handled)
+            self.assertEqual("", state_module.state["quiz_answer"])
+            self.assertEqual("", state_module.state["quiz_phase"])
+            self.assertEqual("题库未命中，AI仅建议", state_module.state["quiz_last_error"])
+            suggest_mock.assert_awaited_once()
+            self.assertIn("AI建议", audit_mock.await_args.args[0])
+
+    async def test_ai_auto_mode_queues_answer_when_confidence_passes_threshold(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "auto_answer_enabled": True,
+            "provider": "claude",
+            "model": "test-model",
+            "confidence_threshold": 0.8,
+        })
+        with state_module.use_identity(self.identity_id):
+            state_module.state["quiz_enabled"] = True
+            with (
+                patch.object(quiz, "_match_quiz_answer", return_value=("", "")),
+                patch.object(quiz, "suggest_quiz_answer_multi", new=AsyncMock(return_value={
+                    "ok": True,
+                    "answer": "B",
+                    "confidence": 0.93,
+                    "reason": "题面指向鼎焰",
+                    "provider": "claude",
+                })),
+                patch.object(quiz.random, "uniform", return_value=25.0),
+                patch.object(quiz, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(quiz, "save_state"),
+                patch.object(quiz, "save_quiz_ai_config_state"),
+            ):
+                handled = await quiz.handle_quiz_prompt(self._prompt(), 1_700_000_000.0, SimpleNamespace(id=456, chat_id=-100))
+
+            self.assertTrue(handled)
+            self.assertEqual("B", state_module.state["quiz_answer"])
+            self.assertEqual(quiz.QUIZ_PHASE_QUEUED_ANSWER, state_module.state["quiz_phase"])
+            self.assertEqual("pending_button_ai", state_module.state["quiz_answer_method"])
+            self.assertEqual("ai:claude:0.93", state_module.state["quiz_match_mode"])
+            self.assertEqual(1_700_000_025.0, state_module.state["next_quiz_time"])
+            self.assertIn("AI已排队作答", audit_mock.await_args.args[0])
+
+    async def test_ai_auto_mode_caps_delay_to_safety_window_after_ai_wait(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "auto_answer_enabled": True,
+            "provider": "codex",
+            "model": "test-model",
+            "confidence_threshold": 0.8,
+            "decision_timeout_sec": 20,
+            "answer_safety_margin_sec": 12,
+        })
+        prompt = self._prompt().replace("300秒", "30秒")
+        with state_module.use_identity(self.identity_id):
+            state_module.state["quiz_enabled"] = True
+            with (
+                patch.object(quiz, "_match_quiz_answer", return_value=("", "")),
+                patch.object(quiz, "suggest_quiz_answer_multi", new=AsyncMock(return_value={
+                    "ok": True,
+                    "answer": "B",
+                    "confidence": 0.93,
+                    "reason": "题面指向鼎焰",
+                    "provider": "vote:B:1",
+                    "provider_count": 1,
+                    "valid_count": 1,
+                    "vote_summary": "B:1",
+                })) as suggest_mock,
+                patch.object(quiz.random, "uniform", return_value=25.0),
+                patch.object(quiz.time, "time", side_effect=[1_000.0, 1_010.0, 1_010.0]),
+                patch.object(quiz, "send_audit_log", new=AsyncMock()),
+                patch.object(quiz, "save_state"),
+                patch.object(quiz, "save_quiz_ai_config_state"),
+            ):
+                handled = await quiz.handle_quiz_prompt(prompt, 1_700_000_000.0, SimpleNamespace(id=789, chat_id=-100))
+
+            self.assertTrue(handled)
+            self.assertEqual("B", state_module.state["quiz_answer"])
+            self.assertEqual(1_700_000_018.0, state_module.state["next_quiz_time"])
+            self.assertEqual(17.0, suggest_mock.await_args.kwargs["decision_timeout_sec"])
+
+
+class QuizAiUiSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+
+    def tearDown(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(self._meta_state_snapshot)
+
+    def test_quiz_ai_snapshot_does_not_expose_api_key(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "provider": "codex",
+            "model": "test-model",
+            "api_key": "secret-token",
+        })
+
+        snapshot = ui.get_quiz_ai_snapshot()
+
+        self.assertTrue(snapshot["api_key_configured"])
+        self.assertNotIn("api_key", snapshot)
+
+    def test_quiz_ai_snapshot_does_not_expose_provider_api_keys(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "providers": [
+                {
+                    "id": "ai1",
+                    "enabled": True,
+                    "label": "primary",
+                    "provider": "codex",
+                    "model": "test-model",
+                    "api_key": "secret-token",
+                }
+            ],
+        })
+
+        snapshot = ui.get_quiz_ai_snapshot()
+
+        self.assertTrue(snapshot["providers"][0]["api_key_configured"])
+        self.assertNotIn("api_key", snapshot["providers"][0])
+
+    def test_ui_set_quiz_ai_config_preserves_and_clears_provider_keys(self):
+        state_module.set_quiz_ai_config({
+            "enabled": True,
+            "providers": [
+                {
+                    "id": "ai1",
+                    "enabled": True,
+                    "label": "primary",
+                    "provider": "codex",
+                    "model": "old-model",
+                    "api_key": "secret-token",
+                }
+            ],
+        })
+
+        ok, _ = ui.ui_set_quiz_ai_config({
+            "enabled": True,
+            "auto_answer_enabled": True,
+            "providers": [
+                {
+                    "id": "ai1",
+                    "enabled": True,
+                    "label": "primary",
+                    "provider": "codex",
+                    "model": "new-model",
+                    "api_key": "",
+                    "clear_api_key": False,
+                    "timeout_sec": 10,
+                    "temperature": 0,
+                }
+            ],
+        })
+
+        self.assertTrue(ok)
+        self.assertEqual("secret-token", state_module.get_quiz_ai_config()["providers"][0]["api_key"])
+
+        ok, _ = ui.ui_set_quiz_ai_config({
+            "enabled": True,
+            "providers": [
+                {
+                    "id": "ai1",
+                    "enabled": True,
+                    "label": "primary",
+                    "provider": "codex",
+                    "model": "new-model",
+                    "clear_api_key": True,
+                    "timeout_sec": 10,
+                    "temperature": 0,
+                }
+            ],
+        })
+
+        self.assertTrue(ok)
+        self.assertEqual("", state_module.get_quiz_ai_config()["providers"][0]["api_key"])
 
 
 class QuizPassiveLearningTests(unittest.IsolatedAsyncioTestCase):

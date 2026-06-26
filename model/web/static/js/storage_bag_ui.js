@@ -36,6 +36,7 @@
     if (typeof appState === 'undefined') return {};
     if (!appState.storageBagTransfer) {
       appState.storageBagTransfer = {
+        operation: 'transfer',
         sourceId: '',
         targetId: '',
         listingItem: '',
@@ -56,6 +57,7 @@
     }
     if (!appState.storageBagTransfer.selectedItems) appState.storageBagTransfer.selectedItems = {};
     if (!Array.isArray(appState.storageBagTransfer.batchSourceIds)) appState.storageBagTransfer.batchSourceIds = [];
+    if (['transfer', 'gift'].indexOf(String(appState.storageBagTransfer.operation || 'transfer')) < 0) appState.storageBagTransfer.operation = 'transfer';
     if (!Number(appState.storageBagTransfer.startPending || 0)) appState.storageBagTransfer.startPending = 0;
     if (!Number(appState.storageBagTransfer.listingCount || 0)) appState.storageBagTransfer.listingCount = 1;
     if (['space', 'compact'].indexOf(String(appState.storageBagTransfer.listingSyntax || 'space')) < 0) appState.storageBagTransfer.listingSyntax = 'space';
@@ -126,6 +128,14 @@
 
   function methodLabel(method) {
     return { basic: '买卖', gift: '赠送', blocked: '不可转移', unknown: '未知' }[String(method || 'unknown')] || '未知';
+  }
+
+  function isGiftMode() {
+    return transferState().operation === 'gift';
+  }
+
+  function operationLabel() {
+    return isGiftMode() ? '赠送' : '转移';
   }
 
   function preferredListingItem(targetId) {
@@ -206,6 +216,7 @@
 
   function transferPayload() {
     const state = transferState();
+    const giftMode = isGiftMode();
     const merged = new Map();
     selectedSnapshotItems().concat(parseManualItems(state.manualText)).forEach(function (item) {
       const name = String(item.item_name || '').trim();
@@ -215,8 +226,9 @@
     if (state.batchMode) {
       const payload = {
         batch: true,
+        operation: state.operation,
         target_identity_id: Number(state.targetId) || 0,
-        listing_item: String(state.listingItem || '').trim(),
+        listing_item: giftMode ? '' : String(state.listingItem || '').trim(),
         listing_count: Math.max(1, Number(state.listingCount) || 1),
         listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
         mode: String(state.batchQuantityMode || 'all') === 'fixed' ? 'fixed' : 'all',
@@ -230,9 +242,10 @@
       return payload;
     }
     return {
+      operation: state.operation,
       source_identity_id: Number(state.sourceId) || 0,
       target_identity_id: Number(state.targetId) || 0,
-      listing_item: String(state.listingItem || '').trim(),
+      listing_item: giftMode ? '' : String(state.listingItem || '').trim(),
       listing_count: Math.max(1, Number(state.listingCount) || 1),
       listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
       items: Array.from(merged.entries()).map(function (entry) {
@@ -648,6 +661,7 @@
     const transferBatch = transfer.batch || {};
     const running = !!sync.running;
     const transferRunning = !!transfer.running || !!transferBatch.running;
+    const runningLabel = transfer.operation === 'gift' || transferBatch.operation === 'gift' ? '赠送中' : '转移中';
     const selectable = rows().filter(function (row) { return !row.protected; });
     const selected = selectedSyncIds();
     const selectedCount = selectable.filter(function (row) { return selected.has(Number(row.identity_id) || 0); }).length;
@@ -656,7 +670,7 @@
     const status = document.getElementById('storage-bag-sync-status');
     if (btn) {
       btn.disabled = running || transferRunning;
-      btn.textContent = running ? '同步中' : (transferRunning ? '转移中' : '同步');
+      btn.textContent = running ? '同步中' : (transferRunning ? runningLabel : '同步');
     }
     if (selectAll) {
       selectAll.checked = selectable.length > 0 && selectedCount === selectable.length;
@@ -666,7 +680,7 @@
     if (status) {
       const pending = Array.isArray(sync.pending_ids) ? sync.pending_ids.length : 0;
       const completed = Array.isArray(sync.completed_ids) ? sync.completed_ids.length : 0;
-      status.textContent = running ? `排队 ${pending}，已发送 ${completed}` : (transferRunning ? '转移中暂停同步' : '');
+      status.textContent = running ? `排队 ${pending}，已发送 ${completed}` : (transferRunning ? `${runningLabel}暂停同步` : '');
     }
   }
 
@@ -742,6 +756,7 @@
     if (!panel) return;
     normalizeTransferDefaults();
     const state = transferState();
+    const giftMode = isGiftMode();
     const runtime = snapshot().storage_bag_transfer || {};
     const batchRuntime = runtime.batch || {};
     const syncRuntime = snapshot().storage_bag_sync || {};
@@ -763,11 +778,11 @@
         const stats = batchItemStats(name);
         const qty = checked ? Number(state.selectedItems[name] || (state.batchQuantityMode === 'fixed' ? 1 : stats.total)) : (state.batchQuantityMode === 'fixed' ? 1 : stats.total);
         const holderText = `${stats.holderCount}号${stats.holderLabels.length ? `｜${stats.holderLabels.join('、')}${stats.holderCount > stats.holderLabels.length ? '…' : ''}` : ''}`;
-        return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(rule.method_label || methodLabel(rule.method))}</td><td>${esc(stats.total.toLocaleString())}</td><td>${esc(holderText)}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked && state.batchQuantityMode === 'fixed' ? '' : ' disabled'} /></td></tr>`;
+        return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(giftMode ? '赠送' : (rule.method_label || methodLabel(rule.method)))}</td><td>${esc(stats.total.toLocaleString())}</td><td>${esc(holderText)}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked && state.batchQuantityMode === 'fixed' ? '' : ' disabled'} /></td></tr>`;
       }
       const count = itemCount(state.sourceId, name);
       const qty = checked ? Number(state.selectedItems[name] || count) : count;
-      return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(rule.method_label || methodLabel(rule.method))}</td><td>${esc(count.toLocaleString())}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked ? '' : ' disabled'} /></td></tr>`;
+      return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(giftMode ? '赠送' : (rule.method_label || methodLabel(rule.method)))}</td><td>${esc(count.toLocaleString())}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked ? '' : ' disabled'} /></td></tr>`;
     }).join('') : `<tr><td colspan="${state.batchMode ? '6' : '5'}" class="storage-bag-empty-cell">${state.batchMode ? '当前来源范围暂无可转移物品，可直接使用手填清单。' : '来源快照暂无可转移物品，可直接使用手填清单。'}</td></tr>`;
     const preview = state.preview;
     const logs = Array.isArray(runtime.logs) ? runtime.logs.slice(-8).map(function (log) {
@@ -778,14 +793,18 @@
     const startPending = Number(state.startPending || 0) > 0;
     const syncBusy = !!syncRuntime.running;
     const sourceLabel = sourceRow ? (sourceRow.label || sourceRow.display_name || state.sourceId) : '来源';
+    const title = document.getElementById('storage-bag-transfer-title');
+    const note = document.getElementById('storage-bag-transfer-note');
+    if (title) title.textContent = giftMode ? '储物袋赠送' : '储物袋转移';
+    if (note) note.textContent = giftMode ? '目标号先发定位消息，来源号回复该消息发送 .赠送；可用快照批量勾选，也可手填清单。' : '来源号提供物品，集中号上架小物；可用快照批量勾选，也可手填清单，快照只作辅助提示。';
     const startLabel = transferRunning || startPending
-      ? (state.batchMode ? '加入批量队列' : '加入队列')
-      : (state.batchMode ? '执行批量转移' : '执行转移');
+      ? (state.batchMode ? `加入批量${operationLabel()}队列` : '加入队列')
+      : (state.batchMode ? `执行批量${operationLabel()}` : `执行${operationLabel()}`);
     const modeButtons = `
       <div class="storage-bag-transfer-mode">
         <button type="button" class="btn btn-secondary${state.batchMode ? '' : ' is-active'}" data-storage-transfer-mode="single"${syncBusy ? ' disabled' : ''}>单次</button>
         <button type="button" class="btn btn-secondary${state.batchMode ? ' is-active' : ''}" data-storage-transfer-mode="batch"${syncBusy ? ' disabled' : ''}>批量</button>
-        <button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${syncBusy ? ' disabled' : ''}>洗钱预设</button>
+        ${giftMode ? '' : `<button type="button" class="btn btn-secondary" data-storage-transfer-money-preset="1"${syncBusy ? ' disabled' : ''}>洗钱预设</button>`}
       </div>`;
     const listingFormatControl = `
         <label class="field-label">上架数量<input class="text-input" type="number" min="1" data-storage-transfer-field="listingCount" value="${esc(Math.max(1, Number(state.listingCount) || 1))}" /></label>
@@ -793,9 +812,8 @@
     const sourceControls = state.batchMode ? `
       <div class="storage-bag-transfer-controls storage-bag-transfer-controls-batch">
         <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
-        <label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>
-        ${listingFormatControl}
-        <label class="field-label">数量模式<select class="text-input" data-storage-transfer-field="batchQuantityMode"><option value="all"${state.batchQuantityMode !== 'fixed' ? ' selected' : ''}>转移全部库存</option><option value="fixed"${state.batchQuantityMode === 'fixed' ? ' selected' : ''}>每号固定上限</option></select></label>
+        ${giftMode ? '' : `<label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>${listingFormatControl}`}
+        <label class="field-label">数量模式<select class="text-input" data-storage-transfer-field="batchQuantityMode"><option value="all"${state.batchQuantityMode !== 'fixed' ? ' selected' : ''}>${giftMode ? '赠送全部库存' : '转移全部库存'}</option><option value="fixed"${state.batchQuantityMode === 'fixed' ? ' selected' : ''}>每号固定上限</option></select></label>
       </div>
       <div class="storage-bag-transfer-batch-options">
         <label><input type="checkbox" data-storage-transfer-flag="batchAllSources"${state.batchAllSources ? ' checked' : ''} />全部可用来源</label>
@@ -814,24 +832,23 @@
       <div class="storage-bag-transfer-controls">
         <label class="field-label">资源号<select class="text-input" data-storage-transfer-field="sourceId">${identityOptions(state.sourceId)}</select></label>
         <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
-        <label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>
-        ${listingFormatControl}
+        ${giftMode ? '' : `<label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>${listingFormatControl}`}
       </div>`;
     panel.innerHTML = `
       ${modeButtons}
       ${sourceControls}
       <div class="storage-bag-transfer-grid">
         <section>
-          <div class="form-label">${state.batchMode ? `批量来源 ${esc(sourceRows.length)} 个，可勾选要集中的物品。` : `${esc(sourceLabel)} 快照物品，可批量勾选。`}</div>
+          <div class="form-label">${state.batchMode ? `批量来源 ${esc(sourceRows.length)} 个，可勾选要${giftMode ? '赠送' : '集中'}的物品。` : `${esc(sourceLabel)} 快照物品，可批量勾选。`}</div>
           <div class="storage-bag-transfer-table-wrap"><table class="storage-bag-transfer-table"><thead>${state.batchMode ? '<tr><th>选</th><th>物品</th><th>方式</th><th>来源合计</th><th>持有号</th><th>数量</th></tr>' : '<tr><th>选</th><th>物品</th><th>方式</th><th>库存</th><th>数量</th></tr>'}</thead><tbody>${itemRows}</tbody></table></div>
         </section>
         <section>
           <label class="field-label">手填清单<textarea class="text-input storage-bag-transfer-textarea" data-storage-transfer-field="manualText" placeholder="妖丹*10 木髓*5 或一行一个">${esc(state.manualText || '')}</textarea></label>
-          <div class="form-label">${state.batchMode ? '全部模式会按每个来源当前库存转移；固定模式按每个来源上限转移。' : '快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。'}</div>
+          <div class="form-label">${state.batchMode ? `全部模式会按每个来源当前库存${giftMode ? '赠送' : '转移'}；固定模式按每个来源上限执行。` : '快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。'}</div>
         </section>
       </div>
       <div class="storage-bag-transfer-actions">
-        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? '生成批量预览' : '生成预览'}</button>
+        <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? `生成批量${operationLabel()}预览` : `生成${operationLabel()}预览`}</button>
         <button type="button" class="btn" data-storage-transfer-start="1"${syncBusy ? ' disabled' : ''}>${startLabel}</button>
         <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${transferRunning ? '' : ' disabled'}>取消任务</button>
       </div>
@@ -856,9 +873,22 @@
   }
 
   function openTransferModal() {
+    transferState().operation = 'transfer';
     const runtime = snapshot().storage_bag_transfer || {};
     const batchRuntime = runtime.batch || {};
     if (!runtime.running && !batchRuntime.running) resetTransferDraftToDefaults();
+    renderTransferPanel();
+    const modal = document.getElementById('storage-bag-transfer-modal');
+    if (modal) modal.classList.add('show');
+  }
+
+  function openGiftModal() {
+    transferState().operation = 'gift';
+    const runtime = snapshot().storage_bag_transfer || {};
+    const batchRuntime = runtime.batch || {};
+    if (!runtime.running && !batchRuntime.running) resetTransferDraftToDefaults();
+    transferState().operation = 'gift';
+    transferState().listingItem = '';
     renderTransferPanel();
     const modal = document.getElementById('storage-bag-transfer-modal');
     if (modal) modal.classList.add('show');
@@ -948,11 +978,11 @@
     state.busy = true;
     renderTransferPanel();
     try {
-      const data = await post('/api/storage-bag-transfer-preview', transferPayload());
+      const data = await post(isGiftMode() ? '/api/storage-bag-gift-preview' : '/api/storage-bag-transfer-preview', transferPayload());
       state.preview = data.preview || null;
       renderTransferPanel();
     } catch (error) {
-      setFlash((error && error.message) || '生成转移预览失败', true);
+      setFlash((error && error.message) || `生成${operationLabel()}预览失败`, true);
       renderTransferPanel();
     } finally {
       state.busy = false;
@@ -970,12 +1000,12 @@
     state.startPending = Math.max(0, Number(state.startPending || 0)) + 1;
     renderTransferPanel();
     try {
-      const data = await post('/api/storage-bag-transfer-start', payload);
-      setFlash(data.message || '已开始储物袋转移', false);
+      const data = await post(isGiftMode() ? '/api/storage-bag-gift-start' : '/api/storage-bag-transfer-start', payload);
+      setFlash(data.message || `已开始储物袋${operationLabel()}`, false);
       if (typeof applySnapshot === 'function') applySnapshot(data.snapshot || snapshot(), { keepFlash: true });
       renderTransferPanel();
     } catch (error) {
-      setFlash((error && error.message) || '启动储物袋转移失败', true);
+      setFlash((error && error.message) || `启动储物袋${operationLabel()}失败`, true);
       renderTransferPanel();
     } finally {
       state.startPending = Math.max(0, Number(state.startPending || 0) - 1);
@@ -1011,6 +1041,7 @@
   document.addEventListener('click', function (event) {
     if (event.target.closest('[data-open-storage-bag]')) return openStorageBagModal();
     if (event.target.closest('#storage-bag-transfer-open-btn')) return openTransferModal();
+    if (event.target.closest('#storage-bag-gift-open-btn')) return openGiftModal();
     if (event.target.closest('#storage-bag-sync-btn')) return syncStorageBag();
     if (event.target.closest('[data-storage-bag-api-save]')) return saveStorageBagApiConfig();
     if (event.target.closest('[data-storage-bag-api-verify]')) return verifyStorageBagApi();

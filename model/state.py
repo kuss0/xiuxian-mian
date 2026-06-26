@@ -84,9 +84,35 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
 REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS = {
     "cangkun": 2.5,
+}
+QUIZ_AI_CONFIG_DEFAULTS = {
+    "enabled": False,
+    "auto_answer_enabled": False,
+    "provider": "codex",
+    "base_url": "",
+    "model": "",
+    "api_key": "",
+    "confidence_threshold": 0.8,
+    "timeout_sec": 20,
+    "decision_timeout_sec": 20,
+    "answer_safety_margin_sec": 12,
+    "temperature": 0,
+    "providers": [],
+    "last_question": "",
+    "last_answer": "",
+    "last_confidence": 0,
+    "last_reason": "",
+    "last_error": "",
+    "last_provider": "",
+    "last_results": [],
+    "last_vote_summary": "",
+    "last_provider_count": 0,
+    "last_valid_count": 0,
+    "last_decision_timeout_sec": 0,
+    "last_updated_at": 0,
 }
 SEND_AS_PROFILE_DEFAULTS = {
     "username": "",
@@ -744,6 +770,7 @@ GLOBAL_STATE_DEFAULTS = {
     "identity_states": {},
     "identity_ids": [],
     "quiz_learning_watchers": {},
+    "quiz_ai_config": {},
     "accounts": {},
     "identity_account_map": {},
     "identity_membership_initialized": False,
@@ -1797,6 +1824,168 @@ def get_quiz_learning_watchers():
     return watchers if isinstance(watchers, dict) else {}
 
 
+def _normalize_quiz_ai_provider(provider_config, index=0, previous=None):
+    provider_config = provider_config if isinstance(provider_config, dict) else {}
+    previous = previous if isinstance(previous, dict) else {}
+    provider = str(provider_config.get("provider") or previous.get("provider") or QUIZ_AI_CONFIG_DEFAULTS["provider"]).strip().lower()
+    if provider not in {"codex", "openai", "claude", "anthropic"}:
+        provider = QUIZ_AI_CONFIG_DEFAULTS["provider"]
+    provider = "claude" if provider in {"claude", "anthropic"} else "codex"
+    try:
+        timeout_sec = int(provider_config.get("timeout_sec", previous.get("timeout_sec", QUIZ_AI_CONFIG_DEFAULTS["timeout_sec"])))
+    except (TypeError, ValueError):
+        timeout_sec = QUIZ_AI_CONFIG_DEFAULTS["timeout_sec"]
+    try:
+        temperature = float(provider_config.get("temperature", previous.get("temperature", QUIZ_AI_CONFIG_DEFAULTS["temperature"])))
+    except (TypeError, ValueError):
+        temperature = QUIZ_AI_CONFIG_DEFAULTS["temperature"]
+    provider_id = str(provider_config.get("id") or previous.get("id") or f"ai{int(index or 0) + 1}").strip()
+    label = str(provider_config.get("label") or previous.get("label") or provider_id).strip()
+    return {
+        "id": provider_id,
+        "enabled": bool(provider_config.get("enabled", previous.get("enabled", True))),
+        "label": label,
+        "provider": provider,
+        "base_url": str(provider_config.get("base_url") or previous.get("base_url") or "").strip().rstrip("/"),
+        "model": str(provider_config.get("model") or previous.get("model") or "").strip(),
+        "api_key": str(provider_config.get("api_key") or previous.get("api_key") or "").strip(),
+        "timeout_sec": max(2, min(60, timeout_sec)),
+        "temperature": max(0.0, min(2.0, temperature)),
+    }
+
+
+def _normalize_quiz_ai_config(config):
+    config = config if isinstance(config, dict) else {}
+    try:
+        confidence_threshold = float(
+            config.get("confidence_threshold", QUIZ_AI_CONFIG_DEFAULTS["confidence_threshold"])
+        )
+    except (TypeError, ValueError):
+        confidence_threshold = QUIZ_AI_CONFIG_DEFAULTS["confidence_threshold"]
+    try:
+        timeout_sec = int(config.get("timeout_sec", QUIZ_AI_CONFIG_DEFAULTS["timeout_sec"]))
+    except (TypeError, ValueError):
+        timeout_sec = QUIZ_AI_CONFIG_DEFAULTS["timeout_sec"]
+    try:
+        decision_timeout_sec = float(config.get("decision_timeout_sec", QUIZ_AI_CONFIG_DEFAULTS["decision_timeout_sec"]))
+    except (TypeError, ValueError):
+        decision_timeout_sec = QUIZ_AI_CONFIG_DEFAULTS["decision_timeout_sec"]
+    try:
+        answer_safety_margin_sec = float(config.get("answer_safety_margin_sec", QUIZ_AI_CONFIG_DEFAULTS["answer_safety_margin_sec"]))
+    except (TypeError, ValueError):
+        answer_safety_margin_sec = QUIZ_AI_CONFIG_DEFAULTS["answer_safety_margin_sec"]
+    try:
+        temperature = float(config.get("temperature", QUIZ_AI_CONFIG_DEFAULTS["temperature"]))
+    except (TypeError, ValueError):
+        temperature = QUIZ_AI_CONFIG_DEFAULTS["temperature"]
+    try:
+        last_confidence = float(config.get("last_confidence") or 0)
+    except (TypeError, ValueError):
+        last_confidence = 0
+    try:
+        last_updated_at = float(config.get("last_updated_at") or 0)
+    except (TypeError, ValueError):
+        last_updated_at = 0
+    try:
+        last_provider_count = int(config.get("last_provider_count") or 0)
+    except (TypeError, ValueError):
+        last_provider_count = 0
+    try:
+        last_valid_count = int(config.get("last_valid_count") or 0)
+    except (TypeError, ValueError):
+        last_valid_count = 0
+    try:
+        last_decision_timeout_sec = float(config.get("last_decision_timeout_sec") or 0)
+    except (TypeError, ValueError):
+        last_decision_timeout_sec = 0
+    last_answer = str(config.get("last_answer") or "").strip().upper()
+    if last_answer not in {"A", "B", "C", "D"}:
+        last_answer = ""
+    raw_providers = config.get("providers") if isinstance(config.get("providers"), list) else []
+    providers = []
+    seen_provider_ids = set()
+    if raw_providers:
+        for index, raw_provider in enumerate(raw_providers[:6]):
+            item = _normalize_quiz_ai_provider(raw_provider, index)
+            if not item["id"] or item["id"] in seen_provider_ids:
+                item["id"] = f"ai{index + 1}"
+            seen_provider_ids.add(item["id"])
+            if item.get("model") or item.get("base_url") or item.get("api_key") or item.get("label"):
+                providers.append(item)
+    if not providers and any(str(config.get(key) or "").strip() for key in ("provider", "base_url", "model", "api_key")):
+        providers.append(_normalize_quiz_ai_provider({
+            "id": "ai1",
+            "enabled": True,
+            "label": "AI 1",
+            "provider": config.get("provider"),
+            "base_url": config.get("base_url"),
+            "model": config.get("model"),
+            "api_key": config.get("api_key"),
+            "timeout_sec": timeout_sec,
+            "temperature": temperature,
+        }, 0))
+    first_provider = providers[0] if providers else {}
+    raw_last_results = config.get("last_results") if isinstance(config.get("last_results"), list) else []
+    last_results = []
+    for item in raw_last_results[:6]:
+        if not isinstance(item, dict):
+            continue
+        answer = str(item.get("answer") or "").strip().upper()
+        try:
+            item_confidence = float(item.get("confidence") or 0)
+        except (TypeError, ValueError):
+            item_confidence = 0
+        try:
+            item_elapsed_ms = int(item.get("elapsed_ms") or 0)
+        except (TypeError, ValueError):
+            item_elapsed_ms = 0
+        last_results.append({
+            "id": str(item.get("id") or "").strip(),
+            "label": str(item.get("label") or item.get("provider") or "").strip(),
+            "provider": str(item.get("provider") or "").strip(),
+            "ok": bool(item.get("ok")) and answer in {"A", "B", "C", "D"},
+            "answer": answer if answer in {"A", "B", "C", "D"} else "",
+            "confidence": max(0.0, min(1.0, item_confidence)),
+            "elapsed_ms": max(0, item_elapsed_ms),
+            "error": str(item.get("error") or "").strip(),
+        })
+    return {
+        "enabled": bool(config.get("enabled")),
+        "auto_answer_enabled": bool(config.get("auto_answer_enabled")),
+        "provider": first_provider.get("provider") or QUIZ_AI_CONFIG_DEFAULTS["provider"],
+        "base_url": first_provider.get("base_url") or "",
+        "model": first_provider.get("model") or "",
+        "api_key": first_provider.get("api_key") or "",
+        "confidence_threshold": max(0.0, min(1.0, confidence_threshold)),
+        "timeout_sec": max(3, min(120, timeout_sec)),
+        "decision_timeout_sec": max(1.0, min(60.0, decision_timeout_sec)),
+        "answer_safety_margin_sec": max(3.0, min(60.0, answer_safety_margin_sec)),
+        "temperature": max(0.0, min(2.0, temperature)),
+        "providers": providers,
+        "last_question": str(config.get("last_question") or "").strip(),
+        "last_answer": last_answer,
+        "last_confidence": max(0.0, min(1.0, last_confidence)),
+        "last_reason": str(config.get("last_reason") or "").strip(),
+        "last_error": str(config.get("last_error") or "").strip(),
+        "last_provider": str(config.get("last_provider") or "").strip(),
+        "last_results": last_results,
+        "last_vote_summary": str(config.get("last_vote_summary") or "").strip(),
+        "last_provider_count": max(0, last_provider_count),
+        "last_valid_count": max(0, last_valid_count),
+        "last_decision_timeout_sec": max(0.0, min(60.0, last_decision_timeout_sec)),
+        "last_updated_at": last_updated_at,
+    }
+
+
+def get_quiz_ai_config():
+    return _normalize_quiz_ai_config(_meta_state.get("quiz_ai_config") or {})
+
+
+def set_quiz_ai_config(config):
+    _meta_state["quiz_ai_config"] = _normalize_quiz_ai_config(config)
+    return get_quiz_ai_config()
+
+
 def set_quiz_learning_watchers(watchers):
     normalized = {}
     for raw_key, item in (watchers or {}).items():
@@ -2239,6 +2428,7 @@ __all__ = [
     "get_module_window_profile_keys",
     "get_pending_command",
     "get_available_module_names",
+    "get_quiz_ai_config",
     "get_dungeon_join_run_state",
     "get_replica_group_id",
     "get_replica_group_ids",
@@ -2315,6 +2505,7 @@ __all__ = [
     "set_guanxing_shift_delay_sec",
     "set_guanxing_shift_target",
     "set_formation_run_state",
+    "set_quiz_ai_config",
     "set_quiz_learning_watchers",
     "set_auto_delete_sent_messages",
     "set_identity_enabled",

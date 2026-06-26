@@ -4,19 +4,22 @@ import re
 import time
 
 from ..config import CMD_QUIZ_ANSWER, QUIZ_BANK_FILE, QUIZ_REPLY_TIMEOUT_SEC, RE_WHITESPACE
-from ..persistence import mark_dirty, save_quiz_learning_watchers_state, save_state
+from ..persistence import mark_dirty, save_quiz_ai_config_state, save_quiz_learning_watchers_state, save_state
 from ..runtime import _get_identity_client, mono, send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
     get_identity_ids,
+    get_quiz_ai_config,
     get_quiz_learning_watchers,
     get_send_as_tags,
+    set_quiz_ai_config,
     set_quiz_learning_watchers,
     state,
     use_identity,
 )
 from ..timing import fmt_abs_ts, fmt_remaining
+from .quiz_ai import suggest_quiz_answer_multi
 
 RE_QUIZ_PROMPT = re.compile(r"你有\s*(\d+)\s*秒")
 RE_QUIZ_QUESTION = re.compile(r'["“”]{1,2}(.+?)["“”]{1,2}\s*$', re.M)
@@ -1010,6 +1013,222 @@ async def handle_quiz_result_broadcast(text, now=None):
     return True
 
 
+def _quiz_answer_delay(timeout_sec):
+    timeout_sec = float(timeout_sec or QUIZ_REPLY_TIMEOUT_SEC)
+    safe_latest = max(3.0, timeout_sec - 10.0)
+    delay_min = min(float(QUIZ_ANSWER_DELAY_MIN_SEC), safe_latest)
+    delay_max = min(float(QUIZ_ANSWER_DELAY_MAX_SEC), safe_latest)
+    return random.uniform(delay_min, delay_max) if delay_max > delay_min else delay_max
+
+
+def _quiz_ai_config_float(config, key, default, *, min_value=0.0, max_value=999.0):
+    try:
+        value = float((config or {}).get(key, default))
+    except (TypeError, ValueError):
+        value = float(default)
+    return max(float(min_value), min(float(max_value), value))
+
+
+def _quiz_ai_safety_margin(config, timeout_sec):
+    timeout_sec = max(1.0, float(timeout_sec or QUIZ_REPLY_TIMEOUT_SEC))
+    default_margin = min(12.0, max(3.0, timeout_sec / 4.0))
+    margin = _quiz_ai_config_float(
+        config,
+        "answer_safety_margin_sec",
+        default_margin,
+        min_value=3.0,
+        max_value=60.0,
+    )
+    return min(margin, max(3.0, timeout_sec - 1.0))
+
+
+def _quiz_ai_decision_timeout(config, timeout_sec, safety_margin_sec):
+    configured_timeout = _quiz_ai_config_float(
+        config,
+        "decision_timeout_sec",
+        20.0,
+        min_value=1.0,
+        max_value=60.0,
+    )
+    timeout_sec = max(1.0, float(timeout_sec or QUIZ_REPLY_TIMEOUT_SEC))
+    safe_wait_window = timeout_sec - float(safety_margin_sec or 0) - 1.0
+    if safe_wait_window <= 0:
+        return 1.0
+    return max(1.0, min(configured_timeout, safe_wait_window))
+
+
+def _quiz_ai_answer_delay(timeout_sec, elapsed_sec, safety_margin_sec):
+    timeout_sec = max(1.0, float(timeout_sec or QUIZ_REPLY_TIMEOUT_SEC))
+    elapsed_sec = max(0.0, float(elapsed_sec or 0))
+    safety_margin_sec = max(0.0, float(safety_margin_sec or 0))
+    safe_latest_from_now = timeout_sec - elapsed_sec - safety_margin_sec
+    if safe_latest_from_now <= 0:
+        return None
+    desired_delay = _quiz_answer_delay(timeout_sec)
+    return max(0.0, min(desired_delay, safe_latest_from_now))
+
+
+def _format_quiz_ai_vote_suffix(result):
+    result = result if isinstance(result, dict) else {}
+    parts = []
+    vote_summary = str(result.get("vote_summary") or "").strip()
+    if vote_summary:
+        parts.append(f"投票 {vote_summary}")
+    provider_count = int(result.get("provider_count") or 0)
+    valid_count = int(result.get("valid_count") or 0)
+    if provider_count:
+        parts.append(f"可用 {valid_count}/{provider_count}")
+    try:
+        decision_timeout = float(result.get("decision_timeout_sec") or 0)
+    except (TypeError, ValueError):
+        decision_timeout = 0
+    if decision_timeout:
+        parts.append(f"等待上限 {decision_timeout:.1f}s")
+    return f"｜{'｜'.join(parts)}" if parts else ""
+
+
+def _update_quiz_ai_last_result(config, parsed, result, *, error=""):
+    next_config = dict(config or {})
+    answer = str((result or {}).get("answer") or "").strip().upper()
+    try:
+        confidence = float((result or {}).get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    next_config.update({
+        "last_question": str((parsed or {}).get("question") or "").strip(),
+        "last_answer": answer if answer in {"A", "B", "C", "D"} else "",
+        "last_confidence": confidence,
+        "last_reason": str((result or {}).get("reason") or "").strip(),
+        "last_error": str(error or (result or {}).get("error") or "").strip(),
+        "last_provider": str((result or {}).get("provider") or next_config.get("provider") or "").strip(),
+        "last_results": list((result or {}).get("results") or []),
+        "last_vote_summary": str((result or {}).get("vote_summary") or "").strip(),
+        "last_provider_count": int((result or {}).get("provider_count") or 0),
+        "last_valid_count": int((result or {}).get("valid_count") or 0),
+        "last_decision_timeout_sec": float((result or {}).get("decision_timeout_sec") or 0),
+        "last_updated_at": time.time(),
+    })
+    set_quiz_ai_config(next_config)
+    save_quiz_ai_config_state()
+    return get_quiz_ai_config()
+
+
+async def _handle_quiz_ai_assist(parsed, identity_id, reply_to_msg_id, now, chat_id):
+    config = get_quiz_ai_config()
+    if not config.get("enabled"):
+        await send_audit_log(
+            "🦴 题库未命中\n"
+            f"- 题目: {parsed['question']}\n"
+            f"- 选项: {_format_quiz_options(parsed['options'])}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=520,
+        )
+        return False
+
+    timeout_sec = float(parsed.get("timeout_sec") or QUIZ_REPLY_TIMEOUT_SEC)
+    safety_margin = _quiz_ai_safety_margin(config, timeout_sec)
+    decision_timeout = _quiz_ai_decision_timeout(config, timeout_sec, safety_margin)
+    started_wall = time.time()
+    result = await suggest_quiz_answer_multi(
+        parsed["question"],
+        parsed["options"],
+        config,
+        decision_timeout_sec=decision_timeout,
+    )
+    completed_wall = time.time()
+    elapsed_wall = max(0.0, completed_wall - started_wall)
+    if elapsed_wall < 0.2:
+        elapsed_wall = 0.0
+    _update_quiz_ai_last_result(config, parsed, result)
+    answer = str(result.get("answer") or "").strip().upper()
+    try:
+        confidence = float(result.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0
+    threshold = float(config.get("confidence_threshold") or 0)
+    answer_detail = _format_quiz_answer_detail(answer, parsed["options"])
+    reason = str(result.get("reason") or "").strip()
+    reason_suffix = f"｜{reason}" if reason else ""
+    vote_suffix = _format_quiz_ai_vote_suffix(result)
+
+    if not result.get("ok") or answer not in {"A", "B", "C", "D"}:
+        state["quiz_last_error"] = "题库未命中，AI辅助失败"
+        save_state()
+        await send_audit_log(
+            "🦴 题库未命中，AI辅助失败\n"
+            f"- 题目: {parsed['question']}\n"
+            f"- 选项: {_format_quiz_options(parsed['options'])}\n"
+            f"- 错误: {result.get('error') or 'AI未返回有效答案'}{vote_suffix}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=620,
+        )
+        return False
+
+    if not config.get("auto_answer_enabled"):
+        state["quiz_last_error"] = "题库未命中，AI仅建议"
+        save_state()
+        await send_audit_log(
+            f"🦴 题库未命中，AI建议：{answer_detail}｜置信度 {confidence:.2f}{vote_suffix}｜未自动作答{reason_suffix}\n"
+            f"- 题目: {parsed['question']}\n"
+            f"- 选项: {_format_quiz_options(parsed['options'])}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=720,
+        )
+        return False
+
+    if confidence < threshold:
+        state["quiz_last_error"] = f"题库未命中，AI置信度不足 {confidence:.2f} < {threshold:.2f}"
+        save_state()
+        await send_audit_log(
+            f"🦴 题库未命中，AI置信度不足：{answer_detail}｜{confidence:.2f} < {threshold:.2f}{vote_suffix}｜未自动作答{reason_suffix}\n"
+            f"- 题目: {parsed['question']}\n"
+            f"- 选项: {_format_quiz_options(parsed['options'])}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=720,
+        )
+        return False
+
+    delay = _quiz_ai_answer_delay(timeout_sec, elapsed_wall, safety_margin)
+    if delay is None:
+        state["quiz_last_error"] = f"题库未命中，AI返回过晚，安全余量不足 {safety_margin:.1f}s"
+        save_state()
+        await send_audit_log(
+            f"🦴 题库未命中，AI返回过晚，未自动作答｜{answer_detail}｜已等待 {elapsed_wall:.1f}s｜安全余量 {safety_margin:.1f}s{vote_suffix}\n"
+            f"- 题目: {parsed['question']}\n"
+            f"- 选项: {_format_quiz_options(parsed['options'])}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=720,
+        )
+        return False
+    schedule_base = now + elapsed_wall
+    _set_quiz_pending(
+        parsed["question"],
+        parsed["options"],
+        answer,
+        reply_to_msg_id,
+        schedule_base + delay,
+        last_error="",
+        last_matched_at=schedule_base,
+        match_mode=f"ai:{result.get('provider') or config.get('provider') or 'unknown'}:{confidence:.2f}",
+        phase=QUIZ_PHASE_QUEUED_ANSWER,
+        chat_id=chat_id,
+        answer_method="pending_button_ai",
+    )
+    save_state()
+    await send_audit_log(
+        f"🦴 题库未命中，AI已排队作答，{delay:.1f}s 后作答｜{answer_detail}｜置信度 {confidence:.2f}{vote_suffix}{reason_suffix}｜题目：{parsed['question']}",
+        scope="identity",
+        send_as_id=identity_id,
+        limit=720,
+    )
+    return True
+
+
 async def handle_quiz_prompt(text, now, event):
     if not state.get("quiz_enabled"):
         return False
@@ -1023,6 +1242,7 @@ async def handle_quiz_prompt(text, now, event):
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     answer, match_mode = _match_quiz_answer(parsed["question"], parsed["options"])
     if not answer:
+        chat_id = getattr(event, "chat_id", 0)
         _set_quiz_pending(
             parsed["question"],
             parsed["options"],
@@ -1031,24 +1251,13 @@ async def handle_quiz_prompt(text, now, event):
             now + float(parsed["timeout_sec"]),
             last_error="题库未命中",
             last_matched_at=0,
-            chat_id=getattr(event, "chat_id", 0),
+            chat_id=chat_id,
         )
         save_state()
-        await send_audit_log(
-            "🦴 题库未命中\n"
-            f"- 题目: {parsed['question']}\n"
-            f"- 选项: {_format_quiz_options(parsed['options'])}",
-            scope="identity",
-            send_as_id=identity_id,
-            limit=520,
-        )
+        await _handle_quiz_ai_assist(parsed, identity_id, reply_to_msg_id, now, chat_id)
         return True
 
-    timeout_sec = float(parsed.get("timeout_sec") or QUIZ_REPLY_TIMEOUT_SEC)
-    safe_latest = max(3.0, timeout_sec - 10.0)
-    delay_min = min(float(QUIZ_ANSWER_DELAY_MIN_SEC), safe_latest)
-    delay_max = min(float(QUIZ_ANSWER_DELAY_MAX_SEC), safe_latest)
-    delay = random.uniform(delay_min, delay_max) if delay_max > delay_min else delay_max
+    delay = _quiz_answer_delay(parsed.get("timeout_sec") or QUIZ_REPLY_TIMEOUT_SEC)
 
     _set_quiz_pending(
         parsed["question"],

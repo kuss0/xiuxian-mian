@@ -77,3 +77,26 @@ def test_storage_bag_batch_runtime_expands_pending_queue_details():
     assert "storage-bag-transfer-queue-list" in runtime_render
     assert "后续队列" in runtime_render
     assert "queue.slice(0, queueLimit)" in runtime_render
+
+
+def test_storage_bag_frontend_has_peer_gift_entry_and_endpoints():
+    html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+
+    assert "storage-bag-gift-open-btn" in html
+    assert "储物袋赠送" in script
+    assert "openGiftModal" in script
+    assert "/api/storage-bag-gift-preview" in script
+    assert "/api/storage-bag-gift-start" in script
+    assert "giftMode ? '' : `<label class=\"field-label\">集中号上架物" in script
+
+
+def test_quiz_ai_frontend_config_is_loaded_outside_minified_app():
+    html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
+    script = (PROJECT_ROOT / "model/web/static/js/quiz_ai_ui.js").read_text(encoding="utf-8")
+
+    assert "quiz-ai-modal" in html
+    assert "/static/js/quiz_ai_ui.js" in html
+    assert "data-open-quiz-ai-config" in script
+    assert "/api/quiz-ai-config" in script
+    assert "api_key_configured" in script
