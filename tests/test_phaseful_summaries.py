@@ -641,6 +641,45 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("running", state_module.state["yuanying_phase"])
             self.assertEqual(next_time, state_module.state["next_yuanying_time"])
 
+    async def test_yuanying_summary_finalize_race_does_not_clobber_running_cycle(self):
+        send_as_id = 8659059205
+        now = 1_700_000_364.0
+        next_time = now + 8 * 60 * 60
+        self._prepare_identity(send_as_id, "WalterWA2000")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "waiting_summary"
+            state_module.state["yuanying_summary_sent_at"] = now - 5
+            state_module.state["last_yuanying_summary_msg_id"] = 10964021
+
+        async def mark_new_cycle_started(_spec):
+            with state_module.use_identity(send_as_id):
+                state_module.state["yuanying_phase"] = "running"
+                state_module.state["next_yuanying_time"] = next_time
+
+        text = (
+            "📜 修士 @WalterWA2000 元神归窍总结\n"
+            "你的元婴在虚空中神游八小时，带回了以下收获：\n"
+            "元婴成长:\n - 获得了 800 点经验。"
+        )
+
+        with (
+            patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock(side_effect=mark_new_cycle_started)),
+            patch.object(yuanying, "save_state"),
+            patch.object(yuanying, "console_log"),
+            patch.object(yuanying, "send_audit_log", new=AsyncMock()),
+        ):
+            await yuanying.handle_yuanying_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": send_as_id, "family": "yuanying", "reply_to_msg_id": 10964022},
+            )
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(next_time, state_module.state["next_yuanying_time"])
+
     async def test_yuanying_success_reply_uses_observed_duration(self):
         send_as_id = 8659059235
         now = 1_700_000_365.0

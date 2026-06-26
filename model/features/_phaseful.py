@@ -64,6 +64,7 @@ class PhasefulSpec:
     summary_retry_max_sec: int = 30 * 60
     queued_launch_timeout_sec: int = 120
     blocks_ordinary_while_running: bool = False
+    ignore_summary_finalize_while_running_until_due_sec: int = 0
     passive_timeout_action: str = "active_query"
     queued_launch_timeout_action: str = "active_query"
     timeout_relaunch_min_sec: int = 2 * 60
@@ -770,6 +771,11 @@ async def delete_summary_trigger_msg(spec):
 
 async def finalize_summary_broadcast(spec, now):
     await delete_summary_trigger_msg(spec)
+    running_skip_sec = float(spec.ignore_summary_finalize_while_running_until_due_sec or 0)
+    if running_skip_sec > 0 and _phase(spec) == "running":
+        next_time = float(state.get(spec.next_time_key, 0) or 0)
+        if next_time > float(now or 0) + running_skip_sec:
+            return
     delay = max(float(spec.post_summary_wait_sec), _other_observing_remaining(spec, now))
     begin_post_summary_wait(spec, now, delay=delay, confirmed=True)
     await update_block_log_state(spec, waiting=False, protect=False)

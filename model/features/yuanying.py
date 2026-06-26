@@ -91,6 +91,7 @@ YUANYING_SPEC = PhasefulSpec(
     summary_observe_sec=45,
     summary_retry_min_sec=45,
     summary_retry_max_sec=90,
+    ignore_summary_finalize_while_running_until_due_sec=10 * 60,
 )
 register_phaseful_spec(YUANYING_SPEC)
 
