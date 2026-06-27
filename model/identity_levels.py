@@ -29,7 +29,7 @@ def parse_yuanying_level_text(text):
 def parse_second_soul_level_text(text):
     raw = str(text or "")
     match = _SECOND_SOUL_LEVEL_RE.search(raw)
-    if not match and ("第二元神" in raw or "五子同心魔" in raw):
+    if not match and "第二元神" in raw:
         match = _LEVEL_RE.search(raw)
     return _format_level_text(match.group(1)) if match else ""
 
@@ -60,4 +60,3 @@ def update_identity_level_record(send_as_id, field, level_text, *, now=None, sou
     records[key] = record
     set_tianjige_dao_path_records(records)
     return True
-

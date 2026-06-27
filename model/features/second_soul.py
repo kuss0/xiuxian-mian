@@ -21,6 +21,7 @@ phase 状态机:
 4. 不使用 fire-and-forget 延迟调度（避开 tree 模块的 guard 漏洞）
 """
 
+import random
 import re
 import time
 
@@ -92,7 +93,6 @@ def _choice_label():
 
 
 def _next_pending_timeout(now):
-    import random
     return now + random.uniform(SECOND_SOUL_PENDING_TIMEOUT_MIN, SECOND_SOUL_PENDING_TIMEOUT_MAX)
 
 
@@ -305,7 +305,10 @@ def get_second_soul_status_text():
             lines.append(f"- 超时自愈：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
     elif phase == "cultivating":
         lines.append("- 当前：修炼中")
-        lines.append(f"- 修炼结束：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
+        if "短复查" in str(state.get("second_soul_last_error") or ""):
+            lines.append(f"- 下次复查：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
+        else:
+            lines.append(f"- 修炼结束：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
     elif phase == "injured":
         lines.append("- 当前：受伤")
         lines.append(f"- 恢复后：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
@@ -432,7 +435,6 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
             state["next_second_soul_time"] = now + remain_sec + CD_BUFFER_SEC
         else:
             # 无剩余字段（比如刚开始或已快结束）：30-60min 后再查
-            import random
             state["next_second_soul_time"] = now + random.uniform(SECOND_SOUL_RECHECK_MIN, SECOND_SOUL_RECHECK_MAX)
         save_state()
         await send_audit_log(f"🌀 第二元神修炼中，下次检查→{fmt_abs_ts(state['next_second_soul_time'])}")
@@ -519,20 +521,8 @@ async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_fam
     )
     if not is_relevant:
         return False
-    level_updated = False
-    level_text = parse_second_soul_level_text(text)
-    if level_text:
-        level_updated = update_identity_level_record(
-            get_current_identity_id(),
-            "second_soul_level",
-            level_text,
-            now=now,
-            source="second_soul_demon_status",
-        )
-        if level_updated:
-            save_state()
     if not state.get("second_soul_enabled", False):
-        return level_updated
+        return False
     if _phase() == "purge_status_pending" and not _is_current_reply(reply_to, "second_soul_purge_status_msg_id"):
         console_log("🌀 忽略迟到的第二元神魔染查询回复。")
         return True
@@ -598,10 +588,10 @@ async def handle_second_soul_train_reply(text, now, reply_to, matched_family=Non
     if "无法分心修炼" in text:
         if "(修炼中)" in text or "（修炼中）" in text:
             _set_phase("cultivating")
-            import random
             state["next_second_soul_time"] = now + random.uniform(
                 SECOND_SOUL_RECHECK_MIN, SECOND_SOUL_RECHECK_MAX
             )
+            state["second_soul_last_error"] = "修炼中未返回剩余时间，短复查校准"
             _clear_pending_msg_ids()
             save_state()
             console_log("🌀 第二元神已在修炼中，稍后复查。")
@@ -908,6 +898,11 @@ async def run_second_soul_scheduler(now):
     # heart_demon_pending：deadline 兜底防死锁
     if phase == "heart_demon_pending":
         deadline = state.get("second_soul_heart_demon_deadline", 0)
+        if deadline <= 0:
+            deadline = now + SECOND_SOUL_HEART_DEMON_DEADLINE_SEC
+            state["second_soul_heart_demon_deadline"] = deadline
+            state["second_soul_last_error"] = "心魔 deadline 缺失，已补齐"
+            save_state()
         if deadline > 0 and now > deadline + 60:
             # deadline 过了 1 分钟还没收到结果 broadcast，强制清状态自检
             _set_phase("idle")

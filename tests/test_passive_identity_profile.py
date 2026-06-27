@@ -37,7 +37,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import control
-from model.config import CMD_IDENTITY_INFO, CMD_SECOND_SOUL_DEMON_STATUS, CMD_YUANYING_STATUS
+from model.config import CMD_IDENTITY_INFO, CMD_SECOND_SOUL_STATUS, CMD_YUANYING_STATUS
 from model import state as state_module
 
 
@@ -114,7 +114,7 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         self.assertIn("元婴和第二元神", message)
         self.assertEqual(
-            [CMD_IDENTITY_INFO, CMD_YUANYING_STATUS, CMD_SECOND_SOUL_DEMON_STATUS],
+            [CMD_IDENTITY_INFO, CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS],
             [call.args[0] for call in send_mock.await_args_list],
         )
         for call in send_mock.await_args_list:

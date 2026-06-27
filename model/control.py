@@ -3914,7 +3914,7 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
         _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at)
 
-    extra_commands = (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_DEMON_STATUS)
+    extra_commands = (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_STATUS)
     extra_sent = []
     extra_failed = []
     for extra_command in extra_commands:

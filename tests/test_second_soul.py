@@ -303,6 +303,74 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         record = state_module.get_tianjige_dao_path_records()[str(send_as_id)]
         self.assertEqual("33级", record["second_soul_level"])
 
+    async def test_demon_status_does_not_update_second_soul_level(self):
+        send_as_id = 8659059200
+        now = 8100.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_tianjige_dao_path_records({str(send_as_id): {"second_soul_level": "33级"}})
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = False
+
+            handled = await second_soul.handle_second_soul_demon_status_reply(
+                "【五子同心魔】\n等级: 34 级\n五子同心魔: 5/5 | 同心 100 | 魔染 40",
+                now,
+                reply_to=SimpleNamespace(id=91, raw_text=CMD_SECOND_SOUL_DEMON_STATUS),
+                matched_family="second_soul_demon_status",
+            )
+
+        self.assertFalse(handled)
+        record = state_module.get_tianjige_dao_path_records()[str(send_as_id)]
+        self.assertEqual("33级", record["second_soul_level"])
+
+    async def test_busy_training_without_remaining_is_short_recheck_not_end_time(self):
+        send_as_id = 8659059201
+        now = 8200.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "train_pending"
+            state_module.state["second_soul_train_msg_id"] = 101
+
+        with (
+            patch.object(second_soul.random, "uniform", return_value=1800),
+            patch.object(second_soul, "save_state"),
+            state_module.use_identity(send_as_id),
+        ):
+            handled = await second_soul.handle_second_soul_train_reply(
+                "你的第二元神正在(修炼中)，无法分心修炼。",
+                now,
+                reply_to=SimpleNamespace(id=101, raw_text=".元神修炼"),
+                matched_family="second_soul_train",
+            )
+            status_text = second_soul.get_second_soul_status_text()
+
+        self.assertTrue(handled)
+        self.assertEqual("cultivating", state_module.state["second_soul_phase"])
+        self.assertEqual(now + 1800, state_module.state["next_second_soul_time"])
+        self.assertIn("短复查", state_module.state["second_soul_last_error"])
+        self.assertIn("下次复查", status_text)
+        self.assertNotIn("修炼结束", status_text)
+
+    async def test_heart_demon_missing_deadline_is_repaired(self):
+        send_as_id = 8659059202
+        now = 8300.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = True
+            state_module.state["second_soul_phase"] = "heart_demon_pending"
+            state_module.state["second_soul_heart_demon_deadline"] = 0
+
+        with (
+            patch.object(second_soul, "save_state"),
+            patch.object(second_soul, "send_game_command", new=AsyncMock()) as send_mock,
+            state_module.use_identity(send_as_id),
+        ):
+            await second_soul.run_second_soul_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertEqual("heart_demon_pending", state_module.state["second_soul_phase"])
+        self.assertEqual(now + second_soul.SECOND_SOUL_HEART_DEMON_DEADLINE_SEC, state_module.state["second_soul_heart_demon_deadline"])
+
     async def test_purge_reply_low_moran_clears_purge(self):
         send_as_id = 8659059199
         now = 9000.0
