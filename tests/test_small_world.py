@@ -549,7 +549,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["small_world_query_msg_id"])
             self.assertEqual("", state_module.state["small_world_pending_god_action"])
 
-    async def test_prayer_panel_harvests_before_manifest_when_incense_ready(self):
+    async def test_prayer_panel_manifests_without_harvest_when_incense_ready(self):
         send_as_id = 8659059205
         now = 22100.0
         state_module.ensure_identity_registered(send_as_id)
@@ -577,8 +577,8 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 handled = await small_world._handle_panel_decision(now, panel)
 
             self.assertTrue(handled)
-            harvest_mock.assert_awaited_once_with(now)
-            manifest_mock.assert_not_awaited()
+            harvest_mock.assert_not_awaited()
+            manifest_mock.assert_awaited_once_with(now)
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_query_msg_id"])
             self.assertEqual("灵石x200", state_module.state["small_world_manifest_cost_text"])

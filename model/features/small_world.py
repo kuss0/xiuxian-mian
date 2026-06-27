@@ -1154,9 +1154,6 @@ async def _handle_panel_decision(now, panel, *, allow_tool_chain=True):
         _clear_maintenance_god_action()
         if state.get("small_world_manifest_enabled"):
             state["small_world_manifest_cost_text"] = str(panel.get("manifest_cost") or "").strip()
-            if state.get("small_world_harvest_enabled") and float(panel.get("pending_incense", 0) or 0) >= SMALL_WORLD_MIN_HARVEST_INCENSE:
-                save_state()
-                return await _send_harvest_before_manifest(now)
             save_state()
             return await _send_manifest(now)
         _schedule_next_cycle(now)

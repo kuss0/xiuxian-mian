@@ -102,7 +102,7 @@ def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     assert "fonts.googleapis.com" not in body
 
 
-def test_module_card_override_groups_settings_and_keeps_toggles_on_card():
+def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal():
     script = (PROJECT_ROOT / "model/web/static/js/module_cards_ui.js").read_text(encoding="utf-8")
 
     assert "renderModules = function(identity)" in script
@@ -117,6 +117,12 @@ def test_module_card_override_groups_settings_and_keeps_toggles_on_card():
     assert "renderSmallWorldBarrierConfig(identity)" in script
     assert "data-jiyin-choice=\"offer_soul\"" in script
     assert "data-open-pet-modal=\"1\"" in script
+    assert "'日常功能开关'" in script
+    assert "'奇遇功能开关'" in script
+    assert "primaryTools =\n          renderModuleToggle('野外历练','野外')" not in script
+    assert "primaryTools =\n          renderModuleToggle('玄骨考校','玄骨')" not in script
+    assert "module-direct-settings-button" in script
+    assert "打开名称设置" not in script
 
 
 def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():

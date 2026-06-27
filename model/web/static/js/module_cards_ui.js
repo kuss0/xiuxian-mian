@@ -215,12 +215,8 @@
           '</span>'+
           '<span class="module-subswitch"><span class="module-subswitch-label">试炼</span>'+
           renderSwitch(trialEnabled ? 'switch-on' : 'switch-off', 'data-toggle-module="1" data-module="器灵试炼" data-enabled="'+(trialEnabled ? 0 : 1)+'" aria-label="器灵试炼开关"')+
-          '</span>';
-        settingsTools = settingSection(
-          '法宝名称',
-          '分别对应抚摸法宝、温养器灵、器灵试炼时发送的目标名称；名称不准时，游戏回复可能无法匹配到正确目标。',
-          '<button type="button" class="btn btn-secondary" data-open-pet-modal="1">打开名称设置</button>'
-        );
+          '</span>'+
+          '<button type="button" class="btn btn-secondary module-direct-settings-button" data-open-pet-modal="1">设置</button>';
       }else if(module.name === '野外历练'){
         var dailyNames = ['野外历练','点卯','宗门传功','闯塔','深度闭关','元婴'];
         var checkinWin = identity.checkin_window_local || {};
@@ -228,14 +224,17 @@
         moduleNote = '<div class="module-note">野外：'+esc(identity.wild_training_strategy || '深入')+
           '｜点卯 '+String(checkinWin.start_hour || 0).padStart(2, '0')+'-'+String(checkinWin.end_hour || 0).padStart(2, '0')+
           '｜闯塔 '+String(towerWin.start_hour || 0).padStart(2, '0')+'-'+String(towerWin.end_hour || 0).padStart(2, '0')+'</div>';
-        primaryTools =
-          renderModuleToggle('野外历练','野外')+
-          renderModuleToggle('点卯','点卯')+
-          renderModuleToggle('宗门传功','传功')+
-          renderModuleToggle('闯塔','闯塔')+
-          renderModuleToggle('深度闭关','闭关')+
-          renderModuleToggle('元婴','元婴');
         settingsTools =
+          settingSection(
+            '日常功能开关',
+            '控制日常聚合卡内各自动任务是否启用；关闭子功能只影响该玩法，不会修改其他模块状态。',
+            renderModuleToggle('野外历练','野外')+
+            renderModuleToggle('点卯','点卯')+
+            renderModuleToggle('宗门传功','传功')+
+            renderModuleToggle('闯塔','闯塔')+
+            renderModuleToggle('深度闭关','闭关')+
+            renderModuleToggle('元婴','元婴')
+          )+
           settingSection(
             '野外历练策略',
             '控制野外历练发出的路线选择；修改后会随下一轮自动历练生效，不会立即补发额外命令。',
@@ -262,11 +261,14 @@
         return renderModuleCard('侍妾', moduleNote, primaryTools, '', compactDetails(['侍妾','天机代卜','共历心劫','侍妾远航']), '侍妾');
       }else if(module.name === '玄骨考校'){
         moduleNote = '<div class="module-note">玄骨考校、极阴祖师、南陇侯独立控制</div>';
-        primaryTools =
-          renderModuleToggle('玄骨考校','玄骨')+
-          renderModuleToggle('极阴祖师','极阴')+
-          renderModuleToggle('南陇侯','南陇');
         settingsTools =
+          settingSection(
+            '奇遇功能开关',
+            '控制玄骨考校、极阴祖师、南陇侯三条奇遇链路是否启用；抉择策略仍在下方单独配置。',
+            renderModuleToggle('玄骨考校','玄骨')+
+            renderModuleToggle('极阴祖师','极阴')+
+            renderModuleToggle('南陇侯','南陇')
+          )+
           settingSection(
             '极阴祖师抉择',
             '决定遇到极阴祖师事件时的默认处理。献魂偏收益，收敛偏保守；自动会恢复脚本内置判断。',
