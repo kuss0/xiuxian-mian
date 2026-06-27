@@ -131,6 +131,8 @@ CONCUBINE_HEART_PANEL_MAX_AGE_SEC = CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
 CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC = 30
 CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC = 120
 CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT = 1
+CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MIN_SEC = 30
+CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MAX_SEC = 90
 CONCUBINE_HEART_GLOBAL_START_GAP_SEC = 5 * 60
 CONCUBINE_HEART_GLOBAL_DEFER_MIN_SEC = 60
 CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
@@ -229,6 +231,10 @@ def _clear_pending_msg_ids():
 
 def _is_heart_chain_active():
     return _phase() in CONCUBINE_HEART_ACTIVE_PHASES or int(state.get("concubine_heart_prompt_msg_id", 0) or 0) > 0
+
+
+def _is_heart_anchor_lost_text(text):
+    return "心劫锚点已散" in str(text or "")
 
 
 def _clear_heart_choice_guard():
@@ -343,6 +349,37 @@ def _close_heart_chain_without_settlement(now, reason, *, detail=""):
         workflow_status="skipped",
     )
     return retry_at
+
+
+async def _handle_heart_anchor_lost(now, raw_text, *, reply_to=None, current_msg_id=0):
+    _close_heart_action_guard(now, "heart_anchor_lost")
+    state["concubine_heart_last_error"] = "心劫锚点已散，已停止旧 prompt 并转状态校准"
+    state["concubine_heart_due_at"] = float(now)
+    _set_phase("idle")
+    _clear_pending_msg_ids()
+    _record_concubine_event(
+        "共历心劫锚点散失",
+        kind="changed",
+        reason="heart_anchor_lost",
+        phase="idle",
+        command=CMD_CONCUBINE_HEART,
+        reply_to=reply_to,
+        current_msg_id=current_msg_id,
+        matched_text=raw_text,
+        detail="旧 prompt 已清理，准备读取侍妾面板冷却",
+        decision="heart_anchor_lost_status_calibration",
+        workflow_status="failed",
+    )
+    if await _send_status_command(now):
+        return True
+    if float(state.get("next_concubine_time", 0) or 0) <= float(now):
+        _schedule_after(
+            now,
+            CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MIN_SEC,
+            CONCUBINE_HEART_ANCHOR_LOST_RECHECK_MAX_SEC,
+        )
+    save_state()
+    return True
 
 
 def _reconcile_stale_heart_action_guard(now, reason):
@@ -1688,6 +1725,7 @@ def _is_concubine_candidate_text_for_phase(text, phase):
             "【坠魔心劫·第1轮已定】" in raw_text
             or "【坠魔心劫·第2轮已定】" in raw_text
             or "【坠魔心劫·结算】" in raw_text
+            or _is_heart_anchor_lost_text(raw_text)
             or "心劫余波" in raw_text
             or "心劫抉择正在进行" in raw_text
             or _is_voyage_lock_text(raw_text)
@@ -1696,6 +1734,7 @@ def _is_concubine_candidate_text_for_phase(text, phase):
         return (
             "坠魔心劫" in raw_text
             or "共历心劫" in raw_text
+            or _is_heart_anchor_lost_text(raw_text)
             or "心劫余波" in raw_text
             or "心劫抉择正在进行" in raw_text
             or "开启共历心劫" in raw_text
@@ -1943,6 +1982,34 @@ def _find_logged_pending_reply(now, phase):
     return found
 
 
+def _find_logged_heart_anchor_lost(now):
+    if _phase() not in CONCUBINE_HEART_ACTIVE_PHASES:
+        return None
+    if int(state.get("concubine_heart_prompt_msg_id", 0) or 0) <= 0:
+        return None
+    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - CONCUBINE_LOG_REPLAY_LOOKBACK_SEC)
+    found = None
+    for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if not _payload_matches_game_topic(payload):
+            continue
+        if payload.get("event_type") not in {"message", "edit"}:
+            continue
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
+            continue
+        text = str(payload.get("text") or "")
+        if not _is_heart_anchor_lost_text(text):
+            continue
+        found = {
+            "ts": event_ts,
+            "message_id": _msg_id_int(payload.get("message_id")),
+            "reply_to_msg_id": _msg_id_int(payload.get("reply_to_msg_id")),
+            "text": text,
+        }
+    return found
+
+
 def _concubine_recovered_reply_key(phase, logged_reply):
     text = str((logged_reply or {}).get("text") or "")
     digest = hashlib.sha1(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
@@ -1952,6 +2019,24 @@ def _concubine_recovered_reply_key(phase, logged_reply):
 
 
 async def _recover_concubine_pending_from_message_log(now, phase):
+    if phase in CONCUBINE_HEART_ACTIVE_PHASES:
+        anchor_lost = _find_logged_heart_anchor_lost(now)
+        if anchor_lost:
+            reply_to_msg_id = _msg_id_int(anchor_lost.get("reply_to_msg_id"))
+            reply_to = SimpleNamespace(raw_text=CMD_CONCUBINE_HEART_STEADY, id=reply_to_msg_id) if reply_to_msg_id > 0 else None
+            handled = await _handle_heart_anchor_lost(
+                float(anchor_lost.get("ts") or now),
+                anchor_lost.get("text") or "",
+                reply_to=reply_to,
+                current_msg_id=_msg_id_int(anchor_lost.get("message_id")),
+            )
+            if handled:
+                await send_audit_log(
+                    f"🌸 侍妾日志补偿：{phase} 识别心劫锚点散失（msg_id={anchor_lost['message_id']}）。",
+                    scope="identity",
+                    limit=220,
+                )
+                return True
     logged_reply = _find_logged_pending_reply(now, phase)
     if not logged_reply:
         return False
@@ -4157,6 +4242,16 @@ async def handle_concubine_heart_reply(text, now, reply_to, matched_family=None,
         )
         save_state()
         return True
+
+    if _is_heart_anchor_lost_text(raw_text):
+        if not _is_heart_chain_active():
+            return False
+        return await _handle_heart_anchor_lost(
+            now,
+            raw_text,
+            reply_to=reply_to,
+            current_msg_id=current_msg_id,
+        )
 
     if "请回复一条包含侍妾/道侣内容的消息" in raw_text:
         _close_heart_action_guard(now, "heart_missing_panel_reply")

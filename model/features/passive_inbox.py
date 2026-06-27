@@ -526,6 +526,7 @@ def _looks_like_concubine_heart_reply(text):
     raw_text = str(text or "")
     return (
         "【坠魔心劫·" in raw_text
+        or concubine_mod._is_heart_anchor_lost_text(raw_text)
         or "心劫余波未散" in raw_text
         or "心劫抉择正在进行" in raw_text
         or "你已有一场心劫抉择正在进行" in raw_text
@@ -565,6 +566,29 @@ def _resolve_concubine_heart_identity_from_context(raw_text, reply_context, obse
     matched = sorted(set(matched))
     if len(matched) == 1:
         return matched[0], "concubine_heart_chain"
+    return None, ""
+
+
+def _resolve_active_concubine_heart_identity(raw_text):
+    if not concubine_mod._is_heart_anchor_lost_text(raw_text):
+        return None, ""
+    matched = []
+    for identity_id in get_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if not identity_state.get("concubine_heart_enabled"):
+            continue
+        phase = str(identity_state.get("concubine_phase") or "").strip()
+        if phase not in concubine_mod.CONCUBINE_HEART_ACTIVE_PHASES:
+            continue
+        if int(identity_state.get("concubine_heart_prompt_msg_id", 0) or 0) <= 0:
+            continue
+        matched.append(int(identity_id))
+    matched = sorted(set(matched))
+    if len(matched) == 1:
+        return matched[0], "concubine_heart_active"
     return None, ""
 
 
@@ -1303,6 +1327,7 @@ def _looks_like_supported_passive(text, family):
         or hehuan_mod.looks_like_hehuan_text(raw_text)
         or tianxing_mod.looks_like_tianxing_text(raw_text)
         or yinluo_mod.looks_like_yinluo_text(raw_text)
+        or concubine_mod._is_heart_anchor_lost_text(raw_text)
         or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE)
     ):
         return True
@@ -1408,6 +1433,12 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             heart_context_resolved = True
             target_route_source = _route_source(event_type, heart_identity_route)
     if target_id is None:
+        target_id, heart_identity_route = _resolve_active_concubine_heart_identity(raw_text)
+        if target_id is not None:
+            heart_context_resolved = True
+            family = family or "concubine_heart"
+            target_route_source = _route_source(event_type, heart_identity_route)
+    if target_id is None:
         target_id, pending_identity_route, concubine_pending_context_spec = _resolve_concubine_pending_identity_from_context(family, reply_context)
         if target_id is not None:
             target_route_source = _route_source(event_type, pending_identity_route)
@@ -1448,6 +1479,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
 
     changed = False
     changed_modules = []
+    event_recorded_by_handler = False
     with use_identity(target_id):
         if family.startswith("tianti_") or tianti_mod.RE_TIANTI_PANEL.search(raw_text):
             module_changed = _apply_tianti_passive(raw_text, now, family, reply_context=reply_context)
@@ -1472,6 +1504,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
         if heart_context_resolved and family == "concubine_heart":
             reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
             reply_to = SimpleNamespace(raw_text="", id=reply_to_msg_id) if reply_to_msg_id > 0 else None
+            handler_passive_total_before = int(_passive_stats.get("total", 0) or 0)
             module_changed = await concubine_mod.handle_concubine_heart_reply(
                 raw_text,
                 now,
@@ -1481,6 +1514,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             )
             if module_changed:
                 changed_modules.append("concubine")
+                event_recorded_by_handler = int(_passive_stats.get("total", 0) or 0) > handler_passive_total_before
             changed = module_changed or changed
         elif concubine_pending_context_spec is not None:
             reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id") or _context_msg_id(reply_context, "root_msg_id")
@@ -1564,7 +1598,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             changed = module_changed or changed
         if changed:
             save_state()
-    if changed:
+    if changed and not event_recorded_by_handler:
         _record_passive_event(
             "changed",
             module=",".join(changed_modules) or "unknown",

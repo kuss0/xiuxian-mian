@@ -1652,6 +1652,43 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, state_module.state["concubine_heart_round"])
         self.assertEqual(now + 3, state_module.state["next_concubine_time"])
 
+    async def test_heart_anchor_lost_switches_to_status_calibration(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387401
+        status_msg = SimpleNamespace(id=9387500, sent_at=now + 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 9387399
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 2
+            identity_state["concubine_heart_choice_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_choice_round"] = 2
+            identity_state["concubine_heart_choice_sent_at"] = now - 10
+            identity_state["concubine_heart_choice_retry_count"] = 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)) as mock_send:
+            handled = await concubine.handle_concubine_heart_reply(
+                "心劫锚点已散，需重新引动天劫。",
+                now,
+                reply_to=None,
+                matched_family="concubine_heart",
+                current_msg_id=9387501,
+            )
+
+        self.assertTrue(handled)
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_heart_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_heart_prompt_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_heart_choice_prompt_msg_id"])
+        self.assertEqual(9387500, state_module.state["concubine_status_msg_id"])
+        self.assertEqual("心劫锚点已散，已停止旧 prompt 并转状态校准", state_module.state["concubine_heart_last_error"])
+        self.assertEqual(now + 1 + config.CONCUBINE_PHASE_TIMEOUT_SEC, state_module.state["next_concubine_time"])
+
     async def test_passive_inbox_recovers_first_heart_prompt_without_send_as_id(self):
         now = 1_780_413_865.0
         send_as_id = self._prepare_identity()
@@ -1693,6 +1730,90 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["changed"])
         self.assertIn("concubine", snapshot["modules"])
+
+    async def test_passive_inbox_recovers_tagless_heart_anchor_lost_for_single_active_prompt(self):
+        now = 1_780_413_870.0
+        send_as_id = self._prepare_identity()
+        status_msg = SimpleNamespace(id=9746400, sent_at=now + 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 9746304
+            identity_state["concubine_heart_prompt_msg_id"] = 9746308
+            identity_state["concubine_heart_round"] = 2
+            identity_state["concubine_heart_choice_prompt_msg_id"] = 9746308
+            identity_state["concubine_heart_choice_round"] = 2
+            identity_state["concubine_heart_choice_sent_at"] = now - 10
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state"), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)):
+            handled = await passive_inbox.handle_passive_module_card(
+                "心劫锚点已散，需重新引动天劫。",
+                now=now,
+                reply_context={},
+                event=SimpleNamespace(chat_id=-1001680975844, id=9746310),
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("status_pending", state_module.state["concubine_phase"])
+            self.assertEqual(0, state_module.state["concubine_heart_prompt_msg_id"])
+            self.assertEqual(9746400, state_module.state["concubine_status_msg_id"])
+        snapshot = passive_inbox.get_passive_inbox_snapshot()
+        self.assertEqual(1, snapshot["changed"])
+        self.assertEqual(1, snapshot["modules"].get("concubine"))
+
+    async def test_scheduler_recovers_logged_tagless_heart_anchor_lost(self):
+        now = 1_780_413_900.0
+        send_as_id = self._prepare_identity()
+        status_msg = SimpleNamespace(id=9746500, sent_at=now + 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_reply_pending"
+            identity_state["concubine_heart_msg_id"] = 9746304
+            identity_state["concubine_heart_prompt_msg_id"] = 9746308
+            identity_state["concubine_heart_round"] = 2
+            identity_state["concubine_heart_choice_prompt_msg_id"] = 9746308
+            identity_state["concubine_heart_choice_round"] = 2
+            identity_state["concubine_heart_choice_sent_at"] = now - 200
+            identity_state["concubine_heart_choice_retry_count"] = 1
+            identity_state["next_concubine_time"] = now - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(
+                tmpdir,
+                [
+                    {
+                        "ts": self._log_ts(now - 5),
+                        "event_type": "message",
+                        "chat_id": -1001680975844,
+                        "topic_id": 0,
+                        "message_id": 9746401,
+                        "reply_to_msg_id": 0,
+                        "text": "心劫锚点已散，需重新引动天劫。",
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                 patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)) as mock_send:
+                await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        audit_mock.assert_awaited()
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(0, state_module.state["concubine_heart_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_heart_prompt_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_heart_choice_prompt_msg_id"])
+        self.assertEqual(9746500, state_module.state["concubine_status_msg_id"])
+        self.assertEqual("心劫锚点已散，已停止旧 prompt 并转状态校准", state_module.state["concubine_heart_last_error"])
+        self.assertEqual(now + 1 + config.CONCUBINE_PHASE_TIMEOUT_SEC, state_module.state["next_concubine_time"])
 
     async def test_passive_inbox_recovers_heart_edit_and_settlement_without_send_as_id(self):
         now = 1_780_413_875.0
