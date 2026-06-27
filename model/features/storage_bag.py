@@ -27,7 +27,10 @@ RE_STORAGE_BAG_GIFT_SUCCESS = re.compile(
 )
 RE_STORAGE_TRANSFER_GIFT_TAX = re.compile(r"额外支付了\s*(?P<tax>[\d,]+)\s*灵石")
 STORAGE_BAG_SECTION_NAMES = ("法宝/丹药/杂物", "材料")
-STORAGE_TRANSFER_REPLY_TIMEOUT_SEC = 180
+STORAGE_TRANSFER_REPLY_TIMEOUT_SEC = 20
+STORAGE_TRANSFER_RETRY_INTERVAL_SEC = 5
+STORAGE_TRANSFER_MAX_RETRY = 3
+STORAGE_TRANSFER_MODULE_NAME = "储物袋"
 STORAGE_TRANSFER_WAITING_PREFIX = "正在思考，请稍等"
 STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX = "compact"
 STORAGE_TRANSFER_BLOCKED_KEYWORDS = ("此物不可交易", "【天道禁制】", "🚫 操作禁止")
@@ -83,6 +86,14 @@ _storage_bag_transfer_state = {
     "created_at": 0,
     "updated_at": 0,
     "reply_due_at": 0,
+    "retry_count": 0,
+    "retry_command": "",
+    "retry_identity_id": 0,
+    "retry_reply_to": 0,
+    "retry_msg_id_key": "",
+    "retry_wait_step": "",
+    "retry_family": "",
+    "retry_last_at": 0,
 }
 
 _storage_bag_transfer_batch_state = {
@@ -444,6 +455,14 @@ def _clear_storage_bag_transfer_state():
         "created_at": 0,
         "updated_at": 0,
         "reply_due_at": 0,
+        "retry_count": 0,
+        "retry_command": "",
+        "retry_identity_id": 0,
+        "retry_reply_to": 0,
+        "retry_msg_id_key": "",
+        "retry_wait_step": "",
+        "retry_family": "",
+        "retry_last_at": 0,
     })
 
 
@@ -545,6 +564,13 @@ def _finalize_storage_bag_transfer(success, message, *, advance_batch=True):
     _storage_bag_transfer_state["last_error"] = "" if success else str(message or "")
     _storage_bag_transfer_state["reply_due_at"] = 0
     _storage_bag_transfer_state["gift_next_due_at"] = 0
+    _storage_bag_transfer_state["retry_command"] = ""
+    _storage_bag_transfer_state["retry_identity_id"] = 0
+    _storage_bag_transfer_state["retry_reply_to"] = 0
+    _storage_bag_transfer_state["retry_msg_id_key"] = ""
+    _storage_bag_transfer_state["retry_wait_step"] = ""
+    _storage_bag_transfer_state["retry_family"] = ""
+    _storage_bag_transfer_state["retry_last_at"] = 0
     _storage_transfer_log(message, level="success" if success else "error")
     if advance_batch:
         try:
@@ -552,6 +578,70 @@ def _finalize_storage_bag_transfer(success, message, *, advance_batch=True):
             _fire_and_forget(_maybe_advance_storage_bag_transfer_batch(bool(success), str(message or ""), op_id=completed_op_id))
         except Exception:
             pass
+
+
+def _storage_transfer_chain_id():
+    op_id = str(_storage_bag_transfer_state.get("op_id") or "").strip()
+    return f"storage_bag:{op_id or 'manual'}"
+
+
+def _storage_transfer_note_waiting_reply(label):
+    _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
+    _storage_transfer_log(f"{label}命令正在处理，等待最终回复")
+
+
+async def _send_storage_bag_transfer_command(
+    command,
+    *,
+    identity_id,
+    msg_id_key,
+    wait_step,
+    family,
+    reply_to=0,
+    retry=False,
+):
+    command = str(command or "").strip()
+    identity_id = int(identity_id or 0)
+    reply_to = int(reply_to or 0)
+    if not command or identity_id <= 0 or not msg_id_key:
+        return None
+    if not retry:
+        _storage_bag_transfer_state["retry_count"] = 0
+    retry_count = int(_storage_bag_transfer_state.get("retry_count") or 0)
+    priority = "retry" if retry else "event_burst"
+    op_suffix = f"{family or 'command'}:{'retry' if retry else 'send'}:{retry_count}"
+    kwargs = {
+        "track": False,
+        "send_as_id": identity_id,
+        "priority": priority,
+        "max_retry": 0,
+        "source_module": STORAGE_TRANSFER_MODULE_NAME,
+        "op_id": f"{_storage_transfer_chain_id()}:{op_suffix}",
+        "chain_id": _storage_transfer_chain_id(),
+    }
+    if reply_to > 0:
+        kwargs["reply_to"] = reply_to
+    msg = await send_game_command(command, **kwargs)
+    now = time.time()
+    if not msg:
+        if retry:
+            _storage_bag_transfer_state["reply_due_at"] = now + STORAGE_TRANSFER_RETRY_INTERVAL_SEC
+            _storage_bag_transfer_state["retry_last_at"] = now
+        return None
+    msg_id = int(getattr(msg, "id", 0) or 0)
+    _storage_bag_transfer_state[msg_id_key] = msg_id
+    _storage_bag_transfer_state["step"] = str(wait_step or "")
+    _storage_bag_transfer_state["reply_due_at"] = now + (
+        STORAGE_TRANSFER_RETRY_INTERVAL_SEC if retry else STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
+    )
+    _storage_bag_transfer_state["retry_command"] = command
+    _storage_bag_transfer_state["retry_identity_id"] = identity_id
+    _storage_bag_transfer_state["retry_reply_to"] = reply_to
+    _storage_bag_transfer_state["retry_msg_id_key"] = str(msg_id_key or "")
+    _storage_bag_transfer_state["retry_wait_step"] = str(wait_step or "")
+    _storage_bag_transfer_state["retry_family"] = str(family or "")
+    _storage_bag_transfer_state["retry_last_at"] = now
+    return msg
 
 
 def _set_storage_bag_rule_method(item_name, method, reason=""):
@@ -932,15 +1022,15 @@ async def _send_next_storage_bag_gift():
         "gift_item": item_name,
         "gift_next_due_at": 0,
         "step": "gift_sending",
-        "reply_due_at": time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC,
     })
     _storage_transfer_log(f"来源身份回复定位消息发送赠送命令：{command}")
-    msg = await send_game_command(
+    msg = await _send_storage_bag_transfer_command(
         command,
-        track=False,
+        identity_id=int(_storage_bag_transfer_state.get("source_identity_id", 0) or 0),
+        msg_id_key="gift_msg_id",
+        wait_step="waiting_gift_reply",
+        family="storage_bag_gift",
         reply_to=int(_storage_bag_transfer_state.get("gift_locator_msg_id", 0) or 0),
-        send_as_id=int(_storage_bag_transfer_state.get("source_identity_id", 0) or 0),
-        priority="normal",
     )
     if not msg:
         _record_storage_transfer_event(
@@ -955,9 +1045,6 @@ async def _send_next_storage_bag_gift():
         _finalize_storage_bag_transfer(False, message)
         await send_audit_log(f"❌ 储物袋赠送发送失败：{item_name}", limit=240)
         return False, message
-    _storage_bag_transfer_state["gift_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    _storage_bag_transfer_state["step"] = "waiting_gift_reply"
-    _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
     _storage_transfer_log(f"已发送赠送命令，等待结果（消息ID={_storage_bag_transfer_state['gift_msg_id']}）")
     _record_storage_transfer_event(
         "赠送已发送",
@@ -988,10 +1075,15 @@ async def _start_storage_bag_gift_phase():
         "gift_locator_delete_error": "",
         "gift_next_due_at": 0,
         "step": "gift_marker",
-        "reply_due_at": time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC,
     })
     _storage_transfer_log(f"目标身份发送赠送定位消息：{locator}")
-    msg = await send_game_command(locator, track=False, send_as_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0), priority="normal")
+    msg = await _send_storage_bag_transfer_command(
+        locator,
+        identity_id=int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0),
+        msg_id_key="gift_locator_msg_id",
+        wait_step="gift_marker",
+        family="storage_bag_gift_locator",
+    )
     if not msg:
         _record_storage_transfer_event(
             "赠送定位发送失败",
@@ -1003,7 +1095,6 @@ async def _start_storage_bag_gift_phase():
         _finalize_storage_bag_transfer(False, message)
         await send_audit_log("❌ 储物袋定位发送失败。", limit=220)
         return False, message
-    _storage_bag_transfer_state["gift_locator_msg_id"] = int(getattr(msg, "id", 0) or 0)
     _storage_transfer_log(f"已发送赠送定位消息（消息ID={_storage_bag_transfer_state['gift_locator_msg_id']}）")
     _record_storage_transfer_event(
         "赠送定位已发送",
@@ -1089,13 +1180,18 @@ async def start_storage_bag_transfer_task(
         "step": "listing" if basic_items else "gift_marker",
         "created_at": now,
         "updated_at": now,
-        "reply_due_at": now + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC,
     })
     if not basic_items:
         ok, message = await _start_storage_bag_gift_phase()
         return ok, message, get_storage_bag_transfer_snapshot()
     _storage_transfer_log(f"目标身份发送上架命令：{listing_command}")
-    msg = await send_game_command(listing_command, track=False, send_as_id=int(target_identity_id), priority="normal")
+    msg = await _send_storage_bag_transfer_command(
+        listing_command,
+        identity_id=int(target_identity_id),
+        msg_id_key="listing_msg_id",
+        wait_step="waiting_listing_reply",
+        family="storage_bag_listing",
+    )
     if not msg:
         _record_storage_transfer_event(
             "上架发送失败",
@@ -1104,9 +1200,6 @@ async def start_storage_bag_transfer_task(
         )
         _finalize_storage_bag_transfer(False, "上架命令发送失败")
         return False, "上架命令发送失败", get_storage_bag_transfer_snapshot()
-    _storage_bag_transfer_state["listing_msg_id"] = int(getattr(msg, "id", 0) or 0)
-    _storage_bag_transfer_state["step"] = "waiting_listing_reply"
-    _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
     _storage_transfer_log(f"已发送上架命令，等待挂单结果（消息ID={_storage_bag_transfer_state['listing_msg_id']}）")
     _record_storage_transfer_event(
         "上架已发送",
@@ -1403,7 +1496,7 @@ async def cancel_storage_bag_transfer_task():
 
 async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, reply_msg_id=0, family="storage_bag_listing"):
     if is_storage_transfer_waiting_reply(raw_text):
-        _storage_transfer_log("上架命令正在处理，等待最终回复")
+        _storage_transfer_note_waiting_reply("上架")
         return False
     success = parsed_success or _parse_listing_success(raw_text)
     if success:
@@ -1415,7 +1508,6 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
         buy_command = f"{CMD_STORAGE_BAG_BUY} {success['id']}"
         _storage_bag_transfer_state["buy_command"] = buy_command
         _storage_bag_transfer_state["step"] = "buying"
-        _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
         _storage_transfer_log(f"上架成功，挂单ID={success['id']}，来源身份准备购买")
         _record_storage_transfer_event(
             "准备购买",
@@ -1427,7 +1519,13 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
             matched_text=raw_text,
             decision="listing_success_queue_buy",
         )
-        msg = await send_game_command(buy_command, track=False, send_as_id=int(_storage_bag_transfer_state["source_identity_id"]), priority="normal")
+        msg = await _send_storage_bag_transfer_command(
+            buy_command,
+            identity_id=int(_storage_bag_transfer_state["source_identity_id"]),
+            msg_id_key="buy_msg_id",
+            wait_step="waiting_buy_reply",
+            family="storage_bag_buy",
+        )
         if not msg:
             _record_storage_transfer_event(
                 "购买发送失败",
@@ -1441,9 +1539,6 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
             _finalize_storage_bag_transfer(False, "购买命令发送失败")
             await send_audit_log("❌ 储物袋购买发送失败。", limit=220)
             return True
-        _storage_bag_transfer_state["buy_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        _storage_bag_transfer_state["step"] = "waiting_buy_reply"
-        _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
         _storage_transfer_log(f"已发送购买命令：{buy_command}（消息ID={_storage_bag_transfer_state['buy_msg_id']}）")
         _record_storage_transfer_event(
             "购买已发送",
@@ -1490,7 +1585,7 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
 
 async def _handle_storage_bag_buy_reply(raw_text, *, reply_msg_id=0, family="storage_bag_buy"):
     if is_storage_transfer_waiting_reply(raw_text):
-        _storage_transfer_log("购买命令正在处理，等待最终回复")
+        _storage_transfer_note_waiting_reply("购买")
         return False
     if raw_text.startswith("交易成功！") or "你成功购得" in raw_text:
         moved_count = _storage_transfer_apply_basic_items_move()
@@ -1530,7 +1625,7 @@ async def _handle_storage_bag_buy_reply(raw_text, *, reply_msg_id=0, family="sto
 
 async def _handle_storage_bag_gift_reply(raw_text, *, reply_msg_id=0, family="storage_bag_gift"):
     if is_storage_transfer_waiting_reply(raw_text):
-        _storage_transfer_log("赠送命令正在处理，等待最终回复")
+        _storage_transfer_note_waiting_reply("赠送")
         return False
     expected_gift = _current_storage_transfer_gift_item()
     gift_item = str(expected_gift.get("item_name") or _storage_bag_transfer_state.get("gift_item") or "").strip()
@@ -1713,6 +1808,76 @@ async def handle_storage_bag_transfer_reply(text, now, reply_to=None, matched_fa
     return False
 
 
+def _storage_transfer_retry_config_for_step(step):
+    step = str(step or "")
+    if step == "waiting_listing_reply":
+        return {
+            "label": "上架",
+            "command": str(_storage_bag_transfer_state.get("listing_command") or ""),
+            "identity_id": int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+            "reply_to": 0,
+            "msg_id_key": "listing_msg_id",
+            "wait_step": "waiting_listing_reply",
+            "family": "storage_bag_listing",
+        }
+    if step == "waiting_buy_reply":
+        return {
+            "label": "购买",
+            "command": str(_storage_bag_transfer_state.get("buy_command") or ""),
+            "identity_id": int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            "reply_to": 0,
+            "msg_id_key": "buy_msg_id",
+            "wait_step": "waiting_buy_reply",
+            "family": "storage_bag_buy",
+        }
+    if step == "waiting_gift_reply":
+        return {
+            "label": "赠送",
+            "command": str(_storage_bag_transfer_state.get("gift_command") or ""),
+            "identity_id": int(_storage_bag_transfer_state.get("source_identity_id") or 0),
+            "reply_to": int(_storage_bag_transfer_state.get("gift_locator_msg_id") or 0),
+            "msg_id_key": "gift_msg_id",
+            "wait_step": "waiting_gift_reply",
+            "family": "storage_bag_gift",
+        }
+    return {}
+
+
+async def _retry_storage_bag_transfer_waiting_step(step):
+    config = _storage_transfer_retry_config_for_step(step)
+    if not config:
+        return False
+    retry_count = int(_storage_bag_transfer_state.get("retry_count") or 0)
+    if retry_count >= STORAGE_TRANSFER_MAX_RETRY:
+        return False
+    retry_count += 1
+    _storage_bag_transfer_state["retry_count"] = retry_count
+    label = str(config.get("label") or "命令")
+    command = str(config.get("command") or "").strip()
+    _storage_transfer_log(f"{label}等待超时，补发第 {retry_count}/{STORAGE_TRANSFER_MAX_RETRY} 次：{command}")
+    _record_storage_transfer_event(
+        f"{label}补发",
+        identity_id=int(config.get("identity_id") or 0),
+        family=str(config.get("family") or "storage_bag_transfer"),
+        command=command,
+        step=str(step or ""),
+        detail=f"第 {retry_count}/{STORAGE_TRANSFER_MAX_RETRY} 次",
+        decision="storage_transfer_retry",
+    )
+    msg = await _send_storage_bag_transfer_command(
+        command,
+        identity_id=int(config.get("identity_id") or 0),
+        msg_id_key=str(config.get("msg_id_key") or ""),
+        wait_step=str(config.get("wait_step") or step),
+        family=str(config.get("family") or "storage_bag_transfer"),
+        reply_to=int(config.get("reply_to") or 0),
+        retry=True,
+    )
+    if not msg:
+        _storage_transfer_log(f"{label}补发发送失败，稍后继续检查", level="warning")
+    return True
+
+
 async def run_storage_bag_transfer_scheduler(now):
     if _storage_bag_transfer_batch_state.get("running") and not _storage_bag_transfer_state.get("running") and not _storage_bag_transfer_batch_state.get("active_task"):
         await _start_next_storage_bag_transfer_batch_task()
@@ -1730,6 +1895,9 @@ async def run_storage_bag_transfer_scheduler(now):
             return await _send_next_storage_bag_gift()
     elif reply_due_at <= 0 or now < reply_due_at:
         return
+    if step in {"waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply"}:
+        if await _retry_storage_bag_transfer_waiting_step(step):
+            return
     if step in {"gift_marker", "gift_sending", "gift_waiting_interval", "waiting_gift_reply"}:
         await _delete_storage_bag_gift_locator()
     _record_storage_transfer_event(

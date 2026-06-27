@@ -141,6 +141,28 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertIn("第2轮", rows[0]["text"])
         self.assertIn("第3轮", rows[1]["text"])
 
+    def test_non_bot_game_group_edit_routes_replica_progress(self):
+        event = SimpleNamespace(
+            id=91003,
+            chat_id=-100910,
+            sender_id=8219248252,
+            raw_text="[战利品结算·夺鼎]\n所有队员均获得5000修为和500贡献!",
+            reply_to=SimpleNamespace(reply_to_msg_id=123, reply_to_top_id=456),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with patch.object(app, "_append_replica_group_message_log", return_value=False), \
+                patch.object(app, "_append_replica_dispatch_group_message_log", return_value=False), \
+                patch.object(app, "_append_game_group_message_log"), \
+                patch.object(app, "get_game_group_id", return_value=-100910), \
+                patch.object(app, "_is_game_bot_event", new=AsyncMock(return_value=False)), \
+                patch.object(app, "_handle_replica_progress_event", new=AsyncMock(return_value=True)) as progress_mock, \
+                patch.object(app, "_handle_suspected_game_bot_reply", new=AsyncMock(return_value=False)):
+            asyncio.run(app.on_message_edited(event))
+
+        progress_mock.assert_awaited_once()
+        self.assertEqual("edit", progress_mock.await_args.kwargs["event_type"])
+
     def test_replica_group_message_log_deduplicates_but_still_claims_group(self):
         listener_client = SimpleNamespace(name="listener")
         event = SimpleNamespace(

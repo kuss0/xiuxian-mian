@@ -107,6 +107,11 @@ CONCUBINE_RECOVERY_CHAIN_PREFIXES = (".每日问安", ".储物袋", ".赠予侍�
 PHASEFUL_REPLAY_OP_PREFIX = "phaseful_replay:"
 CONCUBINE_HEART_CHOICE_OP_PREFIX = "concubine_heart_choice:"
 CONCUBINE_VOYAGE_RETRY_OP_PREFIX = "concubine_voyage_retry:"
+STORAGE_BAG_SOURCE_MODULE = "储物袋"
+STORAGE_BAG_FAMILIES = {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift"}
+STORAGE_BAG_COMMANDS = {".上架", ".购买", ".赠送"}
+STORAGE_BAG_CHAIN_PREFIX = "storage_bag:"
+STORAGE_BAG_MAX_RETRIES = 3
 TOWER_SOURCE_MODULE = "闯塔"
 PHASEFUL_CHAIN_COMMANDS = {".深度闭关", ".元婴出窍"}
 PHASEFUL_CHAIN_MARKERS = {"deep_retreat", "yuanying", "深度闭关", "元婴"}
@@ -121,8 +126,10 @@ DIVINATION_DAILY_QUERY_MIN_GAP_SEC = 55
 DIVINATION_DAILY_QUERY_MAX_ATTEMPTS_45M = 20
 WORLD_BOSS_SOURCE_MODULE = "真仙试锋"
 WORLD_BOSS_FAMILY = "world_boss"
+WORLD_BOSS_STATUS_COMMAND = ".世界boss"
+WORLD_BOSS_MAX_STATUS_RETRY_TRY = 2
 WORLD_BOSS_EVENT_COMMANDS = {
-    ".世界boss 查看战况",
+    WORLD_BOSS_STATUS_COMMAND,
     ".讨伐青元子 破幡",
     ".讨伐青元子 镇魂",
     ".讨伐青元子 护阵",
@@ -293,7 +300,26 @@ def is_dungeon_fast_chain_command(text: str) -> bool:
 def is_controlled_retry_event(item: dict) -> bool:
     if str(item.get("priority") or "").strip().lower() != "retry":
         return False
+    if is_storage_bag_command(str(item.get("text") or "")):
+        return False
     return bool(str(item.get("family") or "").strip() or str(item.get("source_module") or "").strip())
+
+
+def is_storage_bag_command(text: str) -> bool:
+    raw = str(text or "").strip()
+    return any(raw == command or raw.startswith(command + " ") for command in STORAGE_BAG_COMMANDS)
+
+
+def is_storage_bag_transfer_event(item: dict, text: str | None = None) -> bool:
+    if not is_storage_bag_command(str(text if text is not None else item.get("text") or "")):
+        return False
+    family = str(item.get("family") or "").strip()
+    source_module = str(item.get("source_module") or "").strip()
+    if family not in STORAGE_BAG_FAMILIES and source_module != STORAGE_BAG_SOURCE_MODULE:
+        return False
+    chain_id = str(item.get("chain_id") or "").strip()
+    op_id = str(item.get("op_id") or "").strip()
+    return chain_id.startswith(STORAGE_BAG_CHAIN_PREFIX) and op_id.startswith(f"{chain_id}:")
 
 
 def is_tower_retry_event(item: dict) -> bool:
@@ -315,6 +341,7 @@ def is_safe_global_gap_pair(prev: dict, cur: dict) -> bool:
         or is_verified_world_boss_action_event(cur)
         or is_verified_world_boss_action_event(prev)
         or is_safe_world_boss_status_gap_pair(prev, cur)
+        or is_safe_storage_bag_retry_repeat(prev, cur, str(cur.get("text") or ""))
         or is_controlled_retry_event(cur)
         or is_marked_heart_choice_event(cur)
         or (is_concubine_heart_event(prev) and is_marked_heart_choice_event(cur))
@@ -587,11 +614,79 @@ def is_safe_concubine_voyage_retry_repeat(prev: dict, cur: dict, text: str) -> b
 def is_safe_same_command_retry(prev: dict, cur: dict, text: str) -> bool:
     if is_phaseful_replay_command(text):
         return False
+    if is_safe_storage_bag_retry_repeat(prev, cur, text):
+        return True
     if str(prev.get("priority") or "").strip().lower() == "retry":
         return False
     if not is_controlled_retry_event(cur):
         return False
     return has_matching_send_markers(prev, cur)
+
+
+def parse_storage_bag_transfer_op(item: dict, text: str | None = None) -> tuple[str, str, int] | None:
+    if not is_storage_bag_transfer_event(item, text):
+        return None
+    op_id = str(item.get("op_id") or "").strip()
+    chain_id = str(item.get("chain_id") or "").strip()
+    tail = op_id[len(chain_id) + 1:]
+    parts = tail.rsplit(":", 2)
+    if len(parts) != 3:
+        return None
+    family, stage, count_text = parts
+    if family not in {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift", "storage_bag_gift_locator"}:
+        return None
+    if stage not in {"send", "retry"}:
+        return None
+    try:
+        count = int(count_text)
+    except (TypeError, ValueError):
+        return None
+    if stage == "send" and count != 0:
+        return None
+    if stage == "retry" and not (1 <= count <= STORAGE_BAG_MAX_RETRIES):
+        return None
+    priority = str(item.get("priority") or "").strip().lower()
+    if stage == "send" and priority != "event_burst":
+        return None
+    if stage == "retry" and priority != "retry":
+        return None
+    return chain_id, family, count
+
+
+def is_safe_storage_bag_retry_repeat(prev: dict, cur: dict, text: str) -> bool:
+    prev_parsed = parse_storage_bag_transfer_op(prev, text)
+    cur_parsed = parse_storage_bag_transfer_op(cur, text)
+    if not prev_parsed or not cur_parsed:
+        return False
+    prev_chain, prev_family, prev_count = prev_parsed
+    cur_chain, cur_family, cur_count = cur_parsed
+    if prev_chain != cur_chain or prev_family != cur_family:
+        return False
+    return cur_count == prev_count + 1
+
+
+def is_safe_storage_bag_retry_chain(items: list[dict], text: str) -> bool:
+    parsed_items = []
+    for item in sorted(items, key=lambda payload: float(payload.get("_epoch", 0) or 0)):
+        parsed = parse_storage_bag_transfer_op(item, text)
+        if not parsed:
+            return False
+        parsed_items.append((item, parsed))
+    if len(parsed_items) < 2:
+        return False
+    chains = {parsed[0] for _item, parsed in parsed_items}
+    families = {parsed[1] for _item, parsed in parsed_items}
+    if len(chains) != 1 or len(families) != 1:
+        return False
+    op_ids = [str(item.get("op_id") or "").strip() for item, _parsed in parsed_items]
+    if len(op_ids) != len(set(op_ids)):
+        return False
+    expected = 0
+    for _item, (_chain, _family, count) in parsed_items:
+        if count != expected:
+            return False
+        expected += 1
+    return expected <= STORAGE_BAG_MAX_RETRIES + 1
 
 
 def is_safe_phaseful_chain_relaunch(prev: dict, cur: dict, text: str, gap: float) -> bool:
@@ -779,7 +874,7 @@ def is_world_boss_action_event(item: dict, text: str | None = None) -> bool:
 
 
 def is_world_boss_status_event(item: dict, text: str | None = None) -> bool:
-    if command_key(str(text if text is not None else item.get("text") or "")) != ".世界boss 查看战况":
+    if command_key(str(text if text is not None else item.get("text") or "")) != WORLD_BOSS_STATUS_COMMAND:
         return False
     return is_world_boss_event(item, text)
 
@@ -926,6 +1021,8 @@ def is_safe_world_boss_status_repeat(items: list[dict], sender_id: int) -> bool:
             if priority == "retry":
                 return False
         elif priority != "retry":
+            return False
+        if try_no > WORLD_BOSS_MAX_STATUS_RETRY_TRY:
             return False
         if try_no <= previous_try:
             return False
@@ -1103,13 +1200,36 @@ def count_non_burst_exempt_since(events: list[dict], now: float, seconds: float)
     recent = [item for item in events if float(item.get("_epoch", 0) or 0) >= start]
     marked_heart_choice_exempt_ids = get_marked_heart_choice_burst_exempt_ids(recent)
     world_boss_status_exempt_ids = get_world_boss_status_burst_exempt_ids(recent)
+    storage_bag_exempt_ids = get_storage_bag_retry_exempt_ids(recent)
     return sum(
         1
         for item in recent
         if not is_send_burst_exempt_event(item)
         and id(item) not in marked_heart_choice_exempt_ids
         and id(item) not in world_boss_status_exempt_ids
+        and id(item) not in storage_bag_exempt_ids
     )
+
+
+def get_storage_bag_retry_exempt_ids(events: list[dict]) -> set[int]:
+    grouped: dict[tuple[int, str], list[dict]] = defaultdict(list)
+    for item in events:
+        raw_text = str(item.get("text") or "")
+        parsed = parse_storage_bag_transfer_op(item, raw_text)
+        if not parsed:
+            continue
+        chain_id, family, _count = parsed
+        sender_id = int(item.get("sender_id", 0) or 0)
+        if sender_id > 0:
+            grouped[(sender_id, chain_id, family)].append(item)
+
+    exempt_ids: set[int] = set()
+    for (_sender_id, _chain_id, _family), items in grouped.items():
+        if len(items) < 2:
+            continue
+        if is_safe_storage_bag_retry_chain(items, str(items[0].get("text") or "")):
+            exempt_ids.update(id(item) for item in items)
+    return exempt_ids
 
 
 def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str:
@@ -1182,6 +1302,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
         world_boss_action_chain = all(is_world_boss_action_event(item, text) for item in items)
         world_boss_status_chain = all(is_world_boss_status_event(item, text) for item in items)
         fishing_short_window_chain = all(is_fishing_short_window_event(item) for item in items)
+        storage_bag_retry_chain = is_safe_storage_bag_retry_chain(items, text)
         safe_world_boss_status_chain = world_boss_status_chain and is_safe_world_boss_status_repeat(items, sender_id)
         marked_small_world_refresh_chain = refresh and all(is_marked_small_world_refresh_event(item) for item in items)
         if (
@@ -1191,6 +1312,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             or world_boss_action_chain
             or safe_world_boss_status_chain
             or fishing_short_window_chain
+            or storage_bag_retry_chain
             or marked_small_world_refresh_chain
         ):
             min_gap = 0
@@ -1225,6 +1347,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             if is_safe_replica_lightweight_retry_repeat(prev, cur, text):
                 continue
             if safe_world_boss_status_chain:
+                continue
+            if storage_bag_retry_chain:
                 continue
             if min_gap > 0 and 0 <= gap < min_gap:
                 return f"same command repeat: {sender_id}:{text} gap {gap:.1f}s"

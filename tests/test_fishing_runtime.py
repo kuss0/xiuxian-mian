@@ -1051,7 +1051,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 20, state_module.state["next_fishing_time"])
             followup_mock.assert_called_once()
 
-    def test_runtime_send_gap_whitelist_is_fishing_short_window_only(self):
+    def test_runtime_send_gap_whitelist_is_limited_to_fast_modules(self):
         self.assertTrue(
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_URGENT_REACTIVE,
@@ -1080,6 +1080,20 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 intent={"source_module": "灵溪垂钓"},
             )
         )
+        self.assertTrue(
+            runtime_module._send_gap_whitelist_allows(
+                runtime_module.SEND_PRIORITY_EVENT_BURST,
+                ".上架 灵石*1 换 妖丹*3",
+                intent={"source_module": "储物袋"},
+            )
+        )
+        self.assertTrue(
+            runtime_module._send_gap_whitelist_allows(
+                runtime_module.SEND_PRIORITY_EVENT_BURST,
+                ".赠送 木髓*1",
+                intent={"source_module": "储物袋"},
+            )
+        )
         self.assertFalse(
             runtime_module._send_gap_whitelist_allows(
                 runtime_module.SEND_PRIORITY_EVENT_BURST,
@@ -1101,14 +1115,26 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 intent={"source_module": "自动副本"},
             )
         )
+        self.assertFalse(
+            runtime_module._send_gap_whitelist_allows(
+                runtime_module.SEND_PRIORITY_EVENT_BURST,
+                ".上架 灵石*1 换 妖丹*3",
+                intent={"source_module": "自动副本"},
+            )
+        )
 
-    def test_runtime_module_gap_enforces_fishing_minimum(self):
+    def test_runtime_module_gap_enforces_fast_module_minimum(self):
         runtime_module._MODULE_LAST_SEND_AT.clear()
         runtime_module._MODULE_LAST_SEND_AT["灵溪垂钓"] = 100.0
+        runtime_module._MODULE_LAST_SEND_AT["储物袋"] = 100.0
 
         self.assertEqual(
             102.0,
             runtime_module._module_send_gap_ready_at({"source_module": "灵溪垂钓"}, now_mono=100.5),
+        )
+        self.assertEqual(
+            105.0,
+            runtime_module._module_send_gap_ready_at({"source_module": "储物袋"}, now_mono=100.5),
         )
         self.assertEqual(
             0.0,

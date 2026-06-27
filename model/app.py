@@ -116,7 +116,9 @@ from .features.tree import (
 )
 from .features.second_soul import (
     handle_second_soul_choice_result_broadcast,
+    handle_second_soul_demon_status_reply,
     handle_second_soul_heart_demon_warning_broadcast,
+    handle_second_soul_purge_reply,
     handle_second_soul_recovery_broadcast,
     handle_second_soul_return_broadcast,
     handle_second_soul_status_reply,
@@ -446,6 +448,8 @@ BOT_REPLY_FAMILY_HINTS = {
     "second_soul_status": ("第二元神", "元神", "心魔", "修炼"),
     "second_soul_train": ("第二元神", "元神", "修炼", "闭关"),
     "second_soul_choice": ("心魔", "抉择", "第二元神"),
+    "second_soul_purge": ("元神镇魔", "镇魔", "魔染"),
+    "second_soul_demon_status": ("五子同心魔", "魔染", "同心"),
     "taiyi_yindao": ("引道", "太一", "五行", "神识"),
     "taiyi_node_search": ("搜寻节点", "空间节点", "虚空", "神识"),
     "taiyi_node_define": ("定星", "空间节点", "稳固", "材料"),
@@ -1305,6 +1309,8 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 reply_context=reply_context,
                 current_msg_id=event.id,
             ) or handled_any
+            handled_any = await handle_second_soul_purge_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_second_soul_demon_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_second_soul_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_second_soul_train_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_taiyi_yindao_reply(text, now, reply_to, matched_family=matched_family) or handled_any
@@ -1501,6 +1507,7 @@ async def on_message_edited(event):
         try:
             now = time.time()
             text = event.raw_text or ""
+            await _handle_replica_progress_event(event, now, event_type="edit")
             await _handle_suspected_game_bot_reply(event, text, now, edited=True)
         except Exception:
             print(traceback.format_exc())

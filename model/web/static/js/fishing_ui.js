@@ -206,8 +206,9 @@
       panel = document.createElement('div');
       panel.id = 'fishing-config-panel';
     }
-    if(panel.parentNode !== card){
-      card.appendChild(panel);
+    var moduleTop = card.querySelector('.module-top') || card;
+    if(panel.parentNode !== moduleTop){
+      moduleTop.appendChild(panel);
     }
     var fishing = identity.fishing || {};
     var plan = fishing.plan || {};

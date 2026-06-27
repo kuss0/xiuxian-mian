@@ -181,7 +181,9 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('select[name="chum_name"]', script)
         self.assertIn("resourceRequirementHtml", script)
         self.assertIn("findFishingCard", script)
-        self.assertIn("card.appendChild(panel)", script)
+        self.assertIn("card.querySelector('.module-top')", script)
+        self.assertIn("moduleTop.appendChild(panel)", script)
+        self.assertNotIn("card.appendChild(panel)", script)
         self.assertNotIn('<details class="module-submenu fishing-submenu"', script)
         self.assertNotIn("grid.parentNode.insertBefore(panel, grid.nextSibling)", script)
 

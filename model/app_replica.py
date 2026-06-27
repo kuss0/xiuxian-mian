@@ -1717,15 +1717,34 @@ def _parse_cangkun_success_kind(text):
 def _is_replica_settlement_text(text):
     raw_text = str(text or "")
     return (
-        "【战利品结算" in raw_text
-        or "【坠魔谷·封魔成功】" in raw_text
-        or "【坠魔谷·封魔失败】" in raw_text
-        or "【登顶昆吾山】" in raw_text
+        _has_replica_bracket_title(raw_text, prefix="战利品结算")
+        or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔成功")
+        or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔失败")
+        or _has_replica_bracket_title(raw_text, exact="登顶昆吾山")
         or _is_luoyun_settlement_text(raw_text)
-        or ("【后殿冲关止步】" in raw_text and "结算所得早已锁定" in raw_text)
+        or (_has_replica_bracket_title(raw_text, exact="后殿冲关止步") and "结算所得早已锁定" in raw_text)
         or any(keyword in raw_text for keyword in ("挑战成功", "通关成功", "试炼成功", "探索完成"))
         or bool(_parse_cangkun_success_kind(raw_text))
     )
+
+
+def _iter_replica_bracket_titles(text):
+    raw_text = str(text or "")
+    for match in re.finditer(r"[【\[]([^】\]\n]+)[】\]]", raw_text):
+        title = match.group(1).strip()
+        if title:
+            yield title
+
+
+def _has_replica_bracket_title(text, *, exact="", prefix=""):
+    exact = str(exact or "").strip()
+    prefix = str(prefix or "").strip()
+    for title in _iter_replica_bracket_titles(text):
+        if exact and title == exact:
+            return True
+        if prefix and title.startswith(prefix):
+            return True
+    return False
 
 
 def _is_luoyun_settlement_text(text):
@@ -1747,14 +1766,14 @@ def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
     if _is_luoyun_settlement_text(raw_text):
         return _REPLICA_KIND_LUOYUN
-    if "【坠魔谷·封魔成功】" in raw_text or "【坠魔谷·封魔失败】" in raw_text:
+    if _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔成功") or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔失败"):
         return _REPLICA_KIND_ZHUIMO
-    if "【登顶昆吾山】" in raw_text:
+    if _has_replica_bracket_title(raw_text, exact="登顶昆吾山"):
         return _REPLICA_KIND_KUNWU
-    if any(marker in raw_text for marker in (
-        "【战利品结算·夺鼎】",
-        "【后殿冲关止步】",
-    )):
+    if (
+        _has_replica_bracket_title(raw_text, exact="战利品结算·夺鼎")
+        or _has_replica_bracket_title(raw_text, exact="后殿冲关止步")
+    ):
         return _REPLICA_KIND_VIRTUAL_HALL
     cangkun_kind = _parse_cangkun_success_kind(raw_text)
     if cangkun_kind:
@@ -1781,7 +1800,7 @@ def _get_replica_settlement_title(replica_kind, text):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return _get_cangkun_settlement_title(text)
     raw_text = str(text or "")
-    match = re.search(r"【([^】]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|登顶昆吾山)[^】]*)】", raw_text)
+    match = re.search(r"[【\[]([^】\]\n]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|登顶昆吾山)[^】\]\n]*)[】\]]", raw_text)
     if replica_kind == _REPLICA_KIND_LUOYUN and not match:
         match = re.search(r"【(落云秘圃·[^】]+)】", raw_text)
     if match:
@@ -8372,15 +8391,17 @@ def _infer_replica_kind_from_text(text, default=""):
     raw_text = str(text or "")
     if "苍坤上人洞府" in raw_text:
         return _REPLICA_KIND_CANGKUN
-    if any(marker in raw_text for marker in (
-        "【鼎前抉择】",
-        "【后殿余波】",
-        "【战利品结算·夺鼎】",
-        "【后殿冲关止步】",
-        "【第四关·后殿试阵】",
-        "【第五关·虚天鼎灵",
-        "【后殿第 ",
-    )):
+    if (
+        any(marker in raw_text for marker in (
+            "【鼎前抉择】",
+            "【后殿余波】",
+            "【第四关·后殿试阵】",
+            "【第五关·虚天鼎灵",
+            "【后殿第 ",
+        ))
+        or _has_replica_bracket_title(raw_text, exact="战利品结算·夺鼎")
+        or _has_replica_bracket_title(raw_text, exact="后殿冲关止步")
+    ):
         return _REPLICA_KIND_VIRTUAL_HALL
     for kind, meta in _REPLICA_TICKET_META.items():
         if any(str(item or "") and str(item or "") in raw_text for item in meta.get("ticket_items", ())):

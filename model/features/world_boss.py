@@ -43,6 +43,9 @@ WORLD_BOSS_ACTION_GAP_SEC = 1.0
 WORLD_BOSS_ACTION_COOLDOWN_SEC = 90
 WORLD_BOSS_ROUND_GAP_SEC = 90.0
 WORLD_BOSS_MAX_ACTIONS_PER_TICK = 64
+WORLD_BOSS_STATUS_QUERY_COMMAND = CMD_WORLD_BOSS_STATUS
+WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC = WORLD_BOSS_REPLY_TIMEOUT_SEC
+WORLD_BOSS_STATUS_MAX_RETRIES = 2
 WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC = 0
 WORLD_BOSS_STATUS_STALE_SEC = 120
 WORLD_BOSS_STATUS_QUERY_GAP_SEC = 3 * 60
@@ -50,8 +53,6 @@ WORLD_BOSS_EVENT_TTL_SEC = 35 * 60
 WORLD_BOSS_STRONG_ATTACK_LIMIT = 5
 WORLD_BOSS_DEFAULT_ACTION_LIMIT = 5
 WORLD_BOSS_PROGRESS_LOG_GAP_SEC = 5 * 60
-WORLD_BOSS_FALLBACK_START_MINUTE = 13 * 60 + 25
-WORLD_BOSS_FALLBACK_END_MINUTE = 14 * 60 + 10
 WORLD_BOSS_RESCUE_MOYA_THRESHOLD = 80
 WORLD_BOSS_RESCUE_ZHEN_THRESHOLD = 10
 WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN = 35
@@ -59,7 +60,7 @@ WORLD_BOSS_PHASE_TWO_GUARD_MOYA_LIMIT = 95
 WORLD_BOSS_OPENING_GROUP_SIZE = 11
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
-WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {f"{CMD_WORLD_BOSS_STATUS} 查看战况"}
+WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {WORLD_BOSS_STATUS_QUERY_COMMAND}
 WORLD_BOSS_EVENT_PRIORITY = "event_burst"
 WORLD_BOSS_RETRY_PRIORITY = "retry"
 
@@ -435,17 +436,6 @@ def _archive_inactive_event_state(run_state, now, reason):
     run_state["fallback_status_day"] = fallback_status_day
 
 
-def _fallback_status_retry_allowed(run_state, now):
-    if bool(run_state.get("active")):
-        return False
-    day_key = get_day_key(now)
-    if str(run_state.get("fallback_status_day") or "").strip() != day_key:
-        return False
-    if str(run_state.get("event_key") or "").strip():
-        return False
-    return _fallback_window_open(now)
-
-
 def _status_retry_allowed(run_state, now):
     event_day = _event_day_from_key(run_state)
     if event_day and event_day != get_day_key(now):
@@ -455,7 +445,7 @@ def _status_retry_allowed(run_state, now):
         if opened_at <= 0:
             return True
         return float(now) - opened_at <= WORLD_BOSS_EVENT_TTL_SEC
-    return _fallback_status_retry_allowed(run_state, now)
+    return False
 
 
 def _clear_all_world_boss_pending(reason=""):
@@ -474,6 +464,30 @@ def _clear_all_world_boss_pending(reason=""):
         _clear_world_boss_pending_tasks()
         mark_dirty()
     return cleared
+
+
+def _clear_inactive_world_boss_status_residue(run_state, now):
+    changed = False
+    if _coerce_float(run_state.get("next_status_query_at"), 0) > 0:
+        run_state["next_status_query_at"] = 0
+        changed = True
+    if _coerce_float(run_state.get("next_action_at"), 0) > 0:
+        run_state["next_action_at"] = 0
+        changed = True
+    for identity_id in get_identity_ids():
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        last_error = str(identity_state.get("world_boss_last_error") or "")
+        if "战况查询" not in last_error:
+            continue
+        _clear_world_boss_pending_action(identity_state)
+        identity_state["world_boss_last_error"] = ""
+        changed = True
+    if changed:
+        _set_run_state(run_state, persist=False)
+    return changed
 
 
 def _clear_stale_inactive_event_pending(run_state, now):
@@ -540,7 +554,7 @@ def _pending_action_due_at(identity_state):
 def _pending_status_due_at(identity_state):
     if not _has_pending_world_boss_status(identity_state):
         return 0
-    return _coerce_float(identity_state.get("world_boss_pending_since"), 0) + WORLD_BOSS_PENDING_TIMEOUT_SEC
+    return _coerce_float(identity_state.get("world_boss_pending_since"), 0) + WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC
 
 
 def _next_pending_action_due_at():
@@ -1217,10 +1231,28 @@ async def _send_status_query(identity_id, now, run_state, reason):
         identity_state = None
     is_retry = bool(identity_state is not None and _has_pending_world_boss_status(identity_state))
     retry_count = _coerce_int(identity_state.get("world_boss_pending_retry_count"), 0) + 1 if is_retry and identity_state is not None else 0
+    if is_retry and retry_count > WORLD_BOSS_STATUS_MAX_RETRIES:
+        if identity_state is not None:
+            _clear_world_boss_pending_action(identity_state)
+            identity_state["world_boss_last_error"] = "战况查询无回复，补查已达上限"
+        clear_pending_tasks_by_commands({WORLD_BOSS_STATUS_QUERY_COMMAND}, send_as_id=identity_id)
+        run_state["next_status_query_at"] = float(now) + WORLD_BOSS_STATUS_QUERY_GAP_SEC
+        run_state["next_action_at"] = max(
+            _coerce_float(run_state.get("next_action_at"), 0),
+            run_state["next_status_query_at"],
+        )
+        _set_run_state(run_state)
+        console_log(
+            f"🗡 真仙试锋[{_identity_label(identity_id)}] 战况查询无回复，补查已达上限，暂停本轮战况补查。",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=180,
+        )
+        return False
     if is_retry:
-        clear_pending_tasks_by_commands({f"{CMD_WORLD_BOSS_STATUS} 查看战况"}, send_as_id=identity_id)
+        clear_pending_tasks_by_commands({WORLD_BOSS_STATUS_QUERY_COMMAND}, send_as_id=identity_id)
     msg = await send_game_command(
-        f"{CMD_WORLD_BOSS_STATUS} 查看战况",
+        WORLD_BOSS_STATUS_QUERY_COMMAND,
         track=True,
         max_retry=0,
         reply_timeout=WORLD_BOSS_REPLY_TIMEOUT_SEC,
@@ -1234,7 +1266,7 @@ async def _send_status_query(identity_id, now, run_state, reason):
     if not msg:
         if identity_state is not None:
             identity_state["world_boss_last_error"] = f"{reason}战况查询发送失败"
-        run_state["next_status_query_at"] = sent_at + WORLD_BOSS_PENDING_TIMEOUT_SEC
+        run_state["next_status_query_at"] = sent_at + WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC
         _set_run_state(run_state)
         return False
     if identity_state is not None:
@@ -1245,7 +1277,7 @@ async def _send_status_query(identity_id, now, run_state, reason):
             identity_state["world_boss_pending_retry_count"] = retry_count
             identity_state["world_boss_pending_action_seq"] = 0
         identity_state["world_boss_last_error"] = ""
-    run_state["next_status_query_at"] = sent_at + WORLD_BOSS_PENDING_TIMEOUT_SEC
+    run_state["next_status_query_at"] = sent_at + WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC
     run_state["next_action_at"] = max(_coerce_float(run_state.get("next_action_at"), 0), sent_at + WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC)
     _set_run_state(run_state)
     if is_retry:
@@ -1434,12 +1466,6 @@ async def _run_world_boss_action_round(now):
             _schedule_next_world_boss_action(run_state, current_now)
 
 
-def _fallback_window_open(now):
-    local = datetime.fromtimestamp(float(now), TZ_LOCAL)
-    minute = local.hour * 60 + local.minute
-    return WORLD_BOSS_FALLBACK_START_MINUTE <= minute <= WORLD_BOSS_FALLBACK_END_MINUTE
-
-
 async def run_world_boss_scheduler(now):
     if _WORLD_BOSS_SCHEDULER_LOCK.locked():
         return
@@ -1456,25 +1482,14 @@ async def run_world_boss_scheduler(now):
             if _clear_stale_inactive_event_pending(run_state, now):
                 return
             if _has_any_pending_status():
-                if not _status_retry_allowed(run_state, now):
-                    _clear_all_world_boss_pending("战况查询已过期")
-                    _set_run_state(run_state, persist=False)
-                    return
-                if not _has_due_pending_status(now):
-                    _schedule_next_world_boss_action(run_state, now)
-                    return
-                status_identity_id, _identity_state = _pending_status_identity(now)
-                if status_identity_id:
-                    await _send_status_query(status_identity_id, now, run_state, "战况查询无回复")
-                else:
-                    _set_run_state(run_state, persist=False)
-                return
-            day_key = get_day_key(now)
-            if _fallback_window_open(now) and run_state.get("fallback_status_day") != day_key:
-                run_state["fallback_status_day"] = day_key
-                await _send_status_query(enabled_ids[0], now, run_state, "日常观测")
-            else:
+                _clear_all_world_boss_pending("未观测到进行中事件，停止战况补查")
+                run_state["next_status_query_at"] = 0
+                run_state["next_action_at"] = 0
                 _set_run_state(run_state, persist=False)
+                return
+            if _clear_inactive_world_boss_status_residue(run_state, now):
+                return
+            _set_run_state(run_state, persist=False)
             return
 
         if run_state.get("remaining_sec", 0) <= 0 and run_state.get("last_status_at", 0) > 0 and now - float(run_state.get("last_status_at") or 0) > 120:

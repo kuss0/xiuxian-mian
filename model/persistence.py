@@ -1005,6 +1005,18 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_broadcast_key TEXT NOT NULL DEFAULT ''")
     if "second_soul_last_broadcast_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_broadcast_at REAL NOT NULL DEFAULT 0")
+    if "second_soul_moran_value" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_moran_value INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_purge_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_purge_status_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_status_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_purge_attempts" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_attempts INTEGER NOT NULL DEFAULT 0")
+    if "second_soul_purge_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_due_at REAL NOT NULL DEFAULT 0")
+    if "second_soul_purge_last_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_purge_last_at REAL NOT NULL DEFAULT 0")
     if "second_soul_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN second_soul_last_error TEXT NOT NULL DEFAULT ''")
     if "next_second_soul_time" not in timer_columns:
@@ -1555,6 +1567,12 @@ def init_db():
             second_soul_last_train_started_at REAL NOT NULL DEFAULT 0,
             second_soul_last_broadcast_key TEXT NOT NULL DEFAULT '',
             second_soul_last_broadcast_at REAL NOT NULL DEFAULT 0,
+            second_soul_moran_value INTEGER NOT NULL DEFAULT 0,
+            second_soul_purge_msg_id INTEGER NOT NULL DEFAULT 0,
+            second_soul_purge_status_msg_id INTEGER NOT NULL DEFAULT 0,
+            second_soul_purge_attempts INTEGER NOT NULL DEFAULT 0,
+            second_soul_purge_due_at REAL NOT NULL DEFAULT 0,
+            second_soul_purge_last_at REAL NOT NULL DEFAULT 0,
             second_soul_last_error TEXT NOT NULL DEFAULT '',
             identity_info_reply_msg_ids TEXT NOT NULL DEFAULT '[]',
             last_identity_info_msg_id INTEGER NOT NULL DEFAULT 0,

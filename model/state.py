@@ -67,7 +67,8 @@ IDENTITY_RUNTIME_COLUMNS = [
     "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
-    "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_last_error",
+    "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_moran_value",
+    "second_soul_purge_msg_id", "second_soul_purge_status_msg_id", "second_soul_purge_attempts", "second_soul_purge_due_at", "second_soul_purge_last_at", "second_soul_last_error",
     "taiyi_yindao_element", "taiyi_phase", "taiyi_pending_node_name", "taiyi_yindao_msg_id", "taiyi_node_search_msg_id", "taiyi_node_define_msg_id", "taiyi_freeze_reason", "taiyi_failure_history", "taiyi_yindao_resend_count", "taiyi_search_resend_count", "taiyi_last_error",
     "weak_reason", "weak_source", "weak_last_block_log_at",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
@@ -662,7 +663,7 @@ IDENTITY_STATE_TEMPLATE = {
     # 第二元神模块
     "second_soul_enabled": False,
     "second_soul_auto_choice_enabled": True,
-    "second_soul_phase": "idle",  # idle|status_pending|ready_to_train|train_pending|cultivating|heart_demon_pending|injured|not_unlocked
+    "second_soul_phase": "idle",  # idle|status_pending|ready_to_train|train_pending|cultivating|heart_demon_pending|injured|not_unlocked|purge_pending|purge_status_pending
     "second_soul_choice_strategy": "stable",
     "next_second_soul_time": 0,
     "second_soul_heart_demon_msg_id": 0,
@@ -673,6 +674,12 @@ IDENTITY_STATE_TEMPLATE = {
     "second_soul_last_train_started_at": 0,
     "second_soul_last_broadcast_key": "",
     "second_soul_last_broadcast_at": 0,
+    "second_soul_moran_value": 0,
+    "second_soul_purge_msg_id": 0,
+    "second_soul_purge_status_msg_id": 0,
+    "second_soul_purge_attempts": 0,
+    "second_soul_purge_due_at": 0,
+    "second_soul_purge_last_at": 0,
     "second_soul_last_error": "",
 
     # 太一门模块

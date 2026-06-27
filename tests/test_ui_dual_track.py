@@ -64,6 +64,9 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "/static/css/ui_fixes.css" in body
     assert "/static-new/css/app.css" in body
     assert "/static/js/storage_bag_ui.js" in body
+    assert "<span id='global-switch-container'></span>" in body
+    assert "sidebar-global" not in body
+    assert body.index("id='global-switch-container'") < body.index("data-open-logs='1'")
 
 
 def test_legacy_variant_parameter_keeps_new_single_track_ui():
@@ -90,6 +93,15 @@ def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     assert "fonts.googleapis.com" not in body
 
 
+def test_summary_card_script_keeps_role_resource_fields():
+    script = (PROJECT_ROOT / "model/web/static/js/app.js").read_text(encoding="utf-8")
+
+    assert "['香火',incenseText]" in script
+    assert "['元婴',identity.yuanying_level_text||'未读取']" in script
+    assert "['第二元神',identity.second_soul_level_text||'未读取']" in script
+    assert "['洞府灵气',identity.cave_lingqi_text||'未读取']" in script
+
+
 def test_new_static_asset_loader_serves_css_and_blocks_traversal():
     css_body, css_type = ui._load_new_static_asset("css/app.css")
     traversal_body, traversal_type = ui._load_new_static_asset("../web/static/js/app.js")
@@ -97,7 +109,7 @@ def test_new_static_asset_loader_serves_css_and_blocks_traversal():
     assert css_body is not None
     assert css_type == "text/css; charset=utf-8"
     assert b"body.ui-new" in css_body
-    assert b"grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr))" in css_body
+    assert b"grid-template-columns: repeat(auto-fit, minmax(min(100%, 288px), 1fr))" in css_body
     assert b"@media (max-width: 760px)" in css_body
     assert traversal_body is None
     assert traversal_type is None

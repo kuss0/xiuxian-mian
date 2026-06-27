@@ -74,6 +74,8 @@ from .config import (
     CMD_REPLICA_ZHUIMO_JOIN,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
+    CMD_SECOND_SOUL_DEMON_STATUS,
+    CMD_SECOND_SOUL_PURGE,
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
     CMD_SECT_TEACH,
@@ -236,10 +238,15 @@ SEND_GAP_WHITELIST_PREFIXES = (
     CMD_FISHING_LIFT,
     CMD_FISHING_OPEN,
     CMD_FISHING_BASKET,
+    ".储物袋",
+    ".上架",
+    ".购买",
+    ".赠送",
 )
-SEND_GAP_WHITELIST_MODULES = {"灵溪垂钓"}
+SEND_GAP_WHITELIST_MODULES = {"灵溪垂钓", "储物袋"}
 MODULE_SEND_GAP_MIN_SEC = {
     "灵溪垂钓": 2.0,
+    "储物袋": 5.0,
 }
 
 P0_SEND_GAP_MIN_SEC = 20.0
@@ -736,6 +743,8 @@ REPLY_FAMILY_COMMANDS = {
     "second_soul_status": {CMD_SECOND_SOUL_STATUS},
     "second_soul_train": {CMD_SECOND_SOUL_TRAIN},
     "second_soul_choice": {CMD_SECOND_SOUL_CHOICE_BREAK, CMD_SECOND_SOUL_CHOICE_STABLE},
+    "second_soul_purge": {CMD_SECOND_SOUL_PURGE},
+    "second_soul_demon_status": {CMD_SECOND_SOUL_DEMON_STATUS},
     "taiyi_yindao": {CMD_YINDAO},
     "taiyi_node_search": {CMD_NODE_SEARCH},
     "taiyi_node_define": {CMD_NODE_DEFINE},
@@ -1048,6 +1057,8 @@ def _get_special_tracked_message_family(identity_state, msg_id):
         ("small_world_refine_msg_id", "small_world_refine"),
         ("second_soul_status_msg_id", "second_soul_status"),
         ("second_soul_train_msg_id", "second_soul_train"),
+        ("second_soul_purge_msg_id", "second_soul_purge"),
+        ("second_soul_purge_status_msg_id", "second_soul_demon_status"),
         ("taiyi_yindao_msg_id", "taiyi_yindao"),
         ("taiyi_node_search_msg_id", "taiyi_node_search"),
         ("taiyi_node_define_msg_id", "taiyi_node_define"),

@@ -787,19 +787,26 @@ def _apply_tianti_passive(text, now, family, reply_context=None):
 def _apply_second_soul_passive(text, now, family):
     raw_text = str(text or "")
     changed = False
+    moran = second_soul_mod._remember_moran_from_text(raw_text)
+    if moran is not None:
+        changed = True
+    purge_phase_active = second_soul_mod._phase() in {"purge_pending", "purge_status_pending"}
     if second_soul_mod._is_second_soul_panel(raw_text):
         status, remain_sec = second_soul_mod._parse_status_field(raw_text)
         if status == "窍中温养":
-            second_soul_mod._mark_ready_to_train(now)
-            changed = True
+            if not purge_phase_active:
+                second_soul_mod._mark_ready_to_train(now)
+                changed = True
         elif status == "修炼中":
             second_soul_mod._set_phase("cultivating")
+            second_soul_mod._reset_purge_state(keep_moran=True)
             second_soul_mod._clear_heart_demon()
             second_soul_mod._clear_pending_msg_ids()
             state["next_second_soul_time"] = now + remain_sec + second_soul_mod.CD_BUFFER_SEC if remain_sec > 0 else now + second_soul_mod.SECOND_SOUL_RECHECK_MAX
             changed = True
         elif status == "受伤":
             second_soul_mod._set_phase("injured")
+            second_soul_mod._reset_purge_state(keep_moran=True)
             second_soul_mod._clear_heart_demon()
             second_soul_mod._clear_pending_msg_ids()
             state["next_second_soul_time"] = now + remain_sec + second_soul_mod.CD_BUFFER_SEC if remain_sec > 0 else now + second_soul_mod.SECOND_SOUL_INJURED_NO_REMAIN_CD_SEC
@@ -811,6 +818,7 @@ def _apply_second_soul_passive(text, now, family):
             changed = True
     if "你的第二元神已开始闭关修炼" in raw_text and "24小时" in raw_text:
         second_soul_mod._set_phase("cultivating")
+        second_soul_mod._reset_purge_state(keep_moran=True)
         state["next_second_soul_time"] = now + second_soul_mod.SECOND_SOUL_TRAIN_CD_SEC + second_soul_mod.CD_BUFFER_SEC
         state["second_soul_last_train_started_at"] = now
         second_soul_mod._clear_heart_demon()

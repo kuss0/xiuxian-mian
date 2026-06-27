@@ -1188,6 +1188,26 @@ _TIANJIGE_SECT_CONTRIBUTION_KEYS = (
     "sect_points",
     "zongmen_contribution",
 )
+_TIANJIGE_LEVEL_GENERIC_KEYS = ("level", "rank", "grade", "等级", "级别")
+_TIANJIGE_YUANYING_LEVEL_KEYS = (
+    "yuanying_level",
+    "yuan_ying_level",
+    "nascent_soul_level",
+    "nascent_soul_rank",
+    "infant_level",
+    "元婴等级",
+    "元婴级别",
+)
+_TIANJIGE_SECOND_SOUL_LEVEL_KEYS = (
+    "second_soul_level",
+    "second_soul_rank",
+    "secondSoulLevel",
+    "secondSoulRank",
+    "yuan_shen_level",
+    "yuanshen_level",
+    "第二元神等级",
+    "第二元神级别",
+)
 _TIANJIGE_STATUS_LABELS = {
     "normal": "正常",
     "idle": "空闲",
@@ -1226,6 +1246,76 @@ def _tianjige_first_number(row, keys, *, default=0):
             continue
         return _tianjige_number(value, default=default)
     return default
+
+
+def _tianjige_format_role_level_value(value):
+    text = _tianjige_format_level_value(value)
+    if not text:
+        return ""
+    if re.search(r"(级|阶|层|境|未)", text):
+        return text
+    return f"{text}级"
+
+
+def _tianjige_first_role_level(row, direct_keys, container_keys):
+    row = row if isinstance(row, dict) else {}
+    direct = _tianjige_flatten_api_row(row)
+    for key in direct_keys:
+        value = direct.get(key)
+        if value not in ("", None, [], {}):
+            return _tianjige_format_role_level_value(value)
+    for container_key in container_keys:
+        container = _tianjige_parse_json_maybe(direct.get(container_key))
+        if not isinstance(container, dict):
+            continue
+        for key in tuple(direct_keys) + _TIANJIGE_LEVEL_GENERIC_KEYS:
+            value = container.get(key)
+            if value not in ("", None, [], {}):
+                return _tianjige_format_role_level_value(value)
+    return ""
+
+
+def _tianjige_first_status_field_text(record, keys):
+    fields = record.get("status_fields") if isinstance(record, dict) else []
+    if not isinstance(fields, list):
+        return ""
+    wanted = {str(key) for key in keys}
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        if str(field.get("key") or "") not in wanted:
+            continue
+        text = _tianjige_string(field.get("text") or field.get("value"))
+        if text:
+            return text
+    return ""
+
+
+def _tianjige_cave_lingqi_text(cave):
+    _key, value = _tianjige_pick_cave_value(cave, ("lingqi_pool", "spirit_pool", "spiritual_pool", "qi_pool"))
+    return _tianjige_format_amount_value(value) if value not in ("", None, [], {}) else ""
+
+
+def _tianjige_yuanying_level_text(record):
+    direct = _tianjige_first_role_level(
+        record,
+        _TIANJIGE_YUANYING_LEVEL_KEYS,
+        ("yuanying", "yuan_ying", "nascent_soul", "infant", "元婴"),
+    )
+    if direct:
+        return direct
+    return _tianjige_first_status_field_text(record, _TIANJIGE_YUANYING_LEVEL_KEYS)
+
+
+def _tianjige_second_soul_level_text(record):
+    direct = _tianjige_first_role_level(
+        record,
+        _TIANJIGE_SECOND_SOUL_LEVEL_KEYS,
+        ("second_soul", "secondSoul", "yuanshen", "yuan_shen", "second_soul_info", "第二元神"),
+    )
+    if direct:
+        return direct
+    return _tianjige_first_status_field_text(record, _TIANJIGE_SECOND_SOUL_LEVEL_KEYS)
 
 
 def _tianjige_pick_cave_value(cave, keys):
@@ -1339,7 +1429,7 @@ def _tianjige_cave_summary_text(cave):
     lingqi_key, lingqi_pool = _tianjige_pick_cave_value(cave, ("lingqi_pool", "spirit_pool", "spiritual_pool", "qi_pool"))
     if lingqi_key:
         used.add(lingqi_key)
-        lingqi_text = _tianjige_format_amount_value(lingqi_pool)
+        lingqi_text = _tianjige_cave_lingqi_text(cave)
         if lingqi_text:
             parts.append(f"灵气池 {lingqi_text}")
 
@@ -1475,6 +1565,7 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
     status_text = _tianjige_string(row.get("status"))
     combat_status = _tianjige_string(row.get("combat_status"))
     state_label = _tianjige_state_label(status_text, combat_status)
+    cave = _tianjige_extract_cave_summary(row)
     return {
         "identity_id": int(identity_id),
         "owner": owner_text or username or dao_name or profile.get("label") or str(identity_id),
@@ -1495,7 +1586,10 @@ def _tianjige_dao_path_record_from_row(row, *, fallback_identity_id=0, fallback_
         "state_label": state_label or "未记录",
         "spiritual_sense": _tianjige_first_number(row, _TIANJIGE_SPIRITUAL_SENSE_KEYS),
         "taiyi_spiritual_sense": _tianjige_first_number(row, _TIANJIGE_TAIYI_SPIRITUAL_SENSE_KEYS),
-        "cave": _tianjige_extract_cave_summary(row),
+        "yuanying_level": _tianjige_yuanying_level_text(row),
+        "second_soul_level": _tianjige_second_soul_level_text(row),
+        "cave_lingqi": _tianjige_cave_lingqi_text(cave),
+        "cave": cave,
         "status_fields": _tianjige_extract_known_fields(row, _DAO_PATH_STATUS_KEYS),
         "updated_at": float(now),
         "updated_at_text": fmt_abs_ts(now),
@@ -3280,6 +3374,19 @@ def get_identity_ui_snapshot(send_as_id):
         dao_path_records = get_tianjige_dao_path_records()
         dao_path_record = dao_path_records.get(str(send_as_id)) if isinstance(dao_path_records, dict) else {}
         dao_path_record = dao_path_record if isinstance(dao_path_record, dict) else {}
+        dao_path_cave = dao_path_record.get("cave") if isinstance(dao_path_record.get("cave"), dict) else {}
+        yuanying_level_text = (
+            _tianjige_string(dao_path_record.get("yuanying_level"))
+            or _tianjige_yuanying_level_text(dao_path_record)
+        )
+        second_soul_level_text = (
+            _tianjige_string(dao_path_record.get("second_soul_level"))
+            or _tianjige_second_soul_level_text(dao_path_record)
+        )
+        cave_lingqi_text = (
+            _tianjige_string(dao_path_record.get("cave_lingqi"))
+            or _tianjige_cave_lingqi_text(dao_path_cave)
+        )
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -3310,6 +3417,9 @@ def get_identity_ui_snapshot(send_as_id):
             "battle_power_value": int(profile.get("battle_power_value") or 0),
             "spiritual_sense": _tianjige_number(dao_path_record.get("spiritual_sense")),
             "taiyi_spiritual_sense": _tianjige_number(dao_path_record.get("taiyi_spiritual_sense")),
+            "yuanying_level_text": yuanying_level_text or "未读取",
+            "second_soul_level_text": second_soul_level_text or "未读取",
+            "cave_lingqi_text": cave_lingqi_text or "未读取",
             "sect_updated_at": fmt_abs_ts(profile.get("sect_updated_at") or 0),
             "sect_refresh_pending": sect_refresh_pending,
             "sect_refresh_error": sect_refresh_error,
@@ -3350,6 +3460,8 @@ def get_identity_ui_snapshot(send_as_id):
             "small_world_barrier_min_stock": int(identity_state.get("small_world_barrier_min_stock", 130000) or 130000),
             "small_world_barrier_guard_before_min": int(identity_state.get("small_world_barrier_guard_before_min", 30) or 30),
             "small_world_barrier_min_interval_hours": float(identity_state.get("small_world_barrier_min_interval_hours", 18) or 18),
+            "small_world_incense_stock": int(identity_state.get("small_world_incense_stock", 0) or 0),
+            "small_world_faith_value": int(identity_state.get("small_world_faith_value", 0) or 0),
             "yinluo": get_yinluo_ui_state() if "阴罗宗" in available_module_names else {},
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),

@@ -391,6 +391,20 @@
     "event_type": "message",
     "text": "【你的第二元神：金之元神】\n\n等级: 34 级\n经验: 3094 / 17000\n战力: 790286\n状态: 修炼中 (剩余: 12小时59分钟)\n五子同心魔: 5/5 | 调度 修炼 | 同心 100 | 魔染 40"
   },
+  "second_soul.purge.success": {
+    "source": "data/state/passive_event_ledger/2026-06-27.jsonl:6823",
+    "module": "第二元神",
+    "family": "second_soul_purge",
+    "event_type": "message",
+    "text": "【元神镇魔】\n你耗去 5000 点修为，强行镇压识海中翻腾的五魔。\n魔染度: 91 → 39\n同心度: 100 → 100"
+  },
+  "second_soul.demon_status.panel": {
+    "source": "data/state/passive_event_ledger/2026-06-27.jsonl:6837",
+    "module": "第二元神",
+    "family": "second_soul_demon_status",
+    "event_type": "message",
+    "text": "【五子同心魔】\n已分化魔子: 水魔·悟玄、金魔·裂兵、木魔·养魂、土魔·镇魄、火魔·焚战 (5/5)\n当前调度: 修炼\n同心度: 100 / 100\n魔染度: 39 / 100\n\n当前效果:\n- 斗法战力 +10%\n- 闭关收益 +32%\n- 元神修炼修为 +32%\n- 元神修炼经验 +48%\n- 走火入魔率 -3%\n- 闭关失败损失降低 10%\n- 心魔试炼修正 -1%\n\n五魔谱:\n- 金魔·裂兵: 已分化，斗法战力偏向破阵。\n- 木魔·养魂: 已分化，偏重闭关与养魂收益。\n- 水魔·悟玄: 已分化，偏重元神悟性与修炼经验。\n- 火魔·焚战: 已分化，斗法时更凶，更易躁动。\n- 土魔·镇魄: 已分化，偏重护主、稳魂与减损。\n命令: .元神分化 金 / .元神调度 修炼|斗法|护主|沉眠 / .元神镇魔 / .元神合一"
+  },
   "sect_teach.success": {
     "source": "data/state/passive_event_ledger/2026-06-15.jsonl:103",
     "module": "宗门传功",

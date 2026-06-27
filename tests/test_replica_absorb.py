@@ -4353,6 +4353,48 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("玄晶", notice_text)
         self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=now + 181))
 
+    def test_virtual_hall_halfwidth_duoding_settlement_clears_room(self):
+        leader_id = self._register_replica_identity(991201, "CqdOps")
+        first_id = self._register_replica_identity(991202, "first")
+        state_module.set_replica_participant_identity_ids([leader_id, first_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "91",
+            "replica_kind": app_replica._REPLICA_KIND_VIRTUAL_HALL,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@CqdOps",
+            "join_requested_usernames": ["@first"],
+            "entered_at": now,
+            "updated_at": now,
+            "expires_at": now + 3600,
+        })
+        text = (
+            "[战利品结算·夺鼎]\n"
+            "所有队员均获得5000修为和500贡献!天命所归，幸运道友@CqdOps\n"
+            "你们逆着鼎火冲入核心，试图在宝光消散前强夺最后一缕机缘。\n"
+            "本次主殿迎战对象:蛮胡子之影。\n"
+            "你们强行争鼎得手，全队额外获得800修为与80贡献!\n"
+            "额外获得了【养魂木】x3"
+        )
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                handled = await app_replica._handle_replica_progress_event(
+                    SimpleNamespace(id=9984205, raw_text=text),
+                    now + 180,
+                )
+                return handled, notice_mock.await_args.args[1]
+
+        handled, notice_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertIn("虚天殿结算：战利品结算·夺鼎", notice_text)
+        self.assertIn("5000修为", notice_text)
+        self.assertIsNone(app_replica._get_lightweight_last_room(-100777, now=now + 181))
+
     def test_kunwu_summit_settlement_clears_room_and_reports_result(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])

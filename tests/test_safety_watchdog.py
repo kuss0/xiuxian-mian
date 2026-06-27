@@ -1115,7 +1115,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now - 12,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
@@ -1125,7 +1125,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now - 6,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="retry",
@@ -1135,7 +1135,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="retry",
@@ -1146,7 +1146,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
-    def test_marked_world_boss_status_retry_chain_does_not_send_burst(self):
+    def test_marked_world_boss_status_retry_chain_does_not_send_burst_within_retry_cap(self):
         now = int(time.time())
         cfg = self._config()
         cfg.total_2m_limit = 5
@@ -1154,19 +1154,41 @@ class SafetyWatchdogTests(unittest.TestCase):
         event_key = "test-status"
         events = [
             _event(
-                now - (7 - try_no) * 5,
+                now - (2 - try_no) * 45,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst" if try_no == 0 else "retry",
-                op_id=_world_boss_status_op_id(event_key, sender_id, try_no, now - (7 - try_no) * 5),
+                op_id=_world_boss_status_op_id(event_key, sender_id, try_no, now - (2 - try_no) * 45),
                 chain_id=f"world_boss:{event_key}",
             )
-            for try_no in range(8)
+            for try_no in range(3)
         ]
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, cfg))
+
+    def test_marked_world_boss_status_retry_above_cap_still_fuses(self):
+        now = int(time.time())
+        sender_id = 301299112
+        event_key = "test-status"
+        events = [
+            _event(
+                now - (3 - try_no) * 75,
+                sender_id,
+                ".世界boss",
+                family="world_boss",
+                source_module="真仙试锋",
+                priority="event_burst" if try_no == 0 else "retry",
+                op_id=_world_boss_status_op_id(event_key, sender_id, try_no, now - (3 - try_no) * 75),
+                chain_id=f"world_boss:{event_key}",
+            )
+            for try_no in range(4)
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("invalid world boss status retry", breach)
 
     def test_cross_day_world_boss_status_retry_still_fuses(self):
         now = int(safety_watchdog.datetime(2026, 6, 25, 7, 20, 0, tzinfo=safety_watchdog.TZ_LOCAL).timestamp())
@@ -1175,7 +1197,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now - 6,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
@@ -1185,7 +1207,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="retry",
@@ -1202,8 +1224,8 @@ class SafetyWatchdogTests(unittest.TestCase):
         now = time.time()
         sender_id = 301299112
         events = [
-            _event(now - 6, sender_id, ".世界boss 查看战况", family="world_boss", source_module="真仙试锋", priority="event_burst"),
-            _event(now, sender_id, ".世界boss 查看战况", family="world_boss", source_module="真仙试锋", priority="retry"),
+            _event(now - 6, sender_id, ".世界boss", family="world_boss", source_module="真仙试锋", priority="event_burst"),
+            _event(now, sender_id, ".世界boss", family="world_boss", source_module="真仙试锋", priority="retry"),
         ]
 
         breach = safety_watchdog.find_send_breach(events, now, self._config())
@@ -1218,7 +1240,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now - (5 - index),
                 3000 + index,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
@@ -1241,7 +1263,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now,
                 1002,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
@@ -1261,7 +1283,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now - 10,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
@@ -1271,7 +1293,7 @@ class SafetyWatchdogTests(unittest.TestCase):
             _event(
                 now,
                 sender_id,
-                ".世界boss 查看战况",
+                ".世界boss",
                 family="world_boss",
                 source_module="真仙试锋",
                 priority="event_burst",
@@ -1896,6 +1918,158 @@ class SafetyWatchdogTests(unittest.TestCase):
         ]
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_storage_bag_retry_chain_allows_three_fast_resends(self):
+        now = time.time()
+        sender_id = 3504367852
+        chain_id = "storage_bag:test-op"
+        command = ".上架 灵石*1 换 妖丹*3"
+        events = [
+            _event(
+                now - 15,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="event_burst",
+                op_id=f"{chain_id}:storage_bag_listing:send:0",
+                chain_id=chain_id,
+            ),
+            _event(
+                now - 10,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="retry",
+                op_id=f"{chain_id}:storage_bag_listing:retry:1",
+                chain_id=chain_id,
+            ),
+            _event(
+                now - 5,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="retry",
+                op_id=f"{chain_id}:storage_bag_listing:retry:2",
+                chain_id=chain_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="retry",
+                op_id=f"{chain_id}:storage_bag_listing:retry:3",
+                chain_id=chain_id,
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_storage_bag_retry_chain_skipped_try_still_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        chain_id = "storage_bag:test-op"
+        command = ".上架 灵石*1 换 妖丹*3"
+        events = [
+            _event(
+                now - 5,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="event_burst",
+                op_id=f"{chain_id}:storage_bag_listing:send:0",
+                chain_id=chain_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="retry",
+                op_id=f"{chain_id}:storage_bag_listing:retry:2",
+                chain_id=chain_id,
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_storage_bag_retry_duplicate_op_id_still_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        chain_id = "storage_bag:test-op"
+        command = ".赠送 妖丹*3"
+        retry_op_id = f"{chain_id}:storage_bag_gift:retry:1"
+        events = [
+            _event(
+                now - 10,
+                sender_id,
+                command,
+                family="storage_bag_gift",
+                source_module="储物袋",
+                priority="event_burst",
+                op_id=f"{chain_id}:storage_bag_gift:send:0",
+                chain_id=chain_id,
+            ),
+            _event(
+                now - 5,
+                sender_id,
+                command,
+                family="storage_bag_gift",
+                source_module="储物袋",
+                priority="retry",
+                op_id=retry_op_id,
+                chain_id=chain_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                command,
+                family="storage_bag_gift",
+                source_module="储物袋",
+                priority="retry",
+                op_id=retry_op_id,
+                chain_id=chain_id,
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
+
+    def test_storage_bag_retry_without_op_id_still_fuses(self):
+        now = time.time()
+        sender_id = 3504367852
+        command = ".购买 22028"
+        events = [
+            _event(
+                now - 5,
+                sender_id,
+                command,
+                family="storage_bag_buy",
+                source_module="储物袋",
+                priority="event_burst",
+            ),
+            _event(
+                now,
+                sender_id,
+                command,
+                family="storage_bag_buy",
+                source_module="储物袋",
+                priority="retry",
+            ),
+        ]
+
+        breach = safety_watchdog.find_send_breach(events, now, self._config())
+
+        self.assertIn("same command repeat", breach)
 
     def test_retry_without_intent_metadata_still_fuses(self):
         now = time.time()

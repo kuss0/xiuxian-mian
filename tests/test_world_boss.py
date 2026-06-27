@@ -21,7 +21,7 @@ OPEN_TEXT = (
     "━━━━━━━━━━━━━━━\n"
     "万魂幡主·阴罗真影 青元子 降下阴罗法身。\n\n"
     "参战指令\n"
-    "- .世界boss 查看战况\n"
+    "- .世界boss\n"
     "- .讨伐青元子 强攻 压低血线\n"
     "- .讨伐青元子 破幡 拆万魂幡护体\n"
     "- .讨伐青元子 镇魂 压制魔压\n"
@@ -744,7 +744,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
         self.assertEqual("", identity_state["world_boss_pending_action"])
 
-    async def test_scheduler_sends_status_query_once_in_fallback_window(self):
+    async def test_scheduler_does_not_probe_status_without_active_event(self):
         identity_id = 301299112
         self._register(identity_id, label="jfdffdddd")
         now = world_boss.datetime(2026, 6, 13, 13, 30, tzinfo=world_boss.TZ_LOCAL).timestamp()
@@ -756,16 +756,51 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             await world_boss.run_world_boss_scheduler(now)
             await world_boss.run_world_boss_scheduler(now + 5)
 
-        send_mock.assert_awaited_once()
-        self.assertEqual(".世界boss 查看战况", send_mock.await_args.args[0])
-        self.assertEqual(0, send_mock.await_args.kwargs["max_retry"])
-        self.assertEqual("event_burst", send_mock.await_args.kwargs["priority"])
-        self.assertEqual("真仙试锋", send_mock.await_args.kwargs["source_module"])
+        send_mock.assert_not_awaited()
 
-    async def test_status_query_no_reply_retries_after_five_seconds_with_retry_marker(self):
+    async def test_scheduler_clears_inactive_status_residue_without_resending(self):
         identity_id = 301299112
         identity_state = self._register(identity_id, label="jfdffdddd")
-        now = world_boss.datetime(2026, 6, 13, 13, 30, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        now = world_boss.time.time()
+        identity_state["world_boss_last_error"] = "战况查询无回复战况查询发送失败"
+        state_module.set_world_boss_run_state(
+            {
+                "active": False,
+                "event_key": "",
+                "last_result": "败退",
+                "next_status_query_at": now - 1,
+                "next_action_at": now - 1,
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual(0, run_state["next_status_query_at"])
+        self.assertEqual(0, run_state["next_action_at"])
+        self.assertEqual("", identity_state["world_boss_last_error"])
+
+    async def test_active_status_query_no_reply_retries_after_reply_timeout_with_retry_marker(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.time.time()
+        retry_now = now + world_boss.WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC + 2
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": f"{world_boss.get_day_key(now)}:status-retry",
+                "opened_at": now - 60,
+                "remaining_sec": 1200,
+                "last_status_at": now - world_boss.WORLD_BOSS_STATUS_STALE_SEC - 1,
+                "next_status_query_at": now - 1,
+                "next_action_at": now - 1,
+            }
+        )
 
         with (
             patch.object(world_boss, "save_state", return_value=True),
@@ -775,22 +810,22 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
                 "send_game_command",
                 new=AsyncMock(side_effect=[
                     SimpleNamespace(id=9101, sent_at=now + 1),
-                    SimpleNamespace(id=9102, sent_at=now + 6),
+                    SimpleNamespace(id=9102, sent_at=retry_now + 1),
                 ]),
             ) as send_mock,
         ):
             await world_boss.run_world_boss_scheduler(now)
-            await world_boss.run_world_boss_scheduler(now + world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC + 1)
+            await world_boss.run_world_boss_scheduler(retry_now)
 
         self.assertEqual(2, send_mock.await_count)
         first_call, retry_call = send_mock.await_args_list
-        self.assertEqual(".世界boss 查看战况", first_call.args[0])
+        self.assertEqual(".世界boss", first_call.args[0])
         self.assertEqual("event_burst", first_call.kwargs["priority"])
         self.assertTrue(first_call.kwargs["op_id"].endswith(f":status:{identity_id}:try0:{int(now)}"))
-        self.assertEqual(".世界boss 查看战况", retry_call.args[0])
+        self.assertEqual(".世界boss", retry_call.args[0])
         self.assertEqual("retry", retry_call.kwargs["priority"])
-        self.assertTrue(retry_call.kwargs["op_id"].endswith(f":status:{identity_id}:try1:{int(now + world_boss.WORLD_BOSS_PENDING_TIMEOUT_SEC + 1)}"))
-        clear_mock.assert_called_with({".世界boss 查看战况"}, send_as_id=identity_id)
+        self.assertTrue(retry_call.kwargs["op_id"].endswith(f":status:{identity_id}:try1:{int(retry_now)}"))
+        clear_mock.assert_called_with({".世界boss"}, send_as_id=identity_id)
         self.assertEqual(9102, identity_state["world_boss_pending_msg_id"])
         self.assertEqual("status", identity_state["world_boss_pending_action"])
         self.assertEqual(1, identity_state["world_boss_pending_retry_count"])

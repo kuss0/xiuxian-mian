@@ -99,6 +99,7 @@ def _build_message_log_payload(event, *, event_type="message"):
     reply_header = getattr(event, "reply_to", None)
     reply_to_msg_id = int(getattr(reply_header, "reply_to_msg_id", 0) or 0)
     topic_id = int(getattr(reply_header, "reply_to_top_id", 0) or 0)
+    sender = getattr(event, "sender", None)
     payload = {
         "ts": now.strftime("%Y-%m-%d %H:%M:%S UTC+8"),
         "event_type": event_type,
@@ -109,6 +110,25 @@ def _build_message_log_payload(event, *, event_type="message"):
         "reply_to_msg_id": reply_to_msg_id,
         "text": event.raw_text or "",
     }
+    if sender is not None:
+        username = str(getattr(sender, "username", "") or "").strip()
+        if username:
+            payload["sender_username"] = username
+        name = " ".join(
+            part
+            for part in (
+                str(getattr(sender, "first_name", "") or "").strip(),
+                str(getattr(sender, "last_name", "") or "").strip(),
+            )
+            if part
+        )
+        title = str(getattr(sender, "title", "") or "").strip()
+        if name:
+            payload["sender_name"] = name
+        if title:
+            payload["sender_title"] = title
+        if hasattr(sender, "bot"):
+            payload["sender_is_bot"] = bool(getattr(sender, "bot", False))
     buttons = _extract_message_log_buttons(event)
     if buttons:
         payload["buttons"] = buttons

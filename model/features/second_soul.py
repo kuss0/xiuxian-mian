@@ -28,6 +28,8 @@ from ..config import (
     CD_BUFFER_SEC,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
+    CMD_SECOND_SOUL_DEMON_STATUS,
+    CMD_SECOND_SOUL_PURGE,
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
     RE_WHITESPACE,
@@ -42,14 +44,18 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, mono, send_audit_log, send_game_command
-from ..state import get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
 
 # 真实文本特征（来自历史日志样本扫描）：
 RE_SECOND_SOUL_PANEL_HEAD = re.compile(r"【你的第二元神[：:]")
 RE_SECOND_SOUL_STATUS_LINE = re.compile(r"状态[：:]\s*([^\n)]+?)(?:\s*[(（]剩余[：:]\s*([^)）\n]+)[)）])?\s*(?:\n|$)")
+RE_SECOND_SOUL_MORAN = re.compile(r"魔染(?:度)?\s*[:：]?\s*(\d+)(?:\s*(?:→|->|=>)\s*(\d+))?")
 RE_AT_USERNAME = re.compile(r"@([A-Za-z0-9_]+)")
+SECOND_SOUL_PURGE_THRESHOLD = 90
+SECOND_SOUL_PURGE_REPLY_TIMEOUT_SEC = 120
+SECOND_SOUL_PURGE_MAX_ATTEMPTS = 2
 SECOND_SOUL_CHOICE_STRATEGIES = {
     "stable": ("稳固道心", CMD_SECOND_SOUL_CHOICE_STABLE),
     "break": ("强行突破", CMD_SECOND_SOUL_CHOICE_BREAK),
@@ -102,6 +108,22 @@ def _clear_pending_msg_ids():
     state["second_soul_train_msg_id"] = 0
 
 
+def _clear_purge_msg_ids():
+    state["second_soul_purge_msg_id"] = 0
+    state["second_soul_purge_status_msg_id"] = 0
+    state["second_soul_purge_due_at"] = 0
+
+
+def _reset_purge_state(*, keep_moran=False):
+    if not keep_moran:
+        state["second_soul_moran_value"] = 0
+    state["second_soul_purge_msg_id"] = 0
+    state["second_soul_purge_status_msg_id"] = 0
+    state["second_soul_purge_attempts"] = 0
+    state["second_soul_purge_due_at"] = 0
+    state["second_soul_purge_last_at"] = 0
+
+
 def _mark_ready_to_train(now):
     """已确认可修炼。这里只改状态，不直接发命令，实际发送交给 scheduler + 全局锁。"""
     _set_phase("ready_to_train")
@@ -109,6 +131,122 @@ def _mark_ready_to_train(now):
     state["second_soul_last_error"] = ""
     _clear_heart_demon()
     _clear_pending_msg_ids()
+
+
+def _parse_moran_value(text):
+    value = None
+    for match in RE_SECOND_SOUL_MORAN.finditer(text or ""):
+        raw_value = match.group(2) or match.group(1)
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return value
+
+
+def _remember_moran_from_text(text):
+    moran = _parse_moran_value(text)
+    if moran is not None:
+        state["second_soul_moran_value"] = int(moran)
+    return moran
+
+
+def _purge_due_at(now):
+    return float(now) + SECOND_SOUL_PURGE_REPLY_TIMEOUT_SEC
+
+
+def _finish_purge_ready(now, *, moran=None, last_error=""):
+    if moran is not None:
+        state["second_soul_moran_value"] = int(moran)
+    _reset_purge_state(keep_moran=True)
+    _mark_ready_to_train(now)
+    if last_error:
+        state["second_soul_last_error"] = last_error
+
+
+async def _send_second_soul_purge(send_as_id, now, *, reason=""):
+    send_as_id = int(send_as_id or 0)
+    if send_as_id <= 0:
+        return False
+    with use_identity(send_as_id):
+        attempts = int(state.get("second_soul_purge_attempts", 0) or 0)
+        if attempts >= SECOND_SOUL_PURGE_MAX_ATTEMPTS:
+            _finish_purge_ready(now, last_error="元神镇魔已达自动上限，等待人工确认")
+            save_state()
+            await send_audit_log(
+                "⚠️ 第二元神魔染仍高，但元神镇魔自动次数已达上限，已停止补发。",
+                scope="identity", send_as_id=send_as_id, limit=240,
+            )
+            return False
+        attempts += 1
+        state["second_soul_purge_attempts"] = attempts
+        state["second_soul_purge_msg_id"] = 0
+        state["second_soul_purge_status_msg_id"] = 0
+        state["second_soul_purge_due_at"] = _purge_due_at(now)
+        state["second_soul_last_error"] = ""
+        _set_phase("purge_pending")
+        save_state()
+    msg = await send_game_command(
+        CMD_SECOND_SOUL_PURGE,
+        track=False,
+        send_as_id=send_as_id,
+        priority="chain",
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    with use_identity(send_as_id):
+        state["second_soul_purge_last_at"] = sent_at if msg else 0
+        state["second_soul_purge_due_at"] = _purge_due_at(sent_at)
+        if msg:
+            state["second_soul_purge_msg_id"] = int(getattr(msg, "id", 0) or 0)
+            state["second_soul_last_error"] = ""
+            save_state()
+            moran = int(state.get("second_soul_moran_value", 0) or 0)
+            await send_audit_log(
+                f"🌀 第二元神魔染 {moran}，已发送第 {attempts}/{SECOND_SOUL_PURGE_MAX_ATTEMPTS} 次元神镇魔。{reason}",
+                scope="identity", send_as_id=send_as_id, limit=240,
+            )
+            return True
+        state["second_soul_last_error"] = "发送 .元神镇魔 失败，稍后查魔染"
+        save_state()
+        await send_audit_log(
+            "⚠️ 第二元神元神镇魔发送失败，稍后将查五子同心魔确认魔染。",
+            scope="identity", send_as_id=send_as_id, limit=240,
+        )
+    return False
+
+
+async def _send_second_soul_demon_status(send_as_id, now):
+    send_as_id = int(send_as_id or 0)
+    if send_as_id <= 0:
+        return False
+    with use_identity(send_as_id):
+        state["second_soul_purge_status_msg_id"] = 0
+        state["second_soul_purge_due_at"] = _purge_due_at(now)
+        _set_phase("purge_status_pending")
+        save_state()
+    msg = await send_game_command(
+        CMD_SECOND_SOUL_DEMON_STATUS,
+        track=False,
+        send_as_id=send_as_id,
+        priority="chain",
+    )
+    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    with use_identity(send_as_id):
+        state["second_soul_purge_due_at"] = _purge_due_at(sent_at)
+        if msg:
+            state["second_soul_purge_status_msg_id"] = int(getattr(msg, "id", 0) or 0)
+            state["second_soul_last_error"] = ""
+            save_state()
+            console_log("🌀 已发 .五子同心魔 查第二元神魔染。")
+            return True
+        state["second_soul_last_error"] = "发送 .五子同心魔 失败，停止自动镇魔"
+        _finish_purge_ready(sent_at, last_error=state["second_soul_last_error"])
+        save_state()
+        await send_audit_log(
+            "⚠️ 第二元神查魔染发送失败，已停止本轮自动镇魔并恢复修炼队列。",
+            scope="identity", send_as_id=send_as_id, limit=240,
+        )
+    return False
 
 
 def _broadcast_key(kind, text):
@@ -181,11 +319,25 @@ def get_second_soul_status_text():
         msg_id = state.get("second_soul_heart_demon_msg_id", 0)
         if msg_id:
             lines.append(f"- 警示消息：{msg_id}")
+    elif phase == "purge_pending":
+        lines.append("- 当前：魔染镇压中")
+        due_at = float(state.get("second_soul_purge_due_at", 0) or 0)
+        if due_at > 0:
+            lines.append(f"- 镇魔确认：{fmt_abs_ts(due_at)}（{fmt_remaining(due_at)}）")
+        lines.append(f"- 镇魔次数：{int(state.get('second_soul_purge_attempts', 0) or 0)}/{SECOND_SOUL_PURGE_MAX_ATTEMPTS}")
+    elif phase == "purge_status_pending":
+        lines.append("- 当前：镇魔后查魔染")
+        due_at = float(state.get("second_soul_purge_due_at", 0) or 0)
+        if due_at > 0:
+            lines.append(f"- 查询确认：{fmt_abs_ts(due_at)}（{fmt_remaining(due_at)}）")
     elif phase == "not_unlocked":
         lines.append("- 未凝练第二元神")
         if next_time > 0:
             lines.append(f"- 下次重试：{fmt_abs_ts(next_time)}（{fmt_remaining(next_time)}）")
 
+    moran = int(state.get("second_soul_moran_value", 0) or 0)
+    if moran:
+        lines.append(f"- 魔染：{moran}")
     last_err = state.get("second_soul_last_error", "")
     if last_err:
         lines.append(f"- 最近异常：{last_err}")
@@ -303,6 +455,90 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
         return True
 
     return False
+
+
+async def handle_second_soul_purge_reply(text, now, reply_to, matched_family=None):
+    if not state.get("second_soul_enabled", False):
+        return False
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    is_relevant = (
+        matched_family == "second_soul_purge"
+        or CMD_SECOND_SOUL_PURGE in orig_cmd
+    )
+    if not is_relevant:
+        return False
+    if _phase() == "purge_pending" and not _is_current_reply(reply_to, "second_soul_purge_msg_id"):
+        console_log("🌀 忽略迟到的第二元神镇魔回复。")
+        return True
+    moran = _remember_moran_from_text(text)
+    if moran is not None:
+        if moran >= SECOND_SOUL_PURGE_THRESHOLD and int(state.get("second_soul_purge_attempts", 0) or 0) < SECOND_SOUL_PURGE_MAX_ATTEMPTS:
+            send_as_id = get_current_identity_id()
+            save_state()
+            await send_audit_log(
+                f"🌀 第二元神镇魔后魔染仍为 {moran}，补发一次元神镇魔。",
+                scope="identity", send_as_id=send_as_id, limit=220,
+            )
+            await _send_second_soul_purge(send_as_id, now, reason=f"镇魔回复显示魔染 {moran}。")
+            return True
+        _finish_purge_ready(now, moran=moran)
+        save_state()
+        await send_audit_log(
+            f"🌀 第二元神镇魔回复已收口，当前魔染 {moran}，修炼指令恢复队列。",
+            scope="identity", send_as_id=get_current_identity_id(), limit=220,
+        )
+        return True
+    if "元神镇魔" in text or "镇魔" in text:
+        _finish_purge_ready(now)
+        save_state()
+        await send_audit_log(
+            "🌀 第二元神镇魔回复已收到，修炼指令恢复队列。",
+            scope="identity", send_as_id=get_current_identity_id(), limit=220,
+        )
+        return True
+    return False
+
+
+async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_family=None):
+    if not state.get("second_soul_enabled", False):
+        return False
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    is_relevant = (
+        matched_family == "second_soul_demon_status"
+        or CMD_SECOND_SOUL_DEMON_STATUS in orig_cmd
+    )
+    if not is_relevant:
+        return False
+    if _phase() == "purge_status_pending" and not _is_current_reply(reply_to, "second_soul_purge_status_msg_id"):
+        console_log("🌀 忽略迟到的第二元神魔染查询回复。")
+        return True
+    moran = _remember_moran_from_text(text)
+    if moran is None:
+        _finish_purge_ready(now, last_error="五子同心魔回复未解析到魔染")
+        save_state()
+        return True
+    if moran >= SECOND_SOUL_PURGE_THRESHOLD and int(state.get("second_soul_purge_attempts", 0) or 0) < SECOND_SOUL_PURGE_MAX_ATTEMPTS:
+        send_as_id = get_current_identity_id()
+        save_state()
+        await _send_second_soul_purge(
+            send_as_id,
+            now,
+            reason=f"五子同心魔确认魔染 {moran}。",
+        )
+        return True
+    _finish_purge_ready(now, moran=moran)
+    save_state()
+    if moran >= SECOND_SOUL_PURGE_THRESHOLD:
+        await send_audit_log(
+            f"⚠️ 第二元神魔染仍为 {moran}，但自动镇魔已达上限，停止补发并恢复修炼队列。",
+            scope="identity", send_as_id=get_current_identity_id(), limit=260,
+        )
+    else:
+        await send_audit_log(
+            f"🌀 第二元神魔染已低于阈值（{moran}），修炼指令恢复队列。",
+            scope="identity", send_as_id=get_current_identity_id(), limit=220,
+        )
+    return True
 
 
 async def handle_second_soul_train_reply(text, now, reply_to, matched_family=None):
@@ -540,24 +776,45 @@ async def handle_second_soul_return_broadcast(text, now):
             )
         return False
 
+    should_purge = False
+    moran = None
     with use_identity(target_id):
         if _is_recent_duplicate_broadcast("return", text, now):
             return True
         _remember_broadcast("return", text, now)
+        moran = _remember_moran_from_text(text)
         phase = _phase()
-        if phase in ("ready_to_train", "train_pending"):
+        if moran is not None and moran >= SECOND_SOUL_PURGE_THRESHOLD:
+            _mark_ready_to_train(now)
+            _reset_purge_state(keep_moran=True)
+            should_purge = True
+            save_state()
+        elif phase in ("purge_pending", "purge_status_pending"):
             save_state()
             return True
-        if phase == "cultivating" and _recently_confirmed_training(now):
+        if phase in ("ready_to_train", "train_pending"):
+            save_state()
+            if not should_purge:
+                return True
+        elif phase == "cultivating" and _recently_confirmed_training(now):
             save_state()
             console_log("🌀 忽略迟到的第二元神归位广播：当前已是新的 24h 修炼态。")
             return True
-        _mark_ready_to_train(now)
-        save_state()
-        await send_audit_log(
-            "🌀 第二元神已归位，修炼指令进入安全队列。",
-            scope="identity", send_as_id=target_id,
-        )
+        elif not should_purge:
+            _mark_ready_to_train(now)
+            save_state()
+        if should_purge:
+            await send_audit_log(
+                f"🌀 第二元神已归位但魔染 {moran}，先镇魔再恢复修炼队列。",
+                scope="identity", send_as_id=target_id, limit=240,
+            )
+        else:
+            await send_audit_log(
+                "🌀 第二元神已归位，修炼指令进入安全队列。",
+                scope="identity", send_as_id=target_id,
+            )
+    if should_purge:
+        await _send_second_soul_purge(target_id, now, reason="归位广播触发。")
     return True
 
 
@@ -639,6 +896,35 @@ async def run_second_soul_scheduler(now):
             phase = "idle"
         else:
             return  # 仍在抉择期，不发任何命令
+
+    if phase == "purge_pending":
+        due_at = float(state.get("second_soul_purge_due_at", 0) or 0)
+        if due_at > now:
+            return
+        attempts = int(state.get("second_soul_purge_attempts", 0) or 0)
+        if attempts <= 1:
+            await send_audit_log("🌀 第二元神镇魔未收到回复，补查五子同心魔确认魔染。")
+            await _send_second_soul_demon_status(get_current_identity_id(), now)
+            return
+        _finish_purge_ready(now, last_error="第二次元神镇魔未收到回复，停止自动镇魔")
+        save_state()
+        await send_audit_log(
+            "⚠️ 第二元神第二次元神镇魔仍无回复，已停止本轮补发并恢复修炼队列。",
+            limit=260,
+        )
+        return
+
+    if phase == "purge_status_pending":
+        due_at = float(state.get("second_soul_purge_due_at", 0) or 0)
+        if due_at > now:
+            return
+        _finish_purge_ready(now, last_error="五子同心魔查询无回复，停止自动镇魔")
+        save_state()
+        await send_audit_log(
+            "⚠️ 第二元神五子同心魔查询无回复，已停止本轮自动镇魔并恢复修炼队列。",
+            limit=260,
+        )
+        return
 
     if phase in ("status_pending", "train_pending"):
         # 第二元神不用通用 retry 补发，避免 bot 延迟时重复刷屏。
@@ -723,7 +1009,9 @@ async def run_second_soul_bootstrap_check(now):
 __all__ = [
     "get_second_soul_status_text",
     "handle_second_soul_choice_result_broadcast",
+    "handle_second_soul_demon_status_reply",
     "handle_second_soul_heart_demon_warning_broadcast",
+    "handle_second_soul_purge_reply",
     "handle_second_soul_recovery_broadcast",
     "handle_second_soul_return_broadcast",
     "handle_second_soul_status_reply",

@@ -658,6 +658,8 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
                         "spirit_root": "异灵根(雷)",
                         "shenshi_points": 320,
                         "taiyi_shenshi_points": 100,
+                        "yuanying": {"level": 13},
+                        "second_soul": {"level": 34},
                         "battle_power_text": "211.48亿",
                         "inventory": {"items": [{"name": "青竹蜂云剑", "quantity": 1}], "materials": {"mat_001": 5000}},
                         "status": "normal",
@@ -697,6 +699,9 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("正常", record["state_label"])
         self.assertEqual(320, record["spiritual_sense"])
         self.assertEqual(100, record["taiyi_spiritual_sense"])
+        self.assertEqual("13级", record["yuanying_level"])
+        self.assertEqual("34级", record["second_soul_level"])
+        self.assertEqual("88.5", record["cave_lingqi"])
         self.assertEqual(88.5, record["cave"]["lingqi_pool"])
         self.assertEqual(3, record["cave"]["danfang_level"])
         self.assertEqual(4, record["cave"]["dazhen_level"])
@@ -723,6 +728,13 @@ class StorageBagApiTests(unittest.IsolatedAsyncioTestCase):
             "灵脉 2级｜静室 3级｜丹房 3级｜大阵 4级（已开启）｜灵气池 88.5",
             ui_snapshot["rows"][0]["cave_summary"],
         )
+        with state_module.use_identity(self.identity_id):
+            state_module.state["small_world_incense_stock"] = 45678
+        identity_snapshot = ui.get_identity_ui_snapshot(self.identity_id)
+        self.assertEqual(45678, identity_snapshot["small_world_incense_stock"])
+        self.assertEqual("13级", identity_snapshot["yuanying_level_text"])
+        self.assertEqual("34级", identity_snapshot["second_soul_level_text"])
+        self.assertEqual("88.5", identity_snapshot["cave_lingqi_text"])
 
     async def test_manual_identity_api_refresh_single_updates_profile_fields_without_storage_mutation(self):
         state_module.set_storage_bag_api_config({
