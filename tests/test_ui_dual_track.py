@@ -65,6 +65,13 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "/static-new/css/app.css" in body
     assert "/static/js/module_cards_ui.js" in body
     assert "/static/js/storage_bag_ui.js" in body
+    assert "class='topbar-left'" in body
+    assert (
+        body.index("class='topbar-left'")
+        < body.index("id='global-switch-container'")
+        < body.index("class='topbar-spacer'")
+    )
+    assert body.index("class='topbar-spacer'") < body.index("class='topbar-actions'")
     assert "<span id='global-switch-container'></span>" in body
     assert "sidebar-global" not in body
     assert body.index("id='global-switch-container'") < body.index("data-open-logs='1'")
@@ -119,7 +126,11 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "height: calc(100vh - 80px)" not in css
     assert "margin-top: 80px" not in css
     assert "flex: 0 1 100%" not in css
+    assert ".topbar-left" in css
+    assert ".app-topbar .topbar-actions > *" in css
     assert "grid-auto-rows: minmax(260px, 260px);" in new_css
+    assert "body.ui-new .topbar-left" in new_css
+    assert "body.ui-new .topbar-actions > *" in new_css
     assert "flex: 0 1 100%" not in new_css
 
 

@@ -38,6 +38,12 @@ body.ui-new .topbar {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
+body.ui-new .topbar-left {
+  flex: 0 0 auto;
+  gap: 10px;
+  min-width: 0;
+}
+
 body.ui-new .topbar-brand {
   flex: 0 0 auto;
   min-width: 0;
@@ -70,6 +76,11 @@ body.ui-new .topbar-actions {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+}
+
+body.ui-new .topbar-actions > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 body.ui-new .topbar-actions::-webkit-scrollbar {
@@ -435,10 +446,15 @@ body.ui-new .flash.error {
     flex-wrap: nowrap;
   }
 
+  body.ui-new .topbar-left {
+    max-width: 236px;
+    gap: 7px;
+  }
+
   body.ui-new .topbar-brand {
     flex: 0 0 auto;
     min-width: 0;
-    max-width: 148px;
+    max-width: 126px;
   }
 
   body.ui-new .topbar-meta {
@@ -496,6 +512,31 @@ body.ui-new .flash.error {
 }
 
 @media (max-width: 760px) {
+  body.ui-new .topbar-left {
+    max-width: 184px;
+    gap: 5px;
+  }
+
+  body.ui-new .topbar-brand {
+    max-width: 90px;
+    gap: 6px;
+  }
+
+  body.ui-new .topbar-logo-img {
+    width: 24px;
+    height: 24px;
+  }
+
+  body.ui-new .topbar-title {
+    font-size: 14px;
+  }
+
+  body.ui-new .topbar-global-control {
+    gap: 5px;
+    min-height: 28px;
+    padding: 0 7px;
+  }
+
   body.ui-new .module-grid {
     grid-template-columns: 1fr;
     grid-auto-rows: auto;

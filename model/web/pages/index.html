@@ -13,6 +13,7 @@
 <div id='flash' class='flash hidden'>
 </div>
 <header class='topbar app-topbar'>
+<div class='topbar-left'>
 <div class='topbar-brand'>
 <img class='topbar-logo-img' src='/favicon.png' alt='' width='28' height='28' />
 <div>
@@ -20,13 +21,14 @@
 <div class='topbar-meta'>生成 <span id='generated-at'>-</span> ｜ {{ui_auto_refresh_sec}}s</div>
 </div>
 </div>
-<div class='topbar-spacer'></div>
-<div class='topbar-actions'>
-{{ui_mode_link}}
 <span class='topbar-global-control' title='全局开关'>
 <span class='topbar-global-label'>全局</span>
 <span id='global-switch-container'></span>
 </span>
+</div>
+<div class='topbar-spacer'></div>
+<div class='topbar-actions'>
+{{ui_mode_link}}
 <button type='button' class='topbar-btn' data-open-logs='1' title='日志'>日志</button>
 <button type='button' class='topbar-btn' data-open-passive-inbox='1' title='消息盒子'>消息盒子</button>
 <button type='button' class='topbar-btn' data-open-basic-config='1' title='基础配置'>配置</button>

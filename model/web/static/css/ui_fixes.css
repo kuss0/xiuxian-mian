@@ -1891,10 +1891,23 @@ body {
   flex: 1 1 auto;
 }
 
+.topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
 .app-topbar .topbar-actions {
   flex-wrap: nowrap;
   min-width: 0;
   gap: 6px;
+}
+
+.app-topbar .topbar-actions > * {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .topbar-btn {
@@ -1914,10 +1927,13 @@ body {
 }
 
 .app-topbar .btn {
+  flex: 0 0 auto;
   min-height: 30px;
   padding: 0 9px;
   border-radius: 8px;
   font-size: var(--ui-type-control);
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .topbar-btn:hover {
@@ -2551,9 +2567,15 @@ body {
     padding: 0 10px;
   }
 
+  .topbar-left {
+    flex: 0 0 auto;
+    max-width: 236px;
+    gap: 7px;
+  }
+
   .topbar-brand {
     flex: 0 0 auto;
-    max-width: 148px;
+    max-width: 126px;
   }
 
   .topbar-meta {
@@ -2671,6 +2693,31 @@ body {
     min-height: 52px;
     padding: 0 10px;
     flex-wrap: nowrap;
+  }
+
+  .topbar-left {
+    max-width: 184px;
+    gap: 5px;
+  }
+
+  .topbar-brand {
+    max-width: 90px;
+    gap: 6px;
+  }
+
+  .topbar-logo-img {
+    width: 24px;
+    height: 24px;
+  }
+
+  .topbar-title {
+    font-size: 14px;
+  }
+
+  .topbar-global-control {
+    gap: 5px;
+    min-height: 28px;
+    padding: 0 7px;
   }
 
   .app-topbar .topbar-actions {
