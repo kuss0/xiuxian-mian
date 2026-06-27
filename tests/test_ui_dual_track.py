@@ -109,6 +109,7 @@ def test_module_card_override_groups_settings_and_keeps_toggles_on_card():
     assert "module-settings-modal" in script
     assert "data-open-module-settings" in script
     assert "settingSection(" in script
+    assert "toolGroup((primaryTools || '') + settingsButton, 'module-tools-primary')" in script
     assert "details class=\"module-settings\"" not in script
     assert "module-tools-primary" in script
     assert "module-main-switch" in script

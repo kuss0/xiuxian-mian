@@ -171,6 +171,12 @@
     var renderModuleCard = function(title, moduleNote, primaryTools, settingsTools, detail, mainModuleName){
       var summary = getModuleSummaryLineFromDetail(detail);
       var settingsKey = title;
+      var settingsButton = settingsGroup(
+        settingsKey,
+        title+'设置',
+        '低频配置已移入弹窗，卡片只保留日常需要扫一眼的状态和开关。',
+        settingsTools
+      );
       return '<div class="module-card">'+
         '<div class="module-top">'+
           '<div class="module-head-row">'+
@@ -181,8 +187,7 @@
             '</div>'+
             '<div class="module-head-actions">'+renderMainSwitch(mainModuleName)+'</div>'+
           '</div>'+
-          toolGroup(primaryTools, 'module-tools-primary')+
-          settingsGroup(settingsKey, title+'设置', '低频配置已移入弹窗，卡片只保留日常需要扫一眼的状态和开关。', settingsTools)+
+          toolGroup((primaryTools || '') + settingsButton, 'module-tools-primary')+
         '</div>'+
         '<div class="module-detail">'+renderModuleDetailHtml(detail || '')+'</div>'+
       '</div>';
