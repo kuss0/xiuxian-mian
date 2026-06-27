@@ -73,7 +73,7 @@ from .features.concubine import (
     run_concubine_scheduler,
 )
 from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, run_pet_scheduler
-from .features.passive_inbox import handle_passive_module_card
+from .features.passive_inbox import handle_passive_module_card, record_passive_inbox_event
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.rare_daily_report import run_rare_daily_report_scheduler
 from .features.jiyin import handle_jiyin_delayed_action_result, handle_jiyin_prompt, run_jiyin_scheduler
@@ -651,6 +651,49 @@ def _handled_reply_context(reply_context):
     return context
 
 
+def _is_identity_info_waiting_reply(text):
+    raw_text = str(text or "").strip()
+    return (
+        "正在推演天机" in raw_text
+        or "锁定道友神魂" in raw_text
+        or "正在为你绘制" in raw_text
+    )
+
+
+def _is_identity_info_reply_observation(text):
+    raw_text = str(text or "").strip()
+    return _is_identity_info_waiting_reply(raw_text) or "天命玉牒" in raw_text or "战力评估" in raw_text
+
+
+def _is_manual_storage_trade_observation(matched_family, reply_context):
+    family = str(matched_family or "").strip()
+    if family not in {"storage_bag_listing", "storage_bag_buy"}:
+        return False
+    return str((reply_context or {}).get("source") or "").strip() == "manual_game_command"
+
+
+def _record_manual_storage_trade_observation(event, text, reply_context, *, routed_identity_id=0, event_kind="message"):
+    return record_passive_inbox_event(
+        "skipped",
+        module="储物袋",
+        identity_id=int(routed_identity_id or 0),
+        reason="manual_storage_trade_observation",
+        summary=str((reply_context or {}).get("family") or "storage_bag"),
+        family=str((reply_context or {}).get("family") or ""),
+        chat_id=int(getattr(event, "chat_id", 0) or 0),
+        msg_id=int(getattr(event, "id", 0) or 0),
+        reply_to_msg_id=int((reply_context or {}).get("reply_to_msg_id") or 0),
+        reply_to_sender_id=int((reply_context or {}).get("reply_to_sender_id") or 0),
+        root_msg_id=int((reply_context or {}).get("root_msg_id") or (reply_context or {}).get("reply_to_msg_id") or 0),
+        event_type=str(event_kind or "message").strip() or "message",
+        route_source=str((reply_context or {}).get("matched_via") or "reply_context"),
+        matched_text=text,
+        decision="manual_command_observed",
+        source_message_id=int(getattr(event, "id", 0) or 0),
+        include_recent=False,
+    )
+
+
 def _candidate_fishing_swallowed_reply_identity_ids(text, now):
     if not is_fishing_reply_text(text):
         return []
@@ -1175,10 +1218,12 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             int((reply_context or {}).get("reply_to_msg_id") or 0) > 0
             and int((reply_context or {}).get("send_as_id") or 0) == routed_identity_id
         )
+        is_identity_info_observation = matched_family == "identity_info" and _is_identity_info_reply_observation(text)
+        is_identity_info_waiting_reply = matched_family == "identity_info" and _is_identity_info_waiting_reply(text)
         is_nonterminal_waiting_reply = (
             matched_family in {"storage_bag_listing", "storage_bag_buy", "storage_bag_gift"}
             and is_storage_transfer_waiting_reply(text)
-        )
+        ) or is_identity_info_waiting_reply
         clear_result = None if is_nonterminal_waiting_reply else clear_pending_by_reply(reply_to, routed_identity_id, reply_context=reply_context)
         root_msg_id = int((reply_context or {}).get("root_msg_id") or (clear_result or {}).get("reply_to_msg_id") or 0)
         if root_msg_id <= 0:
@@ -1333,15 +1378,26 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 close_action_guard_by_family(matched_family, send_as_id=routed_identity_id, reason="bot_reply_handled", now=now)
             _mark_runtime_message_consumed(event, matched_family)
         elif matched_family and not already_consumed and not is_nonterminal_waiting_reply:
-            record_unhandled_routed_reply(
-                from_telegram_event(
+            if is_identity_info_observation:
+                pass
+            elif _is_manual_storage_trade_observation(matched_family, reply_context):
+                _record_manual_storage_trade_observation(
                     event,
                     text,
                     reply_context,
+                    routed_identity_id=routed_identity_id,
                     event_kind=kind_scope,
-                    root_msg_id=root_msg_id,
                 )
-            )
+            else:
+                record_unhandled_routed_reply(
+                    from_telegram_event(
+                        event,
+                        text,
+                        reply_context,
+                        event_kind=kind_scope,
+                        root_msg_id=root_msg_id,
+                    )
+                )
 
     await schedule_cleanup(reply_to, send_as_id=routed_identity_id)
     return handled_any

@@ -1229,6 +1229,42 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.target_id, context["send_as_id"])
         self.assertEqual("storage_bag_listing", context["family"])
 
+    async def test_manual_storage_trade_reply_is_observation_not_handler_gap(self):
+        runtime.track_reply_chain_message(
+            701,
+            self.source_id,
+            "storage_bag_listing",
+            root_msg_id=701,
+            source="manual_game_command",
+        )
+        reply_to = SimpleNamespace(id=701, raw_text=".上架 凝血草 换 清灵丹*50")
+        reply_context = runtime.get_reply_context(reply_to)
+
+        try:
+            with patch.object(app, "record_unhandled_routed_reply") as gap_mock, \
+                    patch.object(app, "record_passive_inbox_event", return_value=True) as inbox_mock, \
+                    patch.object(app, "schedule_cleanup", new=AsyncMock()):
+                handled = await app._handle_routed_reply_event(
+                    SimpleNamespace(id=702, chat_id=-1001680975844, sender_id=8400307678),
+                    "上架成功！\n你已将 【凝血草】x1 上架至万宝楼。\n每件售价: 【清灵丹】x50\n挂单ID: 23735",
+                    1000.0,
+                    reply_to,
+                    reply_context,
+                )
+        finally:
+            runtime._reply_chain_tracker.pop(701, None)
+            runtime._reply_chain_tracker.pop(702, None)
+
+        self.assertFalse(handled)
+        gap_mock.assert_not_called()
+        inbox_mock.assert_called_once()
+        args, kwargs = inbox_mock.call_args
+        self.assertEqual(("skipped",), args)
+        self.assertEqual("manual_storage_trade_observation", kwargs["reason"])
+        self.assertEqual("manual_command_observed", kwargs["decision"])
+        self.assertEqual("storage_bag_listing", kwargs["family"])
+        self.assertEqual(self.source_id, kwargs["identity_id"])
+
     async def test_routed_waiting_listing_reply_preserves_pending_until_final_edit(self):
         sent = []
 

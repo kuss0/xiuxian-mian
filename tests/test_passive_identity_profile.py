@@ -36,6 +36,7 @@ if CREATED_ENV:
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import app
 from model import control
 from model.config import CMD_IDENTITY_INFO, CMD_SECOND_SOUL_STATUS, CMD_YUANYING_STATUS
 from model import state as state_module
@@ -120,6 +121,98 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         for call in send_mock.await_args_list:
             self.assertEqual(1001, call.kwargs["send_as_id"])
             self.assertEqual(1, call.kwargs["max_retry"])
+
+    async def test_routed_identity_info_waiting_reply_keeps_refresh_pending_without_gap(self):
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["pending_tasks"][501] = {
+                "cmd": CMD_IDENTITY_INFO,
+                "sent_at": 1000.0,
+                "retry": 0,
+                "timeout": 60,
+                "reply_to_msg_id": 0,
+                "priority": "normal",
+                "max_retry": 1,
+            }
+            identity_state["last_identity_info_msg_id"] = 501
+            identity_state["identity_info_reply_msg_ids"] = [501]
+            identity_state["identity_info_last_requested_at"] = 1000.0
+
+        reply_to = SimpleNamespace(id=501, raw_text=CMD_IDENTITY_INFO)
+        reply_context = {
+            "send_as_id": 1001,
+            "family": "identity_info",
+            "reply_to_msg_id": 501,
+            "root_msg_id": 501,
+        }
+
+        with patch.object(app, "record_unhandled_routed_reply") as gap_mock, \
+                patch.object(app, "schedule_cleanup", new=AsyncMock()):
+            handled = await app._handle_routed_reply_event(
+                SimpleNamespace(id=502, chat_id=-1001680975844, sender_id=8567800706),
+                "正在为你绘制 @jfdffdddd 的身份玉牒...",
+                1001.0,
+                reply_to,
+                reply_context,
+                event_kind="edit",
+            )
+
+        self.assertFalse(handled)
+        gap_mock.assert_not_called()
+        with state_module.use_identity(1001) as identity_state:
+            self.assertIn(501, identity_state["pending_tasks"])
+            self.assertIn(502, identity_state["identity_info_reply_msg_ids"])
+            self.assertEqual(502, identity_state["last_identity_info_msg_id"])
+
+    async def test_routed_incomplete_identity_card_schedules_followup_without_gap(self):
+        with state_module.use_identity(1001) as identity_state:
+            identity_state["pending_tasks"][503] = {
+                "cmd": CMD_IDENTITY_INFO,
+                "sent_at": 1000.0,
+                "retry": 0,
+                "timeout": 60,
+                "reply_to_msg_id": 0,
+                "priority": "normal",
+                "max_retry": 1,
+            }
+            identity_state["last_identity_info_msg_id"] = 503
+            identity_state["identity_info_reply_msg_ids"] = [503]
+            identity_state["identity_info_last_requested_at"] = 1000.0
+
+        reply_to = SimpleNamespace(id=503, raw_text=CMD_IDENTITY_INFO)
+        reply_context = {
+            "send_as_id": 1001,
+            "family": "identity_info",
+            "reply_to_msg_id": 503,
+            "root_msg_id": 503,
+        }
+        text = """@jfdffdddd 的天命玉牒
+────────────────
+宗门: 【太一门】
+第二元神: Lv.31 (修炼中) - 战力: 1615047
+灵根: 异灵根(雷)
+修为: 107410 / 32000000
+丹毒: 0 点
+杀戮: 17 人"""
+
+        with patch.object(app, "record_unhandled_routed_reply") as gap_mock, \
+                patch.object(app, "schedule_cleanup", new=AsyncMock()), \
+                patch.object(control.random, "randint", return_value=20), \
+                patch.object(control, "save_state"):
+            handled = await app._handle_routed_reply_event(
+                SimpleNamespace(id=504, chat_id=-1001680975844, sender_id=8388633812),
+                text,
+                1001.0,
+                reply_to,
+                reply_context,
+            )
+
+        self.assertFalse(handled)
+        gap_mock.assert_not_called()
+        with state_module.use_identity(1001) as identity_state:
+            self.assertNotIn(503, identity_state["pending_tasks"])
+            self.assertIn(504, identity_state["identity_info_reply_msg_ids"])
+            self.assertEqual(504, identity_state["last_identity_info_msg_id"])
+            self.assertEqual(1021.0, identity_state["identity_info_followup_due_at"])
 
     async def test_unknown_owner_is_ignored(self):
         state_module.update_send_as_profile(1001, daohao="旧道号", realm="结丹后期")
