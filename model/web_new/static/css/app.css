@@ -345,6 +345,30 @@ body.ui-new .logs-meta {
   color: var(--new-muted);
 }
 
+body.ui-new .module-settings-button {
+  border-color: var(--new-line);
+  background: #171b21;
+  color: var(--new-text);
+}
+
+body.ui-new .module-settings-modal-card {
+  max-height: min(720px, calc(100vh - 32px));
+}
+
+body.ui-new .module-settings-modal-desc,
+body.ui-new .module-setting-copy p {
+  color: var(--new-muted);
+}
+
+body.ui-new .module-setting-section {
+  border-color: var(--new-line);
+  background: #11151b;
+}
+
+body.ui-new .module-setting-copy h4 {
+  color: var(--new-text);
+}
+
 body.ui-new .detail-row,
 body.ui-new .passive-event,
 body.ui-new .queue-row,

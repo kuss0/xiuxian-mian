@@ -1632,43 +1632,76 @@
   font-size: var(--ui-type-control, 12px);
 }
 
-.module-settings {
-  border: 1px solid #1e293b;
-  border-radius: 8px;
-  background: #0b1220;
+.module-settings-entry {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
-.module-settings summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
+.module-settings-button {
+  flex: 0 0 auto;
   min-height: 28px;
   padding: 4px 8px;
-  color: #cbd5e1;
-  cursor: pointer;
+  border-radius: 7px;
   font-size: var(--ui-type-control, 12px);
-  list-style: none;
 }
 
-.module-settings summary::-webkit-details-marker {
-  display: none;
+.module-settings-modal-card {
+  max-height: min(720px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
 }
 
-.module-settings summary::after {
-  content: "v";
-  color: #64748b;
-  font-size: 11px;
+.module-settings-modal-header {
+  align-items: flex-start;
+  margin-bottom: 10px;
 }
 
-.module-settings[open] summary::after {
-  transform: rotate(180deg);
+.module-settings-modal-desc {
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: var(--ui-type-control, 12px);
+  line-height: 1.5;
 }
 
-.module-settings-body {
+.module-settings-modal-body {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.module-setting-section {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.42fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  background: #020617;
+}
+
+.module-setting-copy h4 {
+  margin: 0 0 5px;
+  color: #e5e7eb;
+  font-size: var(--ui-type-section, 14px);
+  line-height: 1.25;
+}
+
+.module-setting-copy p {
+  margin: 0;
+  color: #94a3b8;
+  font-size: var(--ui-type-control, 12px);
+  line-height: 1.55;
+}
+
+.module-setting-controls {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 8px 8px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .module-setting-field {
@@ -2718,6 +2751,27 @@ body {
     gap: 5px;
     min-height: 28px;
     padding: 0 7px;
+  }
+
+  .module-settings-modal-card {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .module-setting-section {
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .module-setting-controls {
+    align-items: stretch;
+  }
+
+  .module-setting-controls .btn,
+  .module-setting-controls .text-input,
+  .module-setting-field {
+    width: 100%;
   }
 
   .app-topbar .topbar-actions {

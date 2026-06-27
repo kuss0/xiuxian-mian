@@ -106,7 +106,10 @@ def test_module_card_override_groups_settings_and_keeps_toggles_on_card():
     script = (PROJECT_ROOT / "model/web/static/js/module_cards_ui.js").read_text(encoding="utf-8")
 
     assert "renderModules = function(identity)" in script
-    assert "module-settings" in script
+    assert "module-settings-modal" in script
+    assert "data-open-module-settings" in script
+    assert "settingSection(" in script
+    assert "details class=\"module-settings\"" not in script
     assert "module-tools-primary" in script
     assert "module-main-switch" in script
     assert "renderSmallWorldFeature(identity,'manifest','显灵')" in script
@@ -122,7 +125,9 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "grid-auto-rows: minmax(260px, 260px);" in css
     assert "max-height: none;" in css
     assert "max-height: 170px;" not in css
-    assert ".module-settings" in css
+    assert ".module-settings-modal-card" in css
+    assert ".module-setting-section" in css
+    assert ".module-settings summary" not in css
     assert "height: calc(100vh - 80px)" not in css
     assert "margin-top: 80px" not in css
     assert "flex: 0 1 100%" not in css
@@ -131,6 +136,7 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "grid-auto-rows: minmax(260px, 260px);" in new_css
     assert "body.ui-new .topbar-left" in new_css
     assert "body.ui-new .topbar-actions > *" in new_css
+    assert "body.ui-new .module-setting-section" in new_css
     assert "flex: 0 1 100%" not in new_css
 
 
