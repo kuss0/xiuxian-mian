@@ -375,6 +375,7 @@ COMMAND_TO_ACTION_KEY = {
 FAMILY_TO_ACTION_KEYS = {
     "concubine_dream": ("concubine_dream",),
     "concubine_tianji": ("concubine_tianji",),
+    "concubine_heart": ("concubine_heart",),
     "concubine_fragment": ("concubine_fragment",),
     "concubine_puzzle": ("concubine_puzzle",),
     "concubine_reacquire": ("concubine_reacquire",),

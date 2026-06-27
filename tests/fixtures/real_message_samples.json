@@ -244,6 +244,13 @@
     "event_type": "message",
     "text": "今日已献祭，幡灵已饱，明日再来。"
   },
+  "yinluo.soothe.success": {
+    "source": "data/messages/2026-06-16.log:25464",
+    "module": "yinluo",
+    "family": "yinluo_soothe",
+    "event_type": "message",
+    "text": "安抚成功！\n你消耗了 50 点修为，成功安抚了 1 个炼化槽。"
+  },
   "yinluo.convert.success": {
     "source": "data/messages/2026-06-13.log:35371",
     "module": "yinluo",

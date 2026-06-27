@@ -52,35 +52,39 @@ SNAPSHOT = {
 }
 
 
-def test_render_legacy_ui_keeps_old_assets_and_links_to_new_track():
+def test_render_default_ui_uses_new_skin_without_mode_switch():
     with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
-        body = ui.render_ui_page(variant="legacy")
+        body = ui.render_ui_page()
 
-    assert "class='ui-legacy'" in body
-    assert "href='/new?send_as_id=1001'" in body
+    assert "class='ui-new'" in body
+    assert "ui-mode-entry" not in body
+    assert "href='/new?send_as_id=1001'" not in body
+    assert "href='/?send_as_id=1001'" not in body
     assert "/static/css/app.css" in body
     assert "/static/css/ui_fixes.css" in body
-    assert "/static-new/css/app.css" not in body
+    assert "/static-new/css/app.css" in body
     assert "/static/js/storage_bag_ui.js" in body
 
 
-def test_legacy_home_keeps_passive_inbox_in_secondary_modal():
+def test_legacy_variant_parameter_keeps_new_single_track_ui():
     with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
         body = ui.render_ui_page(variant="legacy")
 
-    assert "data-open-passive-inbox='1'" in body
-    assert "id='passive-inbox-modal'" in body
-    assert "id='passive-inbox-modal-body'" in body
-    assert "id='passive-inbox-panel'" not in body
-    assert "passive-inbox-home-card" not in body
+    assert "class='ui-new'" in body
+    assert "class='ui-legacy'" not in body
+    assert "ui-mode-entry" not in body
+    assert "/static-new/css/app.css" in body
 
 
-def test_render_new_ui_adds_isolated_skin_and_links_back_to_legacy():
+def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     with patch.object(ui, "get_ui_snapshot", return_value=SNAPSHOT):
         body = ui.render_ui_page(variant="new")
 
     assert "class='ui-new'" in body
-    assert "href='/?send_as_id=1001'" in body
+    assert "ui-mode-entry" not in body
+    assert "href='/?send_as_id=1001'" not in body
+    assert "id='passive-inbox-modal'" in body
+    assert "data-open-passive-inbox='1'" in body
     assert "/static-new/css/app.css" in body
     assert "/static/js/passive_inbox_ui.js" in body
     assert "fonts.googleapis.com" not in body
@@ -93,7 +97,7 @@ def test_new_static_asset_loader_serves_css_and_blocks_traversal():
     assert css_body is not None
     assert css_type == "text/css; charset=utf-8"
     assert b"body.ui-new" in css_body
-    assert b"grid-template-columns: repeat(auto-fit, minmax(260px, 1fr))" in css_body
-    assert b"scrollbar-width: none" in css_body
+    assert b"grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr))" in css_body
+    assert b"@media (max-width: 760px)" in css_body
     assert traversal_body is None
     assert traversal_type is None

@@ -164,6 +164,33 @@ class ModuleManifestTests(unittest.TestCase):
             self.assertTrue(module_manifest.get_module_name_for_reply_family(family), family)
             self.assertNotIn(family, runtime.REPLY_FAMILY_COMMANDS)
 
+    def test_action_guard_families_are_manifested_and_runtime_routable(self):
+        from model import action_guard
+        from model import runtime
+
+        referenced_action_keys = set()
+        unknown_action_keys = []
+        unknown_families = []
+        unroutable_families = []
+        for family, action_keys in sorted(action_guard.FAMILY_TO_ACTION_KEYS.items()):
+            if not module_manifest.get_module_name_for_reply_family(family):
+                unknown_families.append(family)
+            if family not in runtime.REPLY_FAMILY_COMMANDS:
+                unroutable_families.append(family)
+            for action_key in action_keys:
+                referenced_action_keys.add(action_key)
+                if action_key not in action_guard.ACTION_SPECS:
+                    unknown_action_keys.append((family, action_key))
+
+        unmapped_action_specs = sorted(set(action_guard.ACTION_SPECS) - referenced_action_keys)
+
+        self.assertEqual([], unknown_action_keys)
+        self.assertEqual([], unknown_families)
+        self.assertEqual([], unroutable_families)
+        self.assertEqual([], unmapped_action_specs)
+        self.assertEqual("共历心劫", module_manifest.get_module_name_for_reply_family("concubine_heart"))
+        self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_soothe"))
+
     def test_workflow_log_names_are_manifested(self):
         workflow_names = set()
         for source_path in sorted((PROJECT_ROOT / "model" / "features").glob("*.py")):
@@ -352,12 +379,12 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
         self.assertEqual(37, summary["totals"]["active_modules"])
         self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(87, summary["totals"]["reply_families"])
+        self.assertEqual(89, summary["totals"]["reply_families"])
         self.assertEqual(0, summary["totals"]["archived_reply_families"])
-        self.assertEqual(86, summary["totals"]["covered_sample_families"])
-        self.assertEqual(1, summary["totals"]["missing_sample_families"])
-        self.assertEqual(33, summary["totals"]["sample_complete_modules"])
-        self.assertEqual(1, summary["totals"]["sample_partial_modules"])
+        self.assertEqual(87, summary["totals"]["covered_sample_families"])
+        self.assertEqual(2, summary["totals"]["missing_sample_families"])
+        self.assertEqual(32, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(2, summary["totals"]["sample_partial_modules"])
         self.assertEqual(0, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])

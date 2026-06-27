@@ -3701,7 +3701,7 @@ def _render_login_page(message=""):
     )
 
 
-def render_ui_page(message="", selected_send_as_id=None, session_token=None, variant="legacy"):
+def render_ui_page(message="", selected_send_as_id=None, session_token=None, variant="new"):
     snapshot = get_ui_snapshot(session_token=session_token)
     selected_id = _resolve_selected_send_as_id(snapshot, selected_send_as_id)
     boot_data = json.dumps(
@@ -3712,13 +3712,8 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None, var
         },
         ensure_ascii=False,
     ).replace("</", "<\\/")
-    is_new_variant = variant == "new"
-    selected_query = f"?send_as_id={selected_id}" if selected_id else ""
-    ui_mode_link = (
-        f"<a class='topbar-btn ui-mode-entry' href='/{selected_query}' title='旧版UI'>旧版</a>"
-        if is_new_variant
-        else f"<a class='topbar-btn ui-mode-entry' href='/new{selected_query}' title='新版UI'>新版</a>"
-    )
+    is_new_variant = True
+    ui_mode_link = ""
     return _render_ui_template(
         "index.html",
         {
@@ -5101,7 +5096,7 @@ async def handle_ui_http(reader, writer):
                     )
                 else:
                     selected_send_as_id = query.get("send_as_id", [""])[0]
-                    variant = "new" if path == "/new" or query.get("ui", [""])[0] == "new" else "legacy"
+                    variant = "new"
                     _write_response(
                         writer,
                         "HTTP/1.1 200 OK",
