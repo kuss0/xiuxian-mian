@@ -15,6 +15,7 @@ from ..config import (
     YUANYING_PROTECT_SEC,
 )
 from ..action_guard import note_remote_block as note_action_guard_remote_block
+from ..identity_levels import parse_yuanying_level_text, update_identity_level_record
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
@@ -220,9 +221,6 @@ async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None
 
 
 async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None):
-    if not state["yuanying_enabled"]:
-        return False
-
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     is_status_reply = matched_family == "yuanying" or CMD_YUANYING_STATUS in orig_cmd
     is_yuanying_cmd_status_like = (
@@ -231,6 +229,23 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
     )
     if not (is_status_reply or is_yuanying_cmd_status_like):
         return False
+
+    level_updated = False
+    if is_status_reply:
+        level_text = parse_yuanying_level_text(text)
+        if level_text:
+            level_updated = update_identity_level_record(
+                get_current_identity_id(),
+                "yuanying_level",
+                level_text,
+                now=now,
+                source="yuanying_status",
+            )
+            if level_updated:
+                mark_dirty()
+
+    if not state["yuanying_enabled"]:
+        return level_updated
 
     has_cd_hint = any(k in text for k in ["尚未恢复", "冷却", "等待", "不足", "休息", "归来倒计时"])
     if has_cd_hint:

@@ -42,6 +42,7 @@ from ..config import (
     SECOND_SOUL_RECHECK_MIN,
     SECOND_SOUL_TRAIN_CD_SEC,
 )
+from ..identity_levels import parse_second_soul_level_text, update_identity_level_record
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, state, use_identity
@@ -372,9 +373,6 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
     """处理 .第二元神 命令的回复（面板）。
     也兼容 .元神修炼 收到面板（罕见但可能）。
     """
-    if not state.get("second_soul_enabled", False):
-        return False
-
     if not _is_second_soul_panel(text):
         return False
 
@@ -386,6 +384,20 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
     )
     if not is_relevant:
         return False
+    level_updated = False
+    level_text = parse_second_soul_level_text(text)
+    if level_text:
+        level_updated = update_identity_level_record(
+            get_current_identity_id(),
+            "second_soul_level",
+            level_text,
+            now=now,
+            source="second_soul_status",
+        )
+        if level_updated:
+            save_state()
+    if not state.get("second_soul_enabled", False):
+        return level_updated
     phase = _phase()
     if phase == "status_pending" and not _is_current_reply(reply_to, "second_soul_status_msg_id"):
         console_log("🌀 忽略迟到的第二元神状态回复。")
@@ -393,7 +405,7 @@ async def handle_second_soul_status_reply(text, now, reply_to, matched_family=No
 
     status, remain_sec = _parse_status_field(text)
     if status is None:
-        return False
+        return level_updated
 
     state["second_soul_last_error"] = ""
 
@@ -500,8 +512,6 @@ async def handle_second_soul_purge_reply(text, now, reply_to, matched_family=Non
 
 
 async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_family=None):
-    if not state.get("second_soul_enabled", False):
-        return False
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     is_relevant = (
         matched_family == "second_soul_demon_status"
@@ -509,6 +519,20 @@ async def handle_second_soul_demon_status_reply(text, now, reply_to, matched_fam
     )
     if not is_relevant:
         return False
+    level_updated = False
+    level_text = parse_second_soul_level_text(text)
+    if level_text:
+        level_updated = update_identity_level_record(
+            get_current_identity_id(),
+            "second_soul_level",
+            level_text,
+            now=now,
+            source="second_soul_demon_status",
+        )
+        if level_updated:
+            save_state()
+    if not state.get("second_soul_enabled", False):
+        return level_updated
     if _phase() == "purge_status_pending" and not _is_current_reply(reply_to, "second_soul_purge_status_msg_id"):
         console_log("🌀 忽略迟到的第二元神魔染查询回复。")
         return True

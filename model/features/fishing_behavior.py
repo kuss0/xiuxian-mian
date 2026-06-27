@@ -431,22 +431,45 @@ def next_prep_purchase_command(snapshot, *, bait_inventory=None):
 def daily_limit_wait_effect(snapshot, now, *, count, limit, daily_updates=None, bait_inventory=None, next_day_jitter_sec=0, last_result=""):
     updates = clear_pending_updates()
     updates.update(daily_updates or {})
+    if is_fishing_prep_window(now):
+        return daily_reset_prep_effect(
+            snapshot,
+            now,
+            daily_updates=daily_updates,
+            bait_inventory=bait_inventory,
+            next_day_jitter_sec=next_day_jitter_sec,
+            last_result=last_result,
+            last_error=f"今日钓鱼次数已达上限：{count}/{limit}",
+        )
     updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}"
     if last_result:
         updates["fishing_last_result"] = last_result
-    if is_fishing_prep_window(now):
-        planning_snapshot = dict(snapshot)
-        planning_snapshot.update(daily_updates or {})
-        command, plan = next_prep_purchase_command(planning_snapshot, bait_inventory=bait_inventory)
-        if command:
-            updates["fishing_last_result"] = f"日切备饵：{command}"
-            return FishingEffect(handled=True, command=command, updates=updates)
-        blocked_reason = str(getattr(plan, "blocked_reason", "") or "")
-        if blocked_reason:
-            updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}；备饵跳过：{blocked_reason}"
-        updates["next_fishing_time"] = next_fishing_reset_timestamp(now, next_day_jitter_sec)
-        return FishingEffect(handled=True, updates=updates)
     updates["next_fishing_time"] = next_fishing_daily_limit_timestamp(now, next_day_jitter_sec)
+    return FishingEffect(handled=True, updates=updates)
+
+
+def daily_reset_prep_effect(snapshot, now, *, daily_updates=None, bait_inventory=None, next_day_jitter_sec=0, last_result="", last_error=""):
+    updates = clear_pending_updates()
+    updates.update(daily_updates or {})
+    if last_error:
+        updates["fishing_last_error"] = last_error
+    if last_result:
+        updates["fishing_last_result"] = last_result
+
+    planning_snapshot = dict(snapshot)
+    planning_snapshot.update(daily_updates or {})
+    command, plan = next_prep_purchase_command(planning_snapshot, bait_inventory=bait_inventory)
+    if command:
+        updates["fishing_last_result"] = f"日切备饵：{command}"
+        return FishingEffect(handled=True, command=command, updates=updates)
+
+    blocked_reason = str(getattr(plan, "blocked_reason", "") or "")
+    if blocked_reason:
+        prefix = f"{last_error}；" if last_error else ""
+        updates["fishing_last_error"] = f"{prefix}备饵跳过：{blocked_reason}"
+    elif not last_result:
+        updates["fishing_last_result"] = "日切待命：00:00 后启动垂钓"
+    updates["next_fishing_time"] = next_fishing_reset_timestamp(now, next_day_jitter_sec)
     return FishingEffect(handled=True, updates=updates)
 
 
@@ -526,6 +549,11 @@ def is_rod_in_progress(snapshot):
     if pending_action in {CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT}:
         return True
     return False
+
+
+def is_new_fishing_flow_in_progress(snapshot):
+    phase = str(snapshot.get("fishing_phase") or "idle").strip()
+    return is_rod_in_progress(snapshot) or phase in {"buying", "chumming"}
 
 
 def is_nonblocking_open_timeout(snapshot):
@@ -679,6 +707,15 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
             now,
             count=count,
             limit=limit,
+            daily_updates=daily_updates,
+            bait_inventory=bait_inventory,
+            next_day_jitter_sec=next_day_jitter_sec,
+        )
+
+    if is_fishing_prep_window(now):
+        return daily_reset_prep_effect(
+            planning_snapshot,
+            now,
             daily_updates=daily_updates,
             bait_inventory=bait_inventory,
             next_day_jitter_sec=next_day_jitter_sec,

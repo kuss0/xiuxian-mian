@@ -116,13 +116,13 @@ def _active_fishing_identity_ids(exclude_identity_id=None):
             identity_state = get_identity_state(identity_id)
         except KeyError:
             continue
-        if fishing_behavior.is_rod_in_progress(identity_state):
+        if fishing_behavior.is_new_fishing_flow_in_progress(identity_state):
             active_ids.append(identity_id)
     return active_ids
 
 
 def _new_fishing_command_is_capacity_limited(command):
-    return fishing_behavior.command_phase(command) == "fishing"
+    return fishing_behavior.command_phase(command) in {"buying", "chumming", "fishing"}
 
 
 def _defer_new_fishing_for_capacity(now, command):
@@ -132,7 +132,7 @@ def _defer_new_fishing_for_capacity(now, command):
     if len(active_ids) < FISHING_MAX_ACTIVE_IDENTITIES:
         return False
     state["next_fishing_time"] = float(now + random.uniform(FISHING_QUEUE_DELAY_MIN_SEC, FISHING_QUEUE_DELAY_MAX_SEC))
-    state["fishing_last_error"] = f"钓鱼排队中：已有 {len(active_ids)} 个身份正在垂钓"
+    state["fishing_last_error"] = f"钓鱼排队中：已有 {len(active_ids)} 个身份正在垂钓或准备"
     mark_dirty()
     return True
 

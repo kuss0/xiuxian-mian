@@ -10,7 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model import action_guard, control, runtime
+from model import action_guard, control, runtime, ui
 from model.features import _phaseful, concubine, deep_retreat, tower, yuanying
 
 
@@ -714,6 +714,27 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             allowed, reason = action_guard.before_send(yuanying.CMD_YUANYING, send_as_id=send_as_id, now=now + 10)
             self.assertFalse(allowed)
             self.assertIn("执行中", reason)
+
+    async def test_yuanying_status_reply_writes_level_for_ui_even_when_module_disabled(self):
+        send_as_id = 8659059236
+        now = 1_700_000_370.0
+        self._prepare_identity(send_as_id, "YuanyingLevelRead")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = False
+
+            handled = await yuanying.handle_yuanying_status_reply(
+                "【元婴状态】\n元婴等级: 13 级\n状态: 窍中温养",
+                now,
+                reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_STATUS),
+                matched_family="yuanying",
+            )
+
+        self.assertTrue(handled)
+        record = state_module.get_tianjige_dao_path_records()[str(send_as_id)]
+        self.assertEqual("13级", record["yuanying_level"])
+        identity_snapshot = ui.get_identity_ui_snapshot(send_as_id)
+        self.assertEqual("13级", identity_snapshot["yuanying_level_text"])
 
     async def test_summary_timeout_falls_back_to_normal_cd_without_relaunch(self):
         send_as_id = 8659059196

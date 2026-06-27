@@ -25,8 +25,11 @@ from .app_replica import (
     _handle_replica_progress_event,
     _handle_virtual_hall_auto_game_event,
     _cleanup_replica_run_state,
+    handle_huanglong_conscription_text,
     _mark_replica_team_joined_from_text,
     is_replica_group_command_text,
+    run_huanglong_conscription_scheduler,
+    run_luoyun_cd_reminder_scheduler,
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
 from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
@@ -268,6 +271,8 @@ _GLOBAL_SCHEDULERS = (
     ("world_boss", run_world_boss_scheduler),
     ("tiandao_judgement", run_tiandao_judgement_scheduler),
     ("tianji_quiz", run_tianji_quiz_scheduler),
+    ("huanglong_conscription", run_huanglong_conscription_scheduler),
+    ("luoyun_cd_reminder", run_luoyun_cd_reminder_scheduler),
 )
 
 _SCHEDULER_MANIFEST_BRIDGE = {
@@ -280,6 +285,8 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "world_boss": {"manifest_names": ("真仙试锋",), "helper": False},
     "tiandao_judgement": {"manifest_names": (), "helper": True},
     "tianji_quiz": {"manifest_names": (), "helper": True},
+    "huanglong_conscription": {"manifest_names": ("自动副本",), "helper": True},
+    "luoyun_cd_reminder": {"manifest_names": ("自动副本",), "helper": True},
     "run_checkin_scheduler": {"manifest_names": ("点卯", "宗门传功"), "helper": False},
     "run_concubine_scheduler": {"manifest_names": ("侍妾", "天机代卜", "共历心劫", "侍妾远航"), "helper": False},
     "run_deep_retreat_scheduler": {"manifest_names": ("深度闭关",), "helper": False},
@@ -1431,6 +1438,7 @@ async def on_message(event):
         )
 
         await _dispatch_new_message_broadcasts(event, text, now, reply_to=reply_to, reply_context=reply_context)
+        await handle_huanglong_conscription_text(text, now)
         await handle_dungeon_join_bot_message(event, text, now)
         _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
         await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="message")
@@ -1540,6 +1548,7 @@ async def on_message_edited(event):
             reply_to=reply_to,
             reply_context=reply_context,
         )
+        await handle_huanglong_conscription_text(text, now)
         await handle_dungeon_join_bot_message(event, text, now)
         _mark_replica_team_joined_from_text(text, now, msg_id=getattr(event, "id", 0))
         await _handle_virtual_hall_auto_game_event(event, text, now, reply_to=reply_to, reply_context=reply_context, event_type="edit")

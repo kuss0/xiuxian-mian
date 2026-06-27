@@ -10,7 +10,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
-from model.config import CMD_SECOND_SOUL_CHOICE_STABLE, CMD_SECOND_SOUL_DEMON_STATUS, CMD_SECOND_SOUL_PURGE
+from model import ui
+from model.config import CMD_SECOND_SOUL_CHOICE_STABLE, CMD_SECOND_SOUL_DEMON_STATUS, CMD_SECOND_SOUL_PURGE, CMD_SECOND_SOUL_STATUS
 from model.features import second_soul
 
 
@@ -26,6 +27,26 @@ class _StateIsolationMixin:
 
 
 class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
+    async def test_status_panel_writes_level_for_ui_even_when_module_disabled(self):
+        send_as_id = 8659059188
+        now = 500.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id):
+            state_module.state["second_soul_enabled"] = False
+
+            handled = await second_soul.handle_second_soul_status_reply(
+                "【你的第二元神：金之元神】\n状态: 窍中温养\n等级: 34 级\n五子同心魔: 5/5 | 同心 100 | 魔染 40",
+                now,
+                reply_to=SimpleNamespace(raw_text=CMD_SECOND_SOUL_STATUS),
+                matched_family="second_soul_status",
+            )
+
+        self.assertTrue(handled)
+        record = state_module.get_tianjige_dao_path_records()[str(send_as_id)]
+        self.assertEqual("34级", record["second_soul_level"])
+        identity_snapshot = ui.get_identity_ui_snapshot(send_as_id)
+        self.assertEqual("34级", identity_snapshot["second_soul_level_text"])
+
     async def test_heart_demon_warning_auto_chooses_stable_once(self):
         send_as_id = 8659059191
         now = 1000.0
@@ -251,6 +272,7 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         send_as_id = 8659059198
         now = 8000.0
         state_module.ensure_identity_registered(send_as_id)
+        state_module.set_tianjige_dao_path_records({str(send_as_id): {"second_soul_level": "33级"}})
         with state_module.use_identity(send_as_id):
             state_module.state["second_soul_enabled"] = True
             state_module.state["second_soul_phase"] = "purge_status_pending"
@@ -278,6 +300,8 @@ class SecondSoulTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("ready_to_train", state_module.state["second_soul_phase"])
             self.assertEqual(40, state_module.state["second_soul_moran_value"])
             self.assertEqual(0, state_module.state["second_soul_purge_attempts"])
+        record = state_module.get_tianjige_dao_path_records()[str(send_as_id)]
+        self.assertEqual("33级", record["second_soul_level"])
 
     async def test_purge_reply_low_moran_clears_purge(self):
         send_as_id = 8659059199

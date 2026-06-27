@@ -6,6 +6,7 @@ import json
 import sys
 import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -1249,6 +1250,113 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("- @cool｜虚0:10", text)
         self.assertIn("- @active｜昆中", text)
         self.assertNotIn("@leader｜", text)
+
+    def test_replica_team_full_notice_is_high_priority_and_deduped(self):
+        ids = [
+            self._register_replica_identity(991201 + index, username)
+            for index, username in enumerate(["leader", "shield", "healer", "blade", "curse"])
+        ]
+        state_module.set_replica_participant_identity_ids(ids)
+        text = (
+            "@curse 已加入苍坤上人洞府队伍！\n"
+            "当前队伍 (5/5):\n"
+            " - @leader\n"
+            " - @shield\n"
+            " - @healer\n"
+            " - @blade\n"
+            " - @curse"
+        )
+
+        def close_coro(coro):
+            close = getattr(coro, "close", None)
+            if close:
+                close()
+
+        with (
+            patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+            patch("model.app_replica._fire_and_forget", side_effect=close_coro),
+        ):
+            changed = app_replica._mark_replica_team_joined_from_text(text, now=1000.0, msg_id=991)
+            duplicate_changed = app_replica._mark_replica_team_joined_from_text(text, now=1001.0, msg_id=992)
+
+        self.assertTrue(changed)
+        self.assertTrue(duplicate_changed)
+        audit_mock.assert_called_once()
+        notice_text = audit_mock.call_args.args[0]
+        self.assertIn("苍坤洞府队伍已满 5/5", notice_text)
+        self.assertIn("@leader @shield @healer @blade @curse", notice_text)
+        self.assertEqual("high", audit_mock.call_args.kwargs["priority"])
+
+    def test_luoyun_cd_reminder_repeats_hourly_until_new_cooldown(self):
+        identity_id = self._register_replica_identity(991250, "luoyun", realm="结丹后期", sect_name="落云宗")
+        now = 1000.0
+        app_replica._mark_replica_success_cooldown(
+            [identity_id],
+            now,
+            source_msg_id=7001,
+            replica_kind=app_replica._REPLICA_KIND_LUOYUN,
+            completed_room_id="91",
+        )
+        reminder = state_module.get_replica_run_state()["luoyun_cd_reminders"][str(identity_id)]
+        due_at = float(reminder["cooldown_until"])
+
+        async def run_scheduler(ts):
+            return await app_replica.run_luoyun_cd_reminder_scheduler(ts)
+
+        with patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+            self.assertEqual(0, asyncio.run(run_scheduler(due_at - 1)))
+            self.assertEqual(1, asyncio.run(run_scheduler(due_at + 1)))
+            self.assertEqual(0, asyncio.run(run_scheduler(due_at + 30 * 60)))
+            self.assertEqual(1, asyncio.run(run_scheduler(due_at + 3601)))
+
+            app_replica._mark_replica_success_cooldown(
+                [identity_id],
+                due_at + 10,
+                source_msg_id=7002,
+                replica_kind=app_replica._REPLICA_KIND_LUOYUN,
+                completed_room_id="92",
+            )
+            self.assertEqual(0, asyncio.run(run_scheduler(due_at + 20)))
+
+        self.assertEqual(2, audit_mock.await_count)
+        self.assertIn("落云秘圃 CD 已到", audit_mock.await_args_list[0].args[0])
+        self.assertEqual("high", audit_mock.await_args_list[0].kwargs["priority"])
+
+    def test_huanglong_conscription_notice_parses_real_reply_once(self):
+        text = (
+            "【黄龙山宗门征调 · 2026-06-13】\n"
+            "轮值宗门：【落云宗】\n"
+            "当前阶段：报名阶段\n"
+            "当前报名总数：3 人 / 可报名总数 92 人\n"
+        )
+
+        with patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+            handled = asyncio.run(app_replica.handle_huanglong_conscription_text(text, now=1000.0))
+            duplicate = asyncio.run(app_replica.handle_huanglong_conscription_text(text, now=1001.0))
+
+        self.assertTrue(handled)
+        self.assertFalse(duplicate)
+        audit_mock.assert_awaited_once()
+        notice_text = audit_mock.await_args.args[0]
+        self.assertIn("黄龙征调：2026-06-13 轮值宗门【落云宗】", notice_text)
+        self.assertIn("报名：3/92", notice_text)
+        self.assertEqual("high", audit_mock.await_args.kwargs["priority"])
+
+    def test_huanglong_conscription_scheduler_queries_once_after_noon(self):
+        identity_id = self._register_replica_identity(991260, "queryer")
+        state_module.set_replica_participant_identity_ids([identity_id])
+        now = datetime(2026, 6, 27, 12, 6, tzinfo=app_replica.TZ_LOCAL).timestamp()
+
+        with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=19, sent_at=now))) as send_mock:
+            sent = asyncio.run(app_replica.run_huanglong_conscription_scheduler(now))
+            duplicate = asyncio.run(app_replica.run_huanglong_conscription_scheduler(now + 60))
+
+        self.assertEqual(1, sent)
+        self.assertEqual(0, duplicate)
+        send_mock.assert_awaited_once()
+        self.assertEqual(app_replica.CMD_HUANGLONG_CONSCRIPTION, send_mock.await_args.args[0])
+        self.assertFalse(send_mock.await_args.kwargs["track"])
+        self.assertEqual(identity_id, send_mock.await_args.kwargs["send_as_id"])
 
     def test_log_group_replica_summary_keeps_query_buttons_without_listener(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
@@ -3136,7 +3244,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
             "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
         })
         text = (
-            "【落云秘圃·第一幕】\n"
+            "【落云秘圃·第一幕·破禁入圃】\n"
             "队伍：@growrdick、@gyurihero\n"
             "队伍战力：83046868949 / 4250000 | 可调神识：36874 | 掌天瓶共鸣：有\n\n"
             "1 · 温养阵眼：以木水灵力慢慢修复外层阵基，降低伤根值，收益更稳。\n"
@@ -3267,6 +3375,49 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(0, notice_count)
         saved_room = app_replica._get_lightweight_last_room(group_event.chat_id, now=now + 10)
         self.assertEqual("91", saved_room["room_id"])
+
+    def test_luoyun_other_team_first_stage_does_not_enter_room_without_username_evidence(self):
+        leader_id = self._register_replica_identity(991201, "growrdick", realm="结丹后期", sect_name="落云宗")
+        group_event = self._prepare_replica_group([leader_id])
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_LUOYUN,
+            "replica_chat_id": group_event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@growrdick",
+            "opened_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        other_text = (
+            "【落云秘圃·第一幕·破禁入圃】\n"
+            "你们随落云宗执事进入后山秘圃，灵眼母树真身仍被重重禁制遮住。\n"
+            "队伍：@luomanying、@feiyu_ssddc、@huanxinshuimeng、@jianruyan_xs、@jianruyan\n"
+            "队伍战力：4511000958 / 4250000 | 可调神识：0 | 掌天瓶共鸣：无\n\n"
+            "1 · 温养阵眼：以木水灵力慢慢修复外层阵基，降低伤根值，收益更稳。\n"
+            "2 · 强破护傀：先击毁镇灵木傀开路，速度快，但会震伤侧根。\n"
+            "3 · 分探灵脉：分路探查外层灵脉，平衡速度与稳妥。\n\n"
+            "请队长使用 .落云抉择 1/2/3 做出本幕抉择。"
+        )
+        event = SimpleNamespace(id=10992149, chat_id=group_event.chat_id, raw_text=other_text)
+
+        async def run_test():
+            with patch("model.app_replica._send_lightweight_replica_notice", new=AsyncMock(return_value=True)) as notice_mock:
+                room_handled = await app_replica._handle_virtual_hall_auto_game_event(event, other_text, now + 10)
+                progress_handled = await app_replica._handle_replica_progress_event(event, now + 10)
+                return room_handled, progress_handled, notice_mock.await_count
+
+        room_handled, progress_handled, notice_count = asyncio.run(run_test())
+
+        self.assertFalse(room_handled)
+        self.assertFalse(progress_handled)
+        self.assertEqual(0, notice_count)
+        saved_room = app_replica._get_lightweight_last_room(group_event.chat_id, now=now + 10)
+        self.assertEqual("opened", saved_room["phase"])
+        self.assertEqual("88", saved_room["room_id"])
 
     def test_luoyun_settlement_for_other_team_does_not_clear_local_room(self):
         leader_id = self._register_replica_identity(991201, "Shadow_Plus", realm="结丹后期", sect_name="落云宗")

@@ -3,7 +3,8 @@ import copy
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +37,7 @@ if CREATED_ENV:
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import control
+from model.config import CMD_IDENTITY_INFO, CMD_SECOND_SOUL_DEMON_STATUS, CMD_YUANYING_STATUS
 from model import state as state_module
 
 
@@ -95,6 +97,29 @@ class PassiveIdentityProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1000000, profile["xiuwei_max"])
         self.assertEqual("333.8万", profile["battle_power_text"])
         self.assertEqual(3338000, profile["battle_power_value"])
+
+    async def test_refresh_identity_info_sends_level_read_commands(self):
+        messages = [
+            SimpleNamespace(id=11, sent_at=100.0),
+            SimpleNamespace(id=12, sent_at=101.0),
+            SimpleNamespace(id=13, sent_at=102.0),
+        ]
+        with (
+            patch.object(control.time, "time", return_value=100.0),
+            patch.object(control, "send_game_command", new=AsyncMock(side_effect=messages)) as send_mock,
+            patch.object(control, "save_state"),
+        ):
+            ok, message = await control.refresh_identity_info(1001, source="ui", actor_id=123)
+
+        self.assertTrue(ok)
+        self.assertIn("元婴和第二元神", message)
+        self.assertEqual(
+            [CMD_IDENTITY_INFO, CMD_YUANYING_STATUS, CMD_SECOND_SOUL_DEMON_STATUS],
+            [call.args[0] for call in send_mock.await_args_list],
+        )
+        for call in send_mock.await_args_list:
+            self.assertEqual(1001, call.kwargs["send_as_id"])
+            self.assertEqual(1, call.kwargs["max_retry"])
 
     async def test_unknown_owner_is_ignored(self):
         state_module.update_send_as_profile(1001, daohao="旧道号", realm="结丹后期")

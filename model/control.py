@@ -51,6 +51,7 @@ from .config import (
     CMD_RANCH,
     CMD_SECOND_SOUL_CHOICE_BREAK,
     CMD_SECOND_SOUL_CHOICE_STABLE,
+    CMD_SECOND_SOUL_DEMON_STATUS,
     CMD_SECOND_SOUL_STATUS,
     CMD_SECOND_SOUL_TRAIN,
     CMD_TIANTI_CLIMB,
@@ -3913,13 +3914,27 @@ async def refresh_identity_info(send_as_id, *, source="ui", actor_id=None):
         sent_at = float(getattr(msg, "sent_at", 0) or time.time())
         _record_identity_refresh_message(getattr(msg, "id", 0), requested_at=sent_at)
 
+    extra_commands = (CMD_YUANYING_STATUS, CMD_SECOND_SOUL_DEMON_STATUS)
+    extra_sent = []
+    extra_failed = []
+    for extra_command in extra_commands:
+        extra_msg = await send_game_command(extra_command, send_as_id=send_as_id, max_retry=1)
+        if extra_msg:
+            extra_sent.append(extra_command)
+        else:
+            extra_failed.append(extra_command)
+
     actor_suffix = f"，操作者：{actor_id}" if actor_id is not None else ""
+    extra_suffix = f"，附加读取：{'、'.join(extra_sent)}" if extra_sent else ""
+    failed_suffix = f"，失败：{'、'.join(extra_failed)}" if extra_failed else ""
     console_log(
-        f"🪪 已发起身份信息刷新：{command}，来源：{source}{actor_suffix}",
+        f"🪪 已发起身份信息刷新：{command}{extra_suffix}{failed_suffix}，来源：{source}{actor_suffix}",
         scope="identity",
         send_as_id=send_as_id,
     )
-    return True, "已开始获取角色信息，请等待"
+    if extra_failed:
+        return True, f"已开始获取角色信息；附加读取部分发送失败：{'、'.join(extra_failed)}"
+    return True, "已开始获取角色信息、元婴和第二元神信息，请等待"
 
 
 async def run_identity_info_followup_scheduler(now):

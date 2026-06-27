@@ -42,6 +42,8 @@ HELPER_SCHEDULERS = {
     "storage_bag_api_keepalive",
     "tiandao_judgement",
     "tianji_quiz",
+    "huanglong_conscription",
+    "luoyun_cd_reminder",
     "run_second_soul_bootstrap_check",
     "run_taiyi_bootstrap_check",
 }
@@ -104,6 +106,8 @@ class AppSchedulerContractTests(unittest.TestCase):
                 "world_boss",
                 "tiandao_judgement",
                 "tianji_quiz",
+                "huanglong_conscription",
+                "luoyun_cd_reminder",
             ),
             app.get_global_scheduler_order_contract(),
         )
