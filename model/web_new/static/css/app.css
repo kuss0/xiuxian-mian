@@ -32,13 +32,16 @@ body.ui-new {
 body.ui-new .topbar {
   min-height: 52px;
   padding: 0 14px;
+  flex-wrap: nowrap;
   border-bottom: 1px solid var(--new-line);
   background: rgba(13, 15, 18, 0.96);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
 body.ui-new .topbar-brand {
-  min-width: 150px;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 170px;
 }
 
 body.ui-new .topbar-logo-img {
@@ -60,8 +63,17 @@ body.ui-new .section-subtitle {
 }
 
 body.ui-new .topbar-actions {
+  flex: 1 1 auto;
   gap: 6px;
   min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+body.ui-new .topbar-actions::-webkit-scrollbar {
+  display: none;
 }
 
 body.ui-new .topbar-btn,
@@ -286,13 +298,14 @@ body.ui-new .summary-profile-item strong {
 
 body.ui-new .module-grid {
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 288px), 1fr));
-  grid-auto-rows: minmax(214px, auto);
+  grid-auto-rows: minmax(260px, 260px);
   align-items: stretch;
   gap: 12px;
 }
 
 body.ui-new .module-card {
-  min-height: 214px;
+  min-height: 0;
+  height: 100%;
   padding: 12px;
   overflow: hidden;
 }
@@ -416,13 +429,16 @@ body.ui-new .flash.error {
 
 @media (max-width: 1360px) {
   body.ui-new .topbar {
-    padding: 8px 12px;
+    height: 52px;
+    min-height: 52px;
+    padding: 0 10px;
+    flex-wrap: nowrap;
   }
 
   body.ui-new .topbar-brand {
-    flex: 0 1 100%;
+    flex: 0 0 auto;
     min-width: 0;
-    max-width: 100%;
+    max-width: 148px;
   }
 
   body.ui-new .topbar-meta {
@@ -430,10 +446,11 @@ body.ui-new .flash.error {
   }
 
   body.ui-new .topbar-actions {
-    flex: 0 0 100%;
+    flex: 1 1 auto;
     max-width: 100%;
-    flex-wrap: wrap;
-    overflow-x: visible;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 
   body.ui-new .topbar-actions::-webkit-scrollbar {
@@ -463,7 +480,7 @@ body.ui-new .flash.error {
   }
 
   body.ui-new .module-card {
-    min-height: 214px;
+    min-height: 0;
   }
 
   body.ui-new .detail-row,
@@ -486,5 +503,6 @@ body.ui-new .flash.error {
 
   body.ui-new .module-card {
     min-height: 0;
+    height: auto;
   }
 }

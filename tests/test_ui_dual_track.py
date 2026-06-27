@@ -63,6 +63,7 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "/static/css/app.css" in body
     assert "/static/css/ui_fixes.css" in body
     assert "/static-new/css/app.css" in body
+    assert "/static/js/module_cards_ui.js" in body
     assert "/static/js/storage_bag_ui.js" in body
     assert "<span id='global-switch-container'></span>" in body
     assert "sidebar-global" not in body
@@ -89,8 +90,37 @@ def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     assert "id='passive-inbox-modal'" in body
     assert "data-open-passive-inbox='1'" in body
     assert "/static-new/css/app.css" in body
+    assert body.index("/static/js/app.js") < body.index("/static/js/module_cards_ui.js") < body.index("/static/js/fishing_ui.js")
     assert "/static/js/passive_inbox_ui.js" in body
     assert "fonts.googleapis.com" not in body
+
+
+def test_module_card_override_groups_settings_and_keeps_toggles_on_card():
+    script = (PROJECT_ROOT / "model/web/static/js/module_cards_ui.js").read_text(encoding="utf-8")
+
+    assert "renderModules = function(identity)" in script
+    assert "module-settings" in script
+    assert "module-tools-primary" in script
+    assert "module-main-switch" in script
+    assert "renderSmallWorldFeature(identity,'manifest','显灵')" in script
+    assert "renderSmallWorldBarrierConfig(identity)" in script
+    assert "data-jiyin-choice=\"offer_soul\"" in script
+    assert "data-open-pet-modal=\"1\"" in script
+
+
+def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
+    css = (PROJECT_ROOT / "model/web/static/css/ui_fixes.css").read_text(encoding="utf-8")
+    new_css = (PROJECT_ROOT / "model/web_new/static/css/app.css").read_text(encoding="utf-8")
+
+    assert "grid-auto-rows: minmax(260px, 260px);" in css
+    assert "max-height: none;" in css
+    assert "max-height: 170px;" not in css
+    assert ".module-settings" in css
+    assert "height: calc(100vh - 80px)" not in css
+    assert "margin-top: 80px" not in css
+    assert "flex: 0 1 100%" not in css
+    assert "grid-auto-rows: minmax(260px, 260px);" in new_css
+    assert "flex: 0 1 100%" not in new_css
 
 
 def test_summary_card_script_keeps_role_resource_fields():
