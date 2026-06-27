@@ -382,7 +382,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("@first", reply_text)
         self.assertNotIn("@second", reply_text)
 
-    def test_replica_dispatch_group_command_still_allows_external_pull(self):
+    def test_replica_dispatch_group_command_blocks_external_pull_when_disabled(self):
         first_id = self._register_replica_identity(991204, "first")
         second_id = self._register_replica_identity(991205, "second")
         state_module.set_replica_participant_identity_ids([first_id])
@@ -392,14 +392,14 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_replica._get_replica_dispatch_event_listener_account_id", return_value=9001), \
                     patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=778))) as send_mock, \
-                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                    patch("model.app_replica.console_log") as log_mock:
                 handled = await app_replica._handle_replica_dispatch_group_command(event)
-                return handled, send_mock.await_args
+                return handled, send_mock.await_count, log_mock.call_args_list
 
-        handled, send_args = asyncio.run(run_test())
+        handled, send_count, log_calls = asyncio.run(run_test())
         self.assertTrue(handled)
-        self.assertEqual(".加入副本 456", send_args.args[0])
-        self.assertEqual(first_id, send_args.kwargs["send_as_id"])
+        self.assertEqual(0, send_count)
+        self.assertTrue(any("主线拉人已关闭" in str(call.args[0]) for call in log_calls))
 
     def test_replica_dispatch_group_command_ignores_non_dispatch_participants(self):
         first_id = self._register_replica_identity(991206, "first")
@@ -6546,7 +6546,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, room["replica_kind"])
         self.assertEqual(0, room["leader_identity_id"])
 
-    def test_external_dispatch_group_sends_join_and_pending_blocks_duplicate(self):
+    def test_external_dispatch_group_disabled_does_not_send_or_create_pending(self):
         first_id = self._register_replica_identity(991202, "first")
         listener_client = SimpleNamespace(name="dispatch-listener")
         state_module.set_replica_participant_identity_ids([first_id])
@@ -6570,30 +6570,20 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
                     patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=777))) as send_mock, \
-                    patch("model.app_replica.send_audit_log", new=AsyncMock()):
+                    patch("model.app_replica.console_log") as log_mock:
                 first_handled = await app_replica._handle_replica_external_dispatch_command(event)
                 duplicate_handled = await app_replica._handle_replica_external_dispatch_command(duplicate_event)
-                return first_handled, duplicate_handled, send_mock.await_args_list
+                return first_handled, duplicate_handled, send_mock.await_args_list, log_mock.call_args_list
 
-        first_handled, duplicate_handled, send_calls = asyncio.run(run_test())
+        first_handled, duplicate_handled, send_calls, log_calls = asyncio.run(run_test())
 
         self.assertTrue(first_handled)
         self.assertTrue(duplicate_handled)
-        self.assertEqual(1, len(send_calls))
-        self.assertEqual(".加入苍坤洞府 123", send_calls[0].args[0])
-        self.assertFalse(send_calls[0].kwargs["track"])
-        self.assertEqual(first_id, send_calls[0].kwargs["send_as_id"])
-        self.assertEqual("urgent_reactive", send_calls[0].kwargs["priority"])
-        self.assertEqual("自动副本", send_calls[0].kwargs["source_module"])
-        self.assertEqual("keep", send_calls[0].kwargs["delete_policy"])
-        self.assertIn("replica_external_dispatch", send_calls[0].kwargs["op_id"])
-        self.assertEqual("replica_external_dispatch:cangkun:123", send_calls[0].kwargs["chain_id"])
+        self.assertEqual(0, len(send_calls))
+        self.assertTrue(any("主线拉人已关闭" in str(call.args[0]) for call in log_calls))
+        self.assertNotIn(str(first_id), state_module.get_replica_run_state().get("by_identity", {}))
 
-        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
-        self.assertEqual("123", state_item["dispatch_pending_room_id"])
-        self.assertEqual(777, state_item["dispatch_pending_msg_id"])
-
-    def test_external_dispatch_send_failure_clears_pending(self):
+    def test_external_dispatch_disabled_never_reaches_sender_failure_path(self):
         first_id = self._register_replica_identity(991202, "first")
         listener_client = SimpleNamespace(name="dispatch-listener")
         state_module.set_replica_participant_identity_ids([first_id])
@@ -6609,20 +6599,20 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         async def run_test():
             with patch("model.app_message_log.get_all_clients", return_value={9001: listener_client}), \
-                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock, \
                     patch("model.app_replica.console_log") as log_mock:
                 handled = await app_replica._handle_replica_external_dispatch_command(event)
-                return handled, log_mock.call_args_list
+                return handled, send_mock.await_count, log_mock.call_args_list
 
-        handled, log_calls = asyncio.run(run_test())
+        handled, send_count, log_calls = asyncio.run(run_test())
 
         self.assertTrue(handled)
-        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
-        self.assertNotIn("dispatch_pending_room_id", state_item)
-        self.assertNotIn("dispatch_pending_until", state_item)
-        self.assertTrue(any("主线拉人发送失败" in str(call.args[0]) for call in log_calls))
+        self.assertEqual(0, send_count)
+        self.assertNotIn(str(first_id), state_module.get_replica_run_state().get("by_identity", {}))
+        self.assertTrue(any("主线拉人已关闭" in str(call.args[0]) for call in log_calls))
+        self.assertFalse(any("主线拉人发送失败" in str(call.args[0]) for call in log_calls))
 
-    def test_external_dispatch_unknown_user_logs_skip_not_send_failure(self):
+    def test_external_dispatch_disabled_short_circuits_unknown_user_resolution(self):
         listener_client = SimpleNamespace(name="dispatch-listener")
         state_module.set_replica_dispatch_group_ids([-100888])
         state_module.set_replica_dispatch_listener_account_map({"-100888": 9001})
@@ -6645,7 +6635,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertEqual([], send_calls)
-        self.assertTrue(any("主线拉人已跳过" in str(call.args[0]) for call in log_calls))
+        self.assertTrue(any("主线拉人已关闭" in str(call.args[0]) for call in log_calls))
         self.assertFalse(any("主线拉人发送失败" in str(call.args[0]) for call in log_calls))
 
     def test_external_dispatch_fast_retry_resends_once_while_pending(self):
@@ -7069,7 +7059,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(0, send_count)
 
-    def test_external_dispatch_full_reply_after_success_does_not_clear_joined_lobby_state(self):
+    def test_external_dispatch_disabled_does_not_clear_joined_lobby_state(self):
         first_id = self._register_replica_identity(991205, "first")
         listener_client = SimpleNamespace(name="dispatch-listener")
         state_module.set_replica_participant_identity_ids([first_id])
@@ -7094,7 +7084,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertTrue(first_handled)
         self.assertTrue(later_handled)
-        self.assertEqual(1, len(send_calls))
+        self.assertEqual(0, len(send_calls))
         state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_VIRTUAL_HALL]
         self.assertFalse(state_item["participating"])
         self.assertEqual("456", state_item["room_id"])

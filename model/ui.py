@@ -2942,6 +2942,7 @@ def get_replica_config_snapshot():
         "group_ids": group_ids,
         "listener_account_map": {str(group_id): int(listener_map.get(str(group_id)) or 0) for group_id in group_ids},
         "dispatch_group_ids": dispatch_group_ids,
+        "dispatch_enabled": False,
         "dispatch_listener_account_map": {str(group_id): int(dispatch_listener_map.get(str(group_id)) or 0) for group_id in dispatch_group_ids},
         "query_aggregator_config": {
             "base_url": query_aggregator_config.get("base_url") or "",
@@ -3032,7 +3033,7 @@ def ui_set_replica_config(payload):
     save_state()
     dispatch_group_ids = get_replica_dispatch_group_ids()
     ignored_dispatch_group_ids = [group_id for group_id in raw_dispatch_group_ids if group_id not in set(dispatch_group_ids)]
-    message = f"已更新副本群配置：轻量群 {len(group_ids)} 个，主线拉人群 {len(dispatch_group_ids)} 个，本地参与 {len(get_replica_participant_identity_ids())} 个，主线参与 {len(get_replica_dispatch_participant_identity_ids())} 个"
+    message = f"已更新副本群配置：轻量群 {len(group_ids)} 个，主线拉人群 {len(dispatch_group_ids)} 个（已停用），本地参与 {len(get_replica_participant_identity_ids())} 个，主线参与 {len(get_replica_dispatch_participant_identity_ids())} 个"
     if ignored_dispatch_group_ids:
         message += f"，已忽略与游戏群/轻量群重叠的拉人群 {len(ignored_dispatch_group_ids)} 个"
     return True, message

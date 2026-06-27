@@ -252,6 +252,7 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertEqual([9003001, 9003002, 9003003], state_module.get_replica_participant_identity_ids())
         self.assertEqual([9003001, 9003002], state_module.get_replica_dispatch_participant_identity_ids())
         snapshot = ui.get_replica_config_snapshot()
+        self.assertFalse(snapshot["dispatch_enabled"])
         self.assertEqual([9003001, 9003002], snapshot["dispatch_participant_identity_ids"])
 
     def test_replica_config_snapshot_uses_typed_open_commands(self):

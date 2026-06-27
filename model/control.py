@@ -1822,8 +1822,8 @@ def get_dungeon_join_status_text(send_as_id=None):
             "- .加入副本 @用户名 @用户名",
             "- .解散副本",
             "",
-            f"主线拉人群: {dispatch_group_count} 个",
-            "- 兼容 .虚天殿/.坠魔谷/.黄龙山/.苍坤洞府 房间号 @用户名",
+            f"主线拉人群: {dispatch_group_count} 个（已停用，仅保留配置）",
+            "- 外部拉人指令会被识别并跳过，不发送加入命令",
         ]
     )
     return "\n".join(lines)
@@ -2534,7 +2534,7 @@ def _format_log_group_help_html(send_as_id=None):
         + "\n".join(f"- {cmd}{suffix if '<模块名>' in cmd or cmd.startswith('.开启全部') or cmd.startswith('.关闭全部') else ''}" for cmd in control_commands)
         + "\n\n副本群轻量指令（在副本群/游戏群使用）：\n"
         + "\n".join(f"- {cmd}" for cmd in replica_group_commands)
-        + "\n\n主线拉人群兼容指令（仅配置的拉人群生效）：\n"
+        + "\n\n主线拉人群兼容指令（已停用，仅只读保留）：\n"
         + "\n".join(f"- {cmd}" for cmd in replica_dispatch_commands)
         + "\n\n说明：日志群只处理监控、查询和开关；副本开房/加入/解散在副本群入口处理；游戏内指令仍由模块按全局锁排队。"
     )

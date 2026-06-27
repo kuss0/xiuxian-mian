@@ -238,6 +238,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".加入副本 @用户名 @用户名", html_text)
         self.assertIn(".解散副本", html_text)
         self.assertIn("主线拉人群兼容指令", html_text)
+        self.assertIn("已停用", html_text)
         self.assertIn(".苍坤洞府 123 @用户名", html_text)
         self.assertIn("只读", html_text)
 
@@ -727,6 +728,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("自动副本状态", text)
         self.assertIn("副本群轻量指令", text)
         self.assertIn("主线拉人群", text)
+        self.assertIn("已停用", text)
         self.assertNotIn("未知模块", text)
 
     def test_analysis_summary_formatter_includes_core_counts(self):

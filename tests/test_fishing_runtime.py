@@ -612,6 +612,34 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             duplicate_send_mock.assert_not_awaited()
             self.assertIn("短窗重复指令已抑制", state_module.state["fishing_last_error"])
 
+    async def test_duplicate_fishing_start_is_suppressed_inside_watchdog_window(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        command = ".钓鱼 青溪浅滩 灵米饵"
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_bait"] = "灵米饵"
+            state_module.state["next_fishing_time"] = now - 1
+            first_msg = SimpleNamespace(id=22050, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=first_msg)) as first_send_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                first_sent = await fishing_runtime._send_fishing_command(command, now)
+
+            self.assertTrue(first_sent)
+            first_send_mock.assert_awaited_once()
+            state_module.state["fishing_phase"] = "idle"
+            state_module.state["fishing_reply_to_msg_id"] = 0
+            state_module.state["fishing_reply_due_at"] = 0
+            state_module.state["next_fishing_time"] = now + 49
+            with patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as duplicate_send_mock:
+                duplicate_sent = await fishing_runtime._send_fishing_command(command, now + 50)
+
+            self.assertFalse(duplicate_sent)
+            duplicate_send_mock.assert_not_awaited()
+            self.assertIn("短窗重复指令已抑制", state_module.state["fishing_last_error"])
+
     async def test_handled_fishing_reply_cancels_stale_followup(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

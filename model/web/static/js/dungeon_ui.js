@@ -8,6 +8,29 @@ function getReplicaSnapshot() {
   return snapshot.replica || {};
 }
 
+let lastDungeonModalRenderKey = '';
+
+function getDungeonModalRenderKey() {
+  try {
+    return JSON.stringify({
+      dungeon: getDungeonSnapshot(),
+      replica: getReplicaSnapshot()
+    });
+  } catch (error) {
+    return String(Date.now());
+  }
+}
+
+function isDungeonModalOpen() {
+  return !!document.getElementById('dungeon-modal')?.classList.contains('show');
+}
+
+function isReplicaConfigEditing() {
+  const form = document.getElementById('replica-config-form');
+  const active = document.activeElement;
+  return !!(form && active && form.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName || ''));
+}
+
 function getDungeonRows() {
   const dungeon = getDungeonSnapshot();
   return Array.isArray(dungeon.rows) ? dungeon.rows : [];
@@ -179,6 +202,7 @@ function renderReplicaOpeners(replica) {
 function renderReplicaConfig(replica) {
   const groupIds = Array.isArray(replica.group_ids) ? replica.group_ids : [];
   const dispatchGroupIds = Array.isArray(replica.dispatch_group_ids) ? replica.dispatch_group_ids : [];
+  const dispatchEnabled = !!replica.dispatch_enabled;
   const aggregator = replica.query_aggregator_config || {};
   const cooldownHours = replica.success_cooldown_hours || {};
   const cangkunCooldownHours = Number(cooldownHours.cangkun || 2.5);
@@ -192,9 +216,9 @@ function renderReplicaConfig(replica) {
     + '</div>'
     + '</div>'
     + '<div class="replica-config-grid">'
-    + '<label class="form-label">主线拉人群 ID<textarea class="text-input replica-groups-input" name="replica_dispatch_group_ids" rows="3">' + escapeHtml(dispatchGroupIds.join('\n')) + '</textarea></label>'
+    + '<label class="form-label">主线拉人群 ID（已停用）<textarea class="text-input replica-groups-input" name="replica_dispatch_group_ids" rows="3">' + escapeHtml(dispatchGroupIds.join('\n')) + '</textarea></label>'
     + '<div class="replica-config-side">'
-    + '<div class="queue-section-title">拉人群监听账号</div>'
+    + '<div class="queue-section-title">拉人群监听账号' + (dispatchEnabled ? '' : '（停用）') + '</div>'
     + renderReplicaGroupRows(replica, {
       groupIds: dispatchGroupIds,
       listenerMap: replica.dispatch_listener_account_map || {},
@@ -222,7 +246,7 @@ function renderReplicaConfig(replica) {
     + renderReplicaParticipantRows(replica)
     + '</div>'
     + '<div class="dungeon-section">'
-    + '<div class="queue-section-title">主线参与身份</div>'
+    + '<div class="queue-section-title">主线参与身份' + (dispatchEnabled ? '' : '（停用）') + '</div>'
     + renderReplicaParticipantRows(replica, {
       participantIds: replica.dispatch_participant_identity_ids || [],
       participantAttr: 'data-replica-dispatch-participant'
@@ -261,11 +285,23 @@ function renderDungeonRows(rows) {
   }).join('') + '</div>';
 }
 
-function renderDungeonModal() {
+function renderDungeonModal(options) {
+  options = options || {};
   const body = document.getElementById('dungeon-modal-body');
   if (!body) {
     return;
   }
+  const force = !!options.force;
+  const renderKey = getDungeonModalRenderKey();
+  if (!force && isDungeonModalOpen()) {
+    if (isReplicaConfigEditing()) {
+      return;
+    }
+    if (renderKey === lastDungeonModalRenderKey) {
+      return;
+    }
+  }
+  lastDungeonModalRenderKey = renderKey;
   const dungeon = getDungeonSnapshot();
   const replica = getReplicaSnapshot();
   const rows = getDungeonRows();
@@ -304,7 +340,7 @@ function renderDungeonModal() {
 }
 
 function openDungeonModal() {
-  renderDungeonModal();
+  renderDungeonModal({force: true});
   const modal = document.getElementById('dungeon-modal');
   if (modal) {
     modal.classList.add('show');
@@ -331,7 +367,7 @@ async function toggleDungeonIdentity(identityId, enabled) {
     } else if (typeof refreshState === 'function') {
       await refreshState({silent: true, keepFlash: true});
     }
-    renderDungeonModal();
+    renderDungeonModal({force: true});
   } catch (error) {
     updateFlash((error && error.message) || '自动副本切换失败', true);
     if (typeof setFlash === 'function') {
@@ -398,7 +434,7 @@ async function saveReplicaConfig(event) {
     } else if (typeof refreshState === 'function') {
       await refreshState({silent: true, keepFlash: true});
     }
-    renderDungeonModal();
+    renderDungeonModal({force: true});
   } catch (error) {
     updateFlash((error && error.message) || '副本群配置保存失败', true);
     if (typeof setFlash === 'function') {
@@ -419,13 +455,13 @@ async function toggleReplicaGoldDps(identityId, enabled) {
     } else if (typeof refreshState === 'function') {
       await refreshState({silent: true, keepFlash: true});
     }
-    renderDungeonModal();
+    renderDungeonModal({force: true});
   } catch (error) {
     updateFlash((error && error.message) || '金/雷 DPS 切换失败', true);
     if (typeof setFlash === 'function') {
       setFlash();
     }
-    renderDungeonModal();
+    renderDungeonModal({force: true});
   }
 }
 
