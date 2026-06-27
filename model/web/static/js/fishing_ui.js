@@ -22,6 +22,21 @@
     }).join('');
   }
 
+  function identityOptionHtml(options, selected){
+    var html = '<option value="0"'+(String(selected || 0) === '0' ? ' selected' : '')+'>关闭</option>';
+    (options || []).forEach(function(option){
+      var id = option && option.identity_id != null ? option.identity_id : 0;
+      if(!id){
+        return;
+      }
+      var label = (option && option.label) || id;
+      var suffix = option && option.protected ? '（保护）' : '';
+      var sel = String(id) === String(selected || 0) ? ' selected' : '';
+      html += '<option value="'+esc(id)+'"'+sel+'>'+esc(label)+suffix+'</option>';
+    });
+    return html;
+  }
+
   function clampDailyLimit(value){
     var parsed = parseInt(value, 10);
     if(!Number.isFinite(parsed)){
@@ -101,12 +116,29 @@
     }).join('');
   }
 
+  function countMapText(counts){
+    var parts = [];
+    Object.keys(counts || {}).sort().forEach(function(name){
+      var count = Number(counts[name] || 0);
+      if(name && count > 0){
+        parts.push(name+'x'+count);
+      }
+    });
+    return parts.length ? parts.join('、') : '无';
+  }
+
   function fishingStatusText(fishing, plan){
     var bits = [];
     bits.push(esc(fishing.pond || '青溪浅滩')+'/'+esc(fishing.bait || '凡饵'));
     bits.push('竿 '+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit)));
     bits.push('买饵 '+(fishing.auto_buy_bait_enabled ? '开' : '关')+'x'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count)));
     bits.push('开鱼 '+(fishing.auto_open_fish_enabled ? '开' : '关'));
+    if(Number(fishing.transfer_target_id || 0) > 0){
+      bits.push('赠 '+esc(fishing.transfer_target_label || fishing.transfer_target_id));
+    }
+    if(countMapText(fishing.caught_fish || {}) !== '无'){
+      bits.push('待赠 '+esc(countMapText(fishing.caught_fish || {})));
+    }
     if(fishing.auto_chum_enabled){
       bits.push('窝 '+esc((Array.isArray(fishing.chum_names) && fishing.chum_names.length ? fishing.chum_names : [fishing.chum_name || '无']).join(',')));
     }
@@ -128,7 +160,9 @@
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_buy_bait_enabled" '+(fishing.auto_buy_bait_enabled ? 'checked' : '')+' /><span>缺饵购买</span></label>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_probe_enabled" '+(fishing.auto_probe_enabled ? 'checked' : '')+' /><span>试饵</span></label>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_open_fish_enabled" '+(fishing.auto_open_fish_enabled ? 'checked' : '')+' /><span>自动开鱼</span></label>'+
+      '<label class="field-label"><span>鱼获赠送</span><select class="text-input" name="transfer_target_id">'+identityOptionHtml(fishing.transfer_identity_options || [], fishing.transfer_target_id)+'</select></label>'+
       '<div class="fishing-plan"><span>今日</span><div>'+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit))+'</div></div>'+
+      '<div class="fishing-plan"><span>待赠</span><div>'+esc(countMapText(fishing.caught_fish || {}))+'</div></div>'+
       '<div class="fishing-plan"><span>鱼饵</span><div>'+requirementHtml(plan)+'</div></div>'+
       '<div class="fishing-plan"><span>资源</span><div>'+resourceRequirementHtml(plan)+'</div></div>'+
       '<div class="fishing-plan fishing-plan-wide"><span>计划</span><div>'+esc(plan.summary || '未生成')+'</div></div>'+
@@ -242,7 +276,8 @@
       chum_name: chumEnabled && chumNames.length ? chumNames[0] : '无',
       auto_buy_bait_enabled: !!form.querySelector('input[name="auto_buy_bait_enabled"]').checked,
       auto_probe_enabled: !!form.querySelector('input[name="auto_probe_enabled"]').checked,
-      auto_open_fish_enabled: !!form.querySelector('input[name="auto_open_fish_enabled"]').checked
+      auto_open_fish_enabled: !!form.querySelector('input[name="auto_open_fish_enabled"]').checked,
+      transfer_target_id: form.querySelector('select[name="transfer_target_id"]').value
     };
     try{
       var data = await postJson('/api/fishing-config', payload);

@@ -24,6 +24,7 @@ from ..runtime import (
 from ..state import (
     get_current_identity_id,
     get_identity_enabled,
+    get_identity_display_name,
     get_identity_ids,
     get_identity_state,
     get_send_as_profile,
@@ -34,7 +35,7 @@ from ..state import (
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
 from .fishing import plan_fishing_commands
-from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas
+from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas, start_storage_bag_gift_batch
 
 
 FISHING_REPLY_TIMEOUT_SEC = 90
@@ -54,6 +55,7 @@ FISHING_MAX_ACTIVE_IDENTITIES = 2
 FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
 FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 65
+FISHING_TRANSFER_RETRY_DELAY_SEC = 5 * 60
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
@@ -69,6 +71,19 @@ def _parse_int(value, default=0):
 
 def _state_snapshot():
     return dict(state.items())
+
+
+def _format_count_map(counts):
+    normalized = []
+    for name, count in sorted((counts or {}).items(), key=lambda item: str(item[0])):
+        name = str(name or "").strip()
+        try:
+            amount = int(count or 0)
+        except (TypeError, ValueError):
+            amount = 0
+        if name and amount > 0:
+            normalized.append(f"{name}x{amount}")
+    return "、".join(normalized) if normalized else "无"
 
 
 def _apply_updates(updates):
@@ -361,6 +376,7 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
             "fishing_auto_buy_bait_count",
             "fishing_auto_probe_enabled",
             "fishing_auto_open_fish_enabled",
+            "fishing_transfer_target_id",
         ):
             config_values[key] = state.get(key)
     updates = {
@@ -376,6 +392,8 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
         "fishing_last_msg_id": 0,
         "fishing_last_result": "",
         "fishing_last_error": last_error or "",
+        "fishing_transfer_due_at": 0,
+        "fishing_caught_fish_json": "",
         **config_values,
     }
     _apply_updates(updates)
@@ -403,6 +421,9 @@ def get_fishing_status_text():
     active_chum = state.get("fishing_active_chum_name") or "无"
     configured_chums = ",".join(config.chum_names or ()) or "无"
     chum_rods = _parse_int(state.get("fishing_chum_rods_remaining", 0))
+    transfer_target_id = _parse_int(state.get("fishing_transfer_target_id", 0))
+    transfer_target = get_identity_display_name(transfer_target_id) if transfer_target_id in get_identity_ids() else "关"
+    transfer_items = fishing_behavior.pending_fishing_transfer_items(snapshot)
     lines = [
         "🎣 灵溪垂钓",
         f"- 已启用：{'是' if state.get('fishing_enabled') else '否'}",
@@ -413,6 +434,8 @@ def get_fishing_status_text():
         f"- 缺饵购买：{'开' if config.auto_buy_bait_enabled else '关'}",
         f"- 试饵：{'开' if config.auto_probe_enabled else '关'}",
         f"- 自动开鱼：{'开' if state.get('fishing_auto_open_fish_enabled') else '关'}",
+        f"- 鱼获赠送：{transfer_target}",
+        f"- 待赠鱼获：{_format_count_map(transfer_items)}",
         f"- 阶段：{state.get('fishing_phase') or 'idle'}",
         f"- 下次动作：{fmt_abs_ts(state.get('next_fishing_time', 0))}（{fmt_remaining(state.get('next_fishing_time', 0))}）",
         f"- 待回复命令ID：{int(state.get('fishing_reply_to_msg_id', 0) or 0) or '无'}",
@@ -449,6 +472,89 @@ def _maybe_schedule_pending_fishing_action():
     if not command or due_at <= 0:
         return False
     return _schedule_fishing_followup(get_current_identity_id(), command, due_at)
+
+
+async def _run_pending_fishing_transfer(now):
+    snapshot = _state_snapshot()
+    if not snapshot.get("fishing_enabled"):
+        return False
+    transfer_items = fishing_behavior.pending_fishing_transfer_items(snapshot)
+    if not transfer_items:
+        return False
+    due_at = float(snapshot.get("fishing_transfer_due_at", 0) or 0)
+    if due_at > float(now or 0):
+        return False
+    if fishing_behavior.is_rod_in_progress(snapshot):
+        return False
+    if (
+        _parse_int(snapshot.get("fishing_reply_to_msg_id", 0)) > 0
+        and float(snapshot.get("fishing_reply_due_at", 0) or 0) > float(now or 0)
+    ):
+        return False
+
+    source_id = int(get_current_identity_id() or 0)
+    target_id = _parse_int(snapshot.get("fishing_transfer_target_id", 0))
+    known_ids = {int(identity_id) for identity_id in get_identity_ids()}
+    item_text = _format_count_map(transfer_items)
+    if source_id <= 0 or target_id <= 0 or source_id == target_id or target_id not in known_ids:
+        state["fishing_transfer_due_at"] = float(now + FISHING_TRANSFER_RETRY_DELAY_SEC)
+        state["fishing_last_error"] = f"鱼获赠送目标无效，保留待赠鱼获：{item_text}"
+        save_state()
+        await send_audit_log(
+            f"⚠️ 灵溪垂钓鱼获赠送目标无效，已保留队列：{item_text}",
+            scope="identity",
+            limit=220,
+        )
+        return True
+
+    gift_items = [
+        {"item_name": fish, "quantity": count, "method": "gift"}
+        for fish, count in sorted(transfer_items.items())
+        if str(fish or "").strip() and int(count or 0) > 0
+    ]
+    if not gift_items:
+        state["fishing_transfer_due_at"] = 0
+        state["fishing_caught_fish_json"] = ""
+        mark_dirty()
+        return False
+
+    try:
+        ok, message, _transfer = await start_storage_bag_gift_batch(
+            [{
+                "source_identity_id": source_id,
+                "target_identity_id": target_id,
+                "items": gift_items,
+            }],
+            target_identity_id=target_id,
+            stop_on_error=True,
+        )
+    except Exception as exc:
+        ok = False
+        message = str(exc)
+
+    target_label = get_identity_display_name(target_id)
+    if ok:
+        state["fishing_caught_fish_json"] = ""
+        state["fishing_transfer_due_at"] = 0
+        state["fishing_last_result"] = f"鱼获赠送已入队：{item_text} -> {target_label}"
+        state["fishing_last_error"] = ""
+        save_state()
+        await send_audit_log(
+            f"🎣 灵溪垂钓鱼获已加入储物袋赠送队列：{item_text} -> {target_label}",
+            scope="identity",
+            limit=240,
+        )
+        return True
+
+    state["fishing_transfer_due_at"] = float(now + FISHING_TRANSFER_RETRY_DELAY_SEC)
+    state["fishing_last_error"] = f"鱼获赠送入队失败：{message or '未知错误'}"
+    save_state()
+    await send_audit_log(
+        f"⚠️ 灵溪垂钓鱼获赠送入队失败，5分钟后重试：{message or '未知错误'}",
+        scope="identity",
+        limit=240,
+    )
+    return True
 
 
 async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0):
@@ -602,6 +708,9 @@ async def _send_fishing_command_locked(command, now):
 
 
 async def run_fishing_scheduler(now):
+    if await _run_pending_fishing_transfer(now):
+        return
+
     effect = fishing_behavior.decide_scheduler(
         _state_snapshot(),
         now,

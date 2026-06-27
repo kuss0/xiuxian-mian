@@ -64,6 +64,7 @@ FISHING_ACTION_DEADLINE_BUFFER_SEC = 4
 FISHING_STATUS_ACTION_DELAY_SEC = 1
 FISHING_PREP_HOUR_LOCAL = 23
 FISHING_PREP_MINUTE_LOCAL = 40
+FISHING_TRANSFER_QUEUE_DELAY_SEC = 20
 
 
 @dataclass(frozen=True)
@@ -225,6 +226,14 @@ def _basket_storage_counts(basket):
 
 
 def add_pending_open_fish(value, fish, count=1):
+    queue = parse_pending_open_fish(value)
+    name = str(fish or "").strip()
+    if name:
+        queue[name] = queue.get(name, 0) + max(1, int(count or 1))
+    return format_pending_open_fish(queue)
+
+
+def add_caught_fish_for_transfer(value, fish, count=1):
     queue = parse_pending_open_fish(value)
     name = str(fish or "").strip()
     if name:
@@ -485,6 +494,16 @@ def auto_open_fish_enabled(snapshot):
     return bool(snapshot.get("fishing_auto_open_fish_enabled", True))
 
 
+def pending_fishing_transfer_items(snapshot):
+    try:
+        target_id = int(snapshot.get("fishing_transfer_target_id") or 0)
+    except (TypeError, ValueError):
+        target_id = 0
+    if target_id <= 0:
+        return {}
+    return parse_pending_open_fish(snapshot.get("fishing_caught_fish_json"))
+
+
 def normalize_daily_counter(snapshot, now):
     day_key = get_day_key(now)
     updates = {}
@@ -684,6 +703,15 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates)
     if count >= limit:
+        pending_transfer = pending_fishing_transfer_items(planning_snapshot)
+        if pending_transfer:
+            updates = clear_pending_updates()
+            updates.update(daily_updates)
+            updates["fishing_last_result"] = "待赠送鱼获：" + ", ".join(
+                f"{fish}x{count}" for fish, count in sorted(pending_transfer.items())
+            )
+            updates["next_fishing_time"] = float(now + FISHING_TRANSFER_QUEUE_DELAY_SEC)
+            return FishingEffect(handled=True, updates=updates)
         if not auto_open_fish_enabled(planning_snapshot):
             return daily_limit_wait_effect(
                 planning_snapshot,
@@ -1015,7 +1043,20 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
             "fishing_last_result": f"钓获：{catch.fish} {catch.weight_jin:.2f}斤",
             "fishing_last_error": "",
         })
+        transfer_target_id = _parse_int(snapshot.get("fishing_transfer_target_id", 0))
+        if transfer_target_id > 0:
+            updates["fishing_caught_fish_json"] = add_caught_fish_for_transfer(
+                snapshot.get("fishing_caught_fish_json"),
+                catch.fish,
+                1,
+            )
+            if float(snapshot.get("fishing_transfer_due_at", 0) or 0) <= 0:
+                updates["fishing_transfer_due_at"] = float(now + FISHING_TRANSFER_QUEUE_DELAY_SEC)
         if count >= limit:
+            if transfer_target_id > 0:
+                updates["fishing_last_error"] = f"今日钓鱼次数已达上限：{count}/{limit}，等待赠送鱼获"
+                updates["next_fishing_time"] = float(updates.get("fishing_transfer_due_at") or now + FISHING_TRANSFER_QUEUE_DELAY_SEC)
+                return FishingEffect(handled=True, updates=updates, storage_deltas={catch.fish: 1})
             if auto_open_fish_enabled(snapshot):
                 updates["fishing_pending_action"] = CMD_FISHING_BASKET
                 return FishingEffect(handled=True, updates=_with_next_delay(updates, now, action_delay_sec), storage_deltas={catch.fish: 1})

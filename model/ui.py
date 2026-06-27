@@ -98,7 +98,7 @@ from .features.fishing import (
     normalize_fishing_config,
     plan_fishing_commands,
 )
-from .features.fishing_behavior import parse_chum_usage_counts
+from .features.fishing_behavior import parse_chum_usage_counts, parse_pending_open_fish
 from .features.yuanying import get_yuanying_phase_text
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
@@ -2735,6 +2735,31 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
             "available_count": requirement.available_count,
             "missing_count": int(requirement.missing_count or 0),
         })
+    transfer_options = []
+    for identity_id in get_identity_ids():
+        identity_id = int(identity_id or 0)
+        if identity_id <= 0 or identity_id == send_as_id:
+            continue
+        profile = get_send_as_profile(identity_id)
+        transfer_options.append({
+            "identity_id": identity_id,
+            "label": profile.get("label") or profile.get("username") or str(identity_id),
+            "protected": _is_storage_bag_protected_identity(identity_id),
+        })
+    transfer_options.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
+    try:
+        transfer_target_id = int(identity_state.get("fishing_transfer_target_id") or 0)
+    except (TypeError, ValueError):
+        transfer_target_id = 0
+    transfer_target_label = "关闭"
+    for option in transfer_options:
+        if int(option.get("identity_id") or 0) == transfer_target_id:
+            transfer_target_label = option.get("label") or str(transfer_target_id)
+            break
+    else:
+        if transfer_target_id > 0:
+            transfer_target_label = f"未知身份 {transfer_target_id}"
+    caught_fish = parse_pending_open_fish(identity_state.get("fishing_caught_fish_json"))
     return {
         "pond": config.pond,
         "bait": config.bait,
@@ -2748,6 +2773,11 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "auto_buy_bait_count": int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT),
         "auto_probe_enabled": bool(config.auto_probe_enabled),
         "auto_open_fish_enabled": bool(identity_state.get("fishing_auto_open_fish_enabled", True)),
+        "transfer_target_id": transfer_target_id,
+        "transfer_target_label": transfer_target_label,
+        "transfer_identity_options": transfer_options,
+        "transfer_due_at": float(identity_state.get("fishing_transfer_due_at", 0) or 0),
+        "caught_fish": caught_fish,
         "active_chum_name": identity_state.get("fishing_active_chum_name") or "",
         "chum_rods_remaining": int(identity_state.get("fishing_chum_rods_remaining", 0) or 0),
         "chum_day": identity_state.get("fishing_chum_day") or "",
@@ -4011,6 +4041,21 @@ async def ui_set_fishing_config(send_as_id, payload=None):
     auto_chum_enabled = _coerce_ui_bool(payload.get("auto_chum_enabled"))
     auto_buy_bait_enabled = _coerce_ui_bool(payload.get("auto_buy_bait_enabled"))
     auto_probe_enabled = _coerce_ui_bool(payload.get("auto_probe_enabled"))
+    current_identity_state = get_identity_state(send_as_id)
+    raw_transfer_target_id = (
+        payload.get("transfer_target_id")
+        if "transfer_target_id" in payload
+        else current_identity_state.get("fishing_transfer_target_id", 0)
+    )
+    try:
+        transfer_target_id = int(str(raw_transfer_target_id or 0).replace(",", ""))
+    except (TypeError, ValueError):
+        return False, "无效的鱼获赠送目标"
+    known_ids = {int(identity_id or 0) for identity_id in get_identity_ids()}
+    if transfer_target_id < 0 or (transfer_target_id > 0 and transfer_target_id not in known_ids):
+        return False, "鱼获赠送目标不存在"
+    if transfer_target_id == send_as_id:
+        return False, "鱼获赠送目标不能是当前身份"
     try:
         config = normalize_fishing_config(
             pond or "青溪浅滩",
@@ -4039,6 +4084,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT)
         state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
         state["fishing_auto_open_fish_enabled"] = bool(auto_open_fish_enabled)
+        state["fishing_transfer_target_id"] = int(transfer_target_id)
         save_state()
         saved_identity_state = dict(state.items())
     plan = plan_fishing_commands(
@@ -4056,6 +4102,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         f"买饵={'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}｜"
         f"试饵={'开' if config.auto_probe_enabled else '关'}｜"
         f"开鱼={'开' if auto_open_fish_enabled else '关'}｜"
+        f"鱼获赠送={get_identity_display_name(transfer_target_id) if transfer_target_id else '关'}｜"
         f"计划={_format_fishing_command_plan(plan)}",
         scope="identity",
         send_as_id=send_as_id,

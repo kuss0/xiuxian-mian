@@ -40,6 +40,10 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["米糠小窝"], fishing["chum_names"])
         self.assertTrue(fishing["auto_buy_bait_enabled"])
         self.assertTrue(fishing["auto_open_fish_enabled"])
+        self.assertEqual(0, fishing["transfer_target_id"])
+        self.assertEqual("关闭", fishing["transfer_target_label"])
+        self.assertEqual([], fishing["transfer_identity_options"])
+        self.assertEqual({}, fishing["caught_fish"])
         self.assertFalse(fishing["bait_inventory_known"])
         self.assertTrue(fishing["plan"]["allow_start"])
         self.assertEqual([".买鱼饵 凡饵 20", ".打窝 米糠小窝", ".钓鱼 青溪浅滩 凡饵"], fishing["plan"]["commands"])
@@ -85,6 +89,46 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["fishing"]["auto_open_fish_enabled"])
         self.assertTrue(snapshot["fishing"]["plan"]["allow_start"])
         self.assertEqual([], [item for item in snapshot["fishing"]["plan"]["resource_requirements"] if item["missing_count"]])
+
+    async def test_set_fishing_config_persists_transfer_target_and_rejects_invalid(self):
+        target_id = 10002
+        state_module.ensure_identity_registered(target_id)
+        state_module.update_send_as_profile(target_id, username="target", label="目标号")
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message = await ui.ui_set_fishing_config(
+                self.identity_id,
+                {
+                    "pond": "青溪浅滩",
+                    "bait": "凡饵",
+                    "transfer_target_id": target_id,
+                },
+            )
+
+        self.assertTrue(ok)
+        self.assertIn("已更新灵溪垂钓", message)
+        identity_state = state_module.get_identity_state(self.identity_id)
+        self.assertEqual(target_id, identity_state["fishing_transfer_target_id"])
+        snapshot = ui.get_identity_ui_snapshot(self.identity_id)
+        self.assertEqual(target_id, snapshot["fishing"]["transfer_target_id"])
+        self.assertEqual("目标号", snapshot["fishing"]["transfer_target_label"])
+        self.assertEqual([target_id], [item["identity_id"] for item in snapshot["fishing"]["transfer_identity_options"]])
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok_self, message_self = await ui.ui_set_fishing_config(
+                self.identity_id,
+                {"pond": "青溪浅滩", "bait": "凡饵", "transfer_target_id": self.identity_id},
+            )
+            ok_unknown, message_unknown = await ui.ui_set_fishing_config(
+                self.identity_id,
+                {"pond": "青溪浅滩", "bait": "凡饵", "transfer_target_id": 99999},
+            )
+
+        self.assertFalse(ok_self)
+        self.assertIn("不能是当前身份", message_self)
+        self.assertFalse(ok_unknown)
+        self.assertIn("不存在", message_unknown)
+        self.assertEqual(target_id, state_module.get_identity_state(self.identity_id)["fishing_transfer_target_id"])
 
     async def test_set_fishing_config_shows_resource_shortage_in_plan(self):
         state_module.set_storage_bag_records({str(self.identity_id): {"items": {"灵米饵": 1, "灵石": 35, "凝血草": 0}, "sections": {}}})
@@ -178,6 +222,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('name="auto_buy_bait_count"', script)
         self.assertIn('name="chum_names"', script)
         self.assertIn('name="auto_open_fish_enabled"', script)
+        self.assertIn('name="transfer_target_id"', script)
         self.assertNotIn('select[name="chum_name"]', script)
         self.assertIn("resourceRequirementHtml", script)
         self.assertIn("findFishingCard", script)

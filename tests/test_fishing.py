@@ -546,6 +546,32 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual(".鱼篓", effect.command)
 
+    def test_fishing_behavior_scheduler_waits_for_transfer_before_auto_open(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": True,
+            "fishing_transfer_target_id": 10002,
+            "fishing_caught_fish_json": '{"银须灵鲢": 2}',
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
+            "fishing_last_result": "鱼篓校准",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertEqual(now + fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC, effect.updates["next_fishing_time"])
+        self.assertIn("待赠送鱼获", effect.updates["fishing_last_result"])
+
     def test_fishing_behavior_scheduler_opens_after_basket_calibration_when_enabled(self):
         from model.features import fishing_behavior
 
@@ -1097,6 +1123,31 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual((), effect.immediate_commands)
         self.assertNotIn("fishing_pending_open_fish", effect.updates)
         self.assertGreater(effect.updates["next_fishing_time"], 1_700_000_000.0)
+
+    def test_fishing_behavior_catch_with_transfer_target_records_gift_queue(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        effect = fishing_behavior.decide_reply(
+            {
+                "fishing_enabled": True,
+                "fishing_daily_limit": 1,
+                "fishing_daily_day": fishing_behavior.get_day_key(now),
+                "fishing_daily_count": 1,
+                "fishing_transfer_target_id": 10002,
+            },
+            FISHING_CATCH_TEXT,
+            now,
+            result_msg_id=22032,
+        )
+
+        self.assertTrue(effect.handled)
+        self.assertEqual({"银须灵鲢": 1}, json.loads(effect.updates["fishing_caught_fish_json"]))
+        self.assertEqual(now + fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC, effect.updates["fishing_transfer_due_at"])
+        self.assertEqual("", effect.updates["fishing_pending_action"])
+        self.assertEqual("", effect.command)
+        self.assertEqual(now + fishing_behavior.FISHING_TRANSFER_QUEUE_DELAY_SEC, effect.updates["next_fishing_time"])
+        self.assertEqual({"银须灵鲢": 1}, effect.storage_deltas)
 
     def test_fishing_behavior_empty_rod_is_terminal_without_opening(self):
         from model.features import fishing_behavior
