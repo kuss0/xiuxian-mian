@@ -114,6 +114,8 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "module-tools-primary" in script
     assert "module-main-switch" in script
     assert "renderSmallWorldFeature(identity,'manifest','显灵')" in script
+    assert "primaryTools =\n          renderSmallWorldFeature(identity,'manifest','显灵')+\n          renderSmallWorldFeature(identity,'harvest','收割');" in script
+    assert "renderSmallWorldFeature(identity,'barrier','护界')+\n            renderSmallWorldBarrierConfig(identity)" in script
     assert "renderSmallWorldBarrierConfig(identity)" in script
     assert "data-jiyin-choice=\"offer_soul\"" in script
     assert "data-save-pet-inline" in script
