@@ -51,6 +51,8 @@
         batchAllSources: true,
         batchSourceIds: [],
         batchQuantityMode: 'all',
+        batchReserveCount: 0,
+        batchMinTransferCount: 1,
         includeProtected: false,
         continueOnError: false,
       };
@@ -60,6 +62,8 @@
     if (['transfer', 'gift'].indexOf(String(appState.storageBagTransfer.operation || 'transfer')) < 0) appState.storageBagTransfer.operation = 'transfer';
     if (!Number(appState.storageBagTransfer.startPending || 0)) appState.storageBagTransfer.startPending = 0;
     if (!Number(appState.storageBagTransfer.listingCount || 0)) appState.storageBagTransfer.listingCount = 1;
+    if (!Number(appState.storageBagTransfer.batchReserveCount || 0)) appState.storageBagTransfer.batchReserveCount = 0;
+    if (!Number(appState.storageBagTransfer.batchMinTransferCount || 0)) appState.storageBagTransfer.batchMinTransferCount = 1;
     if (['space', 'compact'].indexOf(String(appState.storageBagTransfer.listingSyntax || 'space')) < 0) appState.storageBagTransfer.listingSyntax = 'space';
     if (!appState.storageBagTransfer.batchQuantityMode) appState.storageBagTransfer.batchQuantityMode = 'all';
     if (typeof appState.storageBagTransfer.batchAllSources !== 'boolean') appState.storageBagTransfer.batchAllSources = true;
@@ -74,6 +78,7 @@
     { tag: '材料', test: function (name) { return name.indexOf('元磁山核') >= 0; } },
     { tag: '装备武器防具', test: function (name) { return name.indexOf('青竹蜂云剑') >= 0 && name.indexOf('图纸') < 0; } },
   ];
+  var STORAGE_BAG_PINNED_ITEMS = ['天雷竹', '二级妖丹', '金精矿'];
 
   function setFlash(message, isError) {
     if (typeof updateFlash === 'function') {
@@ -232,6 +237,8 @@
         listing_count: Math.max(1, Number(state.listingCount) || 1),
         listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
         mode: String(state.batchQuantityMode || 'all') === 'fixed' ? 'fixed' : 'all',
+        reserve_count: Math.max(0, Number(state.batchReserveCount) || 0),
+        min_transfer_count: Math.max(1, Number(state.batchMinTransferCount) || 1),
         items: Array.from(merged.entries()).map(function (entry) {
           return { item_name: entry[0], quantity: entry[1] };
         }),
@@ -287,6 +294,8 @@
     state.listingItem = preferredListingItem(state.targetId);
     state.listingCount = 1;
     state.listingSyntax = 'space';
+    state.batchReserveCount = Math.max(0, Number(state.batchReserveCount) || 0);
+    state.batchMinTransferCount = Math.max(1, Number(state.batchMinTransferCount) || 1);
     state.selectedItems = {};
     state.manualText = '';
     state.preview = null;
@@ -356,6 +365,18 @@
     return itemTags(itemName)[0] || '未知';
   }
 
+  function pinnedItemRank(itemName) {
+    const index = STORAGE_BAG_PINNED_ITEMS.indexOf(String(itemName || ''));
+    return index >= 0 ? index : 999;
+  }
+
+  function comparePinnedItems(aName, bName) {
+    const aRank = pinnedItemRank(aName);
+    const bRank = pinnedItemRank(bName);
+    if (aRank !== bRank) return aRank - bRank;
+    return 0;
+  }
+
   function buildStorageBagEntries(currentRows, currentItems, totals) {
     return currentItems.map(function (itemName) {
       const rule = itemRule(itemName);
@@ -412,6 +433,8 @@
     const tagRank = function (tag) { return tagOrder.has(tag) ? tagOrder.get(tag) : 999; };
     const sorted = entries.slice();
     sorted.sort(function (a, b) {
+      const pinned = comparePinnedItems(a.name, b.name);
+      if (pinned) return pinned;
       if (view.sort === 'total') return b.total - a.total || a.name.localeCompare(b.name, 'zh-Hans-CN');
       if (view.sort === 'concentration') return b.concentration - a.concentration || b.total - a.total || a.name.localeCompare(b.name, 'zh-Hans-CN');
       if (view.sort === 'name') return a.name.localeCompare(b.name, 'zh-Hans-CN');
@@ -693,6 +716,10 @@
   function renderTransferPreviewHtml(preview) {
     if (!preview) return '<div class="queue-empty">尚未生成预览。</div>';
     if (Array.isArray(preview.tasks)) {
+      const planLines = Array.isArray(preview.item_plans) ? preview.item_plans.map(function (plan) {
+        const demand = Number(plan.requested_quantity || 0) > 0 ? `需求${Number(plan.requested_quantity || 0).toLocaleString()}` : '搬空可搬';
+        return `${plan.item_name}｜${demand}｜计划${Number(plan.planned_quantity || 0).toLocaleString()}｜来源${Number(plan.used_source_count || 0)}/${Number(plan.candidate_count || 0)}｜保留${Number(plan.reserve_count || 0)}｜起送${Number(plan.min_transfer_count || 1)}`;
+      }) : [];
       const taskLines = preview.tasks.map(function (task, index) {
         const itemText = (task.items || []).map(function (item) {
           return `${item.item_name}x${Number(item.quantity || 0).toLocaleString()}`;
@@ -703,7 +730,8 @@
       const skipped = Array.isArray(preview.skipped_source_ids) && preview.skipped_source_ids.length
         ? `<div class="form-label">已跳过无匹配库存来源：${esc(preview.skipped_source_ids.join('、'))}</div>`
         : '';
-      return `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成批量预览')}</div>${renderTransferWarnings(preview)}<pre>${esc(taskLines.join('\n'))}</pre>${skipped}`;
+      const plans = planLines.length ? `<pre>${esc(planLines.join('\n'))}</pre>` : '';
+      return `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成批量预览')}</div>${renderTransferWarnings(preview)}${plans}<pre>${esc(taskLines.join('\n'))}</pre>${skipped}`;
     }
     return `<div class="storage-bag-preview-summary">${esc(preview.summary || '已生成预览')}</div>${renderTransferWarnings(preview)}<pre>${esc((preview.commands || []).map(function (cmd) { return `${cmd.identity_id}｜${cmd.command}｜${cmd.note || ''}`; }).join('\n'))}</pre>`;
   }
@@ -754,6 +782,17 @@
   function renderTransferPanel() {
     const panel = document.getElementById('storage-bag-transfer-panel');
     if (!panel) return;
+    const previousTableWrap = panel.querySelector('.storage-bag-transfer-table-wrap');
+    const previousPreview = panel.querySelector('#storage-bag-transfer-preview');
+    const previousTableScrollTop = previousTableWrap ? previousTableWrap.scrollTop : 0;
+    const previousTableScrollLeft = previousTableWrap ? previousTableWrap.scrollLeft : 0;
+    const previousPreviewScrollTop = previousPreview ? previousPreview.scrollTop : 0;
+    const active = document.activeElement;
+    const activeField = active && panel.contains(active) ? active.getAttribute('data-storage-transfer-field') : '';
+    const activeQty = active && panel.contains(active) ? active.getAttribute('data-storage-transfer-qty') : '';
+    const activeName = active && panel.contains(active) ? active.getAttribute('name') : '';
+    const activeSelectionStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
+    const activeSelectionEnd = active && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
     normalizeTransferDefaults();
     const state = transferState();
     const giftMode = isGiftMode();
@@ -776,9 +815,9 @@
       const checked = Object.prototype.hasOwnProperty.call(state.selectedItems, name);
       if (state.batchMode) {
         const stats = batchItemStats(name);
-        const qty = checked ? Number(state.selectedItems[name] || (state.batchQuantityMode === 'fixed' ? 1 : stats.total)) : (state.batchQuantityMode === 'fixed' ? 1 : stats.total);
+        const qty = checked ? Number(state.selectedItems[name] || stats.total || 1) : (stats.total || 1);
         const holderText = `${stats.holderCount}号${stats.holderLabels.length ? `｜${stats.holderLabels.join('、')}${stats.holderCount > stats.holderLabels.length ? '…' : ''}` : ''}`;
-        return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(giftMode ? '赠送' : (rule.method_label || methodLabel(rule.method)))}</td><td>${esc(stats.total.toLocaleString())}</td><td>${esc(holderText)}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked && state.batchQuantityMode === 'fixed' ? '' : ' disabled'} /></td></tr>`;
+        return `<tr><td><input type="checkbox" name="storage_bag_transfer_item" value="${esc(name)}"${checked ? ' checked' : ''} /></td><th>${esc(name)}</th><td>${esc(giftMode ? '赠送' : (rule.method_label || methodLabel(rule.method)))}</td><td>${esc(stats.total.toLocaleString())}</td><td>${esc(holderText)}</td><td><input class="text-input storage-bag-qty-input" type="number" min="1" name="storage_bag_transfer_qty" data-storage-transfer-qty="${esc(name)}" value="${esc(qty)}"${checked ? '' : ' disabled'} /></td></tr>`;
       }
       const count = itemCount(state.sourceId, name);
       const qty = checked ? Number(state.selectedItems[name] || count) : count;
@@ -813,7 +852,8 @@
       <div class="storage-bag-transfer-controls storage-bag-transfer-controls-batch">
         <label class="field-label">集中号<select class="text-input" data-storage-transfer-field="targetId">${identityOptions(state.targetId)}</select></label>
         ${giftMode ? '' : `<label class="field-label">集中号上架物<input class="text-input" data-storage-transfer-field="listingItem" value="${esc(state.listingItem || '')}" placeholder="如 凝血草" /></label>${listingFormatControl}`}
-        <label class="field-label">数量模式<select class="text-input" data-storage-transfer-field="batchQuantityMode"><option value="all"${state.batchQuantityMode !== 'fixed' ? ' selected' : ''}>${giftMode ? '赠送全部库存' : '转移全部库存'}</option><option value="fixed"${state.batchQuantityMode === 'fixed' ? ' selected' : ''}>每号固定上限</option></select></label>
+        <label class="field-label">每号保留<input class="text-input" type="number" min="0" data-storage-transfer-field="batchReserveCount" value="${esc(Math.max(0, Number(state.batchReserveCount) || 0))}" /></label>
+        <label class="field-label">起送阈值<input class="text-input" type="number" min="1" data-storage-transfer-field="batchMinTransferCount" value="${esc(Math.max(1, Number(state.batchMinTransferCount) || 1))}" /></label>
       </div>
       <div class="storage-bag-transfer-batch-options">
         <label><input type="checkbox" data-storage-transfer-flag="batchAllSources"${state.batchAllSources ? ' checked' : ''} />全部可用来源</label>
@@ -844,15 +884,38 @@
         </section>
         <section>
           <label class="field-label">手填清单<textarea class="text-input storage-bag-transfer-textarea" data-storage-transfer-field="manualText" placeholder="妖丹*10 木髓*5 或一行一个">${esc(state.manualText || '')}</textarea></label>
-          <div class="form-label">${state.batchMode ? `全部模式会按每个来源当前库存${giftMode ? '赠送' : '转移'}；固定模式按每个来源上限执行。` : '快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。'}</div>
+          <div class="form-label">${state.batchMode ? `批量按物品需求规划；每号保留和起送阈值会在生成预览时生效。` : '快照不准时直接手填；脚本只提示，不阻塞，游戏回复兜底。'}</div>
         </section>
       </div>
       <div class="storage-bag-transfer-actions">
         <button type="button" class="btn btn-secondary" data-storage-transfer-preview="1"${busy || syncBusy ? ' disabled' : ''}>${state.batchMode ? `生成批量${operationLabel()}预览` : `生成${operationLabel()}预览`}</button>
-        <button type="button" class="btn" data-storage-transfer-start="1"${syncBusy ? ' disabled' : ''}>${startLabel}</button>
+        <button type="button" class="btn" data-storage-transfer-start="1"${syncBusy || startPending ? ' disabled' : ''}>${startLabel}</button>
         <button type="button" class="btn btn-secondary" data-storage-transfer-cancel="1"${transferRunning ? '' : ' disabled'}>取消任务</button>
       </div>
       <div id="storage-bag-transfer-preview" class="storage-bag-transfer-preview">${renderTransferPreviewHtml(preview)}${renderBatchRuntimeHtml(batchRuntime)}${logs ? `<pre>${esc(logs)}</pre>` : ''}</div>`;
+    const nextTableWrap = panel.querySelector('.storage-bag-transfer-table-wrap');
+    if (nextTableWrap) {
+      nextTableWrap.scrollTop = previousTableScrollTop;
+      nextTableWrap.scrollLeft = previousTableScrollLeft;
+    }
+    const nextPreview = panel.querySelector('#storage-bag-transfer-preview');
+    if (nextPreview) nextPreview.scrollTop = previousPreviewScrollTop;
+    let nextActive = null;
+    if (activeField) nextActive = Array.from(panel.querySelectorAll('[data-storage-transfer-field]')).find(function (item) {
+      return item.getAttribute('data-storage-transfer-field') === activeField;
+    }) || null;
+    else if (activeQty) nextActive = Array.from(panel.querySelectorAll('[data-storage-transfer-qty]')).find(function (item) {
+      return item.getAttribute('data-storage-transfer-qty') === activeQty;
+    }) || null;
+    else if (activeName) nextActive = panel.querySelector(`[name="${activeName}"]`);
+    if (nextActive && typeof nextActive.focus === 'function') {
+      nextActive.focus();
+      if (activeSelectionStart !== null && typeof nextActive.setSelectionRange === 'function') {
+        try {
+          nextActive.setSelectionRange(activeSelectionStart, activeSelectionEnd);
+        } catch (_error) {}
+      }
+    }
   }
 
   function resetTransferPreviewOnly() {
@@ -1179,7 +1242,7 @@
       if (itemCheckbox.checked) {
         const stats = state.batchMode ? batchItemStats(name) : null;
         state.selectedItems[name] = state.batchMode
-          ? (state.batchQuantityMode === 'fixed' ? 1 : Number((stats || {}).total || 1))
+          ? Number((stats || {}).total || 1)
           : itemCount(state.sourceId, name);
       }
       else delete state.selectedItems[name];
@@ -1187,8 +1250,11 @@
       const row = itemCheckbox.closest('tr');
       const qtyInput = row ? row.querySelector('input[name="storage_bag_transfer_qty"]') : null;
       if (qtyInput) {
-        qtyInput.disabled = !itemCheckbox.checked || (state.batchMode && state.batchQuantityMode !== 'fixed');
-        if (itemCheckbox.checked) qtyInput.value = String(state.selectedItems[name] || itemCount(state.sourceId, name) || 1);
+        qtyInput.disabled = !itemCheckbox.checked;
+        if (itemCheckbox.checked) {
+          const stats = state.batchMode ? batchItemStats(name) : null;
+          qtyInput.value = String(state.selectedItems[name] || (state.batchMode ? Number((stats || {}).total || 1) : itemCount(state.sourceId, name)) || 1);
+        }
       }
       resetTransferPreviewOnly();
       return;
@@ -1219,7 +1285,7 @@
     const field = event.target.closest('[data-storage-transfer-field]');
     if (!field) return;
     const key = field.getAttribute('data-storage-transfer-field');
-    if (key === 'manualText' || key === 'listingItem' || key === 'listingCount') {
+    if (key === 'manualText' || key === 'listingItem' || key === 'listingCount' || key === 'batchReserveCount' || key === 'batchMinTransferCount') {
       transferState()[key] = field.value;
       transferState().preview = null;
     }

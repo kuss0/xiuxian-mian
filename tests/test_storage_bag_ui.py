@@ -25,6 +25,8 @@ def test_storage_bag_frontend_has_explicit_category_overrides():
     script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
 
     assert "STORAGE_BAG_EXPLICIT_TAGS" in script
+    assert "STORAGE_BAG_PINNED_ITEMS = ['天雷竹', '二级妖丹', '金精矿']" in script
+    assert "comparePinnedItems(a.name, b.name)" in script
     assert "青竹蜂云剑" in script
     assert "元磁山核" in script
     assert "真仙试锋" in script
@@ -59,9 +61,12 @@ def test_storage_bag_transfer_runtime_allows_queueing_next_plan():
     )[0]
 
     assert 'data-storage-transfer-preview="1"${busy || syncBusy ? \' disabled\' : \'\'}' in render_panel
-    assert 'data-storage-transfer-start="1"${syncBusy ? \' disabled\' : \'\'}' in render_panel
+    assert 'data-storage-transfer-start="1"${syncBusy || startPending ? \' disabled\' : \'\'}' in render_panel
+    assert 'data-storage-transfer-field="batchReserveCount"' in render_panel
+    assert 'data-storage-transfer-field="batchMinTransferCount"' in render_panel
     assert "startPending" in render_panel
     assert "加入队列" in render_panel
+    assert "previousTableScrollTop" in render_panel
     assert "if (state.busy) return" not in start_transfer
     assert "当前已有储物袋转移任务执行中" not in start_transfer
 

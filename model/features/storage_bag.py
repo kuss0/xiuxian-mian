@@ -1,3 +1,4 @@
+import json
 import random
 import re
 import time
@@ -30,6 +31,7 @@ STORAGE_BAG_SECTION_NAMES = ("法宝/丹药/杂物", "材料")
 STORAGE_TRANSFER_REPLY_TIMEOUT_SEC = 20
 STORAGE_TRANSFER_RETRY_INTERVAL_SEC = 5
 STORAGE_TRANSFER_MAX_RETRY = 3
+STORAGE_TRANSFER_LISTING_REPEAT_GAP_SEC = 62
 STORAGE_TRANSFER_MODULE_NAME = "储物袋"
 STORAGE_TRANSFER_WAITING_PREFIX = "正在思考，请稍等"
 STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX = "compact"
@@ -94,6 +96,8 @@ _storage_bag_transfer_state = {
     "retry_wait_step": "",
     "retry_family": "",
     "retry_last_at": 0,
+    "task_key": "",
+    "listing_safe_due_at": 0,
 }
 
 _storage_bag_transfer_batch_state = {
@@ -115,7 +119,11 @@ _storage_bag_transfer_batch_state = {
     "logs": [],
     "created_at": 0,
     "updated_at": 0,
+    "next_task_due_at": 0,
+    "waiting_task_key": "",
 }
+
+_storage_bag_recent_listing_sends = {}
 
 
 def _storage_bag_operation_label(operation=None):
@@ -150,6 +158,111 @@ def format_storage_bag_listing_command(listing_item, listing_count, exchange_par
     else:
         listing_text = f"{listing_item} {listing_count}"
     return f"{CMD_STORAGE_BAG_LISTING} {listing_text} 换 {exchange_text}".strip()
+
+
+def _storage_transfer_items_key(items):
+    normalized = []
+    for raw_item in items if isinstance(items, (list, tuple)) else []:
+        if not isinstance(raw_item, dict):
+            continue
+        item_name = str(raw_item.get("item_name") or "").strip()
+        method = str(raw_item.get("method") or "unknown").strip().lower() or "unknown"
+        try:
+            quantity = int(raw_item.get("quantity") or 0)
+        except (TypeError, ValueError):
+            quantity = 0
+        if item_name and quantity > 0:
+            normalized.append((item_name, quantity, method))
+    return sorted(normalized)
+
+
+def _storage_transfer_listing_command_for_items(items, listing_item, listing_count=1, listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX):
+    basic_items = [
+        item for item in items if isinstance(item, dict) and str(item.get("method") or "unknown") != "gift"
+    ]
+    if not basic_items:
+        return ""
+    exchange_parts = [f"{item['item_name']}*{int(item['quantity'])}" for item in basic_items]
+    return format_storage_bag_listing_command(
+        listing_item,
+        listing_count,
+        exchange_parts,
+        listing_syntax=listing_syntax,
+    )
+
+
+def _storage_transfer_task_key(
+    *,
+    source_identity_id,
+    target_identity_id,
+    items,
+    listing_item="",
+    listing_count=1,
+    listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+    operation="transfer",
+):
+    payload = [
+        "gift" if str(operation or "").strip().lower() == "gift" else "transfer",
+        int(source_identity_id or 0),
+        int(target_identity_id or 0),
+        normalize_storage_bag_listing_count(listing_count),
+        normalize_storage_bag_listing_syntax(listing_syntax),
+        str(listing_item or "").strip(),
+        _storage_transfer_items_key(items),
+    ]
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _storage_transfer_task_key_from_task(task):
+    task = task if isinstance(task, dict) else {}
+    return str(task.get("task_key") or _storage_transfer_task_key(
+        source_identity_id=task.get("source_identity_id"),
+        target_identity_id=task.get("target_identity_id"),
+        items=task.get("items") or [],
+        listing_item=task.get("listing_item") or "",
+        listing_count=task.get("listing_count") or 1,
+        listing_syntax=task.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+        operation=task.get("operation") or "transfer",
+    ))
+
+
+def _storage_transfer_active_task_keys():
+    keys = set()
+    if _storage_bag_transfer_state.get("running"):
+        task_key = str(_storage_bag_transfer_state.get("task_key") or "").strip()
+        if task_key:
+            keys.add(task_key)
+    active_task = _storage_bag_transfer_batch_state.get("active_task")
+    if isinstance(active_task, dict) and active_task:
+        keys.add(_storage_transfer_task_key_from_task(active_task))
+    for task in _storage_bag_transfer_batch_state.get("queue") or []:
+        if isinstance(task, dict):
+            keys.add(_storage_transfer_task_key_from_task(task))
+    return keys
+
+
+def _storage_listing_repeat_key(identity_id, command):
+    return int(identity_id or 0), str(command or "").strip()
+
+
+def _storage_listing_initial_wait_sec(identity_id, command, now=None):
+    command = str(command or "").strip()
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0 or not command:
+        return 0.0
+    now = time.time() if now is None else float(now)
+    last_at = float(_storage_bag_recent_listing_sends.get(_storage_listing_repeat_key(identity_id, command), 0) or 0)
+    if last_at <= 0:
+        return 0.0
+    return max(0.0, last_at + STORAGE_TRANSFER_LISTING_REPEAT_GAP_SEC - now)
+
+
+def _mark_storage_listing_initial_sent(identity_id, command, now=None):
+    command = str(command or "").strip()
+    identity_id = int(identity_id or 0)
+    if identity_id <= 0 or not command:
+        return
+    _storage_bag_recent_listing_sends[_storage_listing_repeat_key(identity_id, command)] = time.time() if now is None else float(now)
 
 
 def _normalize_username(value):
@@ -410,6 +523,7 @@ def get_storage_bag_transfer_snapshot():
     snapshot["updated_at_text"] = fmt_abs_ts(float(snapshot.get("updated_at") or 0))
     snapshot["reply_due_at_text"] = fmt_abs_ts(float(snapshot.get("reply_due_at") or 0))
     snapshot["gift_next_due_at_text"] = fmt_abs_ts(float(snapshot.get("gift_next_due_at") or 0))
+    snapshot["listing_safe_due_at_text"] = fmt_abs_ts(float(snapshot.get("listing_safe_due_at") or 0))
     batch = dict(_storage_bag_transfer_batch_state)
     batch["queue"] = [dict(task) for task in _storage_bag_transfer_batch_state.get("queue") or []]
     batch["active_task"] = dict(_storage_bag_transfer_batch_state.get("active_task") or {}) or None
@@ -418,6 +532,7 @@ def get_storage_bag_transfer_snapshot():
     batch["logs"] = list(_storage_bag_transfer_batch_state.get("logs") or [])
     batch["created_at_text"] = fmt_abs_ts(float(batch.get("created_at") or 0))
     batch["updated_at_text"] = fmt_abs_ts(float(batch.get("updated_at") or 0))
+    batch["next_task_due_at_text"] = fmt_abs_ts(float(batch.get("next_task_due_at") or 0))
     snapshot["batch"] = batch
     return snapshot
 
@@ -463,6 +578,8 @@ def _clear_storage_bag_transfer_state():
         "retry_wait_step": "",
         "retry_family": "",
         "retry_last_at": 0,
+        "task_key": "",
+        "listing_safe_due_at": 0,
     })
 
 
@@ -486,6 +603,8 @@ def _clear_storage_bag_transfer_batch_state():
         "logs": [],
         "created_at": 0,
         "updated_at": 0,
+        "next_task_due_at": 0,
+        "waiting_task_key": "",
     })
 
 
@@ -628,6 +747,8 @@ async def _send_storage_bag_transfer_command(
             _storage_bag_transfer_state["reply_due_at"] = now + STORAGE_TRANSFER_RETRY_INTERVAL_SEC
             _storage_bag_transfer_state["retry_last_at"] = now
         return None
+    if family == "storage_bag_listing" and not retry:
+        _mark_storage_listing_initial_sent(identity_id, command, now=now)
     msg_id = int(getattr(msg, "id", 0) or 0)
     _storage_bag_transfer_state[msg_id_key] = msg_id
     _storage_bag_transfer_state["step"] = str(wait_step or "")
@@ -1162,6 +1283,19 @@ async def start_storage_bag_transfer_task(
             exchange_parts,
             listing_syntax=listing_syntax,
         )
+    task_key = _storage_transfer_task_key(
+        source_identity_id=source_identity_id,
+        target_identity_id=target_identity_id,
+        items=normalized_items,
+        listing_item=listing_item,
+        listing_count=listing_count,
+        listing_syntax=listing_syntax,
+        operation=operation,
+    )
+    if listing_command and not batch_child:
+        wait_sec = _storage_listing_initial_wait_sec(target_identity_id, listing_command)
+        if wait_sec > 0:
+            return False, f"相同上架命令刚发送，约 {int(wait_sec) + 1} 秒后再试", get_storage_bag_transfer_snapshot()
     now = time.time()
     _clear_storage_bag_transfer_state()
     _storage_bag_transfer_state.update({
@@ -1177,6 +1311,7 @@ async def start_storage_bag_transfer_task(
         "listing_count": listing_count,
         "listing_syntax": listing_syntax,
         "listing_command": listing_command,
+        "task_key": task_key,
         "step": "listing" if basic_items else "gift_marker",
         "created_at": now,
         "updated_at": now,
@@ -1278,6 +1413,27 @@ async def _start_next_storage_bag_transfer_batch_task():
         op_label = _storage_bag_operation_label()
         _finalize_storage_bag_transfer_batch(True, f"批量{op_label}完成：{completed}/{total}")
         return True
+    candidate = dict(queue[0] or {})
+    listing_command = str(candidate.get("listing_command") or "").strip()
+    target_identity_id = int(candidate.get("target_identity_id") or _storage_bag_transfer_batch_state.get("target_identity_id") or 0)
+    if listing_command:
+        wait_sec = _storage_listing_initial_wait_sec(target_identity_id, listing_command)
+        if wait_sec > 0:
+            due_at = time.time() + wait_sec
+            task_key = _storage_transfer_task_key_from_task(candidate)
+            previous_waiting_key = str(_storage_bag_transfer_batch_state.get("waiting_task_key") or "")
+            _storage_bag_transfer_batch_state["status"] = "waiting_safe_gap"
+            _storage_bag_transfer_batch_state["next_task_due_at"] = due_at
+            _storage_bag_transfer_batch_state["waiting_task_key"] = task_key
+            _storage_bag_transfer_batch_state["updated_at"] = time.time()
+            if previous_waiting_key != task_key:
+                _storage_transfer_batch_log(
+                    f"相同上架命令刚发送，下一笔延后约 {int(wait_sec) + 1} 秒：{listing_command}",
+                    level="warning",
+                )
+            return True
+    _storage_bag_transfer_batch_state["next_task_due_at"] = 0
+    _storage_bag_transfer_batch_state["waiting_task_key"] = ""
     task = dict(queue.pop(0) or {})
     _storage_bag_transfer_batch_state["active_task"] = task
     _storage_bag_transfer_batch_state["status"] = "running_task"
@@ -1415,6 +1571,21 @@ async def start_storage_bag_transfer_batch(
             return False, "请选择目标身份用于上架的物品", get_storage_bag_transfer_snapshot()
         source_profile = get_send_as_profile(source_identity_id)
         target_profile = get_send_as_profile(target_identity_id)
+        task_listing_command = _storage_transfer_listing_command_for_items(
+            normalized_items,
+            task_listing_item,
+            task_listing_count,
+            task_listing_syntax,
+        )
+        task_key = _storage_transfer_task_key(
+            source_identity_id=source_identity_id,
+            target_identity_id=target_identity_id,
+            items=normalized_items,
+            listing_item=task_listing_item,
+            listing_count=task_listing_count,
+            listing_syntax=task_listing_syntax,
+            operation=operation,
+        )
         normalized_tasks.append({
             "source_identity_id": source_identity_id,
             "source_label": source_profile.get("label") or source_profile.get("username") or str(source_identity_id),
@@ -1424,14 +1595,30 @@ async def start_storage_bag_transfer_batch(
             "listing_item": task_listing_item,
             "listing_count": task_listing_count,
             "listing_syntax": task_listing_syntax,
+            "listing_command": task_listing_command,
+            "task_key": task_key,
             "operation": operation,
         })
     op_label = _storage_bag_operation_label(operation)
     if not normalized_tasks:
         return False, f"没有可执行的批量{op_label}任务", get_storage_bag_transfer_snapshot()
     if _storage_bag_transfer_state.get("running") or _storage_bag_transfer_batch_state.get("running"):
+        existing_keys = _storage_transfer_active_task_keys()
+        fresh_tasks = []
+        duplicate_count = 0
+        for task in normalized_tasks:
+            task_key = _storage_transfer_task_key_from_task(task)
+            if task_key in existing_keys:
+                duplicate_count += 1
+                continue
+            existing_keys.add(task_key)
+            fresh_tasks.append(task)
+        if duplicate_count:
+            _storage_transfer_batch_log(f"忽略重复{op_label}任务：{duplicate_count} 个", level="warning")
+        if not fresh_tasks:
+            return False, f"相同储物袋{op_label}任务已在执行或排队，已忽略重复启动", get_storage_bag_transfer_snapshot()
         return await _enqueue_storage_bag_transfer_batch_tasks(
-            normalized_tasks,
+            fresh_tasks,
             target_identity_id=target_identity_id,
             listing_item=listing_item,
             listing_count=listing_count,

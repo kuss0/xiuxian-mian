@@ -263,6 +263,7 @@ _storage_bag_api_state = {
 }
 _STORAGE_BAG_API_KEEPALIVE_INTERVAL_SEC = 30 * 60
 _STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC = 10 * 60
+_STORAGE_BAG_PINNED_ITEM_ORDER = ("天雷竹", "二级妖丹", "金精矿")
 _LOG_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
 _REPLICA_UI_KIND_VIRTUAL_HALL = "virtual_hall"
 _REPLICA_UI_KIND_CANGKUN = "cangkun"
@@ -413,6 +414,24 @@ def _storage_bag_transfer_method_label(method):
         "blocked": "不可转移",
         "unknown": "未知",
     }.get(str(method or "unknown"), "未知")
+
+
+def _coerce_non_negative_int(value, default=0):
+    try:
+        parsed = int(value if value not in {None, ""} else default)
+    except (TypeError, ValueError):
+        parsed = int(default or 0)
+    return max(0, parsed)
+
+
+def _storage_bag_item_sort_key(item_name):
+    name = str(item_name or "")
+    pinned = {item: index for index, item in enumerate(_STORAGE_BAG_PINNED_ITEM_ORDER)}
+    if name in pinned:
+        return pinned[name], name
+    if name == "灵石":
+        return len(_STORAGE_BAG_PINNED_ITEM_ORDER), name
+    return len(_STORAGE_BAG_PINNED_ITEM_ORDER) + 1, name
 
 
 def _format_storage_bag_identity_options(rows):
@@ -2489,6 +2508,8 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
     listing_item = str(payload.get("listing_item") or "").strip()
     listing_count = normalize_storage_bag_listing_count(payload.get("listing_count") or 1)
     listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX)
+    reserve_count = _coerce_non_negative_int(payload.get("reserve_count"), 0)
+    min_transfer_count = max(1, _coerce_non_negative_int(payload.get("min_transfer_count"), 1))
     mode = str(payload.get("mode") or "all").strip().lower()
     if mode not in {"all", "fixed"}:
         mode = "all"
@@ -2496,61 +2517,103 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
     tasks = []
     skipped = []
     warnings = []
-    for source_id in sources:
-        task_items = []
-        for request_item in requested_items:
-            item_name = request_item["item_name"]
+    item_plans = []
+    source_row_map = {int(row.get("identity_id") or 0): row for row in rows}
+    target_row = source_row_map.get(int(target_identity_id), {})
+    requested_items = sorted(requested_items, key=lambda item: _storage_bag_item_sort_key(item.get("item_name")))
+    for request_item in requested_items:
+        item_name = str(request_item.get("item_name") or "").strip()
+        if not item_name:
+            continue
+        rule = _get_storage_bag_item_rule(item_name)
+        method = rule.get("method") or "unknown"
+        if method == "blocked":
+            warnings.append(f"{item_name} 不可赠送，已跳过" if is_gift_operation else f"{item_name} 不可转移，已跳过")
+            continue
+        if is_gift_operation:
+            method = "gift"
+        requested_quantity = int(request_item.get("quantity") or 0)
+        demand_remaining = requested_quantity if requested_quantity > 0 else None
+        candidates = []
+        for source_id in sources:
             source_count = _get_storage_bag_item_count(rows, source_id, item_name)
-            if source_count <= 0:
+            transferable_count = max(0, source_count - reserve_count)
+            if transferable_count < min_transfer_count:
                 continue
-            rule = _get_storage_bag_item_rule(item_name)
-            method = rule.get("method") or "unknown"
-            if method == "blocked":
-                warnings.append(f"{item_name} 不可赠送，已跳过" if is_gift_operation else f"{item_name} 不可转移，已跳过")
+            candidates.append({
+                "source_identity_id": int(source_id),
+                "source_count": source_count,
+                "transferable_count": transferable_count,
+            })
+        candidates.sort(key=lambda item: (-int(item.get("transferable_count") or 0), int(item.get("source_identity_id") or 0)))
+        planned_quantity = 0
+        used_sources = []
+        for candidate in candidates:
+            if demand_remaining is not None and demand_remaining <= 0:
+                break
+            quantity = int(candidate["transferable_count"])
+            if demand_remaining is not None:
+                quantity = min(quantity, demand_remaining)
+            if quantity < min_transfer_count:
                 continue
-            if is_gift_operation:
-                method = "gift"
-            requested_quantity = int(request_item.get("quantity") or 0)
-            quantity = source_count if mode == "all" or requested_quantity <= 0 else min(requested_quantity, source_count)
-            if quantity <= 0:
-                continue
-            task_items.append({
+            source_id = int(candidate["source_identity_id"])
+            source_row = source_row_map.get(source_id, {})
+            task_item = {
                 "item_name": item_name,
                 "quantity": quantity,
-                "source_count": source_count,
+                "source_count": int(candidate["source_count"]),
+                "source_left_count": max(0, int(candidate["source_count"]) - quantity),
+                "reserve_count": reserve_count,
+                "min_transfer_count": min_transfer_count,
                 "target_count": _get_storage_bag_item_count(rows, target_identity_id, item_name),
                 "method": method,
                 "method_label": _storage_bag_transfer_method_label(method),
                 "tags": rule.get("tags") or [_STORAGE_BAG_DEFAULT_TAG],
+            }
+            task_exchange_parts = [] if method == "gift" else [f"{item_name}*{quantity}"]
+            if task_exchange_parts and not listing_item:
+                return False, "请选择集中号用于上架的物品", None
+            tasks.append({
+                "source_identity_id": source_id,
+                "source_label": source_row.get("label") or source_row.get("display_name") or str(source_id),
+                "target_identity_id": target_identity_id,
+                "target_label": target_row.get("label") or target_row.get("display_name") or str(target_identity_id),
+                "listing_item": "" if is_gift_operation else listing_item,
+                "listing_count": listing_count,
+                "listing_syntax": listing_syntax,
+                "listing_command": format_storage_bag_listing_command(
+                    listing_item,
+                    listing_count,
+                    task_exchange_parts,
+                    listing_syntax=listing_syntax,
+                ) if task_exchange_parts and not is_gift_operation else "",
+                "operation": operation,
+                "items": [task_item],
             })
-        if not task_items:
-            skipped.append(source_id)
-            continue
-        if not is_gift_operation and any(str(item.get("method") or "unknown") != "gift" for item in task_items) and not listing_item:
-            return False, "请选择集中号用于上架的物品", None
-        task_exchange_parts = [
-            f"{item['item_name']}*{int(item['quantity'])}"
-            for item in task_items
-            if str(item.get("method") or "unknown") != "gift"
-        ]
-        source_row = next((row for row in rows if int(row.get("identity_id") or 0) == int(source_id)), {})
-        target_row = next((row for row in rows if int(row.get("identity_id") or 0) == int(target_identity_id)), {})
-        tasks.append({
-            "source_identity_id": int(source_id),
-            "source_label": source_row.get("label") or source_row.get("display_name") or str(source_id),
-            "target_identity_id": target_identity_id,
-            "target_label": target_row.get("label") or target_row.get("display_name") or str(target_identity_id),
-            "listing_item": "" if is_gift_operation else listing_item,
-            "listing_count": listing_count,
-            "listing_syntax": listing_syntax,
-            "listing_command": format_storage_bag_listing_command(
-                listing_item,
-                listing_count,
-                task_exchange_parts,
-                listing_syntax=listing_syntax,
-            ) if task_exchange_parts and not is_gift_operation else "",
-            "operation": operation,
-            "items": task_items,
+            planned_quantity += quantity
+            used_sources.append({
+                "source_identity_id": source_id,
+                "source_label": source_row.get("label") or source_row.get("display_name") or str(source_id),
+                "quantity": quantity,
+                "source_count": int(candidate["source_count"]),
+                "source_left_count": max(0, int(candidate["source_count"]) - quantity),
+            })
+            if demand_remaining is not None:
+                demand_remaining -= quantity
+        if not candidates:
+            skipped.extend(source_id for source_id in sources if source_id not in skipped)
+            warnings.append(f"{item_name} 无来源满足保留/起送条件")
+        elif requested_quantity > 0 and planned_quantity < requested_quantity:
+            warnings.append(f"{item_name} 需求 {requested_quantity}，按保留/起送后仅规划 {planned_quantity}")
+        item_plans.append({
+            "item_name": item_name,
+            "requested_quantity": requested_quantity,
+            "planned_quantity": planned_quantity,
+            "reserve_count": reserve_count,
+            "min_transfer_count": min_transfer_count,
+            "candidate_count": len(candidates),
+            "used_source_count": len(used_sources),
+            "sources": used_sources,
         })
     if not tasks:
         return False, "没有匹配库存的来源身份", None
@@ -2563,10 +2626,13 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
         "listing_count": listing_count,
         "listing_syntax": listing_syntax,
         "mode": mode,
+        "reserve_count": reserve_count,
+        "min_transfer_count": min_transfer_count,
         "tasks": tasks,
-        "skipped_source_ids": skipped,
+        "item_plans": item_plans,
+        "skipped_source_ids": sorted(set(skipped)),
         "warnings": sorted(set(warnings)),
-        "summary": f"批量赠送预览 {len(tasks)} 个来源，{total_items} 个条目，合计 {total_quantity}" if is_gift_operation else f"批量预览 {len(tasks)} 个来源，{total_items} 个条目，合计 {total_quantity}",
+        "summary": f"批量赠送预览 {len(item_plans)} 个物品，{len(tasks)} 笔任务，合计 {total_quantity}" if is_gift_operation else f"批量预览 {len(item_plans)} 个物品，{len(tasks)} 笔任务，合计 {total_quantity}",
     }
     return True, "已生成批量赠送预览" if is_gift_operation else "已生成批量转移预览", preview
 
@@ -2631,7 +2697,7 @@ def get_storage_bag_snapshot():
             "empty": bool((record or {}).get("empty")),
         })
     rows.sort(key=lambda row: get_realm_sort_key(get_send_as_profile(row["identity_id"]).get("realm"), row["identity_id"]))
-    sorted_item_names = sorted(item_names, key=lambda name: (name != "灵石", name))
+    sorted_item_names = sorted(item_names, key=_storage_bag_item_sort_key)
     item_rules = {}
     for item_name in sorted_item_names:
         rule = _get_storage_bag_item_rule(item_name)
