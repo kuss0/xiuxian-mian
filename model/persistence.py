@@ -551,6 +551,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN hehuan_observation TEXT NOT NULL DEFAULT '{}' ")
     if "tianxing_observation" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_observation TEXT NOT NULL DEFAULT '{}' ")
+    if "tianxing_auto_config" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_auto_config TEXT NOT NULL DEFAULT '{}' ")
     if "yinluo_observation" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yinluo_observation TEXT NOT NULL DEFAULT '{}' ")
     if "world_boss_action_count" not in runtime_columns:
@@ -1467,6 +1469,7 @@ def init_db():
             concubine_heart_last_error TEXT NOT NULL DEFAULT '',
             hehuan_observation TEXT NOT NULL DEFAULT '{}',
             tianxing_observation TEXT NOT NULL DEFAULT '{}',
+            tianxing_auto_config TEXT NOT NULL DEFAULT '{}',
             yinluo_observation TEXT NOT NULL DEFAULT '{}',
             world_boss_action_count INTEGER NOT NULL DEFAULT 0,
             world_boss_action_limit INTEGER NOT NULL DEFAULT 5,

@@ -26,6 +26,7 @@ TIANXING_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
 TIANXING_STARS = ("紫微", "天府", "太阴", "贪狼")
 TIANXING_ROUTES = ("闭关", "炼制", "探索", "斗法")
+TIANXING_ROUTE_AUTO = "auto"
 
 RE_BRACKET = re.compile(r"【([^】]+)】")
 RE_STAR_EFFECT = re.compile(r"命盘【(?P<star>[^】]+)】照命(?P<desc>[^。\n]*)")
@@ -101,8 +102,117 @@ def _default_tianxing_observation():
         "auto_next_time": 0,
         "auto_last_action": "",
         "auto_last_error": "",
+        "auto_last_plan": "",
+        "auto_last_plan_at": 0,
         "recent": [],
     }
+
+
+def _default_tianxing_auto_config():
+    return {
+        "auto_panel_enabled": True,
+        "auto_observe_enabled": True,
+        "auto_clear_calamity_enabled": True,
+        "auto_set_star_enabled": False,
+        "auto_predict_enabled": False,
+        "auto_change_fate_enabled": False,
+        "strategy_dry_run_enabled": True,
+        "star_priority": ["贪狼", "太阴", "天府", "紫微"],
+        "predict_route": TIANXING_ROUTE_AUTO,
+        "change_route": TIANXING_ROUTE_AUTO,
+        "route_priority": ["探索", "闭关", "炼制", "斗法"],
+        "min_tianji_for_change": 6,
+        "min_calamity_to_clear": 1,
+        "status_backoff_hours": 6,
+    }
+
+
+def _coerce_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on", "open", "enable", "enabled", "开", "开启", "启用"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off", "close", "disable", "disabled", "关", "关闭", "停用"}:
+        return False
+    return bool(default)
+
+
+def _coerce_int_range(value, default, min_value, max_value):
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        parsed = int(default)
+    return max(int(min_value), min(int(max_value), parsed))
+
+
+def _coerce_float_range(value, default, min_value, max_value):
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = float(default)
+    if not math.isfinite(parsed):
+        parsed = float(default)
+    return max(float(min_value), min(float(max_value), parsed))
+
+
+def _normalize_choice_list(value, allowed, default):
+    allowed_set = set(allowed)
+    raw_items = []
+    if isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    elif isinstance(value, str):
+        raw_items = re.split(r"[\s,，、|/]+", value.strip())
+    normalized = []
+    for item in raw_items:
+        item = str(item or "").strip()
+        if item in allowed_set and item not in normalized:
+            normalized.append(item)
+    if not normalized:
+        normalized = [item for item in default if item in allowed_set]
+    return normalized
+
+
+def _normalize_route_choice(value, default=TIANXING_ROUTE_AUTO):
+    value = str(value or "").strip()
+    if value == TIANXING_ROUTE_AUTO:
+        return TIANXING_ROUTE_AUTO
+    if value in TIANXING_ROUTES:
+        return value
+    return default
+
+
+def normalize_tianxing_auto_config(value=None):
+    default = _default_tianxing_auto_config()
+    config = copy.deepcopy(default)
+    if isinstance(value, dict):
+        config.update(value)
+    for key in (
+        "auto_panel_enabled",
+        "auto_observe_enabled",
+        "auto_clear_calamity_enabled",
+        "auto_set_star_enabled",
+        "auto_predict_enabled",
+        "auto_change_fate_enabled",
+        "strategy_dry_run_enabled",
+    ):
+        config[key] = _coerce_bool(config.get(key), default.get(key, False))
+    config["star_priority"] = _normalize_choice_list(config.get("star_priority"), TIANXING_STARS, default["star_priority"])
+    config["route_priority"] = _normalize_choice_list(config.get("route_priority"), TIANXING_ROUTES, default["route_priority"])
+    config["predict_route"] = _normalize_route_choice(config.get("predict_route"), default["predict_route"])
+    config["change_route"] = _normalize_route_choice(config.get("change_route"), default["change_route"])
+    config["min_tianji_for_change"] = _coerce_int_range(config.get("min_tianji_for_change"), default["min_tianji_for_change"], 3, 999)
+    config["min_calamity_to_clear"] = _coerce_int_range(config.get("min_calamity_to_clear"), default["min_calamity_to_clear"], 1, 99)
+    config["status_backoff_hours"] = _coerce_float_range(config.get("status_backoff_hours"), default["status_backoff_hours"], 1, 24)
+    return config
+
+
+def set_tianxing_auto_config(config):
+    normalized = normalize_tianxing_auto_config(config)
+    state["tianxing_auto_config"] = normalized
+    return normalized
 
 
 def normalize_tianxing_observation(value=None):
@@ -535,6 +645,74 @@ def _set_tianxing_auto_wait(observed, now, action, next_time=None, error=""):
     save_state()
 
 
+def _status_backoff_sec(config):
+    return max(3600, int(float((config or {}).get("status_backoff_hours", 6) or 6) * 3600))
+
+
+def _choose_by_priority(candidates, priority):
+    candidates = [str(item).strip() for item in (candidates or []) if str(item or "").strip()]
+    for item in priority or []:
+        if item in candidates:
+            return item
+    return candidates[0] if candidates else ""
+
+
+def _choose_config_route(config, key, observed=None):
+    route = _normalize_route_choice((config or {}).get(key), TIANXING_ROUTE_AUTO)
+    if route != TIANXING_ROUTE_AUTO:
+        return route
+    if key == "change_route":
+        current_prediction = str((observed or {}).get("current_prediction") or "").strip()
+        if current_prediction in TIANXING_ROUTES:
+            return current_prediction
+    return _choose_by_priority(TIANXING_ROUTES, (config or {}).get("route_priority") or [])
+
+
+def _build_tianxing_strategy_plan(observed, config, now):
+    if not _has_recent_observation(observed, now):
+        return _manual_block("idle", "缺少近期天星宗状态。")
+
+    fixed_star = str(observed.get("fixed_star") or "").strip()
+    available_stars = [str(item).strip() for item in observed.get("available_stars") or [] if str(item or "").strip()]
+    if not fixed_star:
+        if available_stars and config.get("auto_set_star_enabled"):
+            star = _choose_by_priority(available_stars, config.get("star_priority") or [])
+            if not star:
+                return _manual_block("set_star", "未能从今日可选命星中选出目标。")
+            return build_tianxing_manual_plan("set_star", star, now=now)
+        return _manual_block("idle", "未定命星，自动定命未开启。")
+
+    prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+    if config.get("auto_predict_enabled") and prediction_until <= now and not str(observed.get("current_prediction") or "").strip():
+        route = _choose_config_route(config, "predict_route", observed)
+        return build_tianxing_manual_plan("predict", route, now=now)
+
+    change_until = float(observed.get("current_change_until", 0) or 0)
+    tianji_value = int(observed.get("tianji_value", 0) or 0)
+    if (
+        config.get("auto_change_fate_enabled")
+        and change_until <= now
+        and not str(observed.get("current_change") or "").strip()
+        and tianji_value >= int(config.get("min_tianji_for_change", 6) or 6)
+    ):
+        route = _choose_config_route(config, "change_route", observed)
+        return build_tianxing_manual_plan("change_fate", route, now=now)
+
+    return _manual_block("idle", "未满足自动定命/推命/改命条件。")
+
+
+def _record_tianxing_dry_run(observed, now, plan, config):
+    action = str(plan.get("action") or "")
+    command = str(plan.get("command") or "")
+    observed["auto_last_action"] = f"dry_run_{action}" if action else "dry_run"
+    observed["auto_last_error"] = "dry-run：战略动作仅记录，不发送。"
+    observed["auto_last_plan"] = command or plan.get("reason") or ""
+    observed["auto_last_plan_at"] = float(now)
+    observed["auto_next_time"] = float(now + _status_backoff_sec(config))
+    state["tianxing_observation"] = observed
+    save_state()
+
+
 async def run_tianxing_scheduler(now):
     now = float(now if now is not None else time.time())
     if not state.get("tianxing_enabled"):
@@ -545,19 +723,34 @@ async def run_tianxing_scheduler(now):
         return
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
         return
 
-    if not _has_recent_observation(observed, now):
+    calamity_count = int(observed.get("calamity_count", 0) or 0)
+    calamity_threshold = int(config.get("min_calamity_to_clear", 1) or 1)
+    if not _has_recent_observation(observed, now) and config.get("auto_panel_enabled"):
         plan = build_tianxing_manual_plan("panel", now=now)
-    elif int(observed.get("calamity_count", 0) or 0) > 0:
-        plan = build_tianxing_manual_plan("clear_calamity", now=now)
-    elif not observed.get("fixed_star") and not observed.get("available_stars"):
+    elif calamity_count >= calamity_threshold:
+        if config.get("auto_clear_calamity_enabled"):
+            plan = build_tianxing_manual_plan("clear_calamity", now=now)
+        else:
+            _set_tianxing_auto_wait(
+                observed,
+                now,
+                "idle",
+                now + _status_backoff_sec(config),
+                f"逆命劫 {calamity_count} 已达阈值 {calamity_threshold}，自动消劫关闭，暂停战略动作。",
+            )
+            return
+    elif not observed.get("fixed_star") and not observed.get("available_stars") and config.get("auto_observe_enabled"):
         plan = build_tianxing_manual_plan("observe", now=now)
     else:
-        _set_tianxing_auto_wait(observed, now, "idle", now + TIANXING_AUTO_STATUS_BACKOFF_SEC)
-        return
+        plan = _build_tianxing_strategy_plan(observed, config, now)
+        if not plan.get("allowed") and str(plan.get("action") or "") == "idle":
+            _set_tianxing_auto_wait(observed, now, "idle", now + _status_backoff_sec(config), plan.get("reason") or "")
+            return
 
     action = str(plan.get("action") or "")
     if not plan.get("allowed"):
@@ -568,6 +761,10 @@ async def run_tianxing_scheduler(now):
             now + TIANXING_AUTO_BLOCK_BACKOFF_SEC,
             plan.get("reason") or "天星宗自动调度未满足条件",
         )
+        return
+
+    if action in {"set_star", "predict", "change_fate"} and config.get("strategy_dry_run_enabled"):
+        _record_tianxing_dry_run(observed, now, plan, config)
         return
 
     msg = await send_game_command(
@@ -595,7 +792,9 @@ async def run_tianxing_scheduler(now):
 
     observed["auto_last_action"] = action
     observed["auto_last_error"] = ""
-    observed["auto_next_time"] = sent_at + TIANXING_AUTO_STATUS_BACKOFF_SEC
+    observed["auto_last_plan"] = plan.get("command") or ""
+    observed["auto_last_plan_at"] = float(sent_at)
+    observed["auto_next_time"] = sent_at + _status_backoff_sec(config)
     state["tianxing_observation"] = observed
     save_state()
 
@@ -637,6 +836,7 @@ def get_tianxing_status_text():
         ])
     dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     lines = [
         "🌌 天星宗",
         f"- 模块：{'开启' if state.get('tianxing_enabled') else '关闭'}（被动观察，手动动作受控发送）",
@@ -649,6 +849,8 @@ def get_tianxing_status_text():
         f"- 最近动作：{observed.get('last_action') or '未记录'} / {observed.get('last_result') or '未记录'}",
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
+        f"- 自动策略：查盘{'开' if config.get('auto_panel_enabled') else '关'}｜观命{'开' if config.get('auto_observe_enabled') else '关'}｜消劫{'开' if config.get('auto_clear_calamity_enabled') else '关'}｜定命{'开' if config.get('auto_set_star_enabled') else '关'}｜推命{'开' if config.get('auto_predict_enabled') else '关'}｜改命{'开' if config.get('auto_change_fate_enabled') else '关'}｜dry-run{'开' if config.get('strategy_dry_run_enabled') else '关'}",
+        f"- 策略优先级：命星 {_format_list(config.get('star_priority'))}｜路线 {_format_list(config.get('route_priority'))}",
     ]
     if dirty_fields:
         lines.append(f"- 状态异常：{_format_list(dirty_fields)} 不可解析，自动发送已暂停")
@@ -662,6 +864,8 @@ def get_tianxing_status_text():
         lines.append(f"- 异常：{observed.get('last_error')}")
     if observed.get("auto_last_error"):
         lines.append(f"- 自动异常：{observed.get('auto_last_error')}")
+    if observed.get("auto_last_plan"):
+        lines.append(f"- 最近自动计划：{observed.get('auto_last_plan')}｜{fmt_abs_ts(observed.get('auto_last_plan_at', 0))}")
     recent = observed.get("recent") or []
     if recent:
         lines.append("- 最近事件：")
@@ -676,7 +880,9 @@ __all__ = [
     "execute_tianxing_manual_action",
     "get_tianxing_status_text",
     "looks_like_tianxing_text",
+    "normalize_tianxing_auto_config",
     "normalize_tianxing_observation",
     "parse_tianxing_text",
     "run_tianxing_scheduler",
+    "set_tianxing_auto_config",
 ]

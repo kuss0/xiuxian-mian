@@ -84,6 +84,7 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
+from .features.tianxing import run_tianxing_scheduler
 from .features.yinluo import run_yinluo_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
 from .features.small_world import (
@@ -236,6 +237,7 @@ _PHASEFUL_IDENTITY_SCHEDULERS = (
 _ORDINARY_IDENTITY_SCHEDULERS = (
     run_pet_scheduler,
     run_ranch_scheduler,
+    run_tianxing_scheduler,
     run_wild_training_scheduler,
     run_stargazer_scheduler,
     run_formation_scheduler,
@@ -307,6 +309,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_taiyi_bootstrap_check": {"manifest_names": ("太一",), "helper": True},
     "run_taiyi_scheduler": {"manifest_names": ("太一",), "helper": False},
     "run_tianti_scheduler": {"manifest_names": ("登天阶",), "helper": False},
+    "run_tianxing_scheduler": {"manifest_names": ("天星宗",), "helper": False},
     "run_tower_scheduler": {"manifest_names": ("闯塔",), "helper": False},
     "run_tree_bootstrap_check": {"manifest_names": ("灵树",), "helper": True},
     "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},

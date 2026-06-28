@@ -141,6 +141,22 @@
     return '<span class="module-setting-current">'+esc(label)+'：'+esc(value || '未设置')+'</span>';
   }
 
+  function checkedAttr(value){
+    return value ? ' checked' : '';
+  }
+
+  function settingCheckbox(key, label, checked){
+    return '<label class="checkbox-inline checkbox-inline-small module-setting-checkbox">'+
+      '<input type="checkbox" data-tianxing-config="'+esc(key)+'"'+checkedAttr(checked)+' /> '+esc(label)+
+    '</label>';
+  }
+
+  function tianxingRouteSelect(key, selected){
+    var options = [{value:'auto', label:'自动'}, '探索', '闭关', '炼制', '斗法'];
+    return '<label class="module-setting-field"><span>'+esc(key === 'predict_route' ? '推命' : '改命')+'</span>'+
+      '<select class="text-input" data-tianxing-config="'+esc(key)+'">'+optionHtml(options, selected || 'auto')+'</select></label>';
+  }
+
   function moduleCardPriority(title){
     var normalized = String(title || '').trim();
     if(normalized === '日常'){
@@ -379,6 +395,51 @@
           currentChoiceText('最近成功', identity.hehuan_last_warm_success_at || '未记录')+
           currentChoiceText('自动调度', identity.hehuan_auto_next_time || '未设置')
         );
+      }else if(module.name === '天星宗'){
+        var tianxing = identity.tianxing || {};
+        var txConfig = tianxing.auto_config || {};
+        var availableStars = (tianxing.available_stars || []).join('、') || '未记录';
+        moduleNote = '<div class="module-note">命星：'+esc(tianxing.fixed_star || '未定')+
+          '｜天机 '+esc(tianxing.tianji_value || 0)+
+          '｜逆命劫 '+esc(tianxing.calamity_count || 0)+
+          '｜dry-run '+(txConfig.strategy_dry_run_enabled ? '开' : '关')+'</div>';
+        settingsTools =
+          settingSection(
+            '状态校准',
+            '查盘和观命用于校准真实状态；消劫会消耗修为和宗门贡献，默认沿用旧逻辑开启。',
+            settingCheckbox('auto_panel_enabled', '自动查盘', txConfig.auto_panel_enabled)+
+            settingCheckbox('auto_observe_enabled', '自动观命', txConfig.auto_observe_enabled)+
+            settingCheckbox('auto_clear_calamity_enabled', '自动消劫', txConfig.auto_clear_calamity_enabled)+
+            '<label class="module-setting-field"><span>消劫阈值</span><input class="text-input module-hour-input" type="number" min="1" max="99" step="1" value="'+esc(txConfig.min_calamity_to_clear || 1)+'" data-tianxing-config="min_calamity_to_clear"></label>'+
+            '<label class="module-setting-field"><span>校准间隔</span><input class="text-input module-hour-input" type="number" min="1" max="24" step="1" value="'+esc(txConfig.status_backoff_hours || 6)+'" data-tianxing-config="status_backoff_hours"></label>'
+          )+
+          settingSection(
+            '战略动作',
+            '定命、推命、改命可能影响后续模块路线；默认关闭且 dry-run 开启时只记录计划不发送。',
+            settingCheckbox('auto_set_star_enabled', '自动定命', txConfig.auto_set_star_enabled)+
+            settingCheckbox('auto_predict_enabled', '自动推命', txConfig.auto_predict_enabled)+
+            settingCheckbox('auto_change_fate_enabled', '自动改命', txConfig.auto_change_fate_enabled)+
+            settingCheckbox('strategy_dry_run_enabled', '战略 dry-run', txConfig.strategy_dry_run_enabled)
+          )+
+          settingSection(
+            '命星与路线',
+            '优先级用逗号或顿号分隔；只会从真实可选命星里挑选。',
+            '<label class="module-setting-field module-setting-field-wide"><span>命星优先</span><input class="text-input module-name-input" value="'+esc((txConfig.star_priority || []).join('、'))+'" data-tianxing-config="star_priority"></label>'+
+            '<label class="module-setting-field module-setting-field-wide"><span>路线优先</span><input class="text-input module-name-input" value="'+esc((txConfig.route_priority || []).join('、'))+'" data-tianxing-config="route_priority"></label>'+
+            tianxingRouteSelect('predict_route', txConfig.predict_route)+
+            tianxingRouteSelect('change_route', txConfig.change_route)+
+            '<label class="module-setting-field"><span>改命天机</span><input class="text-input module-hour-input" type="number" min="3" max="999" step="1" value="'+esc(txConfig.min_tianji_for_change || 6)+'" data-tianxing-config="min_tianji_for_change"></label>'
+          )+
+          settingSection(
+            '当前观测',
+            '这些数据来自真实文案或消息盒子，状态过旧时自动动作会先查盘校准。',
+            currentChoiceText('可选命星', availableStars)+
+            currentChoiceText('推命', (tianxing.current_prediction || '无')+' / '+(tianxing.current_prediction_until || '未设置'))+
+            currentChoiceText('改命', (tianxing.current_change || '无')+' / '+(tianxing.current_change_until || '未设置'))+
+            currentChoiceText('命中/落空/改命', String(tianxing.hit_count || 0)+'/'+String(tianxing.miss_count || 0)+'/'+String(tianxing.change_count || 0))+
+            currentChoiceText('下次自动', tianxing.auto_next_time || '未设置')+
+            currentChoiceText('最近计划', tianxing.auto_last_plan || '无')
+          );
       }else if(module.name === '玄骨考校'){
         moduleNote = '<div class="module-note">极阴：'+esc(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置')+
           '｜南陇：'+esc(identity.nanlong_effective_choice_label || identity.nanlong_choice_label || '未设置')+'</div>';
@@ -581,6 +642,48 @@
     }
   }
 
+  function collectTianxingConfig(){
+    var config = {};
+    var controls = document.querySelectorAll('[data-tianxing-config]');
+    controls.forEach(function(control){
+      var key = control.getAttribute('data-tianxing-config') || '';
+      if(!key){
+        return;
+      }
+      if(control.type === 'checkbox'){
+        config[key] = !!control.checked;
+      }else{
+        config[key] = control.value || '';
+      }
+    });
+    return config;
+  }
+
+  async function submitTianxingConfig(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    try{
+      var data = await postJson('/api/tianxing-config', {
+        send_as_id: appState.selectedId,
+        config: collectTianxingConfig()
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新天星宗策略', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '天星宗策略更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   document.addEventListener('click', function(event){
     if(!event.target || !event.target.closest){
       return;
@@ -610,6 +713,10 @@
     }
     if(event.target.closest('[data-hehuan-retry-max-min]')){
       submitHehuanConfig();
+      return;
+    }
+    if(event.target.closest('[data-tianxing-config]')){
+      submitTianxingConfig();
     }
   });
 

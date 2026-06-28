@@ -274,11 +274,12 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
-    async def _run_with_observation(self, observation, now=1_780_000_000.0):
+    async def _run_with_observation(self, observation, now=1_780_000_000.0, config=None):
         msg = SimpleNamespace(id=9101, sent_at=now)
         with state_module.use_identity(self.identity_id):
             state_module.state["tianxing_enabled"] = True
             state_module.state["tianxing_observation"] = observation
+            state_module.state["tianxing_auto_config"] = config or {}
             with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=msg) as send_mock:
                 await tianxing.run_tianxing_scheduler(now)
             return send_mock, state_module.state["tianxing_observation"]
@@ -332,6 +333,55 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         send_mock.assert_not_called()
         self.assertEqual("idle", observed["auto_last_action"])
+
+    async def test_scheduler_dry_runs_strategic_actions_until_operator_allows_send(self):
+        now = 1_780_000_000.0
+        observation = {
+            "last_observed_at": now - 60,
+            "available_stars": ["天府", "太阴"],
+            "fixed_star": "太阴",
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 63,
+            "auto_next_time": now - 1,
+        }
+        config = {
+            "auto_predict_enabled": True,
+            "strategy_dry_run_enabled": True,
+            "predict_route": "探索",
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config=config)
+
+        send_mock.assert_not_called()
+        self.assertEqual("dry_run_predict", observed["auto_last_action"])
+        self.assertEqual(".推命 探索", observed["auto_last_plan"])
+
+    async def test_scheduler_sends_strategic_action_only_when_dry_run_disabled(self):
+        now = 1_780_000_000.0
+        observation = {
+            "last_observed_at": now - 60,
+            "available_stars": ["天府", "太阴"],
+            "fixed_star": "",
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 63,
+            "auto_next_time": now - 1,
+        }
+        config = {
+            "auto_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "天府"],
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config=config)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 太阴", send_mock.await_args.args[0])
+        self.assertEqual("set_star", observed["auto_last_action"])
+        self.assertEqual(".定命 太阴", observed["auto_last_plan"])
 
     async def test_scheduler_respects_future_auto_time(self):
         now = 1_780_000_000.0

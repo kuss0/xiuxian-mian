@@ -22,6 +22,7 @@ IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
     "run_tianti_scheduler": {"tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"},
     "run_concubine_scheduler": {"concubine"},
     "run_hehuan_scheduler": {"hehuan", "hehuan_dual"},
+    "run_tianxing_scheduler": {"tianxing"},
     "run_yinluo_scheduler": {"yinluo"},
     "run_small_world_scheduler": {
         "small_world_preach",
@@ -77,6 +78,7 @@ class AppSchedulerContractTests(unittest.TestCase):
     def test_ordinary_identity_scheduler_keeps_current_key_module_order(self):
         ordinary = app.get_identity_scheduler_order_contract()["ordinary"]
 
+        self.assertLess(_index(ordinary, "run_tianxing_scheduler"), _index(ordinary, "run_wild_training_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_small_world_scheduler"))
         self.assertLess(_index(ordinary, "run_small_world_scheduler"), _index(ordinary, "run_explore_rift_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_wendao_scheduler"))

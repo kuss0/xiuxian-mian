@@ -84,6 +84,7 @@ from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.stargazer import sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
+from .features.tianxing import normalize_tianxing_auto_config, normalize_tianxing_observation, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
@@ -3485,6 +3486,8 @@ def get_identity_ui_snapshot(send_as_id):
             or _tianjige_cave_lingqi_text(dao_path_cave)
         )
         hehuan_observation = normalize_hehuan_observation(identity_state.get("hehuan_observation"))
+        tianxing_observation = normalize_tianxing_observation(identity_state.get("tianxing_observation"))
+        tianxing_auto_config = normalize_tianxing_auto_config(identity_state.get("tianxing_auto_config"))
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -3545,6 +3548,26 @@ def get_identity_ui_snapshot(send_as_id):
             "hehuan_retry_limit": HEHUAN_AUTO_RETRY_LIMIT,
             "hehuan_last_warm_success_at": fmt_abs_ts(hehuan_observation.get("last_warm_success_at", 0) or 0),
             "hehuan_auto_next_time": fmt_abs_ts(hehuan_observation.get("auto_next_time", 0) or 0),
+            "tianxing": {
+                "auto_config": tianxing_auto_config,
+                "available_stars": list(tianxing_observation.get("available_stars") or []),
+                "fixed_star": tianxing_observation.get("fixed_star") or "",
+                "current_prediction": tianxing_observation.get("current_prediction") or "",
+                "current_prediction_until": fmt_abs_ts(tianxing_observation.get("current_prediction_until", 0) or 0),
+                "current_change": tianxing_observation.get("current_change") or "",
+                "current_change_until": fmt_abs_ts(tianxing_observation.get("current_change_until", 0) or 0),
+                "tianji_value": int(tianxing_observation.get("tianji_value", 0) or 0),
+                "calamity_count": int(tianxing_observation.get("calamity_count", 0) or 0),
+                "hit_count": int(tianxing_observation.get("hit_count", 0) or 0),
+                "miss_count": int(tianxing_observation.get("miss_count", 0) or 0),
+                "change_count": int(tianxing_observation.get("change_count", 0) or 0),
+                "auto_next_time": fmt_abs_ts(tianxing_observation.get("auto_next_time", 0) or 0),
+                "auto_last_action": tianxing_observation.get("auto_last_action") or "",
+                "auto_last_error": tianxing_observation.get("auto_last_error") or "",
+                "auto_last_plan": tianxing_observation.get("auto_last_plan") or "",
+                "auto_last_plan_at": fmt_abs_ts(tianxing_observation.get("auto_last_plan_at", 0) or 0),
+                "last_observed_at": fmt_abs_ts(tianxing_observation.get("last_observed_at", 0) or 0),
+            },
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
             "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
             "second_soul_choice_strategy_choices": [
@@ -4097,6 +4120,34 @@ async def ui_set_hehuan_config(send_as_id, *, retry_max_interval_min=None):
         send_as_id=send_as_id,
     )
     return True, f"已更新合欢宗补发策略[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_tianxing_config(send_as_id, config=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    config = config if isinstance(config, dict) else {}
+    with use_identity(send_as_id):
+        normalized = set_tianxing_auto_config(config)
+        save_state()
+    enabled_parts = []
+    for key, label in (
+        ("auto_panel_enabled", "查盘"),
+        ("auto_observe_enabled", "观命"),
+        ("auto_clear_calamity_enabled", "消劫"),
+        ("auto_set_star_enabled", "定命"),
+        ("auto_predict_enabled", "推命"),
+        ("auto_change_fate_enabled", "改命"),
+        ("strategy_dry_run_enabled", "dry-run"),
+    ):
+        enabled_parts.append(f"{label}={'开' if normalized.get(key) else '关'}")
+    await send_audit_log(
+        f"🌌 已更新天星宗自动策略：{'，'.join(enabled_parts)}",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=260,
+    )
+    return True, f"已更新天星宗策略[{get_identity_display_name(send_as_id)}]"
 
 
 async def ui_set_divination_config(send_as_id, daily_limit=None):
@@ -6006,6 +6057,18 @@ async def handle_ui_http(reader, writer):
                             retry_max_interval_min=payload.get("retry_max_interval_min"),
                         )
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/tianxing-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_tianxing_config(send_as_id, payload.get("config") or {})
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/divination-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -6344,6 +6407,7 @@ __all__ = [
     "ui_set_small_world_feature_enabled",
     "ui_set_small_world_barrier_config",
     "ui_set_hehuan_config",
+    "ui_set_tianxing_config",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",
