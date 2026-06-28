@@ -37,6 +37,11 @@ from .config import (
     CMD_FORMATION_START,
     CMD_GUANXING,
     CMD_GUANXING_SHIFT,
+    CMD_HEHUAN_CONTRACT,
+    CMD_HEHUAN_DUAL,
+    CMD_HEHUAN_ESCAPE,
+    CMD_HEHUAN_RETREAT,
+    CMD_HEHUAN_SEAL,
     CMD_NANLONG_EXCHANGE_FABAO,
     CMD_NANLONG_EXCHANGE_GONGFA,
     CMD_NANLONG_REJECT,
@@ -241,6 +246,7 @@ from .state import (
     get_global_enabled,
     get_guanxing_monitor_enabled,
     get_guanxing_shift_target,
+    has_sect_membership,
     has_identity,
     remove_identity,
     set_global_enabled as set_global_enabled_state,
@@ -608,6 +614,8 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
         return f"{module_name}模块已归档" + (f"：{reason}" if reason else "")
     if is_module_available(module_name, send_as_id):
         return ""
+    if module_name in {"点卯", "宗门传功", "闯塔"} and not has_sect_membership(send_as_id):
+        return f"当前身份无宗门，无法执行{module_name}模块"
     if module_name == "灵树":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "观星台":
@@ -623,6 +631,12 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
     if module_name == "问道":
         return "当前宗门未提供问道模块"
     if module_name == "放养":
+        return f"当前宗门未提供{module_name}模块"
+    if module_name == "合欢宗":
+        return f"当前宗门未提供{module_name}模块"
+    if module_name == "天星宗":
+        return f"当前宗门未提供{module_name}模块"
+    if module_name == "阴罗宗":
         return f"当前宗门未提供{module_name}模块"
     if module_name == "元婴" and not is_yuanying_realm_available(send_as_id):
         return f"当前境界未达到{module_name}模块开启条件"
@@ -788,6 +802,27 @@ def _manual_enable_guanxing_module_state(now):
     state["guanxing_enabled"] = True
     clear_guanxing_identity_runtime(get_current_identity_id())
     restore_guanxing_round_runtime(now)
+
+
+def _disable_hehuan_module_state():
+    state["hehuan_enabled"] = False
+    state["hehuan_observation"] = {}
+    _clear_pending_tasks_by_commands({
+        CMD_HEHUAN_RETREAT,
+        CMD_HEHUAN_CONTRACT,
+        CMD_HEHUAN_DUAL,
+        CMD_HEHUAN_SEAL,
+        CMD_HEHUAN_ESCAPE,
+    })
+
+
+def _manual_disable_hehuan_module_state():
+    _disable_hehuan_module_state()
+
+
+def _manual_enable_hehuan_module_state(now):
+    state["hehuan_enabled"] = True
+    state["hehuan_observation"] = {}
 
 
 def _disable_tianxing_module_state():
@@ -1504,6 +1539,11 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_TIANTI_WENXIN: "登天阶",
     CMD_TIANTI_CLIMB: "登天阶",
     CMD_TIANTI_GANGFENG: "登天阶",
+    CMD_HEHUAN_RETREAT: "合欢宗",
+    CMD_HEHUAN_CONTRACT: "合欢宗",
+    CMD_HEHUAN_DUAL: "合欢宗",
+    CMD_HEHUAN_SEAL: "合欢宗",
+    CMD_HEHUAN_ESCAPE: "合欢宗",
     CMD_QUIZ_ANSWER: "玄骨考校",
     CMD_CONCUBINE_STATUS: "侍妾",
     CMD_CONCUBINE_DAILY_GREET: "侍妾",
@@ -1571,6 +1611,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "天机代卜": (_manual_enable_concubine_tianji_module_state, _manual_disable_concubine_tianji_module_state),
     "共历心劫": (_manual_enable_concubine_heart_module_state, _manual_disable_concubine_heart_module_state),
     "侍妾远航": (_manual_enable_concubine_voyage_module_state, _manual_disable_concubine_voyage_module_state),
+    "合欢宗": (_manual_enable_hehuan_module_state, _manual_disable_hehuan_module_state),
     "天星宗": (_manual_enable_tianxing_module_state, _manual_disable_tianxing_module_state),
     "阴罗宗": (_manual_enable_yinluo_module_state, _manual_disable_yinluo_module_state),
     "真仙试锋": (_manual_enable_world_boss_module_state, _manual_disable_world_boss_module_state),
@@ -1606,6 +1647,7 @@ MODULE_DISABLE_HANDLERS = {
     "天机代卜": _manual_disable_concubine_tianji_module_state,
     "共历心劫": _manual_disable_concubine_heart_module_state,
     "侍妾远航": _manual_disable_concubine_voyage_module_state,
+    "合欢宗": _disable_hehuan_module_state,
     "天星宗": _disable_tianxing_module_state,
     "阴罗宗": _disable_yinluo_module_state,
     "真仙试锋": _manual_disable_world_boss_module_state,
@@ -2584,6 +2626,18 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
         if not is_module_available("登天阶", send_as_id) and state.get("tianti_enabled"):
             _disable_tianti_module_state()
             changed = True
+        if not is_module_available("放养", send_as_id) and state.get("ranch_enabled"):
+            _manual_disable_ranch_module_state()
+            changed = True
+        if not is_module_available("合欢宗", send_as_id) and state.get("hehuan_enabled"):
+            _disable_hehuan_module_state()
+            changed = True
+        if not is_module_available("天星宗", send_as_id) and state.get("tianxing_enabled"):
+            _disable_tianxing_module_state()
+            changed = True
+        if not is_module_available("阴罗宗", send_as_id) and state.get("yinluo_enabled"):
+            _disable_yinluo_module_state()
+            changed = True
         if not is_module_available("元婴", send_as_id) and state.get("yuanying_enabled"):
             _disable_yuanying_module_state()
             changed = True
@@ -2595,6 +2649,15 @@ def enforce_identity_module_availability(send_as_id, *, persist=True):
             changed = True
         if not is_module_available("太一", send_as_id) and state.get("taiyi_enabled"):
             _disable_taiyi_module_state()
+            changed = True
+        if not is_module_available("点卯", send_as_id) and state.get("checkin_enabled"):
+            _manual_disable_checkin_module_state()
+            changed = True
+        if not is_module_available("宗门传功", send_as_id) and state.get("sect_teach_enabled"):
+            _manual_disable_sect_teach_module_state()
+            changed = True
+        if not is_module_available("闯塔", send_as_id) and state.get("tower_enabled"):
+            _manual_disable_tower_module_state()
             changed = True
     if changed and persist:
         save_state()

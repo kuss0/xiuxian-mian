@@ -37,6 +37,7 @@ from ..state import (
     get_identity_state,
     get_module_window_hours,
     get_pending_command,
+    is_module_available,
     is_auto_delete_sent_messages_enabled,
     state,
     update_send_as_profile,
@@ -257,6 +258,31 @@ def disable_sect_modules_for_current_identity(now=None):
     return changed
 
 
+def _clear_unavailable_checkin_modules():
+    identity_state = get_identity_state()
+    disabled_modules = []
+
+    if identity_state.get("checkin_enabled") and not is_module_available("点卯"):
+        identity_state["checkin_enabled"] = False
+        identity_state["next_checkin_time"] = 0
+        identity_state["last_checkin_msg_id"] = 0
+        _clear_pending_tasks_by_commands(identity_state, {CMD_CHECKIN})
+        disabled_modules.append("点卯")
+
+    if identity_state.get("sect_teach_enabled") and not is_module_available("宗门传功"):
+        identity_state["sect_teach_enabled"] = False
+        identity_state["next_sect_teach_time"] = 0
+        identity_state["sect_teach_reply_to_msg_id"] = 0
+        identity_state["last_sect_teach_msg_id"] = 0
+        _clear_pending_tasks_by_commands(identity_state, {CMD_SECT_TEACH})
+        disabled_modules.append("宗门传功")
+
+    if disabled_modules:
+        identity_state["checkin_cleanup_msg_ids"] = []
+        mark_dirty()
+    return disabled_modules
+
+
 
 def _handle_checkin_day_rollover(now, reply_to=None):
     day_key = get_checkin_day_key(now)
@@ -337,6 +363,15 @@ def schedule_sect_teach_chain(now, reply_to_msg_id):
     day_key = get_checkin_day_key(now)
     if state["checkin_teach_day"] != day_key:
         reset_checkin_daily_state(now)
+
+    if not is_module_available("宗门传功"):
+        state["sect_teach_enabled"] = False
+        state["next_sect_teach_time"] = 0
+        state["sect_teach_reply_to_msg_id"] = 0
+        state["last_sect_teach_msg_id"] = 0
+        _clear_pending_tasks_by_commands(state, {CMD_SECT_TEACH})
+        save_state()
+        return False
 
     if not state.get("sect_teach_enabled") or state["checkin_teach_count"] >= 3 or not reply_to_msg_id:
         state["next_sect_teach_time"] = 0
@@ -470,6 +505,14 @@ async def handle_sect_teach_reply(text, now, reply_to, matched_family=None):
 
 async def run_checkin_scheduler(now):
     if not state.get("checkin_enabled") and not state.get("sect_teach_enabled"):
+        return
+
+    disabled_modules = _clear_unavailable_checkin_modules()
+    if disabled_modules:
+        save_state()
+        disabled_text = "、".join(disabled_modules)
+        await send_audit_log(f"⚠️ 当前身份无宗门或宗门不支持，已关闭{disabled_text}。", scope="identity")
+        console_log(f"⚠️ 宗门门禁阻断{disabled_text}，已清理旧调度。")
         return
 
     day_key = get_checkin_day_key(now)

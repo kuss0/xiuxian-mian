@@ -13,7 +13,7 @@ from ..config import (
 )
 from ..persistence import save_state
 from ..runtime import send_game_command
-from ..state import state, use_identity
+from ..state import is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
 
@@ -251,6 +251,23 @@ def _stars_from_line(line):
     return [item.strip() for item in RE_BRACKET.findall(str(line or "")) if item.strip()]
 
 
+def _available_stars_from_observe_text(text):
+    stars = []
+    for match in re.finditer(r"【(?P<star>紫微|天府|太阴|贪狼)】\s*[-－—]", str(text or "")):
+        star = match.group("star").strip()
+        if star and star not in stars:
+            stars.append(star)
+    if stars:
+        return stars
+    for line in str(text or "").splitlines():
+        if " - " not in line and "－" not in line and "—" not in line:
+            continue
+        for star in _stars_from_line(line):
+            if star in TIANXING_STARS and star not in stars:
+                stars.append(star)
+    return stars
+
+
 def _wait_until(text, now, fallback=0):
     if has_wait_time(text):
         wait_sec = parse_wait_time(text)
@@ -311,19 +328,12 @@ def parse_tianxing_text(text, now=None, family=""):
         parsed.update(action="玩法帮助", result="guide", summary="天星宗玩法帮助")
         return parsed
 
-    if "你所属的宗门: 【天星宗】" in raw_text and "司命盘要诀" in raw_text:
-        parsed.update(action="宗门信息", result="guide", summary="天星宗宗门信息与司命盘要诀")
-        return parsed
-
     if "【天星宗】的观星长老" in raw_text:
         parsed.update(action="拜入天星宗", result="not_qualified", summary="资质不足，未能拜入天星宗", last_error="无法感应九天星辰之力")
         return parsed
 
-    if "【观命结果】" in raw_text:
-        stars = []
-        for line in raw_text.splitlines():
-            if line.strip().startswith("【") and " - " in line:
-                stars.extend(_stars_from_line(line))
+    if "【观命结果】" in raw_text or ("观命结果" in raw_text and "今日可定下的命星" in raw_text):
+        stars = _available_stars_from_observe_text(raw_text)
         parsed.update(action="观命", result="success", summary="观命结果", available_stars=stars)
         return parsed
 
@@ -357,6 +367,10 @@ def parse_tianxing_text(text, now=None, family=""):
             parsed["hit_count"] = int(counts_match.group("hit") or 0)
             parsed["miss_count"] = int(counts_match.group("miss") or 0)
             parsed["change_count"] = int(counts_match.group("change") or 0)
+        return parsed
+
+    if "你所属的宗门: 【天星宗】" in raw_text and "司命盘要诀" in raw_text:
+        parsed.update(action="宗门信息", result="guide", summary="天星宗宗门信息与司命盘要诀")
         return parsed
 
     set_match = RE_SET_STAR.search(raw_text)
@@ -701,6 +715,121 @@ def _build_tianxing_strategy_plan(observed, config, now):
     return _manual_block("idle", "未满足自动定命/推命/改命条件。")
 
 
+def _route_preflight_result(route, stage, route_allowed, reason="", prepare_plan=None, deadline_at=0, now=0):
+    prepare_plan = prepare_plan if isinstance(prepare_plan, dict) else {}
+    return {
+        "route": route,
+        "stage": stage,
+        "route_allowed": bool(route_allowed),
+        "reason": str(reason or ""),
+        "prepare_plan": prepare_plan,
+        "prepare_command": str(prepare_plan.get("command") or ""),
+        "prepare_action": str(prepare_plan.get("action") or ""),
+        "deadline_at": float(deadline_at or 0),
+        "planned_at": float(now or 0),
+        "source_module": "天星宗",
+        "lab_only": True,
+    }
+
+
+def _route_preflight_prepare(route, stage, plan, now, deadline_at, reason=""):
+    if deadline_at and float(deadline_at) <= float(now):
+        return _route_preflight_result(
+            route,
+            "deadline_expired",
+            True,
+            reason or "路线动作已到截止时间，本轮不插入天星预检。",
+            plan,
+            deadline_at,
+            now,
+        )
+    return _route_preflight_result(
+        route,
+        stage,
+        False,
+        reason or plan.get("reason") or "需要先执行天星宗预检动作。",
+        plan,
+        deadline_at,
+        now,
+    )
+
+
+def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None):
+    now = float(now if now is not None else time.time())
+    route = _normalize_route_choice(route, "")
+    deadline_at = float(deadline_at or 0)
+    if route not in TIANXING_ROUTES:
+        return _route_preflight_result("", "unsupported_route", True, "天星路线必须是：闭关、炼制、探索、斗法。", deadline_at=deadline_at, now=now)
+    if not state.get("tianxing_enabled"):
+        return _route_preflight_result(route, "disabled", True, "天星宗模块未开启，路线动作不等待天星预检。", deadline_at=deadline_at, now=now)
+    if not is_module_available("天星宗"):
+        return _route_preflight_result(route, "unavailable", True, "当前身份不是天星宗，路线动作不等待天星预检。", deadline_at=deadline_at, now=now)
+
+    dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
+    if dirty_fields:
+        return _route_preflight_result(
+            route,
+            "dirty_state",
+            True,
+            f"天星宗状态字段异常（{_format_list(dirty_fields)}），本轮不插入天星预检。",
+            deadline_at=deadline_at,
+            now=now,
+        )
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
+    route_reason = str(reason or route).strip() or route
+
+    if not _has_recent_observation(observed, now):
+        if effective_config.get("auto_panel_enabled"):
+            plan = build_tianxing_manual_plan("panel", now=now)
+            return _route_preflight_prepare(route, "need_panel", plan, now, deadline_at, f"{route_reason} 前缺少近期天机盘状态。")
+        return _route_preflight_result(route, "missing_observation", True, "缺少近期天星宗状态，且自动查盘未开启。", deadline_at=deadline_at, now=now)
+
+    calamity_count = int(observed.get("calamity_count", 0) or 0)
+    calamity_threshold = int(effective_config.get("min_calamity_to_clear", 1) or 1)
+    if calamity_count >= calamity_threshold and effective_config.get("auto_clear_calamity_enabled"):
+        plan = build_tianxing_manual_plan("clear_calamity", now=now)
+        return _route_preflight_prepare(route, "need_clear_calamity", plan, now, deadline_at, f"{route_reason} 前逆命劫已达 {calamity_count}。")
+
+    fixed_star = str(observed.get("fixed_star") or "").strip()
+    available_stars = [str(item).strip() for item in observed.get("available_stars") or [] if str(item or "").strip()]
+    if not fixed_star:
+        if available_stars and effective_config.get("auto_set_star_enabled"):
+            star = _choose_by_priority(available_stars, effective_config.get("star_priority") or [])
+            plan = build_tianxing_manual_plan("set_star", star, now=now)
+            return _route_preflight_prepare(route, "need_set_star", plan, now, deadline_at, f"{route_reason} 前需要先定命。")
+        if not available_stars and effective_config.get("auto_observe_enabled"):
+            plan = build_tianxing_manual_plan("observe", now=now)
+            return _route_preflight_prepare(route, "need_observe", plan, now, deadline_at, f"{route_reason} 前缺少今日可选命星。")
+        return _route_preflight_result(route, "missing_fixed_star", True, "今日未定命，且自动定命/观命未开启。", deadline_at=deadline_at, now=now)
+
+    current_change = str(observed.get("current_change") or "").strip()
+    change_until = float(observed.get("current_change_until", 0) or 0)
+    if current_change == route:
+        return _route_preflight_result(route, "ready_change_fate", True, f"{route_reason} 已有匹配改命待发。", deadline_at=deadline_at, now=now)
+    if not current_change:
+        tianji_value = int(observed.get("tianji_value", 0) or 0)
+        min_tianji = int(effective_config.get("min_tianji_for_change", 6) or 6)
+        if effective_config.get("auto_change_fate_enabled") and tianji_value >= min_tianji:
+            plan = build_tianxing_manual_plan("change_fate", route, now=now)
+            return _route_preflight_prepare(route, "need_change_fate", plan, now, deadline_at, f"{route_reason} 前优先准备改命。")
+    elif change_until > now:
+        return _route_preflight_result(route, "change_fate_busy", True, f"已有 {current_change} 改命待发，本轮不覆盖。", deadline_at=deadline_at, now=now)
+
+    current_prediction = str(observed.get("current_prediction") or "").strip()
+    prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+    if current_prediction == route:
+        return _route_preflight_result(route, "ready_prediction", True, f"{route_reason} 已有匹配推命。", deadline_at=deadline_at, now=now)
+    if not current_prediction and effective_config.get("auto_predict_enabled"):
+        plan = build_tianxing_manual_plan("predict", route, now=now)
+        return _route_preflight_prepare(route, "need_predict", plan, now, deadline_at, f"{route_reason} 前补推命积攒天机值。")
+    if current_prediction and prediction_until > now:
+        return _route_preflight_result(route, "prediction_busy", True, f"已有 {current_prediction} 推命尚未应验，本轮不覆盖。", deadline_at=deadline_at, now=now)
+
+    return _route_preflight_result(route, "ready", True, "无需插入天星宗预检动作。", deadline_at=deadline_at, now=now)
+
+
 def _record_tianxing_dry_run(observed, now, plan, config):
     action = str(plan.get("action") or "")
     command = str(plan.get("command") or "")
@@ -716,6 +845,11 @@ def _record_tianxing_dry_run(observed, now, plan, config):
 async def run_tianxing_scheduler(now):
     now = float(now if now is not None else time.time())
     if not state.get("tianxing_enabled"):
+        return
+    if not is_module_available("天星宗"):
+        state["tianxing_enabled"] = False
+        state["tianxing_observation"] = {}
+        save_state()
         return
 
     dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
@@ -877,6 +1011,7 @@ def get_tianxing_status_text():
 __all__ = [
     "apply_tianxing_passive",
     "build_tianxing_manual_plan",
+    "build_tianxing_route_preflight_plan",
     "execute_tianxing_manual_action",
     "get_tianxing_status_text",
     "looks_like_tianxing_text",

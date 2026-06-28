@@ -23,6 +23,7 @@ from ..state import (
     get_current_identity_id,
     get_send_as_profile,
     infer_realm_from_xiuwei_max,
+    is_module_available,
     state,
     update_send_as_profile,
     use_identity,
@@ -1952,6 +1953,11 @@ def _set_yinluo_auto_wait(observed, now, action, next_time=None, error=""):
 async def run_yinluo_scheduler(now):
     now = float(now if now is not None else time.time())
     if not state.get("yinluo_enabled"):
+        return
+    if not is_module_available("阴罗宗"):
+        state["yinluo_enabled"] = False
+        state["yinluo_observation"] = {}
+        save_state()
         return
 
     observed = normalize_yinluo_observation(state.get("yinluo_observation"))

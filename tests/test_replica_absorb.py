@@ -625,6 +625,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(app_replica._REPLICA_KIND_CANGKUN, parsed["replica_kind"])
         self.assertEqual("35", parsed["room_id"])
         self.assertEqual(["@zhengyuan0213", "@walterwa2000", "@boxboxji"], parsed["team_usernames"])
+        self.assertEqual({
+            "@zhengyuan0213": ["御山"],
+            "@walterwa2000": ["破军"],
+            "@boxboxji": ["灵医"],
+        }, parsed["team_professions_by_username"])
 
     def test_parse_cangkun_real_join_cooldown_reply(self):
         parsed = app_replica._parse_replica_join_reply(
@@ -661,6 +666,11 @@ class ReplicaAbsorbTests(unittest.TestCase):
             state_item = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_CANGKUN]
             self.assertFalse(state_item["participating"])
             self.assertEqual(["@zhengyuan0213", "@walterwa2000", "@boxboxji"], state_item["team_usernames"])
+            self.assertEqual({
+                "@zhengyuan0213": ["御山"],
+                "@walterwa2000": ["破军"],
+                "@boxboxji": ["灵医"],
+            }, state_item["team_professions_by_username"])
             self.assertEqual("joined", state_item["lobby_status"])
 
     def test_opened_and_joined_lobby_do_not_show_as_running_until_entered(self):
@@ -1307,7 +1317,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("@xuruode3(灵医/咒师)", notice_text)
         self.assertIn("@xuruode1(影刃/咒师)", notice_text)
         self.assertIn("@dingfengbosushi(咒师)", notice_text)
-        self.assertIn("职业分配：", notice_text)
+        self.assertIn("可分配职业：", notice_text)
         self.assertIn("破军:@xuruode4", notice_text)
         self.assertIn("御山:@gyurihero", notice_text)
         self.assertIn("灵医:@xuruode3", notice_text)
@@ -1315,6 +1325,74 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("咒师:@dingfengbosushi", notice_text)
         self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师；缺职业：无", notice_text)
         self.assertEqual("high", audit_mock.call_args.kwargs["priority"])
+
+    def test_zhuimo_team_full_notice_uses_observed_professions(self):
+        now = 1000.0
+        wa_id = self._register_replica_identity(991201, "WalterWA2000", professions="破军|御山")
+        grow_id = self._register_replica_identity(991202, "growrdick", professions="破军|御山|咒师")
+        myios_id = self._register_replica_identity(991203, "myios17", professions="破军|灵医")
+        xuruode_id = self._register_replica_identity(991204, "xuruode1", professions="影刃|咒师")
+        jfd_id = self._register_replica_identity(991205, "jfdffdddd", professions="御山|灵医|咒师")
+        state_module.set_replica_participant_identity_ids([wa_id, grow_id, myios_id, xuruode_id, jfd_id])
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "588",
+            "replica_kind": app_replica._REPLICA_KIND_ZHUIMO,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": wa_id,
+            "leader_username": "@WalterWA2000",
+            "join_requested_usernames": ["@growrdick", "@myios17", "@xuruode1", "@jfdffdddd"],
+            "opened_at": now - 10,
+            "updated_at": now - 5,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        text = (
+            "@jfdffdddd 已加入坠魔谷队伍！\n"
+            "当前队伍 (5/5):\n"
+            "- @WalterWA2000 (破军)\n"
+            "- @growrdick (御山)\n"
+            "- @myios17 (灵医)\n"
+            "- @xuruode1 (影刃)\n"
+            "- @jfdffdddd (咒师)"
+        )
+
+        def close_coro(coro):
+            close = getattr(coro, "close", None)
+            if close:
+                close()
+
+        with (
+            patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+            patch("model.app_replica._fire_and_forget", side_effect=close_coro),
+        ):
+            changed = app_replica._mark_replica_team_joined_from_text(text, now=now, msg_id=993)
+
+        self.assertTrue(changed)
+        notice_text = audit_mock.call_args.args[0]
+        self.assertIn("坠魔谷队伍已满 5/5", notice_text)
+        self.assertIn("房间 588", notice_text)
+        self.assertIn("@walterwa2000(破军)", notice_text)
+        self.assertIn("@growrdick(御山)", notice_text)
+        self.assertIn("@myios17(灵医)", notice_text)
+        self.assertIn("@xuruode1(影刃)", notice_text)
+        self.assertIn("@jfdffdddd(咒师)", notice_text)
+
+    def test_cangkun_progress_notice_uses_raw_team_profession_coverage(self):
+        self._register_replica_identity(991201, "gyurihero", professions="御山|灵医|咒师")
+        self._register_replica_identity(991202, "xuruode4", professions="破军|御山")
+        self._register_replica_identity(991203, "xuruode3", professions="灵医|咒师")
+        self._register_replica_identity(991204, "xuruode1", professions="影刃|咒师")
+
+        detail = "\n".join(app_replica._format_replica_team_notice_details(
+            app_replica._REPLICA_KIND_CANGKUN,
+            ["@gyurihero", "@xuruode4", "@xuruode3", "@xuruode1"],
+        ))
+
+        self.assertIn("@xuruode4(破军/御山)", detail)
+        self.assertIn("可分配职业：", detail)
+        self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师；缺职业：无", detail)
+        self.assertNotIn("缺职业：破军", detail)
 
     def test_luoyun_cd_reminder_repeats_hourly_until_new_cooldown(self):
         identity_id = self._register_replica_identity(991250, "luoyun", realm="结丹后期", sect_name="落云宗")

@@ -133,6 +133,35 @@ class ControlBoolCoercionTests(unittest.TestCase):
 
                 self.assertEqual(expected_available, "问道" in modules)
 
+    def test_no_sect_and_sanxiu_hide_all_sect_dependent_modules(self):
+        blocked_modules = {
+            "点卯",
+            "宗门传功",
+            "闯塔",
+            "灵树",
+            "观星台",
+            "观星",
+            "周天星斗",
+            "登天阶",
+            "太一",
+            "放养",
+            "合欢宗",
+            "天星宗",
+            "阴罗宗",
+            "问道",
+        }
+        for offset, sect_name in enumerate(("", "散修")):
+            with self.subTest(sect_name=sect_name or "empty"):
+                send_as_id = 990360 + offset
+                state_module.ensure_identity_registered(send_as_id)
+                state_module.update_send_as_profile(send_as_id, sect_name=sect_name, realm="元婴初期")
+
+                modules = set(state_module.get_available_module_names(send_as_id))
+
+                self.assertFalse(blocked_modules & modules)
+                self.assertIn("野外历练", modules)
+                self.assertIn("深度闭关", modules)
+
     def test_wendao_toggle_rejected_for_non_yuanying_sect(self):
         send_as_id = 990332
         state_module.ensure_identity_registered(send_as_id)
@@ -171,6 +200,23 @@ class ControlBoolCoercionTests(unittest.TestCase):
         self.assertIn("未提供灵树模块", message)
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["tree_enabled"])
+
+    def test_sanxiu_rejects_checkin_and_sect_teach_enable(self):
+        send_as_id = 990361
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="散修", realm="元婴初期")
+
+        with patch.object(control, "save_state"), patch.object(control, "console_log"):
+            checkin_ok, checkin_message = asyncio.run(control.set_module_enabled("点卯", True, send_as_id=send_as_id))
+            teach_ok, teach_message = asyncio.run(control.set_module_enabled("宗门传功", True, send_as_id=send_as_id))
+
+        self.assertFalse(checkin_ok)
+        self.assertIn("当前身份无宗门", checkin_message)
+        self.assertFalse(teach_ok)
+        self.assertIn("当前身份无宗门", teach_message)
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["checkin_enabled"])
+            self.assertFalse(state_module.state["sect_teach_enabled"])
 
     def test_ui_module_toggle_message_matches_coerced_false_string(self):
         send_as_id = 990331
@@ -314,6 +360,49 @@ class ControlBoolCoercionTests(unittest.TestCase):
             self.assertEqual({}, state_module.state["tianxing_observation"])
             self.assertEqual({}, state_module.state["yinluo_observation"])
         mark_dirty_mock.assert_called()
+
+    def test_startup_availability_clears_stale_sanxiu_sect_modules(self):
+        send_as_id = 990347
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="散修", realm="元婴初期")
+        with state_module.use_identity(send_as_id):
+            state_module.state["checkin_enabled"] = True
+            state_module.state["sect_teach_enabled"] = True
+            state_module.state["tower_enabled"] = True
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["yinluo_enabled"] = True
+            state_module.state["ranch_enabled"] = True
+            state_module.state["next_checkin_time"] = now
+            state_module.state["next_sect_teach_time"] = now
+            state_module.state["next_tower_time"] = now
+            state_module.state["hehuan_observation"] = {"last_error": "旧合欢"}
+            state_module.state["tianxing_observation"] = {"last_error": "旧天星"}
+            state_module.state["yinluo_observation"] = {"last_error": "旧阴罗"}
+            state_module.state["pending_tasks"] = {
+                501: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0},
+                502: {"cmd": config.CMD_SECT_TEACH, "sent_at": now, "retry": 0},
+                503: {"cmd": config.CMD_TOWER, "sent_at": now, "retry": 0},
+            }
+
+        with patch.object(control, "save_state") as save_mock:
+            changed = control.enforce_identity_module_availability(send_as_id)
+
+        self.assertTrue(changed)
+        save_mock.assert_called_once()
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(state_module.state["checkin_enabled"])
+            self.assertFalse(state_module.state["sect_teach_enabled"])
+            self.assertFalse(state_module.state["tower_enabled"])
+            self.assertFalse(state_module.state["hehuan_enabled"])
+            self.assertFalse(state_module.state["tianxing_enabled"])
+            self.assertFalse(state_module.state["yinluo_enabled"])
+            self.assertFalse(state_module.state["ranch_enabled"])
+            self.assertEqual({}, state_module.state["hehuan_observation"])
+            self.assertEqual({}, state_module.state["tianxing_observation"])
+            self.assertEqual({}, state_module.state["yinluo_observation"])
+            self.assertEqual({}, state_module.state["pending_tasks"])
 
     def test_toggling_concubine_preserves_partner_snapshot(self):
         send_as_id = 990343

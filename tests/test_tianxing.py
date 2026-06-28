@@ -66,6 +66,24 @@ class TianxingParserTests(unittest.TestCase):
         self.assertEqual(0, missed["current_prediction_until"])
         self.assertGreater(missed["current_change_until"], 1_780_000_000.0)
 
+    def test_observe_parses_combined_sect_info_and_inline_star(self):
+        parsed = tianxing.parse_tianxing_text(
+            "你所属的宗门: 【天星宗】\n\n"
+            "掌门: 玄宁生 (@hfsscxf)\n"
+            "司命盘要诀:\n"
+            ".观命 先看今日可选命星，再用 .定命 <命星> 锁定今日主修路线；.推命 <闭关|炼制|探索|斗法> 押你接下来要走的路，命中可积攒天机值；.改命 <闭关|炼制|探索|斗法> 把天机值换成一次后手；.天机盘 查看当前推命、改命与逆命劫。  观命结果】\n"
+            "你引动司命盘，今日可定下的命星如下：\n"
+            "【太阴】 - 主趋吉避凶，探索更易避祸，斗法更善脱身，但闭关悟性略降。\n"
+            "【贪狼】 - 主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n"
+            "【天府】 - 主丹器之成与稳守之势，炼制更稳，斗法更耐打，偶有额外成品。\n"
+            "请使用 .定命 <命星> 锁定今日命轨。【紫微】 - 主悟道与先机，闭关更稳更厚，斗法更易抢先，但炼制时心念易散。",
+            now=1_780_000_000.0,
+        )
+
+        self.assertEqual("观命", parsed["action"])
+        self.assertEqual("success", parsed["result"])
+        self.assertEqual(["太阴", "贪狼", "天府", "紫微"], parsed["available_stars"])
+
     def test_clear_calamity_and_join_blocked_parse(self):
         clear = tianxing.parse_tianxing_text(real_text("tianxing.clear_calamity.basic"), now=1_780_000_000.0)
         blocked = tianxing.parse_tianxing_text(real_text("tianxing.join.not_qualified"), now=1_780_000_000.0)
@@ -253,6 +271,76 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertIn("🌌 天星宗", text)
         self.assertIn("状态异常", text)
         self.assertIn("未设置", text)
+
+    def test_route_preflight_requests_panel_before_downstream_action_when_status_missing(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {}
+
+            plan = tianxing.build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now)
+
+        self.assertEqual("need_panel", plan["stage"])
+        self.assertFalse(plan["route_allowed"])
+        self.assertEqual(".天机盘", plan["prepare_command"])
+        self.assertTrue(plan["lab_only"])
+
+    def test_route_preflight_prefers_change_fate_then_prediction_for_explore_route(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "fixed_star": "太阴",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 42,
+                "calamity_count": 0,
+            }
+            change_plan = tianxing.build_tianxing_route_preflight_plan(
+                "探索",
+                reason="探寻裂缝",
+                now=now,
+                config={
+                    "auto_change_fate_enabled": True,
+                    "auto_predict_enabled": True,
+                    "strategy_dry_run_enabled": True,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+            state_module.state["tianxing_observation"]["tianji_value"] = 2
+            predict_plan = tianxing.build_tianxing_route_preflight_plan(
+                "探索",
+                reason="野外历练",
+                now=now,
+                config={
+                    "auto_change_fate_enabled": True,
+                    "auto_predict_enabled": True,
+                    "strategy_dry_run_enabled": True,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+        self.assertEqual("need_change_fate", change_plan["stage"])
+        self.assertEqual(".改命 探索", change_plan["prepare_command"])
+        self.assertFalse(change_plan["route_allowed"])
+        self.assertEqual("need_predict", predict_plan["stage"])
+        self.assertEqual(".推命 探索", predict_plan["prepare_command"])
+
+    def test_route_preflight_does_not_block_non_tianxing_identity(self):
+        now = 1_780_000_000.0
+        state_module.update_send_as_profile(self.identity_id, sect_name="散修")
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+
+            plan = tianxing.build_tianxing_route_preflight_plan("探索", now=now)
+
+        self.assertEqual("unavailable", plan["stage"])
+        self.assertTrue(plan["route_allowed"])
+        self.assertEqual("", plan["prepare_command"])
 
 
 class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):

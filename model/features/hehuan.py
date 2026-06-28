@@ -17,6 +17,7 @@ from ..state import (
     get_identity_enabled,
     get_identity_ids,
     get_send_as_profile,
+    is_module_available,
     state,
     use_identity,
 )
@@ -715,6 +716,11 @@ def _has_unresolved_hehuan_pending(observed, now):
 async def run_hehuan_scheduler(now):
     now = float(now if now is not None else time.time())
     if not state.get("hehuan_enabled"):
+        return
+    if not is_module_available("合欢宗"):
+        state["hehuan_enabled"] = False
+        state["hehuan_observation"] = {}
+        save_state()
         return
 
     dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))

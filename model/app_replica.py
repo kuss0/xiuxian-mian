@@ -3175,6 +3175,45 @@ def _find_lightweight_room_for_kind_by_usernames(replica_kind="", usernames=None
     return dict(candidates[0][1])
 
 
+def _update_lightweight_room_team_snapshot(replica_kind, room_id, team_usernames, team_professions_by_username=None, now=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    normalized_usernames = _normalize_replica_username_list(team_usernames or [])
+    if not replica_kind or not normalized_usernames:
+        return False
+    room_id = str(room_id or "").strip()
+    normalized_professions = _normalize_replica_team_professions_by_username(team_professions_by_username)
+    now = float(now or time.time())
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    candidates = []
+    evidence = set(normalized_usernames)
+    for chat_id, room in rooms.items():
+        if not isinstance(room, dict) or room.get("replica_kind") != replica_kind:
+            continue
+        current_room_id = str(room.get("room_id") or "").strip()
+        if room_id and current_room_id and current_room_id != room_id:
+            continue
+        room_usernames = set(_get_lightweight_room_usernames(room))
+        if room_id and current_room_id == room_id:
+            matched = True
+        else:
+            matched = bool(room_usernames and evidence.intersection(room_usernames))
+        if matched:
+            candidates.append((float(room.get("updated_at") or room.get("opened_at") or 0), str(chat_id), room))
+    if not candidates:
+        return False
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    _updated_at, chat_id, room = candidates[0]
+    room["team_usernames"] = normalized_usernames
+    room["team_identity_ids"] = _map_replica_usernames_to_identity_ids(normalized_usernames)
+    room["team_professions_by_username"] = normalized_professions
+    room["updated_at"] = now
+    rooms[chat_id] = room
+    state_item["last_room_by_chat"] = rooms
+    _save_lightweight_dungeon_state(state_item)
+    return True
+
+
 def _resolve_luoyun_local_context(text, now=None):
     now = float(now or time.time())
     event_usernames = _extract_replica_usernames(text)
@@ -3271,9 +3310,9 @@ def _format_lightweight_existing_room_notice(room, *, html=False):
         ]
         if replica_kind == _REPLICA_KIND_CANGKUN:
             team_ids = _get_lightweight_room_team_identity_ids(room)
-            covered_text, missing_text = _format_cangkun_profession_coverage(
+            covered_text, missing_text = _format_cangkun_raw_profession_coverage(
                 team_ids,
-                leader_identity_id=int(room.get("leader_identity_id") or 0),
+                professions_by_username=room.get("team_professions_by_username"),
             )
             lines.insert(1, f"覆盖职业：{covered_text}；缺职业：{missing_text}。")
             lines.insert(2, _format_cangkun_spiritual_sense_status(team_ids, html=html))
@@ -4835,6 +4874,29 @@ def _get_cangkun_identity_roles(identity_id):
         for role in _CANGKUN_REQUIRED_PROFESSIONS
         if role in _get_replica_profile_professions(identity_id)
     )
+
+
+def _format_cangkun_raw_profession_coverage(identity_ids, *, professions_by_username=None):
+    normalized_professions = _normalize_replica_team_professions_by_username(professions_by_username)
+    identity_ids_by_username = _get_replica_identity_ids_by_username()
+    observed_identity_ids = {
+        int(identity_ids_by_username.get(username) or 0)
+        for username in normalized_professions
+    }
+    covered = {
+        role
+        for professions in normalized_professions.values()
+        for role in professions
+    }
+    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
+        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
+        if username and normalized_professions.get(username):
+            continue
+        elif identity_id not in observed_identity_ids:
+            covered.update(_get_cangkun_identity_roles(identity_id))
+    covered_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in covered) or "无"
+    missing_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered) or "无"
+    return covered_text, missing_text
 
 
 def _get_cangkun_available_identity_records(now=None):
@@ -7051,17 +7113,67 @@ def _extract_replica_team_section(text):
     return team_section
 
 
-def _extract_replica_team_usernames(text):
+def _normalize_replica_profession_list(text):
+    professions = []
+    if isinstance(text, (list, tuple, set)):
+        items = text
+    else:
+        items = re.split(r"[|/,，、\s]+", str(text or ""))
+    for item in items:
+        item = str(item or "").strip()
+        if item and item in _REPLICA_QUERY_PROFESSION_NAMES and item != "未匹配" and item not in professions:
+            professions.append(item)
+    return professions
+
+
+def _normalize_replica_team_professions_by_username(value):
+    normalized = {}
+    if not isinstance(value, dict):
+        return normalized
+    for username, professions in value.items():
+        normalized_username = _normalize_replica_username(username)
+        normalized_professions = _normalize_replica_profession_list(professions)
+        if normalized_username and normalized_professions:
+            normalized[normalized_username] = normalized_professions
+    return normalized
+
+
+def _extract_replica_team_members(text):
     team_section = _extract_replica_team_section(text)
-    usernames = []
+    members = []
+    seen = set()
     for line in team_section.splitlines():
         line = line.strip()
         if not line.startswith("-"):
             continue
         username_match = _REPLICA_USERNAME_RE.search(line)
-        if username_match:
-            usernames.append(username_match.group(0))
-    return _normalize_replica_username_list(usernames)
+        if not username_match:
+            continue
+        username = _normalize_replica_username(username_match.group(0))
+        if not username or username in seen:
+            continue
+        seen.add(username)
+        professions = []
+        suffix = line[username_match.end():]
+        profession_match = re.search(r"[（(]\s*([^）)]{1,60})\s*[）)]", suffix)
+        if profession_match:
+            professions = _normalize_replica_profession_list(profession_match.group(1))
+        members.append({"username": username, "professions": professions})
+    return members
+
+
+def _extract_replica_team_usernames(text):
+    return _normalize_replica_username_list(member.get("username") for member in _extract_replica_team_members(text))
+
+
+def _extract_replica_team_professions_by_username(text):
+    professions_by_username = {}
+    for member in _extract_replica_team_members(text):
+        username = _normalize_replica_username(member.get("username") or "")
+        professions = _normalize_replica_profession_list(member.get("professions") or [])
+        if username and professions:
+            professions_by_username[username] = professions
+    return professions_by_username
 
 
 def _parse_replica_team_capacity(text, default=5):
@@ -7118,7 +7230,7 @@ def _cleanup_replica_team_notice_records(now=None):
     return records
 
 
-def _mark_replica_team_notice_once(replica_kind, room_id, team_usernames, capacity, is_full, now=None):
+def _mark_replica_team_notice_once(replica_kind, room_id, team_usernames, capacity, is_full, now=None, team_professions_by_username=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     normalized_usernames = _normalize_replica_username_list(team_usernames or [])
     if not replica_kind or not normalized_usernames:
@@ -7128,7 +7240,14 @@ def _mark_replica_team_notice_once(replica_kind, room_id, team_usernames, capaci
     capacity = max(1, int(capacity or 5))
     status_key = "full" if is_full else str(len(normalized_usernames))
     usernames_hash = hashlib.sha1(" ".join(normalized_usernames).encode("utf-8", errors="ignore")).hexdigest()[:12]
-    key = f"team:{replica_kind}:{room_id}:{status_key}:{usernames_hash}"
+    normalized_professions = _normalize_replica_team_professions_by_username(team_professions_by_username)
+    profession_key = "|".join(
+        f"{username}:{'/'.join(normalized_professions.get(username) or [])}"
+        for username in normalized_usernames
+        if normalized_professions.get(username)
+    )
+    professions_hash = hashlib.sha1(profession_key.encode("utf-8", errors="ignore")).hexdigest()[:12] if profession_key else "none"
+    key = f"team:{replica_kind}:{room_id}:{status_key}:{usernames_hash}:{professions_hash}"
     records = _cleanup_replica_team_notice_records(now)
     if key in records:
         return False
@@ -7160,12 +7279,15 @@ def _resolve_replica_team_notice_room_id(replica_kind, room_id, team_usernames, 
     return str(candidate or room_id or "").strip()
 
 
-def _format_replica_team_notice_member(replica_kind, username, identity_id=0):
+def _format_replica_team_notice_member(replica_kind, username, identity_id=0, observed_professions=None):
     username = _normalize_replica_username(username)
     if not username:
         return ""
     identity_id = int(identity_id or 0)
-    if replica_kind == _REPLICA_KIND_CANGKUN and identity_id > 0:
+    observed_professions = _normalize_replica_profession_list(observed_professions)
+    if observed_professions:
+        roles = tuple(observed_professions)
+    elif replica_kind == _REPLICA_KIND_CANGKUN and identity_id > 0:
         roles = _get_cangkun_identity_roles(identity_id)
     elif identity_id > 0:
         roles = tuple(_get_replica_profile_professions(identity_id))
@@ -7175,8 +7297,9 @@ def _format_replica_team_notice_member(replica_kind, username, identity_id=0):
     return f"{username}({role_text})"
 
 
-def _format_replica_team_notice_details(replica_kind, team_usernames, *, now=None):
+def _format_replica_team_notice_details(replica_kind, team_usernames, *, now=None, team_professions_by_username=None):
     normalized_usernames = _normalize_replica_username_list(team_usernames or [])
+    normalized_professions = _normalize_replica_team_professions_by_username(team_professions_by_username)
     identity_ids_by_username = _get_replica_identity_ids_by_username()
     identity_ids = []
     member_parts = []
@@ -7184,27 +7307,38 @@ def _format_replica_team_notice_details(replica_kind, team_usernames, *, now=Non
         identity_id = int(identity_ids_by_username.get(username) or 0)
         if identity_id > 0 and identity_id not in identity_ids:
             identity_ids.append(identity_id)
-        member = _format_replica_team_notice_member(replica_kind, username, identity_id)
+        member = _format_replica_team_notice_member(replica_kind, username, identity_id, normalized_professions.get(username))
         if member:
             member_parts.append(member)
     lines = ["队伍：" + (" ".join(member_parts) if member_parts else " ".join(normalized_usernames))]
-    if replica_kind != _REPLICA_KIND_CANGKUN or not identity_ids:
+    if replica_kind != _REPLICA_KIND_CANGKUN or (not identity_ids and not normalized_professions):
         return lines
-    assignments = _best_cangkun_profession_assignment(identity_ids)
-    if assignments:
+    if normalized_professions:
         assignment_parts = []
-        for role, identity_id in assignments:
-            username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or str(identity_id))
-            assignment_parts.append(f"{role}:{username}")
-        lines.append("职业分配：" + "、".join(assignment_parts))
-    covered = {role for role, _identity_id in assignments}
-    covered_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in covered) or "无"
-    missing_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered) or "无"
+        for role in _CANGKUN_REQUIRED_PROFESSIONS:
+            for username in normalized_usernames:
+                if role in (normalized_professions.get(username) or []):
+                    assignment_parts.append(f"{role}:{username}")
+                    break
+        if assignment_parts:
+            lines.append("队伍职业：" + "、".join(assignment_parts))
+    else:
+        assignments = _best_cangkun_profession_assignment(identity_ids)
+        if assignments:
+            assignment_parts = []
+            for role, identity_id in assignments:
+                username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or str(identity_id))
+                assignment_parts.append(f"{role}:{username}")
+            lines.append("可分配职业：" + "、".join(assignment_parts))
+    covered_text, missing_text = _format_cangkun_raw_profession_coverage(
+        identity_ids,
+        professions_by_username=normalized_professions,
+    )
     lines.append(f"覆盖职业：{covered_text}；缺职业：{missing_text}")
     return lines
 
 
-def _schedule_replica_team_notice(replica_kind, room_id, team_usernames, capacity, is_full, now=None):
+def _schedule_replica_team_notice(replica_kind, room_id, team_usernames, capacity, is_full, now=None, team_professions_by_username=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     normalized_usernames = _normalize_replica_username_list(team_usernames or [])
     if not replica_kind or not normalized_usernames:
@@ -7213,11 +7347,25 @@ def _schedule_replica_team_notice(replica_kind, room_id, team_usernames, capacit
     room_id = _resolve_replica_team_notice_room_id(replica_kind, room_id, normalized_usernames, now=now)
     capacity = max(1, int(capacity or 5))
     is_full = bool(is_full or len(normalized_usernames) >= capacity)
-    if not _mark_replica_team_notice_once(replica_kind, room_id, normalized_usernames, capacity, is_full, now=now):
+    normalized_professions = _normalize_replica_team_professions_by_username(team_professions_by_username)
+    if not _mark_replica_team_notice_once(
+        replica_kind,
+        room_id,
+        normalized_usernames,
+        capacity,
+        is_full,
+        now=now,
+        team_professions_by_username=normalized_professions,
+    ):
         return False
     replica_name = (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本"
     room_text = str(room_id or "").strip() or "-"
-    detail_lines = _format_replica_team_notice_details(replica_kind, normalized_usernames, now=now)
+    detail_lines = _format_replica_team_notice_details(
+        replica_kind,
+        normalized_usernames,
+        now=now,
+        team_professions_by_username=normalized_professions,
+    )
     if is_full:
         text = f"🧩 {replica_name}队伍已满 {len(normalized_usernames)}/{capacity}：房间 {room_text}\n" + "\n".join(detail_lines)
         priority = "high"
@@ -8417,7 +8565,7 @@ def _get_replica_kind_state(record, replica_kind, *, create=False):
         if create:
             states[replica_kind] = state_item
     if replica_kind == _REPLICA_KIND_VIRTUAL_HALL:
-        for key in ("cooldown_until", "participating", "room_id", "team_usernames", "team_identity_ids", "joined_at", "active_until"):
+        for key in ("cooldown_until", "participating", "room_id", "team_usernames", "team_identity_ids", "team_professions_by_username", "joined_at", "active_until"):
             if key in record and key not in state_item:
                 state_item[key] = record.get(key)
     return state_item
@@ -8561,12 +8709,13 @@ def _parse_replica_join_reply(text, reply_to=None):
     if joined_match and not room_id:
         room_id = next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
     team_usernames = _extract_replica_team_usernames(raw_text) or _extract_replica_usernames(raw_text)
+    team_professions_by_username = _extract_replica_team_professions_by_username(raw_text)
     if joined_match or "你已在队伍中" in raw_text:
-        return {"kind": "joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "wait_sec": 0, "reason": ""}
+        return {"kind": "joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "team_professions_by_username": team_professions_by_username, "wait_sec": 0, "reason": ""}
     if "此队伍已满员" in raw_text or "队伍已满" in raw_text:
-        return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "wait_sec": 0, "reason": "full"}
+        return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "team_professions_by_username": {}, "wait_sec": 0, "reason": "full"}
     if "找不到此副本房间" in raw_text or "副本房间不存在" in raw_text:
-        return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "wait_sec": 0, "reason": "not_found"}
+        return {"kind": "not_joined", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "team_professions_by_username": {}, "wait_sec": 0, "reason": "not_found"}
     if (
         ("无法立即加入新副本" in raw_text and "请在" in raw_text and "后再试" in raw_text)
         or (
@@ -8578,8 +8727,8 @@ def _parse_replica_join_reply(text, reply_to=None):
             )
         )
     ):
-        return {"kind": "cooldown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "wait_sec": parse_wait_time(raw_text), "reason": "cooldown"}
-    return {"kind": "unknown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "wait_sec": 0, "reason": ""}
+        return {"kind": "cooldown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "team_professions_by_username": {}, "wait_sec": parse_wait_time(raw_text), "reason": "cooldown"}
+    return {"kind": "unknown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "team_professions_by_username": team_professions_by_username, "wait_sec": 0, "reason": ""}
 
 
 def _cleanup_replica_run_state(now=None):
@@ -8599,11 +8748,13 @@ def _cleanup_replica_run_state(now=None):
                 state_item["participating"] = False
                 state_item["team_usernames"] = []
                 state_item["team_identity_ids"] = []
+                state_item["team_professions_by_username"] = {}
                 changed = True
             elif state_item.get("participating") and active_until > 0 and now >= active_until:
                 state_item["participating"] = False
                 state_item["team_usernames"] = []
                 state_item["team_identity_ids"] = []
+                state_item["team_professions_by_username"] = {}
                 changed = True
             lobby_until = _get_replica_lobby_until(state_item)
             if lobby_until > 0 and now >= lobby_until:
@@ -8611,6 +8762,7 @@ def _cleanup_replica_run_state(now=None):
                 if not state_item.get("participating"):
                     state_item["team_usernames"] = []
                     state_item["team_identity_ids"] = []
+                    state_item["team_professions_by_username"] = {}
                 changed = True
         has_kind_failure_pending = any(float(_get_replica_kind_state(record, kind).get("failure_pending_until") or 0) > 0 for kind in _REPLICA_KINDS)
         for replica_kind in _REPLICA_KINDS:
@@ -8622,6 +8774,7 @@ def _cleanup_replica_run_state(now=None):
                     state_item["participating"] = False
                     state_item["team_usernames"] = []
                     state_item["team_identity_ids"] = []
+                    state_item["team_professions_by_username"] = {}
                 changed = True
             dispatch_pending_until = float(state_item.get("dispatch_pending_until") or 0)
             if dispatch_pending_until > 0 and now >= dispatch_pending_until:
@@ -8639,6 +8792,7 @@ def _cleanup_replica_run_state(now=None):
                         state_item["participating"] = False
                         state_item["team_usernames"] = []
                         state_item["team_identity_ids"] = []
+                        state_item["team_professions_by_username"] = {}
                         changed = True
             changed = True
     if changed:
@@ -8661,6 +8815,7 @@ def _update_replica_join_record(
     replica_kind=_REPLICA_KIND_VIRTUAL_HALL,
     lobby_status="joined",
     leader_username="",
+    team_professions_by_username=None,
 ):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else _REPLICA_KIND_VIRTUAL_HALL
     state_item = _get_replica_kind_state(record, replica_kind, create=True)
@@ -8668,6 +8823,7 @@ def _update_replica_join_record(
         return False
     profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
     normalized_usernames = _normalize_replica_username_list(team_usernames)
+    normalized_professions_by_username = _normalize_replica_team_professions_by_username(team_professions_by_username)
     if profile_username and profile_username not in normalized_usernames:
         normalized_usernames.append(profile_username)
     normalized_leader_username = _normalize_replica_username(leader_username)
@@ -8685,6 +8841,8 @@ def _update_replica_join_record(
         "last_join_msg_id": int(msg_id or 0),
         "failure_pending_until": 0,
     })
+    if team_professions_by_username is not None:
+        state_item["team_professions_by_username"] = normalized_professions_by_username
     if already_entered:
         _clear_replica_lobby_fields(state_item)
     else:
@@ -8710,14 +8868,31 @@ def _update_replica_join_record(
     return True
 
 
-def _mark_replica_join_success(identity_id, room_id, team_usernames, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
+def _mark_replica_join_success(identity_id, room_id, team_usernames, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL, team_professions_by_username=None):
     identity_id = int(identity_id or 0)
     if identity_id <= 0:
         return
     records = _get_replica_run_records()
     record = _get_replica_identity_record(records, identity_id)
-    if _update_replica_join_record(record, identity_id, room_id, team_usernames, now, msg_id=msg_id, replica_kind=replica_kind, lobby_status="joined"):
+    if _update_replica_join_record(
+        record,
+        identity_id,
+        room_id,
+        team_usernames,
+        now,
+        msg_id=msg_id,
+        replica_kind=replica_kind,
+        lobby_status="joined",
+        team_professions_by_username=team_professions_by_username,
+    ):
         _save_replica_run_records(records)
+        _update_lightweight_room_team_snapshot(
+            replica_kind,
+            room_id,
+            team_usernames,
+            team_professions_by_username=team_professions_by_username,
+            now=now,
+        )
 
 
 def _preserve_confirmed_replica_join(records, record, state_item, room_id, now, msg_id=0, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
@@ -8755,6 +8930,7 @@ def _mark_replica_join_not_joined(identity_id, room_id, reason, now, msg_id=0, r
         "room_id": str(room_id or state_item.get("room_id") or ""),
         "team_usernames": [],
         "team_identity_ids": [],
+        "team_professions_by_username": {},
         "failure_pending_until": 0,
     })
     _clear_replica_lobby_fields(state_item)
@@ -8781,6 +8957,7 @@ def _mark_replica_join_cooldown(identity_id, room_id, wait_sec, now, msg_id=0, r
         "cooldown_until": float(now or 0) + max(0, int(wait_sec or 0)),
         "team_usernames": [],
         "team_identity_ids": [],
+        "team_professions_by_username": {},
         "failure_pending_until": 0,
     })
     _clear_replica_lobby_fields(state_item)
@@ -8935,6 +9112,7 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
     replica_kind = _infer_replica_kind_from_text(raw_text)
     lobby_status = "joined"
     leader_username = ""
+    team_professions_by_username = {}
     if opened_match:
         room_id = str(opened_match.group("room_id") or "").strip()
         leader_username = _normalize_replica_username(opened_match.group("leader"))
@@ -8947,6 +9125,7 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
     elif joined_match:
         room_id = next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
         team_usernames = _extract_replica_team_usernames(raw_text)
+        team_professions_by_username = _extract_replica_team_professions_by_username(raw_text)
         leader_username = team_usernames[0] if team_usernames else ""
         if not replica_kind:
             replica_kind = _infer_replica_kind_from_active_team_usernames(team_usernames, now)
@@ -8971,9 +9150,17 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
             replica_kind=replica_kind,
             lobby_status=lobby_status,
             leader_username=leader_username,
+            team_professions_by_username=team_professions_by_username,
         ) or changed
     if changed:
         _save_replica_run_records(records)
+        _update_lightweight_room_team_snapshot(
+            replica_kind,
+            room_id,
+            team_usernames,
+            team_professions_by_username=team_professions_by_username,
+            now=now,
+        )
         capacity = _parse_replica_team_capacity(raw_text, default=5)
         _schedule_replica_team_notice(
             replica_kind,
@@ -8982,6 +9169,7 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
             capacity,
             len(_normalize_replica_username_list(team_usernames)) >= capacity,
             now=now,
+            team_professions_by_username=team_professions_by_username,
         )
     return changed
 
@@ -9100,6 +9288,7 @@ def _mark_replica_success_cooldown(identity_ids, now, source_msg_id=0, leader_us
             "cooldown_until": max(float(state_item.get("cooldown_until") or 0), cooldown_until),
             "team_usernames": [],
             "team_identity_ids": [],
+            "team_professions_by_username": {},
             "joined_at": 0,
             "active_until": 0,
             "entered_at": 0,
@@ -9169,6 +9358,7 @@ def _mark_replica_room_dissolved(room_id, now, source_msg_id=0, leader_username=
                 "room_id": "",
                 "team_usernames": [],
                 "team_identity_ids": [],
+                "team_professions_by_username": {},
                 "failure_pending_until": 0,
                 "last_dissolve_source_msg_id": int(source_msg_id or 0),
                 "last_dissolved_room_id": room_id,
@@ -9228,11 +9418,17 @@ def _mark_replica_team_kicked(leader_username, kicked_username, team_usernames, 
                     "participating": False,
                     "team_usernames": [],
                     "team_identity_ids": [],
+                    "team_professions_by_username": {},
                 })
                 _clear_replica_lobby_fields(state_item)
             elif normalized_team_usernames:
                 state_item["team_usernames"] = normalized_team_usernames
                 state_item["team_identity_ids"] = _map_replica_usernames_to_identity_ids(normalized_team_usernames)
+                state_item["team_professions_by_username"] = {
+                    username: professions
+                    for username, professions in _normalize_replica_team_professions_by_username(state_item.get("team_professions_by_username")).items()
+                    if username in normalized_team_usernames
+                }
             matched = True
         if not matched:
             continue
@@ -12033,7 +12229,15 @@ async def _handle_replica_join_reply(text, now, reply_to, matched_family=None, e
         return True
     msg_id = int(getattr(event, "id", 0) or 0)
     if kind == "joined":
-        _mark_replica_join_success(identity_id, parsed.get("room_id"), parsed.get("team_usernames") or [], now, msg_id=msg_id, replica_kind=parsed.get("replica_kind") or _REPLICA_KIND_VIRTUAL_HALL)
+        _mark_replica_join_success(
+            identity_id,
+            parsed.get("room_id"),
+            parsed.get("team_usernames") or [],
+            now,
+            msg_id=msg_id,
+            replica_kind=parsed.get("replica_kind") or _REPLICA_KIND_VIRTUAL_HALL,
+            team_professions_by_username=parsed.get("team_professions_by_username"),
+        )
     elif kind == "not_joined":
         _mark_replica_join_not_joined(identity_id, parsed.get("room_id"), parsed.get("reason"), now, msg_id=msg_id, replica_kind=parsed.get("replica_kind") or _REPLICA_KIND_VIRTUAL_HALL)
     elif kind == "cooldown":

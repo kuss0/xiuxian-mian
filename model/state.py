@@ -176,6 +176,21 @@ REALM_SORT_ORDER = [
     "化神后期大圆满",
 ]
 REALM_SORT_INDEX = {realm: index for index, realm in enumerate(REALM_SORT_ORDER)}
+NO_SECT_NAMES = {"", "散修", "无", "无宗门", "未加入宗门", "未记录", "未知"}
+GENERIC_SECT_MODULE_NAMES = {"点卯", "宗门传功", "闯塔"}
+SECT_MODULE_REQUIREMENTS = {
+    "灵树": "落云宗",
+    "观星台": "星宫",
+    "观星": "星宫",
+    "周天星斗": "星宫",
+    "登天阶": "凌霄宫",
+    "太一": "太一门",
+    "放养": "万灵宗",
+    "合欢宗": "合欢宗",
+    "天星宗": "天星宗",
+    "阴罗宗": "阴罗宗",
+    "问道": "元婴宗",
+}
 REPLICA_PROFESSION_RULES = [
     ("御山", {"土"}),
     ("灵医", {"木", "水"}),
@@ -2189,33 +2204,36 @@ def is_small_world_realm_available(send_as_id=None):
     return realm_index >= SMALL_WORLD_MIN_REALM_INDEX
 
 
+def normalize_sect_name(sect_name):
+    normalized = str(sect_name or "").strip()
+    while normalized.startswith("【") and normalized.endswith("】") and len(normalized) >= 2:
+        normalized = normalized[1:-1].strip()
+    return normalized
+
+
+def has_sect_membership(send_as_id=None):
+    sect_name = normalize_sect_name(get_send_as_profile(send_as_id).get("sect_name"))
+    return sect_name not in NO_SECT_NAMES
+
+
 def get_available_module_names(send_as_id=None):
     available_module_names = [
         module_name
         for module_name in MODULE_NAMES
         if module_name != "观星监控" and not is_module_archived(module_name)
     ]
-    sect_name = (get_send_as_profile(send_as_id).get("sect_name") or "").strip()
-    if sect_name and sect_name != "落云宗":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "灵树"]
-    if sect_name and sect_name != "星宫":
-        available_module_names = [module_name for module_name in available_module_names if module_name not in {"观星台", "观星"}]
-    if sect_name != "星宫":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "周天星斗"]
-    if sect_name and sect_name != "凌霄宫":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "登天阶"]
-    if sect_name and sect_name != "太一门":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "太一"]
-    if sect_name and sect_name != "万灵宗":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "放养"]
-    if sect_name and sect_name != "合欢宗":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "合欢宗"]
-    if sect_name and sect_name != "天星宗":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "天星宗"]
-    if sect_name and sect_name != "阴罗宗":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "阴罗宗"]
-    if sect_name != "元婴宗":
-        available_module_names = [module_name for module_name in available_module_names if module_name != "问道"]
+    sect_name = normalize_sect_name(get_send_as_profile(send_as_id).get("sect_name"))
+    if sect_name in NO_SECT_NAMES:
+        available_module_names = [
+            module_name for module_name in available_module_names
+            if module_name not in GENERIC_SECT_MODULE_NAMES
+        ]
+    for module_name, required_sect_name in SECT_MODULE_REQUIREMENTS.items():
+        if sect_name != required_sect_name:
+            available_module_names = [
+                available_module_name for available_module_name in available_module_names
+                if available_module_name != module_name
+            ]
     if not is_yuanying_realm_available(send_as_id):
         available_module_names = [module_name for module_name in available_module_names if module_name != "元婴"]
     if not is_explore_rift_realm_available(send_as_id):

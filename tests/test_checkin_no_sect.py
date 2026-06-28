@@ -208,6 +208,45 @@ class CheckinNoSectTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
 
+    async def test_scheduler_clears_sanxiu_checkin_and_teach_before_send(self):
+        send_as_id = 991006
+        now = datetime(2026, 6, 20, 2, 30, tzinfo=timezone.utc).timestamp()
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="sanxiucheckin", sect_name="散修")
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["checkin_enabled"] = True
+            identity_state["sect_teach_enabled"] = True
+            identity_state["checkin_teach_day"] = checkin.get_checkin_day_key(now)
+            identity_state["last_checkin_msg_id"] = 8801
+            identity_state["last_sect_teach_msg_id"] = 8802
+            identity_state["next_checkin_time"] = now - 1
+            identity_state["next_sect_teach_time"] = now - 1
+            identity_state["sect_teach_reply_to_msg_id"] = 8801
+            identity_state["pending_tasks"] = {
+                8801: {"cmd": config.CMD_CHECKIN, "sent_at": now - 10, "retry": 0},
+                8802: {"cmd": config.CMD_SECT_TEACH, "sent_at": now - 5, "retry": 0},
+                9999: {"cmd": config.CMD_PET, "sent_at": now - 1, "retry": 0},
+            }
+            identity_state["my_msg_ids"] = {8801: now - 10, 8802: now - 5, 9999: now - 1}
+
+            with (
+                patch.object(checkin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(checkin, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(checkin, "save_state"),
+            ):
+                await checkin.run_checkin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_awaited_once()
+            self.assertFalse(identity_state["checkin_enabled"])
+            self.assertFalse(identity_state["sect_teach_enabled"])
+            self.assertEqual(0, identity_state["next_checkin_time"])
+            self.assertEqual(0, identity_state["next_sect_teach_time"])
+            self.assertEqual(0, identity_state["sect_teach_reply_to_msg_id"])
+            self.assertEqual({9999: {"cmd": config.CMD_PET, "sent_at": now - 1, "retry": 0}}, identity_state["pending_tasks"])
+            self.assertEqual({9999: now - 1}, identity_state["my_msg_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()
