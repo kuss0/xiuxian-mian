@@ -116,12 +116,29 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "renderSmallWorldFeature(identity,'manifest','显灵')" in script
     assert "renderSmallWorldBarrierConfig(identity)" in script
     assert "data-jiyin-choice=\"offer_soul\"" in script
-    assert "data-open-pet-modal=\"1\"" in script
-    assert "'日常功能开关'" in script
-    assert "'奇遇功能开关'" in script
+    assert "data-save-pet-inline" in script
+    assert "data-pet-inline-name" in script
+    assert "renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼']), null)" in script
+    assert "renderModuleToggle('法宝','开关')" in script
+    assert "renderModuleToggle('温养器灵','开关')" in script
+    assert "renderModuleToggle('器灵试炼','开关')" in script
+    assert "['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法']" in script
+    assert "renderModuleToggle('卜筮问天','开关')" in script
+    assert "renderModuleToggle('斗法','开关')" in script
+    assert "data-divination-daily-limit" in script
+    assert "windowInlineConfig('点卯', checkinWin)" in script
+    assert "windowInlineConfig('闯塔', towerWin)" in script
+    assert "data-open-window-modal" not in script
+    assert "renderModuleCard('元婴', moduleNote, primaryTools, settingsTools, compactDetails(['元婴','探寻裂缝']), null)" in script
+    assert "renderModuleToggle('探寻裂缝','开关')" in script
+    assert "identity.jiyin_effective_choice_label" in script
+    assert "identity.nanlong_effective_choice_label" in script
+    assert "献魂偏收益" not in script
+    assert "收敛偏保守" not in script
+    assert "不确定收益" not in script
     assert "primaryTools =\n          renderModuleToggle('野外历练','野外')" not in script
     assert "primaryTools =\n          renderModuleToggle('玄骨考校','玄骨')" not in script
-    assert "module-direct-settings-button" in script
+    assert "module-direct-settings-button" not in script
     assert "打开名称设置" not in script
 
 
@@ -134,6 +151,9 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "max-height: 170px;" not in css
     assert ".module-settings-modal-card" in css
     assert ".module-setting-section" in css
+    assert ".module-inline-window" in css
+    assert ".module-setting-current" in css
+    assert ".module-name-input" in css
     assert ".module-settings summary" not in css
     assert "height: calc(100vh - 80px)" not in css
     assert "margin-top: 80px" not in css
@@ -144,6 +164,7 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "body.ui-new .topbar-left" in new_css
     assert "body.ui-new .topbar-actions > *" in new_css
     assert "body.ui-new .module-setting-section" in new_css
+    assert "body.ui-new .module-setting-current" in new_css
     assert "flex: 0 1 100%" not in new_css
 
 

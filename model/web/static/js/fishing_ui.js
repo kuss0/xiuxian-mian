@@ -252,7 +252,7 @@
       '<strong>'+(plan.allow_start ? '可执行' : esc(plan.blocked_reason || '待配置'))+'</strong>'+
       '<span>'+fishingStatusText(fishing, plan)+'</span>'+
       '</div>'+
-      '<button type="button" class="btn btn-secondary" data-open-fishing-config>垂钓设置</button>'+
+      '<button type="button" class="btn btn-secondary" data-open-fishing-config>设置</button>'+
       '</div>';
     renderFishingConfigModal(false);
   }

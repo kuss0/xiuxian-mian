@@ -360,6 +360,12 @@ body.ui-new .module-setting-copy p {
   color: var(--new-muted);
 }
 
+body.ui-new .module-setting-current {
+  border-color: var(--new-line);
+  background: #171b21;
+  color: var(--new-text);
+}
+
 body.ui-new .module-setting-section {
   border-color: var(--new-line);
   background: #11151b;

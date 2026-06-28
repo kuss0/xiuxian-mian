@@ -26,7 +26,7 @@
       '<section class="module-setting-section">'+
         '<div class="module-setting-copy">'+
           '<h4>'+esc(title)+'</h4>'+
-          '<p>'+esc(description)+'</p>'+
+          (description ? '<p>'+esc(description)+'</p>' : '')+
         '</div>'+
         '<div class="module-setting-controls">'+controlsHtml+'</div>'+
       '</section>';
@@ -122,6 +122,25 @@
     }).join('');
   }
 
+  function windowInlineConfig(moduleName, windowData){
+    var data = windowData || {};
+    return ''+
+      '<span class="module-setting-current">当前：'+esc(data.text || '')+'</span>'+
+      '<span class="module-inline-window" data-inline-window-config="'+esc(moduleName)+'">'+
+        '<label class="module-setting-field"><span>开始</span><input class="text-input module-hour-input" type="number" min="0" max="23" step="1" value="'+esc(data.start_hour || 0)+'" data-inline-window-start="1"></label>'+
+        '<label class="module-setting-field"><span>结束</span><input class="text-input module-hour-input" type="number" min="0" max="23" step="1" value="'+esc(data.end_hour || 0)+'" data-inline-window-end="1"></label>'+
+        '<button type="button" class="btn btn-secondary" data-save-window-inline="'+esc(moduleName)+'">保存</button>'+
+      '</span>';
+  }
+
+  function petNameInput(fieldName, label, value){
+    return '<label class="module-setting-field module-setting-field-wide"><span>'+esc(label)+'</span><input class="text-input module-name-input" type="text" value="'+esc(value || '')+'" data-pet-inline-name="'+esc(fieldName)+'"></label>';
+  }
+
+  function currentChoiceText(label, value){
+    return '<span class="module-setting-current">'+esc(label)+'：'+esc(value || '未设置')+'</span>';
+  }
+
   renderModules = function(identity){
     var grid = document.getElementById('module-grid');
     if(!grid){
@@ -195,7 +214,7 @@
 
     var petWarmModule = moduleByName('温养器灵');
     var petTrialModule = moduleByName('器灵试炼');
-    var hiddenModules = new Set(['温养器灵','器灵试炼','天机代卜','共历心劫','侍妾远航','极阴祖师','南陇侯','点卯','宗门传功','闯塔','深度闭关','元婴']);
+    var hiddenModules = new Set(['温养器灵','器灵试炼','天机代卜','共历心劫','侍妾远航','极阴祖师','南陇侯','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法','探寻裂缝']);
 
     grid.innerHTML = identityModules.map(function(module){
       if(hiddenModules.has(module.name)){
@@ -206,52 +225,96 @@
       var settingsTools = '';
 
       if(module.name === '法宝'){
-        var warmEnabled = !!(petWarmModule && petWarmModule.enabled);
-        var trialEnabled = !!(petTrialModule && petTrialModule.enabled);
         moduleNote = '<div class="module-note">抚摸：'+esc(identity.pet_name || '')+'｜温养：'+esc(identity.pet_warm_name || identity.pet_name || '')+'｜试炼：'+esc(identity.pet_trial_name || identity.pet_name || '')+'</div>';
-        primaryTools =
-          '<span class="module-subswitch"><span class="module-subswitch-label">温养</span>'+
-          renderSwitch(warmEnabled ? 'switch-on' : 'switch-off', 'data-toggle-module="1" data-module="温养器灵" data-enabled="'+(warmEnabled ? 0 : 1)+'" aria-label="温养器灵开关"')+
-          '</span>'+
-          '<span class="module-subswitch"><span class="module-subswitch-label">试炼</span>'+
-          renderSwitch(trialEnabled ? 'switch-on' : 'switch-off', 'data-toggle-module="1" data-module="器灵试炼" data-enabled="'+(trialEnabled ? 0 : 1)+'" aria-label="器灵试炼开关"')+
-          '</span>'+
-          '<button type="button" class="btn btn-secondary module-direct-settings-button" data-open-pet-modal="1">设置</button>';
+        settingsTools =
+          settingSection(
+            '抚摸法宝',
+            '目标：'+(identity.pet_name || '未设置'),
+            renderModuleToggle('法宝','开关')+petNameInput('pet_name', '目标', identity.pet_name || '')
+          )+
+          settingSection(
+            '温养器灵',
+            '目标：'+(identity.pet_warm_name || identity.pet_name || '未设置'),
+            renderModuleToggle('温养器灵','开关')+petNameInput('pet_warm_name', '目标', identity.pet_warm_name || identity.pet_name || '')
+          )+
+          settingSection(
+            '器灵试炼',
+            '目标：'+(identity.pet_trial_name || identity.pet_name || '未设置'),
+            renderModuleToggle('器灵试炼','开关')+petNameInput('pet_trial_name', '目标', identity.pet_trial_name || identity.pet_name || '')
+          )+
+          settingSection(
+            '名称保存',
+            '修改目标名后保存；留空的温养或试炼目标会沿用抚摸目标。',
+            '<button type="button" class="btn btn-secondary" data-save-pet-inline="1">保存名称</button>'
+          );
+        return renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼']), null);
       }else if(module.name === '野外历练'){
-        var dailyNames = ['野外历练','点卯','宗门传功','闯塔','深度闭关','元婴'];
+        var dailyNames = ['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法'];
         var checkinWin = identity.checkin_window_local || {};
         var towerWin = identity.tower_window_local || {};
         moduleNote = '<div class="module-note">野外：'+esc(identity.wild_training_strategy || '深入')+
           '｜点卯 '+String(checkinWin.start_hour || 0).padStart(2, '0')+'-'+String(checkinWin.end_hour || 0).padStart(2, '0')+
-          '｜闯塔 '+String(towerWin.start_hour || 0).padStart(2, '0')+'-'+String(towerWin.end_hour || 0).padStart(2, '0')+'</div>';
+          '｜闯塔 '+String(towerWin.start_hour || 0).padStart(2, '0')+'-'+String(towerWin.end_hour || 0).padStart(2, '0')+
+          '｜问天 '+esc(identity.divination_daily_limit || 6)+'/日'+
+          '｜斗法 '+esc(identity.duel_completed_count || 0)+'/'+esc(identity.duel_total_count || 0)+'</div>';
         settingsTools =
           settingSection(
-            '日常功能开关',
-            '控制日常聚合卡内各自动任务是否启用；关闭子功能只影响该玩法，不会修改其他模块状态。',
-            renderModuleToggle('野外历练','野外')+
-            renderModuleToggle('点卯','点卯')+
-            renderModuleToggle('宗门传功','传功')+
-            renderModuleToggle('闯塔','闯塔')+
-            renderModuleToggle('深度闭关','闭关')+
-            renderModuleToggle('元婴','元婴')
-          )+
-          settingSection(
-            '野外历练策略',
-            '控制野外历练发出的路线选择；修改后会随下一轮自动历练生效，不会立即补发额外命令。',
+            '野外历练',
+            '策略随下一轮历练生效，不会因修改配置立即补发命令。',
+            renderModuleToggle('野外历练','开关')+
             '<label class="module-setting-field"><span>策略</span><select class="text-input wild-training-select" data-wild-training-strategy="1">'+
             optionHtml(identity.wild_training_strategy_choices || [], identity.wild_training_strategy)+'</select></label>'
           )+
           settingSection(
-            '点卯执行窗口',
-            '限制自动点卯只在本地时间窗口内执行；用于避开不方便观察的时间段，窗口外不会主动补发。',
-            '<button type="button" class="btn btn-secondary" data-open-window-modal="点卯">设置点卯窗口</button>'
+            '点卯',
+            '只在本地时间窗口内执行，窗口外不主动补发。',
+            renderModuleToggle('点卯','开关')+windowInlineConfig('点卯', checkinWin)
           )+
           settingSection(
-            '闯塔执行窗口',
-            '限制自动闯塔只在本地时间窗口内执行；适合把高频或可能触发后续交互的动作固定到可控时间。',
-            '<button type="button" class="btn btn-secondary" data-open-window-modal="闯塔">设置闯塔窗口</button>'
+            '宗门传功',
+            '按宗门传功冷却执行，关闭后只影响传功链路。',
+            renderModuleToggle('宗门传功','开关')
+          )+
+          settingSection(
+            '闯塔',
+            '只在本地时间窗口内执行，适合把可能触发后续交互的动作固定到可观察时段。',
+            renderModuleToggle('闯塔','开关')+windowInlineConfig('闯塔', towerWin)
+          )+
+          settingSection(
+            '深度闭关',
+            '闭关结算仍按被动回复和安全锁处理。',
+            renderModuleToggle('深度闭关','开关')
+          )+
+          settingSection(
+            '卜筮问天',
+            '每日次数控制问天查询上限。',
+            renderModuleToggle('卜筮问天','开关')+
+            '<label class="module-setting-field"><span>次数</span><input class="text-input divination-limit-input" type="number" min="1" max="20" step="1" value="'+esc(identity.divination_daily_limit || 6)+'" data-divination-daily-limit="1"></label>'
+          )+
+          settingSection(
+            '斗法',
+            '目标和次数按斗法模块配置执行。',
+            renderModuleToggle('斗法','开关')+
+            currentChoiceText('目标', identity.duel_target || '未配置')+
+            currentChoiceText('进度', String(identity.duel_completed_count || 0)+'/'+String(identity.duel_total_count || 0))
           );
         return renderModuleCard('日常', moduleNote, primaryTools, settingsTools, compactDetails(dailyNames), null);
+      }else if(module.name === '元婴'){
+        var riftModule = moduleByName('探寻裂缝');
+        var riftStatus = riftModule ? (riftModule.enabled ? '开' : '关') : '不可用';
+        moduleNote = '<div class="module-note">元婴：'+esc(identity.yuanying_level_text || '未读取')+'｜裂缝：'+esc(riftStatus)+'</div>';
+        settingsTools =
+          settingSection(
+            '元婴出窍',
+            '元婴链路按被动结算和冷却推进。',
+            renderModuleToggle('元婴','开关')
+          )+
+          settingSection(
+            '探寻裂缝',
+            '裂缝探寻归到元婴卡片统一管理。',
+            renderModuleToggle('探寻裂缝','开关')
+          );
+        return renderModuleCard('元婴', moduleNote, primaryTools, settingsTools, compactDetails(['元婴','探寻裂缝']), null);
       }else if(module.name === '侍妾'){
         moduleNote = '<div class="module-note">入梦、天机、心劫、远航按链路独立控制</div>';
         primaryTools =
@@ -260,25 +323,26 @@
           renderModuleToggle('侍妾远航', '远航');
         return renderModuleCard('侍妾', moduleNote, primaryTools, '', compactDetails(['侍妾','天机代卜','共历心劫','侍妾远航']), '侍妾');
       }else if(module.name === '玄骨考校'){
-        moduleNote = '<div class="module-note">玄骨考校、极阴祖师、南陇侯独立控制</div>';
+        moduleNote = '<div class="module-note">极阴：'+esc(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置')+
+          '｜南陇：'+esc(identity.nanlong_effective_choice_label || identity.nanlong_choice_label || '未设置')+'</div>';
         settingsTools =
           settingSection(
-            '奇遇功能开关',
-            '控制玄骨考校、极阴祖师、南陇侯三条奇遇链路是否启用；抉择策略仍在下方单独配置。',
-            renderModuleToggle('玄骨考校','玄骨')+
-            renderModuleToggle('极阴祖师','极阴')+
-            renderModuleToggle('南陇侯','南陇')
+            '玄骨考校',
+            '监听题目后按题库或辅助策略作答。',
+            renderModuleToggle('玄骨考校','开关')
           )+
           settingSection(
             '极阴祖师抉择',
-            '决定遇到极阴祖师事件时的默认处理。献魂偏收益，收敛偏保守；自动会恢复脚本内置判断。',
+            '当前：'+(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置'),
+            renderModuleToggle('极阴祖师','开关')+
             '<button type="button" class="btn btn-secondary" data-jiyin-choice="offer_soul">献魂</button>'+
             '<button type="button" class="btn btn-secondary" data-jiyin-choice="hide_aura">收敛</button>'+
             '<button type="button" class="btn btn-secondary" data-jiyin-choice="auto">自动</button>'
           )+
           settingSection(
             '南陇侯兑换',
-            '决定南陇侯相关事件出现时优先兑换的方向；不确定收益时可以选择拒绝，避免拿错消耗型奖励。',
+            '当前：'+(identity.nanlong_effective_choice_label || identity.nanlong_choice_label || '未设置'),
+            renderModuleToggle('南陇侯','开关')+
             '<button type="button" class="btn btn-secondary" data-nanlong-choice="exchange_fabao">换法宝</button>'+
             '<button type="button" class="btn btn-secondary" data-nanlong-choice="exchange_gongfa">换功法</button>'+
             '<button type="button" class="btn btn-secondary" data-nanlong-choice="reject">拒绝</button>'
@@ -366,8 +430,84 @@
     renderModuleSettingsModal();
   };
 
+  async function saveInlineWindowConfig(moduleName){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var root = null;
+    var candidates = document.querySelectorAll('[data-inline-window-config]');
+    for(var i = 0; i < candidates.length; i += 1){
+      if((candidates[i].getAttribute('data-inline-window-config') || '') === moduleName){
+        root = candidates[i];
+        break;
+      }
+    }
+    if(!root){
+      return;
+    }
+    var startInput = root.querySelector('[data-inline-window-start]');
+    var endInput = root.querySelector('[data-inline-window-end]');
+    try{
+      var data = await postJson('/api/module-window', {
+        send_as_id: appState.selectedId,
+        module: moduleName,
+        start_hour_local: startInput ? startInput.value : 0,
+        end_hour_local: endInput ? endInput.value : 0
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新执行窗口', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '执行窗口更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
+  async function saveInlinePetNames(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var payload = {send_as_id: appState.selectedId};
+    var inputs = document.querySelectorAll('[data-pet-inline-name]');
+    inputs.forEach(function(input){
+      payload[input.getAttribute('data-pet-inline-name')] = input.value || '';
+    });
+    try{
+      var data = await postJson('/api/pet-name', payload);
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新法宝名称', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '法宝名称更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   document.addEventListener('click', function(event){
     if(!event.target || !event.target.closest){
+      return;
+    }
+    var saveWindowBtn = event.target.closest('[data-save-window-inline]');
+    if(saveWindowBtn){
+      saveInlineWindowConfig(saveWindowBtn.getAttribute('data-save-window-inline') || '');
+      return;
+    }
+    if(event.target.closest('[data-save-pet-inline]')){
+      saveInlinePetNames();
       return;
     }
     var openBtn = event.target.closest('[data-open-module-settings]');

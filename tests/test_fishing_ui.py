@@ -217,6 +217,8 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fishing-config-panel", script)
         self.assertIn("fishing-config-modal", script)
         self.assertIn("data-open-fishing-config", script)
+        self.assertIn("data-open-fishing-config>设置</button>", script)
+        self.assertNotIn("data-open-fishing-config>垂钓设置</button>", script)
         self.assertIn("renderFishingConfigModal(false)", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
