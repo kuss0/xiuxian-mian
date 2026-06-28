@@ -75,6 +75,9 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "<span id='global-switch-container'></span>" in body
     assert "sidebar-global" not in body
     assert body.index("id='global-switch-container'") < body.index("data-open-logs='1'")
+    assert "id='module-grid'" in body
+    assert "模块详情" not in body
+    assert "当前身份的自动化模块" not in body
 
 
 def test_legacy_variant_parameter_keeps_new_single_track_ui():
