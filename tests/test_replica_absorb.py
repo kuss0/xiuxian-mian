@@ -1252,19 +1252,36 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("@leader｜", text)
 
     def test_replica_team_full_notice_is_high_priority_and_deduped(self):
-        ids = [
-            self._register_replica_identity(991201 + index, username)
-            for index, username in enumerate(["leader", "shield", "healer", "blade", "curse"])
-        ]
+        now = 1000.0
+        leader_id = self._register_replica_identity(991201, "gyurihero", professions="御山|灵医|咒师")
+        shield_id = self._register_replica_identity(991202, "xuruode4", professions="御山|破军")
+        healer_id = self._register_replica_identity(991203, "xuruode3", professions="灵医|咒师")
+        blade_id = self._register_replica_identity(991204, "xuruode1", professions="影刃|咒师")
+        curse_id = self._register_replica_identity(991205, "dingfengbosushi", professions="咒师")
+        ids = [leader_id, shield_id, healer_id, blade_id, curse_id]
         state_module.set_replica_participant_identity_ids(ids)
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "266",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@gyurihero",
+            "join_requested_usernames": ["@xuruode4", "@xuruode3", "@xuruode1", "@dingfengbosushi"],
+            "team_usernames": ["@gyurihero", "@xuruode4", "@xuruode3", "@xuruode1", "@dingfengbosushi"],
+            "opened_at": now - 10,
+            "updated_at": now - 5,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
         text = (
-            "@curse 已加入苍坤上人洞府队伍！\n"
+            "@dingfengbosushi 已加入苍坤上人洞府队伍！\n"
             "当前队伍 (5/5):\n"
-            " - @leader\n"
-            " - @shield\n"
-            " - @healer\n"
-            " - @blade\n"
-            " - @curse"
+            " - @gyurihero\n"
+            " - @xuruode4\n"
+            " - @xuruode3\n"
+            " - @xuruode1\n"
+            " - @dingfengbosushi"
         )
 
         def close_coro(coro):
@@ -1276,15 +1293,27 @@ class ReplicaAbsorbTests(unittest.TestCase):
             patch("model.app_replica.send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
             patch("model.app_replica._fire_and_forget", side_effect=close_coro),
         ):
-            changed = app_replica._mark_replica_team_joined_from_text(text, now=1000.0, msg_id=991)
-            duplicate_changed = app_replica._mark_replica_team_joined_from_text(text, now=1001.0, msg_id=992)
+            changed = app_replica._mark_replica_team_joined_from_text(text, now=now, msg_id=991)
+            duplicate_changed = app_replica._mark_replica_team_joined_from_text(text, now=now + 1, msg_id=992)
 
         self.assertTrue(changed)
         self.assertTrue(duplicate_changed)
         audit_mock.assert_called_once()
         notice_text = audit_mock.call_args.args[0]
         self.assertIn("苍坤洞府队伍已满 5/5", notice_text)
-        self.assertIn("@leader @shield @healer @blade @curse", notice_text)
+        self.assertIn("房间 266", notice_text)
+        self.assertIn("@gyurihero(御山/灵医/咒师)", notice_text)
+        self.assertIn("@xuruode4(破军/御山)", notice_text)
+        self.assertIn("@xuruode3(灵医/咒师)", notice_text)
+        self.assertIn("@xuruode1(影刃/咒师)", notice_text)
+        self.assertIn("@dingfengbosushi(咒师)", notice_text)
+        self.assertIn("职业分配：", notice_text)
+        self.assertIn("破军:@xuruode4", notice_text)
+        self.assertIn("御山:@gyurihero", notice_text)
+        self.assertIn("灵医:@xuruode3", notice_text)
+        self.assertIn("影刃:@xuruode1", notice_text)
+        self.assertIn("咒师:@dingfengbosushi", notice_text)
+        self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师；缺职业：无", notice_text)
         self.assertEqual("high", audit_mock.call_args.kwargs["priority"])
 
     def test_luoyun_cd_reminder_repeats_hourly_until_new_cooldown(self):

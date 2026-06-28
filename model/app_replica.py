@@ -7142,26 +7142,89 @@ def _mark_replica_team_notice_once(replica_kind, room_id, team_usernames, capaci
     return True
 
 
+def _resolve_replica_team_notice_room_id(replica_kind, room_id, team_usernames, now=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    room_id = str(room_id or "").strip()
+    if room_id and room_id != "-":
+        return room_id
+    if not replica_kind:
+        return room_id
+    normalized_usernames = _normalize_replica_username_list(team_usernames or [])
+    if normalized_usernames:
+        room = _find_lightweight_room_for_kind_by_usernames(replica_kind, normalized_usernames, now=now)
+        candidate = str((room or {}).get("room_id") or "").strip()
+        if candidate:
+            return candidate
+    leader_username = normalized_usernames[0] if normalized_usernames else ""
+    candidate = _get_latest_replica_room_id(replica_kind, now=now, leader_username=leader_username)
+    return str(candidate or room_id or "").strip()
+
+
+def _format_replica_team_notice_member(replica_kind, username, identity_id=0):
+    username = _normalize_replica_username(username)
+    if not username:
+        return ""
+    identity_id = int(identity_id or 0)
+    if replica_kind == _REPLICA_KIND_CANGKUN and identity_id > 0:
+        roles = _get_cangkun_identity_roles(identity_id)
+    elif identity_id > 0:
+        roles = tuple(_get_replica_profile_professions(identity_id))
+    else:
+        roles = ()
+    role_text = "/".join(roles) if roles else "未匹配"
+    return f"{username}({role_text})"
+
+
+def _format_replica_team_notice_details(replica_kind, team_usernames, *, now=None):
+    normalized_usernames = _normalize_replica_username_list(team_usernames or [])
+    identity_ids_by_username = _get_replica_identity_ids_by_username()
+    identity_ids = []
+    member_parts = []
+    for username in normalized_usernames:
+        identity_id = int(identity_ids_by_username.get(username) or 0)
+        if identity_id > 0 and identity_id not in identity_ids:
+            identity_ids.append(identity_id)
+        member = _format_replica_team_notice_member(replica_kind, username, identity_id)
+        if member:
+            member_parts.append(member)
+    lines = ["队伍：" + (" ".join(member_parts) if member_parts else " ".join(normalized_usernames))]
+    if replica_kind != _REPLICA_KIND_CANGKUN or not identity_ids:
+        return lines
+    assignments = _best_cangkun_profession_assignment(identity_ids)
+    if assignments:
+        assignment_parts = []
+        for role, identity_id in assignments:
+            username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or str(identity_id))
+            assignment_parts.append(f"{role}:{username}")
+        lines.append("职业分配：" + "、".join(assignment_parts))
+    covered = {role for role, _identity_id in assignments}
+    covered_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in covered) or "无"
+    missing_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered) or "无"
+    lines.append(f"覆盖职业：{covered_text}；缺职业：{missing_text}")
+    return lines
+
+
 def _schedule_replica_team_notice(replica_kind, room_id, team_usernames, capacity, is_full, now=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     normalized_usernames = _normalize_replica_username_list(team_usernames or [])
     if not replica_kind or not normalized_usernames:
         return False
     now = float(now or time.time())
+    room_id = _resolve_replica_team_notice_room_id(replica_kind, room_id, normalized_usernames, now=now)
     capacity = max(1, int(capacity or 5))
     is_full = bool(is_full or len(normalized_usernames) >= capacity)
     if not _mark_replica_team_notice_once(replica_kind, room_id, normalized_usernames, capacity, is_full, now=now):
         return False
     replica_name = (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本"
     room_text = str(room_id or "").strip() or "-"
-    team_text = " ".join(normalized_usernames)
+    detail_lines = _format_replica_team_notice_details(replica_kind, normalized_usernames, now=now)
     if is_full:
-        text = f"🧩 {replica_name}队伍已满 {len(normalized_usernames)}/{capacity}：房间 {room_text}\n队伍：{team_text}"
+        text = f"🧩 {replica_name}队伍已满 {len(normalized_usernames)}/{capacity}：房间 {room_text}\n" + "\n".join(detail_lines)
         priority = "high"
     else:
-        text = f"🧩 {replica_name}组队进度 {len(normalized_usernames)}/{capacity}：房间 {room_text}\n队伍：{team_text}"
+        text = f"🧩 {replica_name}组队进度 {len(normalized_usernames)}/{capacity}：房间 {room_text}\n" + "\n".join(detail_lines)
         priority = "medium"
-    coro = send_audit_log(text, scope="global", priority=priority, limit=360)
+    coro = send_audit_log(text, scope="global", priority=priority, limit=720)
     try:
         _fire_and_forget(coro)
     except RuntimeError:
