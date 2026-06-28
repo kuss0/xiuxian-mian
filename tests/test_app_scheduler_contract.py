@@ -21,6 +21,7 @@ IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
     "run_formation_scheduler": {"formation"},
     "run_tianti_scheduler": {"tianti_status", "tianti_wenxin", "tianti_climb", "tianti_gangfeng"},
     "run_concubine_scheduler": {"concubine"},
+    "run_hehuan_scheduler": {"hehuan", "hehuan_dual"},
     "run_yinluo_scheduler": {"yinluo"},
     "run_small_world_scheduler": {
         "small_world_preach",

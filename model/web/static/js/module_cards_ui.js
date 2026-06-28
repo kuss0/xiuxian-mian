@@ -141,6 +141,50 @@
     return '<span class="module-setting-current">'+esc(label)+'：'+esc(value || '未设置')+'</span>';
   }
 
+  function moduleCardPriority(title){
+    var normalized = String(title || '').trim();
+    if(normalized === '日常'){
+      return 0;
+    }
+    if(['合欢宗','天星宗','阴罗宗'].indexOf(normalized) >= 0){
+      return 1;
+    }
+    if(normalized === '灵溪垂钓'){
+      return 2;
+    }
+    if(normalized === '侍妾'){
+      return 3;
+    }
+    if(normalized === '奇遇'){
+      return 4;
+    }
+    return 5;
+  }
+
+  function reorderModuleCards(grid){
+    if(!grid){
+      return;
+    }
+    var cards = Array.prototype.slice.call(grid.children || []);
+    var originalOrder = new Map();
+    cards.forEach(function(card, index){
+      originalOrder.set(card, index);
+    });
+    cards.sort(function(a, b){
+      var titleA = a.querySelector('.module-title');
+      var titleB = b.querySelector('.module-title');
+      var priorityA = moduleCardPriority(titleA ? titleA.textContent : '');
+      var priorityB = moduleCardPriority(titleB ? titleB.textContent : '');
+      if(priorityA !== priorityB){
+        return priorityA - priorityB;
+      }
+      return (originalOrder.get(a) || 0) - (originalOrder.get(b) || 0);
+    });
+    cards.forEach(function(card){
+      grid.appendChild(card);
+    });
+  }
+
   renderModules = function(identity){
     var grid = document.getElementById('module-grid');
     if(!grid){
@@ -322,6 +366,19 @@
           renderModuleToggle('共历心劫', '心劫')+
           renderModuleToggle('侍妾远航', '远航');
         return renderModuleCard('侍妾', moduleNote, primaryTools, '', compactDetails(['侍妾','天机代卜','共历心劫','侍妾远航']), '侍妾');
+      }else if(module.name === '合欢宗'){
+        var hehuanRetryMax = Number(identity.hehuan_retry_max_interval_min || 5);
+        var hehuanRetryCount = Number(identity.hehuan_retry_count || 0);
+        var hehuanRetryLimit = Number(identity.hehuan_retry_limit || 5);
+        moduleNote = '<div class="module-note">回复吧唧锚点｜补发随机 1-'+esc(hehuanRetryMax)+' 分钟｜'+esc(hehuanRetryCount)+'/'+esc(hehuanRetryLimit)+'</div>';
+        settingsTools = settingSection(
+          '自动温养',
+          '自动温养会回复10分钟内吧唧发言；没有锚点时先由吧唧发一条锚点。冷却按最近成功+1小时校准，结算卡住或吞回复按随机间隔补发。',
+          renderModuleToggle('合欢宗','开关')+
+          '<label class="module-setting-field"><span>补发上限</span><input class="text-input module-hour-input" type="number" min="1" max="30" step="1" value="'+esc(hehuanRetryMax)+'" data-hehuan-retry-max-min="1"></label>'+
+          currentChoiceText('最近成功', identity.hehuan_last_warm_success_at || '未记录')+
+          currentChoiceText('自动调度', identity.hehuan_auto_next_time || '未设置')
+        );
       }else if(module.name === '玄骨考校'){
         moduleNote = '<div class="module-note">极阴：'+esc(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置')+
           '｜南陇：'+esc(identity.nanlong_effective_choice_label || identity.nanlong_choice_label || '未设置')+'</div>';
@@ -427,6 +484,7 @@
 
       return renderModuleCard(module.name, moduleNote, primaryTools, settingsTools, module.detail || '', module.name);
     }).join('');
+    reorderModuleCards(grid);
     renderModuleSettingsModal();
   };
 
@@ -497,6 +555,32 @@
     }
   }
 
+  async function submitHehuanConfig(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var input = document.querySelector('[data-hehuan-retry-max-min]');
+    try{
+      var data = await postJson('/api/hehuan-config', {
+        send_as_id: appState.selectedId,
+        retry_max_interval_min: input ? input.value : 5
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新合欢宗补发策略', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '合欢宗补发策略更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   document.addEventListener('click', function(event){
     if(!event.target || !event.target.closest){
       return;
@@ -517,6 +601,15 @@
     }
     if(event.target.closest('[data-close-module-settings]') || event.target.id === 'module-settings-modal'){
       closeModuleSettingsModal();
+    }
+  });
+
+  document.addEventListener('change', function(event){
+    if(!event.target || !event.target.closest){
+      return;
+    }
+    if(event.target.closest('[data-hehuan-retry-max-min]')){
+      submitHehuanConfig();
     }
   });
 

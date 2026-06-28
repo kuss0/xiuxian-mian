@@ -76,6 +76,7 @@ from .control import (
 from .features.deep_retreat import get_deep_retreat_phase_text
 from .features.guanxing import get_guanxing_round_summary_text
 from .features.guanxing_monitor import get_guanxing_monitor_summary_text
+from .features.hehuan import HEHUAN_AUTO_RETRY_LIMIT, HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN, normalize_hehuan_observation, set_hehuan_retry_max_interval_min
 from .features.join_dungeon import get_dungeon_join_inbox_snapshot
 from .features.jiyin import apply_jiyin_choice, get_jiyin_choice_label, normalize_jiyin_choice, resolve_jiyin_choice
 from .features.nanlong import apply_nanlong_choice, get_nanlong_choice_label, normalize_nanlong_choice, resolve_nanlong_choice
@@ -3417,6 +3418,7 @@ def get_identity_ui_snapshot(send_as_id):
             _tianjige_string(dao_path_record.get("cave_lingqi"))
             or _tianjige_cave_lingqi_text(dao_path_cave)
         )
+        hehuan_observation = normalize_hehuan_observation(identity_state.get("hehuan_observation"))
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -3472,6 +3474,11 @@ def get_identity_ui_snapshot(send_as_id):
             "duel_last_error": identity_state.get("duel_last_error") or "",
             "fishing": get_fishing_ui_snapshot(send_as_id, identity_state),
             "divination_daily_limit": get_divination_daily_limit(send_as_id),
+            "hehuan_retry_max_interval_min": int(hehuan_observation.get("auto_retry_max_interval_min", HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN) or HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN),
+            "hehuan_retry_count": int(hehuan_observation.get("auto_retry_count", 0) or 0),
+            "hehuan_retry_limit": HEHUAN_AUTO_RETRY_LIMIT,
+            "hehuan_last_warm_success_at": fmt_abs_ts(hehuan_observation.get("last_warm_success_at", 0) or 0),
+            "hehuan_auto_next_time": fmt_abs_ts(hehuan_observation.get("auto_next_time", 0) or 0),
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
             "second_soul_choice_strategy": identity_state.get("second_soul_choice_strategy") or "stable",
             "second_soul_choice_strategy_choices": [
@@ -4009,6 +4016,21 @@ async def ui_set_small_world_barrier_config(
         send_as_id=send_as_id,
     )
     return True, f"已更新小世界护界禁制[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_hehuan_config(send_as_id, *, retry_max_interval_min=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    with use_identity(send_as_id):
+        max_interval = set_hehuan_retry_max_interval_min(retry_max_interval_min)
+        save_state()
+    await send_audit_log(
+        f"🌸 已更新合欢宗补发策略：随机 1-{int(max_interval)} 分钟，最多 {HEHUAN_AUTO_RETRY_LIMIT} 次",
+        scope="identity",
+        send_as_id=send_as_id,
+    )
+    return True, f"已更新合欢宗补发策略[{get_identity_display_name(send_as_id)}]"
 
 
 async def ui_set_divination_config(send_as_id, daily_limit=None):
@@ -5903,6 +5925,21 @@ async def handle_ui_http(reader, writer):
                             min_interval_hours=payload.get("min_interval_hours"),
                         )
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/hehuan-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_hehuan_config(
+                            send_as_id,
+                            retry_max_interval_min=payload.get("retry_max_interval_min"),
+                        )
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/divination-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -6240,6 +6277,7 @@ __all__ = [
     "ui_set_duel_config",
     "ui_set_small_world_feature_enabled",
     "ui_set_small_world_barrier_config",
+    "ui_set_hehuan_config",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",

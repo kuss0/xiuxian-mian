@@ -1,12 +1,25 @@
 import copy
+import json
 import math
+import os
+import random
 import re
 import time
+from datetime import datetime, timedelta
 
-from ..config import CMD_HEHUAN_DUAL
+from ..config import CMD_HEHUAN_DUAL, MESSAGES_DIR, TZ_LOCAL
 from ..persistence import save_state
 from ..runtime import send_game_command
-from ..state import state, use_identity
+from ..state import (
+    get_current_identity_id,
+    get_game_group_id,
+    get_game_topic_id,
+    get_identity_enabled,
+    get_identity_ids,
+    get_send_as_profile,
+    state,
+    use_identity,
+)
 from ..timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 
 
@@ -17,6 +30,15 @@ HEHUAN_CD_BUFFER_SEC = 60
 HEHUAN_OBSERVATION_STALE_SEC = 8 * 24 * 3600
 HEHUAN_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
+HEHUAN_AUTO_RETRY_LIMIT = 5
+HEHUAN_RETRY_MIN_INTERVAL_MIN = 1
+HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN = 5
+HEHUAN_RETRY_MAX_INTERVAL_MIN = 30
+HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC = 10 * 60
+HEHUAN_BAIJI_SEND_AS_ID = 301299112
+HEHUAN_BAIJI_USERNAME = "jfdffdddd"
+HEHUAN_BAIJI_NAME = "吧唧"
+HEHUAN_ANCHOR_TEXT = "。"
 
 PATH_FANCHEN = "凡尘缘"
 PATH_TONGCAN = "同参道"
@@ -34,10 +56,14 @@ RE_BONUS_GAIN = re.compile(r"因【合欢宗】灵脉加持，你额外获得了
 
 HEHUAN_OBSERVATION_TIME_KEYS = (
     "last_observed_at",
+    "last_warm_success_at",
     "next_hehuan_time",
     "contract_until",
     "heart_seal_until",
     "auto_next_time",
+    "auto_pending_sent_at",
+    "auto_pending_deadline_at",
+    "auto_anchor_requested_at",
 )
 
 
@@ -78,6 +104,7 @@ def _default_hehuan_observation():
         "last_partner": "",
         "last_target": "",
         "last_error": "",
+        "last_warm_success_at": 0,
         "next_hehuan_time": 0,
         "contract_until": 0,
         "heart_seal_until": 0,
@@ -87,6 +114,14 @@ def _default_hehuan_observation():
         "auto_next_time": 0,
         "auto_last_action": "",
         "auto_last_error": "",
+        "auto_retry_count": 0,
+        "auto_retry_reason": "",
+        "auto_retry_max_interval_min": HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN,
+        "auto_pending_msg_id": 0,
+        "auto_pending_sent_at": 0,
+        "auto_pending_deadline_at": 0,
+        "auto_reply_anchor_msg_id": 0,
+        "auto_anchor_requested_at": 0,
         "recent": [],
     }
 
@@ -113,7 +148,200 @@ def normalize_hehuan_observation(value=None):
         observed["last_contrib_gain"] = int(observed.get("last_contrib_gain", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         observed["last_contrib_gain"] = 0
+    for key in ("auto_retry_count", "auto_pending_msg_id", "auto_reply_anchor_msg_id"):
+        try:
+            observed[key] = max(0, int(observed.get(key, 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            observed[key] = 0
+    try:
+        observed["auto_retry_max_interval_min"] = max(
+            HEHUAN_RETRY_MIN_INTERVAL_MIN,
+            min(HEHUAN_RETRY_MAX_INTERVAL_MIN, int(observed.get("auto_retry_max_interval_min", HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN) or HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN)),
+        )
+    except (TypeError, ValueError, OverflowError):
+        observed["auto_retry_max_interval_min"] = HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN
     return observed
+
+
+def _reset_hehuan_auto_pending(observed):
+    observed["auto_pending_msg_id"] = 0
+    observed["auto_pending_sent_at"] = 0
+    observed["auto_pending_deadline_at"] = 0
+    observed["auto_reply_anchor_msg_id"] = 0
+
+
+def _reset_hehuan_retry(observed):
+    observed["auto_retry_count"] = 0
+    observed["auto_retry_reason"] = ""
+    _reset_hehuan_auto_pending(observed)
+
+
+def _hehuan_retry_delay_sec(observed):
+    max_min = int((observed or {}).get("auto_retry_max_interval_min", HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN) or HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN)
+    max_min = max(HEHUAN_RETRY_MIN_INTERVAL_MIN, min(HEHUAN_RETRY_MAX_INTERVAL_MIN, max_min))
+    min_sec = HEHUAN_RETRY_MIN_INTERVAL_MIN * 60
+    max_sec = max_min * 60
+    if max_sec <= min_sec:
+        return float(min_sec)
+    return float(random.uniform(min_sec, max_sec))
+
+
+def _schedule_hehuan_retry(observed, now, reason):
+    observed = normalize_hehuan_observation(observed)
+    retry_count = int(observed.get("auto_retry_count", 0) or 0)
+    if retry_count >= HEHUAN_AUTO_RETRY_LIMIT:
+        _reset_hehuan_auto_pending(observed)
+        observed["auto_last_action"] = "warm"
+        observed["auto_last_error"] = f"{reason}，补发已达 {HEHUAN_AUTO_RETRY_LIMIT} 次上限"
+        observed["auto_next_time"] = float(now + HEHUAN_AUTO_BLOCK_BACKOFF_SEC)
+        return observed
+    observed["auto_retry_count"] = retry_count + 1
+    observed["auto_retry_reason"] = str(reason or "retry")
+    observed["auto_last_action"] = "warm"
+    observed["auto_last_error"] = str(reason or "")
+    observed["auto_next_time"] = float(now + _hehuan_retry_delay_sec(observed))
+    _reset_hehuan_auto_pending(observed)
+    return observed
+
+
+def set_hehuan_retry_max_interval_min(value, now=None):
+    observed = normalize_hehuan_observation(state.get("hehuan_observation"))
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        parsed = HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN
+    observed["auto_retry_max_interval_min"] = max(HEHUAN_RETRY_MIN_INTERVAL_MIN, min(HEHUAN_RETRY_MAX_INTERVAL_MIN, parsed))
+    state["hehuan_observation"] = observed
+    return observed["auto_retry_max_interval_min"]
+
+
+def _parse_message_log_ts(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    if text.endswith(" UTC+8"):
+        text = text[:-6].strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _recent_message_log_paths(now, days=2):
+    base = datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL)
+    return [
+        os.path.join(MESSAGES_DIR, f"{(base - timedelta(days=offset)).strftime('%Y-%m-%d')}.log")
+        for offset in range(max(1, int(days or 1)))
+    ]
+
+
+def _read_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - int(max_bytes or 0))
+            handle.seek(start)
+            if start > 0:
+                handle.readline()
+            data = handle.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    return data.splitlines()[-max(1, int(max_lines or 1)):]
+
+
+def _is_baiji_log_entry(payload):
+    try:
+        sender_id = int(payload.get("sender_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        sender_id = 0
+    username = str(payload.get("sender_username") or "").strip().lstrip("@").lower()
+    sender_name = str(payload.get("sender_name") or "").strip()
+    return (
+        sender_id == HEHUAN_BAIJI_SEND_AS_ID
+        or username == HEHUAN_BAIJI_USERNAME.lower()
+        or sender_name == HEHUAN_BAIJI_NAME
+    )
+
+
+def _is_game_topic_entry(payload):
+    topic_id = int(get_game_topic_id() or 0)
+    if topic_id <= 0:
+        return True
+    try:
+        payload_topic_id = int(payload.get("topic_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        payload_topic_id = 0
+    try:
+        reply_to_msg_id = int(payload.get("reply_to_msg_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        reply_to_msg_id = 0
+    return payload_topic_id == topic_id or reply_to_msg_id == topic_id
+
+
+def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC):
+    now = float(now if now is not None else time.time())
+    min_ts = now - max(1, int(max_age_sec or HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC))
+    game_group_id = int(get_game_group_id() or 0)
+    for path in _recent_message_log_paths(now):
+        if not os.path.exists(path):
+            continue
+        for line in reversed(_read_message_log_tail(path)):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("event_type") or "") not in {"message", "sent"}:
+                continue
+            if game_group_id and int(payload.get("chat_id", 0) or 0) != game_group_id:
+                continue
+            if not _is_game_topic_entry(payload):
+                continue
+            if not _is_baiji_log_entry(payload):
+                continue
+            msg_ts = _parse_message_log_ts(payload.get("ts"))
+            if msg_ts <= 0 or msg_ts < min_ts or msg_ts > now + 60:
+                continue
+            try:
+                msg_id = int(payload.get("message_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                msg_id = 0
+            if msg_id > 0:
+                return msg_id
+    return 0
+
+
+def find_baiji_identity_id():
+    fallback = 0
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        profile = get_send_as_profile(identity_id) or {}
+        try:
+            candidate_id = int(identity_id or 0)
+        except (TypeError, ValueError, OverflowError):
+            candidate_id = 0
+        username = str(profile.get("username") or "").strip().lstrip("@").lower()
+        label = str(profile.get("label") or "").strip()
+        daohao = str(profile.get("daohao") or "").strip()
+        if candidate_id == HEHUAN_BAIJI_SEND_AS_ID:
+            return candidate_id
+        if username == HEHUAN_BAIJI_USERNAME.lower():
+            fallback = candidate_id
+        elif label == HEHUAN_BAIJI_NAME or daohao == HEHUAN_BAIJI_NAME:
+            fallback = candidate_id or fallback
+    return fallback
+
+
+def _cooldown_matches_current_identity(observed):
+    target = str((observed or {}).get("last_target") or "").strip().lstrip("@").lower()
+    if not target:
+        return False
+    profile = get_send_as_profile(get_current_identity_id()) or {}
+    username = str(profile.get("username") or "").strip().lstrip("@").lower()
+    return bool(username and target == username)
 
 
 def looks_like_hehuan_text(text):
@@ -175,7 +403,7 @@ def _extract_warm_success(text, now):
         "summary": "温养双修成功",
         "partner": partner_match.group("partner") if partner_match else "",
         "target": "",
-        "next_hehuan_time": float(now + HEHUAN_WARM_OBSERVED_CD_SEC + HEHUAN_CD_BUFFER_SEC),
+        "next_hehuan_time": float(now + HEHUAN_WARM_OBSERVED_CD_SEC),
         "contract_until": float(now + HEHUAN_CONTRACT_SEC),
         "heart_seal_until": 0,
         "last_gains": gains,
@@ -372,6 +600,8 @@ def apply_hehuan_passive(text, now=None, family=""):
     observed["last_partner"] = parsed.get("partner") or ""
     observed["last_target"] = parsed.get("target") or ""
     observed["last_error"] = parsed.get("error") or ""
+    result = str(parsed.get("result") or "").strip().lower()
+    action = str(parsed.get("action") or "").strip()
     if parsed.get("next_hehuan_time"):
         observed["next_hehuan_time"] = float(parsed.get("next_hehuan_time") or 0)
     if parsed.get("contract_until"):
@@ -381,11 +611,43 @@ def apply_hehuan_passive(text, now=None, family=""):
     observed["last_gains"] = parsed.get("last_gains") if isinstance(parsed.get("last_gains"), dict) else {}
     observed["last_contrib_gain"] = int(parsed.get("last_contrib_gain", 0) or 0)
     observed["last_insight"] = parsed.get("last_insight") or ""
-    if observed.get("next_hehuan_time"):
-        observed["auto_next_time"] = max(float(observed.get("next_hehuan_time") or 0), now + 60)
-    else:
-        observed["auto_next_time"] = min(float(observed.get("auto_next_time") or 0) or now + 60, now + 60)
-    observed["auto_last_error"] = ""
+    auto_next_handled = False
+    if result == "success" and action == "双修 温养":
+        observed["last_warm_success_at"] = now
+        observed["next_hehuan_time"] = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
+        observed["auto_next_time"] = observed["next_hehuan_time"]
+        observed["auto_last_error"] = ""
+        _reset_hehuan_retry(observed)
+        auto_next_handled = True
+    elif result == "cooldown":
+        parsed_next_time = float(parsed.get("next_hehuan_time") or 0)
+        last_success_at = float(observed.get("last_warm_success_at", 0) or 0)
+        if parsed_next_time > 0:
+            observed["next_hehuan_time"] = parsed_next_time
+            observed["auto_next_time"] = max(parsed_next_time, now + 60)
+            observed["auto_last_error"] = "心神尚未恢复，已按真实等待时间校准"
+            _reset_hehuan_auto_pending(observed)
+        elif last_success_at > 0:
+            corrected_next_time = float(last_success_at + HEHUAN_WARM_OBSERVED_CD_SEC)
+            observed["next_hehuan_time"] = corrected_next_time
+            if corrected_next_time > now:
+                observed["auto_next_time"] = corrected_next_time
+                observed["auto_last_error"] = "心神尚未恢复，已按上次成功+1小时校准"
+                _reset_hehuan_auto_pending(observed)
+            else:
+                observed = _schedule_hehuan_retry(observed, now, "心神尚未恢复")
+        else:
+            observed = _schedule_hehuan_retry(observed, now, "心神尚未恢复且缺少成功时间")
+        auto_next_handled = True
+    elif result == "pending":
+        observed = _schedule_hehuan_retry(observed, now, "温养结算无最终推进")
+        auto_next_handled = True
+    if not auto_next_handled:
+        if observed.get("next_hehuan_time"):
+            observed["auto_next_time"] = max(float(observed.get("next_hehuan_time") or 0), now + 60)
+        else:
+            observed["auto_next_time"] = min(float(observed.get("auto_next_time") or 0) or now + 60, now + 60)
+        observed["auto_last_error"] = ""
     observed["recent"].append({
         "ts": now,
         "path": observed["last_path"],
@@ -402,8 +664,52 @@ def _set_hehuan_auto_block(observed, now, reason, next_time=None):
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = str(reason or "")
     observed["auto_next_time"] = float(next_time or now + HEHUAN_AUTO_BLOCK_BACKOFF_SEC)
+    _reset_hehuan_auto_pending(observed)
     state["hehuan_observation"] = observed
     save_state()
+
+
+async def _ensure_hehuan_reply_anchor(observed, now):
+    anchor_msg_id = find_recent_baiji_anchor_msg_id(now)
+    if anchor_msg_id > 0:
+        return anchor_msg_id, ""
+
+    baiji_identity_id = find_baiji_identity_id()
+    if baiji_identity_id <= 0:
+        return 0, "10分钟内没有吧唧发言，且未找到吧唧身份用于创建回复锚点"
+    if int(baiji_identity_id) == int(get_current_identity_id() or 0):
+        return 0, "当前身份是吧唧，不能对自己的锚点自动温养"
+
+    anchor_msg = await send_game_command(
+        HEHUAN_ANCHOR_TEXT,
+        track=False,
+        send_as_id=baiji_identity_id,
+        max_retry=0,
+        priority="normal",
+        source_module="合欢宗",
+        op_id=f"hehuan-anchor-{int(now)}",
+        delete_policy="manual_keep",
+    )
+    if not anchor_msg:
+        return 0, "10分钟内没有吧唧发言，锚点发送失败或被安全策略拦截"
+
+    anchor_msg_id = int(getattr(anchor_msg, "id", 0) or 0)
+    if anchor_msg_id <= 0:
+        return 0, "吧唧锚点发送后未返回消息ID"
+    observed["auto_anchor_requested_at"] = float(now)
+    return anchor_msg_id, ""
+
+
+def _has_unresolved_hehuan_pending(observed, now):
+    pending_msg_id = int(observed.get("auto_pending_msg_id", 0) or 0)
+    pending_sent_at = float(observed.get("auto_pending_sent_at", 0) or 0)
+    pending_deadline_at = float(observed.get("auto_pending_deadline_at", 0) or 0)
+    if pending_msg_id <= 0 or pending_sent_at <= 0 or pending_deadline_at <= 0:
+        return False
+    if float(observed.get("last_observed_at", 0) or 0) >= pending_sent_at:
+        _reset_hehuan_auto_pending(observed)
+        return False
+    return now >= pending_deadline_at
 
 
 async def run_hehuan_scheduler(now):
@@ -420,6 +726,13 @@ async def run_hehuan_scheduler(now):
     if auto_next_time > 0 and now < auto_next_time:
         return
 
+    if _has_unresolved_hehuan_pending(observed, now):
+        observed = _schedule_hehuan_retry(observed, now, "温养回复超时或被吞")
+        state["hehuan_observation"] = observed
+        save_state()
+        if float(observed.get("auto_next_time", 0) or 0) > now:
+            return
+
     plan = build_hehuan_manual_plan("warm", now=now)
     if not plan.get("allowed"):
         next_time = float(observed.get("next_hehuan_time", 0) or 0)
@@ -428,13 +741,21 @@ async def run_hehuan_scheduler(now):
         _set_hehuan_auto_block(observed, now, plan.get("reason") or "合欢宗自动温养未满足条件", next_time)
         return
 
+    anchor_msg_id, anchor_error = await _ensure_hehuan_reply_anchor(observed, now)
+    if anchor_msg_id <= 0:
+        _set_hehuan_auto_block(observed, now, anchor_error or "缺少吧唧回复锚点", now + 5 * 60)
+        return
+
     msg = await send_game_command(
         plan["command"],
         track=True,
+        reply_to=anchor_msg_id,
         max_retry=0,
         priority="normal",
         source_module="合欢宗",
         op_id=f"hehuan-auto-warm-{int(now)}",
+        reply_timeout=max(1, int(_hehuan_retry_delay_sec(observed))),
+        delete_policy="manual_keep",
     )
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     if not msg:
@@ -445,8 +766,11 @@ async def run_hehuan_scheduler(now):
     sent_at = now if sent_at_dirty or parsed_sent_at <= 0 else parsed_sent_at
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = ""
-    observed["next_hehuan_time"] = max(float(observed.get("next_hehuan_time", 0) or 0), sent_at + HEHUAN_WARM_OBSERVED_CD_SEC + HEHUAN_CD_BUFFER_SEC)
-    observed["auto_next_time"] = observed["next_hehuan_time"]
+    observed["auto_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    observed["auto_pending_sent_at"] = float(sent_at)
+    observed["auto_pending_deadline_at"] = float(sent_at + _hehuan_retry_delay_sec(observed))
+    observed["auto_reply_anchor_msg_id"] = int(anchor_msg_id)
+    observed["auto_next_time"] = observed["auto_pending_deadline_at"]
     state["hehuan_observation"] = observed
     save_state()
 
@@ -493,7 +817,9 @@ def build_hehuan_manual_plan(action="warm", now=None):
             "family": "hehuan_dual",
             "reason": f"温养双修仍在冷却中，{fmt_remaining(next_time)} 后再试。",
         }
-    if str(observed.get("last_result") or "").strip().lower() == "cooldown" and next_time <= 0:
+    retry_count = int(observed.get("auto_retry_count", 0) or 0)
+    last_result = str(observed.get("last_result") or "").strip().lower()
+    if last_result == "cooldown" and next_time <= 0 and retry_count <= 0:
         return {
             "allowed": False,
             "action": normalized_action,
@@ -502,7 +828,7 @@ def build_hehuan_manual_plan(action="warm", now=None):
             "reason": "合欢宗冷却时间不可解析，不发送温养双修。",
         }
 
-    if str(observed.get("last_result") or "").strip().lower() == "pending":
+    if last_result == "pending" and retry_count <= 0:
         return {
             "allowed": False,
             "action": normalized_action,
@@ -530,7 +856,8 @@ def build_hehuan_manual_plan(action="warm", now=None):
         }
 
     contract_until = float(observed.get("contract_until", 0) or 0)
-    if contract_until <= now:
+    cooldown_identity_hint = last_result == "cooldown" and _cooldown_matches_current_identity(observed)
+    if contract_until <= now and not cooldown_identity_hint:
         return {
             "allowed": False,
             "action": normalized_action,
@@ -592,8 +919,11 @@ def get_hehuan_status_text():
         f"- 最近路径：{observed.get('last_path') or '未记录'}",
         f"- 最近动作：{observed.get('last_action') or '未记录'} / {observed.get('last_result') or '未记录'}",
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
+        f"- 最近成功：{fmt_abs_ts(observed.get('last_warm_success_at', 0))}",
         f"- 下次可试：{fmt_abs_ts(observed.get('next_hehuan_time', 0))}（{fmt_remaining(observed.get('next_hehuan_time', 0))}）",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
+        f"- 补发策略：随机 1-{int(observed.get('auto_retry_max_interval_min', HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN) or HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN)} 分钟，{int(observed.get('auto_retry_count', 0) or 0)}/{HEHUAN_AUTO_RETRY_LIMIT}",
+        f"- 待回复：{int(observed.get('auto_pending_msg_id', 0) or 0) or '无'}｜锚点 {int(observed.get('auto_reply_anchor_msg_id', 0) or 0) or '无'}",
         f"- 同参契印：{fmt_abs_ts(observed.get('contract_until', 0))}（{fmt_remaining(observed.get('contract_until', 0))}）",
         f"- 心印/炉鼎：{fmt_abs_ts(observed.get('heart_seal_until', 0))}（{fmt_remaining(observed.get('heart_seal_until', 0))}）",
         f"- 修为/贡献：{_format_gain_map(observed.get('last_gains'))}｜贡献 {int(observed.get('last_contrib_gain', 0) or 0)}",
@@ -610,6 +940,8 @@ def get_hehuan_status_text():
         lines.append(f"- 异常：{observed.get('last_error')}")
     if observed.get("auto_last_error"):
         lines.append(f"- 自动异常：{observed.get('auto_last_error')}")
+    if observed.get("auto_retry_reason"):
+        lines.append(f"- 补发原因：{observed.get('auto_retry_reason')}")
     recent = observed.get("recent") or []
     if recent:
         lines.append("- 最近事件：")
@@ -625,9 +957,12 @@ __all__ = [
     "apply_hehuan_passive",
     "build_hehuan_manual_plan",
     "execute_hehuan_manual_action",
+    "find_baiji_identity_id",
+    "find_recent_baiji_anchor_msg_id",
     "get_hehuan_status_text",
     "looks_like_hehuan_text",
     "normalize_hehuan_observation",
     "parse_hehuan_text",
     "run_hehuan_scheduler",
+    "set_hehuan_retry_max_interval_min",
 ]

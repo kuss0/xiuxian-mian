@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -242,6 +242,76 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertIn("状态异常", text)
         self.assertIn("未设置", text)
 
+    def test_success_records_last_warm_success_and_clears_retry(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "auto_retry_count": 3,
+                "auto_retry_reason": "温养回复超时或被吞",
+                "auto_pending_msg_id": 123,
+                "auto_pending_sent_at": now - 90,
+                "auto_pending_deadline_at": now - 1,
+            }
+
+            changed = hehuan.apply_hehuan_passive(
+                real_text("hehuan.warm_success.basic"),
+                now=now,
+                family="hehuan_dual",
+            )
+
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(now, observed["last_warm_success_at"])
+        self.assertEqual(now + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertEqual(0, observed["auto_pending_msg_id"])
+
+    def test_cooldown_without_success_time_schedules_bounded_retry(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 30,
+                "contract_until": now + 3600,
+                "auto_retry_max_interval_min": 5,
+            }
+            with patch.object(hehuan.random, "uniform", return_value=120):
+                changed = hehuan.apply_hehuan_passive(
+                    real_text("hehuan.dual.cooldown"),
+                    now=now,
+                    family="hehuan_dual",
+                )
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(1, observed["auto_retry_count"])
+        self.assertEqual(now + 120, observed["auto_next_time"])
+        self.assertIn("缺少成功时间", observed["auto_retry_reason"])
+
+    def test_cooldown_with_success_time_uses_success_plus_one_hour(self):
+        now = 1_780_000_000.0
+        last_success = now - 1800
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_warm_success_at": last_success,
+                "contract_until": now + 3600,
+                "auto_retry_count": 0,
+            }
+            changed = hehuan.apply_hehuan_passive(
+                real_text("hehuan.dual.cooldown"),
+                now=now,
+                family="hehuan_dual",
+            )
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(last_success + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+        self.assertEqual(observed["next_hehuan_time"], observed["auto_next_time"])
+        self.assertEqual(0, observed["auto_retry_count"])
+
 
 class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -274,16 +344,23 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "last_partner": "@dao_partner",
                 "auto_next_time": now - 1,
             }
-            with patch.object(hehuan, "save_state"), patch.object(hehuan, "send_game_command", return_value=msg) as send_mock:
+            with (
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "_ensure_hehuan_reply_anchor", new=AsyncMock(return_value=(8801, ""))),
+                patch.object(hehuan, "send_game_command", return_value=msg) as send_mock,
+            ):
                 await hehuan.run_hehuan_scheduler(now)
 
             send_mock.assert_awaited_once()
             self.assertEqual(".双修 温养", send_mock.await_args.args[0])
+            self.assertEqual(8801, send_mock.await_args.kwargs["reply_to"])
             self.assertEqual("合欢宗", send_mock.await_args.kwargs["source_module"])
             self.assertEqual(0, send_mock.await_args.kwargs["max_retry"])
             observed = state_module.state["hehuan_observation"]
             self.assertEqual("warm", observed["auto_last_action"])
             self.assertEqual("", observed["auto_last_error"])
+            self.assertEqual(9001, observed["auto_pending_msg_id"])
+            self.assertEqual(8801, observed["auto_reply_anchor_msg_id"])
             self.assertGreater(observed["auto_next_time"], now)
 
     async def test_scheduler_respects_future_auto_time(self):
@@ -373,6 +450,59 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["hehuan_observation"]
             self.assertEqual("pending", observed["last_result"])
             self.assertIn("仍待真实结果", observed["auto_last_error"])
+
+    async def test_scheduler_stops_after_retry_limit_on_swallowed_reply(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 600,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+                "auto_retry_count": hehuan.HEHUAN_AUTO_RETRY_LIMIT,
+                "auto_pending_msg_id": 9901,
+                "auto_pending_sent_at": now - 300,
+                "auto_pending_deadline_at": now - 1,
+            }
+            with patch.object(hehuan, "save_state") as save_mock, patch.object(hehuan, "send_game_command") as send_mock:
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_called()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+            self.assertIn("补发已达", observed["auto_last_error"])
+            self.assertEqual(0, observed["auto_pending_msg_id"])
+
+    async def test_scheduler_creates_baiji_anchor_when_recent_anchor_missing(self):
+        now = 1_780_000_000.0
+        anchor_msg = SimpleNamespace(id=8802, sent_at=now)
+        warm_msg = SimpleNamespace(id=9002, sent_at=now + 1)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+            }
+            with (
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "find_recent_baiji_anchor_msg_id", return_value=0),
+                patch.object(hehuan, "find_baiji_identity_id", return_value=hehuan.HEHUAN_BAIJI_SEND_AS_ID),
+                patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=[anchor_msg, warm_msg])) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            self.assertEqual(2, send_mock.await_count)
+            anchor_call = send_mock.await_args_list[0]
+            warm_call = send_mock.await_args_list[1]
+            self.assertEqual(hehuan.HEHUAN_ANCHOR_TEXT, anchor_call.args[0])
+            self.assertEqual(hehuan.HEHUAN_BAIJI_SEND_AS_ID, anchor_call.kwargs["send_as_id"])
+            self.assertEqual(".双修 温养", warm_call.args[0])
+            self.assertEqual(8802, warm_call.kwargs["reply_to"])
 
 
 class HehuanPassiveInboxTests(unittest.TestCase):

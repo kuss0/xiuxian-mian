@@ -54,6 +54,7 @@ from .features.guanxing import (
 )
 from .features.formation import handle_formation_event, is_formation_reply_text, run_formation_scheduler
 from .features.guanxing_monitor import handle_guanxing_monitor_broadcast, restore_guanxing_monitor_runtime_state, run_guanxing_monitor_scheduler
+from .features.hehuan import run_hehuan_scheduler
 from .features.concubine import (
     handle_concubine_affinity_event,
     handle_concubine_dream_reply,
@@ -242,6 +243,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_quiz_scheduler,
     run_jiyin_scheduler,
     run_concubine_scheduler,
+    run_hehuan_scheduler,
     run_nanlong_scheduler,
     run_yinluo_scheduler,
     run_small_world_scheduler,
@@ -291,6 +293,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_concubine_scheduler": {"manifest_names": ("侍妾", "天机代卜", "共历心劫", "侍妾远航"), "helper": False},
     "run_deep_retreat_scheduler": {"manifest_names": ("深度闭关",), "helper": False},
     "run_formation_scheduler": {"manifest_names": ("周天星斗",), "helper": False},
+    "run_hehuan_scheduler": {"manifest_names": ("合欢宗",), "helper": False},
     "run_jiyin_scheduler": {"manifest_names": ("极阴祖师",), "helper": False},
     "run_nanlong_scheduler": {"manifest_names": ("南陇侯",), "helper": False},
     "run_pet_scheduler": {"manifest_names": ("法宝", "温养器灵", "器灵试炼"), "helper": False},
