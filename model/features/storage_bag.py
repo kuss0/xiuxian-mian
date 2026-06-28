@@ -740,6 +740,7 @@ async def _send_storage_bag_transfer_command(
     }
     if reply_to > 0:
         kwargs["reply_to"] = reply_to
+    _storage_bag_transfer_state["reply_due_at"] = 0
     msg = await send_game_command(command, **kwargs)
     now = time.time()
     if not msg:

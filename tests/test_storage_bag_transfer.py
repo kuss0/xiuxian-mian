@@ -1618,6 +1618,38 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.source_id, sent[1][1]["send_as_id"])
         self.assertEqual(901, sent[1][1]["reply_to"])
 
+    async def test_gift_command_send_pending_does_not_inherit_locator_timeout(self):
+        sent = []
+        checked_during_gift_send = False
+
+        async def fake_send(command, **kwargs):
+            nonlocal checked_during_gift_send
+            sent.append((command, kwargs))
+            if command.startswith(".赠送"):
+                checked_during_gift_send = True
+                await run_storage_bag_transfer_scheduler(1030.0)
+                self.assertTrue(storage_bag._storage_bag_transfer_state["running"])
+                self.assertEqual("gift_sending", storage_bag._storage_bag_transfer_state["step"])
+                self.assertEqual(0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+            return SimpleNamespace(id=900 + len(sent))
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.random.choice", return_value="稍等"), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.storage_bag.time.time", return_value=1000.0):
+            ok, message, transfer = await storage_bag.start_storage_bag_gift_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "妖丹", "quantity": 2, "method": "basic"}],
+            )
+
+        self.assertTrue(ok, message)
+        self.assertTrue(checked_during_gift_send)
+        self.assertEqual(["稍等", ".赠送 妖丹*2"], [item[0] for item in sent])
+        self.assertTrue(storage_bag._storage_bag_transfer_state["running"])
+        self.assertEqual("waiting_gift_reply", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual(1020.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+
     async def test_gift_transfer_sends_locator_and_gift_reply_then_syncs_tax(self):
         sent = []
 
