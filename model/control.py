@@ -31,6 +31,8 @@ from .config import (
     CMD_DIVINATION,
     CMD_DIVINATION_EXCHANGE,
     CMD_EXPLORE_RIFT,
+    CMD_REBIRTH_REQUEST,
+    CMD_REBIRTH_SELECT_PREFIX,
     CMD_FORMATION_ASSIST,
     CMD_FORMATION_START,
     CMD_GUANXING,
@@ -1340,7 +1342,18 @@ def _clear_explore_rift_runtime():
     state["explore_rift_reply_due_at"] = 0
     state["explore_rift_pending_result_msg_id"] = 0
     state["explore_rift_last_msg_id"] = 0
-    _clear_pending_tasks_by_commands({CMD_EXPLORE_RIFT})
+    state["explore_rift_nascent_escape_weak_until"] = 0
+    state["explore_rift_rebirth_required"] = False
+    state["explore_rift_rebirth_phase"] = "idle"
+    state["explore_rift_rebirth_due_at"] = 0
+    state["explore_rift_rebirth_request_msg_id"] = 0
+    state["explore_rift_rebirth_options_msg_id"] = 0
+    state["explore_rift_rebirth_select_msg_id"] = 0
+    state["explore_rift_rebirth_options_text"] = ""
+    state["explore_rift_rebirth_selected_index"] = 0
+    state["explore_rift_fatal_msg_id"] = 0
+    state["explore_rift_fatal_confirm_due_at"] = 0
+    _clear_pending_tasks_by_commands({CMD_EXPLORE_RIFT, CMD_REBIRTH_REQUEST, CMD_REBIRTH_SELECT_PREFIX})
 
 
 def _manual_disable_explore_rift_module_state():
@@ -4484,12 +4497,12 @@ def _normalize_storage_bag_simple_find_query(raw_query):
 
 def _get_storage_bag_log_identity_name(identity_id):
     profile = get_send_as_profile(identity_id)
-    return str(
-        profile.get("username")
-        or profile.get("label")
-        or profile.get("daohao")
-        or "未知身份"
-    ).strip()
+    label = str(profile.get("label") or "").strip()
+    daohao = str(profile.get("daohao") or "").strip()
+    username = str(profile.get("username") or "").strip()
+    if label and daohao and label != daohao:
+        return f"{label}[{daohao}]"
+    return label or daohao or username or f"身份{int(identity_id or 0)}"
 
 
 def _format_storage_bag_simple_find_text(raw_query):

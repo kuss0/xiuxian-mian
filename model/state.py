@@ -62,6 +62,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "resource_shortage_backoffs", "action_guard_sessions",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required",
+    "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
     "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_last_msg_id", "duel_last_result", "duel_last_error",
     "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
@@ -82,7 +83,7 @@ IDENTITY_BOOL_FIELDS = {
     "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged",
     "second_soul_heart_demon_notified",
-    "explore_rift_manual_required",
+    "explore_rift_manual_required", "explore_rift_rebirth_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
 META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
@@ -563,6 +564,19 @@ IDENTITY_STATE_TEMPLATE = {
     "explore_rift_last_error": "",
     "explore_rift_last_result_key": "",
     "explore_rift_manual_required": False,
+    "explore_rift_nascent_escape_weak_until": 0,
+    "explore_rift_rebirth_required": False,
+    "explore_rift_rebirth_phase": "idle",
+    "explore_rift_rebirth_due_at": 0,
+    "explore_rift_rebirth_request_msg_id": 0,
+    "explore_rift_rebirth_options_msg_id": 0,
+    "explore_rift_rebirth_select_msg_id": 0,
+    "explore_rift_rebirth_options_text": "",
+    "explore_rift_rebirth_selected_index": 0,
+    "explore_rift_rebirth_last_result": "",
+    "explore_rift_rebirth_last_error": "",
+    "explore_rift_fatal_msg_id": 0,
+    "explore_rift_fatal_confirm_due_at": 0,
 
     # 元婴宗问道模块
     "next_wendao_time": 0,

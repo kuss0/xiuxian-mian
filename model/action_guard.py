@@ -582,6 +582,12 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
     if action_key == "explore_rift":
         if _int_state(identity_state, "explore_rift_reply_to_msg_id") > 0 and _float_state(identity_state, "explore_rift_reply_due_at") > now:
             return True
+        if _int_state(identity_state, "explore_rift_rebirth_request_msg_id") > 0 and _float_state(identity_state, "explore_rift_rebirth_due_at") > now:
+            return True
+        if _int_state(identity_state, "explore_rift_rebirth_select_msg_id") > 0 and _float_state(identity_state, "explore_rift_rebirth_due_at") > now:
+            return True
+        if _int_state(identity_state, "explore_rift_fatal_msg_id") > 0 and _float_state(identity_state, "explore_rift_fatal_confirm_due_at") > now:
+            return True
         return _int_state(identity_state, "explore_rift_pending_result_msg_id") > 0 and _float_state(identity_state, "next_explore_rift_time") > now
     if action_key == "nanlong":
         return _int_state(identity_state, "nanlong_reply_to_msg_id") > 0 and _float_state(identity_state, "nanlong_reply_due_at") > now

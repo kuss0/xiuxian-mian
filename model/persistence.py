@@ -961,6 +961,32 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_last_result_key TEXT NOT NULL DEFAULT ''")
     if "explore_rift_manual_required" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_manual_required INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_nascent_escape_weak_until" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_nascent_escape_weak_until REAL NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_required" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_required INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "explore_rift_rebirth_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_due_at REAL NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_request_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_request_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_options_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_options_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_select_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_select_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_options_text" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_options_text TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_rebirth_selected_index" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_selected_index INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_rebirth_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_last_result TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_rebirth_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_last_error TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_fatal_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_fatal_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "explore_rift_fatal_confirm_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_fatal_confirm_due_at REAL NOT NULL DEFAULT 0")
 
     pending_columns = {row[1] for row in conn.execute("PRAGMA table_info(pending_tasks)").fetchall()}
     if "max_retry" not in pending_columns:
@@ -1507,6 +1533,19 @@ def init_db():
             explore_rift_last_error TEXT NOT NULL DEFAULT '',
             explore_rift_last_result_key TEXT NOT NULL DEFAULT '',
             explore_rift_manual_required INTEGER NOT NULL DEFAULT 0,
+            explore_rift_nascent_escape_weak_until REAL NOT NULL DEFAULT 0,
+            explore_rift_rebirth_required INTEGER NOT NULL DEFAULT 0,
+            explore_rift_rebirth_phase TEXT NOT NULL DEFAULT 'idle',
+            explore_rift_rebirth_due_at REAL NOT NULL DEFAULT 0,
+            explore_rift_rebirth_request_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_rebirth_options_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_rebirth_select_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_rebirth_options_text TEXT NOT NULL DEFAULT '',
+            explore_rift_rebirth_selected_index INTEGER NOT NULL DEFAULT 0,
+            explore_rift_rebirth_last_result TEXT NOT NULL DEFAULT '',
+            explore_rift_rebirth_last_error TEXT NOT NULL DEFAULT '',
+            explore_rift_fatal_msg_id INTEGER NOT NULL DEFAULT 0,
+            explore_rift_fatal_confirm_due_at REAL NOT NULL DEFAULT 0,
             wendao_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             wendao_reply_due_at REAL NOT NULL DEFAULT 0,
             wendao_pending_result_msg_id INTEGER NOT NULL DEFAULT 0,

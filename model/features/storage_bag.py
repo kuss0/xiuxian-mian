@@ -608,7 +608,7 @@ async def _send_storage_bag_transfer_command(
     if not retry:
         _storage_bag_transfer_state["retry_count"] = 0
     retry_count = int(_storage_bag_transfer_state.get("retry_count") or 0)
-    priority = "retry" if retry else "event_burst"
+    priority = "retry" if retry else "chain"
     op_suffix = f"{family or 'command'}:{'retry' if retry else 'send'}:{retry_count}"
     kwargs = {
         "track": False,

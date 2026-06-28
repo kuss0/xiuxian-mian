@@ -801,7 +801,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok, message)
         self.assertEqual([".上架 灵石*1 换 妖丹*3"], [item[0] for item in sent])
         self.assertEqual(1020.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
-        self.assertEqual("event_burst", sent[0][1]["priority"])
+        self.assertEqual("chain", sent[0][1]["priority"])
         self.assertEqual("储物袋", sent[0][1]["source_module"])
         self.assertEqual(0, sent[0][1]["max_retry"])
 

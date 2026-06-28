@@ -1969,6 +1969,36 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
+    def test_storage_bag_retry_chain_allows_chain_priority_initial_send(self):
+        now = time.time()
+        sender_id = 3504367852
+        chain_id = "storage_bag:test-op"
+        command = ".上架 灵石*1 换 妖丹*3"
+        events = [
+            _event(
+                now - 5,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="chain",
+                op_id=f"{chain_id}:storage_bag_listing:send:0",
+                chain_id=chain_id,
+            ),
+            _event(
+                now,
+                sender_id,
+                command,
+                family="storage_bag_listing",
+                source_module="储物袋",
+                priority="retry",
+                op_id=f"{chain_id}:storage_bag_listing:retry:1",
+                chain_id=chain_id,
+            ),
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
     def test_storage_bag_retry_chain_skipped_try_still_fuses(self):
         now = time.time()
         sender_id = 3504367852

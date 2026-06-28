@@ -646,7 +646,7 @@ def parse_storage_bag_transfer_op(item: dict, text: str | None = None) -> tuple[
     if stage == "retry" and not (1 <= count <= STORAGE_BAG_MAX_RETRIES):
         return None
     priority = str(item.get("priority") or "").strip().lower()
-    if stage == "send" and priority != "event_burst":
+    if stage == "send" and priority not in {"event_burst", "chain", "normal"}:
         return None
     if stage == "retry" and priority != "retry":
         return None
