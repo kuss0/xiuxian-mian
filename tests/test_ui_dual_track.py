@@ -65,6 +65,10 @@ def test_render_default_ui_uses_new_skin_without_mode_switch():
     assert "/static-new/css/app.css" in body
     assert "/static/js/module_cards_ui.js" in body
     assert "/static/js/storage_bag_ui.js" in body
+    assert "/static/js/runtime_health_ui.js" in body
+    assert "data-open-runtime-health='1'" in body
+    assert "id='runtime-health-modal'" in body
+    assert "id='runtime-health-panel'" not in body
     assert "class='topbar-left'" in body
     assert (
         body.index("class='topbar-left'")

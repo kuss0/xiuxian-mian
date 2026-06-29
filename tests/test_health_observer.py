@@ -186,6 +186,7 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertEqual(2, result["active_status_counts"][".查看闭关"])
         self.assertEqual(2, result["active_status_identity_counts"]["1:.查看闭关"])
+        self.assertEqual(".查看闭关", result["repeated_command_samples"][0]["command"])
         self.assertTrue(any("active status query repeated" in item["message"] for item in result["alerts"]))
 
     def test_business_message_analysis_allows_active_status_queries_from_different_identities(self):
@@ -323,6 +324,106 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(2, len(result["stuck_phases"]))
         self.assertTrue(any("overdue pending" in item["message"] for item in result["alerts"]))
         self.assertTrue(any("stuck runtime phases" in item["message"] for item in result["alerts"]))
+
+    def test_module_summary_ignores_stale_due_without_pending_anchor(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, concubine_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                    concubine_heart_due_at REAL NOT NULL DEFAULT 0,
+                    concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(42, 0)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, concubine_heart_due_at, concubine_heart_msg_id) VALUES(42, ?, 0)",
+                (now - 3 * 86400,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        concubine = next(item for item in summary if item["module"] == "concubine")
+        self.assertEqual("ok", concubine["status"])
+        self.assertTrue(concubine["due"][0]["stale_without_pending"])
+
+    def test_module_summary_flags_overdue_due_with_pending_anchor(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, concubine_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                    concubine_heart_due_at REAL NOT NULL DEFAULT 0,
+                    concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(42, 0)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, concubine_heart_due_at, concubine_heart_msg_id) VALUES(42, ?, 99)",
+                (now - 600,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        concubine = next(item for item in summary if item["module"] == "concubine")
+        self.assertEqual("error", concubine["status"])
+        self.assertEqual(99, concubine["pending"][0]["msg_id"])
+
+    def test_health_payload_and_markdown_include_score_risks_and_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = health_observer.ObserverConfig(
+                project_root=Path(tmp_dir),
+                services=("xiuxian.service",),
+                interval_sec=60,
+                journal_window_sec=600,
+                max_journal_matches=5,
+                max_event_lines=100,
+                state_dir=Path(tmp_dir) / "health",
+                business_window_sec=900,
+            )
+            snapshot = {
+                "ts": "2026-06-29 12:00:00",
+                "status": "ok",
+                "services": {"xiuxian.service": {"ActiveState": "active", "SubState": "running"}},
+                "safety": {"fused": True, "path": "/tmp/safety_watchdog_fused.json", "reason": "same command repeat"},
+                "journals": [],
+                "business": {
+                    "message_log": "/tmp/messages.log",
+                    "message_state": {"window_sec": 900, "sent_count": 3, "last_sent_ts": "2026-06-29 11:59:59"},
+                    "db_state": {"available": True, "db_path": "/tmp/state.db", "pending_total": 0, "module_summary": []},
+                    "alerts": [],
+                },
+            }
+
+            snapshot["health"] = health_observer.build_health_payload(snapshot, cfg)
+            snapshot["evidence_refs"] = health_observer.build_evidence_refs(snapshot)
+            markdown = health_observer.format_audit_pack_markdown(snapshot)
+
+        self.assertLess(snapshot["health"]["score"], 100)
+        self.assertTrue(any(item["code"] == "safety_watchdog_fused" for item in snapshot["health"]["risk_reasons"]))
+        self.assertTrue(any(item["kind"] == "safety_watchdog_fused" for item in snapshot["evidence_refs"]))
+        self.assertIn("Xiuxian Health Audit Pack", markdown)
+        self.assertIn("score:", markdown)
 
     def test_merge_status_promotes_business_warnings_from_ok_only(self):
         status, reasons = health_observer.merge_status(

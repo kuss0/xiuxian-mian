@@ -140,6 +140,7 @@ from .config import (
     RE_CMD_ANALYSIS_UNKNOWN,
     RE_CMD_ANALYSIS_WEBMINI,
     RE_CMD_RUNTIME_HEALTH,
+    RE_CMD_RUNTIME_HEALTH_DETAIL,
     RE_CMD_AUDIT_FLUSH_SUMMARY,
     RE_CMD_AUDIT_PUSH_STATUS,
     RE_CMD_STAGING_PREFLIGHT,
@@ -317,6 +318,8 @@ ANALYSIS_REPORT_DIR = Path(PROJECT_ROOT_DIR) / "data" / "analysis" / "latest"
 ANALYSIS_PAYLOAD_FILE = ANALYSIS_REPORT_DIR / "analysis_payload.json"
 MESSAGE_BOX_SHADOW_DIR = Path(STATE_DIR) / "message_box_shadow"
 MESSAGE_BOX_SHADOW_LATEST_FILE = MESSAGE_BOX_SHADOW_DIR / "latest.json"
+HEALTH_OBSERVER_LATEST_FILE = Path(STATE_DIR) / "health_observer" / "latest.json"
+HEALTH_OBSERVER_LATEST_MD_FILE = Path(STATE_DIR) / "health_observer" / "latest.md"
 RE_IDENTITY_INFO_NAME = re.compile(r"(?:道号|修士)[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_SECT = re.compile(r"境界[:：]\s*(\S+)")
 RE_IDENTITY_INFO_REALM_WITH_SECT = re.compile(r"境界[:：]\s*\S+\s*\(([^)]+)\)")
@@ -2442,6 +2445,53 @@ def _format_runtime_counter_map(items, limit=6):
     return "、".join(f"{key}:{value}" for key, value in ordered[:limit])
 
 
+def _load_health_observer_snapshot():
+    try:
+        if not HEALTH_OBSERVER_LATEST_FILE.exists():
+            return None
+        payload = json.loads(HEALTH_OBSERVER_LATEST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _format_health_observer_summary_lines(snapshot):
+    if not snapshot:
+        return [
+            "外部健康包: 未生成",
+            f"路径: {HEALTH_OBSERVER_LATEST_FILE}",
+            "提示: tools/health_observer.py --once 可生成只读审计包。",
+        ]
+    health = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else {}
+    risks = health.get("risk_reasons") if isinstance(health.get("risk_reasons"), list) else []
+    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    db_state = business.get("db_state") if isinstance(business.get("db_state"), dict) else {}
+    lines = [
+        f"外部健康包: {snapshot.get('ts') or '-'}｜score={health.get('score', '-')}｜level={health.get('level', snapshot.get('status', '-'))}",
+        f"风险原因: {len(risks)}",
+        f"近窗发送: {message_state.get('sent_count', 0)} 条｜pending={db_state.get('pending_total', 0)}",
+    ]
+    if risks:
+        lines.append("主要风险:")
+        for item in risks[:5]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"- {item.get('severity', 'warn')}｜{_short_analysis_text(item.get('message'), 90)}")
+    else:
+        lines.append("主要风险: 无")
+    return lines
+
+
+def _format_observer_module_line(item):
+    who = item.get("username") or item.get("label") or item.get("identity_id") or "-"
+    details = "；".join(str(part) for part in (item.get("details") or [])[:4])
+    return (
+        f"- {who}: {item.get('module_label') or item.get('module')}｜"
+        f"{item.get('status')}｜{_short_analysis_text(details or '-', 120)}"
+    )
+
+
 def _runtime_health_module_active(module_key):
     if not module_key:
         return True
@@ -2450,6 +2500,7 @@ def _runtime_health_module_active(module_key):
 
 def _format_runtime_health_text():
     now = time.time()
+    observer_snapshot = _load_health_observer_snapshot()
     identity_ids = get_identity_ids()
     enabled_count = sum(1 for identity_id in identity_ids if get_identity_enabled(identity_id))
     pending_total = 0
@@ -2507,6 +2558,8 @@ def _format_runtime_health_text():
         "常驻检测: 脚本内状态/消息盒子常驻采样；外部 safety watchdog 负责风暴与进程熔断。",
         "只读: 不触发游戏命令，不读取天机阁 API。",
         "",
+        *_format_health_observer_summary_lines(observer_snapshot),
+        "",
         f"全局状态: {'启用' if get_global_enabled() else '暂停'}",
         f"身份: {enabled_count}/{len(identity_ids)} 启用",
         f"游戏 pending: {pending_total}",
@@ -2561,6 +2614,66 @@ def _format_runtime_health_text():
     return "\n".join(lines)
 
 
+def _format_runtime_health_detail_text():
+    snapshot = _load_health_observer_snapshot()
+    lines = [
+        "运行健康详情",
+        "只读: 来自 health_observer/latest.json；不触发游戏命令，不重启服务。",
+        "",
+    ]
+    if not snapshot:
+        lines.extend(_format_health_observer_summary_lines(None))
+        return "\n".join(lines)
+
+    lines.extend(_format_health_observer_summary_lines(snapshot))
+    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
+    db_state = business.get("db_state") if isinstance(business.get("db_state"), dict) else {}
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    module_summary = db_state.get("module_summary") if isinstance(db_state.get("module_summary"), list) else []
+    abnormal = [item for item in module_summary if isinstance(item, dict) and item.get("status") in {"error", "warn"}]
+    active = [item for item in module_summary if isinstance(item, dict) and item.get("status") == "active"]
+
+    lines.extend(["", "异常模块:"])
+    if abnormal:
+        lines.extend(_format_observer_module_line(item) for item in abnormal[:12])
+    else:
+        lines.append("- 无")
+
+    if active:
+        lines.extend(["", "活跃模块样本:"])
+        lines.extend(_format_observer_module_line(item) for item in active[:8])
+
+    repeats = message_state.get("repeated_command_samples") if isinstance(message_state.get("repeated_command_samples"), list) else []
+    if repeats:
+        lines.extend(["", "重复命令样本:"])
+        for item in repeats[:6]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"- {item.get('identity_id')}: {item.get('command')} x{item.get('count')}")
+
+    evidence_refs = snapshot.get("evidence_refs") if isinstance(snapshot.get("evidence_refs"), list) else []
+    lines.extend(["", "证据入口:"])
+    if evidence_refs:
+        for item in evidence_refs[:8]:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind") or "evidence"
+            if kind == "message_log":
+                lines.append(f"- message_log: {item.get('path')}｜sent={item.get('sent_count')}｜last={item.get('last_sent_ts')}")
+            elif kind == "state_db":
+                lines.append(f"- state_db: {item.get('path')}｜pending={item.get('pending_total')}")
+            elif kind == "journal":
+                lines.append(f"- journal: {item.get('service')}｜hard={item.get('hard_count')} warn={item.get('warn_count')}｜since={item.get('since')}")
+            elif kind == "repeat_sample":
+                lines.append(f"- repeat: {item.get('identity_id')} {item.get('command')} x{item.get('count')}")
+            else:
+                lines.append(f"- {kind}: {_short_analysis_text(item, 120)}")
+    else:
+        lines.append("- 无")
+    lines.append(f"Markdown: {HEALTH_OBSERVER_LATEST_MD_FILE}")
+    return "\n".join(lines)
+
+
 def _format_log_group_help_html(send_as_id=None):
     suffix = ""
     if send_as_id is not None:
@@ -2587,6 +2700,7 @@ def _format_log_group_help_html(send_as_id=None):
     analysis_commands = [
         ".上线预检",
         ".运行健康",
+        ".健康详情",
         ".玩法总览",
         ".发送健康码",
         ".日志群分析",
@@ -5087,6 +5201,15 @@ async def handle_log_group_command(event):
             "运行健康摘要",
             _format_runtime_health_text(),
             error_prefix="❌ 运行健康摘要发送失败",
+        )
+        return True
+
+    if RE_CMD_RUNTIME_HEALTH_DETAIL.match(text):
+        await _reply_log_group_card(
+            event,
+            "运行健康详情",
+            _format_runtime_health_detail_text(),
+            error_prefix="❌ 运行健康详情发送失败",
         )
         return True
 

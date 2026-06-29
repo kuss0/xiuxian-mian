@@ -50,6 +50,7 @@ from model.config import (
     RE_CMD_ANALYSIS_UNKNOWN,
     RE_CMD_ANALYSIS_WEBMINI,
     RE_CMD_RUNTIME_HEALTH,
+    RE_CMD_RUNTIME_HEALTH_DETAIL,
     RE_CMD_AUDIT_FLUSH_SUMMARY,
     RE_CMD_AUDIT_PUSH_STATUS,
     RE_CMD_ENABLE_PATTERNS,
@@ -71,6 +72,8 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIsNotNone(RE_CMD_ANALYSIS_HEALTH.match(".发送健康码"))
         self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH.match(".运行健康"))
         self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH.match(".健康摘要"))
+        self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH_DETAIL.match(".健康详情"))
+        self.assertIsNotNone(RE_CMD_RUNTIME_HEALTH_DETAIL.match(".接手审计"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_LOG_GROUP.match(".日志群分析"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_WEBMINI.match(".miniweb分析"))
         self.assertIsNotNone(RE_CMD_ANALYSIS_UNKNOWN.match(".未知指令"))
@@ -784,7 +787,8 @@ class LogGroupDisplayTests(unittest.TestCase):
                 patch.object(control, "get_global_enabled", return_value=True), \
                 patch.object(control, "get_game_send_queue_snapshot", return_value=[{"identity_name": "wa2000", "cmd": ".引道 水", "priority": "chain", "status": "waiting", "ready_in_sec": 2}]), \
                 patch.object(control, "get_low_priority_audit_pending_counts", return_value=(4, 2)), \
-                patch.object(control, "get_passive_inbox_snapshot", return_value=inbox):
+                patch.object(control, "get_passive_inbox_snapshot", return_value=inbox), \
+                patch.object(control, "_load_health_observer_snapshot", return_value=None):
             time_mock.time.return_value = 1060
             text = control._format_runtime_health_text()
 
@@ -800,6 +804,58 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("待关注分类: handler_gap:1", text)
         self.assertIn("待关注原因: unhandled_routed_reply:1", text)
         self.assertIn("msg=99", text)
+
+    def test_runtime_health_detail_surfaces_observer_pack(self):
+        snapshot = {
+            "ts": "2026-06-29 12:00:00",
+            "status": "warn",
+            "health": {
+                "score": 82,
+                "level": "warn",
+                "risk_reasons": [{"severity": "warn", "message": "module send density: 世界Boss x22/15m"}],
+            },
+            "business": {
+                "message_state": {
+                    "sent_count": 22,
+                    "window_sec": 900,
+                    "repeated_command_samples": [{"identity_id": 301, "command": ".世界boss 战况", "count": 5}],
+                },
+                "db_state": {
+                    "pending_total": 0,
+                    "module_summary": [
+                        {
+                            "identity_id": 301,
+                            "username": "baji",
+                            "module": "world_boss",
+                            "module_label": "世界Boss",
+                            "status": "warn",
+                            "details": ["动作:战况", "错误:安全锁拦截"],
+                        },
+                        {
+                            "identity_id": 302,
+                            "username": "wa2000",
+                            "module": "fishing",
+                            "module_label": "钓鱼",
+                            "status": "active",
+                            "details": ["回复:msg=9"],
+                        },
+                    ],
+                },
+            },
+            "evidence_refs": [
+                {"kind": "message_log", "path": "/tmp/messages.log", "sent_count": 22, "last_sent_ts": "2026-06-29 11:59:59"},
+                {"kind": "repeat_sample", "identity_id": 301, "command": ".世界boss 战况", "count": 5},
+            ],
+        }
+
+        with patch.object(control, "_load_health_observer_snapshot", return_value=snapshot):
+            text = control._format_runtime_health_detail_text()
+
+        self.assertIn("运行健康详情", text)
+        self.assertIn("score=82", text)
+        self.assertIn("世界Boss", text)
+        self.assertIn(".世界boss 战况 x5", text)
+        self.assertIn("/tmp/messages.log", text)
 
     def test_auto_dungeon_status_text_is_not_unknown(self):
         text = control.get_single_module_status_text("自动副本")

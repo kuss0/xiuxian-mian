@@ -41,6 +41,7 @@ from .config import (
     CMD_TIANTI_GANGFENG,
     MESSAGES_DIR,
     MODULE_KEY_MAP,
+    STATE_DIR,
     STARGAZER_STAR_CHOICES,
     TAIYI_VALID_ELEMENTS,
     TIANTI_RANK_CHOICES,
@@ -593,6 +594,48 @@ def get_quiz_ai_snapshot():
         "last_valid_count": int(config.get("last_valid_count") or 0),
         "last_decision_timeout_sec": float(config.get("last_decision_timeout_sec") or 0),
         "last_updated_at": fmt_abs_ts(config.get("last_updated_at") or 0),
+    }
+
+
+def get_runtime_health_snapshot():
+    path = os.path.join(STATE_DIR, "health_observer", "latest.json")
+    fallback = {
+        "available": False,
+        "status": "unknown",
+        "health": {"score": None, "level": "unknown", "risk_reasons": []},
+        "module_summary": [],
+        "evidence_refs": [],
+        "path": path,
+    }
+    try:
+        with open(path, "r", encoding="utf-8") as fp:
+            payload = json.load(fp)
+    except Exception:
+        return fallback
+    if not isinstance(payload, dict):
+        return fallback
+    business = payload.get("business") if isinstance(payload.get("business"), dict) else {}
+    db_state = business.get("db_state") if isinstance(business.get("db_state"), dict) else {}
+    health = payload.get("health") if isinstance(payload.get("health"), dict) else {}
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    module_summary = db_state.get("module_summary") if isinstance(db_state.get("module_summary"), list) else []
+    evidence_refs = payload.get("evidence_refs") if isinstance(payload.get("evidence_refs"), list) else []
+    return {
+        "available": True,
+        "status": payload.get("status") or "unknown",
+        "ts": payload.get("ts") or "",
+        "health": {
+            "score": health.get("score"),
+            "level": health.get("level") or payload.get("status") or "unknown",
+            "risk_reasons": (health.get("risk_reasons") if isinstance(health.get("risk_reasons"), list) else [])[:8],
+            "last_ok_at": health.get("last_ok_at") or "",
+            "last_bad_at": health.get("last_bad_at") or "",
+        },
+        "module_summary": module_summary[:24],
+        "evidence_refs": evidence_refs[:12],
+        "sent_count": int(message_state.get("sent_count") or 0),
+        "pending_total": int(db_state.get("pending_total") or 0),
+        "path": path,
     }
 
 
@@ -3809,6 +3852,7 @@ def get_ui_snapshot(session_token=None):
             for item in get_game_send_queue_snapshot()
         ],
         "passive_inbox": get_passive_inbox_snapshot(),
+        "runtime_health": get_runtime_health_snapshot(),
         "official_schedules": list_local_official_schedules(limit=200),
         "storage_bag": get_storage_bag_snapshot(),
         "storage_bag_api": get_storage_bag_api_snapshot(),

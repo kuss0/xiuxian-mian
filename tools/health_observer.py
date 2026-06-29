@@ -36,6 +36,8 @@ BENIGN_WARN_CONTEXT_PATTERN = re.compile(
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
 )
+MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
+BENIGN_MODULE_ERROR_PATTERN = re.compile(r"今日.*已达上限|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发")
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
 GUARDED_BUSINESS_PREFIXES = (
     ".入梦寻图",
@@ -63,6 +65,171 @@ PHASEFUL_ATTENTION_PHASES = {
     "queued_launch",
     "launching",
 }
+IDLE_PHASE_VALUES = {"", "idle", "normal", "none", "{}", "[]"}
+MODULE_HEALTH_SPECS = [
+    {
+        "key": "tianxing",
+        "label": "天星",
+        "enabled": "tianxing_enabled",
+        "json_fields": ("tianxing_observation", "tianxing_timeline_state", "tianxing_auto_config"),
+    },
+    {
+        "key": "fishing",
+        "label": "钓鱼",
+        "enabled": "fishing_enabled",
+        "phase_fields": (("fishing_phase", "阶段"),),
+        "pending_fields": (("fishing_reply_to_msg_id", "回复"), ("fishing_status_msg_id", "状态")),
+        "due_fields": (("fishing_reply_due_at", "回复截止"), ("fishing_transfer_due_at", "赠送截止")),
+        "next_fields": (("next_fishing_time", "下次"),),
+        "last_result_fields": (("fishing_last_result", "结果"),),
+        "last_error_fields": (("fishing_last_error", "错误"),),
+    },
+    {
+        "key": "hehuan",
+        "label": "合欢",
+        "enabled": "hehuan_enabled",
+        "json_fields": ("hehuan_observation",),
+        "phase_fields": (("concubine_partner_kind", "道侣锚点"),),
+        "pending_fields": (("concubine_reply_to_msg_id", "回复"),),
+        "due_fields": (("concubine_reply_due_at", "回复截止"),),
+    },
+    {
+        "key": "explore_rift",
+        "label": "探寻裂缝",
+        "enabled": "explore_rift_enabled",
+        "pending_fields": (
+            ("explore_rift_reply_to_msg_id", "裂缝回复"),
+            ("explore_rift_pending_result_msg_id", "裂缝结果"),
+            ("explore_rift_rebirth_request_msg_id", "夺舍请求"),
+            ("explore_rift_rebirth_options_msg_id", "夺舍选项"),
+            ("explore_rift_rebirth_select_msg_id", "夺舍选择"),
+        ),
+        "due_fields": (
+            ("explore_rift_reply_due_at", "裂缝回复截止"),
+            ("explore_rift_rebirth_due_at", "夺舍截止"),
+            ("explore_rift_fatal_confirm_due_at", "死亡确认截止"),
+        ),
+        "next_fields": (("next_explore_rift_time", "下次"),),
+        "phase_fields": (("explore_rift_rebirth_phase", "夺舍"),),
+        "flag_fields": (("explore_rift_manual_required", "需人工"), ("explore_rift_rebirth_required", "需夺舍")),
+        "last_result_fields": (("explore_rift_last_result", "结果"), ("explore_rift_rebirth_last_result", "夺舍结果")),
+        "last_error_fields": (("explore_rift_last_error", "错误"), ("explore_rift_rebirth_last_error", "夺舍错误")),
+    },
+    {
+        "key": "wild_training",
+        "label": "野外历练",
+        "enabled": "wild_training_enabled",
+        "pending_fields": (("wild_training_reply_to_msg_id", "回复"),),
+        "due_fields": (("wild_training_reply_due_at", "回复截止"),),
+        "next_fields": (("next_wild_training_time", "下次"),),
+        "last_result_fields": (("wild_training_last_result", "结果"),),
+        "last_error_fields": (("wild_training_last_error", "错误"),),
+    },
+    {
+        "key": "deep_retreat",
+        "label": "深度闭关",
+        "enabled": "deep_retreat_enabled",
+        "phase_fields": (("deep_retreat_phase", "阶段"),),
+        "pending_fields": (("last_deep_retreat_summary_msg_id", "结算"),),
+        "next_fields": (("next_deep_retreat_time", "下次"),),
+    },
+    {
+        "key": "yuanying",
+        "label": "元婴",
+        "enabled": "yuanying_enabled",
+        "phase_fields": (("yuanying_phase", "阶段"),),
+        "pending_fields": (("last_yuanying_summary_msg_id", "结算"),),
+        "next_fields": (("next_yuanying_time", "下次"),),
+    },
+    {
+        "key": "second_soul",
+        "label": "第二元神",
+        "enabled": "second_soul_enabled",
+        "phase_fields": (("second_soul_phase", "阶段"),),
+        "pending_fields": (
+            ("second_soul_status_msg_id", "状态"),
+            ("second_soul_train_msg_id", "历练"),
+            ("second_soul_purge_msg_id", "镇魔"),
+            ("second_soul_heart_demon_msg_id", "心魔"),
+        ),
+        "due_fields": (("second_soul_purge_due_at", "镇魔截止"),),
+        "next_fields": (("next_second_soul_time", "下次"),),
+        "last_error_fields": (("second_soul_last_error", "错误"),),
+    },
+    {
+        "key": "small_world",
+        "label": "小世界",
+        "enabled": "small_world_enabled",
+        "phase_fields": (("small_world_phase", "阶段"),),
+        "pending_fields": (
+            ("small_world_query_msg_id", "查询"),
+            ("small_world_preach_reply_to_msg_id", "布道"),
+            ("small_world_manifest_msg_id", "显灵"),
+            ("small_world_harvest_msg_id", "收割"),
+            ("small_world_barrier_msg_id", "护界"),
+        ),
+        "due_fields": (("small_world_preach_due_at", "布道截止"), ("small_world_barrier_due_at", "护界截止")),
+        "next_fields": (("next_small_world_time", "下次"), ("small_world_god_cooldown_until", "神迹冷却")),
+        "last_error_fields": (("small_world_last_error", "错误"),),
+    },
+    {
+        "key": "world_boss",
+        "label": "世界Boss",
+        "enabled": "world_boss_enabled",
+        "pending_fields": (("world_boss_pending_msg_id", "待回复"),),
+        "phase_fields": (("world_boss_pending_action", "动作"),),
+        "last_result_fields": (("world_boss_last_action", "上次动作"),),
+        "last_error_fields": (("world_boss_last_error", "错误"),),
+    },
+    {
+        "key": "concubine",
+        "label": "侍妾",
+        "enabled": "concubine_enabled",
+        "phase_fields": (("concubine_phase", "阶段"), ("concubine_voyage_status", "八仙过海")),
+        "pending_fields": (
+            ("concubine_reply_to_msg_id", "回复"),
+            ("concubine_heart_msg_id", "心劫"),
+            ("concubine_voyage_msg_id", "出海"),
+            ("concubine_voyage_return_msg_id", "归来"),
+        ),
+        "due_fields": (
+            ("concubine_reply_due_at", "回复截止"),
+            ("concubine_heart_due_at", "心劫截止"),
+            ("concubine_voyage_due_at", "出海截止"),
+        ),
+        "next_fields": (("next_concubine_time", "下次"),),
+        "last_result_fields": (("concubine_last_result", "结果"), ("concubine_voyage_last_result", "出海结果")),
+        "last_error_fields": (("concubine_last_error", "错误"), ("concubine_heart_last_error", "心劫错误"), ("concubine_voyage_last_error", "出海错误")),
+    },
+    {
+        "key": "wendao",
+        "label": "问道",
+        "enabled": "wendao_enabled",
+        "pending_fields": (("wendao_reply_to_msg_id", "回复"), ("wendao_pending_result_msg_id", "结果")),
+        "due_fields": (("wendao_reply_due_at", "回复截止"),),
+        "next_fields": (("next_wendao_time", "下次"),),
+        "last_result_fields": (("wendao_last_result", "结果"),),
+        "last_error_fields": (("wendao_last_error", "错误"),),
+    },
+    {
+        "key": "duel",
+        "label": "斗法",
+        "enabled": "duel_enabled",
+        "pending_fields": (("duel_reply_to_msg_id", "回复"), ("duel_open_msg_id", "开局")),
+        "due_fields": (("duel_reply_due_at", "回复截止"), ("duel_magic_due_at", "神通截止")),
+        "next_fields": (("next_duel_time", "下次"),),
+        "last_result_fields": (("duel_last_result", "结果"),),
+        "last_error_fields": (("duel_last_error", "错误"),),
+    },
+    {
+        "key": "tower",
+        "label": "闯塔",
+        "enabled": "tower_enabled",
+        "pending_fields": (("last_tower_msg_id", "闯塔"),),
+        "due_fields": (("tower_reply_due_at", "回复截止"),),
+        "next_fields": (("next_tower_time", "下次"),),
+    },
+]
 
 
 @dataclass
@@ -83,6 +250,10 @@ class ObserverConfig:
     @property
     def events_path(self) -> Path:
         return self.state_dir / "events.jsonl"
+
+    @property
+    def latest_md_path(self) -> Path:
+        return self.state_dir / "latest.md"
 
 
 def local_ts(epoch: float | None = None) -> str:
@@ -223,6 +394,36 @@ def state_db_path(project_root: Path) -> Path:
     return state_dir / "chaogu_state.db"
 
 
+def safety_watchdog_fused_path(project_root: Path) -> Path:
+    return state_db_path(project_root).parent / "safety_watchdog_fused.json"
+
+
+def read_safety_state(project_root: Path) -> dict[str, object]:
+    path = safety_watchdog_fused_path(project_root)
+    if not path.exists():
+        return {"fused": False, "path": str(path)}
+    payload: dict[str, object] = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            payload = loaded
+    except Exception as exc:
+        payload = {"read_error": str(exc)}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return {
+        "fused": True,
+        "path": str(path),
+        "mtime": mtime,
+        "mtime_ts": local_ts(mtime) if mtime > 0 else "",
+        "reason": str(payload.get("reason") or payload.get("message") or "")[:240],
+        "action": str(payload.get("action") or "")[:80],
+        "payload": {key: payload.get(key) for key in ("reason", "action", "command", "identity_id") if key in payload},
+    }
+
+
 def command_key(text: str) -> str:
     raw = str(text or "").strip()
     for prefix in (".引道", ".神识淬炼", ".搜寻节点"):
@@ -294,6 +495,27 @@ def business_alert(message: str, *, severity: str = "warn", **extra) -> dict[str
     return payload
 
 
+def event_ref(item: dict[str, object]) -> dict[str, object]:
+    return {
+        key: item.get(key)
+        for key in (
+            "ts",
+            "event_type",
+            "message_id",
+            "reply_to_msg_id",
+            "sender_id",
+            "send_as_id",
+            "identity_id",
+            "text",
+            "source_module",
+            "family",
+            "op_id",
+            "chain_id",
+        )
+        if item.get(key) not in (None, "")
+    }
+
+
 def analyze_message_events(events: list[dict[str, object]], now: float, window_sec: int) -> dict[str, object]:
     window_start = float(now) - float(window_sec)
     recent = [
@@ -306,6 +528,7 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         and float(item.get("_epoch", 0) or 0) > 0
     ]
     alerts: list[dict[str, object]] = []
+    repeated_command_samples: list[dict[str, object]] = []
     sent_ids = {int(item.get("message_id", 0) or 0) for item in sent}
     sent_ids.discard(0)
 
@@ -319,6 +542,18 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
     for (identity_id, command), count in sorted(active_by_identity.items()):
         if count >= 2:
             identity_part = f"{identity_id}:" if identity_id else ""
+            sample = [
+                event_ref(item)
+                for item in sent
+                if event_identity_id(item) == identity_id and command_key(str(item.get("text") or "")) == command
+            ][-4:]
+            repeated_command_samples.append({
+                "kind": "active_status",
+                "identity_id": identity_id,
+                "command": command,
+                "count": count,
+                "sample": sample,
+            })
             alerts.append(
                 business_alert(
                     f"active status query repeated: {identity_part}{command} x{count}/{int(window_sec / 60)}m",
@@ -338,6 +573,13 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         if text == ".卜筮问天" and is_expected_divination_query_chain(items):
             continue
         if len(items) >= 4:
+            repeated_command_samples.append({
+                "kind": "guarded_command",
+                "identity_id": sender_id,
+                "command": text,
+                "count": len(items),
+                "sample": [event_ref(item) for item in items[-4:]],
+            })
             alerts.append(
                 business_alert(
                     f"guarded command repeated: {sender_id}:{text} x{len(items)}/{int(window_sec / 60)}m",
@@ -365,6 +607,9 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         )
 
     last_sent_at = max((float(item.get("_epoch", 0) or 0) for item in sent), default=0.0)
+    command_counts = Counter(command_key(str(item.get("text") or "")) for item in sent if str(item.get("text") or "").strip())
+    module_counts = Counter(str(item.get("source_module") or item.get("family") or "").strip() for item in sent)
+    module_counts = Counter({key: value for key, value in module_counts.items() if key})
     return {
         "window_sec": int(window_sec),
         "sent_count": len(sent),
@@ -372,9 +617,282 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
         "last_sent_ts": local_ts(last_sent_at) if last_sent_at > 0 else "",
         "active_status_counts": dict(active_counts),
         "active_status_identity_counts": {f"{identity_id}:{command}": count for (identity_id, command), count in active_by_identity.items()},
+        "command_counts": dict(command_counts.most_common(12)),
+        "module_counts": dict(module_counts.most_common(12)),
         "cooldown_reply_count": len(cooldown_replies),
+        "last_sent_sample": [event_ref(item) for item in sent[-8:]],
+        "repeated_command_samples": repeated_command_samples[:12],
+        "cooldown_reply_sample": [event_ref(item) for item in cooldown_replies[-8:]],
         "alerts": alerts,
     }
+
+
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def sqlite_table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if not sqlite_table_exists(conn, table):
+        return set()
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def fetch_table_rows_by_identity(conn: sqlite3.Connection, table: str) -> dict[int, dict[str, object]]:
+    if not sqlite_table_exists(conn, table):
+        return {}
+    try:
+        rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+    except sqlite3.Error:
+        return {}
+    result: dict[int, dict[str, object]] = {}
+    for row in rows:
+        mapping = dict(row)
+        try:
+            identity_id = int(mapping.get("send_as_id") or 0)
+        except Exception:
+            identity_id = 0
+        if identity_id:
+            result[identity_id] = mapping
+    return result
+
+
+def short_value(value: object, limit: int = 120) -> str:
+    text = str(value or "").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def parse_json_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return {}
+    try:
+        loaded = json.loads(value)
+    except Exception:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def boolish(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or "").strip().lower()
+    return text in {"1", "true", "yes", "on", "enabled", "启用", "开启"}
+
+
+def positive_int(value: object) -> int:
+    try:
+        return int(float(value or 0))
+    except Exception:
+        return 0
+
+
+def positive_epoch(value: object) -> float:
+    try:
+        epoch = float(value or 0)
+    except Exception:
+        return 0.0
+    if epoch <= 0:
+        return 0.0
+    return epoch
+
+
+def module_error_needs_attention(text: object) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+    if BENIGN_MODULE_ERROR_PATTERN.search(raw):
+        return False
+    return bool(MODULE_ERROR_ATTENTION_PATTERN.search(raw))
+
+
+def add_module_detail(details: list[str], label: str, value: object, *, limit: int = 80) -> None:
+    text = short_value(value, limit)
+    if text:
+        details.append(f"{label}:{text}")
+
+
+def summarize_json_state(field: str, payload: dict[str, object], now: float, details: list[str], evidence: dict[str, object]) -> tuple[bool, bool]:
+    if not payload:
+        return False, False
+    evidence.setdefault("json_fields", []).append(field)
+    warn = False
+    error = False
+    for key, label in (
+        ("fixed_star", "定命"),
+        ("current_prediction", "推命"),
+        ("current_change", "改命"),
+        ("tianji_value", "天机"),
+        ("last_action", "动作"),
+        ("last_result", "结果"),
+        ("last_summary", "摘要"),
+        ("auto_last_action", "自动"),
+        ("phase", "阶段"),
+        ("route", "路线"),
+        ("reason", "原因"),
+    ):
+        value = payload.get(key)
+        if value not in (None, "", {}, []):
+            add_module_detail(details, label, value)
+    for key, label in (("last_error", "错误"), ("auto_last_error", "自动错误")):
+        value = payload.get(key)
+        if value not in (None, ""):
+            add_module_detail(details, label, value)
+            if module_error_needs_attention(value):
+                error = True
+    for key, label in (
+        ("current_prediction_until", "推命到期"),
+        ("current_change_until", "改命到期"),
+        ("auto_next_time", "自动下次"),
+        ("deadline_at", "计划截止"),
+        ("automation_paused_until", "暂停至"),
+    ):
+        epoch = positive_epoch(payload.get(key))
+        if epoch > 0:
+            add_module_detail(details, label, local_ts(epoch))
+            if key in {"deadline_at"} and now > epoch + 300:
+                warn = True
+    paused_until = float(payload.get("automation_paused_until", 0) or 0)
+    if paused_until < 0 or paused_until > now:
+        reason = str(payload.get("automation_paused_reason") or "手动暂停").strip()
+        add_module_detail(details, "接管", f"暂停 {reason}")
+    return warn, error
+
+
+def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 120) -> list[dict[str, object]]:
+    identities = fetch_table_rows_by_identity(conn, "identities")
+    runtime_rows = fetch_table_rows_by_identity(conn, "identity_runtime_state")
+    timer_rows = fetch_table_rows_by_identity(conn, "identity_timers")
+    module_rows = fetch_table_rows_by_identity(conn, "identity_module_state")
+    identity_ids = sorted(set(identities) | set(runtime_rows) | set(timer_rows) | set(module_rows))
+    summary: list[dict[str, object]] = []
+    for identity_id in identity_ids:
+        identity = identities.get(identity_id, {})
+        runtime = runtime_rows.get(identity_id, {})
+        timers = timer_rows.get(identity_id, {})
+        modules = module_rows.get(identity_id, {})
+        username = str(identity.get("username") or "").strip()
+        label = str(identity.get("label") or "").strip()
+
+        def value_for(key: str) -> object:
+            if key in runtime:
+                return runtime.get(key)
+            if key in timers:
+                return timers.get(key)
+            if key in modules:
+                return modules.get(key)
+            return identity.get(key)
+
+        for spec in MODULE_HEALTH_SPECS:
+            module_key = str(spec["key"])
+            enabled_key = str(spec.get("enabled") or "")
+            enabled = boolish(value_for(enabled_key)) if enabled_key else False
+            details: list[str] = []
+            pending: list[dict[str, object]] = []
+            due_items: list[dict[str, object]] = []
+            next_items: list[dict[str, object]] = []
+            flags: list[str] = []
+            evidence: dict[str, object] = {
+                "identity_id": identity_id,
+                "db_tables": ["identity_runtime_state", "identity_timers", "identity_module_state"],
+            }
+            active = False
+            warn = False
+            error = False
+
+            for field in spec.get("json_fields", ()):
+                json_payload = parse_json_dict(value_for(str(field)))
+                json_warn, json_error = summarize_json_state(str(field), json_payload, now, details, evidence)
+                warn = warn or json_warn
+                error = error or json_error
+
+            for field, label_text in spec.get("phase_fields", ()):
+                text = str(value_for(str(field)) or "").strip()
+                if text.lower() not in IDLE_PHASE_VALUES:
+                    add_module_detail(details, str(label_text), text)
+                    active = True
+                    warn = warn or any(token in text for token in ("manual", "人工", "失败", "异常"))
+
+            for field, label_text in spec.get("pending_fields", ()):
+                msg_id = positive_int(value_for(str(field)))
+                if msg_id > 0:
+                    pending.append({"field": str(field), "label": str(label_text), "msg_id": msg_id})
+                    add_module_detail(details, str(label_text), f"msg={msg_id}")
+                    active = True
+
+            for field, label_text in spec.get("due_fields", ()):
+                epoch = positive_epoch(value_for(str(field)))
+                if epoch > 0:
+                    overdue_sec = int(now - epoch) if now > epoch else 0
+                    stale_without_pending = not (pending or active or warn)
+                    due_items.append({
+                        "field": str(field),
+                        "label": str(label_text),
+                        "at": local_ts(epoch),
+                        "overdue_sec": overdue_sec,
+                        "stale_without_pending": stale_without_pending,
+                    })
+                    if not stale_without_pending:
+                        add_module_detail(details, str(label_text), local_ts(epoch))
+                    if overdue_sec > 120 and not stale_without_pending:
+                        error = True
+                    elif overdue_sec > 0 and not stale_without_pending:
+                        active = True
+
+            for field, label_text in spec.get("next_fields", ()):
+                epoch = positive_epoch(value_for(str(field)))
+                if epoch > 0:
+                    next_items.append({"field": str(field), "label": str(label_text), "at": local_ts(epoch)})
+                    if enabled:
+                        add_module_detail(details, str(label_text), local_ts(epoch))
+
+            for field, label_text in spec.get("flag_fields", ()):
+                if boolish(value_for(str(field))):
+                    flags.append(str(label_text))
+                    add_module_detail(details, str(label_text), "是")
+                    warn = True
+
+            for field, label_text in spec.get("last_result_fields", ()):
+                text = str(value_for(str(field)) or "").strip()
+                if text:
+                    add_module_detail(details, str(label_text), text)
+
+            for field, label_text in spec.get("last_error_fields", ()):
+                text = str(value_for(str(field)) or "").strip()
+                if text:
+                    add_module_detail(details, str(label_text), text)
+                    if module_error_needs_attention(text):
+                        error = True
+
+            if not enabled and not pending and not flags and not error and not warn:
+                continue
+            status = "error" if error else "warn" if warn else "active" if active else "ok" if enabled else "inactive"
+            summary.append({
+                "identity_id": identity_id,
+                "username": username,
+                "label": label,
+                "module": module_key,
+                "module_label": str(spec.get("label") or module_key),
+                "enabled": enabled,
+                "status": status,
+                "details": details[:10],
+                "pending": pending[:8],
+                "due": due_items[:8],
+                "next": next_items[:6],
+                "flags": flags[:8],
+                "evidence": evidence,
+            })
+    priority = {"error": 0, "warn": 1, "active": 2, "ok": 3, "inactive": 4}
+    summary.sort(key=lambda item: (priority.get(str(item.get("status")), 9), int(item.get("identity_id") or 0), str(item.get("module") or "")))
+    return summary[:limit]
 
 
 def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
@@ -388,6 +906,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     pending_total = 0
     overdue_pending: list[dict[str, object]] = []
     stuck_phases: list[dict[str, object]] = []
+    module_summary: list[dict[str, object]] = []
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
@@ -472,6 +991,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "phase": "reply_wait",
                         "overdue_sec": int(now - tower_due),
                     })
+            module_summary = build_module_summary(conn, now)
     except sqlite3.Error as exc:
         return {
             "db_path": str(db_path),
@@ -497,6 +1017,39 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                 sample=stuck_phases[:8],
             )
         )
+    module_errors = [item for item in module_summary if item.get("status") == "error"]
+    module_warnings = [item for item in module_summary if item.get("status") == "warn"]
+    if module_errors:
+        alerts.append(
+            business_alert(
+                f"module runtime errors: {len(module_errors)}",
+                severity="error",
+                count=len(module_errors),
+                sample=[
+                    {
+                        "identity_id": item.get("identity_id"),
+                        "module": item.get("module"),
+                        "details": item.get("details", [])[:3],
+                    }
+                    for item in module_errors[:8]
+                ],
+            )
+        )
+    elif module_warnings:
+        alerts.append(
+            business_alert(
+                f"module runtime warnings: {len(module_warnings)}",
+                count=len(module_warnings),
+                sample=[
+                    {
+                        "identity_id": item.get("identity_id"),
+                        "module": item.get("module"),
+                        "details": item.get("details", [])[:3],
+                    }
+                    for item in module_warnings[:8]
+                ],
+            )
+        )
 
     return {
         "db_path": str(db_path),
@@ -504,6 +1057,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "pending_total": pending_total,
         "overdue_pending": overdue_pending[:20],
         "stuck_phases": stuck_phases[:20],
+        "module_summary": module_summary,
         "alerts": alerts,
     }
 
@@ -536,6 +1090,247 @@ def merge_status(base_status: str, business_alerts: list[dict[str, object]]) -> 
     return base_status, reasons
 
 
+def health_level_from_score(score: int, status: str) -> str:
+    if status == "error" or score < 50:
+        return "critical" if score < 35 else "error"
+    if status == "warn" or score < 85:
+        return "warn"
+    return "ok"
+
+
+def previous_health_times(latest_path: Path, now_ts: str, is_ok: bool) -> tuple[str, str]:
+    last_ok_at = now_ts if is_ok else ""
+    last_bad_at = "" if is_ok else now_ts
+    try:
+        payload = json.loads(latest_path.read_text(encoding="utf-8"))
+        health = payload.get("health") if isinstance(payload, dict) else {}
+        if isinstance(health, dict):
+            last_ok_at = str(health.get("last_ok_at") or last_ok_at)
+            last_bad_at = str(health.get("last_bad_at") or last_bad_at)
+    except Exception:
+        pass
+    if is_ok:
+        last_ok_at = now_ts
+    else:
+        last_bad_at = now_ts
+    return last_ok_at, last_bad_at
+
+
+def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> dict[str, object]:
+    score = 100
+    risk_reasons: list[dict[str, object]] = []
+
+    def add_risk(code: str, message: str, severity: str, deduct: int, **extra) -> None:
+        nonlocal score
+        score -= int(deduct)
+        payload: dict[str, object] = {
+            "code": code,
+            "message": message,
+            "severity": severity,
+            "deduct": int(deduct),
+        }
+        payload.update({key: value for key, value in extra.items() if value not in (None, "", [], {})})
+        risk_reasons.append(payload)
+
+    services = snapshot.get("services") if isinstance(snapshot.get("services"), dict) else {}
+    for service, info in services.items():
+        if str(service).startswith("_") or not isinstance(info, dict):
+            continue
+        if info.get("ActiveState") != "active" or info.get("SubState") != "running":
+            add_risk(
+                "service_not_running",
+                f"{service} not running: {info.get('ActiveState')}/{info.get('SubState')}",
+                "critical",
+                35,
+                service=service,
+            )
+
+    safety = snapshot.get("safety") if isinstance(snapshot.get("safety"), dict) else {}
+    if safety.get("fused"):
+        add_risk("safety_watchdog_fused", "safety watchdog fused marker exists", "critical", 40, path=safety.get("path"), reason=safety.get("reason"))
+
+    journals = snapshot.get("journals") if isinstance(snapshot.get("journals"), list) else []
+    hard_total = sum(int(item.get("hard_count") or 0) for item in journals if isinstance(item, dict))
+    warn_total = sum(int(item.get("warn_count") or 0) for item in journals if isinstance(item, dict))
+    if hard_total:
+        add_risk("journal_hard", f"journal hard matches: {hard_total}", "error", min(35, 18 + hard_total * 3))
+    if warn_total:
+        add_risk("journal_warn", f"journal warn matches: {warn_total}", "warn", min(18, 4 + warn_total))
+
+    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
+    for alert in business.get("alerts") or []:
+        if not isinstance(alert, dict):
+            continue
+        severity = str(alert.get("severity") or "warn")
+        deduct = 16 if severity == "error" else 7
+        add_risk(
+            "business_alert",
+            str(alert.get("message") or "business alert"),
+            "error" if severity == "error" else "warn",
+            deduct,
+            sample=alert.get("sample"),
+        )
+
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    sent_count = int(message_state.get("sent_count") or 0)
+    window_min = max(1, int(int(message_state.get("window_sec") or 0) / 60))
+    if sent_count >= 90:
+        add_risk("send_density_high", f"sent density high: {sent_count}/{window_min}m", "warn", 10)
+    elif sent_count >= 60:
+        add_risk("send_density_elevated", f"sent density elevated: {sent_count}/{window_min}m", "warn", 6)
+    for key, count in (message_state.get("module_counts") or {}).items():
+        try:
+            value = int(count or 0)
+        except Exception:
+            value = 0
+        if value >= 20:
+            add_risk("module_send_density", f"module send density: {key} x{value}/{window_min}m", "warn", 8, module=key)
+            break
+
+    db_state = business.get("db_state") if isinstance(business.get("db_state"), dict) else {}
+    module_summary = db_state.get("module_summary") if isinstance(db_state.get("module_summary"), list) else []
+    module_error_count = sum(1 for item in module_summary if isinstance(item, dict) and item.get("status") == "error")
+    module_warn_count = sum(1 for item in module_summary if isinstance(item, dict) and item.get("status") == "warn")
+    if module_error_count:
+        add_risk("module_errors", f"module runtime errors: {module_error_count}", "error", min(24, 8 + module_error_count * 3))
+    if module_warn_count:
+        add_risk("module_warnings", f"module runtime warnings: {module_warn_count}", "warn", min(15, 4 + module_warn_count))
+
+    score = max(0, min(100, score))
+    status = str(snapshot.get("status") or "ok")
+    level = health_level_from_score(score, status)
+    now_ts = str(snapshot.get("ts") or local_ts())
+    last_ok_at, last_bad_at = previous_health_times(cfg.latest_path, now_ts, level == "ok")
+    return {
+        "score": score,
+        "level": level,
+        "risk_reasons": risk_reasons[:24],
+        "last_ok_at": last_ok_at,
+        "last_bad_at": last_bad_at,
+        "policy": "read-only sidecar; no commands, no restarts, no Tianjige API",
+    }
+
+
+def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
+    refs: list[dict[str, object]] = []
+    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
+    message_log = str(business.get("message_log") or "")
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    if message_log:
+        refs.append({
+            "kind": "message_log",
+            "path": message_log,
+            "window_sec": message_state.get("window_sec"),
+            "sent_count": message_state.get("sent_count"),
+            "last_sent_ts": message_state.get("last_sent_ts"),
+        })
+    for item in message_state.get("repeated_command_samples") or []:
+        if isinstance(item, dict):
+            refs.append({
+                "kind": "repeat_sample",
+                "identity_id": item.get("identity_id"),
+                "command": item.get("command"),
+                "count": item.get("count"),
+                "sample": item.get("sample"),
+            })
+    db_state = business.get("db_state") if isinstance(business.get("db_state"), dict) else {}
+    if db_state.get("available"):
+        refs.append({
+            "kind": "state_db",
+            "path": db_state.get("db_path"),
+            "pending_total": db_state.get("pending_total"),
+            "overdue_pending": (db_state.get("overdue_pending") or [])[:5],
+            "stuck_phases": (db_state.get("stuck_phases") or [])[:5],
+        })
+    safety = snapshot.get("safety") if isinstance(snapshot.get("safety"), dict) else {}
+    if safety.get("fused"):
+        refs.append({"kind": "safety_watchdog_fused", "path": safety.get("path"), "reason": safety.get("reason")})
+    journals = snapshot.get("journals") if isinstance(snapshot.get("journals"), list) else []
+    for item in journals:
+        if not isinstance(item, dict):
+            continue
+        if int(item.get("hard_count") or 0) or int(item.get("warn_count") or 0):
+            refs.append({
+                "kind": "journal",
+                "service": item.get("service"),
+                "since": item.get("since"),
+                "hard_count": item.get("hard_count"),
+                "warn_count": item.get("warn_count"),
+                "hard": (item.get("hard") or [])[-3:],
+                "warn": (item.get("warn") or [])[-3:],
+            })
+    return refs[:30]
+
+
+def format_audit_pack_markdown(snapshot: dict[str, object]) -> str:
+    health = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else {}
+    business = snapshot.get("business") if isinstance(snapshot.get("business"), dict) else {}
+    db_state = business.get("db_state") if isinstance(business.get("db_state"), dict) else {}
+    message_state = business.get("message_state") if isinstance(business.get("message_state"), dict) else {}
+    module_summary = db_state.get("module_summary") if isinstance(db_state.get("module_summary"), list) else []
+    risk_reasons = health.get("risk_reasons") if isinstance(health.get("risk_reasons"), list) else []
+    evidence_refs = snapshot.get("evidence_refs") if isinstance(snapshot.get("evidence_refs"), list) else []
+
+    lines = [
+        "# Xiuxian Health Audit Pack",
+        "",
+        f"- ts: {snapshot.get('ts') or '-'}",
+        f"- status: {snapshot.get('status') or '-'}",
+        f"- score: {health.get('score', '-')}",
+        f"- level: {health.get('level', '-')}",
+        f"- policy: {snapshot.get('policy') or health.get('policy') or 'read-only'}",
+        "",
+        "## Summary",
+        f"- services: {len(snapshot.get('services') or {})}",
+        f"- journal hard/warn: {sum(int(item.get('hard_count') or 0) for item in snapshot.get('journals') or [])}/{sum(int(item.get('warn_count') or 0) for item in snapshot.get('journals') or [])}",
+        f"- sent: {message_state.get('sent_count', 0)} in {int((message_state.get('window_sec') or 0) / 60)}m",
+        f"- pending: {db_state.get('pending_total', 0)}",
+        "",
+        "## Risk Reasons",
+    ]
+    if risk_reasons:
+        for item in risk_reasons[:12]:
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"- [{item.get('severity')}] {item.get('message')} ({item.get('code')}, -{item.get('deduct')})")
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Module Summary"])
+    interesting_modules = [
+        item for item in module_summary
+        if isinstance(item, dict) and item.get("status") in {"error", "warn"}
+    ][:16]
+    if interesting_modules:
+        for item in interesting_modules:
+            who = item.get("username") or item.get("label") or item.get("identity_id")
+            details = "；".join(str(part) for part in (item.get("details") or [])[:4])
+            lines.append(f"- {who} {item.get('module_label') or item.get('module')}: {item.get('status')}｜{details or '-'}")
+    else:
+        lines.append("- no abnormal modules")
+
+    lines.extend(["", "## Evidence Refs"])
+    if evidence_refs:
+        for item in evidence_refs[:12]:
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("kind") or "evidence"
+            if kind == "message_log":
+                lines.append(f"- message_log: {item.get('path')} sent={item.get('sent_count')} last={item.get('last_sent_ts')}")
+            elif kind == "state_db":
+                lines.append(f"- state_db: {item.get('path')} pending={item.get('pending_total')}")
+            elif kind == "repeat_sample":
+                lines.append(f"- repeat: {item.get('identity_id')} {item.get('command')} x{item.get('count')}")
+            elif kind == "journal":
+                lines.append(f"- journal: {item.get('service')} since={item.get('since')} hard={item.get('hard_count')} warn={item.get('warn_count')}")
+            else:
+                lines.append(f"- {kind}: {short_value(item, 180)}")
+    else:
+        lines.append("- none")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[dict[str, object]]) -> tuple[str, list[str]]:
     reasons: list[str] = []
     for service, info in service_states.items():
@@ -562,6 +1357,7 @@ def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[
 def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
     now = time.time()
     service_states = read_service_states(cfg.services)
+    safety = read_safety_state(cfg.project_root)
     journals = [
         read_journal_matches(
             service,
@@ -577,22 +1373,37 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
     business = collect_business_snapshot(cfg, now)
     status, business_reasons = merge_status(status, list(business.get("alerts") or []))
     reasons.extend(business_reasons)
-    return {
+    if safety.get("fused") and status == "ok":
+        status = "error"
+    if safety.get("fused"):
+        reasons.append("safety watchdog fused marker exists")
+    snapshot = {
         "ts": local_ts(),
         "epoch": now,
         "status": status,
         "reasons": reasons,
         "services": service_states,
+        "safety": safety,
         "journals": journals,
         "business": business,
         "policy": "read-only: no game commands, no Tianjige API calls",
     }
+    snapshot["health"] = build_health_payload(snapshot, cfg)
+    snapshot["evidence_refs"] = build_evidence_refs(snapshot)
+    return snapshot
 
 
 def write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.replace(tmp_path, path)
+
+
+def write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(text, encoding="utf-8")
     os.replace(tmp_path, path)
 
 
@@ -612,6 +1423,7 @@ def append_event(path: Path, payload: dict[str, object], max_lines: int) -> None
 def observe_once(cfg: ObserverConfig) -> dict[str, object]:
     snapshot = collect_snapshot(cfg)
     write_json_atomic(cfg.latest_path, snapshot)
+    write_text_atomic(cfg.latest_md_path, format_audit_pack_markdown(snapshot))
     append_event(cfg.events_path, snapshot, cfg.max_event_lines)
     return snapshot
 

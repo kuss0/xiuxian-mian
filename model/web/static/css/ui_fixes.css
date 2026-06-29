@@ -2364,6 +2364,143 @@ body {
   margin-bottom: 0;
 }
 
+.runtime-health-card {
+  display: block;
+}
+
+.runtime-health-modal-card {
+  width: min(760px, 100%);
+}
+
+.runtime-health-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.runtime-health-head h2 {
+  margin: 0;
+  font-size: var(--ui-type-section-title, 16px);
+  line-height: 1.25;
+}
+
+.runtime-health-score {
+  min-width: 72px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: #020617;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.runtime-health-score strong {
+  display: block;
+  color: #f8fafc;
+  font-size: 22px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.runtime-health-score span {
+  color: #94a3b8;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.runtime-health-ok {
+  border-color: rgba(34, 197, 94, 0.42);
+}
+
+.runtime-health-warn {
+  border-color: rgba(251, 191, 36, 0.5);
+}
+
+.runtime-health-error {
+  border-color: rgba(248, 113, 113, 0.55);
+}
+
+.runtime-health-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.runtime-health-stats > div {
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  background: #020617;
+  padding: 9px 10px;
+}
+
+.runtime-health-stats strong {
+  display: block;
+  color: #e5e7eb;
+  font-size: 18px;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.runtime-health-stats span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.runtime-health-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.runtime-health-risk,
+.runtime-health-module,
+.runtime-health-evidence,
+.runtime-health-empty {
+  margin-top: 8px;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  background: #020617;
+  padding: 9px 10px;
+  color: #cbd5e1;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.runtime-health-risk span,
+.runtime-health-evidence span,
+.runtime-health-module span,
+.runtime-health-module em {
+  display: inline-flex;
+  margin-right: 6px;
+  color: #94a3b8;
+  font-style: normal;
+}
+
+.runtime-health-risk strong,
+.runtime-health-evidence strong,
+.runtime-health-module strong {
+  color: #e5e7eb;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.runtime-health-module small {
+  display: block;
+  margin-top: 5px;
+  color: #94a3b8;
+  overflow-wrap: anywhere;
+}
+
+.runtime-health-empty {
+  color: #94a3b8;
+}
+
+.runtime-health-wide {
+  margin-bottom: 12px;
+}
+
 .passive-inbox-modal-card {
   width: min(720px, 100%);
 }
@@ -2731,6 +2868,8 @@ body {
   }
 
   .passive-readable-grid,
+  .runtime-health-grid,
+  .runtime-health-stats,
   .passive-readable-event,
   .passive-readable-event-head {
     grid-template-columns: 1fr;
