@@ -476,6 +476,7 @@
             '自动命令',
             '先试运行，确认不会抢原链路再打开发送。',
             settingCheckbox('auto_set_star_enabled', '自动定命', txConfig.auto_set_star_enabled)+
+            settingCheckbox('route_special_star_enabled', '特化命星', txConfig.route_special_star_enabled)+
             settingCheckbox('auto_predict_enabled', '自动推命', txConfig.auto_predict_enabled)+
             settingCheckbox('auto_change_fate_enabled', '自动改命', txConfig.auto_change_fate_enabled)+
             settingCheckbox('strategy_dry_run_enabled', '命令试运行', txConfig.strategy_dry_run_enabled)+

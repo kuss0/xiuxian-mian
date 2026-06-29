@@ -159,10 +159,11 @@ def _default_tianxing_auto_config():
         "auto_set_star_enabled": False,
         "auto_predict_enabled": False,
         "auto_change_fate_enabled": False,
+        "route_special_star_enabled": False,
         "strategy_dry_run_enabled": True,
         "timeline_enabled": False,
         "timeline_dry_run_enabled": True,
-        "star_priority": ["贪狼", "太阴", "天府", "紫微"],
+        "star_priority": ["太阴", "贪狼", "天府", "紫微"],
         "predict_route": TIANXING_ROUTE_AUTO,
         "change_route": TIANXING_ROUTE_AUTO,
         "route_priority": ["探索", "闭关", "炼制", "斗法"],
@@ -382,6 +383,7 @@ def normalize_tianxing_auto_config(value=None):
         "auto_set_star_enabled",
         "auto_predict_enabled",
         "auto_change_fate_enabled",
+        "route_special_star_enabled",
         "strategy_dry_run_enabled",
         "timeline_enabled",
         "timeline_dry_run_enabled",
@@ -1199,6 +1201,20 @@ def _should_wake_tianxing_timeline(observed, config, now):
         return False
     if not config.get("craft_farm_enabled"):
         return False
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    active_status = str((timeline.get("active_step") or {}).get("status") or "").strip()
+    if timeline.get("phase") in {"state_confirmed", "downstream_released", "waiting_send", "blocked_replan"} or active_status in {"confirmed", "released", "pending"}:
+        return True
+    if active_status in {"sending", "sent_waiting_ack", "ack_timeout"}:
+        active_step = timeline.get("active_step") or {}
+        wake_at = float(
+            active_step.get("calibration_due_at")
+            or active_step.get("ack_due_at")
+            or timeline.get("blocked_until")
+            or 0
+        )
+        if wake_at > 0 and wake_at <= float(now):
+            return True
     windows = build_tianxing_farm_window(now=now, config=config, reason="天星自动调度")
     if not windows:
         return False
@@ -1579,16 +1595,28 @@ def _choose_by_priority(candidates, priority):
     return candidates[0] if candidates else ""
 
 
+_TIANXING_STABLE_STAR_PRIORITY = ["太阴", "贪狼"]
 _TIANXING_ROUTE_STAR_PRIORITY = {
-    "探索": ["贪狼", "太阴", "紫微", "天府"],
-    "闭关": ["紫微", "贪狼", "太阴", "天府"],
-    "炼制": ["贪狼", "紫微", "天府", "太阴"],
-    "斗法": ["贪狼", "紫微", "太阴", "天府"],
+    "探索": ["太阴", "贪狼"],
+    "闭关": ["太阴", "贪狼"],
+    "炼制": ["太阴", "贪狼"],
+    "斗法": ["太阴", "贪狼"],
 }
-_TIANXING_ROUTE_STICKY_STARS = {
-    # 炼制攒天机只负责拿点，不主动为了天府打乱贪狼/紫微节奏。
-    "炼制": {"贪狼", "紫微"},
+_TIANXING_SPECIAL_ROUTE_STAR_PRIORITY = {
+    "探索": ["贪狼"],
+    "闭关": ["紫微"],
+    "炼制": ["天府"],
+    "斗法": ["太阴"],
 }
+
+
+def _route_star_priority(route, config=None):
+    route = _normalize_route_choice(route, "")
+    if route not in TIANXING_ROUTES:
+        return []
+    if (config or {}).get("route_special_star_enabled"):
+        return list(_TIANXING_SPECIAL_ROUTE_STAR_PRIORITY.get(route) or [])
+    return list(_TIANXING_ROUTE_STAR_PRIORITY.get(route) or _TIANXING_STABLE_STAR_PRIORITY)
 
 
 def _choose_route_star(route, available_stars, config=None, fixed_star=""):
@@ -1597,13 +1625,13 @@ def _choose_route_star(route, available_stars, config=None, fixed_star=""):
     fixed_star = str(fixed_star or "").strip()
     if route not in TIANXING_ROUTES or not available_stars:
         return ""
-    if fixed_star in _TIANXING_ROUTE_STICKY_STARS.get(route, set()):
+    priority = _route_star_priority(route, config)
+    if fixed_star in priority:
         return fixed_star
-    priority = list(_TIANXING_ROUTE_STAR_PRIORITY.get(route) or [])
-    for item in (config or {}).get("star_priority") or []:
-        if item not in priority:
-            priority.append(item)
-    return _choose_by_priority(available_stars, priority)
+    for item in priority:
+        if item in available_stars:
+            return item
+    return ""
 
 
 def _choose_config_route(config, key, observed=None):
@@ -1962,21 +1990,50 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
 
     next_consume_route, next_consume = _next_consume_route(normalized_windows)
     next_consume_requires_change = bool((next_consume or {}).get("require_change_fate"))
+    critical_change_lacks_tianji = bool(
+        next_consume_requires_change
+        and next_consume_route
+        and next_consume_route == dominant_route
+        and tianji_value < min_tianji
+    )
     preferred_star_route = _preferred_star_route(normalized_windows, dominant_route, now)
     available_stars = [str(item).strip() for item in observed.get("available_stars") or [] if str(item or "").strip()]
     star_source = str(observed.get("available_stars_source") or "").strip()
     target_star = ""
-    if preferred_star_route and config.get("auto_set_star_enabled"):
+    route_star_priority = _route_star_priority(preferred_star_route, config)
+    fixed_star_matches_route = bool(fixed_star and fixed_star in route_star_priority)
+    change_fate_is_primary = bool(
+        next_consume_requires_change
+        and next_consume_route == preferred_star_route == "探索"
+        and not dominant_is_farm
+    )
+    if fixed_star_matches_route:
+        target_star = fixed_star
+    elif preferred_star_route and config.get("auto_set_star_enabled"):
         target_star = _choose_route_star(preferred_star_route, available_stars, config, fixed_star=fixed_star)
-    star_action_needed = bool(dominant_route and not fixed_star)
-    if dominant_route and fixed_star and config.get("auto_set_star_enabled"):
-        if target_star and target_star != fixed_star:
-            star_action_needed = True
-        elif preferred_star_route and not available_stars and config.get("auto_observe_enabled"):
-            star_action_needed = True
+    needs_star_observe = bool(
+        dominant_route
+        and preferred_star_route
+        and config.get("auto_set_star_enabled")
+        and config.get("auto_observe_enabled")
+        and not change_fate_is_primary
+        and not fixed_star_matches_route
+        and (not available_stars or star_source != "observe")
+    )
+    star_action_needed = bool(
+        dominant_route
+        and config.get("auto_set_star_enabled")
+        and not change_fate_is_primary
+        and not fixed_star_matches_route
+        and (needs_star_observe or (target_star and target_star != fixed_star))
+    )
     star_gate_blocks_plan = False
 
-    if dominant_route and current_prediction and current_prediction != dominant_route and prediction_until > now and not config.get("allow_prediction_override_enabled"):
+    if critical_change_lacks_tianji:
+        stage = "need_tianji_for_change"
+        change_reason = f"天机值 {tianji_value} 低于改命阈值 {min_tianji}。"
+        predict_reason = f"{next_consume_route} 需要先确认改命；天机值不足，等待攒点。"
+    elif dominant_route and current_prediction and current_prediction != dominant_route and prediction_until > now and not config.get("allow_prediction_override_enabled"):
         blocked_by_conflict = True
         blocked_until = prediction_until
         stage = "prediction_conflict"
@@ -1988,10 +2045,9 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         _append_tianxing_step(steps, "predict", dominant_route, route=dominant_route, reason=predict_reason, now=now)
     elif dominant_route and star_action_needed:
         stage = "need_set_star"
-        predict_reason = "时间线已形成，但当前命星不适合下一段路线。"
-        if not fixed_star:
-            predict_reason = "时间线已形成，但当前尚未定命。"
-        if (star_source != "observe" or not available_stars) and config.get("auto_observe_enabled"):
+        preferred_star_text = _format_list(route_star_priority) or preferred_star_route or dominant_route
+        predict_reason = f"时间线已形成，{preferred_star_route or dominant_route} 前优先尝试 {preferred_star_text}。"
+        if needs_star_observe:
             _append_tianxing_step(steps, "observe", reason="定命前需先取得今日观命结果。", now=now)
             star_gate_blocks_plan = True
         elif available_stars and target_star and config.get("auto_set_star_enabled"):
@@ -2005,11 +2061,6 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             )
             if not fixed_star:
                 star_gate_blocks_plan = True
-        elif not available_stars and config.get("auto_observe_enabled"):
-            _append_tianxing_step(steps, "observe", reason="时间线执行前先观命。", now=now)
-            star_gate_blocks_plan = True
-        else:
-            star_gate_blocks_plan = True
     elif dominant_route and current_prediction == dominant_route and prediction_until > now:
         if dominant_is_farm and config.get("auto_predict_enabled") and not _has_fresh_prediction_evidence(dominant_route, observed, timeline, now):
             should_predict = True
@@ -2071,7 +2122,11 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         release_route = dominant_route
         release_reason = f"{dominant_route} 推命确认后放行对应路线。"
     if release_route and not blocked_by_conflict:
-        if current_prediction and current_prediction != release_route and prediction_until > now:
+        has_predict_step = any(
+            str(step.get("action") or "") == "predict" and _normalize_route_choice(step.get("route") or step.get("arg"), "") == release_route
+            for step in steps
+        )
+        if current_prediction and current_prediction != release_route and prediction_until > now and not has_predict_step:
             release_reason = f"已有 {current_prediction} 推命未应验，暂不放行 {release_route}。"
         else:
             has_change_step = any(
@@ -2354,9 +2409,14 @@ def _build_tianxing_timeline_state_from_plan(plan, now, config):
         _timeline_audit(timeline, now, "prediction_conflict", blocked_until=timeline["blocked_until"])
         return timeline
     if not steps:
-        timeline["phase"] = "idle"
-        timeline["blocked_until"] = float(now + _status_backoff_sec(config))
-        _timeline_audit(timeline, now, "no_steps", stage=(plan or {}).get("stage"))
+        plan_stage = str((plan or {}).get("stage") or "idle").strip() or "idle"
+        timeline["phase"] = plan_stage
+        if plan_stage == "need_tianji_for_change":
+            timeline["blocked_until"] = float(now)
+            timeline["last_error"] = str((plan or {}).get("predict_reason") or (plan or {}).get("change_reason") or "")
+        else:
+            timeline["blocked_until"] = float(now + _status_backoff_sec(config))
+        _timeline_audit(timeline, now, "no_steps", stage=plan_stage)
         return timeline
     if config.get("timeline_dry_run_enabled"):
         dry_steps = []
@@ -3321,7 +3381,7 @@ async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", con
         _retreat_farm_audit(farm, now, "timeline_waiting", phase=timeline_result.get("phase"), reason=timeline_result.get("reason"))
         _set_tianxing_retreat_farm_state(farm, now)
         save_state()
-        return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "")
+        return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "", next_time=farm["next_time"])
 
     command = str(plan.get("command") or "")
     if not command:
@@ -3399,6 +3459,11 @@ def _craft_farm_explore_consume_block(now, config):
     now = float(now or 0)
     lead_sec = int((config or {}).get("route_prepare_lead_sec", 5 * 60) or 5 * 60)
     interval_sec = _craft_interval_bounds(config)[0]
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    current_change = _normalize_route_choice(observed.get("current_change"), "")
+    change_until = float(observed.get("current_change_until", 0) or 0)
+    tianji_value = int(observed.get("tianji_value", 0) or 0)
+    min_tianji = int((config or {}).get("min_tianji_for_change", 6) or 6)
     candidates = []
     module_specs = (
         ("野外历练", "wild_training_enabled", "next_wild_training_time", ("wild_training_reply_to_msg_id",), "wild_training_reply_due_at"),
@@ -3423,6 +3488,10 @@ def _craft_farm_explore_consume_block(now, config):
         if due_at <= 0:
             continue
         if due_at <= now + lead_sec and due_at >= now - TIANXING_TIME_BUFFER_SEC:
+            if current_change == "探索" and change_until > now:
+                continue
+            if tianji_value < min_tianji:
+                continue
             block_until = max(now + interval_sec, due_at + TIANXING_TIME_BUFFER_SEC)
             candidates.append((block_until, f"{label}探索消费窗口临近（{fmt_abs_ts(due_at)}），炼制攒点让路。"))
     if not candidates:
@@ -3697,11 +3766,26 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "")
         farm["phase"] = "timeline_waiting"
         farm["last_result"] = str(timeline_result.get("phase") or "")
-        farm["next_time"] = float(now + _craft_farm_interval_sec(config))
+        timeline_phase = str(timeline_result.get("phase") or current_timeline.get("phase") or "").strip()
+        active_step = current_timeline.get("active_step") or {}
+        followup_at = 0.0
+        if timeline_phase in {"sending", "sent_waiting_ack"}:
+            followup_at = float(active_step.get("ack_due_at", 0) or 0)
+        elif timeline_phase in {"ack_timeout", "calibrating"}:
+            followup_at = float(active_step.get("calibration_due_at", 0) or current_timeline.get("blocked_until", 0) or 0)
+        if followup_at > now:
+            farm["next_time"] = float(followup_at)
+        else:
+            followup_sec = (
+                TIANXING_CRAFT_FARM_RETRY_SEC
+                if timeline_phase in {"state_confirmed", "downstream_released", "waiting_send", "calibrating", "blocked_replan", "completed"}
+                else _craft_farm_interval_sec(config)
+            )
+            farm["next_time"] = float(now + followup_sec)
         _craft_farm_audit(farm, now, "timeline_waiting", phase=timeline_result.get("phase"), reason=timeline_result.get("reason"))
         _set_tianxing_craft_farm_state(farm, now)
         save_state()
-        return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "")
+        return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "", next_time=farm["next_time"])
 
     if plan.get("stage") in {"waiting_reply", "waiting_calibration"}:
         previous_phase = str(farm.get("phase") or "").strip()
@@ -3947,8 +4031,8 @@ def get_tianxing_status_text():
         f"- 最近动作：{observed.get('last_action') or '未记录'} / {observed.get('last_result') or '未记录'}",
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
-        f"- 自动策略：查盘{'开' if config.get('auto_panel_enabled') else '关'}｜观命{'开' if config.get('auto_observe_enabled') else '关'}｜消劫{'开' if config.get('auto_clear_calamity_enabled') else '关'}｜定命{'开' if config.get('auto_set_star_enabled') else '关'}｜推命{'开' if config.get('auto_predict_enabled') else '关'}｜改命{'开' if config.get('auto_change_fate_enabled') else '关'}｜试运行{'开' if config.get('strategy_dry_run_enabled') else '关'}",
-        "- 定星规则：探索优先贪狼｜闭关/出关优先紫微｜炼制攒点不主动切天府",
+        f"- 自动策略：查盘{'开' if config.get('auto_panel_enabled') else '关'}｜观命{'开' if config.get('auto_observe_enabled') else '关'}｜消劫{'开' if config.get('auto_clear_calamity_enabled') else '关'}｜定命{'开' if config.get('auto_set_star_enabled') else '关'}｜推命{'开' if config.get('auto_predict_enabled') else '关'}｜改命{'开' if config.get('auto_change_fate_enabled') else '关'}｜特化命星{'开' if config.get('route_special_star_enabled') else '关'}｜试运行{'开' if config.get('strategy_dry_run_enabled') else '关'}",
+        "- 定星规则：默认优先太阴/贪狼；特化命星开启后才按探索贪狼、闭关紫微、炼制天府、斗法太阴处理",
     ]
     if dirty_fields:
         lines.append(f"- 状态异常：{_format_list(dirty_fields)} 不可解析，自动发送已暂停")

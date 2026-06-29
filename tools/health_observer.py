@@ -833,6 +833,14 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                 if epoch > 0:
                     overdue_sec = int(now - epoch) if now > epoch else 0
                     stale_without_pending = not (pending or active or warn)
+                    if str(field) == "concubine_heart_due_at":
+                        concubine_phase = str(value_for("concubine_phase") or "").strip()
+                        heart_active = (
+                            concubine_phase in {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
+                            or positive_int(value_for("concubine_heart_msg_id")) > 0
+                            or positive_int(value_for("concubine_heart_prompt_msg_id")) > 0
+                        )
+                        stale_without_pending = not heart_active
                     due_items.append({
                         "field": str(field),
                         "label": str(label_text),

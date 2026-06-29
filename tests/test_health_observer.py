@@ -357,6 +357,42 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("ok", concubine["status"])
         self.assertTrue(concubine["due"][0]["stale_without_pending"])
 
+    def test_module_summary_ignores_stale_heart_due_during_unrelated_concubine_phase(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, concubine_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                    concubine_heart_due_at REAL NOT NULL DEFAULT 0,
+                    concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(42, ?)", (now + 600,))
+            conn.execute(
+                """
+                INSERT INTO identity_runtime_state(send_as_id, concubine_phase, concubine_heart_due_at, concubine_heart_msg_id, concubine_heart_prompt_msg_id)
+                VALUES(42, 'dream_pending', ?, 0, 0)
+                """,
+                (now - 600,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        concubine = next(item for item in summary if item["module"] == "concubine")
+        self.assertEqual("active", concubine["status"])
+        self.assertTrue(concubine["due"][0]["stale_without_pending"])
+
     def test_module_summary_flags_overdue_due_with_pending_anchor(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
@@ -388,6 +424,42 @@ class HealthObserverTests(unittest.TestCase):
         concubine = next(item for item in summary if item["module"] == "concubine")
         self.assertEqual("error", concubine["status"])
         self.assertEqual(99, concubine["pending"][0]["msg_id"])
+
+    def test_module_summary_flags_overdue_heart_due_with_prompt_anchor(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, concubine_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                    concubine_heart_due_at REAL NOT NULL DEFAULT 0,
+                    concubine_heart_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_heart_prompt_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(42, 0)")
+            conn.execute(
+                """
+                INSERT INTO identity_runtime_state(send_as_id, concubine_phase, concubine_heart_due_at, concubine_heart_msg_id, concubine_heart_prompt_msg_id)
+                VALUES(42, 'heart_choice_pending', ?, 0, 99)
+                """,
+                (now - 600,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        concubine = next(item for item in summary if item["module"] == "concubine")
+        self.assertEqual("error", concubine["status"])
+        self.assertFalse(concubine["due"][0]["stale_without_pending"])
 
     def test_health_payload_and_markdown_include_score_risks_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
