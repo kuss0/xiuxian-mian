@@ -151,13 +151,6 @@
     '</label>';
   }
 
-  function tianxingRouteSelect(key, selected){
-    var options = [{value:'auto', label:'自动'}, '探索', '闭关', '炼制', '斗法'];
-    var labels = {predict_route: '推命', change_route: '改命', farm_route: '攒天机路线'};
-    return '<label class="module-setting-field"><span>'+esc(labels[key] || key)+'</span>'+
-      '<select class="text-input" data-tianxing-config="'+esc(key)+'">'+optionHtml(options, selected || 'auto')+'</select></label>';
-  }
-
   function renderExploreRiftRebirthConfig(config){
     config = config || {};
     var modeChoices = config.choice_mode_choices || [
@@ -485,7 +478,8 @@
             settingCheckbox('auto_set_star_enabled', '自动定命', txConfig.auto_set_star_enabled)+
             settingCheckbox('auto_predict_enabled', '自动推命', txConfig.auto_predict_enabled)+
             settingCheckbox('auto_change_fate_enabled', '自动改命', txConfig.auto_change_fate_enabled)+
-            settingCheckbox('strategy_dry_run_enabled', '命令试运行', txConfig.strategy_dry_run_enabled)
+            settingCheckbox('strategy_dry_run_enabled', '命令试运行', txConfig.strategy_dry_run_enabled)+
+            '<button type="button" class="btn btn-secondary" data-save-tianxing-config="1">保存设置</button>'
           )+
           settingSection(
             '动作前置',
@@ -500,9 +494,9 @@
           )+
           settingSection(
             '攒天机窗口',
-            '按上海时间填写多段时段；下游动作临近时会让路。',
+            '按上海时间填写多段时段；炼制或闭关由下方开关决定，下游动作临近时会让路。',
             settingCheckbox('farm_window_enabled', '启用攒点窗口', txConfig.farm_window_enabled)+
-            tianxingRouteSelect('farm_route', txConfig.farm_route)+
+            currentChoiceText('当前方式', txConfig.craft_farm_enabled ? '炼制' : (txConfig.retreat_farm_enabled ? '闭关' : '未启用'))+
             '<label class="module-setting-field module-setting-field-wide"><span>时段</span><input class="text-input module-name-input" type="text" value="'+esc(txFarmWindows)+'" data-tianxing-config="farm_windows_text"></label>'
           )+
           settingSection(
@@ -539,18 +533,9 @@
           settingSection(
             '卡住处理',
             '没读到回复先查盘；仍不准就停住，避免乱发。',
-            '<label class="module-setting-field module-setting-field-wide"><span>改命路线优先</span><input class="text-input module-name-input" value="'+esc((txConfig.change_route_priority || []).join('、'))+'" data-tianxing-config="change_route_priority"></label>'+
+            '<label class="module-setting-field"><span>改命天机</span><input class="text-input module-hour-input" type="number" min="3" max="999" step="1" value="'+esc(txConfig.min_tianji_for_change || 6)+'" data-tianxing-config="min_tianji_for_change"></label>'+
             '<label class="module-setting-field"><span>确认超时</span><input class="text-input module-hour-input" type="number" min="15" max="900" step="5" value="'+esc(txAckTimeout)+'" data-tianxing-config="ack_timeout_sec"></label>'+
             '<label class="module-setting-field"><span>校准间隔</span><input class="text-input module-hour-input" type="number" min="60" max="3600" step="30" value="'+esc(txCalibrationBackoff)+'" data-tianxing-config="calibration_backoff_sec"></label>'
-          )+
-          settingSection(
-            '命星与路线',
-            '优先级用逗号或顿号分隔；只从真实可选项里挑。',
-            '<label class="module-setting-field module-setting-field-wide"><span>命星优先</span><input class="text-input module-name-input" value="'+esc((txConfig.star_priority || []).join('、'))+'" data-tianxing-config="star_priority"></label>'+
-            '<label class="module-setting-field module-setting-field-wide"><span>路线优先</span><input class="text-input module-name-input" value="'+esc((txConfig.route_priority || []).join('、'))+'" data-tianxing-config="route_priority"></label>'+
-            tianxingRouteSelect('predict_route', txConfig.predict_route)+
-            tianxingRouteSelect('change_route', txConfig.change_route)+
-            '<label class="module-setting-field"><span>改命天机</span><input class="text-input module-hour-input" type="number" min="3" max="999" step="1" value="'+esc(txConfig.min_tianji_for_change || 6)+'" data-tianxing-config="min_tianji_for_change"></label>'
           )+
           settingSection(
             '当前观测',
@@ -867,6 +852,10 @@
       submitExploreRiftRebirthConfig();
       return;
     }
+    if(event.target.closest('[data-save-tianxing-config]')){
+      submitTianxingConfig();
+      return;
+    }
     var openBtn = event.target.closest('[data-open-module-settings]');
     if(openBtn){
       openModuleSettingsModal(openBtn.getAttribute('data-open-module-settings') || '');
@@ -884,9 +873,6 @@
     if(event.target.closest('[data-hehuan-retry-max-min]')){
       submitHehuanConfig();
       return;
-    }
-    if(event.target.closest('[data-tianxing-config]')){
-      submitTianxingConfig();
     }
   });
 

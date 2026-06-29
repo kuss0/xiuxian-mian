@@ -4294,7 +4294,15 @@ async def ui_set_tianxing_config(send_as_id, config=None):
         return False, f"未知身份: {send_as_id}"
     config = config if isinstance(config, dict) else {}
     with use_identity(send_as_id):
-        normalized = set_tianxing_auto_config(config)
+        merged = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+        merged.update(config)
+        if "farm_route" not in config:
+            preview = normalize_tianxing_auto_config(merged)
+            if preview.get("craft_farm_enabled"):
+                merged["farm_route"] = "炼制"
+            elif preview.get("retreat_farm_enabled"):
+                merged["farm_route"] = "闭关"
+        normalized = set_tianxing_auto_config(merged)
         save_state()
     enabled_parts = []
     for key, label in (

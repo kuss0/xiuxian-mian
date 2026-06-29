@@ -1353,8 +1353,8 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None, allow_predictio
         if star not in TIANXING_STARS:
             return _manual_block(action, "定命必须指定：紫微、天府、太阴、贪狼。")
         fixed_star = str(observed.get("fixed_star") or "").strip()
-        if fixed_star:
-            return _manual_block(action, f"今日已定命星：{fixed_star}，不重复定命。")
+        if fixed_star == star:
+            return _manual_block(action, f"当前已是目标命星：{fixed_star}，不重复定命。")
         available_stars = [str(item) for item in observed.get("available_stars") or [] if str(item or "").strip()]
         if available_stars and star not in available_stars:
             return _manual_block(action, f"今日可选命星为 {_format_list(available_stars)}，不发送定命 {star}。")
@@ -1577,6 +1577,33 @@ def _choose_by_priority(candidates, priority):
         if item in candidates:
             return item
     return candidates[0] if candidates else ""
+
+
+_TIANXING_ROUTE_STAR_PRIORITY = {
+    "探索": ["贪狼", "太阴", "紫微", "天府"],
+    "闭关": ["紫微", "贪狼", "太阴", "天府"],
+    "炼制": ["贪狼", "紫微", "天府", "太阴"],
+    "斗法": ["贪狼", "紫微", "太阴", "天府"],
+}
+_TIANXING_ROUTE_STICKY_STARS = {
+    # 炼制攒天机只负责拿点，不主动为了天府打乱贪狼/紫微节奏。
+    "炼制": {"贪狼", "紫微"},
+}
+
+
+def _choose_route_star(route, available_stars, config=None, fixed_star=""):
+    route = _normalize_route_choice(route, "")
+    available_stars = [str(item).strip() for item in (available_stars or []) if str(item or "").strip()]
+    fixed_star = str(fixed_star or "").strip()
+    if route not in TIANXING_ROUTES or not available_stars:
+        return ""
+    if fixed_star in _TIANXING_ROUTE_STICKY_STARS.get(route, set()):
+        return fixed_star
+    priority = list(_TIANXING_ROUTE_STAR_PRIORITY.get(route) or [])
+    for item in (config or {}).get("star_priority") or []:
+        if item not in priority:
+            priority.append(item)
+    return _choose_by_priority(available_stars, priority)
 
 
 def _choose_config_route(config, key, observed=None):
@@ -1819,6 +1846,25 @@ def _next_consume_route(normalized_windows):
     return str(next_consume.get("route") or "").strip(), next_consume
 
 
+def _preferred_star_route(normalized_windows, dominant_route, now):
+    candidates = []
+    for item in normalized_windows or []:
+        route = _normalize_route_choice(item.get("route"), "")
+        if route not in TIANXING_ROUTES:
+            continue
+        kind = str(item.get("kind") or "").strip()
+        kind_order = 0 if kind == "consume" else 1
+        candidates.append((
+            max(float(item.get("start_at", 0) or 0), float(now or 0)),
+            kind_order,
+            -float(item.get("weight", 0) or 0),
+            route,
+        ))
+    if candidates:
+        return sorted(candidates)[0][3]
+    return _normalize_route_choice(dominant_route, "")
+
+
 def _last_craft_farm_result_at(timeline):
     farm = normalize_tianxing_craft_farm_state((timeline or {}).get("craft_farm"))
     latest = 0.0
@@ -1914,6 +1960,22 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
     release_reason = ""
     steps = []
 
+    next_consume_route, next_consume = _next_consume_route(normalized_windows)
+    next_consume_requires_change = bool((next_consume or {}).get("require_change_fate"))
+    preferred_star_route = _preferred_star_route(normalized_windows, dominant_route, now)
+    available_stars = [str(item).strip() for item in observed.get("available_stars") or [] if str(item or "").strip()]
+    star_source = str(observed.get("available_stars_source") or "").strip()
+    target_star = ""
+    if preferred_star_route and config.get("auto_set_star_enabled"):
+        target_star = _choose_route_star(preferred_star_route, available_stars, config, fixed_star=fixed_star)
+    star_action_needed = bool(dominant_route and not fixed_star)
+    if dominant_route and fixed_star and config.get("auto_set_star_enabled"):
+        if target_star and target_star != fixed_star:
+            star_action_needed = True
+        elif preferred_star_route and not available_stars and config.get("auto_observe_enabled"):
+            star_action_needed = True
+    star_gate_blocks_plan = False
+
     if dominant_route and current_prediction and current_prediction != dominant_route and prediction_until > now and not config.get("allow_prediction_override_enabled"):
         blocked_by_conflict = True
         blocked_until = prediction_until
@@ -1924,18 +1986,30 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         stage = "need_predict_override"
         predict_reason = f"已有 {current_prediction} 推命仍在生效，配置允许尝试改押 {dominant_route}；以真实回包为准。"
         _append_tianxing_step(steps, "predict", dominant_route, route=dominant_route, reason=predict_reason, now=now)
-    elif dominant_route and not fixed_star:
+    elif dominant_route and star_action_needed:
         stage = "need_set_star"
-        predict_reason = "时间线已形成，但今日尚未定命。"
-        available_stars = [str(item).strip() for item in observed.get("available_stars") or [] if str(item or "").strip()]
-        star_source = str(observed.get("available_stars_source") or "").strip()
-        if star_source != "observe" and config.get("auto_observe_enabled"):
+        predict_reason = "时间线已形成，但当前命星不适合下一段路线。"
+        if not fixed_star:
+            predict_reason = "时间线已形成，但当前尚未定命。"
+        if (star_source != "observe" or not available_stars) and config.get("auto_observe_enabled"):
             _append_tianxing_step(steps, "observe", reason="定命前需先取得今日观命结果。", now=now)
-        elif available_stars and config.get("auto_set_star_enabled"):
-            star = _choose_by_priority(available_stars, config.get("star_priority") or [])
-            _append_tianxing_step(steps, "set_star", star, reason="时间线执行前先定命。", now=now)
+            star_gate_blocks_plan = True
+        elif available_stars and target_star and config.get("auto_set_star_enabled"):
+            _append_tianxing_step(
+                steps,
+                "set_star",
+                target_star,
+                route=preferred_star_route,
+                reason=f"{preferred_star_route or dominant_route} 前切到 {target_star}。",
+                now=now,
+            )
+            if not fixed_star:
+                star_gate_blocks_plan = True
         elif not available_stars and config.get("auto_observe_enabled"):
             _append_tianxing_step(steps, "observe", reason="时间线执行前先观命。", now=now)
+            star_gate_blocks_plan = True
+        else:
+            star_gate_blocks_plan = True
     elif dominant_route and current_prediction == dominant_route and prediction_until > now:
         if dominant_is_farm and config.get("auto_predict_enabled") and not _has_fresh_prediction_evidence(dominant_route, observed, timeline, now):
             should_predict = True
@@ -1965,9 +2039,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         stage = "observe_only"
         predict_reason = f"{dominant_route} 只有消费窗口，没有稳定攒天机窗口，不建议盲发推命。"
 
-    next_consume_route, next_consume = _next_consume_route(normalized_windows)
-    next_consume_requires_change = bool((next_consume or {}).get("require_change_fate"))
-    if next_consume_route:
+    if not star_gate_blocks_plan and next_consume_route:
         if current_change == next_consume_route and change_until > now:
             recommended_change_route = next_consume_route
             change_reason = f"{recommended_change_route} 改命已待发。"
@@ -1995,7 +2067,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
                 predict_reason = f"{next_consume_route} 需要先确认改命；天机值不足，等待攒点。"
 
     release_requires_change = bool(next_consume_requires_change and next_consume_route == dominant_route)
-    if not release_route and dominant_route and (should_predict or current_prediction == dominant_route) and not release_requires_change:
+    if not star_gate_blocks_plan and not release_route and dominant_route and (should_predict or current_prediction == dominant_route) and not release_requires_change:
         release_route = dominant_route
         release_reason = f"{dominant_route} 推命确认后放行对应路线。"
     if release_route and not blocked_by_conflict:
@@ -3876,7 +3948,7 @@ def get_tianxing_status_text():
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
         f"- 自动策略：查盘{'开' if config.get('auto_panel_enabled') else '关'}｜观命{'开' if config.get('auto_observe_enabled') else '关'}｜消劫{'开' if config.get('auto_clear_calamity_enabled') else '关'}｜定命{'开' if config.get('auto_set_star_enabled') else '关'}｜推命{'开' if config.get('auto_predict_enabled') else '关'}｜改命{'开' if config.get('auto_change_fate_enabled') else '关'}｜试运行{'开' if config.get('strategy_dry_run_enabled') else '关'}",
-        f"- 策略优先级：命星 {_format_list(config.get('star_priority'))}｜路线 {_format_list(config.get('route_priority'))}",
+        "- 定星规则：探索优先贪狼｜闭关/出关优先紫微｜炼制攒点不主动切天府",
     ]
     if dirty_fields:
         lines.append(f"- 状态异常：{_format_list(dirty_fields)} 不可解析，自动发送已暂停")

@@ -357,7 +357,7 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual(".观命", observe["command"])
         self.assertEqual("tianxing_observe", observe["family"])
 
-    def test_set_star_requires_recent_available_star_and_no_existing_fixed_star(self):
+    def test_set_star_requires_recent_available_star_and_allows_switching_fixed_star(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             state_module.state["tianxing_enabled"] = True
@@ -370,14 +370,18 @@ class TianxingManualPlanTests(unittest.TestCase):
             unavailable = tianxing.build_tianxing_manual_plan("set_star", "紫微", now=now)
 
             state_module.state["tianxing_observation"]["fixed_star"] = "太阴"
-            fixed = tianxing.build_tianxing_manual_plan("set_star", "天府", now=now)
+            switched = tianxing.build_tianxing_manual_plan("set_star", "天府", now=now)
+            state_module.state["tianxing_observation"]["fixed_star"] = "天府"
+            same = tianxing.build_tianxing_manual_plan("set_star", "天府", now=now)
 
         self.assertTrue(allowed["allowed"])
         self.assertEqual(".定命 天府", allowed["command"])
         self.assertFalse(unavailable["allowed"])
         self.assertIn("今日可选命星", unavailable["reason"])
-        self.assertFalse(fixed["allowed"])
-        self.assertIn("今日已定命星", fixed["reason"])
+        self.assertTrue(switched["allowed"])
+        self.assertEqual(".定命 天府", switched["command"])
+        self.assertFalse(same["allowed"])
+        self.assertIn("当前已是目标命星", same["reason"])
 
     def test_predict_change_fate_and_clear_calamity_use_observed_cooldowns_and_resources(self):
         now = 1_780_000_000.0
@@ -437,6 +441,37 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertIn("天机值不足", tianji_shortage["reason"])
         self.assertFalse(no_calamity["allowed"])
         self.assertIn("未记录逆命劫", no_calamity["reason"])
+
+    def test_ui_config_save_preserves_hidden_fields_and_derives_farm_route(self):
+        async def run_save():
+            with state_module.use_identity(self.identity_id):
+                state_module.state["tianxing_auto_config"] = {
+                    "star_priority": ["太阴"],
+                    "route_priority": ["斗法"],
+                    "change_route_priority": ["探索", "闭关"],
+                    "farm_route": "闭关",
+                    "craft_farm_enabled": False,
+                }
+            with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+                return await ui.ui_set_tianxing_config(
+                    self.identity_id,
+                    {
+                        "auto_set_star_enabled": True,
+                        "craft_farm_enabled": True,
+                    },
+                )
+
+        ok, message = asyncio.run(run_save())
+        with state_module.use_identity(self.identity_id):
+            config = tianxing.normalize_tianxing_auto_config(state_module.state.get("tianxing_auto_config"))
+
+        self.assertTrue(ok, message)
+        self.assertEqual(["太阴"], config["star_priority"])
+        self.assertEqual(["斗法"], config["route_priority"])
+        self.assertEqual(["探索", "闭关"], config["change_route_priority"])
+        self.assertEqual("炼制", config["farm_route"])
+        self.assertTrue(config["craft_farm_enabled"])
+        self.assertTrue(config["auto_set_star_enabled"])
 
     def test_status_hides_stale_observation_when_module_disabled(self):
         with state_module.use_identity(self.identity_id):
@@ -752,6 +787,127 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual("need_set_star", plan["stage"])
         self.assertEqual([("observe", "")], [(step["action"], step["arg"]) for step in plan["steps"]])
         self.assertEqual(".观命", plan["steps"][0]["command"])
+
+    def test_timeline_plan_switches_to_tanlang_before_explore(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼", "太阴", "天府"],
+                "available_stars_source": "observe",
+                "fixed_star": "太阴",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[
+                    {"route": "探索", "kind": "consume", "start_at": now + 60, "end_at": now + 240, "weight": 10, "reason": "野外历练", "require_change_fate": True},
+                ],
+                config={
+                    "auto_set_star_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "min_tianji_for_change": 3,
+                    "timeline_enabled": True,
+                },
+            )
+
+        self.assertEqual("need_set_star", plan["stage"])
+        self.assertEqual(("set_star", "贪狼", "探索"), (plan["steps"][0]["action"], plan["steps"][0]["arg"], plan["steps"][0]["route"]))
+        self.assertIn(("change_fate", "探索"), [(step["action"], step["arg"]) for step in plan["steps"]])
+
+    def test_timeline_plan_switches_to_ziwei_before_retreat_route(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼", "紫微", "天府"],
+                "available_stars_source": "observe",
+                "fixed_star": "贪狼",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[
+                    {"route": "闭关", "kind": "farm", "start_at": now + 60, "end_at": now + 3600, "weight": 8, "reason": "闭关/出关窗口"},
+                ],
+                config={
+                    "auto_set_star_enabled": True,
+                    "auto_predict_enabled": True,
+                    "timeline_enabled": True,
+                },
+            )
+
+        self.assertEqual("need_set_star", plan["stage"])
+        self.assertEqual([("set_star", "紫微")], [(step["action"], step["arg"]) for step in plan["steps"]])
+
+    def test_timeline_plan_uses_next_window_for_star_before_later_consume(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼", "紫微", "太阴"],
+                "available_stars_source": "observe",
+                "fixed_star": "贪狼",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[
+                    {"route": "闭关", "kind": "farm", "start_at": now + 60, "end_at": now + 3600, "weight": 8, "reason": "闭关/出关窗口"},
+                    {"route": "探索", "kind": "consume", "start_at": now + 600, "end_at": now + 900, "weight": 10, "reason": "野外历练", "require_change_fate": True},
+                ],
+                config={
+                    "auto_set_star_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "min_tianji_for_change": 3,
+                    "timeline_enabled": True,
+                },
+            )
+
+        self.assertEqual("need_set_star", plan["stage"])
+        self.assertEqual(("set_star", "紫微"), (plan["steps"][0]["action"], plan["steps"][0]["arg"]))
+
+    def test_timeline_plan_does_not_switch_craft_from_core_stars_to_tianfu(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["紫微", "天府", "太阴"],
+                "available_stars_source": "observe",
+                "fixed_star": "紫微",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[
+                    {"route": "炼制", "kind": "farm", "start_at": now + 60, "end_at": now + 3600, "weight": 8, "reason": "炼制攒点"},
+                ],
+                config={
+                    "auto_set_star_enabled": True,
+                    "auto_predict_enabled": True,
+                    "timeline_enabled": True,
+                },
+            )
+
+        self.assertEqual("need_predict", plan["stage"])
+        self.assertEqual(("predict", "炼制"), (plan["steps"][0]["action"], plan["steps"][0]["arg"]))
+        self.assertNotIn("set_star", [step["action"] for step in plan["steps"]])
 
     def test_timeline_plan_does_not_emit_strategy_steps_when_switches_are_closed(self):
         now = 1_780_000_000.0

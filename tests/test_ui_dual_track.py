@@ -153,7 +153,13 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "data-tianxing-config=\"retreat_farm_heqi_exchange_count\"" in script
     assert "settingCheckbox('retreat_farm_auto_donate_lingshi', '贡献不足捐灵石'" in script
     assert "data-tianxing-config=\"retreat_farm_donate_lingshi_count\"" in script
-    assert "tianxingRouteSelect('farm_route', txConfig.farm_route)" in script
+    assert "data-save-tianxing-config" in script
+    assert "命星与路线" not in script
+    assert "data-tianxing-config=\"farm_route\"" not in script
+    assert "data-tianxing-config=\"star_priority\"" not in script
+    assert "data-tianxing-config=\"route_priority\"" not in script
+    assert "data-tianxing-config=\"predict_route\"" not in script
+    assert "data-tianxing-config=\"change_route\"" not in script
     assert "data-tianxing-config=\"target_tianji_daily\"" in script
     assert "data-tianxing-config=\"ack_timeout_sec\"" in script
     assert "执行状态" in script
