@@ -740,3 +740,30 @@ git diff --check
 - `tests/test_tianxing.py tests/test_wild_training.py tests/test_explore_rift.py -q`：`140 passed, 9 subtests passed`。
 - 全量测试：`1859 passed, 351 subtests passed`。
 - `node --check model/web/static/js/module_cards_ui.js`、`compileall model tests`、`git diff --check`：通过。
+
+## 2026-06-30 图图误挂闭关改命与 0 点日切缺陷
+
+现场问题：
+
+- 小耳朵图图 `天机盘` 显示 `当前改命: 闭关`，但该账号深度闭关并不能实际吃到紫微/闭关改命收益。
+- 0 点后天星没有及时 `观命 -> 定命`，仍可能被旧的 `auto_next_time` 睡眠挡住。
+- 0 点灵溪垂钓第一竿被备饵/打窝等准备命令拖后，真实第一条 `.钓鱼` 晚到数分钟，错过伴生机缘抢跑窗口。
+
+根因：
+
+- 深度闭关 gate 默认把“深度闭关即将到期/发起”视作天星 `闭关` 消费窗口，可能在 route_prepare 窗口内触发 `.改命 闭关`。
+- 天星 `available_stars` 和 `fixed_star` 没有按日标记，同一天/跨天状态混在一起；`auto_next_time` 未来值也没有为日切 `观命/定命` 让路。
+- 钓鱼日切准备窗口只做买饵；饵够时没有提前打窝和挂 0 点首竿，同时每日上限后的鱼篓/开鱼分支优先于日切准备。
+
+修正：
+
+- 新增 `deep_retreat_consume_enabled`，默认 `False`。默认情况下深度闭关不再创建 `闭关` 消费窗口，不再自动 `.改命 闭关`；旧联动只在显式开启时保留。
+- 天星观测增加 `available_stars_day` / `fixed_star_day`，跨天不再沿用旧命星；日切 `观命/定命` 会绕过未来 `auto_next_time`。
+- UI 补充 `日切观命`、`日切定命`、`深闭消费改命` 三个开关，避免后端有配置但界面不可见。
+- 钓鱼日切 jitter 从 100 秒收窄到 12 秒；23:40 后优先备饵/预打窝并挂起 0 点首竿；0 点前 5 分钟抢跑窗口优先直接 `.钓鱼`，不被打窝拖住。
+
+复测：
+
+- `tests/test_phaseful_summaries.py tests/test_tianxing.py tests/test_fishing.py tests/test_fishing_runtime.py -q`：`320 passed, 4 subtests passed`。
+- 全量测试：`1926 passed, 353 subtests passed`。
+- `node --check model/web/static/js/module_cards_ui.js`、`compileall model tests`、`git diff --check`：通过。

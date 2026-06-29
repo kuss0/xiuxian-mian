@@ -366,7 +366,36 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
             self.assertEqual(expected_start, state_module.state["next_fishing_time"])
+            self.assertEqual(".钓鱼 青溪浅滩 灵米饵", state_module.state["fishing_pending_action"])
+            self.assertIn(identity_id, fishing_runtime._FOLLOWUP_TASKS)
             self.assertIn("日切待命", state_module.state["fishing_last_result"])
+
+    async def test_prep_window_pre_chums_when_bait_is_ready(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 6, 26, 23, 45)
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_bait"] = "灵米饵"
+            state_module.state["fishing_auto_chum_enabled"] = True
+            state_module.state["fishing_chum_names"] = '["米糠小窝"]'
+            state_module.state["fishing_auto_buy_bait_enabled"] = True
+            state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+            state_module.state["fishing_daily_count"] = 20
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["next_fishing_time"] = now - 1
+            state_module.set_storage_bag_records({
+                str(identity_id): {"items": {"灵米饵": 3, "凡饵": 2, "灵石": 1000}, "sections": {"材料": {"灵米饵": 3, "凡饵": 2}}},
+            })
+            fake_msg = SimpleNamespace(id=22062, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".打窝 米糠小窝", track=False, max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual("chumming", state_module.state["fishing_phase"])
+            self.assertIn("已发送：.打窝 米糠小窝", state_module.state["fishing_last_result"])
 
     async def test_midnight_resets_daily_counter_and_starts_next_day_rod(self):
         identity_id = self._prepare_identity()
@@ -394,6 +423,33 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(fishing_runtime.get_day_key(now), state_module.state["fishing_daily_day"])
             self.assertEqual(0, state_module.state["fishing_daily_count"])
             self.assertEqual("fishing", state_module.state["fishing_phase"])
+
+    async def test_midnight_rush_skips_chum_for_first_rod(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 6, 27, 0, 0, 2)
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_bait"] = "灵米饵"
+            state_module.state["fishing_auto_chum_enabled"] = True
+            state_module.state["fishing_chum_names"] = '["米糠小窝"]'
+            state_module.state["fishing_auto_buy_bait_enabled"] = True
+            state_module.state["fishing_daily_day"] = "2026-06-26"
+            state_module.state["fishing_daily_count"] = 20
+            state_module.state["fishing_daily_limit"] = 20
+            state_module.state["next_fishing_time"] = now - 1
+            state_module.set_storage_bag_records({
+                str(identity_id): {"items": {"灵米饵": 3, "凡饵": 2, "灵石": 1000}, "sections": {"材料": {"灵米饵": 3, "凡饵": 2}}},
+            })
+            fake_msg = SimpleNamespace(id=22063, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".钓鱼 青溪浅滩 灵米饵", track=False, max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual("fishing", state_module.state["fishing_phase"])
+            self.assertNotEqual(".打窝 米糠小窝", send_mock.await_args.args[0])
 
     async def test_duplicate_lift_is_suppressed_before_message_id_returns(self):
         identity_id = self._prepare_identity()

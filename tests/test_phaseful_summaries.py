@@ -1329,7 +1329,10 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 "current_change_until": 0,
                 "tianji_value": 12,
             }
-            state_module.state["tianxing_auto_config"] = self._active_tianxing_farm_config(now)
+            state_module.state["tianxing_auto_config"] = dict(
+                self._active_tianxing_farm_config(now),
+                deep_retreat_consume_enabled=True,
+            )
 
             with (
                 patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "sent_waiting_ack", "changed": True})) as timeline_mock,
@@ -1370,6 +1373,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             }
             state_module.state["tianxing_auto_config"] = dict(
                 self._active_tianxing_farm_config(now),
+                deep_retreat_consume_enabled=True,
                 route_prepare_lead_sec=300,
             )
 
@@ -1539,6 +1543,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["tianxing_auto_config"] = {
                 "timeline_enabled": False,
                 "farm_window_enabled": False,
+                "deep_retreat_consume_enabled": True,
             }
 
             with (

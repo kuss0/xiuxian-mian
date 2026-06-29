@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import action_guard, runtime
 from model import state as state_module
 from model import ui
-from model.features import passive_inbox, tianxing
+from model.features import deep_retreat, passive_inbox, tianxing
 from model.real_message_replay import get_real_message_text, iter_real_message_samples
 
 
@@ -121,6 +121,39 @@ class TianxingParserTests(unittest.TestCase):
         self.assertEqual("observe", observed["available_stars_source"])
         self.assertEqual("", observed["fixed_star"])
         self.assertLessEqual(observed["auto_next_time"], now + 60)
+
+    def test_observe_and_panel_record_current_day_markers(self):
+        now = local_ts(0, 1, year=2026, month=6, day=30)
+        identity_id = 2100
+        panel_text = (
+            "【天机盘】\n"
+            "今日可选命星: 【紫微】、【贪狼】、【天府】\n"
+            "今日已定命星: 未定命\n"
+            "当前推命: 无\n"
+            "当前改命: 无\n"
+            "天机值: 36\n"
+            "逆命劫: 0\n"
+            "命中 / 落空 / 改命: 42 / 1 / 1"
+        )
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="tianxing_parser", label="tianxing_parser", sect_name="天星宗")
+            with state_module.use_identity(identity_id):
+                state_module.state["tianxing_enabled"] = True
+                tianxing.apply_tianxing_passive(real_text("tianxing.observe.basic"), now=now, family="tianxing_observe")
+                observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+                self.assertEqual(tianxing.get_day_key(now), observed["available_stars_day"])
+
+                tianxing.apply_tianxing_passive(panel_text, now=now + 60, family="tianxing_panel")
+                observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+        self.assertEqual(tianxing.get_day_key(now), observed["available_stars_day"])
+        self.assertEqual("", observed["fixed_star"])
+        self.assertEqual("", observed["fixed_star_day"])
 
     def test_panel_with_fixed_star_and_no_prediction_wakes_timeline_in_farm_window(self):
         now = 1_780_000_000.0
@@ -382,6 +415,23 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual(".定命 天府", switched["command"])
         self.assertFalse(same["allowed"])
         self.assertIn("当前已是目标命星", same["reason"])
+
+    def test_set_star_allows_same_star_again_on_next_day(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        yesterday = local_ts(23, 50, year=2026, month=6, day=29)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["太阴", "贪狼"],
+                "available_stars_day": tianxing.get_day_key(now),
+                "fixed_star": "太阴",
+                "fixed_star_day": tianxing.get_day_key(yesterday),
+            }
+            plan = tianxing.build_tianxing_manual_plan("set_star", "太阴", now=now)
+
+        self.assertTrue(plan["allowed"])
+        self.assertEqual(".定命 太阴", plan["command"])
 
     def test_predict_change_fate_and_clear_calamity_use_observed_cooldowns_and_resources(self):
         now = 1_780_000_000.0
@@ -2930,12 +2980,60 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock, observed = await self._run_with_observation({})
 
         send_mock.assert_awaited_once()
-        self.assertEqual(".天机盘", send_mock.await_args.args[0])
+        self.assertEqual(".观命", send_mock.await_args.args[0])
         self.assertEqual("天星宗", send_mock.await_args.kwargs["source_module"])
-        self.assertEqual("panel", observed["auto_last_action"])
-        self.assertEqual("panel", observed["auto_pending_action"])
-        self.assertEqual(".天机盘", observed["auto_pending_command"])
+        self.assertEqual("observe", observed["auto_last_action"])
+        self.assertEqual("observe", observed["auto_pending_action"])
+        self.assertEqual(".观命", observed["auto_pending_command"])
         self.assertEqual(9101, observed["auto_pending_msg_id"])
+
+    async def test_scheduler_bypasses_future_auto_time_for_daily_observe(self):
+        now = local_ts(0, 1, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 60,
+            "available_stars": ["太阴", "贪狼"],
+            "available_stars_day": tianxing.get_day_key(now - 3600),
+            "fixed_star": "太阴",
+            "fixed_star_day": tianxing.get_day_key(now - 3600),
+            "auto_next_time": now + 6 * 3600,
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "auto_observe_enabled": True,
+            "daily_observe_enabled": True,
+        })
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".观命", send_mock.await_args.args[0])
+        self.assertEqual("observe", observed["auto_last_action"])
+
+    async def test_scheduler_bypasses_future_auto_time_for_daily_set_star(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "",
+            "fixed_star_day": "",
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 6 * 3600,
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "timeline_enabled": True,
+            "auto_set_star_enabled": True,
+            "daily_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+        })
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("set_star", observed["auto_last_action"])
 
     async def test_scheduler_waits_for_pending_auto_panel_without_resend(self):
         now = 1_780_000_000.0
@@ -3423,7 +3521,9 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["tianxing_observation"] = {
                 "last_observed_at": now - 60,
                 "available_stars": [],
+                "available_stars_day": tianxing.get_day_key(now),
                 "fixed_star": "",
+                "fixed_star_day": "",
                 "auto_next_time": now + 300,
             }
             with patch.object(tianxing, "send_game_command") as send_mock:
@@ -3461,6 +3561,48 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                     send_mock.assert_not_called()
                     save_mock.assert_not_called()
                     self.assertEqual(dirty_value, state_module.state["tianxing_observation"][field_name])
+
+    async def test_deep_retreat_gate_does_not_create_close_change_fate_by_default(self):
+        now = local_ts(1, 55, year=2026, month=6, day=30)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "timeline_dry_run_enabled": False,
+                "auto_change_fate_enabled": True,
+                "deep_retreat_consume_enabled": False,
+                "route_prepare_lead_sec": 300,
+            }
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["紫微", "贪狼", "天府"],
+                "available_stars_day": tianxing.get_day_key(now),
+                "fixed_star": "",
+                "fixed_star_day": "",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 36,
+            }
+            state_module.state["tianxing_timeline_state"] = {}
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["next_deep_retreat_time"] = now + 60
+            with (
+                patch.object(deep_retreat, "save_state") as save_mock,
+                patch.object(
+                    deep_retreat,
+                    "run_tianxing_timeline_scheduler",
+                    new=AsyncMock(return_value={"phase": "sent_waiting_ack", "changed": True}),
+                ) as timeline_mock,
+            ):
+                allowed = await deep_retreat._run_deep_retreat_tianxing_gate(now)
+            next_time = state_module.state["next_deep_retreat_time"]
+
+        self.assertTrue(allowed)
+        self.assertEqual(now + 60, next_time)
+        timeline_mock.assert_not_awaited()
+        save_mock.assert_not_called()
 
 
 class TianxingPassiveInboxTests(unittest.TestCase):

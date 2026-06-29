@@ -639,6 +639,8 @@ async def _run_deep_retreat_tianxing_gate(now):
             state["next_deep_retreat_time"] = retreat_farm_block_until + CD_BUFFER_SEC
         save_state()
         return False
+    if not config.get("deep_retreat_consume_enabled"):
+        return True
     consume_windows = build_tianxing_consume_window("闭关", now=now, due_at=max(due_at, now), config=config, reason="深度闭关")
     route_config = dict(config)
     route_config["timeline_enabled"] = bool(consume_windows) and bool(config.get("timeline_enabled"))

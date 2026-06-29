@@ -468,6 +468,7 @@
             '查盘、观命用于对账；消劫会消耗修为和贡献。',
             settingCheckbox('auto_panel_enabled', '自动查盘', txConfig.auto_panel_enabled)+
             settingCheckbox('auto_observe_enabled', '自动观命', txConfig.auto_observe_enabled)+
+            settingCheckbox('daily_observe_enabled', '日切观命', txConfig.daily_observe_enabled)+
             settingCheckbox('auto_clear_calamity_enabled', '自动消劫', txConfig.auto_clear_calamity_enabled)+
             '<label class="module-setting-field"><span>消劫阈值</span><input class="text-input module-hour-input" type="number" min="1" max="99" step="1" value="'+esc(txConfig.min_calamity_to_clear || 1)+'" data-tianxing-config="min_calamity_to_clear"></label>'+
             '<label class="module-setting-field"><span>校准间隔</span><input class="text-input module-hour-input" type="number" min="1" max="24" step="1" value="'+esc(txConfig.status_backoff_hours || 6)+'" data-tianxing-config="status_backoff_hours"></label>'
@@ -476,6 +477,7 @@
             '自动命令',
             '先试运行，确认不会抢原链路再打开发送。',
             settingCheckbox('auto_set_star_enabled', '自动定命', txConfig.auto_set_star_enabled)+
+            settingCheckbox('daily_set_star_enabled', '日切定命', txConfig.daily_set_star_enabled)+
             settingCheckbox('route_special_star_enabled', '特化命星', txConfig.route_special_star_enabled)+
             settingCheckbox('auto_predict_enabled', '自动推命', txConfig.auto_predict_enabled)+
             settingCheckbox('auto_change_fate_enabled', '自动改命', txConfig.auto_change_fate_enabled)+
@@ -526,6 +528,7 @@
             settingCheckbox('retreat_farm_auto_exchange_heqi_dan', '缺丹自动兑换', txConfig.retreat_farm_auto_exchange_heqi_dan)+
             '<label class="module-setting-field"><span>兑换数量</span><input class="text-input module-hour-input" type="number" min="1" max="999" step="1" value="'+esc(txConfig.retreat_farm_heqi_exchange_count || 10)+'" data-tianxing-config="retreat_farm_heqi_exchange_count"></label>'+
             settingCheckbox('retreat_farm_auto_donate_lingshi', '贡献不足捐灵石', txConfig.retreat_farm_auto_donate_lingshi)+
+            settingCheckbox('deep_retreat_consume_enabled', '深闭消费改命', txConfig.deep_retreat_consume_enabled)+
             '<label class="module-setting-field"><span>捐献灵石</span><input class="text-input module-hour-input" type="number" min="1" max="99999" step="1" value="'+esc(txConfig.retreat_farm_donate_lingshi_count || 200)+'" data-tianxing-config="retreat_farm_donate_lingshi_count"></label>'+
             currentChoiceText('闭关状态', (txRetreatFarm.phase || 'idle')+' / '+(txRetreatFarm.last_action || '无'))+
             currentChoiceText('下次闭关', txRetreatFarm.next_time || '未设置')+

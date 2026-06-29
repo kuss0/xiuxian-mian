@@ -53,7 +53,7 @@ FISHING_RECOVERY_MAX_SEC = 45
 FISHING_POST_ROD_DELAY_MIN_SEC = 3
 FISHING_POST_ROD_DELAY_MAX_SEC = 5
 FISHING_RESET_JITTER_MIN_SEC = 0
-FISHING_RESET_JITTER_MAX_SEC = 100
+FISHING_RESET_JITTER_MAX_SEC = 12
 FISHING_MAX_ACTIVE_IDENTITIES = 2
 FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
@@ -527,6 +527,8 @@ async def _run_fishing_followup(send_as_id, command, due_at):
             return
         if _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0 and float(state.get("fishing_reply_due_at", 0) or 0) > time.time():
             return
+        if _defer_new_fishing_for_capacity(time.time(), command):
+            return
         await _send_fishing_command(command, time.time())
 
 
@@ -938,6 +940,7 @@ async def run_fishing_scheduler(now):
         return
 
     _apply_effect(effect)
+    _maybe_schedule_pending_fishing_action()
     await _emit_effect_audits(effect, limit=220)
 
 

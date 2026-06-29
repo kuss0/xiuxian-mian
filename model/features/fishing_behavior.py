@@ -68,6 +68,7 @@ FISHING_ACTION_DEADLINE_BUFFER_SEC = 4
 FISHING_STATUS_ACTION_DELAY_SEC = 1
 FISHING_PREP_HOUR_LOCAL = 23
 FISHING_PREP_MINUTE_LOCAL = 40
+FISHING_RESET_RUSH_WINDOW_SEC = 5 * 60
 FISHING_TRANSFER_QUEUE_DELAY_SEC = 20
 
 
@@ -312,6 +313,13 @@ def is_fishing_prep_window(now):
     return local_now.hour == FISHING_PREP_HOUR_LOCAL and local_now.minute >= FISHING_PREP_MINUTE_LOCAL
 
 
+def is_fishing_reset_rush_window(now):
+    local_now = datetime.fromtimestamp(float(now), TZ_LOCAL)
+    reset_at = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed = (local_now - reset_at).total_seconds()
+    return 0 <= elapsed <= FISHING_RESET_RUSH_WINDOW_SEC
+
+
 def next_fishing_daily_limit_timestamp(now, jitter_sec=0):
     if is_fishing_prep_window(now):
         return next_fishing_reset_timestamp(now, jitter_sec)
@@ -447,6 +455,43 @@ def next_prep_purchase_command(snapshot, *, bait_inventory=None):
     return "", plan
 
 
+def next_prep_setup_command(snapshot, *, bait_inventory=None):
+    command, plan = next_prep_purchase_command(snapshot, bait_inventory=bait_inventory)
+    if command:
+        return command, plan
+
+    config = current_fishing_config(snapshot)
+    plan = plan_fishing_commands(
+        config,
+        bait_inventory=bait_inventory,
+        chum_usage_counts=parse_chum_usage_counts(snapshot.get("fishing_chum_counts")),
+        **active_chum_plan_kwargs(snapshot),
+    )
+    if not plan.allow_start:
+        return "", plan
+    for planned_command in plan.commands or ():
+        raw = str(planned_command or "").strip()
+        if raw.startswith(CMD_FISHING_CHUM):
+            return raw, plan
+        if raw.startswith(CMD_FISHING):
+            return "", plan
+    return "", plan
+
+
+def reset_rush_command(snapshot, *, bait_inventory=None):
+    bait = str(snapshot.get("fishing_forced_buy_bait") or "").strip()
+    count = max(1, _parse_int(snapshot.get("fishing_forced_buy_count", 0), 1))
+    if bait and snapshot.get("fishing_auto_buy_bait_enabled"):
+        return f"{CMD_FISHING_BUY_BAIT} {bait} {count}", None
+
+    config = current_fishing_config(snapshot)
+    inventory = bait_inventory if isinstance(bait_inventory, dict) else None
+    if inventory is not None and int(inventory.get(config.bait, 0) or 0) <= 0 and config.auto_buy_bait_enabled:
+        buy_count = max(1, int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT))
+        return f"{CMD_FISHING_BUY_BAIT} {config.bait} {buy_count}", None
+    return f"{CMD_FISHING} {config.pond} {config.bait}", None
+
+
 def daily_limit_wait_effect(snapshot, now, *, count, limit, daily_updates=None, bait_inventory=None, next_day_jitter_sec=0, last_result=""):
     updates = clear_pending_updates()
     updates.update(daily_updates or {})
@@ -477,9 +522,12 @@ def daily_reset_prep_effect(snapshot, now, *, daily_updates=None, bait_inventory
 
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates or {})
-    command, plan = next_prep_purchase_command(planning_snapshot, bait_inventory=bait_inventory)
+    command, plan = next_prep_setup_command(planning_snapshot, bait_inventory=bait_inventory)
     if command:
-        updates["fishing_last_result"] = f"日切备饵：{command}"
+        if command.startswith(CMD_FISHING_CHUM):
+            updates["fishing_last_result"] = f"日切预打窝：{command}"
+        else:
+            updates["fishing_last_result"] = f"日切备饵：{command}"
         return FishingEffect(handled=True, command=command, updates=updates)
 
     blocked_reason = str(getattr(plan, "blocked_reason", "") or "")
@@ -487,7 +535,8 @@ def daily_reset_prep_effect(snapshot, now, *, daily_updates=None, bait_inventory
         prefix = f"{last_error}；" if last_error else ""
         updates["fishing_last_error"] = f"{prefix}备饵跳过：{blocked_reason}"
     elif not last_result:
-        updates["fishing_last_result"] = "日切待命：00:00 后启动垂钓"
+        updates["fishing_last_result"] = "日切待命：00:00 抢先抛竿"
+    updates["fishing_pending_action"] = cast_command_from_config(planning_snapshot)
     updates["next_fishing_time"] = next_fishing_reset_timestamp(now, next_day_jitter_sec)
     return FishingEffect(handled=True, updates=updates)
 
@@ -749,6 +798,15 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
     daily_updates.update(chum_updates)
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates)
+    if is_fishing_prep_window(now):
+        return daily_reset_prep_effect(
+            planning_snapshot,
+            now,
+            daily_updates=daily_updates,
+            bait_inventory=bait_inventory,
+            next_day_jitter_sec=next_day_jitter_sec,
+        )
+
     if count >= limit:
         pending_transfer = pending_fishing_transfer_items(planning_snapshot)
         if pending_transfer:
@@ -787,14 +845,9 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
             next_day_jitter_sec=next_day_jitter_sec,
         )
 
-    if is_fishing_prep_window(now):
-        return daily_reset_prep_effect(
-            planning_snapshot,
-            now,
-            daily_updates=daily_updates,
-            bait_inventory=bait_inventory,
-            next_day_jitter_sec=next_day_jitter_sec,
-        )
+    if count == 0 and is_fishing_reset_rush_window(now):
+        command, _plan = reset_rush_command(planning_snapshot, bait_inventory=bait_inventory)
+        return FishingEffect(handled=True, command=command, updates=daily_updates)
 
     command, plan = next_planned_command(planning_snapshot, bait_inventory=bait_inventory)
     if not command:
