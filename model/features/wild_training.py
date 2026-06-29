@@ -13,6 +13,7 @@ from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is
 from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
+    looks_like_tianxing_route_result,
     normalize_tianxing_observation,
     run_tianxing_timeline_scheduler,
 )
@@ -268,6 +269,18 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     _schedule_next(now)
 
 
+async def _send_tianxing_wild_training_result_audit(raw_text):
+    if not looks_like_tianxing_route_result(raw_text):
+        return False
+    await send_audit_log(
+        f"🌌 天星探索结果｜野外历练：{state.get('wild_training_last_result') or '未知结果'}",
+        scope="identity",
+        priority="high",
+        limit=260,
+    )
+    return True
+
+
 def _find_logged_entry_by_msg_id(msg_id, now, *, result=False):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
@@ -382,6 +395,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
 
     _apply_wild_training_result(raw_text, now, msg_id)
     save_state()
+    await _send_tianxing_wild_training_result_audit(raw_text)
     await send_audit_log(f"🏞️ 野外历练结果：{state['wild_training_last_result']}", scope="identity", limit=220)
     return True
 

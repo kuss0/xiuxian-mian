@@ -48,6 +48,14 @@ TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC = 7 * 60
 TIANXING_STARS = ("紫微", "天府", "太阴", "贪狼")
 TIANXING_ROUTES = ("闭关", "炼制", "探索", "斗法")
 TIANXING_ROUTE_AUTO = "auto"
+TIANXING_ROUTE_RESULT_MARKERS = (
+    "命盘【",
+    "【推命命中】",
+    "【推命落空】",
+    "【改命待发】",
+    "【改命回天】",
+    "【天星偏转】",
+)
 
 RE_BRACKET = re.compile(r"【([^】]+)】")
 RE_STAR_EFFECT = re.compile(r"命盘【(?P<star>[^】]+)】照命(?P<desc>[^。\n]*)")
@@ -109,6 +117,11 @@ def _dirty_tianxing_time_fields(value=None):
         if dirty:
             dirty_fields.append(key)
     return dirty_fields
+
+
+def looks_like_tianxing_route_result(text):
+    raw_text = str(text or "")
+    return any(marker in raw_text for marker in TIANXING_ROUTE_RESULT_MARKERS)
 
 
 def _default_tianxing_observation():

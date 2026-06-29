@@ -27,7 +27,12 @@ from ..state import (
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
-from .tianxing import build_tianxing_consume_window, build_tianxing_route_preflight_plan, run_tianxing_timeline_scheduler
+from .tianxing import (
+    build_tianxing_consume_window,
+    build_tianxing_route_preflight_plan,
+    looks_like_tianxing_route_result,
+    run_tianxing_timeline_scheduler,
+)
 
 
 EXPLORE_RIFT_PENDING_KEYWORD = "撕开一道漆黑的空间裂缝"
@@ -316,6 +321,18 @@ def parse_explore_rift_result_summary(text):
         parts.insert(0, title)
 
     return (" ｜ ".join(parts) if parts else "探寻裂缝成功"), item_deltas
+
+
+async def _send_tianxing_explore_rift_result_audit(raw_text, result_summary):
+    if not looks_like_tianxing_route_result(raw_text):
+        return False
+    await send_audit_log(
+        f"🌌 天星探索结果｜探寻裂缝：{result_summary or '未知结果'}",
+        scope="identity",
+        priority="high",
+        limit=260,
+    )
+    return True
 
 
 def _is_explore_rift_terminal_success(raw_text):
@@ -863,6 +880,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         save_state()
         if item_deltas:
             apply_storage_bag_item_deltas(get_current_identity_id(), item_deltas)
+        await _send_tianxing_explore_rift_result_audit(raw_text, result_summary)
         await send_audit_log(f"🕳 探寻裂缝结果：{result_summary}", scope="identity", limit=220)
         return True
 
@@ -877,6 +895,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         state["explore_rift_manual_required"] = False
         _schedule_next_explore_rift(now)
         save_state()
+        await _send_tianxing_explore_rift_result_audit(raw_text, result_summary)
         await send_audit_log(f"🕳 探寻裂缝结果：{result_summary}", scope="identity", limit=220)
         return True
 

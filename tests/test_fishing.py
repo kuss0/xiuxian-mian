@@ -598,6 +598,51 @@ class FishingLabTests(unittest.TestCase):
         self.assertTrue(effect.handled)
         self.assertEqual(".开鱼 银须灵鲢 2", effect.command)
 
+    def test_fishing_behavior_scheduler_uses_calibrated_day_after_open_result(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": True,
+            "fishing_pending_open_fish": '{"银须灵鲢": 2}',
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
+            "fishing_last_result": "开鱼：赤尾火鲤，修为+10",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".开鱼 银须灵鲢 2", effect.command)
+
+    def test_fishing_behavior_scheduler_does_not_requery_after_calibrated_queue_empty(self):
+        from model.features import fishing_behavior
+
+        now = 1_700_000_000.0
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 20,
+            "fishing_auto_open_fish_enabled": True,
+            "fishing_pending_open_fish": "",
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
+            "fishing_last_result": "开鱼：银须灵鲢，修为+10",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual("", effect.command)
+        self.assertIn("今日钓鱼次数已达上限", effect.updates["fishing_last_error"])
+
     def test_fishing_behavior_daily_full_waits_for_2340_prep_before_reset(self):
         from model.features import fishing_behavior
 
@@ -664,10 +709,11 @@ class FishingLabTests(unittest.TestCase):
         self.assertEqual(reset, effect.updates["next_fishing_time"])
         self.assertEqual(".钓鱼 青溪浅滩 灵米饵", effect.updates["fishing_pending_action"])
 
-    def test_fishing_behavior_daily_full_pre_chums_when_bait_is_ready(self):
+    def test_fishing_behavior_daily_full_does_not_pre_chum_when_bait_is_ready(self):
         from model.features import fishing_behavior
 
         now = _local_ts(2026, 6, 27, 23, 45)
+        reset = _local_ts(2026, 6, 28, 0, 0)
         snapshot = {
             "fishing_enabled": True,
             "next_fishing_time": 0,
@@ -688,8 +734,10 @@ class FishingLabTests(unittest.TestCase):
         )
 
         self.assertTrue(effect.handled)
-        self.assertEqual(".打窝 米糠小窝", effect.command)
-        self.assertIn("日切预打窝", effect.updates["fishing_last_result"])
+        self.assertEqual("", effect.command)
+        self.assertEqual(reset, effect.updates["next_fishing_time"])
+        self.assertEqual(".钓鱼 青溪浅滩 灵米饵", effect.updates["fishing_pending_action"])
+        self.assertIn("日切待命", effect.updates["fishing_last_result"])
 
     def test_fishing_behavior_daily_counter_resets_at_midnight_and_starts(self):
         from model.features import fishing_behavior

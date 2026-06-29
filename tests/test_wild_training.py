@@ -138,6 +138,39 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["wild_training_retry_count"])
         self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
 
+    async def test_tianxing_final_edit_reports_high_priority_before_normal_audit(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        text = (
+            "【野外历练 · 灵机暗藏】\n"
+            "【推命命中】你顺应命盘，天机值 +1。\n"
+            "命盘【贪狼】照命，主偏财夺势。\n"
+            "@myios7 采得一份机缘，获得修为 +392，获得 【清灵草】x1。"
+        )
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 深入", id=101)
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+            handled = await wild_training.handle_wild_training_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="wild_training",
+                current_msg_id=201,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual(2, audit_mock.await_count)
+        first_args, first_kwargs = audit_mock.await_args_list[0]
+        second_args, second_kwargs = audit_mock.await_args_list[1]
+        self.assertIn("🌌 天星探索结果｜野外历练", first_args[0])
+        self.assertEqual("high", first_kwargs["priority"])
+        self.assertEqual("identity", first_kwargs["scope"])
+        self.assertIn("🏞️ 野外历练结果", second_args[0])
+        self.assertNotIn("priority", second_kwargs)
+
     async def test_recent_completed_result_with_stale_due_timer_is_rescheduled_not_sent(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_100.0

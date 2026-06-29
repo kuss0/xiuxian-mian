@@ -455,29 +455,6 @@ def next_prep_purchase_command(snapshot, *, bait_inventory=None):
     return "", plan
 
 
-def next_prep_setup_command(snapshot, *, bait_inventory=None):
-    command, plan = next_prep_purchase_command(snapshot, bait_inventory=bait_inventory)
-    if command:
-        return command, plan
-
-    config = current_fishing_config(snapshot)
-    plan = plan_fishing_commands(
-        config,
-        bait_inventory=bait_inventory,
-        chum_usage_counts=parse_chum_usage_counts(snapshot.get("fishing_chum_counts")),
-        **active_chum_plan_kwargs(snapshot),
-    )
-    if not plan.allow_start:
-        return "", plan
-    for planned_command in plan.commands or ():
-        raw = str(planned_command or "").strip()
-        if raw.startswith(CMD_FISHING_CHUM):
-            return raw, plan
-        if raw.startswith(CMD_FISHING):
-            return "", plan
-    return "", plan
-
-
 def reset_rush_command(snapshot, *, bait_inventory=None):
     bait = str(snapshot.get("fishing_forced_buy_bait") or "").strip()
     count = max(1, _parse_int(snapshot.get("fishing_forced_buy_count", 0), 1))
@@ -522,12 +499,9 @@ def daily_reset_prep_effect(snapshot, now, *, daily_updates=None, bait_inventory
 
     planning_snapshot = dict(snapshot)
     planning_snapshot.update(daily_updates or {})
-    command, plan = next_prep_setup_command(planning_snapshot, bait_inventory=bait_inventory)
+    command, plan = next_prep_purchase_command(planning_snapshot, bait_inventory=bait_inventory)
     if command:
-        if command.startswith(CMD_FISHING_CHUM):
-            updates["fishing_last_result"] = f"日切预打窝：{command}"
-        else:
-            updates["fishing_last_result"] = f"日切备饵：{command}"
+        updates["fishing_last_result"] = f"日切备饵：{command}"
         return FishingEffect(handled=True, command=command, updates=updates)
 
     blocked_reason = str(getattr(plan, "blocked_reason", "") or "")
@@ -828,8 +802,7 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
                 next_day_jitter_sec=next_day_jitter_sec,
                 last_result="今日垂钓已满，自动开鱼关闭",
             )
-        last_result = str(snapshot.get("fishing_last_result") or "")
-        basket_calibrated = last_result.startswith("鱼篓校准")
+        basket_calibrated = str(snapshot.get("fishing_basket_calibrated_day") or "").strip() == get_day_key(now)
         if not basket_calibrated:
             return FishingEffect(handled=True, command=CMD_FISHING_BASKET, updates=daily_updates)
         pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))

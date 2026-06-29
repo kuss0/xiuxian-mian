@@ -502,6 +502,41 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(2, records[str(identity_id)]["items"]["法则碎片·木"])
             self.assertEqual(1, records[str(identity_id)]["items"]["空间之核"])
 
+    async def test_tianxing_explore_result_reports_high_priority_before_normal_audit(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        state_module.set_storage_bag_records({})
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 22027
+            state_module.state["explore_rift_reply_due_at"] = now + 30
+            state_module.state["explore_rift_pending_result_msg_id"] = 22028
+            with (
+                patch.object(explore_rift.random, "uniform", return_value=0),
+                patch.object(explore_rift, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                handled = await explore_rift.handle_explore_rift_reply(
+                    "【改命回天】\n"
+                    "命盘【贪狼】照命，改命待发。\n"
+                    "你避开虚空噬体，修为未损，并平安带回：【法则碎片·木】x2。",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=22028,
+                )
+
+        self.assertTrue(handled)
+        self.assertEqual(2, audit_mock.await_count)
+        first_args, first_kwargs = audit_mock.await_args_list[0]
+        second_args, second_kwargs = audit_mock.await_args_list[1]
+        self.assertIn("🌌 天星探索结果｜探寻裂缝", first_args[0])
+        self.assertEqual("high", first_kwargs["priority"])
+        self.assertEqual("identity", first_kwargs["scope"])
+        self.assertIn("🕳 探寻裂缝结果", second_args[0])
+        self.assertNotIn("priority", second_kwargs)
+
     async def test_scheduler_sends_explore_rift_with_reply_tracking_metadata(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
