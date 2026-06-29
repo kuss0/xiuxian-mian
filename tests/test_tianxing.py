@@ -2028,8 +2028,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("玄铁剑", config["craft_farm_item"])
         self.assertEqual(42, config["craft_farm_daily_limit"])
         self.assertEqual("02:00-05:00,06:00-09:00,15:00-16:00", config["farm_windows_text"])
-        self.assertEqual(180, config["craft_farm_interval_min_sec"])
-        self.assertEqual(420, config["craft_farm_interval_max_sec"])
+        self.assertEqual(120, config["craft_farm_interval_min_sec"])
+        self.assertEqual(300, config["craft_farm_interval_max_sec"])
         self.assertFalse(config["duel_route_enabled"])
         self.assertFalse(config["consume_conflicting_prediction_enabled"])
         self.assertFalse(config["route_special_star_enabled"])
@@ -2071,8 +2071,18 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
             "craft_farm_interval_sec": 20,
         })
 
-        self.assertEqual(180, config["craft_farm_interval_min_sec"])
-        self.assertEqual(420, config["craft_farm_interval_max_sec"])
+        self.assertEqual(120, config["craft_farm_interval_min_sec"])
+        self.assertEqual(300, config["craft_farm_interval_max_sec"])
+
+    def test_legacy_saved_random_range_migrates_to_current_default(self):
+        config = tianxing.normalize_tianxing_auto_config({
+            "farm_route": "炼制",
+            "craft_farm_interval_min_sec": 180,
+            "craft_farm_interval_max_sec": 420,
+        })
+
+        self.assertEqual(120, config["craft_farm_interval_min_sec"])
+        self.assertEqual(300, config["craft_farm_interval_max_sec"])
 
     def test_craft_farm_outside_window_schedules_next_preferred_window(self):
         now = local_ts(12)

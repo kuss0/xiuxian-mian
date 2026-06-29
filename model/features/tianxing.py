@@ -43,8 +43,10 @@ TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC = 120
 TIANXING_CRAFT_FARM_RETRY_SEC = 20
 TIANXING_CRAFT_FARM_CALIBRATION_DELAY_SEC = 60
 TIANXING_FARM_WINDOWS_DEFAULT_TEXT = "02:00-05:00,06:00-09:00,15:00-16:00"
-TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC = 3 * 60
-TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC = 7 * 60
+TIANXING_CRAFT_FARM_LEGACY_INTERVAL_MIN_SEC = 3 * 60
+TIANXING_CRAFT_FARM_LEGACY_INTERVAL_MAX_SEC = 7 * 60
+TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC = 2 * 60
+TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC = 5 * 60
 TIANXING_STARS = ("紫微", "天府", "太阴", "贪狼")
 TIANXING_ROUTES = ("闭关", "炼制", "探索", "斗法")
 TIANXING_ROUTE_AUTO = "auto"
@@ -451,18 +453,27 @@ def normalize_tianxing_auto_config(value=None):
     config["craft_farm_daily_limit"] = _coerce_int_range(config.get("craft_farm_daily_limit"), default["craft_farm_daily_limit"], 0, 999)
     legacy_interval = _coerce_int_range(config.get("craft_farm_interval_sec"), default["craft_farm_interval_sec"], 5, 60 * 60)
     if "craft_farm_interval_min_sec" in raw_value or "craft_farm_interval_max_sec" in raw_value:
-        config["craft_farm_interval_min_sec"] = _coerce_int_range(
+        configured_min = _coerce_int_range(
             config.get("craft_farm_interval_min_sec"),
             default["craft_farm_interval_min_sec"],
             5,
             60 * 60,
         )
-        config["craft_farm_interval_max_sec"] = _coerce_int_range(
+        configured_max = _coerce_int_range(
             config.get("craft_farm_interval_max_sec"),
             default["craft_farm_interval_max_sec"],
             5,
             60 * 60,
         )
+        if (
+            int(configured_min) == TIANXING_CRAFT_FARM_LEGACY_INTERVAL_MIN_SEC
+            and int(configured_max) == TIANXING_CRAFT_FARM_LEGACY_INTERVAL_MAX_SEC
+        ):
+            config["craft_farm_interval_min_sec"] = default["craft_farm_interval_min_sec"]
+            config["craft_farm_interval_max_sec"] = default["craft_farm_interval_max_sec"]
+        else:
+            config["craft_farm_interval_min_sec"] = configured_min
+            config["craft_farm_interval_max_sec"] = configured_max
     elif "craft_farm_interval_sec" in raw_value and legacy_interval != TIANXING_CRAFT_FARM_RETRY_SEC:
         config["craft_farm_interval_min_sec"] = legacy_interval
         config["craft_farm_interval_max_sec"] = legacy_interval

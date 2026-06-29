@@ -448,9 +448,9 @@
         var txCraftLimit = txConfig.craft_farm_daily_limit;
         if(txCraftLimit === undefined || txCraftLimit === null || txCraftLimit === ''){ txCraftLimit = 42; }
         var txCraftIntervalMin = txConfig.craft_farm_interval_min_sec;
-        if(txCraftIntervalMin === undefined || txCraftIntervalMin === null || txCraftIntervalMin === ''){ txCraftIntervalMin = 180; }
+        if(txCraftIntervalMin === undefined || txCraftIntervalMin === null || txCraftIntervalMin === ''){ txCraftIntervalMin = 120; }
         var txCraftIntervalMax = txConfig.craft_farm_interval_max_sec;
-        if(txCraftIntervalMax === undefined || txCraftIntervalMax === null || txCraftIntervalMax === ''){ txCraftIntervalMax = 420; }
+        if(txCraftIntervalMax === undefined || txCraftIntervalMax === null || txCraftIntervalMax === ''){ txCraftIntervalMax = 300; }
         var txCraftTimeout = txConfig.craft_farm_reply_timeout_sec;
         if(txCraftTimeout === undefined || txCraftTimeout === null || txCraftTimeout === ''){ txCraftTimeout = 120; }
         var txPrepareLead = txConfig.route_prepare_lead_sec;
