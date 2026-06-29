@@ -588,7 +588,11 @@ class MessageContractTests(unittest.TestCase):
             f"families={totals['covered_sample_families']}/{totals['reply_families']}"
         )
         self.assertIn(expected, text)
-        self.assertIn("- 天星宗: sample_complete 9/9", text)
+        tianxing_row = next(row for row in readiness["modules"] if row["module"] == "天星宗")
+        self.assertIn(
+            f"- 天星宗: sample_complete {tianxing_row['covered_sample_count']}/{tianxing_row['reply_family_count']}",
+            text,
+        )
 
     def test_contract_gap_summary_resolves_module_from_family(self):
         event = {

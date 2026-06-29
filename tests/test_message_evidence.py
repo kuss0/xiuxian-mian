@@ -617,6 +617,7 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".天机代卜": "天机代卜",
             ".搜寻节点": "太一",
             ".查看闭关": "深度闭关",
+            ".元婴闭关": "元婴",
         }
 
         with patch.object(runtime, "is_auto_delete_sent_messages_enabled", return_value=False):
@@ -636,6 +637,7 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".推命 炼制": "天星宗",
             ".改命 探索": "天星宗",
             ".消劫": "天星宗",
+            ".炼制 玄铁剑": "天星宗",
             ".我的阴罗幡": "阴罗宗",
             ".每日献祭": "阴罗宗",
             ".血洗山林": "阴罗宗",
@@ -661,6 +663,8 @@ class SentMessageEvidenceTests(unittest.TestCase):
             ".推命 炼制": "tianxing_predict",
             ".改命 探索": "tianxing_change_fate",
             ".消劫": "tianxing_clear_calamity",
+            ".炼制 玄铁剑": "tianxing_craft_farm",
+            ".元婴闭关": "yuanying_launch",
             ".探寻裂缝": "explore_rift",
             ".我的阴罗幡": "yinluo_banner",
             ".每日献祭": "yinluo_daily_sacrifice",
@@ -681,6 +685,24 @@ class SentMessageEvidenceTests(unittest.TestCase):
         self.assertEqual("tianxing_change_fate", action_guard.resolve_action_key_for_family("tianxing_change_fate"))
         self.assertEqual("wendao", action_guard.resolve_action_key_for_family("wendao"))
         self.assertEqual("explore_rift", action_guard.resolve_action_key_for_family("explore_rift"))
+
+    def test_action_guard_resolves_module_owned_sessions(self):
+        tianxing_keys = set(action_guard.resolve_action_keys_for_module("天星宗"))
+
+        self.assertTrue(
+            {
+                "tianxing_panel",
+                "tianxing_observe",
+                "tianxing_set_star",
+                "tianxing_predict",
+                "tianxing_change_fate",
+                "tianxing_clear_calamity",
+                "tianxing_retreat_farm",
+                "tianxing_craft_farm",
+                "tianxing_heqi_dan",
+            }.issubset(tianxing_keys)
+        )
+        self.assertNotIn("deep_retreat", tianxing_keys)
 
     def test_action_guard_closes_three_sect_sessions_by_reply_family(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)

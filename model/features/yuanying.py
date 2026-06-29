@@ -5,6 +5,7 @@ import time
 from ..config import (
     CD_BUFFER_SEC,
     CMD_YUANYING,
+    CMD_YUANYING_SECT_RETREAT,
     CMD_YUANYING_STATUS,
     LAUNCHING_TIMEOUT_SEC,
     POST_SUMMARY_WAIT_SEC,
@@ -18,7 +19,7 @@ from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..identity_levels import parse_yuanying_level_text, update_identity_level_record
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
+from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import (
     PhasefulSpec,
@@ -97,6 +98,19 @@ YUANYING_SPEC = PhasefulSpec(
 )
 register_phaseful_spec(YUANYING_SPEC)
 
+YUANYING_SECT_NAME = "元婴宗"
+
+
+def get_yuanying_launch_command(send_as_id=None):
+    profile = get_send_as_profile(send_as_id or get_current_identity_id()) or {}
+    sect_name = str(profile.get("sect_name") or "").strip()
+    return CMD_YUANYING_SECT_RETREAT if sect_name == YUANYING_SECT_NAME else CMD_YUANYING
+
+
+def _is_yuanying_launch_command(command):
+    raw = str(command or "").strip()
+    return raw in {CMD_YUANYING, CMD_YUANYING_SECT_RETREAT}
+
 
 def set_yuanying_phase(phase):
     set_phase(YUANYING_SPEC, phase)
@@ -135,7 +149,7 @@ def _note_yuanying_remote_block(now, block_until, reason, kind):
         reason=reason,
         kind=kind,
         now=now,
-        command=CMD_YUANYING,
+        command=get_yuanying_launch_command(),
     )
 
 
@@ -171,7 +185,7 @@ async def handle_yuanying_success_reply(text, now, reply_to, matched_family=None
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "yuanying" and CMD_YUANYING not in orig_cmd:
+    if matched_family != "yuanying" and not _is_yuanying_launch_command(orig_cmd):
         return False
 
     if "你心念一动" in text and "元婴化作一道流光飞出" in text:
@@ -192,7 +206,7 @@ async def handle_yuanying_running_reply(text, now, reply_to, matched_family=None
         return False
 
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
-    if matched_family != "yuanying" and CMD_YUANYING not in orig_cmd:
+    if matched_family != "yuanying" and not _is_yuanying_launch_command(orig_cmd):
         return False
 
     probe_hit = (
@@ -225,7 +239,7 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
     is_status_reply = matched_family == "yuanying" or CMD_YUANYING_STATUS in orig_cmd
     is_yuanying_cmd_status_like = (
         matched_family == "yuanying"
-        or (CMD_YUANYING in orig_cmd and any(k in text for k in ["归来倒计时", "窍中温养", "尚未恢复", "冷却", "等待", "不足", "休息"]))
+        or (_is_yuanying_launch_command(orig_cmd) and any(k in text for k in ["归来倒计时", "窍中温养", "尚未恢复", "冷却", "等待", "不足", "休息"]))
     )
     if not (is_status_reply or is_yuanying_cmd_status_like):
         return False
@@ -264,7 +278,7 @@ async def handle_yuanying_status_reply(text, now, reply_to, matched_family=None)
         clear_yuanying_summary_flags()
         begin_queued_launch(YUANYING_SPEC, now)
         console_log("👶 窍中温养，直接继续元婴。")
-        msg = await send_game_command(CMD_YUANYING, track=False, priority="chain")
+        msg = await send_game_command(get_yuanying_launch_command(), track=False, priority="chain")
         if msg:
             sent_at = float(getattr(msg, "sent_at", 0) or time.time())
             mark_launch_command_sent(YUANYING_SPEC, sent_at)
@@ -362,7 +376,7 @@ async def run_yuanying_scheduler(now):
     await run_phaseful_scheduler(
         YUANYING_SPEC,
         now,
-        launch_command=CMD_YUANYING,
+        launch_command=get_yuanying_launch_command(),
         schedule_probe=schedule_yuanying_status_probe,
     )
 
@@ -373,6 +387,7 @@ __all__ = [
     "clear_yuanying_summary_flags",
     "delete_yuanying_summary_trigger_msg",
     "get_yuanying_block_reason",
+    "get_yuanying_launch_command",
     "get_yuanying_phase_text",
     "get_yuanying_status_detail_text",
     "handle_yuanying_running_reply",

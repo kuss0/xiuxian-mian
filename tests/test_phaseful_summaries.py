@@ -1,5 +1,6 @@
 import copy
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import action_guard, control, runtime, ui
-from model.features import _phaseful, concubine, deep_retreat, tower, yuanying
+from model.features import _phaseful, concubine, deep_retreat, tianxing, tower, yuanying
 
 
 class _StateIsolationMixin:
@@ -36,6 +37,18 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
     def _prepare_identity(self, send_as_id, username):
         state_module.ensure_identity_registered(send_as_id)
         state_module.update_send_as_profile(send_as_id, username=username)
+
+    def _active_tianxing_farm_config(self, now):
+        local_time = time.localtime(now)
+        return {
+            "timeline_enabled": True,
+            "timeline_dry_run_enabled": False,
+            "auto_predict_enabled": True,
+            "auto_change_fate_enabled": False,
+            "farm_window_enabled": True,
+            "farm_window_start": f"{local_time.tm_hour:02d}:{local_time.tm_min:02d}",
+            "farm_window_duration_min": 5,
+        }
 
     def test_passive_summary_trigger_reply_context_uses_abs_tracked_id(self):
         send_as_id = 8659059210
@@ -243,6 +256,52 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+
+    async def test_deep_retreat_force_exit_summary_updates_tianxing_retreat_farm_cooldown(self):
+        send_as_id = 8659059244
+        now = 1_700_000_101.0
+        self._prepare_identity(send_as_id, "TianxingForceExitRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 10
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_timeline_state"] = {
+                "retreat_farm": {
+                    "phase": "sent_waiting_reply",
+                    "started_at": now - 30,
+                    "last_action": "force_exit",
+                    "last_command": ".强行出关",
+                    "target_tianji": 42,
+                }
+            }
+
+        text = (
+            "【深度闭关总结】\n"
+            "本次结算时长: 85.7 小时 (化身护法，上限100小时)\n"
+            "神魂吐纳次数: 342 周天\n\n"
+            "【强行出关惩罚】: 因你强行中断修行，所得感悟流失大半。\n"
+            "你的神魂因中断修行而震荡不休，需调息40分钟方可进行下一次【闭关修炼】。"
+        )
+
+        with (
+            patch.object(deep_retreat, "save_state"),
+            patch.object(deep_retreat, "console_log"),
+            patch.object(deep_retreat, "send_audit_log", new=AsyncMock()),
+        ):
+            await deep_retreat.handle_deep_retreat_summary_broadcast(
+                text,
+                now,
+                reply_context={"send_as_id": send_as_id, "family": "deep_retreat", "reply_to_msg_id": 9545415},
+            )
+
+        with state_module.use_identity(send_as_id):
+            farm = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["retreat_farm"]
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual("cooldown", farm["phase"])
+            self.assertGreaterEqual(farm["next_time"], now + 40 * 60)
 
     async def test_deep_retreat_tagless_force_exit_summary_skips_mismatched_reply_context(self):
         waiting_id = 8659059220
@@ -715,6 +774,32 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertFalse(allowed)
             self.assertIn("执行中", reason)
 
+    async def test_yuanying_sect_success_reply_accepts_retreat_command(self):
+        send_as_id = 8659059237
+        now = 1_700_000_366.0
+        self._prepare_identity(send_as_id, "YuanyingSectCd")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="元婴宗")
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "launching"
+            state_module.state["last_yuanying_command_time"] = now - 5
+
+            with (
+                patch.object(yuanying, "save_state"),
+                patch.object(yuanying, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await yuanying.handle_yuanying_success_reply(
+                    "你心念一动，丹田中的元婴化作一道流光飞出，消失在洞府深处。\n它将在外云游 8 小时。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_SECT_RETREAT),
+                    matched_family=None,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("running", state_module.state["yuanying_phase"])
+            self.assertEqual(yuanying.CMD_YUANYING_SECT_RETREAT, yuanying.get_yuanying_launch_command())
+
     async def test_yuanying_status_reply_writes_level_for_ui_even_when_module_disabled(self):
         send_as_id = 8659059236
         now = 1_700_000_370.0
@@ -735,6 +820,33 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         self.assertEqual("13级", record["yuanying_level"])
         identity_snapshot = ui.get_identity_ui_snapshot(send_as_id)
         self.assertEqual("13级", identity_snapshot["yuanying_level_text"])
+
+    async def test_yuanying_sect_qiaozhong_relaunches_retreat_command(self):
+        send_as_id = 8659059238
+        now = 1_700_000_371.0
+        self._prepare_identity(send_as_id, "YuanyingSectWarm")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="元婴宗")
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "launching"
+            sent_msg = SimpleNamespace(id=905, sent_at=now)
+
+            with (
+                patch.object(yuanying, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(yuanying, "save_state"),
+            ):
+                handled = await yuanying.handle_yuanying_status_reply(
+                    "【元婴状态】\n状态: 窍中温养，可继续闭关。",
+                    now,
+                    reply_to=SimpleNamespace(raw_text=yuanying.CMD_YUANYING_STATUS),
+                    matched_family="yuanying",
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_awaited_once_with(yuanying.CMD_YUANYING_SECT_RETREAT, track=False, priority="chain")
+            self.assertEqual("launching", state_module.state["yuanying_phase"])
+
 
     async def test_summary_timeout_falls_back_to_normal_cd_without_relaunch(self):
         send_as_id = 8659059196
@@ -1195,6 +1307,252 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now, state_module.state["last_deep_retreat_command_time"])
             audit_mock.assert_not_awaited()
 
+    async def test_deep_retreat_farm_window_requests_tianxing_timeline_before_launch(self):
+        send_as_id = 8659059241
+        now = 1_700_000_485.0
+        self._prepare_identity(send_as_id, "TianxingFarmRetreat")
+        state_module.update_send_as_profile(send_as_id, username="TianxingFarmRetreat", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            state_module.state["tianxing_auto_config"] = self._active_tianxing_farm_config(now)
+
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "sent_waiting_ack", "changed": True})) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat.random, "uniform", return_value=120),
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_awaited_once()
+            self.assertEqual("闭关", timeline_mock.await_args.kwargs["windows"][0]["route"])
+            send_mock.assert_not_awaited()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
+
+    async def test_deep_retreat_running_prepares_tianxing_before_estimated_summary_due(self):
+        send_as_id = 8659059244
+        now = 1_700_000_485.0
+        due_at = now + 240
+        self._prepare_identity(send_as_id, "TianxingRunningRetreat")
+        state_module.update_send_as_profile(send_as_id, username="TianxingRunningRetreat", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "running"
+            state_module.state["deep_retreat_probe_pending"] = False
+            state_module.state["next_deep_retreat_time"] = due_at
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            state_module.state["tianxing_auto_config"] = dict(
+                self._active_tianxing_farm_config(now),
+                route_prepare_lead_sec=300,
+            )
+
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "sent_waiting_ack", "changed": True})) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_awaited_once()
+            window = timeline_mock.await_args.kwargs["windows"][0]
+            self.assertEqual("闭关", window["route"])
+            self.assertEqual("consume", window["kind"])
+            self.assertEqual(due_at, state_module.state["next_deep_retreat_time"])
+            send_mock.assert_not_awaited()
+            self.assertEqual("running", state_module.state["deep_retreat_phase"])
+
+    async def test_deep_retreat_tianxing_release_allows_launch(self):
+        send_as_id = 8659059242
+        now = 1_700_000_486.0
+        self._prepare_identity(send_as_id, "TianxingReleasedRetreat")
+        state_module.update_send_as_profile(send_as_id, username="TianxingReleasedRetreat", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "闭关",
+                "current_prediction_until": now + 3600,
+            }
+            state_module.state["tianxing_auto_config"] = self._active_tianxing_farm_config(now)
+            state_module.state["tianxing_timeline_state"] = {
+                "released_routes": {
+                    "闭关": {"released_at": now - 5, "plan_id": "test", "reason": "confirmed"},
+                },
+            }
+
+            sent_msg = SimpleNamespace(id=907, sent_at=now)
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+
+    async def test_deep_retreat_waits_for_tianxing_retreat_farm_chain(self):
+        send_as_id = 8659059245
+        now = 1_700_000_486.0
+        self._prepare_identity(send_as_id, "TianxingRetreatFarmChain")
+        state_module.update_send_as_profile(send_as_id, username="TianxingRetreatFarmChain", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_timeline_state"] = {
+                "retreat_farm": {
+                    "phase": "sent_waiting_reply",
+                    "started_at": now - 30,
+                    "next_time": now + 90,
+                    "cooldown_until": now + 600,
+                    "target_tianji": 42,
+                    "last_command": ".服用 合气丹",
+                }
+            }
+            state_module.state["tianxing_auto_config"] = self._active_tianxing_farm_config(now)
+
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 600 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+
+    async def test_deep_retreat_waits_for_tianxing_ready_retreat_prediction(self):
+        send_as_id = 8659059246
+        now = 1_700_000_486.0
+        self._prepare_identity(send_as_id, "TianxingReadyRetreat")
+        state_module.update_send_as_profile(send_as_id, username="TianxingReadyRetreat", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 30,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "闭关",
+                "current_prediction_until": now + 3600,
+                "tianji_value": 3,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "retreat_farm": {
+                    "phase": "ready",
+                    "started_at": now - 30,
+                    "next_time": now,
+                    "cooldown_until": now,
+                    "target_tianji": 42,
+                    "last_command": ".服用 合气丹",
+                }
+            }
+            state_module.state["tianxing_auto_config"] = self._active_tianxing_farm_config(now)
+
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(
+                now + deep_retreat.DEEP_RETREAT_TIANXING_RETRY_MIN_SEC + deep_retreat.CD_BUFFER_SEC,
+                state_module.state["next_deep_retreat_time"],
+            )
+
+    async def test_deep_retreat_blocks_when_other_tianxing_prediction_active(self):
+        send_as_id = 8659059243
+        now = 1_700_000_487.0
+        self._prepare_identity(send_as_id, "TianxingConflictRetreat")
+        state_module.update_send_as_profile(send_as_id, username="TianxingConflictRetreat", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["太阴"],
+                "fixed_star": "太阴",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 1800,
+                "current_change": "",
+                "current_change_until": 0,
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": False,
+                "farm_window_enabled": False,
+            }
+
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 1800 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+
     async def test_yuanying_queued_launch_timeout_delays_relaunch_without_status_query(self):
         send_as_id = 8659059217
         now = 1_700_000_487.0
@@ -1368,6 +1726,35 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now, state_module.state["yuanying_summary_sent_at"])
             self.assertEqual(904, state_module.state["last_yuanying_summary_msg_id"])
             self.assertTrue(state_module.state["yuanying_probe_pending"])
+
+    async def test_yuanying_sect_summary_due_launches_retreat_command_after_grace(self):
+        send_as_id = 8659059204
+        now = 1_700_000_460.0
+        self._prepare_identity(send_as_id, "YuanyingSectLaunch")
+
+        with state_module.use_identity(send_as_id):
+            state_module.update_send_as_profile(send_as_id, sect_name="元婴宗")
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "summary_due"
+            state_module.state["yuanying_summary_sent_at"] = now - yuanying.YUANYING_SPEC.summary_active_query_grace_sec - 1
+            state_module.state["next_yuanying_time"] = now - 1
+
+            sent_msg = SimpleNamespace(id=905, sent_at=now)
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await yuanying.run_yuanying_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                yuanying.CMD_YUANYING_SECT_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="元婴",
+            )
+            self.assertEqual("waiting_summary", state_module.state["yuanying_phase"])
+            self.assertEqual(905, state_module.state["last_yuanying_summary_msg_id"])
 
     def test_yuanying_summary_due_ignores_unrelated_dot_command(self):
         send_as_id = 8659059229

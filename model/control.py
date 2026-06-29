@@ -26,6 +26,11 @@ from .config import (
     CMD_CONCUBINE_VOYAGE,
     CMD_CONCUBINE_VOYAGE_RETURN,
     CMD_CONCUBINE_VOYAGE_STATUS,
+    CMD_NORMAL_RETREAT,
+    CMD_DEEP_RETREAT_FORCE_EXIT,
+    CMD_USE_HEQI_DAN,
+    CMD_EXCHANGE_HEQI_DAN_PREFIX,
+    CMD_SECT_DONATE_LINGSHI_PREFIX,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_DIVINATION,
@@ -110,6 +115,7 @@ from .config import (
     CMD_YINLUO_DEMON_SUMMON,
     CMD_YINLUO_REFINE,
     CMD_YUANYING,
+    CMD_YUANYING_SECT_RETREAT,
     CMD_YUANYING_STATUS,
     CD_BUFFER_SEC,
     DEEP_RETREAT_CD,
@@ -213,7 +219,12 @@ from .features.wild_training import (
     get_wild_training_status_text,
     schedule_wild_training_initial_check,
 )
-from .action_guard import reconcile_identity_sessions
+from .action_guard import (
+    close_actions as close_action_guard_actions,
+    close_by_module as close_action_guard_by_module,
+    reconcile_identity_sessions,
+    resolve_action_key as resolve_action_guard_key,
+)
 from .persistence import delete_identity_from_db, mark_dirty, save_state
 from .runtime import (
     IDENTITY_INFO_REFRESH_ERROR_TEXT,
@@ -648,7 +659,19 @@ def get_module_unavailable_reason(module_name, send_as_id=None):
 
 
 def _clear_pending_tasks_by_commands(commands):
-    clear_pending_tasks_by_commands(commands, send_as_id=get_current_identity_id())
+    identity_id = get_current_identity_id()
+    clear_pending_tasks_by_commands(commands, send_as_id=identity_id)
+    action_keys = [
+        action_key
+        for action_key in (resolve_action_guard_key(command) for command in tuple(commands or ()))
+        if action_key
+    ]
+    if action_keys:
+        close_action_guard_actions(action_keys, send_as_id=identity_id, reason="pending_cleared_by_module")
+
+
+def _close_module_action_guard_sessions(module_name, reason="module_disabled"):
+    return close_action_guard_by_module(module_name, send_as_id=get_current_identity_id(), reason=reason)
 
 
 def _disable_tree_module_state():
@@ -828,14 +851,20 @@ def _manual_enable_hehuan_module_state(now):
 def _disable_tianxing_module_state():
     state["tianxing_enabled"] = False
     state["tianxing_observation"] = {}
+    state["tianxing_timeline_state"] = {}
     _clear_pending_tasks_by_commands({
+        CMD_NORMAL_RETREAT,
         CMD_TIANXING_PANEL,
         CMD_TIANXING_OBSERVE,
         CMD_TIANXING_SET_STAR,
         CMD_TIANXING_PREDICT,
         CMD_TIANXING_CHANGE_FATE,
         CMD_TIANXING_CLEAR_CALAMITY,
+        CMD_USE_HEQI_DAN,
+        CMD_EXCHANGE_HEQI_DAN_PREFIX,
+        CMD_SECT_DONATE_LINGSHI_PREFIX,
     })
+    _close_module_action_guard_sessions("天星宗")
 
 
 def _manual_disable_tianxing_module_state():
@@ -843,8 +872,10 @@ def _manual_disable_tianxing_module_state():
 
 
 def _manual_enable_tianxing_module_state(now):
+    _close_module_action_guard_sessions("天星宗", reason="module_enabled_reset")
     state["tianxing_enabled"] = True
     state["tianxing_observation"] = {}
+    state["tianxing_timeline_state"] = {}
 
 
 def _disable_yinluo_module_state():
@@ -1578,10 +1609,16 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_SECT_TEACH: "宗门传功",
     CMD_TOWER: "闯塔",
     CMD_YUANYING: "元婴",
+    CMD_YUANYING_SECT_RETREAT: "元婴",
     CMD_YUANYING_STATUS: "元婴",
     CMD_EXPLORE_RIFT: "探寻裂缝",
     CMD_WENDAO: "问道",
     CMD_DUEL: "斗法",
+    CMD_NORMAL_RETREAT: "天星宗",
+    CMD_DEEP_RETREAT_FORCE_EXIT: "深度闭关",
+    CMD_USE_HEQI_DAN: "天星宗",
+    CMD_EXCHANGE_HEQI_DAN_PREFIX: "天星宗",
+    CMD_SECT_DONATE_LINGSHI_PREFIX: "天星宗",
     CMD_DEEP_RETREAT: "深度闭关",
     CMD_DEEP_RETREAT_QUERY: "深度闭关",
     CMD_DIVINATION: "卜筮问天",
@@ -3022,6 +3059,9 @@ def _clear_disabled_passive_observations():
     if not state.get("tianxing_enabled") and state.get("tianxing_observation"):
         state["tianxing_observation"] = {}
         changed = True
+    if not state.get("tianxing_enabled") and state.get("tianxing_timeline_state"):
+        state["tianxing_timeline_state"] = {}
+        changed = True
     if not state.get("yinluo_enabled") and state.get("yinluo_observation"):
         state["yinluo_observation"] = {}
         changed = True
@@ -3163,6 +3203,8 @@ def _get_pending_task_module_name(command):
         return "温养器灵"
     if raw_command == CMD_PET_TRIAL or raw_command.startswith(f"{CMD_PET_TRIAL} "):
         return "器灵试炼"
+    if raw_command.startswith(CMD_EXCHANGE_HEQI_DAN_PREFIX) or raw_command.startswith(CMD_SECT_DONATE_LINGSHI_PREFIX):
+        return "天星宗"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")
 
 

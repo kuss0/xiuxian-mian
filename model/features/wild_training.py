@@ -10,6 +10,12 @@ from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
+from .tianxing import (
+    build_tianxing_consume_window,
+    build_tianxing_route_preflight_plan,
+    normalize_tianxing_observation,
+    run_tianxing_timeline_scheduler,
+)
 
 
 WILD_TRAINING_CYCLE_MIN_SEC = 2 * 3600
@@ -37,12 +43,28 @@ RE_WILD_TRAINING_START_STRATEGY = re.compile(r"选择【([^】]+)】")
 
 def normalize_wild_training_strategy(strategy):
     normalized = str(strategy or "").strip()
-    return normalized if normalized in WILD_TRAINING_STRATEGIES else "深入"
+    return normalized if normalized in WILD_TRAINING_STRATEGIES else "谨慎"
 
 
 def get_wild_training_command(strategy=None):
     strategy = normalize_wild_training_strategy(strategy or get_wild_training_strategy())
     return f"{CMD_WILD_TRAINING} {strategy}"
+
+
+def _has_active_tianxing_explore_change(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    return (
+        str(observed.get("current_change") or "").strip() == "探索"
+        and float(observed.get("current_change_until", 0) or 0) > float(now or 0)
+    )
+
+
+def _effective_wild_training_strategy(now):
+    if state.get("tianxing_enabled"):
+        return "深入" if _has_active_tianxing_explore_change(now) else "谨慎"
+    return normalize_wild_training_strategy(get_wild_training_strategy())
 
 
 def _schedule_next(now):
@@ -364,6 +386,51 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
     return True
 
 
+async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
+    due_at = float(due_at or now)
+    preflight = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now)
+    if preflight.get("route_allowed"):
+        return True
+    blocked_until = float(preflight.get("blocked_until", 0) or 0)
+    if blocked_until > now:
+        state["next_wild_training_time"] = blocked_until + CD_BUFFER_SEC
+        state["wild_training_last_error"] = str(preflight.get("reason") or "野外历练天星预检阻断")
+        save_state()
+        return False
+    if preflight.get("timeline_required"):
+        windows = build_tianxing_consume_window("探索", now=now, due_at=max(due_at, now), reason="野外历练")
+        if not windows:
+            return True
+        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+        followup = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now)
+        if followup.get("route_allowed"):
+            return True
+        phase = str(timeline_result.get("phase") or "").strip()
+        if (
+            due_at <= now
+            and not _has_active_tianxing_explore_change(now)
+            and str(followup.get("stage") or "") == "timeline_waiting"
+            and phase in {"idle", "completed", "dry_run", "blocked_replan"}
+        ):
+            state["wild_training_last_result"] = "天星无探索改命，野外降级谨慎"
+            state["wild_training_last_result_at"] = 0
+            state["wild_training_last_error"] = ""
+            save_state()
+            return True
+        if due_at <= now:
+            _schedule_retry(now)
+        state["wild_training_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
+        state["wild_training_last_result_at"] = 0
+        state["wild_training_last_error"] = "" if timeline_result.get("changed") else str(preflight.get("reason") or "")
+        save_state()
+        return False
+    if due_at <= now:
+        _schedule_retry(now)
+    state["wild_training_last_error"] = str(preflight.get("reason") or "野外历练天星预检阻断")
+    save_state()
+    return False
+
+
 async def run_wild_training_scheduler(now):
     if not state.get("wild_training_enabled"):
         return
@@ -405,6 +472,14 @@ async def run_wild_training_scheduler(now):
         await send_audit_log(f"⚠️ {state['wild_training_last_error']}", scope="identity")
         return
 
+    try:
+        next_wild_training_time = float(state.get("next_wild_training_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_wild_training_time = 0
+    if next_wild_training_time > now:
+        windows = build_tianxing_consume_window("探索", now=now, due_at=next_wild_training_time, reason="野外历练")
+        if windows and not await _prepare_wild_training_tianxing_route(now, due_at=next_wild_training_time):
+            return
     if cd_blocks(state.get("next_wild_training_time", 0), now, 0):
         return
     if _guard_recent_completed_result(now):
@@ -418,6 +493,10 @@ async def run_wild_training_scheduler(now):
     ):
         return
 
+    if not await _prepare_wild_training_tianxing_route(now, due_at=now):
+        return
+
+    strategy = _effective_wild_training_strategy(now)
     msg = await send_game_command(get_wild_training_command(strategy), track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:

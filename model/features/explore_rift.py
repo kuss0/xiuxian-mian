@@ -27,13 +27,15 @@ from ..state import (
 )
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
+from .tianxing import build_tianxing_consume_window, build_tianxing_route_preflight_plan, run_tianxing_timeline_scheduler
 
 
 EXPLORE_RIFT_PENDING_KEYWORD = "撕开一道漆黑的空间裂缝"
 EXPLORE_RIFT_RESULT_TITLE = "【探寻成功】"
 EXPLORE_RIFT_FATAL_TITLE = "【大凶·虚空噬体】"
 EXPLORE_RIFT_ESCAPE_WEAK_TITLE = "【元婴遁逃·虚弱】"
-EXPLORE_RIFT_SUCCESS_TITLES = (EXPLORE_RIFT_RESULT_TITLE, "【激战得胜】")
+EXPLORE_RIFT_FATE_REWRITE_TITLE = "【改命回天】"
+EXPLORE_RIFT_SUCCESS_TITLES = (EXPLORE_RIFT_RESULT_TITLE, "【激战得胜】", EXPLORE_RIFT_FATE_REWRITE_TITLE)
 EXPLORE_RIFT_FAILURE_TITLES = ("【遭遇风暴】", "【不敌败退】")
 EXPLORE_RIFT_FINAL_TITLES = EXPLORE_RIFT_SUCCESS_TITLES + EXPLORE_RIFT_FAILURE_TITLES + (
     EXPLORE_RIFT_FATAL_TITLE,
@@ -50,10 +52,29 @@ EXPLORE_RIFT_FALLBACK_CD_SEC = EXPLORE_RIFT_CD
 EXPLORE_RIFT_FAST_CD_SEC = 9 * 3600
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
-RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取)")
+RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下)")
 RE_EXPLORER_NOISE_PREFIX = re.compile(r"^[\-•·\s]+")
 RE_EXPLORER_XIUWEI_GAIN = re.compile(r"修为(?:最终)?(?:增加了|增加)\s*([\d,]+)\s*点")
-RE_EXPLORER_XIUWEI_LOSS = re.compile(r"修为(?:倒退了|倒退|暴跌了|损失)\s*([\d,]+)\s*点")
+RE_EXPLORER_XIUWEI_LOSS = re.compile(r"修为(?:倒退了|倒退|暴跌了|损失|逸散了|逸散)\s*([\d,]+)\s*点")
+RE_EXPLORER_XIUWEI_NO_LOSS = re.compile(r"(?:未损修为|未损失修为|修为未损)")
+EXPLORE_RIFT_NON_REWARD_TOKENS = {
+    "探寻成功",
+    "激战得胜",
+    "遭遇风暴",
+    "不敌败退",
+    "大凶·虚空噬体",
+    "元婴遁逃·虚弱",
+    "改命回天",
+    "推命命中",
+    "改命待发",
+    "命盘",
+    "天星偏转",
+    "贪狼",
+    "紫微",
+    "天府",
+    "太阴",
+    "虚弱期",
+}
 REBIRTH_WEAK_PREFIX = "你的元婴尚在虚弱之中"
 REBIRTH_SEARCHING_PREFIX = "你虚弱的元婴在天地间游荡"
 REBIRTH_OPTIONS_PREFIX = "你面前出现了三具可供夺舍的肉身"
@@ -249,7 +270,7 @@ def _reward_from_line(line):
         name = str(match.group(1) or "").strip()
         if match.span(1) in explicit_spans:
             continue
-        if not name or name in {"探寻成功", "激战得胜", "遭遇风暴", "不敌败退", "命盘", "天星偏转", "贪狼", "紫微", "天府", "太阴"}:
+        if not name or name in EXPLORE_RIFT_NON_REWARD_TOKENS:
             continue
         item_deltas[name] = item_deltas.get(name, 0) + 1
     return item_deltas
@@ -277,6 +298,8 @@ def parse_explore_rift_result_summary(text):
     if xiuwei_loss_match:
         xiuwei_loss = _parse_int(xiuwei_loss_match.group(1))
         parts.append(f"修为 -{xiuwei_loss}")
+    elif RE_EXPLORER_XIUWEI_NO_LOSS.search(raw_text):
+        parts.append("修为未损")
 
     for line in raw_text.splitlines():
         line_deltas = _reward_from_line(line)
@@ -698,10 +721,10 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         save_state()
         return True
 
-    if any(keyword in raw_text for keyword in ("境界不足", "元婴初期", "未到元婴", "修为不足")):
+    if any(keyword in raw_text for keyword in ("境界不足", "元婴初期", "元婴期", "未到元婴", "修为不足", "主魂的一缕分神")):
         _clear_explore_rift_pending()
-        _set_explore_rift_error("境界或修为不足，延后探寻", next_delay=RETRY_MAX_SEC, now=now)
-        await send_audit_log("🕳 探寻裂缝被拦截：境界或修为不足，已延后。", scope="identity", limit=180)
+        _set_explore_rift_error("境界/修为/分神限制，延后探寻", next_delay=RETRY_MAX_SEC, now=now)
+        await send_audit_log("🕳 探寻裂缝被拦截：境界/修为/分神限制，已延后。", scope="identity", limit=180)
         return True
 
     if "空间裂缝尚未稳定" in raw_text or "风暴" in raw_text:
@@ -716,6 +739,35 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         await send_audit_log(f"🕳 探寻裂缝 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}")
         return True
 
+    return False
+
+
+async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
+    due_at = float(due_at or now)
+    preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now)
+    if preflight.get("route_allowed"):
+        return True
+    blocked_until = float(preflight.get("blocked_until", 0) or 0)
+    if blocked_until > now:
+        state["next_explore_rift_time"] = blocked_until + CD_BUFFER_SEC
+        state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
+        save_state()
+        return False
+    if preflight.get("timeline_required"):
+        windows = build_tianxing_consume_window("探索", now=now, due_at=max(due_at, now), reason="探寻裂缝")
+        if not windows:
+            return True
+        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+        if due_at <= now:
+            state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+        state["explore_rift_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
+        state["explore_rift_last_error"] = "" if timeline_result.get("changed") else str(preflight.get("reason") or "")
+        save_state()
+        return False
+    if due_at <= now:
+        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+    state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
+    save_state()
     return False
 
 
@@ -764,7 +816,16 @@ async def run_explore_rift_scheduler(now):
             _set_explore_rift_error("auto模式修为>=500000，暂不探寻", next_delay=RETRY_MAX_SEC, now=now)
         return
 
+    next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
+    if next_explore_rift_time > now:
+        windows = build_tianxing_consume_window("探索", now=now, due_at=next_explore_rift_time, reason="探寻裂缝")
+        if windows and not await _prepare_explore_rift_tianxing_route(now, due_at=next_explore_rift_time):
+            return
+
     if _explore_rift_next_time_blocks(now):
+        return
+
+    if not await _prepare_explore_rift_tianxing_route(now, due_at=now):
         return
 
     msg = await send_game_command(CMD_EXPLORE_RIFT, track=False, max_retry=0, source_module="探寻裂缝")

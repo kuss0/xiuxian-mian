@@ -138,6 +138,17 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "renderModuleToggle('探寻裂缝','开关')" in script
     assert "identity.jiyin_effective_choice_label" in script
     assert "identity.nanlong_effective_choice_label" in script
+    assert "settingCheckbox('timeline_enabled', '启用时间线'" in script
+    assert "settingCheckbox('timeline_dry_run_enabled', '时间线 dry-run'" in script
+    assert "settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费'" in script
+    assert "settingCheckbox('retreat_farm_auto_exchange_heqi_dan', '缺丹自动兑换'" in script
+    assert "data-tianxing-config=\"retreat_farm_heqi_exchange_count\"" in script
+    assert "settingCheckbox('retreat_farm_auto_donate_lingshi', '贡献不足捐灵石'" in script
+    assert "data-tianxing-config=\"retreat_farm_donate_lingshi_count\"" in script
+    assert "tianxingRouteSelect('farm_route', txConfig.farm_route)" in script
+    assert "data-tianxing-config=\"target_tianji_daily\"" in script
+    assert "data-tianxing-config=\"ack_timeout_sec\"" in script
+    assert "时间线观测" in script
     assert "献魂偏收益" not in script
     assert "收敛偏保守" not in script
     assert "不确定收益" not in script

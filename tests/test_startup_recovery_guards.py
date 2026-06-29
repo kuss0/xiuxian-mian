@@ -370,6 +370,11 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         self.assertFalse(allowed)
         self.assertIn("等待游戏回复", reason)
 
+        allowed, reason = action_guard.before_send(config.CMD_YUANYING_SECT_RETREAT, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+
         with state_module.use_identity(send_as_id):
             state_module.state["yuanying_phase"] = "waiting_summary"
 

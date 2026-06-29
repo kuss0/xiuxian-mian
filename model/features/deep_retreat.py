@@ -34,6 +34,15 @@ from ._phaseful import (
     update_block_log_state,
 )
 from . import workflow_log
+from .tianxing import (
+    build_tianxing_consume_window,
+    build_tianxing_route_preflight_plan,
+    note_tianxing_retreat_force_exit_summary,
+    normalize_tianxing_auto_config,
+    normalize_tianxing_observation,
+    normalize_tianxing_timeline_state,
+    run_tianxing_timeline_scheduler,
+)
 
 
 DEEP_RETREAT_EMPTY_STATUS_RETRY_MIN_SEC = 2 * 60
@@ -41,6 +50,8 @@ DEEP_RETREAT_EMPTY_STATUS_RETRY_MAX_SEC = 5 * 60
 DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MIN_SEC = 5
 DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MAX_SEC = 15
 DEEP_RETREAT_RUNNING_SUMMARY_EARLY_SEC = 10 * 60
+DEEP_RETREAT_TIANXING_RETRY_MIN_SEC = 2 * 60
+DEEP_RETREAT_TIANXING_RETRY_MAX_SEC = 5 * 60
 
 DEEP_RETREAT_SPEC = PhasefulSpec(
     enabled_key="deep_retreat_enabled",
@@ -541,9 +552,126 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
             decision="summary_finalized",
         )
         await finalize_summary_broadcast(DEEP_RETREAT_SPEC, now)
+        if note_tianxing_retreat_force_exit_summary(text, now=now):
+            save_state()
+
+
+def _deep_retreat_tianxing_consume_due_at(now, config):
+    config = normalize_tianxing_auto_config(config)
+    lead_sec = int(config.get("route_prepare_lead_sec", 5 * 60) or 5 * 60)
+    phase = str(state.get("deep_retreat_phase") or "idle")
+    next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    due_at = 0.0
+
+    if phase == "running":
+        due_at = next_time
+    elif phase == "post_summary_wait":
+        due_at = next_time
+    elif phase == "summary_due":
+        due_at = next_time
+        if DEEP_RETREAT_SPEC.summary_due_timeout_action == "wait_passive":
+            grace_sec = float(DEEP_RETREAT_SPEC.summary_active_query_grace_sec or 0)
+            started_at = float(state.get("deep_retreat_summary_sent_at", 0) or 0)
+            if grace_sec > 0 and started_at > 0:
+                due_at = max(due_at, started_at + grace_sec)
+
+    if due_at <= 0:
+        return 0.0
+    if float(now) < due_at - max(0, lead_sec):
+        return 0.0
+    return due_at
+
+
+def _deep_retreat_launch_due_for_tianxing(now, config=None):
+    config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
+    if _deep_retreat_tianxing_consume_due_at(now, config) > 0:
+        return True
+    phase = str(state.get("deep_retreat_phase") or "idle")
+    next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    if next_time > float(now):
+        return False
+    if phase == "post_summary_wait":
+        return True
+    if phase != "summary_due":
+        return False
+    grace_sec = float(DEEP_RETREAT_SPEC.summary_active_query_grace_sec or 0)
+    started_at = float(state.get("deep_retreat_summary_sent_at", 0) or 0)
+    if grace_sec > 0 and started_at > 0 and float(now) - started_at < grace_sec:
+        return False
+    return DEEP_RETREAT_SPEC.summary_due_timeout_action == "wait_passive"
+
+
+def _deep_retreat_tianxing_retreat_farm_block_until(now):
+    if not state.get("tianxing_enabled"):
+        return 0.0
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    farm = timeline.get("retreat_farm") or {}
+    if not float(farm.get("started_at", 0) or 0):
+        return 0.0
+    phase = str(farm.get("phase") or "").strip()
+    cooldown_until = float(farm.get("cooldown_until", 0) or 0)
+    next_time = float(farm.get("next_time", 0) or 0)
+    if phase in {"sent_waiting_reply", "calibrating", "need_heqi_exchange", "ready_to_use_heqi", "need_lingshi_donation", "send_blocked"}:
+        return max(cooldown_until, next_time, float(now) + DEEP_RETREAT_TIANXING_RETRY_MIN_SEC)
+    if (
+        phase == "ready"
+        and str(observed.get("current_prediction") or "").strip() == "闭关"
+        and float(observed.get("current_prediction_until", 0) or 0) > float(now)
+    ):
+        return max(next_time, float(now) + DEEP_RETREAT_TIANXING_RETRY_MIN_SEC)
+    if phase == "cooldown" and cooldown_until > float(now):
+        return cooldown_until
+    return 0.0
+
+
+async def _run_deep_retreat_tianxing_gate(now):
+    config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    if not _deep_retreat_launch_due_for_tianxing(now, config=config):
+        return True
+    due_at = _deep_retreat_tianxing_consume_due_at(now, config) or float(state.get("next_deep_retreat_time", 0) or now)
+    phase = str(state.get("deep_retreat_phase") or "idle")
+    retreat_farm_block_until = _deep_retreat_tianxing_retreat_farm_block_until(now)
+    if retreat_farm_block_until > now:
+        if phase == "running" and due_at > now and retreat_farm_block_until <= due_at:
+            state["next_deep_retreat_time"] = due_at
+        else:
+            state["next_deep_retreat_time"] = retreat_farm_block_until + CD_BUFFER_SEC
+        save_state()
+        return False
+    consume_windows = build_tianxing_consume_window("闭关", now=now, due_at=max(due_at, now), config=config, reason="深度闭关")
+    route_config = dict(config)
+    route_config["timeline_enabled"] = bool(consume_windows) and bool(config.get("timeline_enabled"))
+    preflight = build_tianxing_route_preflight_plan("闭关", reason="深度闭关", now=now, config=route_config)
+    if preflight.get("route_allowed"):
+        return True
+    blocked_until = float(preflight.get("blocked_until", 0) or 0)
+    if blocked_until > now:
+        if phase == "running" and due_at > now and blocked_until <= due_at:
+            state["next_deep_retreat_time"] = due_at
+        else:
+            state["next_deep_retreat_time"] = blocked_until + CD_BUFFER_SEC
+        save_state()
+        return False
+    if preflight.get("timeline_required") and consume_windows:
+        await run_tianxing_timeline_scheduler(now, windows=consume_windows, config=config)
+        if phase == "running" and due_at > now:
+            state["next_deep_retreat_time"] = due_at
+        else:
+            state["next_deep_retreat_time"] = float(now + random.uniform(DEEP_RETREAT_TIANXING_RETRY_MIN_SEC, DEEP_RETREAT_TIANXING_RETRY_MAX_SEC))
+        save_state()
+        return False
+    if phase == "running" and due_at > now:
+        state["next_deep_retreat_time"] = due_at
+    else:
+        state["next_deep_retreat_time"] = float(now + random.uniform(DEEP_RETREAT_TIANXING_RETRY_MIN_SEC, DEEP_RETREAT_TIANXING_RETRY_MAX_SEC))
+    save_state()
+    return False
 
 
 async def run_deep_retreat_scheduler(now):
+    if not await _run_deep_retreat_tianxing_gate(now):
+        return
     await run_phaseful_scheduler(
         DEEP_RETREAT_SPEC,
         now,

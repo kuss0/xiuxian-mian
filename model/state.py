@@ -55,7 +55,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "quiz_reply_to_msg_id", "quiz_chat_id", "quiz_question", "quiz_options", "quiz_answer", "quiz_phase", "quiz_retry_count", "quiz_match_mode", "quiz_answer_method", "quiz_last_error", "quiz_last_matched_at",
     "jiyin_reply_to_msg_id", "jiyin_last_error",
     "concubine_phase", "concubine_availability", "concubine_nanlong_strategy", "concubine_status_msg_id", "concubine_greet_msg_id", "concubine_last_greet_day", "concubine_greet_retry_count", "concubine_greet_last_error", "concubine_gift_status_msg_id", "concubine_gift_bag_msg_id", "concubine_gift_msg_id", "concubine_gift_amount", "concubine_last_gift_day", "concubine_gift_attempt_day", "concubine_gift_last_error", "concubine_dream_msg_id", "concubine_fragment_msg_id", "concubine_puzzle_msg_id", "concubine_reacquire_msg_id", "concubine_tianji_msg_id", "concubine_heart_msg_id", "concubine_heart_prompt_msg_id", "concubine_voyage_msg_id", "concubine_voyage_retry_count", "concubine_last_panel_msg_id", "concubine_name", "concubine_kind", "concubine_location", "concubine_affinity", "concubine_oath", "concubine_dream_due_at", "concubine_tianji_due_at", "concubine_heart_due_at", "concubine_tianji_chain", "concubine_tianji_chain_due_at", "concubine_heart_round", "concubine_heart_choice_prompt_msg_id", "concubine_heart_choice_round", "concubine_heart_choice_sent_at", "concubine_heart_choice_retry_count", "concubine_last_recovered_reply_key", "concubine_last_recovered_reply_at", "concubine_fragment_count", "concubine_fragment_total", "concubine_fragment_xutian_count", "concubine_fragment_xutian_total", "concubine_fragment_cangkun_count", "concubine_fragment_cangkun_total", "concubine_fragment_confirm_key", "concubine_fragment_confirmed_at", "concubine_voyage_status", "concubine_voyage_route", "concubine_voyage_return_at", "concubine_voyage_last_result", "concubine_voyage_last_error", "concubine_last_snapshot_at", "concubine_reacquire_blocked_until", "concubine_reacquire_attempts", "concubine_reacquire_command_override", "concubine_last_error", "concubine_tianji_last_error", "concubine_heart_last_error",
-    "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "yinluo_observation",
+    "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation",
     "world_boss_action_count", "world_boss_action_limit", "world_boss_attack_count", "world_boss_pending_msg_id", "world_boss_pending_action", "world_boss_pending_since", "world_boss_pending_retry_count", "world_boss_pending_action_seq", "world_boss_last_action", "world_boss_last_action_at", "world_boss_last_reply_msg_id", "world_boss_exhausted", "world_boss_last_error",
     "nanlong_reply_to_msg_id", "nanlong_reply_due_at", "nanlong_last_msg_id", "nanlong_retry_count", "nanlong_last_command", "nanlong_protect_phase", "nanlong_place_msg_id", "nanlong_recall_msg_id", "nanlong_last_error",
     "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_god_cooldown_until", "small_world_pending_god_action", "small_world_pending_god_reason", "small_world_pending_god_priority", "small_world_pending_god_at", "small_world_last_god_action", "small_world_last_god_sent_at", "small_world_last_disaster_wave_at", "small_world_barrier_msg_id", "small_world_barrier_due_at", "small_world_last_barrier_sent_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_panel_snapshot", "small_world_last_panel_at", "small_world_last_error",
@@ -65,7 +65,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
     "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_last_msg_id", "duel_last_result", "duel_last_error",
-    "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
+    "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_valuable_drop_reminders", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_moran_value",
@@ -74,7 +74,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "weak_reason", "weak_source", "weak_last_block_log_at",
     "identity_info_reply_msg_ids", "last_identity_info_msg_id", "identity_info_last_error", "identity_info_last_requested_at", "identity_info_followup_due_at", "identity_info_primary_payload",
 ]
-IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "yinluo_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions"}
+IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders"}
 IDENTITY_BOOL_FIELDS = {
     "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
@@ -345,7 +345,7 @@ IDENTITY_STATE_TEMPLATE = {
     "ranch_return_wait_since": 0,
     "ranch_return_last_notified_at": 0,
     "next_wild_training_time": 0,
-    "wild_training_strategy": "深入",
+    "wild_training_strategy": "谨慎",
     "wild_training_reply_to_msg_id": 0,
     "wild_training_reply_due_at": 0,
     "wild_training_retry_count": 0,
@@ -533,6 +533,7 @@ IDENTITY_STATE_TEMPLATE = {
     # 天星宗/阴罗宗模块（被动观察）
     "tianxing_observation": {},
     "tianxing_auto_config": {},
+    "tianxing_timeline_state": {},
     "yinluo_observation": {},
 
     # 真仙试锋世界事件
@@ -639,6 +640,7 @@ IDENTITY_STATE_TEMPLATE = {
     "fishing_transfer_target_id": 0,
     "fishing_transfer_due_at": 0,
     "fishing_caught_fish_json": "",
+    "fishing_valuable_drop_reminders": [],
     "fishing_phase": "idle",
     "fishing_reply_to_msg_id": 0,
     "fishing_reply_due_at": 0,
@@ -2245,7 +2247,7 @@ def get_available_module_names(send_as_id=None):
 
 def normalize_wild_training_strategy(strategy):
     normalized = str(strategy or "").strip()
-    return normalized if normalized in WILD_TRAINING_STRATEGIES else "深入"
+    return normalized if normalized in WILD_TRAINING_STRATEGIES else "谨慎"
 
 
 def get_wild_training_strategy(send_as_id=None):

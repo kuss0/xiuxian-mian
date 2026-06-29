@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from ..config import CMD_HEHUAN_DUAL, MESSAGES_DIR, TZ_LOCAL
 from ..persistence import save_state
-from ..runtime import send_game_command
+from ..runtime import send_audit_log, send_game_command
 from ..state import (
     get_current_identity_id,
     get_game_group_id,
@@ -36,6 +36,7 @@ HEHUAN_RETRY_MIN_INTERVAL_MIN = 1
 HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN = 5
 HEHUAN_RETRY_MAX_INTERVAL_MIN = 30
 HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC = 10 * 60
+HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC = (0, 3 * 3600, 6 * 3600)
 HEHUAN_BAIJI_SEND_AS_ID = 301299112
 HEHUAN_BAIJI_USERNAME = "jfdffdddd"
 HEHUAN_BAIJI_NAME = "吧唧"
@@ -123,6 +124,7 @@ def _default_hehuan_observation():
         "auto_pending_deadline_at": 0,
         "auto_reply_anchor_msg_id": 0,
         "auto_anchor_requested_at": 0,
+        "valuable_drop_reminders": [],
         "recent": [],
     }
 
@@ -135,6 +137,23 @@ def normalize_hehuan_observation(value=None):
         observed["last_gains"] = {}
     if not isinstance(observed.get("recent"), list):
         observed["recent"] = []
+    reminders = []
+    for item in observed.get("valuable_drop_reminders", []):
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        for key in ("event_at", "next_reminder_at"):
+            entry[key], _dirty = _parse_observation_float(entry.get(key, 0))
+        try:
+            entry["next_index"] = max(0, min(len(HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC), int(entry.get("next_index", 0) or 0)))
+        except (TypeError, ValueError, OverflowError):
+            entry["next_index"] = 0
+        for key in ("event_id", "item", "partner", "source"):
+            entry[key] = str(entry.get(key) or "").strip()
+        entry["done"] = bool(entry.get("done")) or entry["next_index"] >= len(HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC)
+        if entry["item"]:
+            reminders.append(entry)
+    observed["valuable_drop_reminders"] = reminders[-12:]
     recent = []
     for item in observed.get("recent", []):
         if not isinstance(item, dict):
@@ -203,6 +222,98 @@ def _schedule_hehuan_retry(observed, now, reason):
     observed["auto_next_time"] = float(now + _hehuan_retry_delay_sec(observed))
     _reset_hehuan_auto_pending(observed)
     return observed
+
+
+def _hehuan_valuable_items_from_parsed(parsed):
+    items = []
+    insight = str((parsed or {}).get("last_insight") or "").strip()
+    if insight and insight not in {"修为", "宗门贡献"}:
+        items.append(insight)
+    return items
+
+
+def _queue_hehuan_valuable_drop_reminders(observed, parsed, now):
+    observed = normalize_hehuan_observation(observed)
+    items = _hehuan_valuable_items_from_parsed(parsed)
+    if not items:
+        return observed
+    reminders = list(observed.get("valuable_drop_reminders") or [])
+    existing_ids = {str(item.get("event_id") or "") for item in reminders if isinstance(item, dict)}
+    partner = str((parsed or {}).get("partner") or "").strip()
+    event_minute = int(float(now or 0) // 60)
+    for item in items:
+        event_id = f"hehuan-warm:{partner}:{item}:{event_minute}"
+        if event_id in existing_ids:
+            continue
+        reminders.append({
+            "event_id": event_id,
+            "source": "合欢双修温养",
+            "item": item,
+            "partner": partner,
+            "event_at": float(now),
+            "next_index": 0,
+            "next_reminder_at": float(now),
+            "done": False,
+        })
+        existing_ids.add(event_id)
+    observed["valuable_drop_reminders"] = reminders[-12:]
+    return observed
+
+
+def _format_hehuan_valuable_reminder(event, index):
+    item = str((event or {}).get("item") or "").strip() or "未解析物品"
+    partner = str((event or {}).get("partner") or "").strip() or "未解析道侣"
+    labels = ("即时", "+3h", "+6h")
+    label = labels[index] if 0 <= int(index or 0) < len(labels) else f"第{int(index or 0) + 1}次"
+    return f"🌸 合欢温养出货提醒（{label}/3）：{item}｜道侣 {partner}"
+
+
+async def _run_hehuan_valuable_drop_reminders(observed, now):
+    observed = normalize_hehuan_observation(observed)
+    reminders = list(observed.get("valuable_drop_reminders") or [])
+    changed = False
+    sent_any = False
+    for event in reminders:
+        if not isinstance(event, dict) or event.get("done"):
+            continue
+        next_index = int(event.get("next_index", 0) or 0)
+        if next_index >= len(HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC):
+            event["done"] = True
+            changed = True
+            continue
+        due_at = float(event.get("next_reminder_at", 0) or 0)
+        if due_at <= 0:
+            event_at = float(event.get("event_at", now) or now)
+            due_at = event_at + HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC[next_index]
+            event["next_reminder_at"] = float(due_at)
+            changed = True
+        if float(now) < due_at or sent_any:
+            continue
+        ok = await send_audit_log(
+            _format_hehuan_valuable_reminder(event, next_index),
+            scope="identity",
+            priority="high",
+            limit=260,
+        )
+        if not ok:
+            event["next_reminder_at"] = float(now + 5 * 60)
+            event["last_error"] = "日志提醒发送失败，5分钟后重试"
+            changed = True
+            sent_any = True
+            continue
+        next_index += 1
+        event["next_index"] = next_index
+        event["last_error"] = ""
+        if next_index >= len(HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC):
+            event["done"] = True
+            event["next_reminder_at"] = 0
+        else:
+            event["next_reminder_at"] = float(event.get("event_at", now) or now) + HEHUAN_VALUABLE_REMINDER_OFFSETS_SEC[next_index]
+        changed = True
+        sent_any = True
+    if changed:
+        observed["valuable_drop_reminders"] = reminders[-12:]
+    return changed, observed, sent_any
 
 
 def set_hehuan_retry_max_interval_min(value, now=None):
@@ -619,6 +730,7 @@ def apply_hehuan_passive(text, now=None, family=""):
         observed["auto_next_time"] = observed["next_hehuan_time"]
         observed["auto_last_error"] = ""
         _reset_hehuan_retry(observed)
+        observed = _queue_hehuan_valuable_drop_reminders(observed, parsed, now)
         auto_next_handled = True
     elif result == "cooldown":
         parsed_next_time = float(parsed.get("next_hehuan_time") or 0)
@@ -715,6 +827,18 @@ def _has_unresolved_hehuan_pending(observed, now):
 
 async def run_hehuan_scheduler(now):
     now = float(now if now is not None else time.time())
+    dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
+    if dirty_fields:
+        return
+
+    observed = normalize_hehuan_observation(state.get("hehuan_observation"))
+    reminders_changed, observed, reminder_sent = await _run_hehuan_valuable_drop_reminders(observed, now)
+    if reminders_changed:
+        state["hehuan_observation"] = observed
+        save_state()
+    if reminder_sent:
+        return
+
     if not state.get("hehuan_enabled"):
         return
     if not is_module_available("合欢宗"):
@@ -723,11 +847,6 @@ async def run_hehuan_scheduler(now):
         save_state()
         return
 
-    dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
-    if dirty_fields:
-        return
-
-    observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
         return

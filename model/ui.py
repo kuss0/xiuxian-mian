@@ -84,7 +84,7 @@ from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.stargazer import sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
-from .features.tianxing import normalize_tianxing_auto_config, normalize_tianxing_observation, set_tianxing_auto_config
+from .features.tianxing import normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
@@ -3395,6 +3395,100 @@ def _read_log_entries(date_str, q_text="", types_set=None, sender_id=0, offset=0
     }
 
 
+def _format_tianxing_timeline_step(step):
+    step = step if isinstance(step, dict) else {}
+    return {
+        "action": str(step.get("action") or ""),
+        "arg": str(step.get("arg") or ""),
+        "route": str(step.get("route") or ""),
+        "reason": str(step.get("reason") or ""),
+        "command": str(step.get("command") or ""),
+        "family": str(step.get("family") or ""),
+        "status": str(step.get("status") or ""),
+        "last_error": str(step.get("last_error") or ""),
+        "send_msg_id": int(step.get("send_msg_id", 0) or 0),
+        "sent_at": fmt_abs_ts(step.get("sent_at", 0) or 0),
+        "ack_due_at": fmt_abs_ts(step.get("ack_due_at", 0) or 0),
+        "confirmed_at": fmt_abs_ts(step.get("confirmed_at", 0) or 0),
+        "released_at": fmt_abs_ts(step.get("released_at", 0) or 0),
+        "calibration_due_at": fmt_abs_ts(step.get("calibration_due_at", 0) or 0),
+    }
+
+
+def _format_tianxing_timeline_ui(raw_timeline):
+    timeline = normalize_tianxing_timeline_state(raw_timeline)
+    retreat_farm = timeline.get("retreat_farm") or {}
+    craft_farm = timeline.get("craft_farm") or {}
+    released_routes = []
+    for route, info in sorted((timeline.get("released_routes") or {}).items()):
+        info = info if isinstance(info, dict) else {}
+        released_routes.append({
+            "route": str(route or ""),
+            "released_at": fmt_abs_ts(info.get("released_at", 0) or 0),
+            "plan_id": str(info.get("plan_id") or ""),
+            "reason": str(info.get("reason") or ""),
+        })
+    audit = []
+    for item in (timeline.get("audit") or [])[-5:]:
+        if not isinstance(item, dict):
+            continue
+        audit.append({
+            "ts": fmt_abs_ts(item.get("ts", 0) or 0),
+            "event": str(item.get("event") or ""),
+            "action": str(item.get("action") or ""),
+            "arg": str(item.get("arg") or ""),
+            "route": str(item.get("route") or ""),
+            "reason": str(item.get("reason") or ""),
+        })
+    return {
+        "plan_id": timeline.get("plan_id") or "",
+        "phase": timeline.get("phase") or "idle",
+        "route": timeline.get("route") or "",
+        "reason": timeline.get("reason") or "",
+        "created_at": fmt_abs_ts(timeline.get("created_at", 0) or 0),
+        "updated_at": fmt_abs_ts(timeline.get("updated_at", 0) or 0),
+        "deadline_at": fmt_abs_ts(timeline.get("deadline_at", 0) or 0),
+        "blocked_until": fmt_abs_ts(timeline.get("blocked_until", 0) or 0),
+        "last_error": timeline.get("last_error") or "",
+        "active_step_index": int(timeline.get("active_step_index", -1) or -1),
+        "active_step": _format_tianxing_timeline_step(timeline.get("active_step") or {}),
+        "steps": [_format_tianxing_timeline_step(step) for step in (timeline.get("steps") or [])],
+        "released_routes": released_routes,
+        "audit": audit,
+        "retreat_farm": {
+            "phase": str(retreat_farm.get("phase") or "idle"),
+            "next_time": fmt_abs_ts(retreat_farm.get("next_time", 0) or 0),
+            "target_tianji": int(retreat_farm.get("target_tianji", 0) or 0),
+            "start_tianji": int(retreat_farm.get("start_tianji", 0) or 0),
+            "last_action": str(retreat_farm.get("last_action") or ""),
+            "last_command": str(retreat_farm.get("last_command") or ""),
+            "last_error": str(retreat_farm.get("last_error") or ""),
+            "last_result": str(retreat_farm.get("last_result") or ""),
+            "last_tianji_gain": int(retreat_farm.get("last_tianji_gain", 0) or 0),
+            "handoff_ready": bool(retreat_farm.get("handoff_ready")),
+        },
+        "craft_farm": {
+            "phase": str(craft_farm.get("phase") or "idle"),
+            "next_time": fmt_abs_ts(craft_farm.get("next_time", 0) or 0),
+            "target_tianji": int(craft_farm.get("target_tianji", 0) or 0),
+            "start_tianji": int(craft_farm.get("start_tianji", 0) or 0),
+            "estimated_tianji": int(craft_farm.get("estimated_tianji", 0) or 0),
+            "daily_limit": int(craft_farm.get("daily_limit", 0) or 0),
+            "daily_count": int(craft_farm.get("daily_count", 0) or 0),
+            "success_count": int(craft_farm.get("success_count", 0) or 0),
+            "hit_count": int(craft_farm.get("hit_count", 0) or 0),
+            "miss_count": int(craft_farm.get("miss_count", 0) or 0),
+            "last_item": str(craft_farm.get("last_item") or ""),
+            "last_action": str(craft_farm.get("last_action") or ""),
+            "last_command": str(craft_farm.get("last_command") or ""),
+            "last_error": str(craft_farm.get("last_error") or ""),
+            "last_result": str(craft_farm.get("last_result") or ""),
+            "last_tianji_gain": int(craft_farm.get("last_tianji_gain", 0) or 0),
+            "handoff_ready": bool(craft_farm.get("handoff_ready")),
+        },
+    }
+
+
 def get_identity_ui_snapshot(send_as_id):
     send_as_id = int(send_as_id)
     now = time.time()
@@ -3488,6 +3582,7 @@ def get_identity_ui_snapshot(send_as_id):
         hehuan_observation = normalize_hehuan_observation(identity_state.get("hehuan_observation"))
         tianxing_observation = normalize_tianxing_observation(identity_state.get("tianxing_observation"))
         tianxing_auto_config = normalize_tianxing_auto_config(identity_state.get("tianxing_auto_config"))
+        tianxing_timeline = _format_tianxing_timeline_ui(identity_state.get("tianxing_timeline_state"))
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -3550,6 +3645,7 @@ def get_identity_ui_snapshot(send_as_id):
             "hehuan_auto_next_time": fmt_abs_ts(hehuan_observation.get("auto_next_time", 0) or 0),
             "tianxing": {
                 "auto_config": tianxing_auto_config,
+                "timeline": tianxing_timeline,
                 "available_stars": list(tianxing_observation.get("available_stars") or []),
                 "fixed_star": tianxing_observation.get("fixed_star") or "",
                 "current_prediction": tianxing_observation.get("current_prediction") or "",

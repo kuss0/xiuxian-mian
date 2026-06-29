@@ -748,6 +748,20 @@
     "event_type": "message",
     "text": "【闭关成功】\n掩月心契·共修: 神念共鸣，本次闭关收益提升。\n命盘【贪狼】照命，主偏财夺势，闭关奇遇与探寻收获更盛，斗法更擅夺取战果，但炼制时心火浮躁。\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n你福至心灵，成功炼化灵气，基础修为增加了 570 点。\n因【天星宗】灵脉加持，你额外获得了 239 点修为！\n星力加持: 阵法之力使你的收益额外提升了 169 点！\n本次闭关，你的修为最终增加了 978 点。\n\n当前境界: 元婴初期\n当前修为: 351449 / 500000\n\n你感到一阵疲惫，需要打坐调息 11 分钟方可再次闭关。\n*(因 【侍妾护持】+10%，本次奇遇几率提升至 15%)*"
   },
+  "tianxing.retreat_farm.heqi_dan_success": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-29.log:410",
+    "module": "tianxing",
+    "family": "tianxing_retreat_farm",
+    "event_type": "message",
+    "text": "你服下一枚【合气丹】，只觉丹田温热，全身精力瞬间充盈！可以继续闭关了。\n接下来 2小时 内，你的御宝法力维持 +2，斗法灵力上限 +4。"
+  },
+  "tianxing.craft_farm.hit": {
+    "source": "/opt/xiuxian-main/data/messages/2026-06-28.log:24349",
+    "module": "tianxing",
+    "family": "tianxing_craft_farm",
+    "event_type": "edit",
+    "text": "炼制结束！\n共开炉 1 次，成功 1 次。\n最终获得【玄铁剑】x1！\n\n命盘【天府】照命，主丹器之成与稳守之势，炼制更稳，斗法更耐打，偶有额外成品。\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30"
+  },
   "wendao.result.basic": {
     "source": "/opt/xiuxian-main/data/messages/2026-06-11.log:309",
     "module": "wendao",

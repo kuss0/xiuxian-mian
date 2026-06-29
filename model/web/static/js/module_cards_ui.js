@@ -153,7 +153,8 @@
 
   function tianxingRouteSelect(key, selected){
     var options = [{value:'auto', label:'自动'}, '探索', '闭关', '炼制', '斗法'];
-    return '<label class="module-setting-field"><span>'+esc(key === 'predict_route' ? '推命' : '改命')+'</span>'+
+    var labels = {predict_route: '推命', change_route: '改命', farm_route: 'Farm 路线'};
+    return '<label class="module-setting-field"><span>'+esc(labels[key] || key)+'</span>'+
       '<select class="text-input" data-tianxing-config="'+esc(key)+'">'+optionHtml(options, selected || 'auto')+'</select></label>';
   }
 
@@ -312,7 +313,7 @@
         var dailyNames = ['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法'];
         var checkinWin = identity.checkin_window_local || {};
         var towerWin = identity.tower_window_local || {};
-        moduleNote = '<div class="module-note">野外：'+esc(identity.wild_training_strategy || '深入')+
+        moduleNote = '<div class="module-note">野外：'+esc(identity.wild_training_strategy || '谨慎')+
           '｜点卯 '+String(checkinWin.start_hour || 0).padStart(2, '0')+'-'+String(checkinWin.end_hour || 0).padStart(2, '0')+
           '｜闯塔 '+String(towerWin.start_hour || 0).padStart(2, '0')+'-'+String(towerWin.end_hour || 0).padStart(2, '0')+
           '｜问天 '+esc(identity.divination_daily_limit || 6)+'/日'+
@@ -398,10 +399,46 @@
       }else if(module.name === '天星宗'){
         var tianxing = identity.tianxing || {};
         var txConfig = tianxing.auto_config || {};
+        var txTimeline = tianxing.timeline || {};
+        var txRetreatFarm = txTimeline.retreat_farm || {};
+        var txCraftFarm = txTimeline.craft_farm || {};
+        var txActiveStep = txTimeline.active_step || {};
         var availableStars = (tianxing.available_stars || []).join('、') || '未记录';
+        var txReleasedRoutes = (txTimeline.released_routes || []).map(function(item){
+          return String(item.route || '') + (item.released_at ? ' @ '+String(item.released_at || '') : '');
+        }).filter(Boolean).join('；') || '无';
+        var txAuditText = (txTimeline.audit || []).map(function(item){
+          var parts = [item.event || ''];
+          if(item.action || item.arg){ parts.push(String(item.action || '') + (item.arg ? ' '+String(item.arg) : '')); }
+          if(item.route){ parts.push('路线 '+String(item.route)); }
+          return parts.filter(Boolean).join(' / ');
+        }).filter(Boolean).join('；') || '无';
+        var txActiveStepText = txActiveStep.command || ([txActiveStep.action || '', txActiveStep.arg || ''].join(' ').trim());
+        if(!txActiveStepText){ txActiveStepText = '无'; }
+        if(txActiveStep.status){ txActiveStepText += ' / '+String(txActiveStep.status); }
+        var txFarmDuration = txConfig.farm_window_duration_min;
+        if(txFarmDuration === undefined || txFarmDuration === null || txFarmDuration === ''){ txFarmDuration = 60; }
+        var txTargetTianji = txConfig.target_tianji_daily;
+        if(txTargetTianji === undefined || txTargetTianji === null || txTargetTianji === ''){ txTargetTianji = 42; }
+        var txAckTimeout = txConfig.ack_timeout_sec;
+        if(txAckTimeout === undefined || txAckTimeout === null || txAckTimeout === ''){ txAckTimeout = 120; }
+        var txCalibrationBackoff = txConfig.calibration_backoff_sec;
+        if(txCalibrationBackoff === undefined || txCalibrationBackoff === null || txCalibrationBackoff === ''){ txCalibrationBackoff = 300; }
+        var txMaxReplans = txConfig.max_replans_per_day;
+        if(txMaxReplans === undefined || txMaxReplans === null || txMaxReplans === ''){ txMaxReplans = 3; }
+        var txCraftLimit = txConfig.craft_farm_daily_limit;
+        if(txCraftLimit === undefined || txCraftLimit === null || txCraftLimit === ''){ txCraftLimit = 42; }
+        var txCraftInterval = txConfig.craft_farm_interval_sec;
+        if(txCraftInterval === undefined || txCraftInterval === null || txCraftInterval === ''){ txCraftInterval = 20; }
+        var txCraftTimeout = txConfig.craft_farm_reply_timeout_sec;
+        if(txCraftTimeout === undefined || txCraftTimeout === null || txCraftTimeout === ''){ txCraftTimeout = 120; }
+        var txPrepareLead = txConfig.route_prepare_lead_sec;
+        if(txPrepareLead === undefined || txPrepareLead === null || txPrepareLead === ''){ txPrepareLead = 300; }
         moduleNote = '<div class="module-note">命星：'+esc(tianxing.fixed_star || '未定')+
           '｜天机 '+esc(tianxing.tianji_value || 0)+
           '｜逆命劫 '+esc(tianxing.calamity_count || 0)+
+          '｜时间线 '+esc(txTimeline.phase || 'idle')+
+          '｜炼制攒点 '+esc(txCraftFarm.phase || 'idle')+
           '｜dry-run '+(txConfig.strategy_dry_run_enabled ? '开' : '关')+'</div>';
         settingsTools =
           settingSection(
@@ -422,6 +459,62 @@
             settingCheckbox('strategy_dry_run_enabled', '战略 dry-run', txConfig.strategy_dry_run_enabled)
           )+
           settingSection(
+            '时间线规划',
+            '时间线只做上层授权：先发天星战略动作，等真实文案确认后才放行闭关、探索、斗法或炼制；不会绕过全局发送锁。',
+            settingCheckbox('timeline_enabled', '启用时间线', txConfig.timeline_enabled)+
+            settingCheckbox('timeline_dry_run_enabled', '时间线 dry-run', txConfig.timeline_dry_run_enabled)+
+            settingCheckbox('allow_prediction_override_enabled', '允许改押推命', txConfig.allow_prediction_override_enabled)+
+            settingCheckbox('duel_route_enabled', '斗法前置', txConfig.duel_route_enabled)+
+            '<label class="module-setting-field"><span>日目标天机</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txTargetTianji)+'" data-tianxing-config="target_tianji_daily"></label>'+
+            '<label class="module-setting-field"><span>日重算上限</span><input class="text-input module-hour-input" type="number" min="0" max="99" step="1" value="'+esc(txMaxReplans)+'" data-tianxing-config="max_replans_per_day"></label>'+
+            '<label class="module-setting-field"><span>提前准备秒</span><input class="text-input module-hour-input" type="number" min="30" max="3600" step="30" value="'+esc(txPrepareLead)+'" data-tianxing-config="route_prepare_lead_sec"></label>'
+          )+
+          settingSection(
+            'Farm 窗口',
+            '固定时间段只给具体攒点状态机使用；闭关、野外、裂缝等下游动作按自己的到期时间临近插推命。',
+            settingCheckbox('farm_window_enabled', '启用 Farm 窗口', txConfig.farm_window_enabled)+
+            tianxingRouteSelect('farm_route', txConfig.farm_route)+
+            '<label class="module-setting-field"><span>开始 HH:MM</span><input class="text-input module-name-input" type="text" value="'+esc(txConfig.farm_window_start || '02:00')+'" data-tianxing-config="farm_window_start"></label>'+
+            '<label class="module-setting-field"><span>持续分钟</span><input class="text-input module-hour-input" type="number" min="5" max="480" step="5" value="'+esc(txFarmDuration)+'" data-tianxing-config="farm_window_duration_min"></label>'
+          )+
+          settingSection(
+            '炼制攒点',
+            '按“推命炼制确认 -> 炼制物品 -> 结算确认”循环攒天机；结算超时先查盘，不重复补发同一炉。',
+            settingCheckbox('craft_farm_enabled', '启用炼制攒点', txConfig.craft_farm_enabled)+
+            settingCheckbox('craft_farm_dry_run_enabled', '炼制 dry-run', txConfig.craft_farm_dry_run_enabled)+
+            settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费', txConfig.consume_conflicting_prediction_enabled)+
+            '<label class="module-setting-field"><span>炼制物品</span><input class="text-input module-name-input" value="'+esc(txConfig.craft_farm_item || '玄铁剑')+'" data-tianxing-config="craft_farm_item"></label>'+
+            '<label class="module-setting-field"><span>每日上限</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txCraftLimit)+'" data-tianxing-config="craft_farm_daily_limit"></label>'+
+            '<label class="module-setting-field"><span>单轮间隔秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftInterval)+'" data-tianxing-config="craft_farm_interval_sec"></label>'+
+            '<label class="module-setting-field"><span>回复超时秒</span><input class="text-input module-hour-input" type="number" min="30" max="1800" step="10" value="'+esc(txCraftTimeout)+'" data-tianxing-config="craft_farm_reply_timeout_sec"></label>'+
+            currentChoiceText('攒点状态', (txCraftFarm.phase || 'idle')+' / '+(txCraftFarm.last_action || '无'))+
+            currentChoiceText('今日轮次', String(txCraftFarm.daily_count || 0)+' / '+String(txCraftFarm.daily_limit || txCraftLimit || 0))+
+            currentChoiceText('估算天机', String(txCraftFarm.estimated_tianji || tianxing.tianji_value || 0))+
+            currentChoiceText('最近结果', txCraftFarm.last_result || txCraftFarm.last_error || '无')
+          )+
+          settingSection(
+            '普通闭关攒点',
+            '用普通 .闭关修炼 命中闭关推命来攒天机；与深度闭关互斥，只有关闭 dry-run 且授权后才会强行出关或服用合气丹。',
+            settingCheckbox('retreat_farm_enabled', '启用普通闭关攒点', txConfig.retreat_farm_enabled)+
+            settingCheckbox('retreat_farm_dry_run_enabled', '普通闭关 dry-run', txConfig.retreat_farm_dry_run_enabled)+
+            settingCheckbox('retreat_farm_allow_force_exit', '允许强行出关', txConfig.retreat_farm_allow_force_exit)+
+            settingCheckbox('retreat_farm_allow_heqi_dan', '允许合气丹', txConfig.retreat_farm_allow_heqi_dan)+
+            settingCheckbox('retreat_farm_auto_exchange_heqi_dan', '缺丹自动兑换', txConfig.retreat_farm_auto_exchange_heqi_dan)+
+            '<label class="module-setting-field"><span>兑换数量</span><input class="text-input module-hour-input" type="number" min="1" max="999" step="1" value="'+esc(txConfig.retreat_farm_heqi_exchange_count || 10)+'" data-tianxing-config="retreat_farm_heqi_exchange_count"></label>'+
+            settingCheckbox('retreat_farm_auto_donate_lingshi', '贡献不足捐灵石', txConfig.retreat_farm_auto_donate_lingshi)+
+            '<label class="module-setting-field"><span>捐献灵石</span><input class="text-input module-hour-input" type="number" min="1" max="99999" step="1" value="'+esc(txConfig.retreat_farm_donate_lingshi_count || 200)+'" data-tianxing-config="retreat_farm_donate_lingshi_count"></label>'+
+            currentChoiceText('攒点状态', (txRetreatFarm.phase || 'idle')+' / '+(txRetreatFarm.last_action || '无'))+
+            currentChoiceText('下次攒点', txRetreatFarm.next_time || '未设置')+
+            currentChoiceText('最近结果', txRetreatFarm.last_result || txRetreatFarm.last_error || '无')
+          )+
+          settingSection(
+            '确认与重算',
+            '确认发送不等于状态确认；超时先查盘校准，仍不确认则阻断并等待重算。',
+            '<label class="module-setting-field module-setting-field-wide"><span>改命路线优先</span><input class="text-input module-name-input" value="'+esc((txConfig.change_route_priority || []).join('、'))+'" data-tianxing-config="change_route_priority"></label>'+
+            '<label class="module-setting-field"><span>确认超时秒</span><input class="text-input module-hour-input" type="number" min="15" max="900" step="5" value="'+esc(txAckTimeout)+'" data-tianxing-config="ack_timeout_sec"></label>'+
+            '<label class="module-setting-field"><span>校准退避秒</span><input class="text-input module-hour-input" type="number" min="60" max="3600" step="30" value="'+esc(txCalibrationBackoff)+'" data-tianxing-config="calibration_backoff_sec"></label>'
+          )+
+          settingSection(
             '命星与路线',
             '优先级用逗号或顿号分隔；只会从真实可选命星里挑选。',
             '<label class="module-setting-field module-setting-field-wide"><span>命星优先</span><input class="text-input module-name-input" value="'+esc((txConfig.star_priority || []).join('、'))+'" data-tianxing-config="star_priority"></label>'+
@@ -439,6 +532,19 @@
             currentChoiceText('命中/落空/改命', String(tianxing.hit_count || 0)+'/'+String(tianxing.miss_count || 0)+'/'+String(tianxing.change_count || 0))+
             currentChoiceText('下次自动', tianxing.auto_next_time || '未设置')+
             currentChoiceText('最近计划', tianxing.auto_last_plan || '无')
+          )+
+          settingSection(
+            '时间线观测',
+            '这些是 lab 时间线的只读状态，用来审计是否卡在发送、确认、校准或放行。',
+            currentChoiceText('阶段', txTimeline.phase || 'idle')+
+            currentChoiceText('路线', txTimeline.route || '无')+
+            currentChoiceText('原因', txTimeline.reason || '无')+
+            currentChoiceText('当前步骤', txActiveStepText)+
+            currentChoiceText('确认截止', txActiveStep.ack_due_at || '未设置')+
+            currentChoiceText('阻断至', txTimeline.blocked_until || '未设置')+
+            currentChoiceText('已放行', txReleasedRoutes)+
+            currentChoiceText('最近审计', txAuditText)+
+            currentChoiceText('最近错误', txTimeline.last_error || '无')
           );
       }else if(module.name === '玄骨考校'){
         moduleNote = '<div class="module-note">极阴：'+esc(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置')+

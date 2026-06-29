@@ -7,6 +7,12 @@ from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_send_as_profile, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining
+from .tianxing import (
+    build_tianxing_consume_window,
+    build_tianxing_route_preflight_plan,
+    normalize_tianxing_auto_config,
+    run_tianxing_timeline_scheduler,
+)
 
 
 DUEL_MIN_REALM = "元婴后期"
@@ -199,6 +205,43 @@ def _duel_next_time_blocks(now):
     return cd_blocks(state.get("next_duel_time", 0), now, 0)
 
 
+async def _prepare_duel_tianxing_route(now, *, due_at=0):
+    due_at = float(due_at or now)
+    preflight = build_tianxing_route_preflight_plan("斗法", reason="斗法", now=now)
+    if preflight.get("route_allowed"):
+        return True
+
+    blocked_until = float(preflight.get("blocked_until", 0) or 0)
+    if blocked_until > now:
+        state["next_duel_time"] = blocked_until + CD_BUFFER_SEC
+        state["duel_last_error"] = str(preflight.get("reason") or "斗法天星预检阻断")
+        save_state()
+        return False
+
+    if preflight.get("timeline_required"):
+        config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+        if not config.get("duel_route_enabled"):
+            return True
+        windows = build_tianxing_consume_window("斗法", now=now, due_at=max(due_at, now), reason="斗法")
+        if not windows:
+            state["duel_last_error"] = str(preflight.get("reason") or "斗法等待天星时间线准备窗口")
+            save_state()
+            return False
+        timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+        state["duel_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
+        state["duel_last_error"] = "" if timeline_result.get("changed") else str(preflight.get("reason") or "")
+        if due_at <= now:
+            _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+        save_state()
+        return False
+
+    state["duel_last_error"] = str(preflight.get("reason") or "斗法天星预检阻断")
+    if due_at <= now:
+        _schedule_next_duel(now, random.uniform(DUEL_RECOVERY_MIN_SEC, DUEL_RECOVERY_MAX_SEC))
+    save_state()
+    return False
+
+
 def clear_duel_state(*, persist=False, keep_last_error=False, keep_config=True):
     last_error = state.get("duel_last_error") if keep_last_error else ""
     target = state.get("duel_target", "") if keep_config else ""
@@ -361,6 +404,10 @@ async def run_duel_scheduler(now):
         state["duel_last_result"] = f"任务完成：{completed_count}/{total_count}"
         save_state()
         return
+    if total_count <= 0:
+        if not _duel_next_time_blocks(now):
+            _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
+        return
 
     reply_to_msg_id = int(state.get("duel_reply_to_msg_id", 0) or 0)
     reply_due_at = float(state.get("duel_reply_due_at", 0) or 0)
@@ -374,11 +421,15 @@ async def run_duel_scheduler(now):
         await send_audit_log(f"⚠️ 斗法回复超时，消息ID={reply_to_msg_id}，进入长冷却。", scope="identity", limit=220)
         return
 
+    next_duel_time = float(state.get("next_duel_time", 0) or 0)
+    if next_duel_time > now:
+        windows = build_tianxing_consume_window("斗法", now=now, due_at=next_duel_time, reason="斗法")
+        if windows and not await _prepare_duel_tianxing_route(now, due_at=next_duel_time):
+            return
     if _duel_next_time_blocks(now):
         return
 
-    if total_count <= 0:
-        _set_duel_error("斗法次数未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
+    if not await _prepare_duel_tianxing_route(now, due_at=now):
         return
 
     command = build_duel_command(target)

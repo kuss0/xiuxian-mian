@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 
 from ..config import STATE_DIR
+from ..action_guard import close_by_family as close_action_guard_by_family
 from ..persistence import save_state
 from ..state import get_identity_ids, get_identity_state, get_send_as_profile, get_send_as_tags, state, use_identity
 from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait_time
@@ -1596,6 +1597,8 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append(family)
             changed = module_changed or changed
+        if changed and family and family != "concubine_heart":
+            close_action_guard_by_family(family, send_as_id=target_id, reason="passive_state_changed", now=now)
         if changed:
             save_state()
     if changed and not event_recorded_by_handler:

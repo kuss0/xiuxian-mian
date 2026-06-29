@@ -40,6 +40,20 @@ class HehuanParserTests(unittest.TestCase):
         self.assertEqual(now + hehuan.HEHUAN_CONTRACT_SEC, parsed["contract_until"])
         self.assertGreater(parsed["next_hehuan_time"], now)
 
+    def test_warm_success_parses_valuable_insight(self):
+        now = 1_779_968_455.0
+        text = (
+            "【温养双修·圆满】\n"
+            "在同参契印的加持下，你与 @wuwenyao 灵力交融。\n"
+            "@wushanxiang 修为增加了 36 点，并获得 15 点宗门贡献！\n"
+            "@wuwenyao 修为增加了 68 点！\n"
+            "共同领悟了【青元剑诀】。"
+        )
+        parsed = hehuan.parse_hehuan_text(text, now=now, family="hehuan_dual")
+
+        self.assertEqual("success", parsed["result"])
+        self.assertEqual("青元剑诀", parsed["last_insight"])
+
     def test_dual_cooldown_parses_target_and_result(self):
         parsed = hehuan.parse_hehuan_text(
             real_text("hehuan.dual.cooldown"),
@@ -267,6 +281,29 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertEqual(now + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
         self.assertEqual(0, observed["auto_retry_count"])
         self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertEqual([], observed["valuable_drop_reminders"])
+
+    def test_success_with_valuable_insight_queues_three_reminders(self):
+        now = 1_780_000_000.0
+        text = (
+            "【温养双修·圆满】\n"
+            "在同参契印的加持下，你与 @wuwenyao 灵力交融。\n"
+            "@wushanxiang 修为增加了 36 点，并获得 15 点宗门贡献！\n"
+            "@wuwenyao 修为增加了 68 点！\n"
+            "共同领悟了【青元剑诀】。"
+        )
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            changed = hehuan.apply_hehuan_passive(text, now=now, family="hehuan_dual")
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(1, len(observed["valuable_drop_reminders"]))
+        reminder = observed["valuable_drop_reminders"][0]
+        self.assertEqual("青元剑诀", reminder["item"])
+        self.assertEqual("@wuwenyao", reminder["partner"])
+        self.assertEqual(0, reminder["next_index"])
+        self.assertEqual(now, reminder["next_reminder_at"])
 
     def test_cooldown_without_success_time_schedules_bounded_retry(self):
         now = 1_780_000_000.0
@@ -503,6 +540,92 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(hehuan.HEHUAN_BAIJI_SEND_AS_ID, anchor_call.kwargs["send_as_id"])
             self.assertEqual(".双修 温养", warm_call.args[0])
             self.assertEqual(8802, warm_call.kwargs["reply_to"])
+
+    async def test_scheduler_sends_valuable_drop_reminders_three_times(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = False
+            state_module.state["hehuan_observation"] = {
+                "valuable_drop_reminders": [{
+                    "event_id": "hehuan-warm:@dao_partner:青元剑诀:29666666",
+                    "source": "合欢双修温养",
+                    "item": "青元剑诀",
+                    "partner": "@dao_partner",
+                    "event_at": now,
+                    "next_index": 0,
+                    "next_reminder_at": now,
+                    "done": False,
+                }]
+            }
+            with patch.object(hehuan, "save_state") as save_mock, patch.object(hehuan, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock:
+                await hehuan.run_hehuan_scheduler(now)
+                await hehuan.run_hehuan_scheduler(now + 60)
+                await hehuan.run_hehuan_scheduler(now + 3 * 3600)
+                await hehuan.run_hehuan_scheduler(now + 6 * 3600)
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertEqual(3, audit_mock.await_count)
+        self.assertIn("青元剑诀", audit_mock.await_args_list[0].args[0])
+        self.assertEqual("high", audit_mock.await_args_list[0].kwargs["priority"])
+        self.assertTrue(observed["valuable_drop_reminders"][0]["done"])
+        self.assertEqual(3, observed["valuable_drop_reminders"][0]["next_index"])
+        self.assertGreaterEqual(save_mock.call_count, 3)
+
+    async def test_scheduler_retries_valuable_drop_reminder_when_audit_send_fails(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = False
+            state_module.state["hehuan_observation"] = {
+                "valuable_drop_reminders": [{
+                    "event_id": "hehuan-warm:@dao_partner:青元剑诀:29666666",
+                    "source": "合欢双修温养",
+                    "item": "青元剑诀",
+                    "partner": "@dao_partner",
+                    "event_at": now,
+                    "next_index": 0,
+                    "next_reminder_at": now,
+                    "done": False,
+                }]
+            }
+            with patch.object(hehuan, "save_state"), patch.object(hehuan, "send_audit_log", new=AsyncMock(return_value=False)) as audit_mock:
+                await hehuan.run_hehuan_scheduler(now)
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertEqual(1, audit_mock.await_count)
+        self.assertEqual(0, observed["valuable_drop_reminders"][0]["next_index"])
+        self.assertEqual(now + 5 * 60, observed["valuable_drop_reminders"][0]["next_reminder_at"])
+        self.assertFalse(observed["valuable_drop_reminders"][0]["done"])
+
+    async def test_scheduler_does_not_send_warm_in_same_tick_as_valuable_reminder(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+                "valuable_drop_reminders": [{
+                    "event_id": "hehuan-warm:@dao_partner:青元剑诀:29666666",
+                    "source": "合欢双修温养",
+                    "item": "青元剑诀",
+                    "partner": "@dao_partner",
+                    "event_at": now,
+                    "next_index": 0,
+                    "next_reminder_at": now,
+                    "done": False,
+                }]
+            }
+            with (
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+        audit_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
 
 
 class HehuanPassiveInboxTests(unittest.TestCase):

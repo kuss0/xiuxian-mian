@@ -307,9 +307,40 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             state_module.state["tianxing_enabled"] = True
             state_module.state["tianxing_observation"] = {"last_observed_at": now, "last_error": "旧天星错误"}
+            state_module.state["tianxing_timeline_state"] = {"phase": "sent_waiting_ack"}
             state_module.state["pending_tasks"] = {
                 301: {"cmd": config.CMD_TIANXING_PANEL, "sent_at": now, "retry": 0},
                 302: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0},
+            }
+            state_module.state["action_guard_sessions"] = {
+                "tianxing_panel": {
+                    "action_key": "tianxing_panel",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 301,
+                    "last_command": config.CMD_TIANXING_PANEL,
+                },
+                "tianxing_set_star": {
+                    "action_key": "tianxing_set_star",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 303,
+                    "last_command": f"{config.CMD_TIANXING_SET_STAR} 贪狼",
+                },
+                "tianxing_retreat_farm": {
+                    "action_key": "tianxing_retreat_farm",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 304,
+                    "last_command": config.CMD_NORMAL_RETREAT,
+                },
+                "deep_retreat": {
+                    "action_key": "deep_retreat",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 305,
+                    "last_command": config.CMD_DEEP_RETREAT,
+                },
             }
 
         with patch.object(control, "save_state"), patch.object(control, "console_log"):
@@ -319,7 +350,57 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertFalse(state_module.state["tianxing_enabled"])
             self.assertEqual({}, state_module.state["tianxing_observation"])
+            self.assertEqual({}, state_module.state["tianxing_timeline_state"])
             self.assertEqual({302: {"cmd": config.CMD_CHECKIN, "sent_at": now, "retry": 0}}, state_module.state["pending_tasks"])
+            sessions = state_module.state["action_guard_sessions"]
+            self.assertNotIn("tianxing_panel", sessions)
+            self.assertNotIn("tianxing_set_star", sessions)
+            self.assertNotIn("tianxing_retreat_farm", sessions)
+            self.assertIn("deep_retreat", sessions)
+
+    def test_enabling_tianxing_resets_stale_action_guard_sessions(self):
+        send_as_id = 990349
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+        with state_module.use_identity(send_as_id):
+            state_module.state["tianxing_enabled"] = False
+            state_module.state["action_guard_sessions"] = {
+                "tianxing_panel": {
+                    "action_key": "tianxing_panel",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 301,
+                    "last_command": config.CMD_TIANXING_PANEL,
+                },
+                "tianxing_set_star": {
+                    "action_key": "tianxing_set_star",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 302,
+                    "last_command": f"{config.CMD_TIANXING_SET_STAR} 贪狼",
+                },
+                "deep_retreat": {
+                    "action_key": "deep_retreat",
+                    "attempt": 1,
+                    "last_sent_at": now,
+                    "last_msg_id": 303,
+                    "last_command": config.CMD_DEEP_RETREAT,
+                },
+            }
+
+        with patch.object(control.time, "time", return_value=now), \
+             patch.object(control, "save_state"), \
+             patch.object(control, "console_log"):
+            ok, message = asyncio.run(control.set_module_enabled("天星宗", True, send_as_id=send_as_id))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertTrue(state_module.state["tianxing_enabled"])
+            sessions = state_module.state["action_guard_sessions"]
+            self.assertNotIn("tianxing_panel", sessions)
+            self.assertNotIn("tianxing_set_star", sessions)
+            self.assertIn("deep_retreat", sessions)
 
     def test_disabling_yinluo_clears_observation_and_pending(self):
         send_as_id = 990345

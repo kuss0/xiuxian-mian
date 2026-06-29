@@ -1,5 +1,7 @@
 import asyncio
+import json
 import random
+import re
 import time
 
 from ..config import (
@@ -34,7 +36,7 @@ from ..state import (
 )
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 from . import fishing_behavior
-from .fishing import plan_fishing_commands
+from .fishing import parse_open_fish_result, plan_fishing_commands
 from .storage_bag import apply_storage_bag_item_counts, apply_storage_bag_item_deltas, start_storage_bag_gift_batch
 
 
@@ -56,6 +58,25 @@ FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
 FISHING_DUPLICATE_COMMAND_SUPPRESS_SEC = 65
 FISHING_TRANSFER_RETRY_DELAY_SEC = 5 * 60
+FISHING_VALUABLE_REMINDER_OFFSETS_SEC = (0, 3 * 3600, 6 * 3600)
+FISHING_COMMON_OPEN_REWARD_ITEMS = {"灵石", "灵鱼肉", "灵鱼鳞", "清灵草", "水草"}
+FISHING_VALUABLE_KEYWORDS = (
+    "图纸",
+    "丹方",
+    "图谱",
+    "功法",
+    "剑诀",
+    "法则",
+    "残图",
+    "通行令",
+    "昆吾",
+    "大衍诀",
+    "空间节点",
+    "坐标",
+    "灵眼之树",
+    "至宝",
+    "真仙试锋",
+)
 _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
@@ -104,6 +125,171 @@ def _apply_effect(effect, *, persist=True):
     elif effect.updates:
         mark_dirty()
     return True
+
+
+def _normalize_fishing_valuable_drop_reminders(value=None):
+    raw = state.get("fishing_valuable_drop_reminders") if value is None else value
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = []
+    if not isinstance(raw, list):
+        raw = []
+    reminders = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        for key in ("event_at", "next_reminder_at"):
+            try:
+                entry[key] = float(entry.get(key, 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                entry[key] = 0.0
+        try:
+            entry["next_index"] = max(0, min(len(FISHING_VALUABLE_REMINDER_OFFSETS_SEC), int(entry.get("next_index", 0) or 0)))
+        except (TypeError, ValueError, OverflowError):
+            entry["next_index"] = 0
+        try:
+            entry["result_msg_id"] = max(0, int(entry.get("result_msg_id", 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            entry["result_msg_id"] = 0
+        for key in ("event_id", "source", "item", "fish", "last_error"):
+            entry[key] = str(entry.get(key) or "").strip()
+        entry["done"] = bool(entry.get("done")) or entry["next_index"] >= len(FISHING_VALUABLE_REMINDER_OFFSETS_SEC)
+        if entry["item"]:
+            reminders.append(entry)
+    return reminders[-12:]
+
+
+def _clean_fishing_reward_name(value):
+    name = str(value or "").strip()
+    while len(name) >= 2 and ((name[0], name[-1]) in {("【", "】"), ("[", "]"), ("(", ")"), ("（", "）")}):
+        name = name[1:-1].strip()
+    return name
+
+
+def _is_common_fishing_reward_item(name):
+    normalized = _clean_fishing_reward_name(name)
+    return normalized in FISHING_COMMON_OPEN_REWARD_ITEMS or normalized in {"修为", "宗门贡献"}
+
+
+def _is_valuable_fishing_reward_item(name, *, companion=False):
+    normalized = _clean_fishing_reward_name(name)
+    if not normalized or _is_common_fishing_reward_item(normalized):
+        return False
+    if companion:
+        return True
+    return any(keyword in normalized for keyword in FISHING_VALUABLE_KEYWORDS)
+
+
+def _fishing_valuable_items_from_text(raw_text, open_result=None):
+    text = str(raw_text or "")
+    companion = "伴生机缘" in text
+    parsed = open_result or parse_open_fish_result(text)
+    items = []
+    if parsed:
+        for item_name in (parsed.items or {}).keys():
+            normalized = _clean_fishing_reward_name(item_name)
+            if _is_valuable_fishing_reward_item(normalized, companion=companion):
+                items.append(normalized)
+    for match in re.finditer(r"【(?P<name>[^】]+)】(?:x\d+)?", text):
+        normalized = _clean_fishing_reward_name(match.group("name"))
+        if _is_valuable_fishing_reward_item(normalized, companion=companion):
+            items.append(normalized)
+    deduped = []
+    seen = set()
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _queue_fishing_valuable_drop_reminders(raw_text, now, *, result_msg_id=0, open_result=None):
+    items = _fishing_valuable_items_from_text(raw_text, open_result=open_result)
+    if not items:
+        return False
+    parsed = open_result or parse_open_fish_result(raw_text)
+    fish = str(getattr(parsed, "fish", "") or "").strip()
+    item_text = "、".join(items)
+    result_msg_id = int(result_msg_id or 0)
+    event_key = result_msg_id if result_msg_id > 0 else int(float(now or 0) // 60)
+    event_id = f"fishing-valuable:{event_key}:{fish}:{item_text}"
+    reminders = _normalize_fishing_valuable_drop_reminders()
+    existing_ids = {str(item.get("event_id") or "") for item in reminders if isinstance(item, dict)}
+    if event_id in existing_ids:
+        return False
+    reminders.append({
+        "event_id": event_id,
+        "source": "灵溪垂钓伴生机缘",
+        "item": item_text,
+        "fish": fish,
+        "event_at": float(now or time.time()),
+        "next_index": 0,
+        "next_reminder_at": float(now or time.time()),
+        "done": False,
+        "result_msg_id": result_msg_id,
+        "last_error": "",
+    })
+    state["fishing_valuable_drop_reminders"] = reminders[-12:]
+    mark_dirty()
+    return True
+
+
+def _format_fishing_valuable_reminder(event, index):
+    labels = ("即时", "+3h", "+6h")
+    label = labels[index] if 0 <= int(index or 0) < len(labels) else f"第{int(index or 0) + 1}次"
+    item = str((event or {}).get("item") or "").strip() or "未解析宝物"
+    fish = str((event or {}).get("fish") or "").strip()
+    suffix = f"｜来源 {fish}" if fish else ""
+    return f"🎣 灵溪垂钓伴生机缘提醒（{label}/3）：{item}{suffix}"
+
+
+async def _run_fishing_valuable_drop_reminders(now):
+    reminders = _normalize_fishing_valuable_drop_reminders()
+    changed = False
+    sent_any = False
+    for event in reminders:
+        if not isinstance(event, dict) or event.get("done"):
+            continue
+        next_index = int(event.get("next_index", 0) or 0)
+        if next_index >= len(FISHING_VALUABLE_REMINDER_OFFSETS_SEC):
+            event["done"] = True
+            changed = True
+            continue
+        due_at = float(event.get("next_reminder_at", 0) or 0)
+        if due_at <= 0:
+            due_at = float(event.get("event_at", now) or now) + FISHING_VALUABLE_REMINDER_OFFSETS_SEC[next_index]
+            event["next_reminder_at"] = float(due_at)
+            changed = True
+        if float(now or 0) < due_at or sent_any:
+            continue
+        ok = await send_audit_log(
+            _format_fishing_valuable_reminder(event, next_index),
+            scope="identity",
+            priority="high",
+            limit=260,
+        )
+        sent_any = True
+        changed = True
+        if not ok:
+            event["next_reminder_at"] = float(now + 5 * 60)
+            event["last_error"] = "日志提醒发送失败，5分钟后重试"
+            continue
+        next_index += 1
+        event["next_index"] = next_index
+        event["last_error"] = ""
+        if next_index >= len(FISHING_VALUABLE_REMINDER_OFFSETS_SEC):
+            event["done"] = True
+            event["next_reminder_at"] = 0
+        else:
+            event["next_reminder_at"] = float(event.get("event_at", now) or now) + FISHING_VALUABLE_REMINDER_OFFSETS_SEC[next_index]
+    if changed:
+        state["fishing_valuable_drop_reminders"] = reminders[-12:]
+        save_state()
+    return sent_any
 
 
 def _get_bait_inventory_from_storage(send_as_id=None):
@@ -573,6 +759,7 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
             or fishing_behavior.parse_chum_daily_limit_reply(raw_text)
             or fishing_behavior.parse_generic_resource_shortage(raw_text)
             or fishing_behavior.parse_chum_shortage(raw_text)
+            or parse_open_fish_result(raw_text)
         ):
             return False
         effect = fishing_behavior.decide_reply(
@@ -586,6 +773,12 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
         if not effect.handled:
             return False
         _apply_effect(effect)
+        if _queue_fishing_valuable_drop_reminders(
+            raw_text,
+            now,
+            result_msg_id=int(result_msg_id or _parse_int(getattr(reply_to, "id", 0)) or 0),
+        ):
+            save_state()
         _cancel_fishing_followup(get_current_identity_id())
         await _emit_effect_audits(effect)
         return True
@@ -626,6 +819,8 @@ async def handle_fishing_reply(text, now, reply_to=None, matched_family=None, re
         return False
 
     _apply_effect(effect)
+    if _queue_fishing_valuable_drop_reminders(raw_text, now, result_msg_id=result_msg_id):
+        save_state()
     _cancel_fishing_followup(get_current_identity_id())
     _cancel_fishing_recovery(get_current_identity_id())
     await _emit_effect_audits(effect)
@@ -708,6 +903,9 @@ async def _send_fishing_command_locked(command, now):
 
 
 async def run_fishing_scheduler(now):
+    if await _run_fishing_valuable_drop_reminders(now):
+        return
+
     if await _run_pending_fishing_transfer(now):
         return
 

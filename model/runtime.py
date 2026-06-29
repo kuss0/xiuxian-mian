@@ -48,6 +48,12 @@ from .config import (
     CMD_TIANXING_PANEL,
     CMD_TIANXING_PREDICT,
     CMD_TIANXING_SET_STAR,
+    CMD_CRAFT,
+    CMD_NORMAL_RETREAT,
+    CMD_DEEP_RETREAT_FORCE_EXIT,
+    CMD_USE_HEQI_DAN,
+    CMD_EXCHANGE_HEQI_DAN_PREFIX,
+    CMD_SECT_DONATE_LINGSHI_PREFIX,
     CMD_DEEP_RETREAT,
     CMD_DEEP_RETREAT_QUERY,
     CMD_DIVINATION,
@@ -121,6 +127,7 @@ from .config import (
     CMD_WORLD_BOSS_STATUS,
     CMD_YINDAO,
     CMD_YUANYING,
+    CMD_YUANYING_SECT_RETREAT,
     CMD_YUANYING_STATUS,
     CMD_WENDAO,
     CMD_DUEL,
@@ -681,7 +688,7 @@ REPLY_FAMILY_COMMANDS = {
     "tianti_wenxin": {CMD_TIANTI_WENXIN},
     "tianti_climb": {CMD_TIANTI_CLIMB},
     "tianti_gangfeng": {CMD_TIANTI_GANGFENG},
-    "yuanying": {CMD_YUANYING, CMD_YUANYING_STATUS},
+    "yuanying": {CMD_YUANYING, CMD_YUANYING_SECT_RETREAT, CMD_YUANYING_STATUS},
     "explore_rift": {CMD_EXPLORE_RIFT},
     "wendao": {CMD_WENDAO},
     "duel": {CMD_DUEL},
@@ -695,7 +702,8 @@ REPLY_FAMILY_COMMANDS = {
         CMD_FISHING_OPEN,
         CMD_FISHING_BASKET,
     },
-    "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY},
+    "deep_retreat": {CMD_DEEP_RETREAT, CMD_DEEP_RETREAT_QUERY, CMD_DEEP_RETREAT_FORCE_EXIT},
+    "tianxing_retreat_farm": {CMD_NORMAL_RETREAT, CMD_USE_HEQI_DAN, CMD_EXCHANGE_HEQI_DAN_PREFIX, CMD_SECT_DONATE_LINGSHI_PREFIX},
     "small_world_preach": {CMD_SMALL_WORLD_PREACH},
     "small_world_relief": {CMD_SMALL_WORLD_RELIEF},
     "small_world_query": {CMD_SMALL_WORLD_QUERY},
@@ -727,6 +735,7 @@ REPLY_FAMILY_COMMANDS = {
     "tianxing_predict": {CMD_TIANXING_PREDICT},
     "tianxing_change_fate": {CMD_TIANXING_CHANGE_FATE},
     "tianxing_clear_calamity": {CMD_TIANXING_CLEAR_CALAMITY},
+    "tianxing_craft_farm": {CMD_CRAFT},
     "yinluo_guide": {CMD_YINLUO_GUIDE},
     "yinluo_banner": {CMD_YINLUO_BANNER},
     "yinluo_blood_forest": {CMD_YINLUO_BLOOD_FOREST},
@@ -889,11 +898,23 @@ def _coerce_ui_auth_float(value, default=0.0):
         return float(default)
 
 
+def _command_matches_prefix(raw_command, prefix):
+    raw_command = str(raw_command or "").strip()
+    prefix = str(prefix or "").strip()
+    if not raw_command or not prefix:
+        return False
+    if raw_command == prefix or raw_command.startswith(f"{prefix} "):
+        return True
+    if prefix.endswith("*") and raw_command.startswith(prefix):
+        return True
+    return False
+
+
 def is_script_command_text(text):
     raw_text = (text or "").strip()
     if not raw_text:
         return False
-    return any(raw_text == cmd or raw_text.startswith(f"{cmd} ") for cmd in SCRIPT_COMMANDS)
+    return any(_command_matches_prefix(raw_text, cmd) for cmd in SCRIPT_COMMANDS)
 
 
 def _gc_reply_chain_tracker(now=None):
@@ -974,7 +995,7 @@ def resolve_reply_family(command):
     if not raw_command:
         return None
     for prefix, family in COMMAND_TO_REPLY_FAMILY.items():
-        if raw_command == prefix or raw_command.startswith(f"{prefix} "):
+        if _command_matches_prefix(raw_command, prefix):
             return family
     return None
 

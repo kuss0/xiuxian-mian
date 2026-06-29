@@ -34,6 +34,12 @@ from .config import (
     CMD_TIANXING_PANEL,
     CMD_TIANXING_PREDICT,
     CMD_TIANXING_SET_STAR,
+    CMD_CRAFT,
+    CMD_NORMAL_RETREAT,
+    CMD_DEEP_RETREAT_FORCE_EXIT,
+    CMD_USE_HEQI_DAN,
+    CMD_EXCHANGE_HEQI_DAN_PREFIX,
+    CMD_SECT_DONATE_LINGSHI_PREFIX,
     CMD_TOWER,
     CMD_TREE_PULSE,
     CMD_TREE_PULSE_STATUS,
@@ -50,6 +56,7 @@ from .config import (
     CMD_YINLUO_SOOTHE,
     CMD_YINDAO,
     CMD_YUANYING,
+    CMD_YUANYING_SECT_RETREAT,
 )
 from .persistence import mark_dirty
 from .state import has_identity, state, use_identity
@@ -140,10 +147,48 @@ ACTION_SPECS = {
         "kind": ACTION_KIND_HIGH_RISK,
         "label": "深度闭关",
     },
-    "yuanying_launch": {
-        "commands": (CMD_YUANYING,),
+    "deep_retreat_force_exit": {
+        "commands": (CMD_DEEP_RETREAT_FORCE_EXIT,),
         "kind": ACTION_KIND_HIGH_RISK,
-        "label": "元婴出窍",
+        "label": "强行出关",
+    },
+    "tianxing_retreat_farm": {
+        "commands": (CMD_NORMAL_RETREAT,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "天星普通闭关",
+    },
+    "tianxing_craft_farm": {
+        "commands": (CMD_CRAFT,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "天星炼制攒点",
+        "max_attempts": 1,
+        "ttl_sec": 20 * 60,
+    },
+    "tianxing_heqi_dan": {
+        "commands": (CMD_USE_HEQI_DAN,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "合气丹",
+        "max_attempts": 1,
+        "ttl_sec": 20 * 60,
+    },
+    "tianxing_heqi_exchange": {
+        "commands": (CMD_EXCHANGE_HEQI_DAN_PREFIX,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "兑换合气丹",
+        "max_attempts": 1,
+        "ttl_sec": 20 * 60,
+    },
+    "tianxing_lingshi_donation": {
+        "commands": (CMD_SECT_DONATE_LINGSHI_PREFIX,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "宗门捐献灵石",
+        "max_attempts": 1,
+        "ttl_sec": 20 * 60,
+    },
+    "yuanying_launch": {
+        "commands": (CMD_YUANYING, CMD_YUANYING_SECT_RETREAT),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "元婴",
     },
     "tower": {
         "commands": (CMD_TOWER,),
@@ -384,7 +429,7 @@ FAMILY_TO_ACTION_KEYS = {
     "ranch": ("ranch",),
     "wild_training": ("wild_training",),
     "second_soul_train": ("second_soul_train",),
-    "deep_retreat": ("deep_retreat",),
+    "deep_retreat": ("deep_retreat", "deep_retreat_force_exit"),
     "tower": ("tower",),
     "tree_panel": ("tree_pulse_status",),
     "tree_pulse": ("tree_pulse",),
@@ -410,6 +455,8 @@ FAMILY_TO_ACTION_KEYS = {
     "tianxing_predict": ("tianxing_predict",),
     "tianxing_change_fate": ("tianxing_change_fate",),
     "tianxing_clear_calamity": ("tianxing_clear_calamity",),
+    "tianxing_retreat_farm": ("tianxing_retreat_farm", "tianxing_heqi_dan", "tianxing_heqi_exchange", "tianxing_lingshi_donation"),
+    "tianxing_craft_farm": ("tianxing_craft_farm",),
     "yinluo_banner": ("yinluo_banner",),
     "yinluo_demon_summon": ("yinluo_demon_summon",),
     "yinluo_daily_sacrifice": ("yinluo_daily_sacrifice",),
@@ -427,12 +474,24 @@ def normalize_command(command):
     return str(command or "").strip()
 
 
+def _command_matches_prefix(raw_command, prefix):
+    raw_command = normalize_command(raw_command)
+    prefix = normalize_command(prefix)
+    if not raw_command or not prefix:
+        return False
+    if raw_command == prefix or raw_command.startswith(f"{prefix} "):
+        return True
+    if prefix.endswith("*") and raw_command.startswith(prefix):
+        return True
+    return False
+
+
 def resolve_action_key(command):
     raw_command = normalize_command(command)
     if not raw_command:
         return ""
     for prefix, action_key in COMMAND_TO_ACTION_KEY.items():
-        if raw_command == prefix or raw_command.startswith(f"{prefix} "):
+        if _command_matches_prefix(raw_command, prefix):
             return action_key
     return ""
 
@@ -444,6 +503,25 @@ def resolve_action_key_for_family(family):
 
 def resolve_action_keys_for_family(family):
     return tuple(FAMILY_TO_ACTION_KEYS.get(str(family or "").strip(), ()))
+
+
+def resolve_action_keys_for_module(module_name):
+    try:
+        from .module_manifest import get_module_manifest
+    except Exception:
+        return ()
+    manifest = get_module_manifest(module_name)
+    if not manifest:
+        return ()
+    action_keys = []
+    seen = set()
+    for family in tuple(getattr(manifest, "reply_families", ()) or ()):
+        for action_key in resolve_action_keys_for_family(family):
+            if action_key in seen:
+                continue
+            seen.add(action_key)
+            action_keys.append(action_key)
+    return tuple(action_keys)
 
 
 def _get_sessions(identity_state=None):
@@ -800,11 +878,43 @@ def close_action(action_key, send_as_id=None, reason="reply", now=None):
     return True
 
 
+def close_actions(action_keys, send_as_id=None, reason="reply", now=None):
+    if not has_identity(send_as_id):
+        return 0
+    now = float(now if now is not None else time.time())
+    closed_count = 0
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        for action_key in tuple(action_keys or ()):
+            action_key = str(action_key or "").strip()
+            if not action_key:
+                continue
+            session = sessions.get(action_key)
+            if not isinstance(session, dict):
+                continue
+            if _has_remote_block(session, now):
+                session["attempt"] = 0
+                session["last_msg_id"] = 0
+                session["next_allowed_at"] = 0
+                session["closed_at"] = now
+                session["close_reason"] = str(reason or "")
+            else:
+                sessions.pop(action_key, None)
+            closed_count += 1
+        if closed_count:
+            mark_dirty()
+    return closed_count
+
+
 def close_by_family(family, send_as_id=None, reason="reply", now=None):
     closed = False
     for action_key in resolve_action_keys_for_family(family):
         closed = close_action(action_key, send_as_id=send_as_id, reason=reason, now=now) or closed
     return closed
+
+
+def close_by_module(module_name, send_as_id=None, reason="module_disabled", now=None):
+    return close_actions(resolve_action_keys_for_module(module_name), send_as_id=send_as_id, reason=reason, now=now)
 
 
 def should_log_block(command, send_as_id=None, now=None):

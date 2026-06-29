@@ -553,6 +553,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_observation TEXT NOT NULL DEFAULT '{}' ")
     if "tianxing_auto_config" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_auto_config TEXT NOT NULL DEFAULT '{}' ")
+    if "tianxing_timeline_state" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_timeline_state TEXT NOT NULL DEFAULT '{}' ")
     if "yinluo_observation" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yinluo_observation TEXT NOT NULL DEFAULT '{}' ")
     if "world_boss_action_count" not in runtime_columns:
@@ -919,6 +921,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_transfer_due_at REAL NOT NULL DEFAULT 0")
     if "fishing_caught_fish_json" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_caught_fish_json TEXT NOT NULL DEFAULT ''")
+    if "fishing_valuable_drop_reminders" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_valuable_drop_reminders TEXT NOT NULL DEFAULT '[]'")
     if "fishing_phase" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_phase TEXT NOT NULL DEFAULT 'idle'")
     if "fishing_reply_to_msg_id" not in runtime_columns:
@@ -1470,6 +1474,7 @@ def init_db():
             hehuan_observation TEXT NOT NULL DEFAULT '{}',
             tianxing_observation TEXT NOT NULL DEFAULT '{}',
             tianxing_auto_config TEXT NOT NULL DEFAULT '{}',
+            tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
             yinluo_observation TEXT NOT NULL DEFAULT '{}',
             world_boss_action_count INTEGER NOT NULL DEFAULT 0,
             world_boss_action_limit INTEGER NOT NULL DEFAULT 5,
@@ -1585,6 +1590,10 @@ def init_db():
             fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 20,
             fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0,
             fishing_auto_open_fish_enabled INTEGER NOT NULL DEFAULT 1,
+            fishing_transfer_target_id INTEGER NOT NULL DEFAULT 0,
+            fishing_transfer_due_at REAL NOT NULL DEFAULT 0,
+            fishing_caught_fish_json TEXT NOT NULL DEFAULT '',
+            fishing_valuable_drop_reminders TEXT NOT NULL DEFAULT '[]',
             fishing_phase TEXT NOT NULL DEFAULT 'idle',
             fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             fishing_reply_due_at REAL NOT NULL DEFAULT 0,

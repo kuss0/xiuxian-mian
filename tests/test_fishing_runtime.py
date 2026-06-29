@@ -56,6 +56,11 @@ OPEN_FISH_TEXT = """【剖鱼取机缘】
 
 获得：灵石x28、灵鱼肉x1、灵鱼鳞x1、清灵草x1、修为+39"""
 
+VALUABLE_OPEN_FISH_TEXT = """【剖鱼取机缘】
+你剖开 【银须灵鲢】x1，鱼腹中灵光一震，竟牵出伴生机缘。
+
+获得：灵石x28、【大衍诀】x1、修为+39"""
+
 
 class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -866,6 +871,61 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 30, state_module.state["next_fishing_time"])
             self.assertIn("开鱼：银须灵鲢", state_module.state["fishing_last_result"])
 
+    async def test_common_open_fish_reply_does_not_queue_valuable_reminder(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "opening"
+            state_module.state["fishing_reply_to_msg_id"] = 22042
+            state_module.state["fishing_reply_due_at"] = now + 60
+            state_module.state["fishing_pending_open_fish"] = '{"银须灵鲢": 1}'
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    OPEN_FISH_TEXT,
+                    now,
+                    reply_to=SimpleNamespace(id=22042, raw_text=".开鱼 银须灵鲢"),
+                    matched_family="fishing",
+                    result_msg_id=22052,
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            self.assertEqual([], state_module.state["fishing_valuable_drop_reminders"])
+
+    async def test_valuable_open_fish_reply_queues_valuable_reminder(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "opening"
+            state_module.state["fishing_reply_to_msg_id"] = 22042
+            state_module.state["fishing_reply_due_at"] = now + 60
+            state_module.state["fishing_pending_open_fish"] = '{"银须灵鲢": 1}'
+            with (
+                patch.object(fishing_runtime, "save_state") as save_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                handled = await fishing_runtime.handle_fishing_reply(
+                    VALUABLE_OPEN_FISH_TEXT,
+                    now,
+                    reply_to=SimpleNamespace(id=22042, raw_text=".开鱼 银须灵鲢"),
+                    matched_family="fishing",
+                    result_msg_id=22052,
+                )
+
+            self.assertTrue(handled)
+            send_mock.assert_not_awaited()
+            reminders = state_module.state["fishing_valuable_drop_reminders"]
+            self.assertEqual(1, len(reminders))
+            self.assertIn("大衍诀", reminders[0]["item"])
+            self.assertEqual("银须灵鲢", reminders[0]["fish"])
+            self.assertEqual(22052, reminders[0]["result_msg_id"])
+            self.assertGreaterEqual(save_mock.call_count, 2)
+
     async def test_open_only_reply_calibrates_pending_count(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -892,6 +952,97 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".开鱼 赤尾火鲤 6", state_module.state["fishing_pending_action"])
             self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
             followup_mock.assert_called_once()
+
+    async def test_scheduler_sends_fishing_valuable_reminders_three_times(self):
+        identity_id = self._prepare_identity()
+        now = 1_780_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_valuable_drop_reminders"] = [{
+                "event_id": "fishing-valuable:22052:银须灵鲢:大衍诀",
+                "source": "灵溪垂钓伴生机缘",
+                "item": "大衍诀",
+                "fish": "银须灵鲢",
+                "event_at": now,
+                "next_index": 0,
+                "next_reminder_at": now,
+                "done": False,
+                "result_msg_id": 22052,
+            }]
+            with (
+                patch.object(fishing_runtime, "save_state") as save_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+                await fishing_runtime.run_fishing_scheduler(now + 60)
+                await fishing_runtime.run_fishing_scheduler(now + 3 * 3600)
+                await fishing_runtime.run_fishing_scheduler(now + 6 * 3600)
+            reminders = state_module.state["fishing_valuable_drop_reminders"]
+
+        self.assertEqual(3, audit_mock.await_count)
+        self.assertIn("大衍诀", audit_mock.await_args_list[0].args[0])
+        self.assertEqual("high", audit_mock.await_args_list[0].kwargs["priority"])
+        self.assertTrue(reminders[0]["done"])
+        self.assertEqual(3, reminders[0]["next_index"])
+        self.assertGreaterEqual(save_mock.call_count, 3)
+
+    async def test_scheduler_retries_fishing_valuable_reminder_when_audit_send_fails(self):
+        identity_id = self._prepare_identity()
+        now = 1_780_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = False
+            state_module.state["fishing_valuable_drop_reminders"] = [{
+                "event_id": "fishing-valuable:22052:银须灵鲢:大衍诀",
+                "source": "灵溪垂钓伴生机缘",
+                "item": "大衍诀",
+                "fish": "银须灵鲢",
+                "event_at": now,
+                "next_index": 0,
+                "next_reminder_at": now,
+                "done": False,
+                "result_msg_id": 22052,
+            }]
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=False)) as audit_mock,
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+            reminders = state_module.state["fishing_valuable_drop_reminders"]
+
+        self.assertEqual(1, audit_mock.await_count)
+        self.assertEqual(0, reminders[0]["next_index"])
+        self.assertEqual(now + 5 * 60, reminders[0]["next_reminder_at"])
+        self.assertFalse(reminders[0]["done"])
+
+    async def test_scheduler_does_not_send_fishing_command_in_same_tick_as_valuable_reminder(self):
+        identity_id = self._prepare_identity()
+        now = 1_780_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_bait"] = "凡饵"
+            state_module.state["fishing_auto_chum_enabled"] = False
+            state_module.state["fishing_auto_buy_bait_enabled"] = False
+            state_module.state["next_fishing_time"] = now - 1
+            state_module.state["fishing_valuable_drop_reminders"] = [{
+                "event_id": "fishing-valuable:22052:银须灵鲢:大衍诀",
+                "source": "灵溪垂钓伴生机缘",
+                "item": "大衍诀",
+                "fish": "银须灵鲢",
+                "event_at": now,
+                "next_index": 0,
+                "next_reminder_at": now,
+                "done": False,
+                "result_msg_id": 22052,
+            }]
+            with (
+                patch.object(fishing_runtime, "save_state"),
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock(return_value=True)) as audit_mock,
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+        audit_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
 
     async def test_in_progress_reply_checks_status_instead_of_starting_new_rod(self):
         identity_id = self._prepare_identity()
