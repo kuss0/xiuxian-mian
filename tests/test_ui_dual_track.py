@@ -136,10 +136,14 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "data-open-window-modal" not in script
     assert "renderModuleCard('元婴', moduleNote, primaryTools, settingsTools, compactDetails(['元婴','探寻裂缝']), null)" in script
     assert "renderModuleToggle('探寻裂缝','开关')" in script
+    assert "renderExploreRiftRebirthConfig(rebirthConfig)" in script
+    assert "data-explore-rift-rebirth-config=\"preferred_root_type\"" in script
+    assert "data-save-explore-rift-rebirth-config" in script
+    assert "/api/explore-rift-rebirth-config" in script
     assert "identity.jiyin_effective_choice_label" in script
     assert "identity.nanlong_effective_choice_label" in script
     assert "settingCheckbox('timeline_enabled', '启用时间线'" in script
-    assert "settingCheckbox('timeline_dry_run_enabled', '时间线 dry-run'" in script
+    assert "settingCheckbox('timeline_dry_run_enabled', '时间线试运行'" in script
     assert "settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费'" in script
     assert "settingCheckbox('retreat_farm_auto_exchange_heqi_dan', '缺丹自动兑换'" in script
     assert "data-tianxing-config=\"retreat_farm_heqi_exchange_count\"" in script
@@ -148,7 +152,7 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "tianxingRouteSelect('farm_route', txConfig.farm_route)" in script
     assert "data-tianxing-config=\"target_tianji_daily\"" in script
     assert "data-tianxing-config=\"ack_timeout_sec\"" in script
-    assert "时间线观测" in script
+    assert "执行状态" in script
     assert "献魂偏收益" not in script
     assert "收敛偏保守" not in script
     assert "不确定收益" not in script

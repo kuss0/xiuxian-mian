@@ -23,6 +23,8 @@ FISHING_DEFAULT_DAILY_LIMIT = 20
 FISHING_DEFAULT_BUY_BAIT_COUNT = 20
 FISHING_MAX_DAILY_LIMIT = 20
 FISHING_MAX_BUY_BAIT_COUNT = 99
+FISHING_DEFAULT_CANCEL_AFTER_SEC = 120
+FISHING_MAX_CANCEL_AFTER_SEC = 600
 FISHING_DEFAULT_CHUM_NAMES = ("米糠小窝",)
 FISHING_BAIT_ITEM_KEYS = {
     "凡饵": "item_fishing_bait_plain",
@@ -59,6 +61,7 @@ _NO_FISH_RE = re.compile(r"你的鱼篓中只有【(?P<fish>[^】]+)】x0。")
 _FISHING_IN_PROGRESS_RE = re.compile(r"你已有一竿尚未收起。可用 \.钓鱼状态 查看，或 \.收竿 放弃。")
 _NO_ACTIVE_FISHING_RE = re.compile(r"你当前没有正在进行的垂钓。")
 _DAILY_LIMIT_RE = re.compile(r"你今日已垂钓\s*(?P<used>\d+)\s*/\s*(?P<limit>\d+)\s*竿，神识已乏，明日再来。")
+_CANCEL_FISHING_KEYWORDS = ("已收竿", "收起钓竿", "放弃垂钓", "结束本次垂钓")
 _CATCH_OPEN_COMMAND_RE = re.compile(r"可用\s*(?P<command>\.开鱼\s+[^\s]+)\s+查看鱼腹机缘")
 _RAISE_SUCCESS_RE = re.compile(
     r"【提竿成功】\s*"
@@ -453,6 +456,13 @@ def parse_no_active_fishing_reply(text):
     return bool(_NO_ACTIVE_FISHING_RE.search(str(text or "")))
 
 
+def parse_cancel_fishing_reply(text):
+    raw_text = str(text or "").strip()
+    if not raw_text or "【灵溪垂钓】" in raw_text or "可用" in raw_text:
+        return False
+    return any(keyword in raw_text for keyword in _CANCEL_FISHING_KEYWORDS)
+
+
 def parse_fishing_daily_limit_reached(text):
     match = _DAILY_LIMIT_RE.search(str(text or ""))
     if not match:
@@ -529,6 +539,14 @@ def clamp_fishing_buy_bait_count(value):
     except (TypeError, ValueError):
         parsed = FISHING_DEFAULT_BUY_BAIT_COUNT
     return max(1, min(FISHING_MAX_BUY_BAIT_COUNT, parsed))
+
+
+def clamp_fishing_cancel_after_sec(value):
+    try:
+        parsed = int(str(value if value is not None else FISHING_DEFAULT_CANCEL_AFTER_SEC).strip() or str(FISHING_DEFAULT_CANCEL_AFTER_SEC))
+    except (TypeError, ValueError):
+        parsed = FISHING_DEFAULT_CANCEL_AFTER_SEC
+    return max(0, min(FISHING_MAX_CANCEL_AFTER_SEC, parsed))
 
 
 def normalize_fishing_chum_names(chum_names=None, fallback_chum_name=""):

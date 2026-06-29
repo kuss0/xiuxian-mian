@@ -62,10 +62,10 @@ IDENTITY_RUNTIME_COLUMNS = [
     "resource_shortage_backoffs", "action_guard_sessions",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
     "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required",
-    "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
+    "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_rebirth_choice_mode", "explore_rift_rebirth_preferred_root_type", "explore_rift_rebirth_preferred_attrs", "explore_rift_rebirth_blind_index", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
     "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_last_msg_id", "duel_last_result", "duel_last_error",
-    "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_valuable_drop_reminders", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
+    "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_cancel_after_sec", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_valuable_drop_reminders", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
     "second_soul_phase", "second_soul_choice_strategy", "second_soul_heart_demon_msg_id", "second_soul_heart_demon_notified", "second_soul_status_msg_id", "second_soul_train_msg_id",
     "second_soul_last_train_started_at", "second_soul_last_broadcast_key", "second_soul_last_broadcast_at", "second_soul_moran_value",
@@ -592,6 +592,10 @@ IDENTITY_STATE_TEMPLATE = {
     "explore_rift_rebirth_selected_index": 0,
     "explore_rift_rebirth_last_result": "",
     "explore_rift_rebirth_last_error": "",
+    "explore_rift_rebirth_choice_mode": "safe_first",
+    "explore_rift_rebirth_preferred_root_type": "",
+    "explore_rift_rebirth_preferred_attrs": "",
+    "explore_rift_rebirth_blind_index": 1,
     "explore_rift_fatal_msg_id": 0,
     "explore_rift_fatal_confirm_due_at": 0,
 
@@ -637,6 +641,7 @@ IDENTITY_STATE_TEMPLATE = {
     "fishing_auto_buy_bait_count": 20,
     "fishing_auto_probe_enabled": False,
     "fishing_auto_open_fish_enabled": True,
+    "fishing_cancel_after_sec": 120,
     "fishing_transfer_target_id": 0,
     "fishing_transfer_due_at": 0,
     "fishing_caught_fish_json": "",
@@ -2336,33 +2341,94 @@ def get_identity_display_name(send_as_id=None):
 
 
 def resolve_identity_selector(selector):
+    identity_id, _error = resolve_identity_selector_detail(selector)
+    return identity_id
+
+
+def _identity_selector_key(value):
+    return str(value or "").strip().lstrip("@").casefold()
+
+
+def _identity_selector_candidates(identity_id):
+    profile = get_send_as_profile(identity_id)
+    raw_candidates = [
+        str(identity_id),
+        profile.get("username") or "",
+        profile.get("label") or "",
+        get_send_as_label(identity_id),
+        profile.get("daohao") or "",
+        get_identity_ui_display_name(identity_id),
+    ]
+    candidates = []
+    seen = set()
+    for raw in raw_candidates:
+        text = str(raw or "").strip()
+        key = _identity_selector_key(text)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates.append((text, key))
+    return candidates
+
+
+def _format_identity_selector_matches(matches):
+    labels = []
+    for identity_id, matched_text in matches:
+        try:
+            label = get_identity_ui_display_name(identity_id)
+        except Exception:
+            label = get_identity_display_name(identity_id)
+        matched = str(matched_text or "").strip()
+        labels.append(f"{label}({matched})" if matched else label)
+    return "、".join(labels)
+
+
+def resolve_identity_selector_detail(selector, *, allow_prefix=True, min_prefix_len=2):
     selector = (selector or "").strip()
     if not selector:
-        return None
+        return None, "未指定身份"
 
     normalized = selector.lstrip("@")
     if normalized.isdigit():
         identity_id = int(normalized)
         if identity_id in get_identity_ids():
-            return identity_id
+            return identity_id, ""
 
+    selector_key = _identity_selector_key(normalized)
+    exact_matches = []
     for identity_id in get_identity_ids():
-        profile = get_send_as_profile(identity_id)
-        candidates = {
-            str(identity_id),
-            (profile.get("username") or "").strip(),
-            (profile.get("label") or "").strip(),
-            get_send_as_label(identity_id),
-        }
-        if normalized in {candidate.lstrip("@") for candidate in candidates if candidate}:
-            return identity_id
-    return None
+        for candidate, candidate_key in _identity_selector_candidates(identity_id):
+            if selector_key == candidate_key:
+                exact_matches.append((identity_id, candidate))
+                break
+    exact_ids = {identity_id for identity_id, _candidate in exact_matches}
+    if len(exact_ids) == 1:
+        return exact_matches[0][0], ""
+    if len(exact_ids) > 1:
+        return None, f"身份选择 {selector} 匹配多个身份：{_format_identity_selector_matches(exact_matches)}"
+
+    if allow_prefix and selector_key and not selector_key.isdigit() and len(selector_key) >= int(min_prefix_len or 2):
+        prefix_matches = []
+        seen_ids = set()
+        for identity_id in get_identity_ids():
+            for candidate, candidate_key in _identity_selector_candidates(identity_id):
+                if candidate_key.startswith(selector_key):
+                    if identity_id not in seen_ids:
+                        prefix_matches.append((identity_id, candidate))
+                        seen_ids.add(identity_id)
+                    break
+        if len(prefix_matches) == 1:
+            return prefix_matches[0][0], ""
+        if len(prefix_matches) > 1:
+            return None, f"身份选择 {selector} 匹配多个身份：{_format_identity_selector_matches(prefix_matches)}"
+
+    return None, f"找不到身份：{selector}"
 
 
 def split_command_identity_selector(text):
     parts = (text or "").strip().rsplit(maxsplit=1)
     if len(parts) == 2:
-        target_id = resolve_identity_selector(parts[1])
+        target_id, _error = resolve_identity_selector_detail(parts[1])
         if target_id is not None:
             return parts[0].strip(), target_id
     return (text or "").strip(), None
@@ -2531,6 +2597,7 @@ __all__ = [
     "get_send_as_tags",
     "new_identity_state",
     "resolve_identity_selector",
+    "resolve_identity_selector_detail",
     "set_game_group_id",
     "set_game_bot_ids",
     "set_game_topic_id",

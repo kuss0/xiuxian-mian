@@ -100,6 +100,7 @@ from .config import (
     CMD_DUEL,
     CMD_FISHING,
     CMD_FISHING_BUY_BAIT,
+    CMD_FISHING_CANCEL,
     CMD_FISHING_CHUM,
     CMD_FISHING_LIFT,
     CMD_FISHING_OPEN,
@@ -189,7 +190,7 @@ from .features.quiz import clear_quiz_state, get_quiz_status_text
 from .features.ranch import clear_ranch_state, get_ranch_status_text, schedule_ranch_initial_check
 from .features.small_world import clear_small_world_state, get_small_world_status_text, restore_small_world_runtime, schedule_small_world_initial_check
 from .features.stargazer import get_stargazer_status_text
-from .features.tianxing import execute_tianxing_manual_action, get_tianxing_status_text
+from .features.tianxing import execute_tianxing_manual_action, get_tianxing_automation_pause_text, get_tianxing_status_text, set_tianxing_automation_paused
 from .features.tianti import get_tianti_status_text
 from .features.tower import get_tower_status_text
 from .features.tree import get_tree_status_text, request_tree_bootstrap_check
@@ -267,6 +268,7 @@ from .state import (
     get_pet_name,
     get_realm_sort_index,
     resolve_identity_selector,
+    resolve_identity_selector_detail,
     infer_realm_from_xiuwei_max,
     is_auto_delete_sent_messages_enabled,
     get_send_as_profile,
@@ -304,6 +306,7 @@ RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材
 RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s*$")
 RE_CMD_STORAGE_BAG_API_REFRESH = re.compile(r"^\.(?:更新储物袋|刷新储物袋|储物袋更新|储物袋刷新)$")
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
+RE_CMD_TIANXING_AUTOMATION_CONTROL = re.compile(r"^\.天星(?:自动)?(暂停|恢复)(?:\s+(\S+))?$")
 RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
 RE_CMD_YINLUO_MANUAL = re.compile(r"^\.阴罗(查幡|每日献祭|献祭|召唤魔影|召唤|收取精华|收取幡魂|收取|炼化|囚禁魂魄|囚禁|化煞|化功为煞|血洗山林|血洗|下咒|夺舍)(?:\s+([\s\S]+))?$")
 RE_CMD_XUTIAN_FOLLOWUP_MANUAL = re.compile(r"^(?:\.选择道路\s+(?:冰|火)|\.阵策\s+(?:稳|压|势)|\.争鼎\s+(?:求稳|夺鼎)|\.后殿抉择\s+(?:收手|冲关)|\.后殿阵策\s+(?:镇|夺|卦))$")
@@ -1093,6 +1096,7 @@ def _disable_fishing_module_state():
         CMD_FISHING_CHUM,
         CMD_FISHING_PROBE,
         CMD_FISHING_LIFT,
+        CMD_FISHING_CANCEL,
         CMD_FISHING_OPEN,
     })
 
@@ -4785,6 +4789,8 @@ THREE_SECT_MANUAL_USAGE = (
     "- .天星推命 <闭关|炼制|探索|斗法> @身份\n"
     "- .天星改命 <闭关|炼制|探索|斗法> @身份\n"
     "- .天星消劫 @身份\n"
+    "- .天星暂停 @身份\n"
+    "- .天星恢复 @身份\n"
     "- .阴罗查幡 @身份\n"
     "- .阴罗献祭 @身份\n"
     "- .阴罗召唤 @身份\n"
@@ -4945,6 +4951,66 @@ async def _handle_three_sect_manual_command(event, text, explicit_identity_id):
     return await _reply_three_sect_manual_result(event, "阴罗宗手动发送", ok, message, explicit_identity_id, plan)
 
 
+async def _handle_tianxing_automation_control_command(event, raw_text):
+    match = RE_CMD_TIANXING_AUTOMATION_CONTROL.match((raw_text or "").strip())
+    if not match:
+        return False
+    action = match.group(1) or ""
+    selector = match.group(2) or ""
+    if not selector:
+        await _reply_log_group_card(
+            event,
+            "天星自动接管",
+            "必须指定单个身份：.天星暂停 @身份 或 .天星恢复 @身份",
+            error_prefix="❌ 天星自动接管回复失败",
+        )
+        return True
+    identity_id, error = resolve_identity_selector_detail(selector)
+    if identity_id is None:
+        await _reply_log_group_card(
+            event,
+            "天星自动接管",
+            f"❌ {error or f'找不到身份：{selector}'}",
+            error_prefix="❌ 天星自动接管回复失败",
+        )
+        return True
+    if not get_identity_enabled(identity_id):
+        await _reply_log_group_card(
+            event,
+            "天星自动接管",
+            f"身份：{get_identity_display_name(identity_id)}\n结果：未变更\n说明：身份已停用。",
+            error_prefix="❌ 天星自动接管回复失败",
+        )
+        return True
+    if not is_module_available("天星宗", identity_id):
+        await _reply_log_group_card(
+            event,
+            "天星自动接管",
+            f"身份：{get_identity_display_name(identity_id)}\n结果：未变更\n说明：天星宗对该身份不可用。",
+            error_prefix="❌ 天星自动接管回复失败",
+        )
+        return True
+
+    paused = action == "暂停"
+    with use_identity(identity_id):
+        set_tianxing_automation_paused(paused, now=time.time(), reason="日志群手动暂停")
+        pause_text = get_tianxing_automation_pause_text()
+    await _reply_log_group_card(
+        event,
+        "天星自动接管",
+        "\n".join(
+            [
+                f"身份：{get_identity_display_name(identity_id)}",
+                f"结果：{'已暂停' if paused else '已恢复'}",
+                f"自动接管：{pause_text}",
+                "说明：暂停期间天星自动调度、炼制攒点和路线前置不接管；手动命令仍可使用。",
+            ]
+        ),
+        error_prefix="❌ 天星自动接管回复失败",
+    )
+    return True
+
+
 async def handle_log_group_command(event):
     if event.chat_id != LOG_GROUP_ID:
         return False
@@ -4966,6 +5032,9 @@ async def handle_log_group_command(event):
     storage_bag_simple_find_match = RE_CMD_STORAGE_BAG_SIMPLE_FIND.match(raw_text)
     if storage_bag_simple_find_match:
         return await _handle_storage_bag_simple_find_command(event, storage_bag_simple_find_match.group(1) or "")
+
+    if await _handle_tianxing_automation_control_command(event, raw_text):
+        return True
 
     text, explicit_identity_id = split_command_identity_selector(raw_text)
 

@@ -822,6 +822,33 @@ class SentMessageEvidenceTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
 
+    def test_action_guard_quiets_ordinary_commands_during_explore_rift_rebirth(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990306
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_rebirth_required"] = True
+                state_module.state["explore_rift_rebirth_phase"] = "requesting"
+
+                for command in (".深度闭关", ".钓鱼 青溪浅滩 灵米饵"):
+                    with self.subTest(command=command):
+                        allowed, reason = action_guard.before_send(command, send_as_id=identity_id, now=1_780_000_050.0)
+                        self.assertFalse(allowed)
+                        self.assertIn("普通指令静默", reason)
+                        self.assertFalse(action_guard.should_log_block(command, send_as_id=identity_id, now=1_780_000_050.0))
+
+                allowed, reason = action_guard.before_send(".夺舍重生", send_as_id=identity_id, now=1_780_000_050.0)
+                self.assertTrue(allowed, reason)
+                allowed, reason = action_guard.before_send(".重生 1", send_as_id=identity_id, now=1_780_000_050.0)
+                self.assertTrue(allowed, reason)
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
     def test_runtime_tracks_explore_rift_pending_result_ids(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)
         identity_id = 990304

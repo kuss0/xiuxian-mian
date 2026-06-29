@@ -1,7 +1,10 @@
 import asyncio
 import copy
+import json
 import sys
+import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -384,21 +387,63 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(hehuan, "save_state"),
                 patch.object(hehuan, "_ensure_hehuan_reply_anchor", new=AsyncMock(return_value=(8801, ""))),
+                patch.object(hehuan, "_hehuan_retry_delay_sec", return_value=123.0) as delay_mock,
                 patch.object(hehuan, "send_game_command", return_value=msg) as send_mock,
             ):
                 await hehuan.run_hehuan_scheduler(now)
 
             send_mock.assert_awaited_once()
+            delay_mock.assert_called_once()
             self.assertEqual(".双修 温养", send_mock.await_args.args[0])
             self.assertEqual(8801, send_mock.await_args.kwargs["reply_to"])
             self.assertEqual("合欢宗", send_mock.await_args.kwargs["source_module"])
             self.assertEqual(0, send_mock.await_args.kwargs["max_retry"])
+            self.assertEqual(123, send_mock.await_args.kwargs["reply_timeout"])
             observed = state_module.state["hehuan_observation"]
             self.assertEqual("warm", observed["auto_last_action"])
             self.assertEqual("", observed["auto_last_error"])
             self.assertEqual(9001, observed["auto_pending_msg_id"])
             self.assertEqual(8801, observed["auto_reply_anchor_msg_id"])
-            self.assertGreater(observed["auto_next_time"], now)
+            self.assertEqual(now + 123.0, observed["auto_pending_deadline_at"])
+            self.assertEqual(observed["auto_pending_deadline_at"], observed["auto_next_time"])
+
+    def test_recent_baiji_anchor_skips_command_messages(self):
+        base_dt = datetime(2026, 6, 29, 12, 5, tzinfo=hehuan.TZ_LOCAL)
+        now = base_dt.timestamp()
+        entries = [
+            {
+                "ts": "2026-06-29 12:03:00 UTC+8",
+                "event_type": "message",
+                "message_id": 8801,
+                "chat_id": -1001680975844,
+                "sender_id": hehuan.HEHUAN_BAIJI_SEND_AS_ID,
+                "topic_id": 7310786,
+                "reply_to_msg_id": 0,
+                "text": hehuan.HEHUAN_ANCHOR_TEXT,
+            },
+            {
+                "ts": "2026-06-29 12:04:00 UTC+8",
+                "event_type": "sent",
+                "message_id": 8802,
+                "chat_id": -1001680975844,
+                "sender_id": hehuan.HEHUAN_BAIJI_SEND_AS_ID,
+                "topic_id": 7310786,
+                "reply_to_msg_id": 0,
+                "text": ".神迹 赈灾",
+                "source_module": "小世界",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-06-29.log"
+            log_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in entries), encoding="utf-8")
+            with (
+                patch.object(hehuan, "MESSAGES_DIR", tmpdir),
+                patch.object(hehuan, "get_game_group_id", return_value=-1001680975844),
+                patch.object(hehuan, "get_game_topic_id", return_value=7310786),
+            ):
+                msg_id = hehuan.find_recent_baiji_anchor_msg_id(now=now)
+
+        self.assertEqual(8801, msg_id)
 
     async def test_scheduler_respects_future_auto_time(self):
         now = 1_780_000_000.0

@@ -391,6 +391,13 @@ def _is_game_topic_entry(payload):
     return payload_topic_id == topic_id or reply_to_msg_id == topic_id
 
 
+def _is_baiji_anchor_candidate(payload):
+    text = str((payload or {}).get("text") or "").strip()
+    if not text:
+        return False
+    return not text.startswith(".")
+
+
 def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC):
     now = float(now if now is not None else time.time())
     min_ts = now - max(1, int(max_age_sec or HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC))
@@ -412,6 +419,8 @@ def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR
             if not _is_game_topic_entry(payload):
                 continue
             if not _is_baiji_log_entry(payload):
+                continue
+            if not _is_baiji_anchor_candidate(payload):
                 continue
             msg_ts = _parse_message_log_ts(payload.get("ts"))
             if msg_ts <= 0 or msg_ts < min_ts or msg_ts > now + 60:
@@ -871,6 +880,7 @@ async def run_hehuan_scheduler(now):
         _set_hehuan_auto_block(observed, now, anchor_error or "缺少吧唧回复锚点", now + 5 * 60)
         return
 
+    retry_delay_sec = max(1.0, float(_hehuan_retry_delay_sec(observed)))
     msg = await send_game_command(
         plan["command"],
         track=True,
@@ -879,7 +889,7 @@ async def run_hehuan_scheduler(now):
         priority="normal",
         source_module="合欢宗",
         op_id=f"hehuan-auto-warm-{int(now)}",
-        reply_timeout=max(1, int(_hehuan_retry_delay_sec(observed))),
+        reply_timeout=max(1, int(retry_delay_sec)),
         delete_policy="manual_keep",
     )
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
@@ -893,7 +903,7 @@ async def run_hehuan_scheduler(now):
     observed["auto_last_error"] = ""
     observed["auto_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
     observed["auto_pending_sent_at"] = float(sent_at)
-    observed["auto_pending_deadline_at"] = float(sent_at + _hehuan_retry_delay_sec(observed))
+    observed["auto_pending_deadline_at"] = float(sent_at + retry_delay_sec)
     observed["auto_reply_anchor_msg_id"] = int(anchor_msg_id)
     observed["auto_next_time"] = observed["auto_pending_deadline_at"]
     state["hehuan_observation"] = observed

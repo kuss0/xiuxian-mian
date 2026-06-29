@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
+from model import ui
 from model.features import explore_rift, storage_bag
 from model.real_message_replay import get_real_message_text
 
@@ -41,6 +42,60 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             xiuwei_max=500000,
         )
         return identity_id
+
+    def test_status_text_shows_quiet_lock_during_rebirth_recovery(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_rebirth_required"] = True
+            state_module.state["explore_rift_rebirth_phase"] = "requesting"
+            state_module.state["explore_rift_rebirth_due_at"] = now + 30
+            with patch.object(explore_rift.time, "time", return_value=now):
+                status_text = explore_rift.get_explore_rift_status_text()
+
+        self.assertIn("普通指令静默：是", status_text)
+        self.assertIn("仅放行 .夺舍重生 / .重生 <编号>", status_text)
+        self.assertIn("夺舍阶段：requesting", status_text)
+
+    def test_status_text_does_not_show_quiet_lock_when_normal(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now + 3600
+            with patch.object(explore_rift.time, "time", return_value=now):
+                status_text = explore_rift.get_explore_rift_status_text()
+
+        self.assertNotIn("普通指令静默", status_text)
+
+    async def test_ui_set_rebirth_config_updates_snapshot(self):
+        identity_id = self._prepare_identity()
+
+        with patch.object(ui, "save_state"), patch.object(ui, "send_audit_log", new=AsyncMock()):
+            ok, message = await ui.ui_set_explore_rift_rebirth_config(
+                identity_id,
+                {
+                    "choice_mode": "root_first",
+                    "preferred_root_type": "异灵根",
+                    "preferred_attrs": "雷，冰",
+                    "blind_index": "2",
+                },
+            )
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(identity_id):
+            config = explore_rift.get_rebirth_choice_config()
+        self.assertEqual("root_first", config["choice_mode"])
+        self.assertEqual("异灵根", config["preferred_root_type"])
+        self.assertEqual("雷、冰", config["preferred_attrs"])
+        self.assertEqual(2, config["blind_index"])
+
+        snapshot = ui.get_identity_ui_snapshot(identity_id)
+        rebirth = snapshot["explore_rift_rebirth"]
+        self.assertEqual("root_first", rebirth["choice_mode"])
+        self.assertEqual("异灵根", rebirth["preferred_root_type"])
+        self.assertEqual("雷、冰", rebirth["preferred_attrs"])
+        self.assertEqual(2, rebirth["blind_index"])
 
     def test_parse_explore_rift_result_summary_counts_reward_tokens(self):
         summary, item_deltas = explore_rift.parse_explore_rift_result_summary(
@@ -111,6 +166,77 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, selected["index"])
         self.assertEqual("稳妥之身", selected["fate"])
 
+    def test_parse_rebirth_options_tolerates_extra_lines_without_chasing_root_rank(self):
+        options = explore_rift.parse_rebirth_options(
+            "你面前出现了三具可供夺舍的肉身：\n\n"
+            "1. 【夺舍 玄狂隐】\n"
+            "   - 灵根: 天灵根(水)\n"
+            "   - 批命: 此身命数躁烈，若能压住反噬，未必不能一步翻盘。\n"
+            "   - 命途: 赌命之身\n"
+            "2. 【夺舍 玄安翁】\n"
+            "   - 灵根: 伪灵根(金火水土)\n"
+            "   - 批命: 此身经络稳固、灵脉平和，最利重新立足。\n"
+            "   - 命途: 稳妥之身\n"
+            "3. 【夺舍 隐衍尘】\n"
+            "   - 灵根: 异灵根(暗)\n"
+            "   - 批命: 此身与你前世灵机牵连最深。\n"
+            "   - 命途: 承脉之身"
+        )
+
+        self.assertEqual(3, len(options))
+        selected = explore_rift.choose_safe_rebirth_option(options)
+        self.assertEqual(2, selected["index"])
+        self.assertEqual("稳妥之身", selected["fate"])
+
+    def test_rebirth_choice_safe_first_prefers_root_only_inside_stable_options(self):
+        options = explore_rift.parse_rebirth_options(
+            "你面前出现了三具可供夺舍的肉身：\n\n"
+            "1. 【夺舍 玄安翁】\n"
+            "   - 灵根: 伪灵根(金火水土)\n"
+            "   - 命途: 稳妥之身\n"
+            "2. 【夺舍 隐衍尘】\n"
+            "   - 灵根: 异灵根(雷)\n"
+            "   - 命途: 承脉之身\n"
+            "3. 【夺舍 青命行】\n"
+            "   - 灵根: 天灵根(木)\n"
+            "   - 命途: 稳妥之身\n"
+        )
+        config = {
+            "choice_mode": "safe_first",
+            "preferred_root_type": "异灵根",
+            "preferred_attrs": "雷",
+            "preferred_attrs_list": ["雷"],
+            "blind_index": 1,
+        }
+
+        selected = explore_rift.choose_safe_rebirth_option(options, config=config)
+
+        self.assertEqual(1, selected["index"])
+        self.assertEqual("稳妥之身", selected["fate"])
+
+    def test_rebirth_choice_root_first_can_pick_preferred_non_stable_body(self):
+        options = explore_rift.parse_rebirth_options(
+            "你面前出现了三具可供夺舍的肉身：\n\n"
+            "1. 【夺舍 玄安翁】\n"
+            "   - 灵根: 伪灵根(金火水土)\n"
+            "   - 命途: 稳妥之身\n"
+            "2. 【夺舍 隐衍尘】\n"
+            "   - 灵根: 异灵根(雷)\n"
+            "   - 命途: 承脉之身\n"
+        )
+        config = {
+            "choice_mode": "root_first",
+            "preferred_root_type": "异灵根",
+            "preferred_attrs": "雷",
+            "preferred_attrs_list": ["雷"],
+            "blind_index": 1,
+        }
+
+        selected = explore_rift.choose_safe_rebirth_option(options, config=config)
+
+        self.assertEqual(2, selected["index"])
+        self.assertEqual("承脉之身", selected["fate"])
+
     async def test_fatal_result_waits_for_escape_edit_and_records_weak_period(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -155,6 +281,37 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("weak", state_module.state["explore_rift_rebirth_phase"])
             self.assertEqual(now + 4 + 6 * 3600 + explore_rift.CD_BUFFER_SEC, state_module.state["explore_rift_nascent_escape_weak_until"])
 
+    async def test_confirmed_fatal_without_escape_edit_enters_rebirth_recovery(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_fatal_msg_id"] = 22028
+            state_module.state["explore_rift_fatal_confirm_due_at"] = now - 1
+            with (
+                patch.object(explore_rift.random, "uniform", return_value=0),
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["explore_rift_fatal_msg_id"])
+            self.assertTrue(state_module.state["explore_rift_rebirth_required"])
+            self.assertEqual("idle", state_module.state["explore_rift_rebirth_phase"])
+            self.assertIn("待夺舍恢复", state_module.state["explore_rift_last_result"])
+
+            fake_msg = SimpleNamespace(id=33001, sent_at=now + 5)
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now + 5)
+
+            send_mock.assert_awaited_once_with(".夺舍重生", track=False, max_retry=0, source_module="探寻裂缝")
+            self.assertEqual(33001, state_module.state["explore_rift_rebirth_request_msg_id"])
+
     async def test_rebirth_scheduler_sends_request_after_weak_period(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -173,6 +330,73 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once_with(".夺舍重生", track=False, max_retry=0, source_module="探寻裂缝")
             self.assertEqual(33001, state_module.state["explore_rift_rebirth_request_msg_id"])
             self.assertEqual("requesting", state_module.state["explore_rift_rebirth_phase"])
+
+    async def test_rebirth_scheduler_blind_selects_stable_body_when_options_reply_times_out(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_rebirth_required"] = True
+            state_module.state["explore_rift_rebirth_phase"] = "requesting"
+            state_module.state["explore_rift_rebirth_request_msg_id"] = 33001
+            state_module.state["explore_rift_rebirth_due_at"] = now - 1
+            fake_msg = SimpleNamespace(id=33002, sent_at=now)
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(explore_rift, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".重生 1", track=False, max_retry=0, source_module="探寻裂缝")
+            self.assertEqual(0, state_module.state["explore_rift_rebirth_request_msg_id"])
+            self.assertEqual(33002, state_module.state["explore_rift_rebirth_select_msg_id"])
+            self.assertEqual(1, state_module.state["explore_rift_rebirth_selected_index"])
+            self.assertEqual("blind_selecting", state_module.state["explore_rift_rebirth_phase"])
+
+    async def test_rebirth_scheduler_uses_configured_blind_index_when_options_reply_times_out(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_rebirth_required"] = True
+            state_module.state["explore_rift_rebirth_phase"] = "requesting"
+            state_module.state["explore_rift_rebirth_request_msg_id"] = 33001
+            state_module.state["explore_rift_rebirth_due_at"] = now - 1
+            state_module.state["explore_rift_rebirth_blind_index"] = 2
+            fake_msg = SimpleNamespace(id=33002, sent_at=now)
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(explore_rift, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".重生 2", track=False, max_retry=0, source_module="探寻裂缝")
+            self.assertEqual(2, state_module.state["explore_rift_rebirth_selected_index"])
+
+    async def test_rebirth_scheduler_stops_after_rebirth_choice_confirmation_timeout(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_rebirth_required"] = True
+            state_module.state["explore_rift_rebirth_phase"] = "blind_selecting"
+            state_module.state["explore_rift_rebirth_select_msg_id"] = 33002
+            state_module.state["explore_rift_rebirth_selected_index"] = 1
+            state_module.state["explore_rift_rebirth_due_at"] = now - 1
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["explore_rift_rebirth_select_msg_id"])
+            self.assertTrue(state_module.state["explore_rift_manual_required"])
+            self.assertEqual("manual_required", state_module.state["explore_rift_rebirth_phase"])
+            self.assertIn("停止自动重试", state_module.state["explore_rift_rebirth_last_error"])
 
     async def test_rebirth_options_send_stable_rebirth_choice(self):
         identity_id = self._prepare_identity()
@@ -360,6 +584,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
 
             timeline_mock.assert_awaited_once()
             self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
+            self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
             send_mock.assert_not_awaited()
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
@@ -398,6 +623,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
 
             timeline_mock.assert_awaited_once()
             self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
+            self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
             self.assertEqual(now, timeline_mock.await_args.kwargs["windows"][0]["start_at"])
             self.assertGreaterEqual(timeline_mock.await_args.kwargs["windows"][0]["end_at"], due_at)
             send_mock.assert_not_awaited()

@@ -104,6 +104,7 @@ from .timing import configure_timing
 
 _db_conn = None
 _db_initialized = False
+_schema_columns_ensured_key = None
 _state_dirty = False
 _last_flush_time = 0
 _last_save_failed_at = 0.0
@@ -120,11 +121,27 @@ def _safety_watchdog_fused_file():
 
 
 def get_db_conn():
-    global _db_conn
+    global _db_conn, _schema_columns_ensured_key
     if _db_conn is None:
+        _schema_columns_ensured_key = None
         _db_conn = sqlite3.connect(DB_FILE)
         _db_conn.row_factory = sqlite3.Row
     return _db_conn
+
+
+def _schema_columns_cache_key(conn):
+    return (os.path.abspath(DB_FILE), id(conn))
+
+
+def _mark_schema_columns_ensured(conn):
+    global _schema_columns_ensured_key
+    _schema_columns_ensured_key = _schema_columns_cache_key(conn)
+
+
+def _ensure_schema_columns_ready(conn):
+    if _schema_columns_ensured_key == _schema_columns_cache_key(conn):
+        return
+    _ensure_schema_columns(conn)
 
 
 def _mark_persistence_save_ok():
@@ -915,6 +932,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0")
     if "fishing_auto_open_fish_enabled" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_auto_open_fish_enabled INTEGER NOT NULL DEFAULT 1")
+    if "fishing_cancel_after_sec" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_cancel_after_sec INTEGER NOT NULL DEFAULT 120")
     if "fishing_transfer_target_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN fishing_transfer_target_id INTEGER NOT NULL DEFAULT 0")
     if "fishing_transfer_due_at" not in runtime_columns:
@@ -989,6 +1008,14 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_last_result TEXT NOT NULL DEFAULT ''")
     if "explore_rift_rebirth_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_last_error TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_rebirth_choice_mode" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_choice_mode TEXT NOT NULL DEFAULT 'safe_first'")
+    if "explore_rift_rebirth_preferred_root_type" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_preferred_root_type TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_rebirth_preferred_attrs" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_preferred_attrs TEXT NOT NULL DEFAULT ''")
+    if "explore_rift_rebirth_blind_index" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_rebirth_blind_index INTEGER NOT NULL DEFAULT 1")
     if "explore_rift_fatal_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_fatal_msg_id INTEGER NOT NULL DEFAULT 0")
     if "explore_rift_fatal_confirm_due_at" not in runtime_columns:
@@ -1095,6 +1122,7 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN taiyi_phase_entered_at REAL NOT NULL DEFAULT 0")
     if "taiyi_freeze_until" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN taiyi_freeze_until REAL NOT NULL DEFAULT 0")
+    _mark_schema_columns_ensured(conn)
 
 
 
@@ -1590,6 +1618,7 @@ def init_db():
             fishing_auto_buy_bait_count INTEGER NOT NULL DEFAULT 20,
             fishing_auto_probe_enabled INTEGER NOT NULL DEFAULT 0,
             fishing_auto_open_fish_enabled INTEGER NOT NULL DEFAULT 1,
+            fishing_cancel_after_sec INTEGER NOT NULL DEFAULT 120,
             fishing_transfer_target_id INTEGER NOT NULL DEFAULT 0,
             fishing_transfer_due_at REAL NOT NULL DEFAULT 0,
             fishing_caught_fish_json TEXT NOT NULL DEFAULT '',
@@ -1877,6 +1906,7 @@ def _deserialize_db_value(key, value):
 
 def upsert_identity_to_db(send_as_id):
     conn = get_db_conn()
+    _ensure_schema_columns_ready(conn)
     identity_state = get_identity_state(send_as_id)
     profile = get_send_as_profile(send_as_id)
     now_ts = time.time()

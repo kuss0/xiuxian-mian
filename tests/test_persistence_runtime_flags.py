@@ -1,4 +1,5 @@
 import copy
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -20,8 +21,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._db_conn_snapshot = persistence._db_conn
         self._db_initialized_snapshot = persistence._db_initialized
+        self._schema_columns_ensured_key_snapshot = persistence._schema_columns_ensured_key
         persistence._db_conn = None
         persistence._db_initialized = False
+        persistence._schema_columns_ensured_key = None
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
 
@@ -30,6 +33,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
             persistence._db_conn.close()
         persistence._db_conn = self._db_conn_snapshot
         persistence._db_initialized = self._db_initialized_snapshot
+        persistence._schema_columns_ensured_key = self._schema_columns_ensured_key_snapshot
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
@@ -38,6 +42,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
             persistence._db_conn.close()
         persistence._db_conn = None
         persistence._db_initialized = False
+        persistence._schema_columns_ensured_key = None
 
     def test_divination_daily_limit_roundtrips_as_integer(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -142,6 +147,34 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(1, int(row["small_world_preach_enabled"]))
 
+    def test_direct_runtime_upsert_migrates_missing_runtime_column(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                persistence.init_db()
+                conn = persistence.get_db_conn()
+                try:
+                    conn.execute("ALTER TABLE identity_runtime_state DROP COLUMN fishing_cancel_after_sec")
+                    conn.commit()
+                except sqlite3.OperationalError as exc:
+                    self.skipTest(f"sqlite DROP COLUMN unavailable: {exc}")
+
+                persistence._schema_columns_ensured_key = None
+                identity_id = 990020
+                state_module.ensure_identity_registered(identity_id)
+                with state_module.use_identity(identity_id):
+                    state_module.state["fishing_cancel_after_sec"] = 180
+
+                persistence.upsert_identity_to_db(identity_id)
+
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+                row = conn.execute(
+                    "SELECT fishing_cancel_after_sec FROM identity_runtime_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertIn("fishing_cancel_after_sec", columns)
+                self.assertEqual(180, int(row["fishing_cancel_after_sec"]))
+
     def test_phaseful_log_dedupe_flags_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")
@@ -180,6 +213,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     state_module.state["explore_rift_last_error"] = "境界不足"
                     state_module.state["explore_rift_last_result_key"] = "rift:stable"
                     state_module.state["explore_rift_manual_required"] = True
+                    state_module.state["explore_rift_rebirth_choice_mode"] = "root_first"
+                    state_module.state["explore_rift_rebirth_preferred_root_type"] = "异灵根"
+                    state_module.state["explore_rift_rebirth_preferred_attrs"] = "雷、冰"
+                    state_module.state["explore_rift_rebirth_blind_index"] = 2
                     state_module.state["wendao_enabled"] = True
                     state_module.state["next_wendao_time"] = 1_700_000_777.0
                     state_module.state["wendao_reply_to_msg_id"] = 321
@@ -230,6 +267,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertIn("explore_rift_last_error", columns)
                 self.assertIn("explore_rift_last_result_key", columns)
                 self.assertIn("explore_rift_manual_required", columns)
+                self.assertIn("explore_rift_rebirth_choice_mode", columns)
+                self.assertIn("explore_rift_rebirth_preferred_root_type", columns)
+                self.assertIn("explore_rift_rebirth_preferred_attrs", columns)
+                self.assertIn("explore_rift_rebirth_blind_index", columns)
                 self.assertIn("wendao_reply_to_msg_id", columns)
                 self.assertIn("wendao_reply_due_at", columns)
                 self.assertIn("wendao_pending_result_msg_id", columns)
@@ -293,6 +334,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     self.assertEqual("境界不足", state_module.state["explore_rift_last_error"])
                     self.assertEqual("rift:stable", state_module.state["explore_rift_last_result_key"])
                     self.assertTrue(state_module.state["explore_rift_manual_required"])
+                    self.assertEqual("root_first", state_module.state["explore_rift_rebirth_choice_mode"])
+                    self.assertEqual("异灵根", state_module.state["explore_rift_rebirth_preferred_root_type"])
+                    self.assertEqual("雷、冰", state_module.state["explore_rift_rebirth_preferred_attrs"])
+                    self.assertEqual(2, state_module.state["explore_rift_rebirth_blind_index"])
                     self.assertTrue(state_module.state["wendao_enabled"])
                     self.assertEqual(1_700_000_777.0, state_module.state["next_wendao_time"])
                     self.assertEqual(321, state_module.state["wendao_reply_to_msg_id"])

@@ -53,6 +53,14 @@
     return Math.max(1, Math.min(99, parsed));
   }
 
+  function clampCancelAfterSec(value){
+    var parsed = parseInt(value, 10);
+    if(!Number.isFinite(parsed)){
+      return 120;
+    }
+    return Math.max(0, Math.min(600, parsed));
+  }
+
   function selectedChumSet(fishing){
     var values = Array.isArray(fishing.chum_names) ? fishing.chum_names : [];
     if(!values.length && fishing.chum_name){
@@ -133,6 +141,7 @@
     bits.push('竿 '+esc(fishing.daily_count || 0)+'/'+esc(clampDailyLimit(fishing.daily_limit)));
     bits.push('买饵 '+(fishing.auto_buy_bait_enabled ? '开' : '关')+'x'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count)));
     bits.push('开鱼 '+(fishing.auto_open_fish_enabled ? '开' : '关'));
+    bits.push('收竿 '+(clampCancelAfterSec(fishing.cancel_after_sec) > 0 ? esc(clampCancelAfterSec(fishing.cancel_after_sec))+'s' : '关'));
     if(Number(fishing.transfer_target_id || 0) > 0){
       bits.push('赠 '+esc(fishing.transfer_target_label || fishing.transfer_target_id));
     }
@@ -155,6 +164,7 @@
       '<label class="field-label"><span>鱼饵</span><select class="text-input" name="bait">'+optionHtml(fishing.bait_choices || [], fishing.bait)+'</select></label>'+
       '<label class="field-label"><span>每日竿数</span><input class="text-input" type="number" name="daily_limit" min="1" max="20" step="1" value="'+esc(clampDailyLimit(fishing.daily_limit))+'" /></label>'+
       '<label class="field-label"><span>买饵数量</span><input class="text-input" type="number" name="auto_buy_bait_count" min="1" max="99" step="1" value="'+esc(clampBuyBaitCount(fishing.auto_buy_bait_count))+'" /></label>'+
+      '<label class="field-label"><span>卡竿收竿</span><input class="text-input" type="number" name="cancel_after_sec" min="0" max="600" step="10" value="'+esc(clampCancelAfterSec(fishing.cancel_after_sec))+'" /></label>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_chum_enabled" '+(fishing.auto_chum_enabled ? 'checked' : '')+' /><span>打窝</span></label>'+
       '<div class="fishing-plan fishing-chum-plan"><span>窝料顺序</span><div>'+chumCheckboxHtml(fishing)+'</div></div>'+
       '<label class="toggle-field fishing-toggle"><input type="checkbox" name="auto_buy_bait_enabled" '+(fishing.auto_buy_bait_enabled ? 'checked' : '')+' /><span>缺饵购买</span></label>'+
@@ -271,6 +281,7 @@
       bait: form.querySelector('select[name="bait"]').value,
       daily_limit: clampDailyLimit(form.querySelector('input[name="daily_limit"]').value),
       auto_buy_bait_count: clampBuyBaitCount(form.querySelector('input[name="auto_buy_bait_count"]').value),
+      cancel_after_sec: clampCancelAfterSec(form.querySelector('input[name="cancel_after_sec"]').value),
       auto_chum_enabled: chumEnabled,
       chum_names: chumEnabled ? chumNames : [],
       chum_name: chumEnabled && chumNames.length ? chumNames[0] : '无',

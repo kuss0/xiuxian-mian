@@ -828,6 +828,14 @@ class SafetyWatchdogTests(unittest.TestCase):
                 priority="event_burst",
             ),
             _event(
+                now - 0.5,
+                sender_id,
+                ".收竿",
+                family="fishing",
+                source_module="灵溪垂钓",
+                priority="event_burst",
+            ),
+            _event(
                 now,
                 sender_id,
                 ".开鱼 银须灵鲢",

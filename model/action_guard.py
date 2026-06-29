@@ -13,6 +13,8 @@ from .config import (
     CMD_DIVINATION,
     CMD_DIVINATION_EXCHANGE,
     CMD_EXPLORE_RIFT,
+    CMD_REBIRTH_REQUEST,
+    CMD_REBIRTH_SELECT_PREFIX,
     CMD_HEHUAN_DUAL,
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
@@ -582,8 +584,50 @@ def _float_state(identity_state, key):
         return 0.0
 
 
+def _dict_state(identity_state, key):
+    value = identity_state.get(key) if isinstance(identity_state, dict) else None
+    return value if isinstance(value, dict) else {}
+
+
+def _int_dict_state(mapping, key):
+    try:
+        return int(mapping.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _float_dict_state(mapping, key):
+    try:
+        return float(mapping.get(key, 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _phase_is(identity_state, key, phases):
     return str(identity_state.get(key) or "idle") in set(phases)
+
+
+def _is_rebirth_recovery_command(command):
+    raw_command = normalize_command(command)
+    return (
+        raw_command == CMD_REBIRTH_REQUEST
+        or raw_command == CMD_REBIRTH_SELECT_PREFIX
+        or raw_command.startswith(f"{CMD_REBIRTH_SELECT_PREFIX} ")
+    )
+
+
+def _rebirth_quiet_reason(identity_state, now):
+    now = float(now or 0)
+    fatal_due_at = _float_state(identity_state, "explore_rift_fatal_confirm_due_at")
+    if _int_state(identity_state, "explore_rift_fatal_msg_id") > 0 and fatal_due_at > now:
+        return "探寻裂缝大凶确认中"
+    weak_until = _float_state(identity_state, "explore_rift_nascent_escape_weak_until")
+    if weak_until > now:
+        return "元婴虚弱等待夺舍"
+    if bool(identity_state.get("explore_rift_rebirth_required")):
+        phase = str(identity_state.get("explore_rift_rebirth_phase") or "idle")
+        return f"夺舍恢复中({phase})"
+    return ""
 
 
 def _session_has_send_evidence(session):
@@ -657,6 +701,17 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
         return _int_state(identity_state, "small_world_barrier_msg_id") > 0 and _float_state(identity_state, "small_world_barrier_due_at") > now
     if action_key == "wendao":
         return _int_state(identity_state, "wendao_reply_to_msg_id") > 0 and _float_state(identity_state, "wendao_reply_due_at") > now
+    if action_key == "hehuan_dual":
+        observed = _dict_state(identity_state, "hehuan_observation")
+        pending_msg_id = _int_dict_state(observed, "auto_pending_msg_id")
+        pending_sent_at = _float_dict_state(observed, "auto_pending_sent_at")
+        pending_deadline_at = _float_dict_state(observed, "auto_pending_deadline_at")
+        last_observed_at = _float_dict_state(observed, "last_observed_at")
+        if pending_msg_id <= 0 or pending_sent_at <= 0 or pending_deadline_at <= 0:
+            return False
+        if last_observed_at >= pending_sent_at:
+            return False
+        return pending_deadline_at > now
     if action_key == "explore_rift":
         if _int_state(identity_state, "explore_rift_reply_to_msg_id") > 0 and _float_state(identity_state, "explore_rift_reply_due_at") > now:
             return True
@@ -744,9 +799,14 @@ def _new_session(action_key, now, command):
 
 def before_send(command, send_as_id=None, now=None):
     action_key = resolve_action_key(command)
+    now = float(now if now is not None else time.time())
+    if has_identity(send_as_id):
+        with use_identity(send_as_id) as identity_state:
+            quiet_reason = _rebirth_quiet_reason(identity_state, now)
+            if quiet_reason and not _is_rebirth_recovery_command(command):
+                return False, f"{quiet_reason}，普通指令静默"
     if not action_key:
         return True, ""
-    now = float(now if now is not None else time.time())
     spec = _spec(action_key)
     max_attempts = _max_attempts(spec)
     with use_identity(send_as_id) as identity_state:
@@ -923,6 +983,9 @@ def should_log_block(command, send_as_id=None, now=None):
         return False
     now = float(now if now is not None else time.time())
     with use_identity(send_as_id) as identity_state:
+        quiet_reason = _rebirth_quiet_reason(identity_state, now)
+        if quiet_reason and not _is_rebirth_recovery_command(command):
+            return False
         sessions = _get_sessions(identity_state)
         session = sessions.get(action_key)
         if not isinstance(session, dict):

@@ -81,12 +81,13 @@ REBIRTH_OPTIONS_PREFIX = "你面前出现了三具可供夺舍的肉身"
 REBIRTH_BODY_INTACT_PREFIX = "你肉身完好，神魂稳固"
 REBIRTH_SUCCESS_PREFIX = "夺舍成功！"
 REBIRTH_AUTO_SELECT_PREFIX = "【天道代择】"
-RE_REBIRTH_OPTION = re.compile(
-    r"(?m)^\s*(?P<index>[123])\.\s*【夺舍\s+(?P<name>[^】]+)】\s*\n"
-    r"\s*-\s*灵根:\s*(?P<root>[^\n]+)\n"
-    r"\s*-\s*命途:\s*(?P<fate>[^\n]+)"
-)
+REBIRTH_BLIND_SELECT_INDEX = 1
+REBIRTH_CHOICE_MODES = ("safe_first", "root_first")
+REBIRTH_ROOT_TYPES = ("", "天灵根", "异灵根", "伪灵根", "废灵根")
+RE_REBIRTH_OPTION_HEADER = re.compile(r"(?m)^\s*(?P<index>[123])\.\s*【夺舍\s+(?P<name>[^】]+)】\s*$")
+RE_REBIRTH_OPTION_FIELD = re.compile(r"(?m)^\s*-\s*(?P<key>灵根|命途)\s*[:：]\s*(?P<value>[^\n]+)\s*$")
 RE_ROOT_ATTRS = re.compile(r"\(([^)]*)\)")
+RE_REBIRTH_ATTR_SPLIT = re.compile(r"[\s,，、/|]+")
 
 
 def _parse_int(value, default=0):
@@ -355,9 +356,16 @@ def classify_rebirth_text(text):
 
 
 def parse_rebirth_options(text):
+    raw_text = str(text or "")
     options = []
-    for match in RE_REBIRTH_OPTION.finditer(str(text or "")):
-        root_text = str(match.group("root") or "").strip()
+    headers = list(RE_REBIRTH_OPTION_HEADER.finditer(raw_text))
+    for idx, match in enumerate(headers):
+        block_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(raw_text)
+        block = raw_text[match.end():block_end]
+        fields = {}
+        for field_match in RE_REBIRTH_OPTION_FIELD.finditer(block):
+            fields[str(field_match.group("key") or "").strip()] = str(field_match.group("value") or "").strip()
+        root_text = fields.get("灵根", "")
         attr_match = RE_ROOT_ATTRS.search(root_text)
         attrs = attr_match.group(1).strip() if attr_match else ""
         root_type = RE_ROOT_ATTRS.sub("", root_text).strip()
@@ -368,16 +376,118 @@ def parse_rebirth_options(text):
                 "root_text": root_text,
                 "root_type": root_type,
                 "attrs": attrs,
-                "fate": str(match.group("fate") or "").strip(),
+                "fate": fields.get("命途", ""),
             }
         )
     return options
 
 
-def choose_safe_rebirth_option(options):
-    for option in options or []:
-        if str((option or {}).get("fate") or "").strip() == "稳妥之身":
-            return option
+def _normalize_rebirth_choice_mode(value):
+    mode = str(value or "").strip().lower()
+    return mode if mode in REBIRTH_CHOICE_MODES else "safe_first"
+
+
+def _normalize_rebirth_root_type(value):
+    root_type = str(value or "").strip()
+    return root_type if root_type in REBIRTH_ROOT_TYPES else ""
+
+
+def _normalize_rebirth_attrs(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    parts = []
+    for item in RE_REBIRTH_ATTR_SPLIT.split(raw):
+        item = str(item or "").strip()
+        if item and item not in parts:
+            parts.append(item)
+    return "、".join(parts)
+
+
+def _normalize_rebirth_blind_index(value):
+    index = _parse_int(value, REBIRTH_BLIND_SELECT_INDEX)
+    return index if index in {1, 2, 3} else REBIRTH_BLIND_SELECT_INDEX
+
+
+def get_rebirth_choice_config():
+    def get_value(key, default):
+        try:
+            return state.get(key, default)
+        except KeyError:
+            return default
+
+    attrs_text = _normalize_rebirth_attrs(get_value("explore_rift_rebirth_preferred_attrs", ""))
+    return {
+        "choice_mode": _normalize_rebirth_choice_mode(get_value("explore_rift_rebirth_choice_mode", "safe_first")),
+        "preferred_root_type": _normalize_rebirth_root_type(get_value("explore_rift_rebirth_preferred_root_type", "")),
+        "preferred_attrs": attrs_text,
+        "preferred_attrs_list": [item for item in attrs_text.split("、") if item],
+        "blind_index": _normalize_rebirth_blind_index(get_value("explore_rift_rebirth_blind_index", REBIRTH_BLIND_SELECT_INDEX)),
+    }
+
+
+def set_rebirth_choice_config(choice_mode=None, preferred_root_type=None, preferred_attrs=None, blind_index=None):
+    config = get_rebirth_choice_config()
+    if choice_mode is not None:
+        config["choice_mode"] = _normalize_rebirth_choice_mode(choice_mode)
+    if preferred_root_type is not None:
+        config["preferred_root_type"] = _normalize_rebirth_root_type(preferred_root_type)
+    if preferred_attrs is not None:
+        attrs_text = _normalize_rebirth_attrs(preferred_attrs)
+        config["preferred_attrs"] = attrs_text
+        config["preferred_attrs_list"] = [item for item in attrs_text.split("、") if item]
+    if blind_index is not None:
+        config["blind_index"] = _normalize_rebirth_blind_index(blind_index)
+    state["explore_rift_rebirth_choice_mode"] = config["choice_mode"]
+    state["explore_rift_rebirth_preferred_root_type"] = config["preferred_root_type"]
+    state["explore_rift_rebirth_preferred_attrs"] = config["preferred_attrs"]
+    state["explore_rift_rebirth_blind_index"] = config["blind_index"]
+    return config
+
+
+def _rebirth_option_root_score(option, config):
+    option = option or {}
+    config = config or {}
+    score = 0
+    preferred_root_type = str(config.get("preferred_root_type") or "").strip()
+    if preferred_root_type and str(option.get("root_type") or "").strip() == preferred_root_type:
+        score += 10
+    preferred_attrs = [str(item).strip() for item in config.get("preferred_attrs_list") or [] if str(item or "").strip()]
+    if preferred_attrs:
+        option_attrs_text = f"{option.get('attrs') or ''}{option.get('root_text') or ''}"
+        attr_hits = sum(1 for item in preferred_attrs if item in option_attrs_text)
+        if attr_hits:
+            score += attr_hits
+    return score
+
+
+def _pick_best_rebirth_option(options, config, *, require_safe):
+    candidates = []
+    for order, option in enumerate(options or []):
+        if require_safe and str((option or {}).get("fate") or "").strip() != "稳妥之身":
+            continue
+        score = _rebirth_option_root_score(option, config)
+        candidates.append((score, -order, option))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    if candidates[0][0] <= 0 and not require_safe:
+        return None
+    return candidates[0][2]
+
+
+def choose_safe_rebirth_option(options, config=None):
+    config = config or get_rebirth_choice_config()
+    mode = _normalize_rebirth_choice_mode(config.get("choice_mode"))
+    if mode == "root_first":
+        preferred = _pick_best_rebirth_option(options, config, require_safe=False)
+        if preferred:
+            return preferred
+    safe = _pick_best_rebirth_option(options, config, require_safe=True)
+    if safe:
+        return safe
+    if mode == "root_first":
+        return _pick_best_rebirth_option(options, config, require_safe=False)
     return None
 
 
@@ -413,6 +523,11 @@ def get_explore_rift_status_text():
     last_error = str(state.get("explore_rift_last_error") or "").strip() or "无"
     realm = _profile_realm() or "未知"
     xiuwei_current = _profile_xiuwei_current() or "未知"
+    now = time.time()
+    rebirth_config = get_rebirth_choice_config()
+    choice_mode_text = "灵根优先" if rebirth_config["choice_mode"] == "root_first" else "稳妥优先"
+    preferred_root_text = rebirth_config["preferred_root_type"] or "不限"
+    preferred_attrs_text = rebirth_config["preferred_attrs"] or "不限"
     lines = [
         "🕳 探寻裂缝",
         f"- 已启用：{'是' if state.get('explore_rift_enabled') else '否'}",
@@ -420,6 +535,7 @@ def get_explore_rift_status_text():
         f"- 当前境界：{realm}",
         f"- 当前修为：{xiuwei_current}",
         "- CD口径：默认 12h（化神初期+已确认装备风雷翅才 9h）",
+        f"- 夺舍选择：{choice_mode_text}｜灵根 {preferred_root_text}｜属性 {preferred_attrs_text}｜盲选 {rebirth_config['blind_index']}",
         f"- 待回复命令ID：{int(state.get('explore_rift_reply_to_msg_id', 0) or 0) or '无'}",
         f"- 待编辑结果ID：{int(state.get('explore_rift_pending_result_msg_id', 0) or 0) or '无'}",
         f"- 回复超时：{fmt_abs_ts(state.get('explore_rift_reply_due_at', 0))}（{fmt_remaining(state.get('explore_rift_reply_due_at', 0))}）",
@@ -433,8 +549,19 @@ def get_explore_rift_status_text():
     weak_until = float(state.get("explore_rift_nascent_escape_weak_until", 0) or 0)
     if weak_until > 0:
         lines.append(f"- 元婴虚弱至：{fmt_abs_ts(weak_until)}（{fmt_remaining(weak_until)}）")
-    if state.get("explore_rift_rebirth_required"):
-        lines.append(f"- 夺舍阶段：{state.get('explore_rift_rebirth_phase') or 'idle'}")
+    rebirth_required = bool(state.get("explore_rift_rebirth_required"))
+    rebirth_phase = state.get("explore_rift_rebirth_phase") or "idle"
+    quiet_reason = ""
+    if _parse_int(state.get("explore_rift_fatal_msg_id", 0)) > 0 and fatal_due_at > now:
+        quiet_reason = "大凶确认中"
+    elif weak_until > now:
+        quiet_reason = "元婴虚弱等待夺舍"
+    elif rebirth_required:
+        quiet_reason = f"夺舍恢复中({rebirth_phase})"
+    if quiet_reason:
+        lines.append(f"- 普通指令静默：是（{quiet_reason}，仅放行 .夺舍重生 / .重生 <编号>）")
+    if rebirth_required:
+        lines.append(f"- 夺舍阶段：{rebirth_phase}")
         lines.append(f"- 夺舍超时：{fmt_abs_ts(state.get('explore_rift_rebirth_due_at', 0))}（{fmt_remaining(state.get('explore_rift_rebirth_due_at', 0))}）")
         selected_index = int(state.get("explore_rift_rebirth_selected_index", 0) or 0)
         if selected_index:
@@ -457,6 +584,46 @@ async def _mark_rebirth_restored(result_text, now):
     state["next_explore_rift_time"] = max(float(state.get("next_explore_rift_time", 0) or 0), float(now + RETRY_MAX_SEC))
     save_state()
     await send_audit_log(f"🕳 夺舍恢复完成：{state['explore_rift_rebirth_last_result']}", scope="identity", limit=240)
+
+
+async def _send_rebirth_select(index, now, *, selected=None, blind=False):
+    try:
+        index = int(index or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if index not in {1, 2, 3}:
+        return False
+    command = f"{CMD_REBIRTH_SELECT_PREFIX} {index}"
+    msg = await send_game_command(command, track=False, max_retry=0, source_module="探寻裂缝")
+    if not msg:
+        state["explore_rift_rebirth_phase"] = "manual_required"
+        state["explore_rift_manual_required"] = True
+        state["explore_rift_rebirth_last_error"] = "重生命令发送失败"
+        save_state()
+        await send_audit_log("❌ 重生命令发送失败，请人工处理。", scope="identity", priority="high", limit=240)
+        return True
+
+    state["explore_rift_rebirth_phase"] = "blind_selecting" if blind else "selecting"
+    state["explore_rift_rebirth_select_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    state["explore_rift_rebirth_selected_index"] = index
+    state["explore_rift_rebirth_due_at"] = float(now + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC)
+    if blind:
+        state["explore_rift_rebirth_last_result"] = f"已盲选肉身 {index}"
+        audit_text = f"🕳 夺舍选项回复超时，已盲选肉身：{command}"
+    else:
+        selected = selected or {}
+        state["explore_rift_rebirth_last_result"] = (
+            f"已选稳妥 {index}｜{selected.get('name') or '未知肉身'}｜{selected.get('root_text') or '未知灵根'}"
+        )
+        audit_text = (
+            f"🕳 自动重生选择稳妥之身：{index}｜{selected.get('name') or '未知肉身'}｜"
+            f"{selected.get('root_text') or '未知灵根'}"
+        )
+    state["explore_rift_rebirth_last_error"] = ""
+    state["explore_rift_manual_required"] = False
+    save_state()
+    await send_audit_log(audit_text, scope="identity", priority="high" if blind else "auto", limit=360)
+    return True
 
 
 async def _handle_rebirth_reply(raw_text, now, incoming_msg_id=0):
@@ -498,28 +665,7 @@ async def _handle_rebirth_reply(raw_text, now, incoming_msg_id=0):
             await send_audit_log(f"⚠️ 夺舍选项无法自动定位稳妥之身，请人工处理：\n{raw_text}", scope="identity", limit=900)
             return True
 
-        command = f"{CMD_REBIRTH_SELECT_PREFIX} {int(selected['index'])}"
-        msg = await send_game_command(command, track=False, max_retry=0, source_module="探寻裂缝")
-        if not msg:
-            state["explore_rift_rebirth_phase"] = "manual_required"
-            state["explore_rift_manual_required"] = True
-            state["explore_rift_rebirth_last_error"] = "重生命令发送失败"
-            save_state()
-            await send_audit_log("❌ 重生命令发送失败，请人工处理。", scope="identity", limit=240)
-            return True
-        state["explore_rift_rebirth_phase"] = "selecting"
-        state["explore_rift_rebirth_select_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        state["explore_rift_rebirth_selected_index"] = int(selected["index"])
-        state["explore_rift_rebirth_due_at"] = float(now + EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC)
-        state["explore_rift_rebirth_last_result"] = f"已选稳妥 {selected['index']}｜{selected['name']}｜{selected['root_text']}"
-        state["explore_rift_rebirth_last_error"] = ""
-        state["explore_rift_manual_required"] = False
-        save_state()
-        await send_audit_log(
-            f"🕳 自动重生选择稳妥之身：{selected['index']}｜{selected['name']}｜{selected['root_text']}",
-            scope="identity",
-            limit=360,
-        )
+        await _send_rebirth_select(int(selected["index"]), now, selected=selected, blind=False)
         return True
 
     if rebirth_kind in {"body_intact", "success"}:
@@ -570,12 +716,23 @@ async def _confirm_pending_fatal(now):
         return False
     _clear_explore_rift_fatal_pending()
     state["explore_rift_last_msg_id"] = fatal_msg_id
-    state["explore_rift_last_result"] = f"{EXPLORE_RIFT_FATAL_TITLE}｜肉身崩毁"
+    state["explore_rift_last_result"] = f"{EXPLORE_RIFT_FATAL_TITLE}｜肉身崩毁，待夺舍恢复"
     state["explore_rift_last_error"] = ""
     state["explore_rift_last_result_key"] = _make_result_key(fatal_msg_id, EXPLORE_RIFT_FATAL_TITLE, EXPLORE_RIFT_FATAL_TITLE)
+    state["explore_rift_rebirth_required"] = True
+    state["explore_rift_rebirth_phase"] = "idle"
+    state["explore_rift_rebirth_due_at"] = 0
+    state["explore_rift_rebirth_last_result"] = "肉身崩毁，等待夺舍重生"
+    state["explore_rift_rebirth_last_error"] = ""
+    state["explore_rift_manual_required"] = False
     next_time = _schedule_next_explore_rift(now)
     save_state()
-    await send_audit_log(f"🕳 探寻裂缝大凶已确认｜下次 {fmt_abs_ts(next_time)}", scope="identity", limit=300)
+    await send_audit_log(
+        f"🕳 探寻裂缝大凶已确认，进入夺舍恢复静默｜裂缝下次 {fmt_abs_ts(next_time)}",
+        scope="identity",
+        priority="high",
+        limit=360,
+    )
     return True
 
 
@@ -615,12 +772,22 @@ async def _run_rebirth_scheduler(now):
     due_at = float(state.get("explore_rift_rebirth_due_at", 0) or 0)
     if (request_msg_id > 0 or select_msg_id > 0) and due_at > now:
         return True
-    if request_msg_id > 0 or select_msg_id > 0:
+
+    if select_msg_id > 0:
+        _clear_explore_rift_rebirth_pending()
+        state["explore_rift_rebirth_phase"] = "manual_required"
+        state["explore_rift_manual_required"] = True
+        state["explore_rift_rebirth_last_error"] = "重生选择已发送但未读到确认，停止自动重试"
+        save_state()
+        await send_audit_log("⚠️ 重生选择已发送但未读到确认，已停止自动重试，请人工确认。", scope="identity", priority="high", limit=260)
+        return True
+
+    if request_msg_id > 0:
         _clear_explore_rift_rebirth_pending()
         state["explore_rift_rebirth_phase"] = "idle"
-        state["explore_rift_rebirth_last_error"] = "夺舍回复超时，准备重试"
+        state["explore_rift_rebirth_last_error"] = "夺舍选项回复超时，准备盲选"
         save_state()
-        await send_audit_log("⚠️ 夺舍回复超时，准备重试。", scope="identity", limit=220)
+        await _send_rebirth_select(get_rebirth_choice_config()["blind_index"], now, blind=True)
         return True
 
     await _send_rebirth_request(now)
@@ -754,7 +921,13 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         save_state()
         return False
     if preflight.get("timeline_required"):
-        windows = build_tianxing_consume_window("探索", now=now, due_at=max(due_at, now), reason="探寻裂缝")
+        windows = build_tianxing_consume_window(
+            "探索",
+            now=now,
+            due_at=max(due_at, now),
+            reason="探寻裂缝",
+            require_change_fate=True,
+        )
         if not windows:
             return True
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
@@ -818,7 +991,13 @@ async def run_explore_rift_scheduler(now):
 
     next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
     if next_explore_rift_time > now:
-        windows = build_tianxing_consume_window("探索", now=now, due_at=next_explore_rift_time, reason="探寻裂缝")
+        windows = build_tianxing_consume_window(
+            "探索",
+            now=now,
+            due_at=next_explore_rift_time,
+            reason="探寻裂缝",
+            require_change_fate=True,
+        )
         if windows and not await _prepare_explore_rift_tianxing_route(now, due_at=next_explore_rift_time):
             return
 
@@ -871,10 +1050,12 @@ __all__ = [
     "clear_explore_rift_state",
     "classify_rebirth_text",
     "get_explore_rift_status_text",
+    "get_rebirth_choice_config",
     "handle_explore_rift_reply",
     "is_explore_rift_reply_text",
     "parse_explore_rift_result_summary",
     "parse_rebirth_options",
     "run_explore_rift_scheduler",
     "schedule_explore_rift_initial_check",
+    "set_rebirth_choice_config",
 ]

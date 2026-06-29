@@ -74,6 +74,7 @@ from .control import (
     toggle_global_enabled,
 )
 from .features.deep_retreat import get_deep_retreat_phase_text
+from .features.explore_rift import REBIRTH_CHOICE_MODES, REBIRTH_ROOT_TYPES, get_rebirth_choice_config, set_rebirth_choice_config
 from .features.guanxing import get_guanxing_round_summary_text
 from .features.guanxing_monitor import get_guanxing_monitor_summary_text
 from .features.hehuan import HEHUAN_AUTO_RETRY_LIMIT, HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN, normalize_hehuan_observation, set_hehuan_retry_max_interval_min
@@ -84,7 +85,7 @@ from .features.passive_inbox import get_passive_inbox_snapshot
 from .features.quiz_ai import list_quiz_ai_models
 from .features.stargazer import sync_stargazer_total_slots
 from .features.storage_bag import CMD_STORAGE_BAG, STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX, cancel_storage_bag_transfer_task, format_storage_bag_listing_command, get_storage_bag_transfer_snapshot, normalize_storage_bag_listing_count, normalize_storage_bag_listing_syntax, start_storage_bag_gift_batch, start_storage_bag_gift_task, start_storage_bag_transfer_batch, start_storage_bag_transfer_task
-from .features.tianxing import normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
+from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing_automation_pause_text, normalize_tianxing_auto_config, normalize_tianxing_observation, normalize_tianxing_timeline_state, set_tianxing_auto_config
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
@@ -93,8 +94,10 @@ from .features.fishing import (
     FISHING_BAITS,
     FISHING_CHUMS,
     FISHING_DEFAULT_BUY_BAIT_COUNT,
+    FISHING_DEFAULT_CANCEL_AFTER_SEC,
     FISHING_PONDS,
     clamp_fishing_buy_bait_count,
+    clamp_fishing_cancel_after_sec,
     clamp_fishing_daily_limit,
     format_fishing_chum_names,
     normalize_fishing_config,
@@ -2771,6 +2774,10 @@ def _coerce_fishing_buy_bait_count(value):
     return clamp_fishing_buy_bait_count(value)
 
 
+def _coerce_fishing_cancel_after_sec(value):
+    return clamp_fishing_cancel_after_sec(value)
+
+
 def get_fishing_ui_snapshot(send_as_id, identity_state=None):
     send_as_id = int(send_as_id)
     identity_state = identity_state or get_identity_state(send_as_id)
@@ -2841,6 +2848,7 @@ def get_fishing_ui_snapshot(send_as_id, identity_state=None):
         "auto_buy_bait_count": int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT),
         "auto_probe_enabled": bool(config.auto_probe_enabled),
         "auto_open_fish_enabled": bool(identity_state.get("fishing_auto_open_fish_enabled", True)),
+        "cancel_after_sec": _coerce_fishing_cancel_after_sec(identity_state.get("fishing_cancel_after_sec", FISHING_DEFAULT_CANCEL_AFTER_SEC)),
         "transfer_target_id": transfer_target_id,
         "transfer_target_label": transfer_target_label,
         "transfer_identity_options": transfer_options,
@@ -3583,6 +3591,7 @@ def get_identity_ui_snapshot(send_as_id):
         tianxing_observation = normalize_tianxing_observation(identity_state.get("tianxing_observation"))
         tianxing_auto_config = normalize_tianxing_auto_config(identity_state.get("tianxing_auto_config"))
         tianxing_timeline = _format_tianxing_timeline_ui(identity_state.get("tianxing_timeline_state"))
+        tianxing_pause_state = get_tianxing_automation_pause_state(observed=tianxing_observation)
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -3638,6 +3647,15 @@ def get_identity_ui_snapshot(send_as_id):
             "duel_last_error": identity_state.get("duel_last_error") or "",
             "fishing": get_fishing_ui_snapshot(send_as_id, identity_state),
             "divination_daily_limit": get_divination_daily_limit(send_as_id),
+            "explore_rift_rebirth": {
+                **get_rebirth_choice_config(),
+                "choice_mode_choices": [
+                    {"value": "safe_first", "label": "稳妥优先"},
+                    {"value": "root_first", "label": "灵根优先"},
+                ],
+                "root_type_choices": [{"value": item, "label": item or "不限"} for item in REBIRTH_ROOT_TYPES],
+                "blind_index_choices": [1, 2, 3],
+            },
             "hehuan_retry_max_interval_min": int(hehuan_observation.get("auto_retry_max_interval_min", HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN) or HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN),
             "hehuan_retry_count": int(hehuan_observation.get("auto_retry_count", 0) or 0),
             "hehuan_retry_limit": HEHUAN_AUTO_RETRY_LIMIT,
@@ -3662,6 +3680,14 @@ def get_identity_ui_snapshot(send_as_id):
                 "auto_last_error": tianxing_observation.get("auto_last_error") or "",
                 "auto_last_plan": tianxing_observation.get("auto_last_plan") or "",
                 "auto_last_plan_at": fmt_abs_ts(tianxing_observation.get("auto_last_plan_at", 0) or 0),
+                "automation_paused": bool(tianxing_pause_state.get("paused")),
+                "automation_pause_text": get_tianxing_automation_pause_text(observed=tianxing_observation),
+                "automation_paused_until": (
+                    "手动恢复前"
+                    if float(tianxing_pause_state.get("until", 0) or 0) < 0
+                    else fmt_abs_ts(tianxing_pause_state.get("until", 0) or 0)
+                ),
+                "automation_paused_reason": tianxing_pause_state.get("reason") or "",
                 "last_observed_at": fmt_abs_ts(tianxing_observation.get("last_observed_at", 0) or 0),
             },
             "second_soul_auto_choice_enabled": bool(identity_state.get("second_soul_auto_choice_enabled", True)),
@@ -4246,6 +4272,34 @@ async def ui_set_tianxing_config(send_as_id, config=None):
     return True, f"已更新天星宗策略[{get_identity_display_name(send_as_id)}]"
 
 
+async def ui_set_explore_rift_rebirth_config(send_as_id, payload=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    payload = payload if isinstance(payload, dict) else {}
+    choice_mode = payload.get("choice_mode")
+    if choice_mode not in REBIRTH_CHOICE_MODES:
+        choice_mode = "safe_first"
+    with use_identity(send_as_id):
+        config = set_rebirth_choice_config(
+            choice_mode=choice_mode,
+            preferred_root_type=payload.get("preferred_root_type"),
+            preferred_attrs=payload.get("preferred_attrs"),
+            blind_index=payload.get("blind_index"),
+        )
+        save_state()
+    mode_label = "灵根优先" if config["choice_mode"] == "root_first" else "稳妥优先"
+    root_label = config["preferred_root_type"] or "不限"
+    attrs_label = config["preferred_attrs"] or "不限"
+    await send_audit_log(
+        f"🕳 已更新夺舍选择：{mode_label}，灵根 {root_label}，属性 {attrs_label}，盲选 {config['blind_index']}",
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=220,
+    )
+    return True, f"已更新夺舍选择[{get_identity_display_name(send_as_id)}]"
+
+
 async def ui_set_divination_config(send_as_id, daily_limit=None):
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
@@ -4271,12 +4325,15 @@ async def ui_set_fishing_config(send_as_id, payload=None):
     bait = payload.get("bait")
     chum_name = payload.get("chum_name")
     chum_names = payload.get("chum_names")
+    current_identity_state = get_identity_state(send_as_id)
     daily_limit = _coerce_fishing_daily_limit(payload.get("daily_limit"))
     auto_buy_bait_count = _coerce_fishing_buy_bait_count(payload.get("auto_buy_bait_count"))
+    cancel_after_sec = _coerce_fishing_cancel_after_sec(
+        payload.get("cancel_after_sec", current_identity_state.get("fishing_cancel_after_sec", FISHING_DEFAULT_CANCEL_AFTER_SEC))
+    )
     auto_chum_enabled = _coerce_ui_bool(payload.get("auto_chum_enabled"))
     auto_buy_bait_enabled = _coerce_ui_bool(payload.get("auto_buy_bait_enabled"))
     auto_probe_enabled = _coerce_ui_bool(payload.get("auto_probe_enabled"))
-    current_identity_state = get_identity_state(send_as_id)
     raw_transfer_target_id = (
         payload.get("transfer_target_id")
         if "transfer_target_id" in payload
@@ -4319,6 +4376,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         state["fishing_auto_buy_bait_count"] = int(config.auto_buy_bait_count or FISHING_DEFAULT_BUY_BAIT_COUNT)
         state["fishing_auto_probe_enabled"] = bool(config.auto_probe_enabled)
         state["fishing_auto_open_fish_enabled"] = bool(auto_open_fish_enabled)
+        state["fishing_cancel_after_sec"] = int(cancel_after_sec)
         state["fishing_transfer_target_id"] = int(transfer_target_id)
         save_state()
         saved_identity_state = dict(state.items())
@@ -4337,6 +4395,7 @@ async def ui_set_fishing_config(send_as_id, payload=None):
         f"买饵={'开' if config.auto_buy_bait_enabled else '关'}x{config.auto_buy_bait_count}｜"
         f"试饵={'开' if config.auto_probe_enabled else '关'}｜"
         f"开鱼={'开' if auto_open_fish_enabled else '关'}｜"
+        f"收竿={cancel_after_sec}秒｜"
         f"鱼获赠送={get_identity_display_name(transfer_target_id) if transfer_target_id else '关'}｜"
         f"计划={_format_fishing_command_plan(plan)}",
         scope="identity",
@@ -6165,6 +6224,18 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_tianxing_config(send_as_id, payload.get("config") or {})
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/explore-rift-rebirth-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_explore_rift_rebirth_config(send_as_id, payload)
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/divination-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -6504,6 +6575,7 @@ __all__ = [
     "ui_set_small_world_barrier_config",
     "ui_set_hehuan_config",
     "ui_set_tianxing_config",
+    "ui_set_explore_rift_rebirth_config",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",
     "ui_sync_stargazer_total_slots",

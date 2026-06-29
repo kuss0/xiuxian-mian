@@ -8,6 +8,7 @@ from ..config import (
     CMD_FISHING,
     CMD_FISHING_BASKET,
     CMD_FISHING_BUY_BAIT,
+    CMD_FISHING_CANCEL,
     CMD_FISHING_CHUM,
     CMD_FISHING_LIFT,
     CMD_FISHING_OPEN,
@@ -52,7 +53,7 @@ FISHING_RECOVERY_MAX_SEC = 45
 FISHING_POST_ROD_DELAY_MIN_SEC = 3
 FISHING_POST_ROD_DELAY_MAX_SEC = 5
 FISHING_RESET_JITTER_MIN_SEC = 0
-FISHING_RESET_JITTER_MAX_SEC = 0
+FISHING_RESET_JITTER_MAX_SEC = 100
 FISHING_MAX_ACTIVE_IDENTITIES = 2
 FISHING_QUEUE_DELAY_MIN_SEC = 3
 FISHING_QUEUE_DELAY_MAX_SEC = 5
@@ -338,6 +339,15 @@ def _defer_new_fishing_for_capacity(now, command):
     return True
 
 
+def _fishing_reset_jitter_sec(send_as_id=None):
+    min_sec = max(0, int(FISHING_RESET_JITTER_MIN_SEC or 0))
+    max_sec = max(min_sec, int(FISHING_RESET_JITTER_MAX_SEC or 0))
+    if max_sec <= min_sec:
+        return float(min_sec)
+    identity_id = int(send_as_id or get_current_identity_id() or 0)
+    return float(min_sec + (abs(identity_id) % (max_sec - min_sec)))
+
+
 def _is_fishing_reply(reply_to=None, matched_family=None):
     if matched_family == "fishing":
         return True
@@ -347,6 +357,7 @@ def _is_fishing_reply(reply_to=None, matched_family=None):
         CMD_FISHING_STATUS,
         CMD_FISHING_PROBE,
         CMD_FISHING_LIFT,
+        CMD_FISHING_CANCEL,
         CMD_FISHING_BASKET,
     } or orig_cmd.startswith((
         f"{CMD_FISHING} ",
@@ -389,7 +400,7 @@ def _priority_for_fishing_command(command):
     raw = str(command or "").strip()
     if raw.startswith(CMD_FISHING_STATUS):
         return SEND_PRIORITY_URGENT_REACTIVE
-    if raw.startswith((CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_OPEN, CMD_FISHING_BASKET)):
+    if raw.startswith((CMD_FISHING_PROBE, CMD_FISHING_LIFT, CMD_FISHING_CANCEL, CMD_FISHING_OPEN, CMD_FISHING_BASKET)):
         return SEND_PRIORITY_EVENT_BURST
     return None
 
@@ -400,7 +411,7 @@ def _reply_timeout_for_fishing_command(command):
         return FISHING_STATUS_REPLY_TIMEOUT_SEC
     if raw.startswith(CMD_FISHING):
         return FISHING_FAST_REPLY_TIMEOUT_SEC
-    if raw.startswith(CMD_FISHING_LIFT):
+    if raw.startswith((CMD_FISHING_LIFT, CMD_FISHING_CANCEL)):
         return FISHING_ACTION_REPLY_TIMEOUT_SEC
     if raw.startswith((CMD_FISHING_BUY_BAIT, CMD_FISHING_CHUM)):
         return FISHING_SETUP_REPLY_TIMEOUT_SEC
@@ -562,6 +573,7 @@ def clear_fishing_state(*, persist=False, keep_last_error=False, keep_config=Tru
             "fishing_auto_buy_bait_count",
             "fishing_auto_probe_enabled",
             "fishing_auto_open_fish_enabled",
+            "fishing_cancel_after_sec",
             "fishing_transfer_target_id",
         ):
             config_values[key] = state.get(key)
@@ -620,6 +632,7 @@ def get_fishing_status_text():
         f"- 缺饵购买：{'开' if config.auto_buy_bait_enabled else '关'}",
         f"- 试饵：{'开' if config.auto_probe_enabled else '关'}",
         f"- 自动开鱼：{'开' if state.get('fishing_auto_open_fish_enabled') else '关'}",
+        f"- 卡竿收竿：{int(state.get('fishing_cancel_after_sec', 120) or 0)}秒",
         f"- 鱼获赠送：{transfer_target}",
         f"- 待赠鱼获：{_format_count_map(transfer_items)}",
         f"- 阶段：{state.get('fishing_phase') or 'idle'}",
@@ -850,13 +863,8 @@ async def _send_fishing_command_locked(command, now):
     if (
         phase != "idle"
         and str(state.get("fishing_phase") or "").strip() == phase
-        and (
-            (
-                _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
-                and float(state.get("fishing_reply_due_at", 0) or 0) > float(now)
-            )
-            or float(state.get("next_fishing_time", 0) or 0) > float(now)
-        )
+        and _parse_int(state.get("fishing_reply_to_msg_id", 0)) > 0
+        and float(state.get("fishing_reply_due_at", 0) or 0) > float(now)
     ):
         return False
     priority = _priority_for_fishing_command(command)
@@ -913,7 +921,7 @@ async def run_fishing_scheduler(now):
         _state_snapshot(),
         now,
         bait_inventory=_get_bait_inventory_from_storage(),
-        next_day_jitter_sec=random.uniform(FISHING_RESET_JITTER_MIN_SEC, FISHING_RESET_JITTER_MAX_SEC),
+        next_day_jitter_sec=_fishing_reset_jitter_sec(),
     )
     if not effect.handled:
         return

@@ -153,9 +153,30 @@
 
   function tianxingRouteSelect(key, selected){
     var options = [{value:'auto', label:'自动'}, '探索', '闭关', '炼制', '斗法'];
-    var labels = {predict_route: '推命', change_route: '改命', farm_route: 'Farm 路线'};
+    var labels = {predict_route: '推命', change_route: '改命', farm_route: '攒天机路线'};
     return '<label class="module-setting-field"><span>'+esc(labels[key] || key)+'</span>'+
       '<select class="text-input" data-tianxing-config="'+esc(key)+'">'+optionHtml(options, selected || 'auto')+'</select></label>';
+  }
+
+  function renderExploreRiftRebirthConfig(config){
+    config = config || {};
+    var modeChoices = config.choice_mode_choices || [
+      {value:'safe_first', label:'稳妥优先'},
+      {value:'root_first', label:'灵根优先'}
+    ];
+    var rootChoices = config.root_type_choices || [
+      {value:'', label:'不限'},
+      {value:'天灵根', label:'天灵根'},
+      {value:'异灵根', label:'异灵根'},
+      {value:'伪灵根', label:'伪灵根'},
+      {value:'废灵根', label:'废灵根'}
+    ];
+    return ''+
+      '<label class="module-setting-field"><span>选择</span><select class="text-input" data-explore-rift-rebirth-config="choice_mode">'+optionHtml(modeChoices, config.choice_mode || 'safe_first')+'</select></label>'+
+      '<label class="module-setting-field"><span>灵根</span><select class="text-input" data-explore-rift-rebirth-config="preferred_root_type">'+optionHtml(rootChoices, config.preferred_root_type || '')+'</select></label>'+
+      '<label class="module-setting-field module-setting-field-wide"><span>属性</span><input class="text-input module-name-input" placeholder="例：雷、冰" value="'+esc(config.preferred_attrs || '')+'" data-explore-rift-rebirth-config="preferred_attrs"></label>'+
+      '<label class="module-setting-field"><span>盲选</span><select class="text-input" data-explore-rift-rebirth-config="blind_index">'+optionHtml(config.blind_index_choices || [1,2,3], config.blind_index || 1)+'</select></label>'+
+      '<button type="button" class="btn btn-secondary" data-save-explore-rift-rebirth-config="1">保存</button>';
   }
 
   function moduleCardPriority(title){
@@ -363,17 +384,22 @@
       }else if(module.name === '元婴'){
         var riftModule = moduleByName('探寻裂缝');
         var riftStatus = riftModule ? (riftModule.enabled ? '开' : '关') : '不可用';
+        var rebirthConfig = identity.explore_rift_rebirth || {};
+        var rebirthModeText = rebirthConfig.choice_mode === 'root_first' ? '灵根优先' : '稳妥优先';
+        var rebirthRootText = rebirthConfig.preferred_root_type || '不限';
         moduleNote = '<div class="module-note">元婴：'+esc(identity.yuanying_level_text || '未读取')+'｜裂缝：'+esc(riftStatus)+'</div>';
         settingsTools =
           settingSection(
             '元婴出窍',
-            '元婴链路按被动结算和冷却推进。',
+            '按冷却和结算推进。',
             renderModuleToggle('元婴','开关')
           )+
           settingSection(
             '探寻裂缝',
-            '裂缝探寻归到元婴卡片统一管理。',
-            renderModuleToggle('探寻裂缝','开关')
+            '大凶后会先恢复肉身，再放开其他指令。',
+            renderModuleToggle('探寻裂缝','开关')+
+            currentChoiceText('夺舍', rebirthModeText+' / '+rebirthRootText)+
+            renderExploreRiftRebirthConfig(rebirthConfig)
           );
         return renderModuleCard('元婴', moduleNote, primaryTools, settingsTools, compactDetails(['元婴','探寻裂缝']), null);
       }else if(module.name === '侍妾'){
@@ -416,8 +442,8 @@
         var txActiveStepText = txActiveStep.command || ([txActiveStep.action || '', txActiveStep.arg || ''].join(' ').trim());
         if(!txActiveStepText){ txActiveStepText = '无'; }
         if(txActiveStep.status){ txActiveStepText += ' / '+String(txActiveStep.status); }
-        var txFarmDuration = txConfig.farm_window_duration_min;
-        if(txFarmDuration === undefined || txFarmDuration === null || txFarmDuration === ''){ txFarmDuration = 60; }
+        var txPauseText = tianxing.automation_pause_text || (tianxing.automation_paused ? '已暂停' : '未暂停');
+        var txFarmWindows = txConfig.farm_windows_text || '02:00-05:00,06:00-09:00,15:00-16:00';
         var txTargetTianji = txConfig.target_tianji_daily;
         if(txTargetTianji === undefined || txTargetTianji === null || txTargetTianji === ''){ txTargetTianji = 42; }
         var txAckTimeout = txConfig.ack_timeout_sec;
@@ -428,8 +454,10 @@
         if(txMaxReplans === undefined || txMaxReplans === null || txMaxReplans === ''){ txMaxReplans = 3; }
         var txCraftLimit = txConfig.craft_farm_daily_limit;
         if(txCraftLimit === undefined || txCraftLimit === null || txCraftLimit === ''){ txCraftLimit = 42; }
-        var txCraftInterval = txConfig.craft_farm_interval_sec;
-        if(txCraftInterval === undefined || txCraftInterval === null || txCraftInterval === ''){ txCraftInterval = 20; }
+        var txCraftIntervalMin = txConfig.craft_farm_interval_min_sec;
+        if(txCraftIntervalMin === undefined || txCraftIntervalMin === null || txCraftIntervalMin === ''){ txCraftIntervalMin = 180; }
+        var txCraftIntervalMax = txConfig.craft_farm_interval_max_sec;
+        if(txCraftIntervalMax === undefined || txCraftIntervalMax === null || txCraftIntervalMax === ''){ txCraftIntervalMax = 420; }
         var txCraftTimeout = txConfig.craft_farm_reply_timeout_sec;
         if(txCraftTimeout === undefined || txCraftTimeout === null || txCraftTimeout === ''){ txCraftTimeout = 120; }
         var txPrepareLead = txConfig.route_prepare_lead_sec;
@@ -437,13 +465,14 @@
         moduleNote = '<div class="module-note">命星：'+esc(tianxing.fixed_star || '未定')+
           '｜天机 '+esc(tianxing.tianji_value || 0)+
           '｜逆命劫 '+esc(tianxing.calamity_count || 0)+
-          '｜时间线 '+esc(txTimeline.phase || 'idle')+
-          '｜炼制攒点 '+esc(txCraftFarm.phase || 'idle')+
-          '｜dry-run '+(txConfig.strategy_dry_run_enabled ? '开' : '关')+'</div>';
+          '｜接管 '+esc(tianxing.automation_paused ? '暂停' : '运行')+
+          '｜前置 '+esc(txTimeline.phase || 'idle')+
+          '｜炼制 '+esc(txCraftFarm.phase || 'idle')+
+          '｜试运行 '+(txConfig.strategy_dry_run_enabled ? '开' : '关')+'</div>';
         settingsTools =
           settingSection(
             '状态校准',
-            '查盘和观命用于校准真实状态；消劫会消耗修为和宗门贡献，默认沿用旧逻辑开启。',
+            '查盘、观命用于对账；消劫会消耗修为和贡献。',
             settingCheckbox('auto_panel_enabled', '自动查盘', txConfig.auto_panel_enabled)+
             settingCheckbox('auto_observe_enabled', '自动观命', txConfig.auto_observe_enabled)+
             settingCheckbox('auto_clear_calamity_enabled', '自动消劫', txConfig.auto_clear_calamity_enabled)+
@@ -451,18 +480,18 @@
             '<label class="module-setting-field"><span>校准间隔</span><input class="text-input module-hour-input" type="number" min="1" max="24" step="1" value="'+esc(txConfig.status_backoff_hours || 6)+'" data-tianxing-config="status_backoff_hours"></label>'
           )+
           settingSection(
-            '战略动作',
-            '定命、推命、改命可能影响后续模块路线；默认关闭且 dry-run 开启时只记录计划不发送。',
+            '自动命令',
+            '先试运行，确认不会抢原链路再打开发送。',
             settingCheckbox('auto_set_star_enabled', '自动定命', txConfig.auto_set_star_enabled)+
             settingCheckbox('auto_predict_enabled', '自动推命', txConfig.auto_predict_enabled)+
             settingCheckbox('auto_change_fate_enabled', '自动改命', txConfig.auto_change_fate_enabled)+
-            settingCheckbox('strategy_dry_run_enabled', '战略 dry-run', txConfig.strategy_dry_run_enabled)
+            settingCheckbox('strategy_dry_run_enabled', '命令试运行', txConfig.strategy_dry_run_enabled)
           )+
           settingSection(
-            '时间线规划',
-            '时间线只做上层授权：先发天星战略动作，等真实文案确认后才放行闭关、探索、斗法或炼制；不会绕过全局发送锁。',
+            '动作前置',
+            '野外、裂缝、炼制前先补推命/改命；确认后才放行。',
             settingCheckbox('timeline_enabled', '启用时间线', txConfig.timeline_enabled)+
-            settingCheckbox('timeline_dry_run_enabled', '时间线 dry-run', txConfig.timeline_dry_run_enabled)+
+            settingCheckbox('timeline_dry_run_enabled', '时间线试运行', txConfig.timeline_dry_run_enabled)+
             settingCheckbox('allow_prediction_override_enabled', '允许改押推命', txConfig.allow_prediction_override_enabled)+
             settingCheckbox('duel_route_enabled', '斗法前置', txConfig.duel_route_enabled)+
             '<label class="module-setting-field"><span>日目标天机</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txTargetTianji)+'" data-tianxing-config="target_tianji_daily"></label>'+
@@ -470,53 +499,53 @@
             '<label class="module-setting-field"><span>提前准备秒</span><input class="text-input module-hour-input" type="number" min="30" max="3600" step="30" value="'+esc(txPrepareLead)+'" data-tianxing-config="route_prepare_lead_sec"></label>'
           )+
           settingSection(
-            'Farm 窗口',
-            '固定时间段只给具体攒点状态机使用；闭关、野外、裂缝等下游动作按自己的到期时间临近插推命。',
-            settingCheckbox('farm_window_enabled', '启用 Farm 窗口', txConfig.farm_window_enabled)+
+            '攒天机窗口',
+            '按上海时间填写多段时段；下游动作临近时会让路。',
+            settingCheckbox('farm_window_enabled', '启用攒点窗口', txConfig.farm_window_enabled)+
             tianxingRouteSelect('farm_route', txConfig.farm_route)+
-            '<label class="module-setting-field"><span>开始 HH:MM</span><input class="text-input module-name-input" type="text" value="'+esc(txConfig.farm_window_start || '02:00')+'" data-tianxing-config="farm_window_start"></label>'+
-            '<label class="module-setting-field"><span>持续分钟</span><input class="text-input module-hour-input" type="number" min="5" max="480" step="5" value="'+esc(txFarmDuration)+'" data-tianxing-config="farm_window_duration_min"></label>'
+            '<label class="module-setting-field module-setting-field-wide"><span>时段</span><input class="text-input module-name-input" type="text" value="'+esc(txFarmWindows)+'" data-tianxing-config="farm_windows_text"></label>'
           )+
           settingSection(
-            '炼制攒点',
-            '按“推命炼制确认 -> 炼制物品 -> 结算确认”循环攒天机；结算超时先查盘，不重复补发同一炉。',
-            settingCheckbox('craft_farm_enabled', '启用炼制攒点', txConfig.craft_farm_enabled)+
-            settingCheckbox('craft_farm_dry_run_enabled', '炼制 dry-run', txConfig.craft_farm_dry_run_enabled)+
+            '炼制攒天机',
+            '推命炼制确认后再炼制；超时先查盘，不重复开炉。',
+            settingCheckbox('craft_farm_enabled', '启用炼制', txConfig.craft_farm_enabled)+
+            settingCheckbox('craft_farm_dry_run_enabled', '炼制试运行', txConfig.craft_farm_dry_run_enabled)+
             settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费', txConfig.consume_conflicting_prediction_enabled)+
             '<label class="module-setting-field"><span>炼制物品</span><input class="text-input module-name-input" value="'+esc(txConfig.craft_farm_item || '玄铁剑')+'" data-tianxing-config="craft_farm_item"></label>'+
             '<label class="module-setting-field"><span>每日上限</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txCraftLimit)+'" data-tianxing-config="craft_farm_daily_limit"></label>'+
-            '<label class="module-setting-field"><span>单轮间隔秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftInterval)+'" data-tianxing-config="craft_farm_interval_sec"></label>'+
+            '<label class="module-setting-field"><span>间隔最小秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftIntervalMin)+'" data-tianxing-config="craft_farm_interval_min_sec"></label>'+
+            '<label class="module-setting-field"><span>间隔最大秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftIntervalMax)+'" data-tianxing-config="craft_farm_interval_max_sec"></label>'+
             '<label class="module-setting-field"><span>回复超时秒</span><input class="text-input module-hour-input" type="number" min="30" max="1800" step="10" value="'+esc(txCraftTimeout)+'" data-tianxing-config="craft_farm_reply_timeout_sec"></label>'+
-            currentChoiceText('攒点状态', (txCraftFarm.phase || 'idle')+' / '+(txCraftFarm.last_action || '无'))+
+            currentChoiceText('炼制状态', (txCraftFarm.phase || 'idle')+' / '+(txCraftFarm.last_action || '无'))+
             currentChoiceText('今日轮次', String(txCraftFarm.daily_count || 0)+' / '+String(txCraftFarm.daily_limit || txCraftLimit || 0))+
             currentChoiceText('估算天机', String(txCraftFarm.estimated_tianji || tianxing.tianji_value || 0))+
             currentChoiceText('最近结果', txCraftFarm.last_result || txCraftFarm.last_error || '无')
           )+
           settingSection(
-            '普通闭关攒点',
-            '用普通 .闭关修炼 命中闭关推命来攒天机；与深度闭关互斥，只有关闭 dry-run 且授权后才会强行出关或服用合气丹。',
-            settingCheckbox('retreat_farm_enabled', '启用普通闭关攒点', txConfig.retreat_farm_enabled)+
-            settingCheckbox('retreat_farm_dry_run_enabled', '普通闭关 dry-run', txConfig.retreat_farm_dry_run_enabled)+
+            '闭关攒天机',
+            '用普通闭关攒天机；与深度闭关互斥，需授权才会强行出关或用丹。',
+            settingCheckbox('retreat_farm_enabled', '启用闭关', txConfig.retreat_farm_enabled)+
+            settingCheckbox('retreat_farm_dry_run_enabled', '闭关试运行', txConfig.retreat_farm_dry_run_enabled)+
             settingCheckbox('retreat_farm_allow_force_exit', '允许强行出关', txConfig.retreat_farm_allow_force_exit)+
             settingCheckbox('retreat_farm_allow_heqi_dan', '允许合气丹', txConfig.retreat_farm_allow_heqi_dan)+
             settingCheckbox('retreat_farm_auto_exchange_heqi_dan', '缺丹自动兑换', txConfig.retreat_farm_auto_exchange_heqi_dan)+
             '<label class="module-setting-field"><span>兑换数量</span><input class="text-input module-hour-input" type="number" min="1" max="999" step="1" value="'+esc(txConfig.retreat_farm_heqi_exchange_count || 10)+'" data-tianxing-config="retreat_farm_heqi_exchange_count"></label>'+
             settingCheckbox('retreat_farm_auto_donate_lingshi', '贡献不足捐灵石', txConfig.retreat_farm_auto_donate_lingshi)+
             '<label class="module-setting-field"><span>捐献灵石</span><input class="text-input module-hour-input" type="number" min="1" max="99999" step="1" value="'+esc(txConfig.retreat_farm_donate_lingshi_count || 200)+'" data-tianxing-config="retreat_farm_donate_lingshi_count"></label>'+
-            currentChoiceText('攒点状态', (txRetreatFarm.phase || 'idle')+' / '+(txRetreatFarm.last_action || '无'))+
-            currentChoiceText('下次攒点', txRetreatFarm.next_time || '未设置')+
+            currentChoiceText('闭关状态', (txRetreatFarm.phase || 'idle')+' / '+(txRetreatFarm.last_action || '无'))+
+            currentChoiceText('下次闭关', txRetreatFarm.next_time || '未设置')+
             currentChoiceText('最近结果', txRetreatFarm.last_result || txRetreatFarm.last_error || '无')
           )+
           settingSection(
-            '确认与重算',
-            '确认发送不等于状态确认；超时先查盘校准，仍不确认则阻断并等待重算。',
+            '卡住处理',
+            '没读到回复先查盘；仍不准就停住，避免乱发。',
             '<label class="module-setting-field module-setting-field-wide"><span>改命路线优先</span><input class="text-input module-name-input" value="'+esc((txConfig.change_route_priority || []).join('、'))+'" data-tianxing-config="change_route_priority"></label>'+
-            '<label class="module-setting-field"><span>确认超时秒</span><input class="text-input module-hour-input" type="number" min="15" max="900" step="5" value="'+esc(txAckTimeout)+'" data-tianxing-config="ack_timeout_sec"></label>'+
-            '<label class="module-setting-field"><span>校准退避秒</span><input class="text-input module-hour-input" type="number" min="60" max="3600" step="30" value="'+esc(txCalibrationBackoff)+'" data-tianxing-config="calibration_backoff_sec"></label>'
+            '<label class="module-setting-field"><span>确认超时</span><input class="text-input module-hour-input" type="number" min="15" max="900" step="5" value="'+esc(txAckTimeout)+'" data-tianxing-config="ack_timeout_sec"></label>'+
+            '<label class="module-setting-field"><span>校准间隔</span><input class="text-input module-hour-input" type="number" min="60" max="3600" step="30" value="'+esc(txCalibrationBackoff)+'" data-tianxing-config="calibration_backoff_sec"></label>'
           )+
           settingSection(
             '命星与路线',
-            '优先级用逗号或顿号分隔；只会从真实可选命星里挑选。',
+            '优先级用逗号或顿号分隔；只从真实可选项里挑。',
             '<label class="module-setting-field module-setting-field-wide"><span>命星优先</span><input class="text-input module-name-input" value="'+esc((txConfig.star_priority || []).join('、'))+'" data-tianxing-config="star_priority"></label>'+
             '<label class="module-setting-field module-setting-field-wide"><span>路线优先</span><input class="text-input module-name-input" value="'+esc((txConfig.route_priority || []).join('、'))+'" data-tianxing-config="route_priority"></label>'+
             tianxingRouteSelect('predict_route', txConfig.predict_route)+
@@ -525,17 +554,18 @@
           )+
           settingSection(
             '当前观测',
-            '这些数据来自真实文案或消息盒子，状态过旧时自动动作会先查盘校准。',
+            '来自真实文案；过旧会先校准。',
             currentChoiceText('可选命星', availableStars)+
             currentChoiceText('推命', (tianxing.current_prediction || '无')+' / '+(tianxing.current_prediction_until || '未设置'))+
             currentChoiceText('改命', (tianxing.current_change || '无')+' / '+(tianxing.current_change_until || '未设置'))+
             currentChoiceText('命中/落空/改命', String(tianxing.hit_count || 0)+'/'+String(tianxing.miss_count || 0)+'/'+String(tianxing.change_count || 0))+
+            currentChoiceText('自动接管', txPauseText)+
             currentChoiceText('下次自动', tianxing.auto_next_time || '未设置')+
             currentChoiceText('最近计划', tianxing.auto_last_plan || '无')
           )+
           settingSection(
-            '时间线观测',
-            '这些是 lab 时间线的只读状态，用来审计是否卡在发送、确认、校准或放行。',
+            '执行状态',
+            '只读，用来判断卡在发送、确认、校准还是放行。',
             currentChoiceText('阶段', txTimeline.phase || 'idle')+
             currentChoiceText('路线', txTimeline.route || '无')+
             currentChoiceText('原因', txTimeline.reason || '无')+
@@ -790,6 +820,36 @@
     }
   }
 
+  async function submitExploreRiftRebirthConfig(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    var payload = {send_as_id: appState.selectedId};
+    var controls = document.querySelectorAll('[data-explore-rift-rebirth-config]');
+    controls.forEach(function(control){
+      var key = control.getAttribute('data-explore-rift-rebirth-config') || '';
+      if(key){
+        payload[key] = control.value || '';
+      }
+    });
+    try{
+      var data = await postJson('/api/explore-rift-rebirth-config', payload);
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新夺舍选择', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '夺舍选择更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   document.addEventListener('click', function(event){
     if(!event.target || !event.target.closest){
       return;
@@ -801,6 +861,10 @@
     }
     if(event.target.closest('[data-save-pet-inline]')){
       saveInlinePetNames();
+      return;
+    }
+    if(event.target.closest('[data-save-explore-rift-rebirth-config]')){
+      submitExploreRiftRebirthConfig();
       return;
     }
     var openBtn = event.target.closest('[data-open-module-settings]');

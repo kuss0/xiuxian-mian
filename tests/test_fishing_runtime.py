@@ -268,6 +268,28 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once_with(".提竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
             self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
 
+    async def test_stuck_rod_hard_timeout_sends_cancel_as_event_burst(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "waiting"
+            state_module.state["fishing_started_at"] = now - 121
+            state_module.state["fishing_cancel_after_sec"] = 120
+            state_module.state["next_fishing_time"] = now + 3600
+            fake_msg = SimpleNamespace(id=22077, sent_at=now)
+            with (
+                patch.object(fishing_runtime, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(fishing_runtime, "save_state"),
+            ):
+                await fishing_runtime.run_fishing_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".收竿", track=False, priority="event_burst", max_retry=0, source_module="灵溪垂钓")
+            self.assertEqual("cancelling", state_module.state["fishing_phase"])
+            self.assertEqual(22077, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + fishing_runtime.FISHING_ACTION_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
+
     async def test_pending_lift_send_inflight_blocks_status_reentry(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -324,6 +346,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         identity_id = self._prepare_identity()
         now = self._local_ts(2026, 6, 26, 23, 45)
         midnight = self._local_ts(2026, 6, 27, 0, 0)
+        expected_start = midnight + fishing_runtime._fishing_reset_jitter_sec(identity_id)
         with state_module.use_identity(identity_id):
             state_module.state["fishing_enabled"] = True
             state_module.state["fishing_bait"] = "灵米饵"
@@ -342,7 +365,7 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 await fishing_runtime.run_fishing_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual(midnight, state_module.state["next_fishing_time"])
+            self.assertEqual(expected_start, state_module.state["next_fishing_time"])
             self.assertIn("日切待命", state_module.state["fishing_last_result"])
 
     async def test_midnight_resets_daily_counter_and_starts_next_day_rod(self):

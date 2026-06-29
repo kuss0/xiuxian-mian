@@ -42,6 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import control
 from model import state as state_module
+from model.features import tianxing
 from model.config import (
     RE_CMD_ANALYSIS_HEALTH,
     RE_CMD_ANALYSIS_LOG_GROUP,
@@ -589,6 +590,85 @@ class LogGroupDisplayTests(unittest.TestCase):
             self.assertTrue(handled)
             execute_mock.assert_awaited_once_with("化煞", "1000", send_as_id=3101)
             reply_mock.assert_awaited_once()
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_tianxing_pause_command_uses_unique_prefix_identity_selector(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            state_module.ensure_identity_registered(8659059191)
+            state_module.update_send_as_profile(
+                8659059191,
+                username="WalterWA2000",
+                label="wa2000",
+                sect_name="天星宗",
+                enabled=True,
+            )
+            with state_module.use_identity(8659059191):
+                state_module.state["tianxing_enabled"] = True
+
+            event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".天星暂停 @wa")
+
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(tianxing, "save_state"), \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+
+            with state_module.use_identity(8659059191):
+                observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+            self.assertTrue(handled)
+            self.assertLess(observed["automation_paused_until"], 0)
+            self.assertEqual("paused", observed["auto_last_action"])
+            self.assertIn("已暂停", reply_mock.await_args.args[2])
+
+            event.raw_text = ".天星恢复 @wa"
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(tianxing, "save_state"), \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+
+            with state_module.use_identity(8659059191):
+                observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+            self.assertTrue(handled)
+            self.assertEqual(0, observed["automation_paused_until"])
+            self.assertEqual("resumed", observed["auto_last_action"])
+            self.assertIn("已恢复", reply_mock.await_args.args[2])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_tianxing_pause_command_rejects_ambiguous_prefix_selector(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            for identity_id, label in ((1001, "wa2000"), (1002, "wafang")):
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(
+                    identity_id,
+                    username=label,
+                    label=label,
+                    sect_name="天星宗",
+                    enabled=True,
+                )
+                with state_module.use_identity(identity_id):
+                    state_module.state["tianxing_enabled"] = True
+
+            event = SimpleNamespace(chat_id=control.LOG_GROUP_ID, sender_id=123456, raw_text=".天星暂停 @wa")
+
+            with patch.object(control, "ADMIN_IDS", frozenset({123456})), \
+                    patch.object(tianxing, "save_state") as save_mock, \
+                    patch.object(control, "_reply_log_group_card", new=AsyncMock()) as reply_mock:
+                handled = asyncio.run(control.handle_log_group_command(event))
+
+            self.assertTrue(handled)
+            save_mock.assert_not_called()
+            self.assertIn("匹配多个身份", reply_mock.await_args.args[2])
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)

@@ -318,6 +318,45 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             session = state_module.state["action_guard_sessions"].get("wild_training") or {}
             self.assertEqual(0, int(session.get("attempt", 0) or 0))
 
+    def test_action_guard_reconciles_hehuan_pending_deadline_for_retry(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 600,
+                "auto_pending_msg_id": 456,
+                "auto_pending_sent_at": now - 60,
+                "auto_pending_deadline_at": now + 120,
+            }
+            state_module.state["action_guard_sessions"] = {
+                "hehuan_dual": {
+                    "action_key": "hehuan_dual",
+                    "attempt": 1,
+                    "last_sent_at": now - 60,
+                    "first_sent_at": now - 60,
+                    "next_allowed_at": now - 1,
+                    "last_msg_id": 456,
+                    "last_command": config.CMD_HEHUAN_DUAL,
+                }
+            }
+
+        allowed, reason = action_guard.before_send(config.CMD_HEHUAN_DUAL, send_as_id=send_as_id, now=now)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
+        with state_module.use_identity(send_as_id):
+            self.assertIn("hehuan_dual", state_module.state["action_guard_sessions"])
+            state_module.state["hehuan_observation"]["auto_pending_deadline_at"] = now - 1
+
+        allowed, reason = action_guard.before_send(config.CMD_HEHUAN_DUAL, send_as_id=send_as_id, now=now)
+
+        self.assertTrue(allowed, reason)
+        with state_module.use_identity(send_as_id):
+            session = state_module.state["action_guard_sessions"].get("hehuan_dual") or {}
+            self.assertEqual(0, int(session.get("attempt", 0) or 0))
+
     def test_action_guard_allows_phaseful_queued_launch_but_blocks_running_phases(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

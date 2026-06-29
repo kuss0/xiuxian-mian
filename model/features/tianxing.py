@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import math
+import random
 import re
 import time
 
@@ -41,6 +42,9 @@ TIANXING_RETREAT_FARM_DEFAULT_RETREAT_CD_SEC = 15 * 60
 TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC = 120
 TIANXING_CRAFT_FARM_RETRY_SEC = 20
 TIANXING_CRAFT_FARM_CALIBRATION_DELAY_SEC = 60
+TIANXING_FARM_WINDOWS_DEFAULT_TEXT = "02:00-05:00,06:00-09:00,15:00-16:00"
+TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC = 3 * 60
+TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC = 7 * 60
 TIANXING_STARS = ("紫微", "天府", "太阴", "贪狼")
 TIANXING_ROUTES = ("闭关", "炼制", "探索", "斗法")
 TIANXING_ROUTE_AUTO = "auto"
@@ -72,6 +76,8 @@ TIANXING_OBSERVATION_TIME_KEYS = (
     "auto_next_time",
     "auto_pending_sent_at",
     "auto_pending_due_at",
+    "automation_paused_until",
+    "automation_paused_at",
 )
 
 _TIANXING_TIMELINE_LOCKS = {}
@@ -138,6 +144,9 @@ def _default_tianxing_observation():
         "auto_pending_msg_id": 0,
         "auto_pending_sent_at": 0,
         "auto_pending_due_at": 0,
+        "automation_paused_until": 0,
+        "automation_paused_at": 0,
+        "automation_paused_reason": "",
         "recent": [],
     }
 
@@ -160,6 +169,7 @@ def _default_tianxing_auto_config():
         "change_route_priority": ["探索", "斗法", "闭关", "炼制"],
         "farm_route": "闭关",
         "farm_window_enabled": True,
+        "farm_windows_text": TIANXING_FARM_WINDOWS_DEFAULT_TEXT,
         "farm_window_start": "02:00",
         "farm_window_duration_min": 60,
         "retreat_farm_enabled": False,
@@ -175,6 +185,8 @@ def _default_tianxing_auto_config():
         "craft_farm_item": "玄铁剑",
         "craft_farm_daily_limit": 42,
         "craft_farm_interval_sec": TIANXING_CRAFT_FARM_RETRY_SEC,
+        "craft_farm_interval_min_sec": TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC,
+        "craft_farm_interval_max_sec": TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC,
         "craft_farm_reply_timeout_sec": TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC,
         "duel_route_enabled": False,
         "allow_prediction_override_enabled": False,
@@ -259,15 +271,108 @@ def _normalize_hhmm(value, default="00:00"):
     return f"{hour:02d}:{minute:02d}"
 
 
+def _parse_hhmm_strict(value):
+    raw = str(value or "").strip()
+    match = re.match(r"^(?P<hour>\d{1,2}):(?P<minute>\d{1,2})$", raw)
+    if not match:
+        return ""
+    hour = int(match.group("hour") or 0)
+    minute = int(match.group("minute") or 0)
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return ""
+    return f"{hour:02d}:{minute:02d}"
+
+
 def _hhmm_to_seconds(value):
     value = _normalize_hhmm(value, "00:00")
     hour, minute = value.split(":", 1)
     return int(hour) * 3600 + int(minute) * 60
 
 
+def _seconds_to_hhmm(value):
+    value = int(value or 0) % (24 * 3600)
+    return f"{value // 3600:02d}:{(value % 3600) // 60:02d}"
+
+
+def _legacy_farm_window_text(start, duration_min):
+    start = _normalize_hhmm(start, "02:00")
+    duration_sec = _coerce_int_range(duration_min, 60, 5, 8 * 60) * 60
+    end_sec = (_hhmm_to_seconds(start) + duration_sec) % (24 * 3600)
+    return f"{start}-{_seconds_to_hhmm(end_sec)}"
+
+
+def _parse_tianxing_farm_window_specs(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    specs = []
+    for part in re.split(r"[,，、;；\s]+", raw):
+        token = str(part or "").strip()
+        if not token:
+            continue
+        match = re.match(
+            r"^(?P<start>\d{1,2}:\d{1,2})\s*(?:-|~|～|至|到)\s*(?P<end>\d{1,2}:\d{1,2})$",
+            token,
+        )
+        if not match:
+            continue
+        start = _parse_hhmm_strict(match.group("start"))
+        end = _parse_hhmm_strict(match.group("end"))
+        if not start or not end:
+            continue
+        start_sec = _hhmm_to_seconds(start)
+        end_sec = _hhmm_to_seconds(end)
+        duration_sec = (end_sec - start_sec) % (24 * 3600)
+        if duration_sec <= 0:
+            continue
+        specs.append({
+            "start": start,
+            "end": end,
+            "start_sec": start_sec,
+            "duration_sec": duration_sec,
+        })
+    return specs
+
+
+def _normalize_farm_windows_text(value, default_text=TIANXING_FARM_WINDOWS_DEFAULT_TEXT):
+    specs = _parse_tianxing_farm_window_specs(value)
+    if not specs:
+        specs = _parse_tianxing_farm_window_specs(default_text)
+    if not specs:
+        specs = _parse_tianxing_farm_window_specs("02:00-05:00")
+    return ",".join(f"{item['start']}-{item['end']}" for item in specs)
+
+
+def _craft_interval_bounds(config):
+    config = config or {}
+    min_sec = _coerce_int_range(
+        config.get("craft_farm_interval_min_sec"),
+        TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC,
+        5,
+        60 * 60,
+    )
+    max_sec = _coerce_int_range(
+        config.get("craft_farm_interval_max_sec"),
+        TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC,
+        5,
+        60 * 60,
+    )
+    if max_sec < min_sec:
+        max_sec = min_sec
+    return int(min_sec), int(max_sec)
+
+
+def _craft_farm_interval_sec(config):
+    min_sec, max_sec = _craft_interval_bounds(config)
+    if min_sec >= max_sec:
+        return float(min_sec)
+    return float(random.uniform(min_sec, max_sec))
+
+
 def normalize_tianxing_auto_config(value=None):
     default = _default_tianxing_auto_config()
     config = copy.deepcopy(default)
+    raw_value = value if isinstance(value, dict) else {}
     if isinstance(value, dict):
         config.update(value)
     for key in (
@@ -303,10 +408,48 @@ def normalize_tianxing_auto_config(value=None):
     config["craft_farm_item"] = str(config.get("craft_farm_item") or default["craft_farm_item"]).strip() or default["craft_farm_item"]
     config["farm_window_start"] = _normalize_hhmm(config.get("farm_window_start"), default["farm_window_start"])
     config["farm_window_duration_min"] = _coerce_int_range(config.get("farm_window_duration_min"), default["farm_window_duration_min"], 5, 8 * 60)
+    if str(raw_value.get("farm_windows_text") or "").strip():
+        config["farm_windows_text"] = _normalize_farm_windows_text(raw_value.get("farm_windows_text"), default["farm_windows_text"])
+    elif (
+        "farm_window_start" in raw_value
+        or "farm_window_duration_min" in raw_value
+    ) and (
+        config["farm_window_start"] != default["farm_window_start"]
+        or int(config["farm_window_duration_min"]) != int(default["farm_window_duration_min"])
+    ):
+        config["farm_windows_text"] = _normalize_farm_windows_text(
+            _legacy_farm_window_text(config["farm_window_start"], config["farm_window_duration_min"]),
+            default["farm_windows_text"],
+        )
+    else:
+        config["farm_windows_text"] = _normalize_farm_windows_text(config.get("farm_windows_text"), default["farm_windows_text"])
     config["retreat_farm_heqi_exchange_count"] = _coerce_int_range(config.get("retreat_farm_heqi_exchange_count"), default["retreat_farm_heqi_exchange_count"], 1, 999)
     config["retreat_farm_donate_lingshi_count"] = _coerce_int_range(config.get("retreat_farm_donate_lingshi_count"), default["retreat_farm_donate_lingshi_count"], 1, 99999)
     config["craft_farm_daily_limit"] = _coerce_int_range(config.get("craft_farm_daily_limit"), default["craft_farm_daily_limit"], 0, 999)
-    config["craft_farm_interval_sec"] = _coerce_int_range(config.get("craft_farm_interval_sec"), default["craft_farm_interval_sec"], 5, 60 * 60)
+    legacy_interval = _coerce_int_range(config.get("craft_farm_interval_sec"), default["craft_farm_interval_sec"], 5, 60 * 60)
+    if "craft_farm_interval_min_sec" in raw_value or "craft_farm_interval_max_sec" in raw_value:
+        config["craft_farm_interval_min_sec"] = _coerce_int_range(
+            config.get("craft_farm_interval_min_sec"),
+            default["craft_farm_interval_min_sec"],
+            5,
+            60 * 60,
+        )
+        config["craft_farm_interval_max_sec"] = _coerce_int_range(
+            config.get("craft_farm_interval_max_sec"),
+            default["craft_farm_interval_max_sec"],
+            5,
+            60 * 60,
+        )
+    elif "craft_farm_interval_sec" in raw_value and legacy_interval != TIANXING_CRAFT_FARM_RETRY_SEC:
+        config["craft_farm_interval_min_sec"] = legacy_interval
+        config["craft_farm_interval_max_sec"] = legacy_interval
+    else:
+        config["craft_farm_interval_min_sec"] = default["craft_farm_interval_min_sec"]
+        config["craft_farm_interval_max_sec"] = default["craft_farm_interval_max_sec"]
+    min_interval, max_interval = _craft_interval_bounds(config)
+    config["craft_farm_interval_min_sec"] = min_interval
+    config["craft_farm_interval_max_sec"] = max_interval
+    config["craft_farm_interval_sec"] = min_interval if min_interval == max_interval else default["craft_farm_interval_sec"]
     config["craft_farm_reply_timeout_sec"] = _coerce_int_range(config.get("craft_farm_reply_timeout_sec"), default["craft_farm_reply_timeout_sec"], 30, 30 * 60)
     config["route_prepare_lead_sec"] = _coerce_int_range(config.get("route_prepare_lead_sec"), default["route_prepare_lead_sec"], 30, 60 * 60)
     config["target_tianji_daily"] = _coerce_int_range(config.get("target_tianji_daily"), default["target_tianji_daily"], 0, 999)
@@ -1333,6 +1476,97 @@ def _handle_tianxing_auto_pending(observed, now):
     return True
 
 
+def get_tianxing_automation_pause_state(now=None, observed=None):
+    now = float(now if now is not None else time.time())
+    observed = normalize_tianxing_observation(observed if observed is not None else state.get("tianxing_observation"))
+    until = float(observed.get("automation_paused_until", 0) or 0)
+    paused = bool(until < 0 or until > now)
+    reason = str(observed.get("automation_paused_reason") or "").strip()
+    return {
+        "paused": paused,
+        "until": until,
+        "reason": reason,
+        "paused_at": float(observed.get("automation_paused_at", 0) or 0),
+    }
+
+
+def is_tianxing_automation_paused(now=None, observed=None):
+    return bool(get_tianxing_automation_pause_state(now=now, observed=observed).get("paused"))
+
+
+def _format_tianxing_pause_line(pause_state):
+    if not pause_state.get("paused"):
+        return "未暂停"
+    until = float(pause_state.get("until", 0) or 0)
+    reason = str(pause_state.get("reason") or "手动暂停").strip()
+    if until < 0:
+        return f"已暂停（手动恢复前不接管，原因：{reason}）"
+    return f"已暂停至 {fmt_abs_ts(until)}（{fmt_remaining(until)}，原因：{reason}）"
+
+
+def get_tianxing_automation_pause_text(now=None, observed=None):
+    return _format_tianxing_pause_line(get_tianxing_automation_pause_state(now=now, observed=observed))
+
+
+def _tianxing_pause_block_until(now, observed=None, config=None):
+    pause_state = get_tianxing_automation_pause_state(now=now, observed=observed)
+    until = float(pause_state.get("until", 0) or 0)
+    if until > now:
+        return until
+    return float(now + _status_backoff_sec(config or normalize_tianxing_auto_config(state.get("tianxing_auto_config"))))
+
+
+def _apply_tianxing_pause_wait(observed, now, config=None):
+    changed = False
+    if str(observed.get("auto_pending_action") or "").strip():
+        _clear_tianxing_auto_pending(observed)
+        changed = True
+    next_time = _tianxing_pause_block_until(now, observed=observed, config=config)
+    if (
+        changed
+        or str(observed.get("auto_last_action") or "") != "paused"
+        or str(observed.get("auto_last_error") or "") != "天星自动调度已暂停；等待日志群 .天星恢复。"
+        or float(observed.get("auto_next_time", 0) or 0) <= now
+    ):
+        observed["auto_last_action"] = "paused"
+        observed["auto_last_error"] = "天星自动调度已暂停；等待日志群 .天星恢复。"
+        observed["auto_last_plan"] = ""
+        observed["auto_last_plan_at"] = float(now)
+        observed["auto_next_time"] = next_time
+        state["tianxing_observation"] = observed
+        save_state()
+    return changed
+
+
+def set_tianxing_automation_paused(paused=True, *, now=None, duration_sec=0, reason="手动暂停"):
+    now = float(now if now is not None else time.time())
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if paused:
+        duration = float(duration_sec or 0)
+        observed["automation_paused_until"] = float(now + duration) if duration > 0 else -1.0
+        observed["automation_paused_at"] = float(now)
+        observed["automation_paused_reason"] = str(reason or "手动暂停").strip() or "手动暂停"
+        _clear_tianxing_auto_pending(observed)
+        observed["auto_last_action"] = "paused"
+        observed["auto_last_error"] = "天星自动调度已暂停；手动恢复前不接管路线。"
+        observed["auto_last_plan"] = ""
+        observed["auto_last_plan_at"] = float(now)
+        observed["auto_next_time"] = _tianxing_pause_block_until(now, observed=observed)
+    else:
+        observed["automation_paused_until"] = 0
+        observed["automation_paused_at"] = 0
+        observed["automation_paused_reason"] = ""
+        _clear_tianxing_auto_pending(observed)
+        observed["auto_last_action"] = "resumed"
+        observed["auto_last_error"] = ""
+        observed["auto_last_plan"] = ""
+        observed["auto_last_plan_at"] = float(now)
+        observed["auto_next_time"] = float(now)
+    state["tianxing_observation"] = observed
+    save_state()
+    return get_tianxing_automation_pause_state(now=now, observed=observed)
+
+
 def _status_backoff_sec(config):
     return max(3600, int(float((config or {}).get("status_backoff_hours", 6) or 6) * 3600))
 
@@ -1409,6 +1643,7 @@ def _normalize_tianxing_window(item, now, horizon_end):
         "end_at": end_at,
         "weight": weight,
         "reason": reason,
+        "require_change_fate": _coerce_bool(item.get("require_change_fate"), False),
     }
 
 
@@ -1419,9 +1654,6 @@ def build_tianxing_farm_window(*, now=None, config=None, reason="深度闭关"):
         return []
     route = _normalize_route_choice(config.get("farm_route"), "闭关")
     if route not in TIANXING_ROUTES:
-        return []
-    duration_sec = int(config.get("farm_window_duration_min", 60) or 60) * 60
-    if duration_sec <= 0:
         return []
     local_time = time.localtime(now)
     midnight = time.mktime((
@@ -1435,23 +1667,64 @@ def build_tianxing_farm_window(*, now=None, config=None, reason="深度闭关"):
         local_time.tm_yday,
         local_time.tm_isdst,
     ))
-    start_offset = _hhmm_to_seconds(config.get("farm_window_start", "02:00"))
-    for day_offset in (0, -24 * 3600):
-        start_at = float(midnight + day_offset + start_offset)
-        end_at = float(start_at + duration_sec)
-        if start_at <= now <= end_at:
-            return [{
-                "route": route,
-                "kind": "farm",
-                "start_at": start_at,
-                "end_at": end_at,
-                "weight": 8,
-                "reason": str(reason or "天星 Farm 窗口"),
-            }]
-    return []
+    specs = _parse_tianxing_farm_window_specs(config.get("farm_windows_text"))
+    if not specs:
+        duration_sec = int(config.get("farm_window_duration_min", 60) or 60) * 60
+        if duration_sec <= 0:
+            return []
+        specs = [{
+            "start": config.get("farm_window_start", "02:00"),
+            "end": _seconds_to_hhmm(_hhmm_to_seconds(config.get("farm_window_start", "02:00")) + duration_sec),
+            "start_sec": _hhmm_to_seconds(config.get("farm_window_start", "02:00")),
+            "duration_sec": duration_sec,
+        }]
+    active_windows = []
+    for item in specs:
+        for day_offset in (0, -24 * 3600):
+            start_at = float(midnight + day_offset + int(item.get("start_sec", 0) or 0))
+            end_at = float(start_at + int(item.get("duration_sec", 0) or 0))
+            if start_at <= now <= end_at:
+                active_windows.append({
+                    "route": route,
+                    "kind": "farm",
+                    "start_at": start_at,
+                    "end_at": end_at,
+                    "weight": 8,
+                    "reason": str(reason or "天星攒天机窗口"),
+                })
+    return sorted(active_windows, key=lambda item: (float(item.get("start_at", 0) or 0), float(item.get("end_at", 0) or 0)))
 
 
-def build_tianxing_consume_window(route, *, now=None, due_at=0, config=None, reason="路线动作"):
+def next_tianxing_farm_window_start(*, now=None, config=None):
+    now = float(now if now is not None else time.time())
+    config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
+    if not config.get("farm_window_enabled"):
+        return 0.0
+    specs = _parse_tianxing_farm_window_specs(config.get("farm_windows_text"))
+    if not specs:
+        return 0.0
+    local_time = time.localtime(now)
+    midnight = time.mktime((
+        local_time.tm_year,
+        local_time.tm_mon,
+        local_time.tm_mday,
+        0,
+        0,
+        0,
+        local_time.tm_wday,
+        local_time.tm_yday,
+        local_time.tm_isdst,
+    ))
+    candidates = []
+    for day_offset in (0, 24 * 3600, 2 * 24 * 3600):
+        for item in specs:
+            start_at = float(midnight + day_offset + int(item.get("start_sec", 0) or 0))
+            if start_at > now:
+                candidates.append(start_at)
+    return min(candidates) if candidates else 0.0
+
+
+def build_tianxing_consume_window(route, *, now=None, due_at=0, config=None, reason="路线动作", require_change_fate=False):
     now = float(now if now is not None else time.time())
     config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     route = _normalize_route_choice(route, "")
@@ -1472,6 +1745,7 @@ def build_tianxing_consume_window(route, *, now=None, due_at=0, config=None, rea
         "end_at": max(due_at + TIANXING_TIME_BUFFER_SEC, now + TIANXING_TIME_BUFFER_SEC),
         "weight": 10,
         "reason": str(reason or route).strip() or route,
+        "require_change_fate": bool(require_change_fate),
     }]
 
 
@@ -1666,7 +1940,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         if dominant_is_farm and config.get("auto_predict_enabled") and not _has_fresh_prediction_evidence(dominant_route, observed, timeline, now):
             should_predict = True
             stage = "need_predict_probe"
-            predict_reason = f"{dominant_route} 推命只来自面板或旧状态，Farm 先复核推命再放行。"
+            predict_reason = f"{dominant_route} 推命只来自面板或旧状态，攒天机前先复核推命再放行。"
             _append_tianxing_step(
                 steps,
                 "predict",
@@ -1682,16 +1956,17 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
     elif dominant_route and dominant_is_farm and config.get("auto_predict_enabled"):
         should_predict = True
         stage = "need_predict"
-        predict_reason = f"{dominant_route} 在未来 {int(horizon_hours)}h 内承担主 Farm 窗口，应由时间线规划器决定是否推命。"
+        predict_reason = f"{dominant_route} 在未来 {int(horizon_hours)}h 内承担主攒天机窗口，应由时间线决定是否推命。"
         _append_tianxing_step(steps, "predict", dominant_route, route=dominant_route, reason=predict_reason, now=now)
     elif dominant_route and dominant_is_farm:
         stage = "observe_only"
-        predict_reason = f"{dominant_route} 在未来 {int(horizon_hours)}h 内承担主 Farm 窗口，但自动推命关闭。"
+        predict_reason = f"{dominant_route} 在未来 {int(horizon_hours)}h 内承担主攒天机窗口，但自动推命关闭。"
     elif dominant_route:
         stage = "observe_only"
-        predict_reason = f"{dominant_route} 只有消费窗口，没有稳定 Farm 窗口，不建议盲发推命。"
+        predict_reason = f"{dominant_route} 只有消费窗口，没有稳定攒天机窗口，不建议盲发推命。"
 
     next_consume_route, next_consume = _next_consume_route(normalized_windows)
+    next_consume_requires_change = bool((next_consume or {}).get("require_change_fate"))
     if next_consume_route:
         if current_change == next_consume_route and change_until > now:
             recommended_change_route = next_consume_route
@@ -1707,20 +1982,38 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             release_reason = f"{recommended_change_route} 改命确认后放行下游。"
         elif not current_change and not config.get("auto_change_fate_enabled"):
             change_reason = f"最近消费窗口是 {next_consume_route}，但自动改命关闭。"
+            if next_consume_requires_change:
+                stage = "need_change_fate"
+                predict_reason = f"{next_consume_route} 需要先确认改命，当前自动改命关闭。"
         elif current_change and change_until > now:
             recommended_change_route = current_change
             change_reason = f"已有 {current_change} 改命待发，不覆盖。"
         elif tianji_value < min_tianji:
             change_reason = f"天机值 {tianji_value} 低于改命阈值 {min_tianji}。"
+            if next_consume_requires_change:
+                stage = "need_tianji_for_change"
+                predict_reason = f"{next_consume_route} 需要先确认改命；天机值不足，等待攒点。"
 
-    if not release_route and dominant_route and (should_predict or current_prediction == dominant_route):
+    release_requires_change = bool(next_consume_requires_change and next_consume_route == dominant_route)
+    if not release_route and dominant_route and (should_predict or current_prediction == dominant_route) and not release_requires_change:
         release_route = dominant_route
         release_reason = f"{dominant_route} 推命确认后放行对应路线。"
     if release_route and not blocked_by_conflict:
         if current_prediction and current_prediction != release_route and prediction_until > now:
             release_reason = f"已有 {current_prediction} 推命未应验，暂不放行 {release_route}。"
         else:
-            release_basis = "prediction" if should_predict or (current_prediction == release_route and prediction_until > now) else "change_fate"
+            has_change_step = any(
+                str(step.get("action") or "") == "change_fate" and _normalize_route_choice(step.get("route") or step.get("arg"), "") == release_route
+                for step in steps
+            )
+            if (
+                (current_change == release_route and change_until > now)
+                or has_change_step
+                or (next_consume_requires_change and next_consume_route == release_route)
+            ):
+                release_basis = "change_fate"
+            else:
+                release_basis = "prediction" if should_predict or (current_prediction == release_route and prediction_until > now) else "change_fate"
             _append_tianxing_step(
                 steps,
                 "release_downstream",
@@ -2040,7 +2333,7 @@ def _release_tianxing_downstream(timeline, step, now):
 
 
 def _schedule_tianxing_timeline_calibration(timeline, now):
-    calibration = _make_tianxing_timeline_step("panel", reason="战略动作回复超时后查盘校准。", now=now)
+    calibration = _make_tianxing_timeline_step("panel", reason="天星前置命令回复超时后查盘校准。", now=now)
     calibration["id"] = f"calibration:{int(float(now or 0))}"
     calibration["terminal_after_confirm"] = True
     steps = list(timeline.get("steps") or [])
@@ -2183,7 +2476,7 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
     confirmed, timeline = _confirm_tianxing_timeline_from_observation(now)
     if confirmed:
         save_state()
-        return {"phase": "state_confirmed", "changed": True, "reason": "天星战略动作已由真实状态确认。"}
+        return {"phase": "state_confirmed", "changed": True, "reason": "天星前置命令已由真实状态确认。"}
 
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     if float(timeline.get("blocked_until", 0) or 0) > now:
@@ -2195,13 +2488,13 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
         started_at = float(active_step.get("send_started_at", 0) or active_step.get("sent_at", 0) or 0)
         ack_timeout = int(effective_config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC)
         if started_at <= 0 or now < started_at + ack_timeout:
-            return {"phase": "sending", "changed": False, "reason": "天星战略动作正在发送队列中，等待返回或真实回复。"}
+            return {"phase": "sending", "changed": False, "reason": "天星前置命令正在发送队列中，等待返回或真实回复。"}
         active_step["status"] = "ack_timeout"
         active_step["timeout_at"] = float(now)
         active_step["calibration_due_at"] = float(now + int(effective_config.get("calibration_backoff_sec", TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC) or TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC))
         timeline["phase"] = "ack_timeout"
         timeline["blocked_until"] = active_step["calibration_due_at"]
-        timeline["last_error"] = "天星战略动作发送队列超时，等待查盘校准；不重复发送。"
+        timeline["last_error"] = "天星前置命令发送队列超时，等待查盘校准；不重复发送。"
         timeline["updated_at"] = float(now)
         _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
         _timeline_audit(timeline, now, "send_queue_timeout", action=active_step.get("action"), arg=active_step.get("arg"))
@@ -2211,13 +2504,13 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
     if active_status == "sent_waiting_ack":
         ack_due_at = float(active_step.get("ack_due_at", 0) or 0)
         if ack_due_at <= 0 or now < ack_due_at:
-            return {"phase": "sent_waiting_ack", "changed": False, "reason": "等待天星战略动作真实回复。"}
+            return {"phase": "sent_waiting_ack", "changed": False, "reason": "等待天星前置命令真实回复。"}
         active_step["status"] = "ack_timeout"
         active_step["timeout_at"] = float(now)
         active_step["calibration_due_at"] = float(now + int(effective_config.get("calibration_backoff_sec", TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC) or TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC))
         timeline["phase"] = "ack_timeout"
         timeline["blocked_until"] = active_step["calibration_due_at"]
-        timeline["last_error"] = "天星战略动作回复超时，等待查盘校准；不放行下游。"
+        timeline["last_error"] = "天星前置命令回复超时，等待查盘校准；不放行下游。"
         timeline["updated_at"] = float(now)
         _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
         _timeline_audit(timeline, now, "ack_timeout", action=active_step.get("action"), arg=active_step.get("arg"))
@@ -2236,7 +2529,7 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
         timeline["active_step_index"] = -1
         timeline["active_step"] = {}
         timeline["blocked_until"] = float(now)
-        timeline["last_error"] = "校准已完成，原战略动作未被确认；需重算时间线，不放行下游。"
+        timeline["last_error"] = "校准已完成，原前置命令未被确认；需重算时间线，不放行下游。"
         timeline["updated_at"] = float(now)
         _timeline_audit(timeline, now, "blocked_replan", reason=timeline["last_error"])
         state["tianxing_timeline_state"] = timeline
@@ -2342,6 +2635,16 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
     route_reason = str(reason or route).strip() or route
+    if is_tianxing_automation_paused(now=now, observed=observed):
+        return _route_preflight_result(
+            route,
+            "automation_paused",
+            False,
+            f"天星自动调度已暂停，为避免逆命，本轮不发送{route_reason}；需要手动处理或使用 .天星恢复 @身份。",
+            deadline_at=deadline_at,
+            now=now,
+            blocked_until=_tianxing_pause_block_until(now, observed=observed, config=effective_config),
+        )
 
     current_prediction = str(observed.get("current_prediction") or "").strip()
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
@@ -2562,7 +2865,7 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
             else:
                 farm["phase"] = "ready"
                 farm["handoff_ready"] = False
-                farm["next_time"] = float(now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC))
+                farm["next_time"] = float(now + _craft_farm_interval_sec(config))
             _craft_farm_audit(
                 farm,
                 now,
@@ -2639,11 +2942,11 @@ def build_tianxing_retreat_farm_plan(*, now=None, deep_retreat_phase="", config=
     if not config.get("retreat_farm_enabled"):
         return _retreat_farm_result("disabled", reason="普通闭关攒点未开启。")
     if _normalize_route_choice(config.get("farm_route"), "闭关") != "闭关":
-        return _retreat_farm_result("route_not_retreat", reason="当前 Farm 路线不是闭关。")
+        return _retreat_farm_result("route_not_retreat", reason="当前攒天机路线不是闭关。")
 
     windows = build_tianxing_farm_window(now=now, config=config, reason="天星普通闭关攒点")
     if not windows:
-        return _retreat_farm_result("outside_window", reason="当前不在闭关 Farm 窗口。")
+        return _retreat_farm_result("outside_window", reason="当前不在闭关攒天机窗口。")
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     target_tianji = int(config.get("target_tianji_daily", 0) or 0)
@@ -3023,7 +3326,7 @@ def _state_int(key):
 def _craft_farm_explore_consume_block(now, config):
     now = float(now or 0)
     lead_sec = int((config or {}).get("route_prepare_lead_sec", 5 * 60) or 5 * 60)
-    interval_sec = int((config or {}).get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC)
+    interval_sec = _craft_interval_bounds(config)[0]
     candidates = []
     module_specs = (
         ("野外历练", "wild_training_enabled", "next_wild_training_time", ("wild_training_reply_to_msg_id",), "wild_training_reply_due_at"),
@@ -3082,13 +3385,28 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
     if not config.get("craft_farm_enabled"):
         return _craft_farm_result("disabled", reason="炼制攒点未开启。")
     if _normalize_route_choice(config.get("farm_route"), "炼制") != "炼制":
-        return _craft_farm_result("route_not_craft", reason="当前 Farm 路线不是炼制。")
+        return _craft_farm_result("route_not_craft", reason="当前攒天机路线不是炼制。")
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if is_tianxing_automation_paused(now=now, observed=observed):
+        return _craft_farm_result(
+            "automation_paused",
+            active=True,
+            takeover=False,
+            handoff=True,
+            reason="天星自动调度已暂停，炼制攒点不接管。",
+            next_time=_tianxing_pause_block_until(now, observed=observed, config=config),
+        )
 
     windows = build_tianxing_farm_window(now=now, config=config, reason="天星炼制攒点")
     if not windows:
-        return _craft_farm_result("outside_window", reason="当前不在炼制 Farm 窗口。")
+        next_window = next_tianxing_farm_window_start(now=now, config=config)
+        return _craft_farm_result(
+            "outside_window",
+            active=True,
+            reason="当前不在炼制攒天机窗口。",
+            next_time=next_window or now + _status_backoff_sec(config),
+        )
 
-    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     target_tianji = int(config.get("target_tianji_daily", 0) or 0)
     current_tianji = int(observed.get("tianji_value", 0) or 0)
     farm = _current_craft_farm_state()
@@ -3109,7 +3427,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             takeover=False,
             handoff=True,
             reason=explore_block.get("reason") or "探索消费窗口临近，炼制攒点让路。",
-            next_time=explore_block.get("blocked_until") or now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC),
+            next_time=explore_block.get("blocked_until") or now + _craft_farm_interval_sec(config),
         )
 
     next_time = float(farm.get("next_time", 0) or 0)
@@ -3128,7 +3446,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
                     handoff=dry_run,
                     reason="已有闭关推命未应验；先按闭关路线消费该推命，再回到炼制攒点。",
                     action="consume_prediction",
-                    next_time=now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC),
+                    next_time=now + _craft_farm_interval_sec(config),
                     dry_run=dry_run,
                 )
             return _craft_farm_result(
@@ -3185,7 +3503,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
                 handoff=dry_run,
                 reason=preflight.get("reason") or "等待天星时间线确认炼制路线。",
                 action="timeline",
-                next_time=now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC),
+                next_time=now + _craft_farm_interval_sec(config),
                 timeline_required=True,
                 dry_run=dry_run,
             )
@@ -3195,7 +3513,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             takeover=False,
             handoff=True,
             reason=preflight.get("reason") or "天星预检阻断炼制攒点。",
-            next_time=preflight.get("blocked_until") or now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC),
+            next_time=preflight.get("blocked_until") or now + _craft_farm_interval_sec(config),
             dry_run=dry_run,
         )
 
@@ -3208,7 +3526,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
         reason=f"炼制路线已确认，发送炼制 {item} 获取天机点。",
         action="craft",
         command=command,
-        next_time=now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC),
+        next_time=now + _craft_farm_interval_sec(config),
         dry_run=dry_run,
     )
 
@@ -3261,7 +3579,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
         farm["phase"] = "consume_prediction"
         farm["last_result"] = str(consume_result.get("stage") or "")
         farm["last_error"] = consume_result.get("reason") or ""
-        farm["next_time"] = float(consume_result.get("next_time", 0) or now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC))
+        farm["next_time"] = float(consume_result.get("next_time", 0) or now + _craft_farm_interval_sec(config))
         _craft_farm_audit(
             farm,
             now,
@@ -3307,7 +3625,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             return dict(plan, timeline_phase=timeline_result.get("phase") or "", timeline_reason=timeline_result.get("reason") or "")
         farm["phase"] = "timeline_waiting"
         farm["last_result"] = str(timeline_result.get("phase") or "")
-        farm["next_time"] = float(now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC))
+        farm["next_time"] = float(now + _craft_farm_interval_sec(config))
         _craft_farm_audit(farm, now, "timeline_waiting", phase=timeline_result.get("phase"), reason=timeline_result.get("reason"))
         _set_tianxing_craft_farm_state(farm, now)
         save_state()
@@ -3345,7 +3663,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
     )
     if not msg:
         farm["phase"] = "send_blocked"
-        farm["next_time"] = float(now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC))
+        farm["next_time"] = float(now + _craft_farm_interval_sec(config))
         farm["last_error"] = f"{command} 发送失败或被安全策略拦截。"
         _craft_farm_audit(farm, now, "send_blocked", command=command)
         _set_tianxing_craft_farm_state(farm, now)
@@ -3372,7 +3690,7 @@ def _record_tianxing_dry_run(observed, now, plan, config):
     action = str(plan.get("action") or "")
     command = str(plan.get("command") or "")
     observed["auto_last_action"] = f"dry_run_{action}" if action else "dry_run"
-    observed["auto_last_error"] = "dry-run：战略动作仅记录，不发送。"
+    observed["auto_last_error"] = "试运行：只记录，不发送。"
     observed["auto_last_plan"] = command or plan.get("reason") or ""
     observed["auto_last_plan_at"] = float(now)
     observed["auto_next_time"] = float(now + _status_backoff_sec(config))
@@ -3396,6 +3714,9 @@ async def _run_tianxing_scheduler_unlocked(now):
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    if is_tianxing_automation_paused(now=now, observed=observed):
+        _apply_tianxing_pause_wait(observed, now, config=config)
+        return
     if _handle_tianxing_auto_pending(observed, now):
         return
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
@@ -3416,7 +3737,7 @@ async def _run_tianxing_scheduler_unlocked(now):
                 now,
                 "idle",
                 now + _status_backoff_sec(config),
-                f"逆命劫 {calamity_count} 已达阈值 {calamity_threshold}，自动消劫关闭，暂停战略动作。",
+                f"逆命劫 {calamity_count} 已达阈值 {calamity_threshold}，自动消劫关闭，暂停天星命令。",
             )
             return
     elif (
@@ -3433,7 +3754,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             observed["auto_last_error"] = craft_result.get("reason") or ""
             observed["auto_last_plan"] = craft_result.get("stage") or ""
             observed["auto_last_plan_at"] = float(now)
-            observed["auto_next_time"] = float(craft_result.get("next_time", 0) or now + int(config.get("craft_farm_interval_sec", TIANXING_CRAFT_FARM_RETRY_SEC) or TIANXING_CRAFT_FARM_RETRY_SEC))
+            observed["auto_next_time"] = float(craft_result.get("next_time", 0) or now + _craft_farm_interval_sec(config))
             state["tianxing_observation"] = observed
             save_state()
             return
@@ -3481,7 +3802,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             now,
             action,
             sent_at + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC,
-            "天星宗自动调度发送失败或被安全策略拦截",
+            "天星宗自动命令发送失败或被安全策略拦截",
         )
         return
 
@@ -3540,9 +3861,11 @@ def get_tianxing_status_text():
     dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    pause_state = get_tianxing_automation_pause_state(observed=observed)
     lines = [
         "🌌 天星宗",
         f"- 模块：{'开启' if state.get('tianxing_enabled') else '关闭'}（被动观察，手动动作受控发送）",
+        f"- 自动接管：{_format_tianxing_pause_line(pause_state)}",
         "- 命令：.观命｜.定命 <紫微|天府|太阴|贪狼>｜.推命/.改命 <闭关|炼制|探索|斗法>｜.天机盘｜.消劫",
         f"- 命星：可选 {_format_list(observed.get('available_stars'))}｜已定 {observed.get('fixed_star') or '未记录'}",
         f"- 推命：{observed.get('current_prediction') or '无'}｜{fmt_abs_ts(observed.get('current_prediction_until', 0))}（{fmt_remaining(observed.get('current_prediction_until', 0))}）",
@@ -3552,7 +3875,7 @@ def get_tianxing_status_text():
         f"- 最近动作：{observed.get('last_action') or '未记录'} / {observed.get('last_result') or '未记录'}",
         f"- 最近观察：{fmt_abs_ts(observed.get('last_observed_at', 0))}",
         f"- 自动调度：{fmt_abs_ts(observed.get('auto_next_time', 0))}（{fmt_remaining(observed.get('auto_next_time', 0))}）",
-        f"- 自动策略：查盘{'开' if config.get('auto_panel_enabled') else '关'}｜观命{'开' if config.get('auto_observe_enabled') else '关'}｜消劫{'开' if config.get('auto_clear_calamity_enabled') else '关'}｜定命{'开' if config.get('auto_set_star_enabled') else '关'}｜推命{'开' if config.get('auto_predict_enabled') else '关'}｜改命{'开' if config.get('auto_change_fate_enabled') else '关'}｜dry-run{'开' if config.get('strategy_dry_run_enabled') else '关'}",
+        f"- 自动策略：查盘{'开' if config.get('auto_panel_enabled') else '关'}｜观命{'开' if config.get('auto_observe_enabled') else '关'}｜消劫{'开' if config.get('auto_clear_calamity_enabled') else '关'}｜定命{'开' if config.get('auto_set_star_enabled') else '关'}｜推命{'开' if config.get('auto_predict_enabled') else '关'}｜改命{'开' if config.get('auto_change_fate_enabled') else '关'}｜试运行{'开' if config.get('strategy_dry_run_enabled') else '关'}",
         f"- 策略优先级：命星 {_format_list(config.get('star_priority'))}｜路线 {_format_list(config.get('route_priority'))}",
     ]
     if dirty_fields:
@@ -3587,7 +3910,10 @@ __all__ = [
     "build_tianxing_retreat_farm_plan",
     "build_tianxing_timeline_plan",
     "execute_tianxing_manual_action",
+    "get_tianxing_automation_pause_state",
+    "get_tianxing_automation_pause_text",
     "get_tianxing_status_text",
+    "is_tianxing_automation_paused",
     "is_tianxing_route_released",
     "looks_like_tianxing_text",
     "note_tianxing_retreat_force_exit_summary",
@@ -3600,4 +3926,5 @@ __all__ = [
     "run_tianxing_scheduler",
     "run_tianxing_timeline_scheduler",
     "set_tianxing_auto_config",
+    "set_tianxing_automation_paused",
 ]

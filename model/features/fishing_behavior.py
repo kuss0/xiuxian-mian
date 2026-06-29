@@ -14,6 +14,7 @@ from ..config import (
     CMD_FISHING,
     CMD_FISHING_BASKET,
     CMD_FISHING_BUY_BAIT,
+    CMD_FISHING_CANCEL,
     CMD_FISHING_CHUM,
     CMD_FISHING_LIFT,
     CMD_FISHING_OPEN,
@@ -27,9 +28,11 @@ from .fishing import (
     FISHING_BAITS,
     FISHING_CHUM_DAILY_LIMITS,
     FISHING_DEFAULT_BUY_BAIT_COUNT,
+    FISHING_DEFAULT_CANCEL_AFTER_SEC,
     FISHING_DEFAULT_DAILY_LIMIT,
     FISHING_BAIT_COSTS,
     FISHING_MAX_DAILY_LIMIT,
+    clamp_fishing_cancel_after_sec,
     clamp_fishing_buy_bait_count,
     clamp_fishing_daily_limit,
     fishing_bait_name_for_item_key,
@@ -40,6 +43,7 @@ from .fishing import (
     parse_chum_daily_limit_reply,
     parse_chum_duplicate_active_reply,
     parse_chum_shortage,
+    parse_cancel_fishing_reply,
     parse_chum_success_detail,
     parse_empty_fishing_result,
     parse_fishing_catch,
@@ -367,6 +371,7 @@ def is_fishing_reply_text(text):
         or raw.startswith("【打窝已成】")
         or raw.startswith("【鱼篓】")
         or raw.startswith("打窝失败，资源不足：")
+        or parse_cancel_fishing_reply(raw)
         or parse_chum_daily_limit_reply(raw)
         or parse_chum_duplicate_active_reply(raw) is not None
         or ("你今日已垂钓" in raw and "明日再来" in raw)
@@ -416,6 +421,11 @@ def next_planned_command(snapshot, *, bait_inventory=None):
         return "", plan
     commands = list(plan.commands or ())
     return (commands[0] if commands else ""), plan
+
+
+def cast_command_from_config(snapshot):
+    config = current_fishing_config(snapshot)
+    return f"{CMD_FISHING} {config.pond} {config.bait}"
 
 
 def next_prep_purchase_command(snapshot, *, bait_inventory=None):
@@ -553,6 +563,8 @@ def command_phase(command):
         return "probing"
     if raw.startswith(CMD_FISHING_LIFT):
         return "lifting"
+    if raw.startswith(CMD_FISHING_CANCEL):
+        return "cancelling"
     if raw.startswith(CMD_FISHING_OPEN):
         return "opening"
     if raw.startswith(CMD_FISHING):
@@ -568,6 +580,10 @@ def is_rod_in_progress(snapshot):
     if pending_action in {CMD_FISHING_STATUS, CMD_FISHING_PROBE, CMD_FISHING_LIFT}:
         return True
     return False
+
+
+def fishing_cancel_after_sec(snapshot):
+    return clamp_fishing_cancel_after_sec(snapshot.get("fishing_cancel_after_sec", FISHING_DEFAULT_CANCEL_AFTER_SEC))
 
 
 def is_new_fishing_flow_in_progress(snapshot):
@@ -599,6 +615,8 @@ def build_send_success_effect(snapshot, command, *, sent_at, msg_id, reply_timeo
     }
     if phase == "fishing":
         updates["fishing_started_at"] = float(sent_at)
+    elif phase == "cancelling":
+        updates["fishing_started_at"] = 0
     elif phase == "opening":
         updates["fishing_pending_open_fish"] = snapshot.get("fishing_pending_open_fish", "")
         updates["fishing_started_at"] = snapshot.get("fishing_started_at", 0)
@@ -663,6 +681,19 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
                 },
                 audit_messages=(f"⚠️ 灵溪垂钓回复超时，消息ID={reply_to_msg_id}，改用钓鱼状态恢复。",),
             )
+        if str(snapshot.get("fishing_phase") or "").strip() == "chumming":
+            command = cast_command_from_config(snapshot)
+            updates = clear_pending_updates()
+            updates.update({
+                "fishing_last_error": f"打窝回复超时：{reply_to_msg_id}，跳过重打窝改抛竿",
+                "fishing_last_result": f"打窝回包未确认，改发：{command}",
+            })
+            return FishingEffect(
+                handled=True,
+                command=command,
+                updates=updates,
+                audit_messages=(f"⚠️ 灵溪垂钓打窝回复超时，消息ID={reply_to_msg_id}，本轮跳过重打窝改抛竿。",),
+            )
         if is_nonblocking_open_timeout(snapshot):
             updates = clear_pending_updates()
             updates.update({
@@ -681,6 +712,22 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
             handled=True,
             updates=_with_next_delay(updates, now, RETRY_MAX_SEC),
             audit_messages=(f"⚠️ 灵溪垂钓回复超时，消息ID={reply_to_msg_id}，稍后重试。",),
+        )
+
+    started_at = float(snapshot.get("fishing_started_at", 0) or 0)
+    cancel_after_sec = fishing_cancel_after_sec(snapshot)
+    if is_rod_in_progress(snapshot) and cancel_after_sec > 0 and started_at > 0 and float(now or 0) - started_at >= cancel_after_sec:
+        updates = clear_pending_updates()
+        updates.update({
+            "fishing_phase": "cancelling",
+            "fishing_started_at": 0,
+            "fishing_last_error": f"单竿超过{cancel_after_sec}秒未结束，发收竿兜底",
+        })
+        return FishingEffect(
+            handled=True,
+            command=CMD_FISHING_CANCEL,
+            updates=updates,
+            audit_messages=(f"⚠️ 灵溪垂钓单竿超过{cancel_after_sec}秒未结束，发送 .收竿 兜底。",),
         )
 
     if cd_blocks(snapshot.get("next_fishing_time", 0), now, 0):
@@ -978,6 +1025,16 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
         })
         return FishingEffect(handled=True, updates=_with_next_delay(updates, now, post_rod_delay_sec))
 
+    if parse_cancel_fishing_reply(raw_text):
+        updates = clear_pending_updates()
+        updates.update({
+            "fishing_started_at": 0,
+            "fishing_last_msg_id": result_msg_id,
+            "fishing_last_result": "已收竿",
+            "fishing_last_error": "",
+        })
+        return FishingEffect(handled=True, updates=_with_next_delay(updates, now, post_rod_delay_sec))
+
     daily_limit = parse_fishing_daily_limit_reached(raw_text)
     if daily_limit:
         updates = clear_pending_updates()
@@ -1021,6 +1078,14 @@ def decide_reply(snapshot, text, now, *, result_msg_id=0, action_delay_sec=2, po
         if status.suggested_command:
             updates["fishing_pending_action"] = status.suggested_command
             delay = _bounded_action_delay(FISHING_STATUS_ACTION_DELAY_SEC, status.lift_seconds)
+            immediate_commands = ()
+        elif (
+            bool(snapshot.get("fishing_auto_probe_enabled"))
+            and status.expected_wait_seconds is not None
+            and str(status.signal or "").strip() == "静候鱼讯"
+        ):
+            delay = int(status.expected_wait_seconds or 0) + _bounded_action_delay(action_delay_sec)
+            updates["fishing_pending_action"] = CMD_FISHING_PROBE
             immediate_commands = ()
         else:
             wait_sec = status.wait_seconds if status.wait_seconds is not None else status.expected_wait_seconds

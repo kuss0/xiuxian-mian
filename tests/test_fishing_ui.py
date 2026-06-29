@@ -40,6 +40,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["米糠小窝"], fishing["chum_names"])
         self.assertTrue(fishing["auto_buy_bait_enabled"])
         self.assertTrue(fishing["auto_open_fish_enabled"])
+        self.assertEqual(120, fishing["cancel_after_sec"])
         self.assertEqual(0, fishing["transfer_target_id"])
         self.assertEqual("关闭", fishing["transfer_target_label"])
         self.assertEqual([], fishing["transfer_identity_options"])
@@ -64,6 +65,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
                     "auto_buy_bait_count": 11,
                     "auto_probe_enabled": True,
                     "auto_open_fish_enabled": True,
+                    "cancel_after_sec": 180,
                 },
             )
 
@@ -80,6 +82,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(11, identity_state["fishing_auto_buy_bait_count"])
         self.assertTrue(identity_state["fishing_auto_probe_enabled"])
         self.assertTrue(identity_state["fishing_auto_open_fish_enabled"])
+        self.assertEqual(180, identity_state["fishing_cancel_after_sec"])
         audit_mock.assert_awaited_once()
 
         snapshot = ui.get_identity_ui_snapshot(self.identity_id)
@@ -87,6 +90,7 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(7, snapshot["fishing"]["daily_limit"])
         self.assertEqual(11, snapshot["fishing"]["auto_buy_bait_count"])
         self.assertTrue(snapshot["fishing"]["auto_open_fish_enabled"])
+        self.assertEqual(180, snapshot["fishing"]["cancel_after_sec"])
         self.assertTrue(snapshot["fishing"]["plan"]["allow_start"])
         self.assertEqual([], [item for item in snapshot["fishing"]["plan"]["resource_requirements"] if item["missing_count"]])
 
@@ -222,11 +226,13 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("renderFishingConfigModal(false)", script)
         self.assertIn('name="daily_limit"', script)
         self.assertIn('name="auto_buy_bait_count"', script)
+        self.assertIn('name="cancel_after_sec"', script)
         self.assertIn('name="chum_names"', script)
         self.assertIn('name="auto_open_fish_enabled"', script)
         self.assertIn('name="transfer_target_id"', script)
         self.assertNotIn('select[name="chum_name"]', script)
         self.assertIn("resourceRequirementHtml", script)
+        self.assertIn("clampCancelAfterSec", script)
         self.assertIn("findFishingCard", script)
         self.assertIn("card.querySelector('.module-top')", script)
         self.assertIn("moduleTop.appendChild(panel)", script)
