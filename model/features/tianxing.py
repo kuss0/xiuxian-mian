@@ -2160,8 +2160,6 @@ def _close_tianxing_guards_from_observation(observed, now):
 def _prune_tianxing_released_routes(observed, now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     released = dict(timeline.get("released_routes") or {})
-    if not released:
-        return False
     observed = normalize_tianxing_observation(observed)
     now = float(now if now is not None else time.time())
     kept = {}
@@ -2170,32 +2168,59 @@ def _prune_tianxing_released_routes(observed, now):
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
     current_change = _normalize_route_choice(observed.get("current_change"), "")
     change_until = float(observed.get("current_change_until", 0) or 0)
+    def _release_basis_valid(route, basis):
+        route = _normalize_route_choice(route, "")
+        if basis == "prediction":
+            return current_prediction == route and prediction_until > now
+        if basis == "change_fate":
+            return current_change == route and change_until > now
+        return (
+                (current_prediction == route and prediction_until > now)
+                or (current_change == route and change_until > now)
+            )
+
     for route, item in released.items():
         route = _normalize_route_choice(route, "")
         if route not in TIANXING_ROUTES or not isinstance(item, dict):
             removed.append(route or "?")
             continue
         basis = str(item.get("basis") or item.get("release_basis") or "").strip()
-        if basis == "prediction":
-            valid = current_prediction == route and prediction_until > now
-        elif basis == "change_fate":
-            valid = current_change == route and change_until > now
-        else:
-            valid = (
-                (current_prediction == route and prediction_until > now)
-                or (current_change == route and change_until > now)
-            )
+        valid = _release_basis_valid(route, basis)
         if valid:
             kept[route] = item
         else:
             removed.append(route)
-    if not removed:
-        return False
-    timeline["released_routes"] = kept
-    timeline["updated_at"] = float(now)
-    _timeline_audit(timeline, now, "released_routes_pruned", routes=",".join(sorted(set(removed))))
-    state["tianxing_timeline_state"] = timeline
-    return True
+
+    changed = False
+    if removed:
+        timeline["released_routes"] = kept
+        timeline["updated_at"] = float(now)
+        _timeline_audit(timeline, now, "released_routes_pruned", routes=",".join(sorted(set(removed))))
+        changed = True
+
+    active_step = dict(timeline.get("active_step") or {})
+    active_status = str(active_step.get("status") or "").strip()
+    active_action = str(active_step.get("action") or "").strip()
+    active_route = _normalize_route_choice(active_step.get("route") or active_step.get("arg"), "")
+    active_basis = str(active_step.get("basis") or active_step.get("release_basis") or "").strip()
+    if (
+        active_status == "released"
+        and active_action == "release_downstream"
+        and active_route
+        and not _release_basis_valid(active_route, active_basis)
+    ):
+        timeline["phase"] = "blocked_replan"
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["blocked_until"] = float(now)
+        timeline["last_error"] = f"{active_route} 放行依据已失效，需重算时间线。"
+        timeline["updated_at"] = float(now)
+        _timeline_audit(timeline, now, "released_step_invalidated", route=active_route, basis=active_basis)
+        changed = True
+
+    if changed:
+        state["tianxing_timeline_state"] = timeline
+    return changed
 
 
 def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, observed=None, config=None):

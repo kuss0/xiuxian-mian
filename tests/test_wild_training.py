@@ -233,6 +233,15 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
                 "tianji_value": 22,
             }
             identity_state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "release_downstream",
+                    "route": "探索",
+                    "arg": "探索",
+                    "status": "released",
+                    "release_basis": "change_fate",
+                },
                 "released_routes": {
                     "探索": {
                         "released_at": now - 30,
@@ -254,6 +263,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             observed = state_module.state["tianxing_observation"]
+            timeline = state_module.state["tianxing_timeline_state"]
 
         self.assertTrue(handled)
         self.assertEqual("", observed["current_change"])
@@ -262,6 +272,9 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(observed["current_prediction_until"], now)
         self.assertEqual(1, observed["last_tianji_gain"])
         self.assertEqual(30, observed["last_contrib_gain"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertIn("放行依据已失效", timeline["last_error"])
         with state_module.use_identity(send_as_id):
             self.assertFalse(tianxing.is_tianxing_route_released("探索", now=now + 1))
 
