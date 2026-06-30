@@ -3145,7 +3145,6 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
     confirmed, timeline = _confirm_tianxing_timeline_from_observation(now)
     if confirmed:
         save_state()
-        return {"phase": "state_confirmed", "changed": True, "reason": "天星前置命令已由真实状态确认。"}
 
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     should_replan, replan_reason = _timeline_should_replan_for_window_route(timeline, windows or [], now, horizon_hours)
@@ -3235,6 +3234,12 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
     if timeline.get("phase") in {"state_confirmed", "downstream_released"} or active_status in {"confirmed", "released"}:
         next_index = _timeline_active_index(timeline) + 1
         _activate_timeline_step(timeline, next_index, now)
+        next_step = dict(timeline.get("active_step") or {})
+        if (
+            str(next_step.get("status") or "").strip() == "pending"
+            and str(next_step.get("action") or "").strip() == "release_downstream"
+        ):
+            timeline = await _send_tianxing_timeline_step(timeline, next_step, now, effective_config)
         state["tianxing_timeline_state"] = timeline
         save_state()
         return {"phase": timeline.get("phase"), "changed": True, "reason": "时间线推进到下一步。"}

@@ -729,6 +729,31 @@ class SentMessageEvidenceTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
 
+    def test_action_guard_keeps_short_same_command_guard_after_reply_close(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990304
+        try:
+            action_guard._recent_closed_command_guards.clear()
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+
+            action_guard.note_sent(".显灵", identity_id, 100, sent_at=1_780_000_000.0)
+            self.assertTrue(action_guard.close_by_family("small_world_manifest", send_as_id=identity_id, now=1_780_000_010.0))
+            self.assertNotIn("small_world_manifest", action_guard.get_action_guard_sessions(identity_id))
+
+            allowed, reason = action_guard.before_send(".显灵", send_as_id=identity_id, now=1_780_000_020.0)
+            self.assertFalse(allowed)
+            self.assertIn("短窗保护", reason)
+
+            allowed, _reason = action_guard.before_send(".显灵", send_as_id=identity_id, now=1_780_000_096.0)
+            self.assertTrue(allowed)
+        finally:
+            action_guard._recent_closed_command_guards.clear()
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
     def test_unhandled_routed_reply_keeps_action_guard_session(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)
         identity_id = 990302

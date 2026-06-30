@@ -1675,12 +1675,12 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
             with patch.object(tianxing, "save_state"):
                 advanced = await tianxing.run_tianxing_timeline_scheduler(now + 7, windows=self._farm_windows(now))
-            self.assertEqual("waiting_send", advanced["phase"])
-            self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 7))
+            self.assertEqual("downstream_released", advanced["phase"])
+            self.assertTrue(tianxing.is_tianxing_route_released("闭关", now=now + 7))
 
             with patch.object(tianxing, "save_state"):
                 released = await tianxing.run_tianxing_timeline_scheduler(now + 8, windows=self._farm_windows(now))
-            self.assertEqual("downstream_released", released["phase"])
+            self.assertEqual("completed", released["phase"])
             self.assertTrue(tianxing.is_tianxing_route_released("闭关", now=now + 8))
 
     async def test_timeline_send_without_message_id_waits_for_calibration_without_resend(self):
@@ -2323,6 +2323,67 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("探索", plan["release_route"])
         self.assertEqual(["release_downstream"], [step["action"] for step in plan["steps"]])
         self.assertEqual("change_fate", plan["steps"][0]["release_basis"])
+
+    async def test_timeline_confirmed_prediction_immediately_releases_downstream(self):
+        now = 1_780_000_000.0
+        sent_at = now - 2
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, tianji_value=9, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_observed_at": now - 1,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "探索",
+                "current_change_until": now + 12 * 3600,
+            })
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-探索-test",
+                "phase": "sent_waiting_ack",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": {
+                    "id": "predict:探索:test",
+                    "action": "predict",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".推命 探索",
+                    "status": "sent_waiting_ack",
+                    "send_msg_id": 11244533,
+                    "sent_at": sent_at,
+                    "ack_due_at": now + 30,
+                },
+                "steps": [
+                    {
+                        "id": "predict:探索:test",
+                        "action": "predict",
+                        "arg": "探索",
+                        "route": "探索",
+                        "command": ".推命 探索",
+                        "status": "sent_waiting_ack",
+                        "send_msg_id": 11244533,
+                        "sent_at": sent_at,
+                        "ack_due_at": now + 30,
+                    },
+                    {
+                        "id": "release_downstream:探索:test",
+                        "action": "release_downstream",
+                        "arg": "探索",
+                        "route": "探索",
+                        "status": "pending",
+                        "release_basis": "change_fate",
+                    },
+                ],
+            }
+
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("downstream_released", result["phase"])
+        self.assertEqual("downstream_released", timeline["phase"])
+        self.assertEqual("released", timeline["active_step"]["status"])
+        self.assertEqual("change_fate", timeline["released_routes"]["探索"]["basis"])
+        send_mock.assert_not_called()
 
     async def test_timeline_ack_timeout_schedules_panel_calibration_without_releasing(self):
         now = 1_780_000_000.0

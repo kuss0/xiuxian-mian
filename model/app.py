@@ -148,7 +148,12 @@ from .features.yuanying import (
 from .features.wendao import handle_wendao_reply, run_wendao_scheduler
 from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
 from .features.fishing_runtime import handle_fishing_reply, is_fishing_reply_text, run_fishing_scheduler
-from .features.wild_training import handle_wild_training_reply, run_wild_training_scheduler
+from .features.wild_training import (
+    WILD_TRAINING_RETRY_MAX_SEC,
+    WILD_TRAINING_RETRY_MIN_SEC,
+    handle_wild_training_reply,
+    run_wild_training_scheduler,
+)
 from .persistence import (
     flush_if_dirty,
     get_persistence_write_failure,
@@ -1074,6 +1079,42 @@ async def _run_identity_schedulers(now):
                 await scheduler(identity_now)
 
 
+async def _run_due_wild_training_retry_schedulers(now, *, limit=1):
+    processed = 0
+    for identity_id in get_identity_ids():
+        if processed >= int(limit or 1):
+            break
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            identity_now = time.time()
+            scheduler_now = max(float(now or 0), identity_now)
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            if not state.get("wild_training_enabled"):
+                continue
+            if int(state.get("wild_training_retry_count", 0) or 0) <= 0:
+                continue
+            if int(state.get("wild_training_reply_to_msg_id", 0) or 0) > 0:
+                continue
+            try:
+                next_time = float(state.get("next_wild_training_time", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                next_time = 0.0
+            if next_time <= 0 or next_time > scheduler_now:
+                if next_time > scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5:
+                    state["next_wild_training_time"] = scheduler_now + WILD_TRAINING_RETRY_MIN_SEC
+                    state["wild_training_last_error"] = "野外历练补发计时器被恢复错峰拉长，已压回短补发窗口"
+                    mark_dirty()
+                continue
+            await run_wild_training_scheduler(scheduler_now)
+            processed += 1
+
+
 async def _run_phaseful_identity_schedulers(now):
     for identity_id in get_identity_ids():
         if not get_identity_enabled(identity_id):
@@ -1883,12 +1924,13 @@ async def main_loop(stop_event=None):
             _cancel_identity_schedulers()
             clear_all_pending_tasks("天尊健康暂停")
             await toggle_global_enabled(False, source="bot_health_monitor")
-        await run_rare_daily_report_scheduler(now)
         if not get_global_enabled():
             _cancel_identity_schedulers()
             await _sleep_or_stop(stop_event, 5)
             continue
 
+        await _run_due_wild_training_retry_schedulers(now)
+        await run_rare_daily_report_scheduler(now)
         await _run_phaseful_identity_schedulers(time.time())
         await _run_global_schedulers(now)
         await run_quiz_learning_scheduler(now)

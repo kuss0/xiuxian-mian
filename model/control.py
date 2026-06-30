@@ -219,6 +219,8 @@ from .features.wild_training import (
     WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
     WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
+    WILD_TRAINING_RETRY_MAX_SEC,
+    WILD_TRAINING_RETRY_MIN_SEC,
     clear_wild_training_state,
     get_wild_training_status_text,
     schedule_wild_training_initial_check,
@@ -470,6 +472,12 @@ def _has_stale_tianti_daily_marker(today_key):
 
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
+        try:
+            retry_count = int(state.get("wild_training_retry_count", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            retry_count = 0
+        if retry_count > 0 and not _state_positive_int("wild_training_reply_to_msg_id"):
+            return now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
         try:
             last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
         except (TypeError, ValueError, OverflowError):

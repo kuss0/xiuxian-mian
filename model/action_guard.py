@@ -78,6 +78,9 @@ RETRY_DELAY_RANGES_SEC = (
 SESSION_MAX_ATTEMPTS = 1 + len(RETRY_DELAY_RANGES_SEC)
 SESSION_TTL_SEC = 8 * 3600
 BLOCK_LOG_INTERVAL_SEC = 10 * 60
+POST_CLOSE_REPEAT_GUARD_SEC = 95
+
+_recent_closed_command_guards = {}
 
 
 ACTION_SPECS = {
@@ -648,6 +651,34 @@ def _session_has_send_evidence(session):
     )
 
 
+def _recent_guard_key(send_as_id, action_key, command):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    return identity_id, str(action_key or "").strip(), normalize_command(command)
+
+
+def _note_recent_closed_command_guard(send_as_id, action_key, session, now):
+    command = normalize_command((session or {}).get("last_command") or "")
+    last_sent_at = float((session or {}).get("last_sent_at", 0) or 0)
+    if not command or last_sent_at <= 0:
+        return
+    guard_until = max(float(now or 0), last_sent_at + POST_CLOSE_REPEAT_GUARD_SEC)
+    if guard_until <= float(now or 0):
+        return
+    _recent_closed_command_guards[_recent_guard_key(send_as_id, action_key, command)] = guard_until
+
+
+def _recent_closed_command_guard_until(send_as_id, action_key, command, now):
+    key = _recent_guard_key(send_as_id, action_key, command)
+    guard_until = float(_recent_closed_command_guards.get(key, 0) or 0)
+    if guard_until <= float(now or 0):
+        _recent_closed_command_guards.pop(key, None)
+        return 0.0
+    return guard_until
+
+
 def _has_remote_block(session, now):
     if not isinstance(session, dict):
         return False
@@ -830,6 +861,13 @@ def before_send(command, send_as_id=None, now=None):
                 mark_dirty()
             return False, _remote_block_reason(session, action_key, now)
 
+        recent_guard_until = _recent_closed_command_guard_until(send_as_id, action_key, command, now)
+        if recent_guard_until > now:
+            wait_sec = int(max(1, recent_guard_until - now))
+            if changed:
+                mark_dirty()
+            return False, f"{session.get('label') or spec.get('label') or action_key} 同命令短窗保护，剩余约 {wait_sec}s"
+
         if _runtime_has_inflight_action(action_key, identity_state, now):
             if changed:
                 mark_dirty()
@@ -933,13 +971,14 @@ def close_action(action_key, send_as_id=None, reason="reply", now=None):
         session = sessions.get(action_key)
         if not isinstance(session, dict):
             return False
-        if _has_remote_block(session, now):
+        if _has_remote_block(session, now) and str(session.get("remote_block_kind") or "") != "send_unknown":
             session["attempt"] = 0
             session["last_msg_id"] = 0
             session["next_allowed_at"] = 0
             session["closed_at"] = now
             session["close_reason"] = str(reason or "")
         else:
+            _note_recent_closed_command_guard(send_as_id, action_key, session, now)
             sessions.pop(action_key, None)
         mark_dirty()
     return True
@@ -959,13 +998,14 @@ def close_actions(action_keys, send_as_id=None, reason="reply", now=None):
             session = sessions.get(action_key)
             if not isinstance(session, dict):
                 continue
-            if _has_remote_block(session, now):
+            if _has_remote_block(session, now) and str(session.get("remote_block_kind") or "") != "send_unknown":
                 session["attempt"] = 0
                 session["last_msg_id"] = 0
                 session["next_allowed_at"] = 0
                 session["closed_at"] = now
                 session["close_reason"] = str(reason or "")
             else:
+                _note_recent_closed_command_guard(send_as_id, action_key, session, now)
                 sessions.pop(action_key, None)
             closed_count += 1
         if closed_count:

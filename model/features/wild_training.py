@@ -1,3 +1,4 @@
+import asyncio
 import json
 import random
 import re
@@ -47,6 +48,16 @@ RE_WILD_TRAINING_REWARD = re.compile(r"(?:获得|带回了?)\s+【([^】]+)】x(
 RE_WILD_TRAINING_START_STRATEGY = re.compile(r"选择【([^】]+)】")
 RE_WILD_TRAINING_TIANJI = re.compile(r"天机值\s*([+-]\s*\d+)")
 RE_WILD_TRAINING_CONTRIB = re.compile(r"宗门贡献\s*([+-]\s*\d+)")
+_WILD_TRAINING_LOCKS = {}
+
+
+def _wild_training_lock():
+    identity_id = int(get_current_identity_id() or 0)
+    lock = _WILD_TRAINING_LOCKS.get(identity_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _WILD_TRAINING_LOCKS[identity_id] = lock
+    return lock
 
 
 def normalize_wild_training_strategy(strategy):
@@ -524,7 +535,7 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     return False
 
 
-async def run_wild_training_scheduler(now):
+async def _run_wild_training_scheduler_unlocked(now):
     if not state.get("wild_training_enabled"):
         return
 
@@ -624,6 +635,11 @@ async def run_wild_training_scheduler(now):
     state["wild_training_last_error"] = ""
     save_state()
     console_log(f"🏞️ 野外历练已发送：{strategy}（msg_id={msg.id}）", scope="identity")
+
+
+async def run_wild_training_scheduler(now):
+    async with _wild_training_lock():
+        return await _run_wild_training_scheduler_unlocked(now)
 
 
 __all__ = [

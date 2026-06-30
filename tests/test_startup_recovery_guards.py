@@ -96,6 +96,24 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
 
+    def test_startup_spread_keeps_due_wild_training_retry_short(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["next_wild_training_time"] = now - 1
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["wild_training_retry_count"] = 1
+
+        with patch.object(control.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+            self.assertEqual(1, state_module.state["wild_training_retry_count"])
+
     def test_startup_spread_does_not_stretch_fishing_timer(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
