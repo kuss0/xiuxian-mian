@@ -53,7 +53,13 @@ class HealthObserverTests(unittest.TestCase):
     def test_warn_line_ignores_no_resend_context(self):
         self.assertFalse(health_observer.is_warn_journal_line("启动校验：查询灵树状态（无补发）。"))
         self.assertFalse(health_observer.is_warn_journal_line("状态确认，不补发。"))
-        self.assertTrue(health_observer.is_warn_journal_line("野外历练回复超时，准备补发一次。"))
+        self.assertFalse(health_observer.is_warn_journal_line("野外历练回复超时，准备补发一次。"))
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "野外历练结果编辑未留存，已按正常周期恢复，原消息ID=11240885"
+            )
+        )
+        self.assertTrue(health_observer.is_warn_journal_line("野外历练补发后仍无回复，进入下一轮。"))
 
     def test_warn_line_ignores_quiz_business_timeout(self):
         self.assertFalse(

@@ -69,6 +69,21 @@ def _has_active_tianxing_explore_change(now):
     )
 
 
+def _has_active_tianxing_explore_prediction(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    if str(observed.get("current_prediction") or "").strip() != "探索":
+        return False
+    if float(observed.get("current_prediction_until", 0) or 0) <= float(now or 0):
+        return False
+    if str(observed.get("prediction_consumed_route") or "").strip() != "探索":
+        return True
+    consumed_at = float(observed.get("prediction_consumed_at", 0) or 0)
+    set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+    return consumed_at <= 0 or consumed_at < set_at
+
+
 def _effective_wild_training_strategy(now):
     if state.get("tianxing_enabled"):
         return "深入" if _has_active_tianxing_explore_change(now) else "谨慎"
@@ -481,11 +496,12 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         phase = str(timeline_result.get("phase") or "").strip()
         if (
             due_at <= now
+            and _has_active_tianxing_explore_prediction(now)
             and not _has_active_tianxing_explore_change(now)
             and str(followup.get("stage") or "") in {"timeline_waiting", "timeline_waiting_change_fate"}
             and phase in {"idle", "completed", "dry_run", "blocked_replan", "observe_only", "need_tianji_for_change", "change_fate_conflict"}
         ):
-            state["wild_training_last_result"] = "天星无探索改命，野外降级谨慎"
+            state["wild_training_last_result"] = "天星已有探索推命但无探索改命，野外降级谨慎"
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = ""
             save_state()
