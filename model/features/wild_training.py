@@ -11,6 +11,7 @@ from ..state import get_current_identity_id, get_wild_training_strategy, set_wil
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
 from .tianxing import (
+    apply_tianxing_passive,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
@@ -276,6 +277,8 @@ def _result_summary(text):
 
 
 def _apply_wild_training_result(raw_text, now, msg_id):
+    if looks_like_tianxing_route_result(raw_text):
+        apply_tianxing_passive(raw_text, now=now)
     state["wild_training_reply_to_msg_id"] = 0
     state["wild_training_reply_due_at"] = 0
     state["wild_training_last_msg_id"] = int(msg_id or 0)

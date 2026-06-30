@@ -1159,9 +1159,6 @@ def parse_tianxing_text(text, now=None, family=""):
             parsed["last_contrib_gain"] = int(contrib_gain_match.group("gain") or 0)
         if calamity_gain_match:
             parsed["calamity_delta"] = int(calamity_gain_match.group("gain") or 0)
-        if "【推命命中】" in raw_text or "【推命落空】" in raw_text:
-            parsed["current_prediction"] = ""
-            parsed["current_prediction_until"] = 0
         if "【改命回天】" in raw_text:
             parsed["current_change"] = ""
             parsed["current_change_until"] = 0

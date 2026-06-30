@@ -42,7 +42,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from model import config
 from model import runtime
 from model import state as state_module
-from model.features import passive_inbox, wild_training
+from model.features import passive_inbox, tianxing, wild_training
 
 
 class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
@@ -207,6 +207,63 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🌌 天星探索结果｜野外历练", first_args[0])
         self.assertIn("灵石x571", first_args[0])
         self.assertEqual("high", first_kwargs["priority"])
+
+    async def test_tianxing_change_fate_escape_result_consumes_change_state_immediately(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        text = (
+            "【野外历练 · 改命脱险】\n"
+            "命盘【贪狼】照命，主偏财夺势。\n"
+            "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
+            "【改命待发】此道改命尚可维持 22小时54分钟\n"
+            "【天星偏转】 趋吉偏转，材料显化上扬\n"
+            "@WalterWA2000 遭遇 荒古鳞兽，本已要负伤折返，司命盘却替你撬开了一线退路。\n"
+            "【改命回天】你强行拨正命轨，硬从凶数中抢回一线生机。\n"
+            "你虽未能尽取机缘，却仍带回了 【灵石】x571，且 本次未损修为。"
+        )
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 深入", id=101)
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "current_prediction": "探索",
+                "current_prediction_until": now + 7 * 3600,
+                "current_change": "探索",
+                "current_change_until": now + 22 * 3600,
+                "tianji_value": 22,
+            }
+            identity_state["tianxing_timeline_state"] = {
+                "released_routes": {
+                    "探索": {
+                        "released_at": now - 30,
+                        "basis": "change_fate",
+                    }
+                }
+            }
+
+            self.assertTrue(tianxing.is_tianxing_route_released("探索", now=now - 1))
+            with patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()):
+                handled = await wild_training.handle_wild_training_reply(
+                    text,
+                    now,
+                    reply_to,
+                    matched_family="wild_training",
+                    current_msg_id=201,
+                )
+
+            observed = state_module.state["tianxing_observation"]
+
+        self.assertTrue(handled)
+        self.assertEqual("", observed["current_change"])
+        self.assertEqual(0, observed["current_change_until"])
+        self.assertEqual("探索", observed["current_prediction"])
+        self.assertGreater(observed["current_prediction_until"], now)
+        self.assertEqual(1, observed["last_tianji_gain"])
+        self.assertEqual(30, observed["last_contrib_gain"])
+        with state_module.use_identity(send_as_id):
+            self.assertFalse(tianxing.is_tianxing_route_released("探索", now=now + 1))
 
     async def test_recent_completed_result_with_stale_due_timer_is_rescheduled_not_sent(self):
         send_as_id = self._prepare_identity()
