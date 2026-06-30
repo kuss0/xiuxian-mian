@@ -2340,10 +2340,10 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         dominant_route
         and next_consume_route == dominant_route
         and config.get("auto_predict_enabled")
-        and not consume_change_conflicted
         and (
             consume_change_ready
             or consume_change_can_be_prepared
+            or consume_change_conflicted
             or (not next_consume_requires_change and config.get("auto_change_fate_enabled"))
         )
     )

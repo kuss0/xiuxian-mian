@@ -986,7 +986,7 @@ class TianxingManualPlanTests(unittest.TestCase):
 
         self.assertEqual("change_fate_conflict", plan["stage"])
         self.assertEqual("", plan["release_route"])
-        self.assertEqual([], plan["steps"])
+        self.assertEqual([("predict", "探索")], [(step["action"], step["arg"]) for step in plan["steps"]])
         self.assertIn("已有 闭关 改命", plan["predict_reason"])
 
     def test_timeline_plan_observes_before_set_star_when_stars_only_from_panel(self):
@@ -1210,6 +1210,37 @@ class TianxingManualPlanTests(unittest.TestCase):
 
         self.assertEqual("observe_only", plan["stage"])
         self.assertNotIn("set_star", [step["action"] for step in plan["steps"]])
+
+    def test_timeline_plan_still_predicts_explore_when_change_fate_conflicts(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼", "紫微", "太阴"],
+                "available_stars_source": "observe",
+                "fixed_star": "贪狼",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "闭关",
+                "current_change_until": now + 3600,
+                "tianji_value": 42,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[
+                    {"route": "探索", "kind": "consume", "start_at": now, "end_at": now + 60, "weight": 10, "reason": "野外历练", "require_change_fate": True},
+                ],
+                config={
+                    "auto_predict_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "min_tianji_for_change": 6,
+                    "timeline_enabled": True,
+                },
+            )
+
+        self.assertEqual("change_fate_conflict", plan["stage"])
+        self.assertEqual([("predict", "探索")], [(step["action"], step["arg"]) for step in plan["steps"]])
+        self.assertEqual("", plan["release_route"])
 
     def test_timeline_plan_can_switch_to_tianfu_before_craft_when_special_star_enabled(self):
         now = 1_780_000_000.0
@@ -2095,10 +2126,12 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 )
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertEqual("change_fate_conflict", result["phase"])
-        self.assertLessEqual(timeline["blocked_until"], now)
-        self.assertIn("已有 闭关 改命", timeline["last_error"])
-        send_mock.assert_not_called()
+        self.assertEqual("sent_waiting_ack", result["phase"])
+        self.assertEqual("sent_waiting_ack", timeline["phase"])
+        self.assertEqual("predict", timeline["active_step"]["action"])
+        self.assertEqual("探索", timeline["active_step"]["arg"])
+        send_mock.assert_awaited_once()
+        self.assertEqual(".推命 探索", send_mock.await_args.args[0])
 
     def test_consume_window_requiring_change_releases_only_with_change_fate(self):
         now = 1_780_000_000.0
