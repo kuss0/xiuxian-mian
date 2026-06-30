@@ -723,7 +723,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             }
             identity_state["tianxing_timeline_state"] = {
                 "released_routes": {
-                    "探索": {"released_at": now - 5, "plan_id": "test", "reason": "confirmed"},
+                    "探索": {"released_at": now - 5, "plan_id": "test", "reason": "confirmed", "basis": "change_fate"},
                 },
             }
 
@@ -775,13 +775,14 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         sent_msg = SimpleNamespace(id=202, sent_at=now)
         with state_module.use_identity(send_as_id), \
-             patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
+             patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "idle", "changed": True})) as timeline_mock, \
              patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock, \
              patch.object(wild_training, "console_log"), \
              patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
 
-        timeline_mock.assert_not_awaited()
+        timeline_mock.assert_awaited_once()
+        self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
         send_mock.assert_awaited_once_with(f"{config.CMD_WILD_TRAINING} 谨慎", track=False)
         self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 

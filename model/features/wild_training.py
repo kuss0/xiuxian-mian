@@ -421,7 +421,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
 
 async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     due_at = float(due_at or now)
-    preflight = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now)
+    preflight = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now, require_change_fate=True)
     if preflight.get("route_allowed"):
         return True
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
@@ -444,14 +444,14 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         if not windows:
             return True
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
-        followup = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now)
+        followup = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now, require_change_fate=True)
         if followup.get("route_allowed"):
             return True
         phase = str(timeline_result.get("phase") or "").strip()
         if (
             due_at <= now
             and not _has_active_tianxing_explore_change(now)
-            and str(followup.get("stage") or "") == "timeline_waiting"
+            and str(followup.get("stage") or "") in {"timeline_waiting", "timeline_waiting_change_fate"}
             and phase in {"idle", "completed", "dry_run", "blocked_replan", "observe_only", "need_tianji_for_change", "change_fate_conflict"}
         ):
             state["wild_training_last_result"] = "天星无探索改命，野外降级谨慎"

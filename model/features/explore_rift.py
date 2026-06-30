@@ -930,7 +930,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
 
 async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
     due_at = float(due_at or now)
-    preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now)
+    preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
     if preflight.get("route_allowed"):
         return True
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
@@ -953,7 +953,7 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         if not windows:
             return True
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
-        followup = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now)
+        followup = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
         if followup.get("route_allowed"):
             return True
         if due_at <= now:

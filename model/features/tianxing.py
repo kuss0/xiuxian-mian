@@ -2926,7 +2926,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
     return timeline
 
 
-def is_tianxing_route_released(route, *, now=None, max_age_sec=3600):
+def is_tianxing_route_released(route, *, now=None, max_age_sec=3600, require_change_fate=False):
     now = float(now if now is not None else time.time())
     route = _normalize_route_choice(route, "")
     if route not in TIANXING_ROUTES:
@@ -2947,10 +2947,14 @@ def is_tianxing_route_released(route, *, now=None, max_age_sec=3600):
         and float(observed.get("current_change_until", 0) or 0) > now
     )
     basis = str(item.get("basis") or item.get("release_basis") or "").strip()
+    if require_change_fate and basis != "change_fate":
+        return False
     if basis == "prediction":
         return prediction_active
     if basis == "change_fate":
         return change_active
+    if require_change_fate:
+        return False
     return prediction_active or change_active
 
 
@@ -3146,7 +3150,7 @@ def _route_preflight_prepare(route, stage, plan, now, deadline_at, reason=""):
     )
 
 
-def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None):
+def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=None, config=None, require_change_fate=False):
     now = float(now if now is not None else time.time())
     route = _normalize_route_choice(route, "")
     deadline_at = float(deadline_at or 0)
@@ -3221,8 +3225,19 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
     if not effective_config.get("timeline_enabled"):
         return _route_preflight_result(route, "timeline_disabled", True, "天星时间线未开启，路线动作不等待天星预检。", deadline_at=deadline_at, now=now)
 
-    if is_tianxing_route_released(route, now=now):
+    if is_tianxing_route_released(route, now=now, require_change_fate=bool(require_change_fate)):
         return _route_preflight_result(route, "timeline_released", True, f"{route_reason} 已获天星时间线确认放行。", deadline_at=deadline_at, now=now)
+
+    if require_change_fate:
+        return _route_preflight_result(
+            route,
+            "timeline_waiting_change_fate",
+            False,
+            f"{route_reason} 需等待天星时间线确认 {route} 改命后放行。",
+            deadline_at=deadline_at,
+            now=now,
+            timeline_required=True,
+        )
 
     return _route_preflight_result(route, "timeline_waiting", False, f"{route_reason} 需等待天星时间线确认放行。", deadline_at=deadline_at, now=now, timeline_required=True)
 

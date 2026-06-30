@@ -777,7 +777,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             }
             state_module.state["tianxing_timeline_state"] = {
                 "released_routes": {
-                    "探索": {"released_at": now - 5, "plan_id": "test", "reason": "confirmed"},
+                    "探索": {"released_at": now - 5, "plan_id": "test", "reason": "confirmed", "basis": "change_fate"},
                 },
             }
             fake_msg = SimpleNamespace(id=22027, sent_at=now)

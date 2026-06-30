@@ -738,6 +738,56 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual("timeline_released", released["stage"])
         self.assertTrue(released["route_allowed"])
 
+    def test_route_preflight_can_require_change_fate_release(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 42,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "released_routes": {
+                    "探索": {"released_at": now - 5, "plan_id": "test", "reason": "prediction confirmed", "basis": "prediction"},
+                },
+            }
+            normal = tianxing.build_tianxing_route_preflight_plan(
+                "探索",
+                reason="野外历练",
+                now=now,
+                config={"timeline_enabled": True},
+            )
+            strict = tianxing.build_tianxing_route_preflight_plan(
+                "探索",
+                reason="野外历练",
+                now=now,
+                config={"timeline_enabled": True},
+                require_change_fate=True,
+            )
+
+            state_module.state["tianxing_observation"]["current_change"] = "探索"
+            state_module.state["tianxing_observation"]["current_change_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"]["released_routes"]["探索"]["basis"] = "change_fate"
+            strict_released = tianxing.build_tianxing_route_preflight_plan(
+                "探索",
+                reason="野外历练",
+                now=now,
+                config={"timeline_enabled": True},
+                require_change_fate=True,
+            )
+
+        self.assertEqual("timeline_released", normal["stage"])
+        self.assertTrue(normal["route_allowed"])
+        self.assertEqual("timeline_waiting_change_fate", strict["stage"])
+        self.assertFalse(strict["route_allowed"])
+        self.assertTrue(strict["timeline_required"])
+        self.assertEqual("timeline_released", strict_released["stage"])
+        self.assertTrue(strict_released["route_allowed"])
+
     def test_route_preflight_does_not_block_non_tianxing_identity(self):
         now = 1_780_000_000.0
         state_module.update_send_as_profile(self.identity_id, sect_name="散修")
