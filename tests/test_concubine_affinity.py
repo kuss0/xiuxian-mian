@@ -512,6 +512,46 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("status_pending", state_module.state["concubine_phase"])
         self.assertEqual(989, state_module.state["concubine_status_msg_id"])
 
+    async def test_scheduler_reuses_recent_status_panel_for_active_calibration(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_panel_msg_id"] = 9388001
+            identity_state["concubine_last_snapshot_at"] = now - 60
+            identity_state["concubine_tianji_last_error"] = "tianji_pending 等待回复超时，准备状态校准"
+
+        sent_msg = SimpleNamespace(id=990, sent_at=now)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "_guard_tianji_send_with_message_log", return_value=False), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_TIANJI, track=False)
+        self.assertEqual("tianji_pending", state_module.state["concubine_phase"])
+        self.assertEqual(990, state_module.state["concubine_tianji_msg_id"])
+        self.assertEqual("", state_module.state["concubine_tianji_last_error"])
+
+    async def test_status_command_reuses_recent_panel_instead_of_resending(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_panel_msg_id"] = 9388001
+            identity_state["concubine_last_snapshot_at"] = now - 60
+            identity_state["concubine_tianji_last_error"] = "天机代卜等待回复超时，准备状态校准"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=45), \
+             patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+            sent = await concubine._send_status_command(now)
+
+        self.assertFalse(sent)
+        mock_send.assert_not_awaited()
+        self.assertEqual(0, state_module.state["concubine_status_msg_id"])
+        self.assertEqual("", state_module.state["concubine_tianji_last_error"])
+        self.assertEqual(now + 45, state_module.state["next_concubine_time"])
+
     async def test_scheduler_allows_replayable_dream_during_summary_due(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now + 3600)
@@ -596,6 +636,43 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
         self.assertEqual("status_pending", state_module.state["concubine_phase"])
         self.assertEqual(994, state_module.state["concubine_status_msg_id"])
+
+    async def test_status_reply_clears_tianji_timeout_calibration_error_before_retry(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        panel_text = (
+            "你的道心侍妾: 【凌玉灵】 (状态: 随行中)\n"
+            "情缘值: 1000\n"
+            "当前誓约: 无\n"
+            "命令: .每日问安、.天机代卜"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "status_pending"
+            identity_state["concubine_status_msg_id"] = 994
+            identity_state["concubine_tianji_last_error"] = "tianji_pending 等待回复超时，已转状态校准"
+            identity_state["next_concubine_time"] = now
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=0), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=995, sent_at=now))) as mock_send:
+            handled = await concubine.handle_concubine_status_reply(
+                panel_text,
+                now,
+                SimpleNamespace(raw_text=config.CMD_CONCUBINE_STATUS, id=994),
+                matched_family="concubine_status",
+                current_msg_id=996,
+            )
+            self.assertTrue(handled)
+            self.assertEqual("", state_module.state["concubine_tianji_last_error"])
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_TIANJI, track=False)
+        self.assertEqual("tianji_pending", state_module.state["concubine_phase"])
+        self.assertEqual(995, state_module.state["concubine_tianji_msg_id"])
+        self.assertEqual(0, state_module.state["concubine_status_msg_id"])
 
     async def test_scheduler_defers_tianji_command_during_phaseful_summary_window(self):
         now = 1_700_000_000.0
@@ -778,6 +855,47 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("gift_status_pending", state_module.state["concubine_phase"])
         self.assertEqual(501, state_module.state["concubine_gift_status_msg_id"])
 
+    async def test_gift_status_send_failure_defers_without_marking_day(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        today = concubine._local_day_key(now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_greet_day"] = today
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=90), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual("", state_module.state["concubine_last_gift_day"])
+        self.assertEqual("", state_module.state["concubine_gift_attempt_day"])
+        self.assertEqual(now + 90, state_module.state["next_concubine_time"])
+        self.assertEqual("发送 .我的侍妾 失败，稍后重试", state_module.state["concubine_gift_last_error"])
+
+    async def test_gift_bag_send_failure_defers_without_marking_day(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        today = concubine._local_day_key(now)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_greet_day"] = today
+            identity_state["concubine_last_panel_msg_id"] = 9387319
+            identity_state["concubine_last_snapshot_at"] = now - 60
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=120), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(concubine.CMD_STORAGE_BAG, track=False)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual("", state_module.state["concubine_last_gift_day"])
+        self.assertEqual(now + 120, state_module.state["next_concubine_time"])
+        self.assertEqual("发送 .储物袋 失败，稍后重试", state_module.state["concubine_gift_last_error"])
+
     async def test_gift_attempt_day_blocks_duplicate_recovery_chain_start(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)
@@ -953,6 +1071,25 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         mock_send.assert_not_awaited()
         self.assertEqual(concubine._local_day_key(now), state_module.state["concubine_last_gift_day"])
         self.assertIn("灵石不足", state_module.state["concubine_gift_last_error"])
+
+    async def test_gift_command_send_failure_defers_without_marking_day(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=240, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_phase"] = "gift_pending"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine.random, "uniform", return_value=150), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send:
+            sent = await concubine._send_gift_command(now, 60)
+
+        self.assertFalse(sent)
+        mock_send.assert_awaited_once_with(f"{config.CMD_CONCUBINE_GIFT_STONE} 灵石*60", track=False)
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual("", state_module.state["concubine_last_gift_day"])
+        self.assertEqual(now + 150, state_module.state["next_concubine_time"])
+        self.assertEqual("发送 .赠予侍妾 灵石*60 失败，稍后重试", state_module.state["concubine_gift_last_error"])
 
     async def test_daily_greet_summary_trigger_schedules_single_retry_without_marking_day(self):
         now = 1_700_000_000.0

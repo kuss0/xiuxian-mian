@@ -187,6 +187,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_trial_enabled INTEGER NOT NULL DEFAULT 0")
     if "pet_warm_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_warm_enabled INTEGER NOT NULL DEFAULT 0")
+    if "pet_formation_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN pet_formation_enabled INTEGER NOT NULL DEFAULT 0")
     if "ranch_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN ranch_enabled INTEGER NOT NULL DEFAULT 0")
     if "wild_training_enabled" not in module_columns:
@@ -323,6 +325,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_trial_time REAL NOT NULL DEFAULT 0")
     if "next_pet_warm_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_warm_time REAL NOT NULL DEFAULT 0")
+    if "next_pet_formation_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_pet_formation_time REAL NOT NULL DEFAULT 0")
     if "next_ranch_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_ranch_time REAL NOT NULL DEFAULT 0")
     if "next_wild_training_time" not in timer_columns:
@@ -369,6 +373,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_source TEXT NOT NULL DEFAULT ''")
     if "weak_last_block_log_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN weak_last_block_log_at REAL NOT NULL DEFAULT 0")
+    if "wild_training_tianxing_prepare_retry_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0")
+    if "explore_rift_tianxing_prepare_retry_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN explore_rift_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0")
     if "yuanying_waiting_logged" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yuanying_waiting_logged INTEGER NOT NULL DEFAULT 0")
     if "yuanying_protect_logged" not in runtime_columns:
@@ -606,6 +614,10 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_trial_last_error TEXT NOT NULL DEFAULT ''")
     if "pet_warm_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_warm_last_error TEXT NOT NULL DEFAULT ''")
+    if "pet_formation_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_formation_last_error TEXT NOT NULL DEFAULT ''")
+    if "pet_formation_retry_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN pet_formation_retry_count INTEGER NOT NULL DEFAULT 0")
     if "ranch_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "ranch_reply_due_at" not in runtime_columns:
@@ -1213,6 +1225,7 @@ def init_db():
             pet_enabled INTEGER NOT NULL,
             pet_warm_enabled INTEGER NOT NULL DEFAULT 0,
             pet_trial_enabled INTEGER NOT NULL DEFAULT 0,
+            pet_formation_enabled INTEGER NOT NULL DEFAULT 0,
             ranch_enabled INTEGER NOT NULL DEFAULT 0,
             wild_training_enabled INTEGER NOT NULL DEFAULT 0,
             stargazer_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1277,6 +1290,7 @@ def init_db():
             next_pet_time REAL NOT NULL,
             next_pet_warm_time REAL NOT NULL DEFAULT 0,
             next_pet_trial_time REAL NOT NULL DEFAULT 0,
+            next_pet_formation_time REAL NOT NULL DEFAULT 0,
             next_ranch_time REAL NOT NULL DEFAULT 0,
             next_wild_training_time REAL NOT NULL DEFAULT 0,
             next_stargazer_panel_time REAL NOT NULL DEFAULT 0,
@@ -1346,6 +1360,8 @@ def init_db():
             pet_last_error TEXT NOT NULL DEFAULT '',
             pet_warm_last_error TEXT NOT NULL DEFAULT '',
             pet_trial_last_error TEXT NOT NULL DEFAULT '',
+            pet_formation_last_error TEXT NOT NULL DEFAULT '',
+            pet_formation_retry_count INTEGER NOT NULL DEFAULT 0,
             ranch_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             ranch_reply_due_at REAL NOT NULL DEFAULT 0,
             ranch_retry_count INTEGER NOT NULL DEFAULT 0,
@@ -1364,6 +1380,7 @@ def init_db():
             wild_training_last_result TEXT NOT NULL DEFAULT '',
             wild_training_last_result_at REAL NOT NULL DEFAULT 0,
             wild_training_last_error TEXT NOT NULL DEFAULT '',
+            wild_training_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0,
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,
             stargazer_last_action TEXT NOT NULL DEFAULT '',
             stargazer_queued_action TEXT NOT NULL DEFAULT '',
@@ -1569,6 +1586,7 @@ def init_db():
             explore_rift_last_error TEXT NOT NULL DEFAULT '',
             explore_rift_last_result_key TEXT NOT NULL DEFAULT '',
             explore_rift_manual_required INTEGER NOT NULL DEFAULT 0,
+            explore_rift_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0,
             explore_rift_nascent_escape_weak_until REAL NOT NULL DEFAULT 0,
             explore_rift_rebirth_required INTEGER NOT NULL DEFAULT 0,
             explore_rift_rebirth_phase TEXT NOT NULL DEFAULT 'idle',

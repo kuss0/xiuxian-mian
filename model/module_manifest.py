@@ -165,6 +165,7 @@ _MANIFESTS = (
     ModuleManifest("法宝", MODULE_KEY_MAP["法宝"], replay_modules=("pet",), reply_families=("pet",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("温养器灵", MODULE_KEY_MAP["温养器灵"], reply_families=("pet_warm",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("器灵试炼", MODULE_KEY_MAP["器灵试炼"], reply_families=("pet_trial",), replay_required=False, duplicate_guard="pending_reply"),
+    ModuleManifest("布下剑阵", MODULE_KEY_MAP["布下剑阵"], reply_families=("pet_formation",), replay_required=False, duplicate_guard="pending_reply"),
     ModuleManifest("放养", MODULE_KEY_MAP["放养"], reply_families=("ranch",), replay_required=False, duplicate_guard="passive_result"),
     ModuleManifest("野外历练", MODULE_KEY_MAP["野外历练"], replay_modules=("wild_training",), reply_families=("wild_training",), duplicate_guard="reply_msg_id"),
     ModuleManifest("观星台", MODULE_KEY_MAP["观星台"], replay_modules=("stargazer",), reply_families=("stargazer_panel", "stargazer_guide", "stargazer_soothe", "stargazer_collect"), replay_required=False, duplicate_guard="phase"),

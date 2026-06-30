@@ -63,6 +63,7 @@ class ModuleManifestTests(unittest.TestCase):
                 "法宝",
                 "温养器灵",
                 "器灵试炼",
+                "布下剑阵",
                 "放养",
                 "野外历练",
                 "观星台",
@@ -108,6 +109,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("问道", module_manifest.get_module_name_for_reply_family("wendao"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_start"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_assist"))
+        self.assertEqual("布下剑阵", module_manifest.get_module_name_for_reply_family("pet_formation"))
 
     def test_reply_families_have_single_behavior_owner(self):
         owners = {}
@@ -377,13 +379,13 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(37, summary["totals"]["active_modules"])
+        self.assertEqual(38, summary["totals"]["active_modules"])
         self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(93, summary["totals"]["reply_families"])
+        self.assertEqual(94, summary["totals"]["reply_families"])
         self.assertEqual(0, summary["totals"]["archived_reply_families"])
-        self.assertEqual(91, summary["totals"]["covered_sample_families"])
+        self.assertEqual(92, summary["totals"]["covered_sample_families"])
         self.assertEqual(2, summary["totals"]["missing_sample_families"])
-        self.assertEqual(32, summary["totals"]["sample_complete_modules"])
+        self.assertEqual(33, summary["totals"]["sample_complete_modules"])
         self.assertEqual(2, summary["totals"]["sample_partial_modules"])
         self.assertEqual(0, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])
@@ -394,6 +396,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual([], rows["灵树"]["missing_sample_families"])
         self.assertFalse(rows["灵树"]["archived"])
         self.assertEqual([], rows["天星宗"]["missing_sample_families"])
+        self.assertEqual([], rows["布下剑阵"]["missing_sample_families"])
         self.assertEqual([], rows["第二元神"]["missing_sample_families"])
         self.assertEqual(["hehuan_escape"], rows["合欢宗"]["missing_sample_families"])
         self.assertTrue(rows["灵树"]["strict"])

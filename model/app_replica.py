@@ -1494,26 +1494,78 @@ def _parse_cangkun_status_value(text, label):
         return None
 
 
+def _get_cangkun_status_snapshot(text):
+    return {
+        "fissure": _parse_cangkun_status_value(text, "禁制裂隙"),
+        "soul": _parse_cangkun_status_value(text, "神魂稳度"),
+        "warning": _parse_cangkun_status_value(text, "慕兰警戒"),
+        "greed": _parse_cangkun_status_value(text, "贪念"),
+        "clues": _parse_cangkun_status_value(text, "卷轴线索"),
+        "sense": _parse_cangkun_status_value(text, "可调神识"),
+    }
+
+
+def _format_cangkun_status_notes(snapshot, *keys):
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    labels = {
+        "fissure": "裂隙",
+        "soul": "神魂",
+        "warning": "警戒",
+        "greed": "贪念",
+        "clues": "线索",
+        "sense": "神识",
+    }
+    parts = []
+    for key in keys:
+        value = snapshot.get(key)
+        if value is None:
+            continue
+        parts.append(f"{labels.get(key, key)} {value}")
+    return " / ".join(parts)
+
+
 def _format_cangkun_decision_advice(stage_info, text, *, html=False):
     stage_info = stage_info if isinstance(stage_info, dict) else {}
     title = str(stage_info.get("title") or "")
-    warning = _parse_cangkun_status_value(text, "慕兰警戒")
-    sense = _parse_cangkun_status_value(text, "可调神识")
+    snapshot = _get_cangkun_status_snapshot(text)
+    warning = snapshot.get("warning")
+    soul = snapshot.get("soul")
+    greed = snapshot.get("greed")
+    clues = snapshot.get("clues")
+    sense = snapshot.get("sense")
     advice = ""
     if "第一幕" in title:
         sense_note = "；队内需一名可调神识>=1000"
         if sense is not None:
             sense_note = f"；可调神识 {sense}" + (" 已够" if sense >= 1000 else " 偏低，先确认持识者")
-        advice = f"建议：选1 匿踪潜行；默认路线 1/3/2{sense_note}。"
+        advice = f"建议：选1 匿踪潜行；保守开局先压警戒{sense_note}。"
     elif "第三幕" in title or "玉矶阁取宝" in title:
-        advice = "建议：选3 先探偏殿；默认路线 1/3/2。"
+        status_note = _format_cangkun_status_notes(snapshot, "fissure", "soul", "warning", "greed")
+        if (warning is not None and warning >= 45) or (soul is not None and soul <= 102):
+            advice = "建议：选1 先取卷轴；当前不适合继续加贪，优先卷轴线索与苍坤路线残图权重。"
+        else:
+            advice = "建议：选3 先探偏殿；当前可承受额外搜刮，偏殿/贪念偏向碧鸠毒囊、紫铖兜图谱等权重。"
+        if status_note:
+            advice = advice[:-1] + f"（{status_note}）。"
     elif "第四幕" in title or stage_info.get("audience") == "team":
-        advice = "建议：全员各点一次即可；不要重复表态。"
+        advice = "建议：全员各点一次即可；目标卷轴线索可让三人选2背盟，其余选1守契，不要重复表态。"
     elif "第五幕" in title or "分宝脱身" in title:
         if warning is not None and warning >= 60:
             advice = f"建议：选2 夺图先遁；慕兰警戒 {warning}>=60，不走3。"
+        elif (
+            warning is not None
+            and soul is not None
+            and warning >= 55
+            and soul <= 100
+        ):
+            advice = f"建议：选2 夺图先遁；神魂 {soul} 且慕兰警戒 {warning}，不走3。"
         elif warning is not None:
-            advice = f"建议：选2 夺图先遁；慕兰警戒 {warning}，3只当高风险贪线。"
+            greed_note = f"，贪念 {greed}" if greed is not None else ""
+            clue_note = f"，线索 {clues}" if clues is not None else ""
+            if soul is not None and soul >= 104 and warning <= 52 and (greed is None or greed <= 24) and (clues is None or clues >= 3):
+                advice = f"建议：选2 稳带卷轴；神魂 {soul}、慕兰警戒 {warning}{greed_note}{clue_note}，冲高价值才手动选3。"
+            else:
+                advice = f"建议：选2 夺图先遁；慕兰警戒 {warning}{greed_note}{clue_note}，3只当高风险贪线。"
         else:
             advice = "建议：选2 夺图先遁；3只当高风险贪线。"
     if not advice:
@@ -5891,7 +5943,7 @@ def _format_lightweight_profession_recommendation_section(replica_kind, leader_i
         if leader_identity_id > 0 and not _is_cangkun_realm_available(leader_identity_id):
             lines.append(f"开房身份未达要求，不计入职业覆盖：{_format_cangkun_realm_requirement(leader_identity_id)}。")
         lines.append(_format_cangkun_spiritual_sense_status(([leader_identity_id] if leader_identity_id else []) + team_ids, html=html))
-        lines.append("提示：苍坤要求结丹初期及以上、五职业齐全、队内一名可调神识>=1000；无需DPS标识。默认路线 .苍坤抉择 1 / 3 / 2。")
+        lines.append("提示：苍坤要求结丹初期及以上、五职业齐全、队内一名可调神识>=1000；无需DPS标识。路线建议按阶段状态动态计算，保守基线 1/1/2，高收益才考虑偏殿/贪线。")
     elif replica_kind == _REPLICA_KIND_LUOYUN:
         if leader_identity_id > 0 and not _is_luoyun_open_available(leader_identity_id):
             lines.append(f"开房身份未达要求：{_format_luoyun_open_requirement(leader_identity_id)}。")

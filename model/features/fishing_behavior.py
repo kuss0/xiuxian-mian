@@ -523,6 +523,10 @@ def fishing_buy_bait_count(snapshot):
     return clamp_fishing_buy_bait_count(snapshot.get("fishing_auto_buy_bait_count", FISHING_DEFAULT_BUY_BAIT_COUNT))
 
 
+def is_basket_calibrated_today(snapshot, now):
+    return str(snapshot.get("fishing_basket_calibrated_day") or "").strip() == get_day_key(now)
+
+
 def auto_open_fish_enabled(snapshot):
     return bool(snapshot.get("fishing_auto_open_fish_enabled", True))
 
@@ -781,6 +785,13 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
             next_day_jitter_sec=next_day_jitter_sec,
         )
 
+    basket_calibrated = is_basket_calibrated_today(snapshot, now)
+    if not basket_calibrated and 0 < count < limit and not is_fishing_reset_rush_window(now):
+        updates = clear_pending_updates()
+        updates.update(daily_updates)
+        updates["fishing_last_result"] = "鱼篓校准：读取今日竿数上限"
+        return FishingEffect(handled=True, command=CMD_FISHING_BASKET, updates=updates)
+
     if count >= limit:
         pending_transfer = pending_fishing_transfer_items(planning_snapshot)
         if pending_transfer:
@@ -802,7 +813,6 @@ def decide_scheduler(snapshot, now, *, bait_inventory=None, next_day_jitter_sec=
                 next_day_jitter_sec=next_day_jitter_sec,
                 last_result="今日垂钓已满，自动开鱼关闭",
             )
-        basket_calibrated = str(snapshot.get("fishing_basket_calibrated_day") or "").strip() == get_day_key(now)
         if not basket_calibrated:
             return FishingEffect(handled=True, command=CMD_FISHING_BASKET, updates=daily_updates)
         pending_open_command = next_pending_open_command(snapshot.get("fishing_pending_open_fish"))

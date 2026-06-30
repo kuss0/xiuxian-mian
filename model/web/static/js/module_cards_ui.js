@@ -289,7 +289,7 @@
 
     var petWarmModule = moduleByName('温养器灵');
     var petTrialModule = moduleByName('器灵试炼');
-    var hiddenModules = new Set(['温养器灵','器灵试炼','天机代卜','共历心劫','侍妾远航','极阴祖师','南陇侯','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法','探寻裂缝']);
+    var hiddenModules = new Set(['温养器灵','器灵试炼','布下剑阵','天机代卜','共历心劫','侍妾远航','极阴祖师','南陇侯','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法','探寻裂缝']);
 
     grid.innerHTML = identityModules.map(function(module){
       if(hiddenModules.has(module.name)){
@@ -318,11 +318,16 @@
             renderModuleToggle('器灵试炼','开关')+petNameInput('pet_trial_name', '目标', identity.pet_trial_name || identity.pet_name || '')
           )+
           settingSection(
+            '布下剑阵',
+            '固定发送 .布下剑阵｜下次：'+esc(((identity.timers || {}).next_pet_formation_time) || '未设置'),
+            renderModuleToggle('布下剑阵','开关')
+          )+
+          settingSection(
             '名称保存',
             '修改目标名后保存；留空的温养或试炼目标会沿用抚摸目标。',
             '<button type="button" class="btn btn-secondary" data-save-pet-inline="1">保存名称</button>'
           );
-        return renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼']), null);
+        return renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼','布下剑阵']), null);
       }else if(module.name === '野外历练'){
         var dailyNames = ['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法'];
         var checkinWin = identity.checkin_window_local || {};
@@ -436,7 +441,7 @@
         if(!txActiveStepText){ txActiveStepText = '无'; }
         if(txActiveStep.status){ txActiveStepText += ' / '+String(txActiveStep.status); }
         var txPauseText = tianxing.automation_pause_text || (tianxing.automation_paused ? '已暂停' : '未暂停');
-        var txFarmWindows = txConfig.farm_windows_text || '02:00-05:00,06:00-09:00,15:00-16:00';
+        var txFarmWindows = txConfig.farm_windows_text || '02:00-05:00,06:00-11:50,14:30-17:30,23:00-23:35';
         var txTargetTianji = txConfig.target_tianji_daily;
         if(txTargetTianji === undefined || txTargetTianji === null || txTargetTianji === ''){ txTargetTianji = 42; }
         var txAckTimeout = txConfig.ack_timeout_sec;
@@ -455,8 +460,13 @@
         if(txCraftTimeout === undefined || txCraftTimeout === null || txCraftTimeout === ''){ txCraftTimeout = 120; }
         var txPrepareLead = txConfig.route_prepare_lead_sec;
         if(txPrepareLead === undefined || txPrepareLead === null || txPrepareLead === ''){ txPrepareLead = 300; }
+        var txMinTianjiForChange = txConfig.min_tianji_for_change;
+        if(txMinTianjiForChange === undefined || txMinTianjiForChange === null || txMinTianjiForChange === ''){ txMinTianjiForChange = 3; }
+        var txEstimatedTianji = txCraftFarm.estimated_tianji || tianxing.tianji_value || 0;
+        var txShortagePolicy = Number(txEstimatedTianji || 0) < Number(txMinTianjiForChange || 0) ? '缺点允许裸炼制' : '天机够用先等改命';
         moduleNote = '<div class="module-note">命星：'+esc(tianxing.fixed_star || '未定')+
           '｜天机 '+esc(tianxing.tianji_value || 0)+
+          '｜改命阈值 '+esc(txMinTianjiForChange)+
           '｜逆命劫 '+esc(tianxing.calamity_count || 0)+
           '｜接管 '+esc(tianxing.automation_paused ? '暂停' : '运行')+
           '｜前置 '+esc(txTimeline.phase || 'idle')+
@@ -492,6 +502,7 @@
             settingCheckbox('allow_prediction_override_enabled', '允许改押推命', txConfig.allow_prediction_override_enabled)+
             settingCheckbox('duel_route_enabled', '斗法前置', txConfig.duel_route_enabled)+
             '<label class="module-setting-field"><span>日目标天机</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txTargetTianji)+'" data-tianxing-config="target_tianji_daily"></label>'+
+            '<label class="module-setting-field"><span>改命阈值</span><input class="text-input module-hour-input" type="number" min="3" max="999" step="1" value="'+esc(txMinTianjiForChange)+'" data-tianxing-config="min_tianji_for_change"></label>'+
             '<label class="module-setting-field"><span>日重算上限</span><input class="text-input module-hour-input" type="number" min="0" max="99" step="1" value="'+esc(txMaxReplans)+'" data-tianxing-config="max_replans_per_day"></label>'+
             '<label class="module-setting-field"><span>提前准备秒</span><input class="text-input module-hour-input" type="number" min="30" max="3600" step="30" value="'+esc(txPrepareLead)+'" data-tianxing-config="route_prepare_lead_sec"></label>'
           )+
@@ -504,7 +515,7 @@
           )+
           settingSection(
             '炼制攒天机',
-            '推命炼制确认后再炼制；超时先查盘，不重复开炉。',
+            '默认等炼制路线确认；天机低于改命阈值时可裸炼制补点。',
             settingCheckbox('craft_farm_enabled', '启用炼制', txConfig.craft_farm_enabled)+
             settingCheckbox('craft_farm_dry_run_enabled', '炼制试运行', txConfig.craft_farm_dry_run_enabled)+
             settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费', txConfig.consume_conflicting_prediction_enabled)+
@@ -515,7 +526,8 @@
             '<label class="module-setting-field"><span>回复超时秒</span><input class="text-input module-hour-input" type="number" min="30" max="1800" step="10" value="'+esc(txCraftTimeout)+'" data-tianxing-config="craft_farm_reply_timeout_sec"></label>'+
             currentChoiceText('炼制状态', (txCraftFarm.phase || 'idle')+' / '+(txCraftFarm.last_action || '无'))+
             currentChoiceText('今日轮次', String(txCraftFarm.daily_count || 0)+' / '+String(txCraftFarm.daily_limit || txCraftLimit || 0))+
-            currentChoiceText('估算天机', String(txCraftFarm.estimated_tianji || tianxing.tianji_value || 0))+
+            currentChoiceText('估算天机', String(txEstimatedTianji))+
+            currentChoiceText('缺点策略', txShortagePolicy)+
             currentChoiceText('最近结果', txCraftFarm.last_result || txCraftFarm.last_error || '无')
           )+
           settingSection(
@@ -537,7 +549,6 @@
           settingSection(
             '卡住处理',
             '没读到回复先查盘；仍不准就停住，避免乱发。',
-            '<label class="module-setting-field"><span>改命天机</span><input class="text-input module-hour-input" type="number" min="3" max="999" step="1" value="'+esc(txConfig.min_tianji_for_change || 6)+'" data-tianxing-config="min_tianji_for_change"></label>'+
             '<label class="module-setting-field"><span>确认超时</span><input class="text-input module-hour-input" type="number" min="15" max="900" step="5" value="'+esc(txAckTimeout)+'" data-tianxing-config="ack_timeout_sec"></label>'+
             '<label class="module-setting-field"><span>校准间隔</span><input class="text-input module-hour-input" type="number" min="60" max="3600" step="30" value="'+esc(txCalibrationBackoff)+'" data-tianxing-config="calibration_backoff_sec"></label>'
           )+

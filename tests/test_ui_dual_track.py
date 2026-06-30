@@ -127,10 +127,11 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "data-jiyin-choice=\"offer_soul\"" in script
     assert "data-save-pet-inline" in script
     assert "data-pet-inline-name" in script
-    assert "renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼']), null)" in script
+    assert "renderModuleCard('法宝', moduleNote, primaryTools, settingsTools, compactDetails(['法宝','温养器灵','器灵试炼','布下剑阵']), null)" in script
     assert "renderModuleToggle('法宝','开关')" in script
     assert "renderModuleToggle('温养器灵','开关')" in script
     assert "renderModuleToggle('器灵试炼','开关')" in script
+    assert "renderModuleToggle('布下剑阵','开关')" in script
     assert "['野外历练','点卯','宗门传功','闯塔','深度闭关','卜筮问天','斗法']" in script
     assert "renderModuleToggle('卜筮问天','开关')" in script
     assert "renderModuleToggle('斗法','开关')" in script

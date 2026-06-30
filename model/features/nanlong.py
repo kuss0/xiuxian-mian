@@ -550,8 +550,7 @@ async def run_nanlong_scheduler(now):
         return
     if reply_to_msg_id <= 0 or next_nanlong_time <= 0:
         if _has_nanlong_inflight_state():
-            state["nanlong_last_error"] = "南陇侯待处理状态不完整，已清理"
-            clear_nanlong_state(persist=True, keep_last_error=True)
+            clear_nanlong_state(persist=True)
         return
     if now >= next_nanlong_time:
         state["nanlong_last_error"] = "南陇侯提示已超时"

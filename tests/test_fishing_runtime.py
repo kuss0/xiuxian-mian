@@ -1062,6 +1062,9 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(3, audit_mock.await_count)
         self.assertIn("大衍诀", audit_mock.await_args_list[0].args[0])
+        self.assertIn("第1/3次，即时", audit_mock.await_args_list[0].args[0])
+        self.assertIn("第2/3次，+3h", audit_mock.await_args_list[1].args[0])
+        self.assertIn("第3/3次，+6h", audit_mock.await_args_list[2].args[0])
         self.assertEqual("high", audit_mock.await_args_list[0].kwargs["priority"])
         self.assertTrue(reminders[0]["done"])
         self.assertEqual(3, reminders[0]["next_index"])

@@ -15,7 +15,7 @@ from model import state as state_module
 
 
 IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
-    "run_pet_scheduler": {"pet", "pet_warm", "pet_trial"},
+    "run_pet_scheduler": {"pet", "pet_warm", "pet_trial", "pet_formation"},
     "run_ranch_scheduler": {"ranch"},
     "run_wild_training_scheduler": {"wild_training"},
     "run_formation_scheduler": {"formation"},

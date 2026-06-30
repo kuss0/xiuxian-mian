@@ -31,6 +31,7 @@ from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
+    run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
 )
 
@@ -932,13 +933,25 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
     due_at = float(due_at or now)
     preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
     if preflight.get("route_allowed"):
+        state["explore_rift_tianxing_prepare_retry_at"] = 0
         return True
+    if str(preflight.get("stage") or "") == "prediction_conflict":
+        consume_result = await run_tianxing_consume_craft_prediction(now, reason="探寻裂缝前消费炼制推命")
+        if consume_result.get("active"):
+            if due_at <= now:
+                state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+            else:
+                state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
+            state["explore_rift_last_result"] = f"天星先炼制消费推命：{consume_result.get('stage') or 'waiting'}"
+            state["explore_rift_last_error"] = "" if consume_result.get("takeover") or consume_result.get("stage") == "waiting_reply" else str(consume_result.get("reason") or "")
+            save_state()
+            return False
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
         if due_at <= now:
             state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
         else:
-            state["next_explore_rift_time"] = min(float(due_at), float(now + RETRY_MAX_SEC))
+            state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
         state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
         save_state()
         return False
@@ -955,15 +968,20 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
         followup = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
         if followup.get("route_allowed"):
+            state["explore_rift_tianxing_prepare_retry_at"] = 0
             return True
         if due_at <= now:
             state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+        else:
+            state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
         state["explore_rift_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
         state["explore_rift_last_error"] = "" if timeline_result.get("changed") else str(followup.get("reason") or preflight.get("reason") or "")
         save_state()
         return False
     if due_at <= now:
         state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+    else:
+        state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
     state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
     save_state()
     return False
@@ -1023,7 +1041,11 @@ async def run_explore_rift_scheduler(now):
             reason="探寻裂缝",
             require_change_fate=True,
         )
-        if windows and not await _prepare_explore_rift_tianxing_route(now, due_at=next_explore_rift_time):
+        try:
+            prepare_retry_at = float(state.get("explore_rift_tianxing_prepare_retry_at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            prepare_retry_at = 0.0
+        if windows and prepare_retry_at <= now and not await _prepare_explore_rift_tianxing_route(now, due_at=next_explore_rift_time):
             return
 
     if _explore_rift_next_time_blocks(now):

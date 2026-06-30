@@ -139,6 +139,8 @@ CONCUBINE_HEART_GLOBAL_DEFER_MAX_SEC = 180
 CONCUBINE_DREAM_MIN_RETRY_SEC = 90
 CONCUBINE_TIANJI_MIN_AFFINITY = 300
 CONCUBINE_VOYAGE_MIN_AFFINITY = 120
+CONCUBINE_STATUS_REUSE_DEFER_MIN_SEC = 30
+CONCUBINE_STATUS_REUSE_DEFER_MAX_SEC = 90
 CONCUBINE_HEART_ACTIVE_PHASES = {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}
 CONCUBINE_VOYAGE_PENDING_PHASES = {"voyage_pending", "voyage_return_pending"}
 CONCUBINE_VOYAGE_UNKNOWN_RECHECK_SEC = 60 * 60
@@ -999,6 +1001,37 @@ def _can_use_cached_panel_for_gift_recovery(now):
     if panel_msg_id <= 0 or panel_seen_at <= 0:
         return False
     return panel_seen_at >= float(now or 0) - CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
+
+
+def _has_recent_concubine_status_panel(now):
+    if not _has_available_partner():
+        return False
+    panel_msg_id = int(state.get("concubine_last_panel_msg_id", 0) or 0)
+    panel_seen_at = float(state.get("concubine_last_snapshot_at", 0) or 0)
+    if panel_msg_id <= 0 or panel_seen_at <= 0:
+        return False
+    return panel_seen_at >= float(now or 0) - CONCUBINE_PANEL_REUSE_MAX_AGE_SEC
+
+
+def _reuse_recent_status_panel(now, reason):
+    state["concubine_status_msg_id"] = 0
+    if _phase() == "status_pending":
+        _set_phase("idle")
+    _clear_status_calibration_timeout_errors()
+    state["concubine_last_error"] = str(reason or "已复用近期侍妾面板")
+    current_next = float(state.get("next_concubine_time", 0) or 0)
+    reuse_next = float(now) + random.uniform(CONCUBINE_STATUS_REUSE_DEFER_MIN_SEC, CONCUBINE_STATUS_REUSE_DEFER_MAX_SEC)
+    state["next_concubine_time"] = min(current_next, reuse_next) if current_next > float(now) else reuse_next
+    _record_concubine_event(
+        "复用近期侍妾面板",
+        kind="skipped",
+        reason="concubine_recent_status_panel_reused",
+        phase=_phase(),
+        command=CMD_CONCUBINE_STATUS,
+        msg_id=int(state.get("concubine_last_panel_msg_id", 0) or 0),
+        detail=str(reason or ""),
+        workflow_status="reused",
+    )
 
 
 def _can_continue_gift_recovery(now):
@@ -2388,6 +2421,13 @@ def _finish_gift_recovery_today(now, reason):
     _schedule_affinity_recovery(now)
 
 
+def _defer_gift_recovery_after_send_failure(now, reason):
+    state["concubine_gift_last_error"] = f"{reason}，稍后重试"
+    _set_phase("idle")
+    _clear_non_heart_pending_msg_ids()
+    _schedule_after(now, CONCUBINE_ACTIVE_DEFER_MIN_SEC, CONCUBINE_ACTIVE_DEFER_MAX_SEC)
+
+
 def _is_selfless_affinity_depletion_text(text):
     raw_text = str(text or "")
     return (
@@ -2618,6 +2658,9 @@ def _has_active_cooldown_action_due(now):
 def _needs_active_status_calibration(now):
     if not _has_available_partner():
         return False
+    if _has_recent_concubine_status_panel(now):
+        _clear_status_calibration_timeout_errors()
+        return False
     if _has_tianji_due_action(now):
         last_error = str(state.get("concubine_tianji_last_error") or "")
         if "tianji_pending 等待回复超时" in last_error or "天机代卜等待回复超时" in last_error:
@@ -2639,6 +2682,19 @@ def _active_status_calibration_context(now):
     if _has_heart_due_action(now):
         return "共历心劫", "concubine_heart_last_error"
     return "侍妾状态校准", "concubine_last_error"
+
+
+def _clear_status_calibration_timeout_errors():
+    changed = False
+    tianji_error = str(state.get("concubine_tianji_last_error") or "")
+    if "tianji_pending 等待回复超时" in tianji_error or "天机代卜等待回复超时" in tianji_error:
+        state["concubine_tianji_last_error"] = ""
+        changed = True
+    main_error = str(state.get("concubine_last_error") or "")
+    if "dream_pending 等待回复超时" in main_error or "入梦寻图等待回复超时" in main_error:
+        state["concubine_last_error"] = ""
+        changed = True
+    return changed
 
 
 def _has_active_nanlong_pending(now):
@@ -2771,6 +2827,7 @@ def _apply_status_snapshot(parsed, now):
     state["concubine_last_snapshot_at"] = float(now)
     state["concubine_reacquire_command_override"] = ""
     state["concubine_last_error"] = ""
+    _clear_status_calibration_timeout_errors()
     _normalize_tianji_affinity_error(now)
     _set_availability("available")
     if int(state.get("concubine_affinity", 0) or 0) >= CONCUBINE_TIANJI_MIN_AFFINITY:
@@ -3065,8 +3122,12 @@ async def _send_status_command(now):
     if _defer_active_for_phaseful_summary(now, "侍妾状态校准"):
         save_state()
         return False
+    if _has_recent_concubine_status_panel(now):
+        _reuse_recent_status_panel(now, "10分钟内已有侍妾面板，跳过重复 .我的侍妾")
+        save_state()
+        return False
     msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
         state["concubine_last_error"] = "发送 .我的侍妾 失败"
         _set_phase("idle")
@@ -3110,9 +3171,9 @@ async def _send_gift_status_command(now):
         state["concubine_gift_last_error"] = ""
         return await _send_gift_bag_command(now)
     msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
-        _finish_gift_recovery_today(sent_at, "发送 .我的侍妾 失败，今日不再赠予")
+        _defer_gift_recovery_after_send_failure(sent_at, "发送 .我的侍妾 失败")
         save_state()
         return False
     state["concubine_gift_attempt_day"] = _local_day_key(sent_at)
@@ -3129,9 +3190,9 @@ async def _send_gift_bag_command(now):
         save_state()
         return False
     msg = await send_game_command(CMD_STORAGE_BAG, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
-        _finish_gift_recovery_today(sent_at, "发送 .储物袋 失败，今日不再赠予")
+        _defer_gift_recovery_after_send_failure(sent_at, "发送 .储物袋 失败")
         save_state()
         return False
     _set_phase("gift_bag_pending")
@@ -3156,9 +3217,9 @@ async def _send_gift_command(now, amount):
         return False
     command = f"{CMD_CONCUBINE_GIFT_STONE} 灵石*{gift_amount}"
     msg = await send_game_command(command, track=False)
-    sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+    sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
-        _finish_gift_recovery_today(sent_at, f"发送 {command} 失败，今日不再赠予")
+        _defer_gift_recovery_after_send_failure(sent_at, f"发送 {command} 失败")
         save_state()
         return False
     _set_phase("gift_pending")

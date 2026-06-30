@@ -276,8 +276,9 @@ def _format_hehuan_valuable_reminder(event, index):
     item = str((event or {}).get("item") or "").strip() or "未解析物品"
     partner = str((event or {}).get("partner") or "").strip() or "未解析道侣"
     labels = ("即时", "+3h", "+6h")
-    label = labels[index] if 0 <= int(index or 0) < len(labels) else f"第{int(index or 0) + 1}次"
-    return f"🌸 合欢温养出货提醒（{label}/3）：{item}｜道侣 {partner}"
+    index = int(index or 0)
+    label = labels[index] if 0 <= index < len(labels) else "补发"
+    return f"🌸 合欢温养出货提醒（第{index + 1}/3次，{label}）：{item}｜道侣 {partner}"
 
 
 async def _run_hehuan_valuable_drop_reminders(observed, now):
@@ -763,13 +764,18 @@ def apply_hehuan_passive(text, now=None, family=""):
             _reset_hehuan_auto_pending(observed)
         elif last_success_at > 0:
             corrected_next_time = float(last_success_at + HEHUAN_WARM_OBSERVED_CD_SEC)
-            observed["next_hehuan_time"] = corrected_next_time
             if corrected_next_time > now:
+                observed["next_hehuan_time"] = corrected_next_time
                 observed["auto_next_time"] = corrected_next_time
                 observed["auto_last_error"] = "心神尚未恢复，已按上次成功+1小时校准"
                 _reset_hehuan_auto_pending(observed)
             else:
-                observed = _schedule_hehuan_retry(observed, now, "心神尚未恢复")
+                corrected_next_time = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
+                observed = _block_hehuan_until(
+                    observed,
+                    corrected_next_time,
+                    "心神尚未恢复，上次成功冷却已失效，已按当前+1小时保守校准",
+                )
         else:
             corrected_next_time = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
             observed = _block_hehuan_until(

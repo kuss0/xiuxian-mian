@@ -3,10 +3,10 @@ import random
 import re
 import time
 
-from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
+from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, CMD_PET_FORMATION, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
 from ..persistence import save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, state
+from ..state import get_current_identity_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, get_pet_formation_command, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_text_delta
@@ -22,11 +22,14 @@ PET_REPLY_TIMEOUT_SEC = 30
 RE_PET_TOUCH_SUCCESS = re.compile(r"[(（]\s*默契\s*\+\s*\d+\s*[,，]\s*经验\s*\+\s*\d+\s*[)）]")
 RE_PET_WARM_SUCCESS = re.compile(r"【温养器灵】")
 RE_PET_TRIAL_SUCCESS = re.compile(r"【器灵试炼[·・][^】]+】")
+RE_PET_FORMATION_SUCCESS = re.compile(r"剑阵已成|布下了【大庚剑阵】")
 
 _PET_SCHEDULER_LOCK = asyncio.Lock()
 PET_TRIAL_RESOURCE_KEY = "pet_trial"
 PET_WARM_RESOURCE_KEY = "pet_warm"
 PET_WARM_CD = 6 * 3600
+PET_FORMATION_BUFF_SEC = 12 * 3600
+PET_FORMATION_RETRY_BACKOFF_SEC = 15 * 60
 
 
 def _set_pet_next_time(next_time):
@@ -41,6 +44,11 @@ def _set_pet_trial_next_time(next_time):
 
 def _set_pet_warm_next_time(next_time):
     state["next_pet_warm_time"] = float(next_time or 0)
+    save_state()
+
+
+def _set_pet_formation_next_time(next_time):
+    state["next_pet_formation_time"] = float(next_time or 0)
     save_state()
 
 
@@ -121,6 +129,10 @@ def _has_pending_pet_warm_command():
     return _has_pending_pet_command(CMD_PET_WARM)
 
 
+def _has_pending_pet_formation_command():
+    return _has_pending_pet_command(CMD_PET_FORMATION)
+
+
 def _clear_pet_pending(*prefixes):
     clear_pending_tasks_by_commands(set(prefixes), send_as_id=get_current_identity_id())
 
@@ -144,6 +156,8 @@ def get_pet_status_text():
         f"- 器灵试炼：{'开启' if state.get('pet_trial_enabled') else '关闭'}",
         f"- 试炼名称：{get_pet_trial_name()}",
         f"- 试炼下次：{fmt_abs_ts(state.get('next_pet_trial_time', 0))}（{fmt_remaining(state.get('next_pet_trial_time', 0))}）",
+        f"- 布下剑阵：{'开启' if state.get('pet_formation_enabled') else '关闭'}",
+        f"- 剑阵下次：{fmt_abs_ts(state.get('next_pet_formation_time', 0))}（{fmt_remaining(state.get('next_pet_formation_time', 0))}）",
     ]
     if state.get("pet_last_error"):
         lines.append(f"- 最近异常：{state.get('pet_last_error')}")
@@ -151,6 +165,8 @@ def get_pet_status_text():
         lines.append(f"- 试炼异常：{state.get('pet_trial_last_error')}")
     if state.get("pet_warm_last_error"):
         lines.append(f"- 温养异常：{state.get('pet_warm_last_error')}")
+    if state.get("pet_formation_last_error"):
+        lines.append(f"- 剑阵异常：{state.get('pet_formation_last_error')}")
     return "\n".join(lines)
 
 
@@ -289,6 +305,37 @@ async def handle_pet_warm_reply(text, now, reply_to, matched_family=None):
     return False
 
 
+def _is_pet_formation_reply(text, reply_to, matched_family=None):
+    if matched_family == "pet_formation":
+        return True
+
+    raw_text = str(text or "")
+    orig_cmd = (reply_to.raw_text or "") if reply_to else ""
+    if CMD_PET_FORMATION in orig_cmd:
+        return True
+    return bool(RE_PET_FORMATION_SUCCESS.search(raw_text) and _has_pending_pet_formation_command())
+
+
+async def handle_pet_formation_reply(text, now, reply_to, matched_family=None):
+    if not state.get("pet_formation_enabled"):
+        return False
+    if not _is_pet_formation_reply(text, reply_to, matched_family=matched_family):
+        return False
+
+    raw_text = str(text or "")
+    if RE_PET_FORMATION_SUCCESS.search(raw_text):
+        state["pet_formation_last_error"] = ""
+        state["pet_formation_retry_count"] = 0
+        _clear_pet_pending(CMD_PET_FORMATION)
+        _set_pet_formation_next_time(now + PET_FORMATION_BUFF_SEC)
+        return True
+
+    state["pet_formation_last_error"] = f"未识别的布下剑阵回复: {raw_text[:60]}"
+    _clear_pet_pending(CMD_PET_FORMATION)
+    _set_pet_formation_next_time(now + PET_FORMATION_RETRY_BACKOFF_SEC)
+    return False
+
+
 async def run_pet_scheduler(now):
     if _PET_SCHEDULER_LOCK.locked():
         return
@@ -297,6 +344,37 @@ async def run_pet_scheduler(now):
 
 
 async def _run_pet_scheduler(now):
+    if state.get("pet_formation_enabled") and not _pet_next_time_blocks("next_pet_formation_time", now):
+        if _has_pending_pet_command(CMD_PET_FORMATION):
+            return
+        retry_count = max(0, int(state.get("pet_formation_retry_count", 0) or 0))
+        waiting_reply = "等待回执" in str(state.get("pet_formation_last_error") or "")
+        if waiting_reply and retry_count >= 1:
+            state["pet_formation_last_error"] = "布下剑阵回复超时，补发已达 1 次上限"
+            state["pet_formation_retry_count"] = 0
+            _set_pet_formation_next_time(now + PET_FORMATION_RETRY_BACKOFF_SEC)
+            await send_audit_log("⚠️ 布下剑阵回复超时，补发已达 1 次上限，15分钟后重试。")
+            return
+        msg = await send_game_command(
+            get_pet_formation_command(),
+            track=True,
+            max_retry=0,
+            reply_timeout=PET_REPLY_TIMEOUT_SEC,
+            source_module="布下剑阵",
+        )
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+        if not msg:
+            state["pet_formation_last_error"] = "布下剑阵发送失败"
+            state["pet_formation_retry_count"] = 0
+            _set_pet_formation_next_time(sent_at + RETRY_MAX_SEC)
+            await send_audit_log("❌ 布下剑阵发送失败，稍后重试。")
+            return
+        state["pet_formation_retry_count"] = retry_count + 1 if waiting_reply else 0
+        state["pet_formation_last_error"] = "布下剑阵已发送，等待回执确认"
+        _set_pet_formation_next_time(sent_at + PET_REPLY_TIMEOUT_SEC)
+        console_log("🗡️ 布下剑阵已发送，等待回复确认。")
+        return
+
     if state.get("pet_enabled") and not _pet_next_time_blocks("next_pet_time", now):
         if _has_pending_pet_command(CMD_PET):
             return
@@ -353,5 +431,6 @@ __all__ = [
     "handle_pet_cd_fix",
     "handle_pet_warm_reply",
     "handle_pet_trial_reply",
+    "handle_pet_formation_reply",
     "run_pet_scheduler",
 ]

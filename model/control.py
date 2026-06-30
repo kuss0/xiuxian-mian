@@ -55,6 +55,7 @@ from .config import (
     CMD_PET,
     CMD_PET_WARM,
     CMD_PET_TRIAL,
+    CMD_PET_FORMATION,
     CMD_QINGYUANZI_ATTACK,
     CMD_QINGYUANZI_BREAK,
     CMD_QINGYUANZI_GUARD,
@@ -569,6 +570,9 @@ def _schedule_module_immediate_retry(module_name, now):
     if module_name == "器灵试炼":
         state["next_pet_trial_time"] = retry_at
         return retry_at
+    if module_name == "布下剑阵":
+        state["next_pet_formation_time"] = retry_at
+        return retry_at
     if module_name in {"侍妾", "天机代卜", "共历心劫", "侍妾远航"}:
         state["next_concubine_time"] = retry_at
         return retry_at
@@ -1034,6 +1038,22 @@ def _manual_enable_pet_trial_module_state(now):
     if float(state.get("next_pet_trial_time", 0) or 0) > now:
         return
     _schedule_module_immediate_retry("器灵试炼", now)
+
+
+def _manual_disable_pet_formation_module_state():
+    state["pet_formation_enabled"] = False
+    state["next_pet_formation_time"] = 0
+    state["pet_formation_retry_count"] = 0
+    _clear_pending_tasks_by_commands({CMD_PET_FORMATION})
+
+
+def _manual_enable_pet_formation_module_state(now):
+    state["pet_formation_enabled"] = True
+    state["pet_formation_last_error"] = ""
+    state["pet_formation_retry_count"] = 0
+    if float(state.get("next_pet_formation_time", 0) or 0) > now:
+        return
+    _schedule_module_immediate_retry("布下剑阵", now)
 
 
 def _manual_disable_ranch_module_state():
@@ -1574,6 +1594,7 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_PET: "法宝",
     CMD_PET_WARM: "温养器灵",
     CMD_PET_TRIAL: "器灵试炼",
+    CMD_PET_FORMATION: "布下剑阵",
     CMD_STARGAZER_PANEL: "观星台",
     CMD_STARGAZER_GUIDE: "观星台",
     CMD_STARGAZER_SOOTHE: "观星台",
@@ -1651,6 +1672,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "法宝": (_manual_enable_pet_module_state, _manual_disable_pet_module_state),
     "温养器灵": (_manual_enable_pet_warm_module_state, _manual_disable_pet_warm_module_state),
     "器灵试炼": (_manual_enable_pet_trial_module_state, _manual_disable_pet_trial_module_state),
+    "布下剑阵": (_manual_enable_pet_formation_module_state, _manual_disable_pet_formation_module_state),
     "放养": (_manual_enable_ranch_module_state, _manual_disable_ranch_module_state),
     "野外历练": (_manual_enable_wild_training_module_state, _manual_disable_wild_training_module_state),
     "观星台": (_manual_enable_stargazer_module_state, _manual_disable_stargazer_module_state),
@@ -1687,6 +1709,7 @@ MODULE_DISABLE_HANDLERS = {
     "法宝": _disable_pet_module_state,
     "温养器灵": _manual_disable_pet_warm_module_state,
     "器灵试炼": _manual_disable_pet_trial_module_state,
+    "布下剑阵": _manual_disable_pet_formation_module_state,
     "放养": _manual_disable_ranch_module_state,
     "野外历练": _manual_disable_wild_training_module_state,
     "观星台": _disable_stargazer_module_state,
@@ -1947,6 +1970,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "法宝": get_pet_status_text,
         "温养器灵": get_pet_status_text,
         "器灵试炼": get_pet_status_text,
+        "布下剑阵": get_pet_status_text,
         "放养": get_ranch_status_text,
         "野外历练": get_wild_training_status_text,
         "观星台": get_stargazer_status_text,
@@ -2433,6 +2457,7 @@ RUNTIME_HEALTH_ERROR_KEYS = [
     ("pet_last_error", "灵兽", "pet_enabled"),
     ("pet_warm_last_error", "温养", "pet_warm_enabled"),
     ("pet_trial_last_error", "器灵试炼", "pet_trial_enabled"),
+    ("pet_formation_last_error", "布下剑阵", "pet_formation_enabled"),
     ("stargazer_last_error", "观星台", "stargazer_enabled"),
     ("tianti_last_error", "登天阶", "tianti_enabled"),
     ("nanlong_last_error", "南陇侯", "nanlong_enabled"),
@@ -3333,6 +3358,8 @@ def _get_pending_task_module_name(command):
         return "温养器灵"
     if raw_command == CMD_PET_TRIAL or raw_command.startswith(f"{CMD_PET_TRIAL} "):
         return "器灵试炼"
+    if raw_command == CMD_PET_FORMATION:
+        return "布下剑阵"
     if raw_command.startswith(CMD_EXCHANGE_HEQI_DAN_PREFIX) or raw_command.startswith(CMD_SECT_DONATE_LINGSHI_PREFIX):
         return "天星宗"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")

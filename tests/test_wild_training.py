@@ -268,13 +268,15 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertEqual("", observed["current_change"])
         self.assertEqual(0, observed["current_change_until"])
-        self.assertEqual("探索", observed["current_prediction"])
-        self.assertGreater(observed["current_prediction_until"], now)
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("探索", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
         self.assertEqual(1, observed["last_tianji_gain"])
         self.assertEqual(30, observed["last_contrib_gain"])
         self.assertEqual("blocked_replan", timeline["phase"])
         self.assertEqual({}, timeline["active_step"])
-        self.assertIn("放行依据已失效", timeline["last_error"])
+        self.assertIn("放行已被下游动作消费", timeline["last_error"])
         with state_module.use_identity(send_as_id):
             self.assertFalse(tianxing.is_tianxing_route_released("探索", now=now + 1))
 
@@ -656,6 +658,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(timeline_mock.await_args.kwargs["windows"][0]["end_at"], due_at)
         send_mock.assert_not_awaited()
         self.assertEqual(due_at, state_module.state["next_wild_training_time"])
+        self.assertGreater(state_module.state["wild_training_tianxing_prepare_retry_at"], now)
         self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["wild_training_last_result"])
 
     async def test_scheduler_does_not_insert_tianxing_predict_before_wild_training_without_timeline(self):
@@ -819,6 +822,42 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("避免逆命", state_module.state["wild_training_last_error"])
 
+    async def test_scheduler_consumes_craft_prediction_before_wild_training(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 1800,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 9,
+            }
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "run_tianxing_consume_craft_prediction", new=AsyncMock(return_value={"active": True, "takeover": True, "stage": "sent_waiting_reply"})) as consume_mock, \
+             patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        consume_mock.assert_awaited_once()
+        timeline_mock.assert_not_awaited()
+        send_mock.assert_not_awaited()
+        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("天星先炼制消费推命", state_module.state["wild_training_last_result"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
+
     async def test_scheduler_keeps_future_wild_training_due_when_other_prediction_active(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
@@ -849,18 +888,19 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "run_tianxing_consume_craft_prediction", new=AsyncMock(return_value={"active": True, "takeover": True, "stage": "sent_waiting_reply"})) as consume_mock, \
              patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
              patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
              patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
 
+        consume_mock.assert_awaited_once()
         timeline_mock.assert_not_awaited()
         send_mock.assert_not_awaited()
-        self.assertEqual(
-            min(due_at, now + wild_training.WILD_TRAINING_RETRY_MAX_SEC),
-            state_module.state["next_wild_training_time"],
-        )
-        self.assertIn("避免逆命", state_module.state["wild_training_last_error"])
+        self.assertEqual(due_at, state_module.state["next_wild_training_time"])
+        self.assertGreater(state_module.state["wild_training_tianxing_prepare_retry_at"], now)
+        self.assertIn("天星先炼制消费推命", state_module.state["wild_training_last_result"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
 
     async def test_scheduler_keeps_near_future_wild_training_due_when_other_prediction_active(self):
         send_as_id = self._prepare_identity()
@@ -892,15 +932,19 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             }
 
         with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "run_tianxing_consume_craft_prediction", new=AsyncMock(return_value={"active": True, "takeover": True, "stage": "sent_waiting_reply"})) as consume_mock, \
              patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
              patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
              patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
 
+        consume_mock.assert_awaited_once()
         timeline_mock.assert_not_awaited()
         send_mock.assert_not_awaited()
         self.assertEqual(due_at, state_module.state["next_wild_training_time"])
-        self.assertIn("避免逆命", state_module.state["wild_training_last_error"])
+        self.assertGreater(state_module.state["wild_training_tianxing_prepare_retry_at"], now)
+        self.assertIn("天星先炼制消费推命", state_module.state["wild_training_last_result"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
 
     async def test_started_timeout_recovers_final_edit_from_message_log(self):
         send_as_id = self._prepare_identity()

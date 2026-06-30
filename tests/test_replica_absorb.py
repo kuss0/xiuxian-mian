@@ -2101,7 +2101,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotIn("@aa_low_sense_shield", section)
         self.assertIn("神识校验：@zz_high_sense_shield 太一门，可调神识 1200", section)
         self.assertIn("无需DPS标识", section)
-        self.assertIn("默认路线 .苍坤抉择 1 / 3 / 2", section)
+        self.assertIn("路线建议按阶段状态动态计算", section)
         self.assertNotIn("DPS：", section)
 
     def test_cangkun_multi_team_plan_spreads_high_sense_anchors(self):
@@ -3695,6 +3695,54 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertIn("选2 夺图先遁", advice)
         self.assertIn("慕兰警戒 63>=60，不走3", advice)
+
+    def test_cangkun_third_stage_advice_uses_current_risk(self):
+        safe_text = (
+            "当前状态：禁制裂隙 106 / 神魂稳度 110 / 慕兰警戒 31 / 贪念 0 / 神识余量 5828\n\n"
+            "【第三幕·玉矶阁取宝】\n"
+            "1 · 先取卷轴\n"
+            "2 · 先开玉盒\n"
+            "3 · 先探偏殿\n\n"
+            "请队长使用 .苍坤抉择 1/2/3 做出取宝选择。"
+        )
+        risky_text = (
+            "当前状态：禁制裂隙 104 / 神魂稳度 100 / 慕兰警戒 46 / 贪念 12 / 神识余量 5828\n\n"
+            "【第三幕·玉矶阁取宝】\n"
+            "1 · 先取卷轴\n"
+            "2 · 先开玉盒\n"
+            "3 · 先探偏殿\n\n"
+            "请队长使用 .苍坤抉择 1/2/3 做出取宝选择。"
+        )
+
+        safe_advice = app_replica._format_cangkun_decision_advice(
+            app_replica._get_cangkun_decision_stage(safe_text),
+            safe_text,
+        )
+        risky_advice = app_replica._format_cangkun_decision_advice(
+            app_replica._get_cangkun_decision_stage(risky_text),
+            risky_text,
+        )
+
+        self.assertIn("选3 先探偏殿", safe_advice)
+        self.assertIn("偏殿/贪念", safe_advice)
+        self.assertIn("选1 先取卷轴", risky_advice)
+        self.assertIn("当前不适合继续加贪", risky_advice)
+
+    def test_cangkun_fifth_stage_advice_mentions_manual_greed_only_when_safe(self):
+        text = (
+            "当前状态：神魂稳度 110 / 慕兰警戒 49 / 贪念 16 / 卷轴线索 3\n\n"
+            "【第五幕·分宝脱身】\n"
+            "1 · 平分速退\n"
+            "2 · 夺图先遁\n"
+            "3 · 暗藏后手\n\n"
+            "请队长使用 .苍坤抉择 1/2/3 决定如何脱身。"
+        )
+        stage_info = app_replica._get_cangkun_decision_stage(text)
+
+        advice = app_replica._format_cangkun_decision_advice(stage_info, text)
+
+        self.assertIn("选2 稳带卷轴", advice)
+        self.assertIn("冲高价值才手动选3", advice)
 
     def test_cangkun_team_stage_sends_per_identity_decision_buttons(self):
         leader_id = self._register_replica_identity(991201, "gyurihero", professions="灵医")

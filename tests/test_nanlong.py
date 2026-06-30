@@ -168,7 +168,7 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["nanlong_place_msg_id"])
             self.assertEqual("", state_module.state["nanlong_last_command"])
             self.assertEqual("", state_module.state["nanlong_protect_phase"])
-            self.assertEqual("南陇侯待处理状态不完整，已清理", state_module.state["nanlong_last_error"])
+            self.assertEqual("", state_module.state["nanlong_last_error"])
 
     async def test_prompt_delay_retry_and_broadcast_confirmation_flow(self):
         now = 1_700_000_000.0

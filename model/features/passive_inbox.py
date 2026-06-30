@@ -884,6 +884,12 @@ def _apply_pet_passive(text, now, family):
             state["next_pet_trial_time"] = float(now + parse_wait_time(raw_text) + pet_mod.CD_BUFFER_SEC)
             state["pet_trial_last_error"] = ""
             changed = True
+    if family == "pet_formation" or pet_mod.RE_PET_FORMATION_SUCCESS.search(raw_text):
+        if pet_mod.RE_PET_FORMATION_SUCCESS.search(raw_text):
+            state["next_pet_formation_time"] = float(now + pet_mod.PET_FORMATION_BUFF_SEC)
+            state["pet_formation_last_error"] = ""
+            state["pet_formation_retry_count"] = 0
+            changed = True
     return changed
 
 
@@ -1492,7 +1498,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
             if module_changed:
                 changed_modules.append("second_soul")
             changed = module_changed or changed
-        if family in {"pet", "pet_warm", "pet_trial"}:
+        if family in {"pet", "pet_warm", "pet_trial", "pet_formation"}:
             module_changed = _apply_pet_passive(raw_text, now, family)
             if module_changed:
                 changed_modules.append(family)

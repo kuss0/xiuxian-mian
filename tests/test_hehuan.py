@@ -354,6 +354,35 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertEqual(observed["next_hehuan_time"], observed["auto_next_time"])
         self.assertEqual(0, observed["auto_retry_count"])
 
+    def test_cooldown_with_stale_success_time_blocks_for_one_hour(self):
+        now = 1_780_000_000.0
+        last_success = now - hehuan.HEHUAN_WARM_OBSERVED_CD_SEC - 300
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_warm_success_at": last_success,
+                "contract_until": now + 3600,
+                "auto_retry_count": hehuan.HEHUAN_AUTO_RETRY_LIMIT,
+                "auto_retry_reason": "温养回复超时或被吞",
+                "auto_pending_msg_id": 9901,
+                "auto_pending_sent_at": now - 300,
+                "auto_pending_deadline_at": now - 1,
+            }
+            changed = hehuan.apply_hehuan_passive(
+                real_text("hehuan.dual.cooldown"),
+                now=now,
+                family="hehuan_dual",
+            )
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(now + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+        self.assertEqual(observed["next_hehuan_time"], observed["auto_next_time"])
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertEqual("", observed["auto_retry_reason"])
+        self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertNotIn("补发已达", observed["auto_last_error"])
+
 
 class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -613,6 +642,9 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(3, audit_mock.await_count)
         self.assertIn("青元剑诀", audit_mock.await_args_list[0].args[0])
+        self.assertIn("第1/3次，即时", audit_mock.await_args_list[0].args[0])
+        self.assertIn("第2/3次，+3h", audit_mock.await_args_list[1].args[0])
+        self.assertIn("第3/3次，+6h", audit_mock.await_args_list[2].args[0])
         self.assertEqual("high", audit_mock.await_args_list[0].kwargs["priority"])
         self.assertTrue(observed["valuable_drop_reminders"][0]["done"])
         self.assertEqual(3, observed["valuable_drop_reminders"][0]["next_index"])

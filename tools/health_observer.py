@@ -37,7 +37,7 @@ COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
 )
 MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
-BENIGN_MODULE_ERROR_PATTERN = re.compile(r"今日.*已达上限|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发")
+BENIGN_MODULE_ERROR_PATTERN = re.compile(r"今日.*已达上限|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次")
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
 GUARDED_BUSINESS_PREFIXES = (
     ".入梦寻图",
@@ -199,7 +199,14 @@ MODULE_HEALTH_SPECS = [
         ),
         "next_fields": (("next_concubine_time", "下次"),),
         "last_result_fields": (("concubine_last_result", "结果"), ("concubine_voyage_last_result", "出海结果")),
-        "last_error_fields": (("concubine_last_error", "错误"), ("concubine_heart_last_error", "心劫错误"), ("concubine_voyage_last_error", "出海错误")),
+        "last_error_fields": (
+            ("concubine_last_error", "错误"),
+            ("concubine_tianji_last_error", "代卜错误"),
+            ("concubine_greet_last_error", "问安错误"),
+            ("concubine_gift_last_error", "赠予错误"),
+            ("concubine_heart_last_error", "心劫错误"),
+            ("concubine_voyage_last_error", "出海错误"),
+        ),
     },
     {
         "key": "wendao",

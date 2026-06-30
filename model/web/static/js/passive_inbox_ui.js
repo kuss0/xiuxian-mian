@@ -25,6 +25,7 @@ const PASSIVE_INBOX_LABELS = {
   pet: '抚摸法宝',
   pet_trial: '器灵试炼',
   pet_warm: '温养器灵',
+  pet_formation: '布下剑阵',
   reply_context_no_identity: '回复上下文无身份',
   second_soul: '第二元神',
   sect_teach: '宗门传功',

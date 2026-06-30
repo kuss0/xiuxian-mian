@@ -41,6 +41,7 @@
         targetId: '',
         listingItem: '',
         listingCount: 1,
+        listingUnitPrice: 0,
         listingSyntax: 'space',
         selectedItems: {},
         manualText: '',
@@ -62,6 +63,7 @@
     if (['transfer', 'gift'].indexOf(String(appState.storageBagTransfer.operation || 'transfer')) < 0) appState.storageBagTransfer.operation = 'transfer';
     if (!Number(appState.storageBagTransfer.startPending || 0)) appState.storageBagTransfer.startPending = 0;
     if (!Number(appState.storageBagTransfer.listingCount || 0)) appState.storageBagTransfer.listingCount = 1;
+    if (!Number(appState.storageBagTransfer.listingUnitPrice || 0)) appState.storageBagTransfer.listingUnitPrice = 0;
     if (!Number(appState.storageBagTransfer.batchReserveCount || 0)) appState.storageBagTransfer.batchReserveCount = 0;
     if (!Number(appState.storageBagTransfer.batchMinTransferCount || 0)) appState.storageBagTransfer.batchMinTransferCount = 1;
     if (['space', 'compact'].indexOf(String(appState.storageBagTransfer.listingSyntax || 'space')) < 0) appState.storageBagTransfer.listingSyntax = 'space';
@@ -235,6 +237,7 @@
         target_identity_id: Number(state.targetId) || 0,
         listing_item: giftMode ? '' : String(state.listingItem || '').trim(),
         listing_count: Math.max(1, Number(state.listingCount) || 1),
+        listing_unit_price: Math.max(0, Number(state.listingUnitPrice) || 0),
         listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
         mode: String(state.batchQuantityMode || 'all') === 'fixed' ? 'fixed' : 'all',
         reserve_count: Math.max(0, Number(state.batchReserveCount) || 0),
@@ -254,6 +257,7 @@
       target_identity_id: Number(state.targetId) || 0,
       listing_item: giftMode ? '' : String(state.listingItem || '').trim(),
       listing_count: Math.max(1, Number(state.listingCount) || 1),
+      listing_unit_price: Math.max(0, Number(state.listingUnitPrice) || 0),
       listing_syntax: String(state.listingSyntax || 'space') === 'compact' ? 'compact' : 'space',
       items: Array.from(merged.entries()).map(function (entry) {
         return { item_name: entry[0], quantity: entry[1] };
@@ -310,9 +314,10 @@
   function applyMoneyPreset() {
     const state = transferState();
     state.listingItem = '黄芽丹';
-    state.listingCount = 1;
+    state.listingCount = 20;
+    state.listingUnitPrice = 30000;
     state.listingSyntax = 'compact';
-    state.selectedItems = { '灵石': 1 };
+    state.selectedItems = { '灵石': 600000 };
     state.manualText = '';
     state.batchQuantityMode = 'fixed';
     state.preview = null;
@@ -718,14 +723,23 @@
     if (Array.isArray(preview.tasks)) {
       const planLines = Array.isArray(preview.item_plans) ? preview.item_plans.map(function (plan) {
         const demand = Number(plan.requested_quantity || 0) > 0 ? `需求${Number(plan.requested_quantity || 0).toLocaleString()}` : '搬空可搬';
-        return `${plan.item_name}｜${demand}｜计划${Number(plan.planned_quantity || 0).toLocaleString()}｜来源${Number(plan.used_source_count || 0)}/${Number(plan.candidate_count || 0)}｜保留${Number(plan.reserve_count || 0)}｜起送${Number(plan.min_transfer_count || 1)}`;
+        const aggregate = Number(plan.aggregate_listing_count || 0) > 0
+          ? `｜聚合${Number(plan.aggregate_listing_count || 0).toLocaleString()}份｜单价${Number(plan.aggregate_unit_price || 0).toLocaleString()}｜总价${Number(plan.aggregate_total_price || 0).toLocaleString()}｜实搬${Number(plan.aggregate_planned_quantity || 0).toLocaleString()}`
+          : '';
+        return `${plan.item_name}｜${demand}｜计划${Number(plan.planned_quantity || 0).toLocaleString()}｜来源${Number(plan.used_source_count || 0)}/${Number(plan.candidate_count || 0)}｜保留${Number(plan.reserve_count || 0)}｜起送${Number(plan.min_transfer_count || 1)}${aggregate}`;
       }) : [];
       const taskLines = preview.tasks.map(function (task, index) {
         const itemText = (task.items || []).map(function (item) {
           return `${item.item_name}x${Number(item.quantity || 0).toLocaleString()}`;
         }).join('、');
         const commandText = task.listing_command ? `｜${task.listing_command}` : '';
-        return `${index + 1}. ${task.source_label || task.source_identity_id} -> ${task.target_label || task.target_identity_id}｜${itemText}${commandText}`;
+        const buyers = Array.isArray(task.aggregate_buyers) && task.aggregate_buyers.length
+          ? `\n   购买分摊：${task.aggregate_buyers.map(function (buyer) {
+              const buyerItem = ((buyer.items || [])[0] || {});
+              return `${buyer.source_label || buyer.source_identity_id}买${Number(buyer.listing_count || 1)}份/${Number(buyerItem.quantity || 0).toLocaleString()}`;
+            }).join('；')}`
+          : '';
+        return `${index + 1}. ${task.source_label || task.source_identity_id} -> ${task.target_label || task.target_identity_id}｜${itemText}${commandText}${buyers}`;
       });
       const skipped = Array.isArray(preview.skipped_source_ids) && preview.skipped_source_ids.length
         ? `<div class="form-label">已跳过无匹配库存来源：${esc(preview.skipped_source_ids.join('、'))}</div>`
@@ -742,7 +756,10 @@
       return `${item.item_name}x${Number(item.quantity || 0).toLocaleString()}`;
     }).join('、') || '无物品';
     const listing = task && task.listing_item ? `｜上架 ${task.listing_item}x${Math.max(1, Number(task.listing_count) || 1)}` : '';
-    return `${prefix}${(task || {}).source_label || (task || {}).source_identity_id || '来源'} -> ${(task || {}).target_label || (task || {}).target_identity_id || '目标'}｜${itemText}${listing}`;
+    const aggregate = Array.isArray((task || {}).aggregate_buyers) && (task || {}).aggregate_buyers.length
+      ? `｜聚合购买${(task || {}).aggregate_buyers.length}源`
+      : '';
+    return `${prefix}${(task || {}).source_label || (task || {}).source_identity_id || '来源'} -> ${(task || {}).target_label || (task || {}).target_identity_id || '目标'}｜${itemText}${listing}${aggregate}`;
   }
 
   function renderBatchRuntimeHtml(batchRuntime) {
@@ -847,6 +864,8 @@
       </div>`;
     const listingFormatControl = `
         <label class="field-label">上架数量<input class="text-input" type="number" min="1" data-storage-transfer-field="listingCount" value="${esc(Math.max(1, Number(state.listingCount) || 1))}" /></label>
+        <label class="field-label">上架单价<input class="text-input" type="number" min="0" data-storage-transfer-field="listingUnitPrice" value="${esc(Math.max(0, Number(state.listingUnitPrice) || 0))}" placeholder="洗灵石如 30000" /></label>
+        <label class="field-label">上架总价<input class="text-input" type="text" value="${esc((Math.max(1, Number(state.listingCount) || 1) * Math.max(0, Number(state.listingUnitPrice) || 0)).toLocaleString())}" disabled /></label>
         <label class="field-label">上架格式<select class="text-input" data-storage-transfer-field="listingSyntax"><option value="space"${state.listingSyntax !== 'compact' ? ' selected' : ''}>物品 数量</option><option value="compact"${state.listingSyntax === 'compact' ? ' selected' : ''}>物品*数量</option></select></label>`;
     const sourceControls = state.batchMode ? `
       <div class="storage-bag-transfer-controls storage-bag-transfer-controls-batch">
@@ -1285,7 +1304,7 @@
     const field = event.target.closest('[data-storage-transfer-field]');
     if (!field) return;
     const key = field.getAttribute('data-storage-transfer-field');
-    if (key === 'manualText' || key === 'listingItem' || key === 'listingCount' || key === 'batchReserveCount' || key === 'batchMinTransferCount') {
+    if (key === 'manualText' || key === 'listingItem' || key === 'listingCount' || key === 'listingUnitPrice' || key === 'batchReserveCount' || key === 'batchMinTransferCount') {
       transferState()[key] = field.value;
       transferState().preview = null;
     }

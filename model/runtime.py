@@ -70,6 +70,7 @@ from .config import (
     CMD_PET,
     CMD_PET_WARM,
     CMD_PET_TRIAL,
+    CMD_PET_FORMATION,
     CMD_QUIZ_ANSWER,
     CMD_RANCH,
     CMD_REPLICA_CANGKUN_JOIN,
@@ -672,6 +673,7 @@ REPLY_FAMILY_COMMANDS = {
     "pet": {CMD_PET},
     "pet_warm": {CMD_PET_WARM},
     "pet_trial": {CMD_PET_TRIAL},
+    "pet_formation": {CMD_PET_FORMATION},
     "ranch": {CMD_RANCH},
     "wild_training": {CMD_WILD_TRAINING},
     "tree_panel": {CMD_TREE_WATER, CMD_TREE_STATUS, CMD_TREE_PULSE_STATUS},
@@ -1696,11 +1698,12 @@ _low_priority_audit_seq = 0
 
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
     source_module = str((item or {}).get("source_module") or "").strip()
-    return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗"} or str(family or "").strip() in {
+    return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗", "布下剑阵"} or str(family or "").strip() in {
         "divination",
         "world_boss",
         "small_world_query",
         "hehuan_dual",
+        "pet_formation",
     }
 _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
 _recent_dungeon_quiet_send_blocks = {}

@@ -123,6 +123,7 @@ def _blank_run_state(now=None):
         "last_result": "",
         "participants": 0,
         "fallback_status_day": "",
+        "last_priority_window_key": "",
     }
 
 
@@ -179,7 +180,16 @@ def _normalize_run_state(raw=None, now=None):
     for key in ("hp_percent", "fanhun", "break_progress", "moya", "zhen", "last_status_msg_id", "last_summary_log_total", "participants"):
         record[key] = _coerce_int(record.get(key), -1 if key in {"hp_percent", "fanhun", "break_progress", "moya", "zhen"} else 0)
     record["summary"] = _normalize_summary(record.get("summary"))
-    for key in ("event_key", "phase", "last_phase_log", "last_open_log_key", "last_conclusion_key", "last_result", "fallback_status_day"):
+    for key in (
+        "event_key",
+        "phase",
+        "last_phase_log",
+        "last_open_log_key",
+        "last_conclusion_key",
+        "last_result",
+        "fallback_status_day",
+        "last_priority_window_key",
+    ):
         record[key] = str(record.get(key) or "").strip()
     if record["active"] and record["opened_at"] > 0 and now - record["opened_at"] > WORLD_BOSS_EVENT_TTL_SEC:
         record["active"] = False
@@ -760,6 +770,61 @@ def _strong_attack_allowed(run_state):
     return 0 <= moya <= 70 and zhen >= 75
 
 
+def _priority_window_key(run_state):
+    if not _strong_attack_allowed(run_state):
+        return ""
+    phase = str(run_state.get("phase") or "").strip()
+    hp = _coerce_int(run_state.get("hp_percent"), -1)
+    # Bucket HP so frequent status refreshes inside the same damage band do not
+    # keep reopening the same strong-attack burst.
+    hp_bucket = (hp // 10) * 10 if hp >= 0 else -1
+    return f"strong:{phase}:{hp_bucket}"
+
+
+def _has_ready_priority_identity(run_state, now):
+    if not _strong_attack_allowed(run_state):
+        return False
+    summary = _normalize_summary(run_state.get("summary"))
+    if summary.get("强攻", 0) >= WORLD_BOSS_STRONG_ATTACK_LIMIT:
+        return False
+    for identity_id in _enabled_identity_ids():
+        if not _strong_attacker(identity_id):
+            continue
+        try:
+            identity_state = get_identity_state(identity_id)
+        except KeyError:
+            continue
+        if _has_pending_world_boss_action(identity_state):
+            continue
+        if bool(identity_state.get("world_boss_exhausted")):
+            continue
+        action_limit = max(1, _coerce_int(identity_state.get("world_boss_action_limit"), WORLD_BOSS_DEFAULT_ACTION_LIMIT))
+        if _coerce_int(identity_state.get("world_boss_action_count"), 0) >= action_limit:
+            continue
+        if _coerce_int(identity_state.get("world_boss_attack_count"), 0) >= WORLD_BOSS_STRONG_ATTACK_LIMIT:
+            continue
+        last_action_at = _coerce_float(identity_state.get("world_boss_last_action_at"), 0)
+        if last_action_at > 0 and float(now) - last_action_at < WORLD_BOSS_ACTION_COOLDOWN_SEC:
+            continue
+        return True
+    return False
+
+
+def _maybe_interrupt_round_for_priority_window(run_state, now):
+    window_key = _priority_window_key(run_state)
+    if not window_key or run_state.get("last_priority_window_key") == window_key:
+        return False
+    if _coerce_float(run_state.get("round_completed_at"), 0) <= 0:
+        return False
+    if not _has_ready_priority_identity(run_state, now):
+        return False
+    run_state["last_priority_window_key"] = window_key
+    run_state["round_started_at"] = 0
+    run_state["round_completed_at"] = 0
+    run_state["next_action_at"] = float(now)
+    return True
+
+
 def _urgent_rescue_action(run_state):
     moya = _coerce_int(run_state.get("moya"), -1)
     zhen = _coerce_int(run_state.get("zhen"), -1)
@@ -1121,6 +1186,7 @@ async def _handle_status(parsed, now, *, identity_id=0, current_msg_id=0):
         except KeyError:
             pass
     await _maybe_log_phase_change(run_state, now)
+    _maybe_interrupt_round_for_priority_window(run_state, now)
     _set_run_state(run_state)
     _start_world_boss_round_if_ready(now)
     return True
@@ -1147,6 +1213,7 @@ async def _handle_action(parsed, now, *, identity_id=0, current_msg_id=0):
                 run_state["summary"] = summary
     await _maybe_log_phase_change(run_state, now)
     await _maybe_log_progress(run_state, now)
+    _maybe_interrupt_round_for_priority_window(run_state, now)
     _set_run_state(run_state)
     _start_world_boss_round_if_ready(now)
     return True

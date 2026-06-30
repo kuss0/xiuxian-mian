@@ -2100,10 +2100,78 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual(87, snapshot["faith"])
             self.assertEqual(41, snapshot["stability"])
             self.assertEqual(99630, snapshot["population"])
+            self.assertFalse(snapshot.get("has_prayer"))
+            self.assertEqual("", snapshot.get("prayer_name"))
+            self.assertEqual("", snapshot.get("manifest_cost"))
             self.assertEqual(
                 now + 360 * 60 + small_world.CD_BUFFER_SEC + 60,
                 state_module.state["next_small_world_time"],
             )
+
+    async def test_manifest_failure_clears_cached_prayer_to_avoid_stale_retry_loop(self):
+        send_as_id = 8659059310
+        now = 7200.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 7805
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "大旱",
+                "manifest_cost": "灵石x500",
+                "updated_at": now - 30,
+            }
+
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_manifest_reply(
+                    "显灵失败。\n(信仰 -5, 稳定 -8, 人口 -200)",
+                    now,
+                    reply_to=None,
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled)
+            self.assertIn("显灵失败", state_module.state["small_world_last_error"])
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertFalse(snapshot.get("has_prayer"))
+            self.assertEqual("", snapshot.get("prayer_name"))
+            self.assertEqual("", snapshot.get("manifest_cost"))
+
+    async def test_scheduler_manifests_again_when_new_panel_snapshot_has_ready_prayer(self):
+        send_as_id = 8659059311
+        now = 7300.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = False
+            state_module.state["small_world_refine_enabled"] = False
+            state_module.state["small_world_phase"] = "idle"
+            state_module.state["small_world_last_error"] = "显灵失败，停止本轮"
+            state_module.state["next_small_world_time"] = now + 6 * 3600
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "大旱",
+                "manifest_cost": "灵石x500",
+                "has_wait": False,
+                "updated_at": now - 30,
+            }
+
+            with (
+                patch.object(small_world, "_send_manifest", new=AsyncMock(return_value=True)) as manifest_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            manifest_mock.assert_awaited_once_with(now)
+            self.assertEqual("灵石x500", state_module.state["small_world_manifest_cost_text"])
 
     async def test_manifest_success_deducts_cached_storage_cost_from_panel(self):
         send_as_id = 8659059197

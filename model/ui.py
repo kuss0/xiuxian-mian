@@ -2333,6 +2333,102 @@ def _resolve_storage_bag_batch_sources(payload, target_identity_id):
     ]
 
 
+def _build_storage_bag_aggregate_money_task(tasks, item_plan, *, listing_item, listing_count, listing_syntax, target_identity_id, target_label, rows, min_transfer_count, listing_unit_price=0):
+    if not tasks or not isinstance(item_plan, dict):
+        return None
+    if str(item_plan.get("item_name") or "").strip() != "灵石":
+        return None
+    if not str(listing_item or "").strip():
+        return None
+    source_quantities = []
+    for task in tasks:
+        items = task.get("items") if isinstance(task, dict) else []
+        if len(items or []) != 1 or str((items[0] or {}).get("item_name") or "").strip() != "灵石":
+            return None
+        if str((items[0] or {}).get("method") or "unknown") == "gift":
+            return None
+        source_quantities.append(int((items[0] or {}).get("quantity") or 0))
+    planned_quantity = int(item_plan.get("planned_quantity") or sum(source_quantities))
+    if planned_quantity <= 0:
+        return None
+    target_listing_stock = _get_storage_bag_item_count(rows, target_identity_id, listing_item)
+    unit_price = int(listing_unit_price or 0)
+    if unit_price > 0:
+        aggregate_listing_count = normalize_storage_bag_listing_count(listing_count)
+    else:
+        aggregate_listing_count = len(tasks)
+    if target_listing_stock > 0:
+        aggregate_listing_count = min(aggregate_listing_count, target_listing_stock)
+    aggregate_listing_count = max(1, aggregate_listing_count)
+    if aggregate_listing_count <= 0:
+        return None
+    ranked_tasks = sorted(
+        tasks,
+        key=lambda task: (-int(((task.get("items") or [{}])[0] or {}).get("quantity") or 0), int(task.get("source_identity_id") or 0)),
+    )
+    if unit_price <= 0:
+        ranked_tasks = ranked_tasks[:aggregate_listing_count]
+        unit_price = min(
+            int(((task.get("items") or [{}])[0] or {}).get("quantity") or 0)
+            for task in ranked_tasks
+        )
+    unit_price = max(1, unit_price)
+    buyers = []
+    remaining_units = aggregate_listing_count
+    for task in ranked_tasks:
+        if remaining_units <= 0:
+            break
+        item = (task.get("items") or [{}])[0]
+        source_quantity = int(item.get("quantity") or 0)
+        buyer_units = min(remaining_units, source_quantity // unit_price)
+        if buyer_units <= 0:
+            continue
+        buyer_quantity = buyer_units * unit_price
+        buyer_item = {**dict(item), "quantity": buyer_quantity}
+        buyers.append({
+            "source_identity_id": int(task.get("source_identity_id") or 0),
+            "source_label": task.get("source_label") or task.get("source_identity_id") or "",
+            "items": [buyer_item],
+            "listing_count": buyer_units,
+            "unit_price": unit_price,
+        })
+        remaining_units -= buyer_units
+    if not buyers:
+        return None
+    aggregate_quantity = sum(
+        int((buyer.get("items") or [{}])[0].get("quantity") or 0)
+        for buyer in buyers
+    )
+    aggregate_items = [{
+        **dict((tasks[0].get("items") or [{}])[0]),
+        "quantity": aggregate_quantity,
+        "source_count": aggregate_quantity,
+        "source_left_count": 0,
+    }]
+    aggregate_task = {
+        "source_identity_id": int(buyers[0].get("source_identity_id") or 0),
+        "source_label": f"聚合购买 {len(buyers)} 个来源",
+        "target_identity_id": int(target_identity_id or 0),
+        "target_label": target_label,
+        "listing_item": listing_item,
+        "listing_count": aggregate_listing_count,
+        "listing_syntax": listing_syntax,
+        "listing_command": format_storage_bag_listing_command(
+            listing_item,
+            aggregate_listing_count,
+            [f"灵石*{aggregate_listing_count * unit_price}"],
+            listing_syntax=listing_syntax,
+        ),
+        "operation": "transfer",
+        "items": aggregate_items,
+        "aggregate_buyers": buyers,
+        "aggregate_unit_price": unit_price,
+        "aggregate_planned_quantity": aggregate_quantity,
+        "aggregate_total_price": aggregate_listing_count * unit_price,
+    }
+    return aggregate_task
+
+
 def ui_preview_storage_bag_transfer(payload, *, operation="transfer"):
     payload = payload if isinstance(payload, dict) else {}
     operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
@@ -2437,8 +2533,8 @@ def ui_preview_storage_bag_transfer(payload, *, operation="transfer"):
     if gift_items:
         commands.append({
             "identity_id": target_identity_id,
-            "command": "赠送标记 <本次赠送ID>" if is_gift_operation else "转移标记 <本次转移ID>",
-            "note": "目标身份先发送一条可回复的赠送定位消息" if is_gift_operation else "目标身份先发送一条可回复的标记消息",
+            "command": "复用5分钟内发言；无锚点则发赠送标记" if is_gift_operation else "复用5分钟内发言；无锚点则发转移标记",
+            "note": "优先回复目标身份近期发言，找不到再由目标身份发送可回复定位消息",
         })
         for item in gift_items:
             commands.append({
@@ -2555,6 +2651,7 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
     listing_item = str(payload.get("listing_item") or "").strip()
     listing_count = normalize_storage_bag_listing_count(payload.get("listing_count") or 1)
     listing_syntax = normalize_storage_bag_listing_syntax(payload.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX)
+    listing_unit_price = _coerce_non_negative_int(payload.get("listing_unit_price"), 0)
     reserve_count = _coerce_non_negative_int(payload.get("reserve_count"), 0)
     min_transfer_count = max(1, _coerce_non_negative_int(payload.get("min_transfer_count"), 1))
     mode = str(payload.get("mode") or "all").strip().lower()
@@ -2664,6 +2761,30 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
         })
     if not tasks:
         return False, "没有匹配库存的来源身份", None
+    if not is_gift_operation and len(item_plans) == 1:
+        aggregate_task = _build_storage_bag_aggregate_money_task(
+            tasks,
+            item_plans[0],
+            listing_item=listing_item,
+            listing_count=listing_count,
+            listing_syntax=listing_syntax,
+            target_identity_id=target_identity_id,
+            target_label=target_row.get("label") or target_row.get("display_name") or str(target_identity_id),
+            rows=rows,
+            min_transfer_count=min_transfer_count,
+            listing_unit_price=listing_unit_price,
+        )
+        if aggregate_task:
+            original_planned = int(item_plans[0].get("planned_quantity") or 0)
+            aggregate_quantity = int(aggregate_task.get("aggregate_planned_quantity") or 0)
+            item_plans[0]["aggregate_listing_count"] = int(aggregate_task.get("listing_count") or 0)
+            item_plans[0]["aggregate_unit_price"] = int(aggregate_task.get("aggregate_unit_price") or 0)
+            item_plans[0]["aggregate_planned_quantity"] = aggregate_quantity
+            item_plans[0]["aggregate_total_price"] = int(aggregate_task.get("aggregate_total_price") or 0)
+            item_plans[0]["used_source_count"] = len(aggregate_task.get("aggregate_buyers") or [])
+            if aggregate_quantity < original_planned:
+                warnings.append(f"灵石聚合挂单按统一单价仅能覆盖 {aggregate_quantity}，原可搬 {original_planned}；需降低起送/增加上架物/降低单价或改用逐来源精确转移")
+            tasks = [aggregate_task]
     total_items = sum(len(task.get("items") or []) for task in tasks)
     total_quantity = sum(int(item.get("quantity") or 0) for task in tasks for item in (task.get("items") or []))
     preview = {
@@ -2671,6 +2792,7 @@ def ui_preview_storage_bag_transfer_batch(payload, *, operation="transfer"):
         "target_identity_id": target_identity_id,
         "listing_item": "" if is_gift_operation else listing_item,
         "listing_count": listing_count,
+        "listing_unit_price": listing_unit_price,
         "listing_syntax": listing_syntax,
         "mode": mode,
         "reserve_count": reserve_count,
@@ -3784,6 +3906,7 @@ def get_identity_ui_snapshot(send_as_id):
             "timers": {
                 "next_irr_time": fmt_abs_ts(identity_state.get("next_irr_time", 0)),
                 "next_pet_time": fmt_abs_ts(identity_state.get("next_pet_time", 0)),
+                "next_pet_formation_time": fmt_abs_ts(identity_state.get("next_pet_formation_time", 0)),
                 "next_stargazer_panel_time": fmt_abs_ts(identity_state.get("next_stargazer_panel_time", 0)),
                 "next_stargazer_action_time": fmt_abs_ts(stargazer_next_action_time),
                 "stargazer_followup_due_at": fmt_abs_ts(stargazer_followup_due_at),

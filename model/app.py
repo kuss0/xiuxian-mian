@@ -73,7 +73,7 @@ from .features.concubine import (
     run_concubine_phaseful_cleanup_scheduler,
     run_concubine_scheduler,
 )
-from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, run_pet_scheduler
+from .features.pet import handle_pet_cd_fix, handle_pet_warm_reply, handle_pet_trial_reply, handle_pet_formation_reply, run_pet_scheduler
 from .features.passive_inbox import handle_passive_module_card, record_passive_inbox_event
 from .features.ranch import handle_ranch_reply, handle_ranch_return_broadcast, run_ranch_scheduler
 from .features.rare_daily_report import run_rare_daily_report_scheduler
@@ -298,7 +298,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_hehuan_scheduler": {"manifest_names": ("合欢宗",), "helper": False},
     "run_jiyin_scheduler": {"manifest_names": ("极阴祖师",), "helper": False},
     "run_nanlong_scheduler": {"manifest_names": ("南陇侯",), "helper": False},
-    "run_pet_scheduler": {"manifest_names": ("法宝", "温养器灵", "器灵试炼"), "helper": False},
+    "run_pet_scheduler": {"manifest_names": ("法宝", "温养器灵", "器灵试炼", "布下剑阵"), "helper": False},
     "run_quiz_scheduler": {"manifest_names": ("玄骨考校",), "helper": False},
     "run_ranch_scheduler": {"manifest_names": ("放养",), "helper": False},
     "run_second_soul_bootstrap_check": {"manifest_names": ("第二元神",), "helper": True},
@@ -412,6 +412,7 @@ BOT_REPLY_FAMILY_HINTS = {
     "pet": ("器灵", "法宝", "默契", "经验", "休息"),
     "pet_warm": ("温养器灵", "温养", "灵光大振", "吞纳过灵机"),
     "pet_trial": ("器灵试炼", "试炼", "共鸣", "灵潮", "反噬"),
+    "pet_formation": ("剑阵已成", "布下了【大庚剑阵】", "布下剑阵"),
     "tree_panel": ("灵眼之树", "灵树", "果实", "采摘", "成熟", "定脉", "脉象"),
     "tree_pulse": ("定脉", "注灵", "固脉", "净浊", "冲脉", "脉稳", "浊息"),
     "tree_guard": ("守山", "护山", "攻山", "灵树"),
@@ -1278,6 +1279,7 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             handled_any = await handle_pet_cd_fix(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_warm_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_pet_trial_reply(text, now, reply_to, matched_family=matched_family) or handled_any
+            handled_any = await handle_pet_formation_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_ranch_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_wild_training_reply(text, now, reply_to, matched_family=matched_family, current_msg_id=event.id) or handled_any
             handled_any = await handle_checkin_reply(text, now, reply_to, matched_family=matched_family) or handled_any

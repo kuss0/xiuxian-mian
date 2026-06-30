@@ -241,11 +241,12 @@ def _queue_fishing_valuable_drop_reminders(raw_text, now, *, result_msg_id=0, op
 
 def _format_fishing_valuable_reminder(event, index):
     labels = ("即时", "+3h", "+6h")
-    label = labels[index] if 0 <= int(index or 0) < len(labels) else f"第{int(index or 0) + 1}次"
+    index = int(index or 0)
+    label = labels[index] if 0 <= index < len(labels) else "补发"
     item = str((event or {}).get("item") or "").strip() or "未解析宝物"
     fish = str((event or {}).get("fish") or "").strip()
     suffix = f"｜来源 {fish}" if fish else ""
-    return f"🎣 灵溪垂钓伴生机缘提醒（{label}/3）：{item}{suffix}"
+    return f"🎣 灵溪垂钓伴生机缘提醒（第{index + 1}/3次，{label}）：{item}{suffix}"
 
 
 async def _run_fishing_valuable_drop_reminders(now):

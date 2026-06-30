@@ -225,6 +225,7 @@ CMD_TREE_HARVEST = ".采摘灵果"
 CMD_PET = ".抚摸法宝"
 CMD_PET_WARM = ".温养器灵"
 CMD_PET_TRIAL = ".器灵试炼"
+CMD_PET_FORMATION = ".布下剑阵"
 DEFAULT_PET_NAME = "玄天斩灵剑"
 CMD_STARGAZER_PANEL = ".观星台"
 CMD_STARGAZER_GUIDE = ".牵引星辰"
@@ -455,6 +456,7 @@ SCRIPT_COMMANDS = [
     CMD_TREE_PULSE,
     CMD_TREE_HARVEST,
     CMD_PET,
+    CMD_PET_FORMATION,
     CMD_PET_TRIAL,
     CMD_STARGAZER_PANEL,
     CMD_STARGAZER_GUIDE,
@@ -568,12 +570,13 @@ SCRIPT_COMMANDS = [
     "1",
 ]
 DIVINATION_DEFAULT_DAILY_LIMIT = 6
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "灵溪垂钓", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "布下剑阵", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "灵溪垂钓", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
     "温养器灵": "pet_warm_enabled",
     "器灵试炼": "pet_trial_enabled",
+    "布下剑阵": "pet_formation_enabled",
     "放养": "ranch_enabled",
     "野外历练": "wild_training_enabled",
     "观星台": "stargazer_enabled",
@@ -797,6 +800,7 @@ RE_CMD_SINGLE_STATUS_PATTERNS = [
     (re.compile(r'^\.法宝状态$'), "法宝"),
     (re.compile(r'^\.温养器灵状态$'), "温养器灵"),
     (re.compile(r'^\.器灵试炼状态$'), "器灵试炼"),
+    (re.compile(r'^\.布下剑阵状态$'), "布下剑阵"),
     (re.compile(r'^\.放养状态$'), "放养"),
     (re.compile(r'^\.野外历练状态$'), "野外历练"),
     (re.compile(r'^\.观星台状态$'), "观星台"),
@@ -839,6 +843,8 @@ RE_CMD_ENABLE_PATTERNS = [
     (re.compile(r'^\.(关闭|关掉)温养器灵$'), "温养器灵", False),
     (re.compile(r'^\.(开启|打开)器灵试炼$'), "器灵试炼", True),
     (re.compile(r'^\.(关闭|关掉)器灵试炼$'), "器灵试炼", False),
+    (re.compile(r'^\.(开启|打开)布下剑阵$'), "布下剑阵", True),
+    (re.compile(r'^\.(关闭|关掉)布下剑阵$'), "布下剑阵", False),
     (re.compile(r'^\.(开启|打开)放养$'), "放养", True),
     (re.compile(r'^\.(关闭|关掉)放养$'), "放养", False),
     (re.compile(r'^\.(开启|打开)野外历练$'), "野外历练", True),

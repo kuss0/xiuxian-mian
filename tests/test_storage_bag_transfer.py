@@ -233,7 +233,7 @@ class StorageBagTransferTests(unittest.TestCase):
 
         self.assertTrue(ok, message)
         self.assertEqual([
-            {"identity_id": self.target_id, "command": "转移标记 <本次转移ID>", "note": "目标身份先发送一条可回复的标记消息"},
+            {"identity_id": self.target_id, "command": "复用5分钟内发言；无锚点则发转移标记", "note": "优先回复目标身份近期发言，找不到再由目标身份发送可回复定位消息"},
             {"identity_id": self.source_id, "command": ".赠送 木髓*2", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
@@ -250,7 +250,7 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertEqual("", preview["listing_item"])
         self.assertEqual("gift", preview["items"][0]["method"])
         self.assertEqual([
-            {"identity_id": self.target_id, "command": "赠送标记 <本次赠送ID>", "note": "目标身份先发送一条可回复的赠送定位消息"},
+            {"identity_id": self.target_id, "command": "复用5分钟内发言；无锚点则发赠送标记", "note": "优先回复目标身份近期发言，找不到再由目标身份发送可回复定位消息"},
             {"identity_id": self.source_id, "command": ".赠送 妖丹*3", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
@@ -282,7 +282,7 @@ class StorageBagTransferTests(unittest.TestCase):
 
         self.assertTrue(ok, message)
         self.assertEqual([
-            {"identity_id": self.target_id, "command": "转移标记 <本次转移ID>", "note": "目标身份先发送一条可回复的标记消息"},
+            {"identity_id": self.target_id, "command": "复用5分钟内发言；无锚点则发转移标记", "note": "优先回复目标身份近期发言，找不到再由目标身份发送可回复定位消息"},
             {"identity_id": self.source_id, "command": ".赠送 苍坤残图*1", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
@@ -374,6 +374,38 @@ class StorageBagTransferTests(unittest.TestCase):
         self.assertEqual(3, preview["item_plans"][0]["candidate_count"])
         self.assertEqual(2, preview["item_plans"][0]["used_source_count"])
         self.assertNotIn(fourth_id, [task["source_identity_id"] for task in preview["tasks"]])
+
+    def test_batch_money_preview_uses_single_aggregate_listing(self):
+        second_id = 1003
+        third_id = 1004
+        for identity_id, label in ((second_id, "丁丁"), (third_id, "Lsfnqy")):
+            state_module.ensure_identity_registered(identity_id)
+            state_module.set_send_as_profile(identity_id, label=label, username=label)
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"灵石": 72161}},
+            str(second_id): {"updated_at": 1000, "items": {"灵石": 62854}},
+            str(third_id): {"updated_at": 1000, "items": {"灵石": 46637}},
+            str(self.target_id): {"updated_at": 1000, "items": {"黄芽丹": 20}},
+        })
+
+        ok, message, preview = ui.ui_preview_storage_bag_transfer({
+            "batch": True,
+            "target_identity_id": self.target_id,
+            "listing_item": "黄芽丹",
+            "listing_count": 4,
+            "listing_syntax": "compact",
+            "items": [{"item_name": "灵石", "quantity": 180000}],
+            "reserve_count": 10000,
+            "min_transfer_count": 20000,
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual(1, len(preview["tasks"]))
+        task = preview["tasks"][0]
+        self.assertTrue(task["listing_command"].startswith(".上架 黄芽丹*3 换 灵石*"))
+        self.assertEqual(3, len(task["aggregate_buyers"]))
+        self.assertEqual([1, 1, 1], [buyer["listing_count"] for buyer in task["aggregate_buyers"]])
+        self.assertNotIn("丁丁 ->", task["listing_command"])
 
     def test_blocked_item_rejects_preview(self):
         ok, message, preview = ui.ui_preview_storage_bag_transfer({
@@ -984,6 +1016,158 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, records[str(self.source_id)]["items"]["黄芽丹"])
         self.assertEqual(5000, records[str(self.target_id)]["items"]["灵石"])
         self.assertEqual(1, records[str(self.target_id)]["items"]["黄芽丹"])
+
+    async def test_batch_money_transfer_reuses_listing_for_multiple_buyers(self):
+        other_id = 1003
+        state_module.ensure_identity_registered(other_id)
+        state_module.set_send_as_profile(other_id, label="丁丁", username="ding")
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"灵石": 70000}},
+            str(other_id): {"updated_at": 1000, "items": {"灵石": 50000}},
+            str(self.target_id): {"updated_at": 1000, "items": {"黄芽丹": 20}},
+        })
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            msg_id = 300 + len(sent)
+            sent.append((command, kwargs, msg_id))
+            return SimpleNamespace(id=msg_id)
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, snapshot = await ui.ui_start_storage_bag_transfer({
+                "batch": True,
+                "target_identity_id": self.target_id,
+                "listing_item": "黄芽丹",
+                "items": [{"item_name": "灵石", "quantity": 100000}],
+                "reserve_count": 10000,
+                "min_transfer_count": 20000,
+            })
+            self.assertTrue(ok, message)
+            self.assertEqual(".上架 黄芽丹*2 换 灵石*80000", sent[0][0])
+            self.assertEqual("running_task", snapshot["batch"]["status"])
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "上架成功！\n"
+                "你已将 【黄芽丹】x2 上架至万宝楼。\n"
+                "捆绑总价: 灵石*80000\n"
+                "挂单ID: 1889",
+                1000.0,
+                SimpleNamespace(id=sent[0][2], raw_text=sent[0][0]),
+                reply_context={"reply_to_msg_id": sent[0][2]},
+            ))
+            self.assertEqual(".购买 1889", sent[1][0])
+            self.assertEqual(self.source_id, sent[1][1]["send_as_id"])
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【黄芽丹】x1。",
+                1001.0,
+                SimpleNamespace(id=sent[1][2], raw_text=sent[1][0]),
+                reply_context={"reply_to_msg_id": sent[1][2]},
+            ))
+            self.assertEqual(".购买 1889", sent[2][0])
+            self.assertEqual(other_id, sent[2][1]["send_as_id"])
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【黄芽丹】x1。",
+                1002.0,
+                SimpleNamespace(id=sent[2][2], raw_text=sent[2][0]),
+                reply_context={"reply_to_msg_id": sent[2][2]},
+            ))
+
+        records = state_module.get_storage_bag_records()
+        self.assertEqual(30000, records[str(self.source_id)]["items"]["灵石"])
+        self.assertEqual(10000, records[str(other_id)]["items"]["灵石"])
+        self.assertEqual(80000, records[str(self.target_id)]["items"]["灵石"])
+        self.assertEqual(1, records[str(self.source_id)]["items"]["黄芽丹"])
+        self.assertEqual(1, records[str(other_id)]["items"]["黄芽丹"])
+        self.assertEqual(18, records[str(self.target_id)]["items"]["黄芽丹"])
+
+    async def test_batch_money_transfer_uses_explicit_unit_price_and_multi_buy_units(self):
+        other_id = 1003
+        third_id = 1004
+        state_module.ensure_identity_registered(other_id)
+        state_module.ensure_identity_registered(third_id)
+        state_module.set_send_as_profile(other_id, label="丁丁", username="ding")
+        state_module.set_send_as_profile(third_id, label="Lsfnqy", username="lsfnqy")
+        state_module.set_storage_bag_records({
+            str(self.source_id): {"updated_at": 1000, "items": {"灵石": 82161}},
+            str(other_id): {"updated_at": 1000, "items": {"灵石": 72854}},
+            str(third_id): {"updated_at": 1000, "items": {"灵石": 56637}},
+            str(self.target_id): {"updated_at": 1000, "items": {"黄芽丹": 20}},
+        })
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            msg_id = 400 + len(sent)
+            sent.append((command, kwargs, msg_id))
+            return SimpleNamespace(id=msg_id)
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.passive_inbox.record_passive_inbox_event"):
+            ok, message, snapshot = await ui.ui_start_storage_bag_transfer({
+                "batch": True,
+                "target_identity_id": self.target_id,
+                "listing_item": "黄芽丹",
+                "listing_count": 20,
+                "listing_unit_price": 30000,
+                "listing_syntax": "compact",
+                "items": [{"item_name": "灵石", "quantity": 600000}],
+                "reserve_count": 10000,
+                "min_transfer_count": 20000,
+            })
+            self.assertTrue(ok, message)
+            self.assertEqual(".上架 黄芽丹*20 换 灵石*600000", sent[0][0])
+            self.assertEqual(3, len(snapshot["aggregate_buyers"]))
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "上架成功！\n"
+                "你已将 【黄芽丹】x20 上架至万宝楼。\n"
+                "捆绑总价: 灵石*600000\n"
+                "挂单ID: 2889",
+                1000.0,
+                SimpleNamespace(id=sent[0][2], raw_text=sent[0][0]),
+                reply_context={"reply_to_msg_id": sent[0][2]},
+            ))
+            self.assertEqual(".购买 2889*2", sent[1][0])
+            self.assertEqual(self.source_id, sent[1][1]["send_as_id"])
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【黄芽丹】x2。",
+                1001.0,
+                SimpleNamespace(id=sent[1][2], raw_text=sent[1][0]),
+                reply_context={"reply_to_msg_id": sent[1][2]},
+            ))
+            self.assertEqual(".购买 2889*2", sent[2][0])
+            self.assertEqual(other_id, sent[2][1]["send_as_id"])
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【黄芽丹】x2。",
+                1002.0,
+                SimpleNamespace(id=sent[2][2], raw_text=sent[2][0]),
+                reply_context={"reply_to_msg_id": sent[2][2]},
+            ))
+            self.assertEqual(".购买 2889", sent[3][0])
+            self.assertEqual(third_id, sent[3][1]["send_as_id"])
+
+            self.assertTrue(await handle_storage_bag_transfer_reply(
+                "交易成功！你成功购得 【黄芽丹】x1。",
+                1003.0,
+                SimpleNamespace(id=sent[3][2], raw_text=sent[3][0]),
+                reply_context={"reply_to_msg_id": sent[3][2]},
+            ))
+
+        records = state_module.get_storage_bag_records()
+        self.assertEqual(22161, records[str(self.source_id)]["items"]["灵石"])
+        self.assertEqual(12854, records[str(other_id)]["items"]["灵石"])
+        self.assertEqual(26637, records[str(third_id)]["items"]["灵石"])
+        self.assertEqual(150000, records[str(self.target_id)]["items"]["灵石"])
+        self.assertEqual(2, records[str(self.source_id)]["items"]["黄芽丹"])
+        self.assertEqual(2, records[str(other_id)]["items"]["黄芽丹"])
+        self.assertEqual(1, records[str(third_id)]["items"]["黄芽丹"])
+        self.assertEqual(15, records[str(self.target_id)]["items"]["黄芽丹"])
 
     async def test_single_transfer_start_queues_while_another_transfer_is_running(self):
         sent = []
@@ -1663,6 +1847,57 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("waiting_gift_reply", storage_bag._storage_bag_transfer_state["step"])
         self.assertEqual(1020.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
 
+    async def test_gift_transfer_reuses_recent_target_message_as_anchor(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=300 + len(sent))
+
+        with patch("model.features.storage_bag.find_recent_storage_bag_gift_anchor", return_value={"msg_id": 777, "ts": 990.0, "text": "刚说过"}), \
+                patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.random.choice", return_value="稍等"), \
+                patch("model.features.storage_bag.send_audit_log"):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "木髓", "quantity": 2, "method": "gift"}],
+                "",
+            )
+
+        self.assertTrue(ok, message)
+        self.assertEqual([".赠送 木髓*2"], [item[0] for item in sent])
+        self.assertEqual(self.source_id, sent[0][1]["send_as_id"])
+        self.assertEqual(777, sent[0][1]["reply_to"])
+        self.assertTrue(storage_bag._storage_bag_transfer_state["gift_locator_reused"])
+        self.assertEqual(777, storage_bag._storage_bag_transfer_state["gift_locator_msg_id"])
+
+    def test_find_recent_gift_anchor_reads_target_message_from_log(self):
+        now = 1782820000.0
+        valid_ts = storage_bag.datetime.fromtimestamp(now - 60, storage_bag.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8")
+        stale_ts = storage_bag.datetime.fromtimestamp(now - 400, storage_bag.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8")
+        day = storage_bag.datetime.fromtimestamp(now, storage_bag.TZ_LOCAL).strftime("%Y-%m-%d")
+        state_module.set_game_group_id(-100123)
+        state_module.set_game_topic_id(456)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rows = [
+                {"ts": valid_ts, "event_type": "message", "message_id": 10, "chat_id": -100999, "sender_id": self.target_id, "topic_id": 456, "text": "错群"},
+                {"ts": stale_ts, "event_type": "message", "message_id": 11, "chat_id": -100123, "sender_id": self.target_id, "topic_id": 456, "text": "过期"},
+                {"ts": valid_ts, "event_type": "message", "message_id": 12, "chat_id": -100123, "sender_id": 9999, "topic_id": 456, "text": "错人"},
+                {"ts": valid_ts, "event_type": "message", "message_id": 13, "chat_id": -100123, "sender_id": self.target_id, "topic_id": 999, "text": "错话题"},
+                {"ts": valid_ts, "event_type": "message", "message_id": 14, "chat_id": -100123, "sender_id": self.target_id, "topic_id": 456, "text": "可复用锚点"},
+            ]
+            (Path(tmpdir) / f"{day}.log").write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(storage_bag, "MESSAGES_DIR", tmpdir):
+                anchor = storage_bag.find_recent_storage_bag_gift_anchor(self.target_id, now=now)
+
+        self.assertEqual(14, anchor["msg_id"])
+        self.assertEqual("可复用锚点", anchor["text"])
+
     async def test_gift_transfer_sends_locator_and_gift_reply_then_syncs_tax(self):
         sent = []
 
@@ -1801,6 +2036,20 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ok)
         client_mock.assert_not_called()
         self.assertFalse(storage_bag._storage_bag_transfer_state["gift_locator_deleted"])
+
+    async def test_locator_delete_skips_reused_anchor(self):
+        storage_bag._storage_bag_transfer_state["gift_locator_msg_id"] = 123
+        storage_bag._storage_bag_transfer_state["gift_locator_reused"] = True
+        storage_bag._storage_bag_transfer_state["target_identity_id"] = self.target_id
+
+        client = SimpleNamespace()
+        with patch("model.features.storage_bag.is_auto_delete_sent_messages_enabled", return_value=True), \
+                patch("model.features.storage_bag._get_identity_client", return_value=client) as client_mock:
+            ok = await storage_bag._delete_storage_bag_gift_locator()
+
+        self.assertTrue(ok)
+        client_mock.assert_not_called()
+        self.assertTrue(storage_bag._storage_bag_transfer_state["gift_locator_deleted"])
 
 
 if __name__ == "__main__":

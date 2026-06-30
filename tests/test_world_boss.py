@@ -49,6 +49,16 @@ DANGEROUS_PHASE2_STATUS = (
     "你的出手：4/5\n"
 )
 
+SAFE_PHASE2_STATUS = (
+    "【真仙试锋 · 青元子】\n"
+    "法身：万魂幡主·阴罗真影\n"
+    "阶段：第二阶段·斩灵压顶\n"
+    "血量：[██████████████░░░░] 76%\n"
+    "剩余：105.03亿亿 / 138.03亿亿\n"
+    "幡魂：0 层 ｜ 破幡进度：0\n"
+    "魔压：13/100 ｜ 阵势：99/120 ｜ 剩余时间：27分54秒\n"
+)
+
 SUPPRESS_REPLY = (
     "【讨伐青元子】\n"
     "你镇住阴魂回潮，魔压 -3。\n"
@@ -259,6 +269,54 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         identity_state = {"world_boss_action_count": 0, "world_boss_action_limit": 5, "world_boss_attack_count": 0}
 
         self.assertEqual("镇魂", world_boss.choose_world_boss_action(3907536807, identity_state, run_state, now=now))
+
+    async def test_phase_two_strong_window_interrupts_round_gap_for_ready_strong_attacker(self):
+        strong_id = 301299112
+        cooling_id = 8659059191
+        strong_state = self._register(strong_id, label="jfdffdddd")
+        cooling_state = self._register(cooling_id, label="WalterWA2000")
+        now = 1_781_318_950.0
+        strong_state["world_boss_action_count"] = 1
+        strong_state["world_boss_last_action_at"] = now - world_boss.WORLD_BOSS_ACTION_COOLDOWN_SEC - 5
+        cooling_state["world_boss_action_count"] = 1
+        cooling_state["world_boss_last_action_at"] = now - 20
+        state_module.set_world_boss_run_state(
+            {
+                "active": True,
+                "event_key": "2026-06-13:fast-phase",
+                "opened_at": now - 120,
+                "phase": "第一阶段·万火归源",
+                "hp_percent": 97,
+                "moya": 3,
+                "zhen": 93,
+                "last_status_at": now - 10,
+                "round_started_at": now - 70,
+                "round_completed_at": now - 30,
+                "next_action_at": now + 60,
+                "summary": {"镇魂": 12, "护阵": 0, "强攻": 0, "破幡": 11},
+            }
+        )
+
+        with (
+            patch.object(world_boss.time, "time", return_value=now),
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss.asyncio, "sleep", new=AsyncMock()),
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(return_value=SimpleNamespace(id=9801, sent_at=now + 1)),
+            ) as send_mock,
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+        ):
+            await world_boss.handle_world_boss_broadcast(SAFE_PHASE2_STATUS, now, event=SimpleNamespace(id=9800))
+            await self._await_world_boss_round_task()
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".讨伐青元子 强攻", send_mock.await_args.args[0])
+        self.assertEqual(strong_id, send_mock.await_args.kwargs["send_as_id"])
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual("strong:第二阶段·斩灵压顶:70", run_state["last_priority_window_key"])
+        self.assertEqual("强攻", strong_state["world_boss_pending_action"])
 
     async def test_scheduler_phase_two_high_moya_collapsed_zhen_sends_limited_guard_round(self):
         first_id = 8659059191

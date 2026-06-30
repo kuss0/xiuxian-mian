@@ -16,6 +16,7 @@ from .tianxing import (
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
     normalize_tianxing_observation,
+    run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
 )
 
@@ -82,6 +83,22 @@ def _schedule_next(now):
 
 def _schedule_retry(now):
     state["next_wild_training_time"] = float(now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC))
+
+
+def _schedule_tianxing_prepare_retry(now):
+    state["wild_training_tianxing_prepare_retry_at"] = float(now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC))
+
+
+def _clear_tianxing_prepare_retry():
+    state["wild_training_tianxing_prepare_retry_at"] = 0
+
+
+def _tianxing_prepare_retry_blocks(now):
+    try:
+        retry_at = float(state.get("wild_training_tianxing_prepare_retry_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        retry_at = 0.0
+    return retry_at > float(now or 0)
 
 
 def _schedule_after_dungeon_quiet(now):
@@ -423,13 +440,26 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     due_at = float(due_at or now)
     preflight = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now, require_change_fate=True)
     if preflight.get("route_allowed"):
+        _clear_tianxing_prepare_retry()
         return True
+    if str(preflight.get("stage") or "") == "prediction_conflict":
+        consume_result = await run_tianxing_consume_craft_prediction(now, reason="野外历练前消费炼制推命")
+        if consume_result.get("active"):
+            if due_at <= now:
+                _schedule_retry(now)
+            else:
+                _schedule_tianxing_prepare_retry(now)
+            state["wild_training_last_result"] = f"天星先炼制消费推命：{consume_result.get('stage') or 'waiting'}"
+            state["wild_training_last_result_at"] = 0
+            state["wild_training_last_error"] = "" if consume_result.get("takeover") or consume_result.get("stage") == "waiting_reply" else str(consume_result.get("reason") or "")
+            save_state()
+            return False
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
         if due_at <= now:
             _schedule_retry(now)
         else:
-            state["next_wild_training_time"] = min(float(due_at), float(now + WILD_TRAINING_RETRY_MAX_SEC))
+            _schedule_tianxing_prepare_retry(now)
         state["wild_training_last_error"] = str(preflight.get("reason") or "野外历练天星预检阻断")
         save_state()
         return False
@@ -446,6 +476,7 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
         followup = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now, require_change_fate=True)
         if followup.get("route_allowed"):
+            _clear_tianxing_prepare_retry()
             return True
         phase = str(timeline_result.get("phase") or "").strip()
         if (
@@ -461,6 +492,8 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
             return True
         if due_at <= now:
             _schedule_retry(now)
+        else:
+            _schedule_tianxing_prepare_retry(now)
         state["wild_training_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
         state["wild_training_last_result_at"] = 0
         state["wild_training_last_error"] = "" if timeline_result.get("changed") else str(preflight.get("reason") or "")
@@ -468,6 +501,8 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         return False
     if due_at <= now:
         _schedule_retry(now)
+    else:
+        _schedule_tianxing_prepare_retry(now)
     state["wild_training_last_error"] = str(preflight.get("reason") or "野外历练天星预检阻断")
     save_state()
     return False
@@ -526,7 +561,7 @@ async def run_wild_training_scheduler(now):
             reason="野外历练",
             require_change_fate=True,
         )
-        if windows and not await _prepare_wild_training_tianxing_route(now, due_at=next_wild_training_time):
+        if windows and not _tianxing_prepare_retry_blocks(now) and not await _prepare_wild_training_tianxing_route(now, due_at=next_wild_training_time):
             return
     if cd_blocks(state.get("next_wild_training_time", 0), now, 0):
         return

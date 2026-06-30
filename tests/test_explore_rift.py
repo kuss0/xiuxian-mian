@@ -623,7 +623,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
-    async def test_scheduler_sends_explore_rift_same_tick_after_tianxing_release(self):
+    async def test_scheduler_waits_when_tianxing_release_lacks_unconsumed_prediction(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
 
@@ -672,8 +672,9 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 await explore_rift.run_explore_rift_scheduler(now)
 
             timeline_mock.assert_awaited_once()
-            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
-            self.assertEqual(22028, state_module.state["explore_rift_reply_to_msg_id"])
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+            self.assertIn("天星时间线", state_module.state["explore_rift_last_result"])
 
     async def test_scheduler_prepares_tianxing_timeline_inside_future_explore_rift_lead_window(self):
         identity_id = self._prepare_identity()
@@ -715,6 +716,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(timeline_mock.await_args.kwargs["windows"][0]["end_at"], due_at)
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
+            self.assertGreater(state_module.state["explore_rift_tianxing_prepare_retry_at"], now)
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
     async def test_scheduler_does_not_insert_tianxing_predict_before_explore_rift_without_timeline(self):
@@ -822,6 +824,39 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
             self.assertIn("避免逆命", state_module.state["explore_rift_last_error"])
 
+    async def test_scheduler_consumes_craft_prediction_before_explore_rift(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 1800,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 9,
+            }
+            with (
+                patch.object(explore_rift, "run_tianxing_consume_craft_prediction", new=AsyncMock(return_value={"active": True, "takeover": True, "stage": "sent_waiting_reply"})) as consume_mock,
+                patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            consume_mock.assert_awaited_once()
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
+            self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
+            self.assertEqual("", state_module.state["explore_rift_last_error"])
+
     async def test_scheduler_keeps_due_explore_rift_retrying_when_tianxing_prediction_will_be_consumed(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -849,16 +884,20 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 "route_prepare_lead_sec": 300,
             }
             with (
+                patch.object(explore_rift, "run_tianxing_consume_craft_prediction", new=AsyncMock(return_value={"active": True, "takeover": True, "stage": "sent_waiting_reply"})) as consume_mock,
                 patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
                 patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(explore_rift, "save_state"),
             ):
                 await explore_rift.run_explore_rift_scheduler(now)
 
+            consume_mock.assert_awaited_once()
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
-            self.assertIn("避免逆命", state_module.state["explore_rift_last_error"])
+            self.assertGreater(state_module.state["explore_rift_tianxing_prepare_retry_at"], now)
+            self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
+            self.assertEqual("", state_module.state["explore_rift_last_error"])
 
     async def test_pending_reply_clears_initial_timeout_and_waits_default_cd(self):
         identity_id = self._prepare_identity()

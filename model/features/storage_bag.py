@@ -1,12 +1,15 @@
 import json
+import os
 import random
 import re
 import time
 import uuid
+from datetime import datetime, timedelta
 
+from ..config import MESSAGES_DIR, TZ_LOCAL
 from ..persistence import save_state
 from ..runtime import _get_identity_client, send_audit_log, send_game_command
-from ..state import get_game_group_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
+from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
 from ..timing import fmt_abs_ts
 from . import workflow_log
 
@@ -40,6 +43,7 @@ STORAGE_TRANSFER_GIFT_FALLBACK_KEYWORDS = ("不可作为万宝楼交易货币流
 STORAGE_TRANSFER_NON_RULE_FAILURE_KEYWORDS = ("价格格式错误", "数量不足", "严重偏离天道估值")
 STORAGE_TRANSFER_GIFT_SUCCESS_PREFIX = "【赠送成功】"
 STORAGE_TRANSFER_LOCATOR_MESSAGES = ("稍等", "我看下", "转一下", "放这", "这边", "好了")
+STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC = 5 * 60
 STORAGE_TRANSFER_GIFT_INTERVAL_SEC = 20
 STORAGE_TRANSFER_EXEC_METHODS = {"basic", "gift", "unknown"}
 STORAGE_TRANSFER_LISTING_SYNTAXES = {"space", "compact"}
@@ -73,9 +77,13 @@ _storage_bag_transfer_state = {
     "listing_id": "",
     "buy_command": "",
     "buy_msg_id": 0,
+    "aggregate_buyers": [],
+    "aggregate_buy_index": 0,
+    "aggregate_listing_count": 0,
     "gift_index": 0,
     "gift_locator_command": "",
     "gift_locator_msg_id": 0,
+    "gift_locator_reused": False,
     "gift_locator_deleted": False,
     "gift_locator_delete_error": "",
     "gift_command": "",
@@ -555,9 +563,13 @@ def _clear_storage_bag_transfer_state():
         "listing_id": "",
         "buy_command": "",
         "buy_msg_id": 0,
+        "aggregate_buyers": [],
+        "aggregate_buy_index": 0,
+        "aggregate_listing_count": 0,
         "gift_index": 0,
         "gift_locator_command": "",
         "gift_locator_msg_id": 0,
+        "gift_locator_reused": False,
         "gift_locator_deleted": False,
         "gift_locator_delete_error": "",
         "gift_command": "",
@@ -764,6 +776,75 @@ async def _send_storage_bag_transfer_command(
     _storage_bag_transfer_state["retry_family"] = str(family or "")
     _storage_bag_transfer_state["retry_last_at"] = now
     return msg
+
+
+async def _send_next_storage_bag_aggregate_buy(listing_id):
+    listing_id = str(listing_id or _storage_bag_transfer_state.get("listing_id") or "").strip()
+    buyers = _storage_bag_transfer_state.get("aggregate_buyers") or []
+    index = int(_storage_bag_transfer_state.get("aggregate_buy_index") or 0)
+    if not listing_id or index >= len(buyers):
+        if _storage_bag_transfer_state.get("gift_items"):
+            _storage_transfer_log("聚合购买完成，准备执行赠送物品")
+            return await _start_storage_bag_gift_phase()
+        _finalize_storage_bag_transfer(True, f"储物袋聚合转移完成：购买成功 {len(buyers)}/{len(buyers)}")
+        await send_audit_log(f"✅ 储物袋聚合转移完成：购买成功 {len(buyers)}/{len(buyers)}", limit=240)
+        return True
+    buyer = dict(buyers[index] or {})
+    source_id = int(buyer.get("source_identity_id") or 0)
+    listing_units = normalize_storage_bag_listing_count(buyer.get("listing_count") or 1)
+    items = [dict(item) for item in buyer.get("items") or [] if isinstance(item, dict)]
+    if source_id <= 0 or not items:
+        _storage_bag_transfer_state["aggregate_buy_index"] = index + 1
+        return await _send_next_storage_bag_aggregate_buy(listing_id)
+    buy_command = f"{CMD_STORAGE_BAG_BUY} {listing_id}"
+    if listing_units > 1:
+        buy_command = f"{buy_command}*{listing_units}"
+    _storage_bag_transfer_state["source_identity_id"] = source_id
+    _storage_bag_transfer_state["basic_items"] = items
+    _storage_bag_transfer_state["listing_count"] = listing_units
+    _storage_bag_transfer_state["buy_command"] = buy_command
+    _storage_bag_transfer_state["step"] = "buying"
+    _storage_transfer_log(
+        f"聚合挂单购买 {index + 1}/{len(buyers)}：{buyer.get('source_label') or source_id} 购买 {listing_units} 份"
+    )
+    _record_storage_transfer_event(
+        "准备聚合购买",
+        identity_id=source_id,
+        listing_id=listing_id,
+        command=buy_command,
+        step="buying",
+        detail=f"{index + 1}/{len(buyers)}｜份数={listing_units}",
+        decision="aggregate_buy_queue",
+    )
+    msg = await _send_storage_bag_transfer_command(
+        buy_command,
+        identity_id=source_id,
+        msg_id_key="buy_msg_id",
+        wait_step="waiting_buy_reply",
+        family="storage_bag_buy",
+    )
+    if not msg:
+        _record_storage_transfer_event(
+            "聚合购买发送失败",
+            identity_id=source_id,
+            family="storage_bag_buy",
+            listing_id=listing_id,
+            command=buy_command,
+        )
+        _finalize_storage_bag_transfer(False, "聚合购买命令发送失败")
+        await send_audit_log("❌ 储物袋聚合购买发送失败。", limit=220)
+        return False
+    _storage_transfer_log(f"已发送聚合购买命令：{buy_command}（消息ID={_storage_bag_transfer_state['buy_msg_id']}）")
+    _record_storage_transfer_event(
+        "聚合购买已发送",
+        identity_id=source_id,
+        family="storage_bag_buy",
+        listing_id=listing_id,
+        command=buy_command,
+        msg_id=_storage_bag_transfer_state["buy_msg_id"],
+        decision="aggregate_buy_sent",
+    )
+    return True
 
 
 def _set_storage_bag_rule_method(item_name, method, reason=""):
@@ -1092,9 +1173,125 @@ def _normalize_storage_transfer_task_item(raw_item):
     return item, ""
 
 
+def _parse_storage_message_log_ts(value):
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    if text.endswith(" UTC+8"):
+        text = text[:-6].strip()
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _recent_storage_message_log_paths(now, days=2):
+    try:
+        base = datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL)
+    except (TypeError, ValueError, OverflowError, OSError):
+        base = datetime.now(TZ_LOCAL)
+    return [
+        os.path.join(MESSAGES_DIR, f"{(base - timedelta(days=offset)).strftime('%Y-%m-%d')}.log")
+        for offset in range(max(1, int(days or 1)))
+    ]
+
+
+def _read_storage_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            start = max(0, size - int(max_bytes or 0))
+            handle.seek(start)
+            if start > 0:
+                handle.readline()
+            data = handle.read().decode("utf-8", errors="ignore")
+    except OSError:
+        return []
+    return data.splitlines()[-max(1, int(max_lines or 1)):]
+
+
+def _is_storage_gift_anchor_topic(payload):
+    topic_id = int(get_game_topic_id() or 0)
+    if topic_id <= 0:
+        return True
+    try:
+        payload_topic_id = int(payload.get("topic_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        payload_topic_id = 0
+    try:
+        reply_to_msg_id = int(payload.get("reply_to_msg_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        reply_to_msg_id = 0
+    return payload_topic_id == topic_id or reply_to_msg_id == topic_id
+
+
+def _is_storage_gift_anchor_sender(payload, target_identity_id):
+    target_identity_id = int(target_identity_id or 0)
+    try:
+        sender_id = int(payload.get("sender_id", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        sender_id = 0
+    if target_identity_id > 0 and sender_id == target_identity_id:
+        return True
+    profile = get_send_as_profile(target_identity_id) if target_identity_id > 0 else {}
+    username = str(payload.get("sender_username") or "").strip().lstrip("@").casefold()
+    expected_username = str(profile.get("username") or "").strip().lstrip("@").casefold()
+    return bool(username and expected_username and username == expected_username)
+
+
+def find_recent_storage_bag_gift_anchor(target_identity_id, now=None, *, max_age_sec=STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC):
+    try:
+        now = float(now if now is not None else time.time())
+    except (TypeError, ValueError, OverflowError):
+        now = time.time()
+    min_ts = now - max(1, int(max_age_sec or STORAGE_TRANSFER_GIFT_ANCHOR_LOOKBACK_SEC))
+    game_group_id = int(get_game_group_id() or 0)
+    for path in _recent_storage_message_log_paths(now):
+        if not os.path.exists(path):
+            continue
+        for line in reversed(_read_storage_message_log_tail(path)):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("event_type") or "") not in {"message", "sent"}:
+                continue
+            try:
+                chat_id = int(payload.get("chat_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                chat_id = 0
+            if game_group_id and chat_id != game_group_id:
+                continue
+            if not _is_storage_gift_anchor_topic(payload):
+                continue
+            if not _is_storage_gift_anchor_sender(payload, target_identity_id):
+                continue
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                continue
+            msg_ts = _parse_storage_message_log_ts(payload.get("ts"))
+            if msg_ts <= 0 or msg_ts < min_ts or msg_ts > now + 60:
+                continue
+            try:
+                msg_id = int(payload.get("message_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                msg_id = 0
+            if msg_id > 0:
+                return {"msg_id": msg_id, "ts": msg_ts, "text": text}
+    return {}
+
+
 async def _delete_storage_bag_gift_locator():
     msg_id = int(_storage_bag_transfer_state.get("gift_locator_msg_id", 0) or 0)
     if msg_id <= 0 or _storage_bag_transfer_state.get("gift_locator_deleted"):
+        return True
+    if _storage_bag_transfer_state.get("gift_locator_reused"):
+        _storage_bag_transfer_state["gift_locator_deleted"] = True
+        _storage_bag_transfer_state["gift_locator_delete_error"] = ""
+        _storage_transfer_log("赠送锚点为复用目标近期发言，跳过删除")
         return True
     if not is_auto_delete_sent_messages_enabled():
         _storage_transfer_log("自动删除消息未开启，保留赠送定位消息")
@@ -1188,11 +1385,37 @@ async def _start_storage_bag_gift_phase():
         _finalize_storage_bag_transfer(True, message)
         await send_audit_log(f"✅ {message}", limit=220)
         return True, message
+    target_identity_id = int(_storage_bag_transfer_state.get("target_identity_id", 0) or 0)
+    anchor = find_recent_storage_bag_gift_anchor(target_identity_id)
+    if anchor:
+        anchor_msg_id = int(anchor.get("msg_id") or 0)
+        anchor_text = str(anchor.get("text") or "").strip()
+        _storage_bag_transfer_state.update({
+            "gift_index": 0,
+            "gift_locator_command": anchor_text[:80],
+            "gift_locator_msg_id": anchor_msg_id,
+            "gift_locator_reused": True,
+            "gift_locator_deleted": False,
+            "gift_locator_delete_error": "",
+            "gift_next_due_at": 0,
+            "step": "gift_marker",
+        })
+        _storage_transfer_log(f"复用目标身份 5 分钟内发言作为赠送锚点（消息ID={anchor_msg_id}）")
+        _record_storage_transfer_event(
+            "赠送定位复用",
+            identity_id=target_identity_id,
+            msg_id=anchor_msg_id,
+            step="gift_marker",
+            detail=anchor_text[:80],
+            decision="gift_locator_reused",
+        )
+        return await _send_next_storage_bag_gift()
     locator = random.choice(STORAGE_TRANSFER_LOCATOR_MESSAGES)
     _storage_bag_transfer_state.update({
         "gift_index": 0,
         "gift_locator_command": locator,
         "gift_locator_msg_id": 0,
+        "gift_locator_reused": False,
         "gift_locator_deleted": False,
         "gift_locator_delete_error": "",
         "gift_next_due_at": 0,
@@ -1237,6 +1460,8 @@ async def start_storage_bag_transfer_task(
     *,
     listing_count=1,
     listing_syntax=STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+    listing_command_override="",
+    aggregate_buyers=None,
     batch_child=False,
     operation="transfer",
 ):
@@ -1265,6 +1490,30 @@ async def start_storage_bag_transfer_task(
         normalized_items.append(item)
     if not normalized_items:
         return False, "请至少选择一个转移物品", None
+    normalized_aggregate_buyers = []
+    for raw_buyer in aggregate_buyers if isinstance(aggregate_buyers, (list, tuple)) else []:
+        if not isinstance(raw_buyer, dict):
+            continue
+        try:
+            buyer_source_id = int(raw_buyer.get("source_identity_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if buyer_source_id not in known_ids or buyer_source_id == target_identity_id:
+            continue
+        buyer_items = []
+        for raw_item in raw_buyer.get("items") if isinstance(raw_buyer.get("items"), (list, tuple)) else []:
+            item, error = _normalize_storage_transfer_task_item(raw_item)
+            if error:
+                return False, error, None
+            buyer_items.append(item)
+        if not buyer_items:
+            continue
+        normalized_aggregate_buyers.append({
+            "source_identity_id": buyer_source_id,
+            "source_label": str(raw_buyer.get("source_label") or "").strip(),
+            "items": buyer_items,
+            "listing_count": normalize_storage_bag_listing_count(raw_buyer.get("listing_count") or 1),
+        })
     basic_items = [item for item in normalized_items if str(item.get("method") or "unknown") != "gift"]
     gift_items = [item for item in normalized_items if str(item.get("method") or "unknown") == "gift"]
     if not basic_items and not gift_items:
@@ -1274,16 +1523,20 @@ async def start_storage_bag_transfer_task(
     listing_syntax = normalize_storage_bag_listing_syntax(listing_syntax)
     operation = "gift" if str(operation or "").strip().lower() == "gift" else "transfer"
     listing_command = ""
+    listing_command_override = str(listing_command_override or "").strip()
     if basic_items:
         if not listing_item:
             return False, "请选择目标身份用于上架的物品", None
-        exchange_parts = [f"{item['item_name']}*{int(item['quantity'])}" for item in basic_items]
-        listing_command = format_storage_bag_listing_command(
-            listing_item,
-            listing_count,
-            exchange_parts,
-            listing_syntax=listing_syntax,
-        )
+        if listing_command_override:
+            listing_command = listing_command_override
+        else:
+            exchange_parts = [f"{item['item_name']}*{int(item['quantity'])}" for item in basic_items]
+            listing_command = format_storage_bag_listing_command(
+                listing_item,
+                listing_count,
+                exchange_parts,
+                listing_syntax=listing_syntax,
+            )
     task_key = _storage_transfer_task_key(
         source_identity_id=source_identity_id,
         target_identity_id=target_identity_id,
@@ -1312,6 +1565,9 @@ async def start_storage_bag_transfer_task(
         "listing_count": listing_count,
         "listing_syntax": listing_syntax,
         "listing_command": listing_command,
+        "aggregate_buyers": normalized_aggregate_buyers,
+        "aggregate_buy_index": 0,
+        "aggregate_listing_count": listing_count if normalized_aggregate_buyers else 0,
         "task_key": task_key,
         "step": "listing" if basic_items else "gift_marker",
         "created_at": now,
@@ -1449,6 +1705,8 @@ async def _start_next_storage_bag_transfer_batch_task():
         task.get("listing_item") or "",
         listing_count=task.get("listing_count") or _storage_bag_transfer_batch_state.get("listing_count") or 1,
         listing_syntax=task.get("listing_syntax") or _storage_bag_transfer_batch_state.get("listing_syntax") or STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
+        listing_command_override=task.get("listing_command") or "",
+        aggregate_buyers=task.get("aggregate_buyers") or [],
         batch_child=True,
         operation=task.get("operation") or _storage_bag_transfer_batch_state.get("operation") or "transfer",
     )
@@ -1572,12 +1830,14 @@ async def start_storage_bag_transfer_batch(
             return False, "请选择目标身份用于上架的物品", get_storage_bag_transfer_snapshot()
         source_profile = get_send_as_profile(source_identity_id)
         target_profile = get_send_as_profile(target_identity_id)
-        task_listing_command = _storage_transfer_listing_command_for_items(
-            normalized_items,
-            task_listing_item,
-            task_listing_count,
-            task_listing_syntax,
-        )
+        task_listing_command = str(raw_task.get("listing_command") or "").strip()
+        if not task_listing_command:
+            task_listing_command = _storage_transfer_listing_command_for_items(
+                normalized_items,
+                task_listing_item,
+                task_listing_count,
+                task_listing_syntax,
+            )
         task_key = _storage_transfer_task_key(
             source_identity_id=source_identity_id,
             target_identity_id=target_identity_id,
@@ -1593,6 +1853,7 @@ async def start_storage_bag_transfer_batch(
             "target_identity_id": target_identity_id,
             "target_label": target_profile.get("label") or target_profile.get("username") or str(target_identity_id),
             "items": normalized_items,
+            "aggregate_buyers": [dict(buyer) for buyer in raw_task.get("aggregate_buyers") or [] if isinstance(buyer, dict)],
             "listing_item": task_listing_item,
             "listing_count": task_listing_count,
             "listing_syntax": task_listing_syntax,
@@ -1693,6 +1954,19 @@ async def _handle_storage_bag_listing_reply(raw_text, parsed_success=None, *, re
             rule = get_storage_bag_item_rules().get(item_name)
             if not isinstance(rule, dict) or str(rule.get("method") or "unknown") == "unknown":
                 _set_storage_bag_rule_method(item_name, "basic")
+        if _storage_bag_transfer_state.get("aggregate_buyers"):
+            _storage_transfer_log(f"聚合上架成功，挂单ID={success['id']}，准备分摊购买")
+            _record_storage_transfer_event(
+                "准备聚合分摊购买",
+                identity_id=int(_storage_bag_transfer_state.get("target_identity_id") or 0),
+                family=family,
+                listing_id=success["id"],
+                reply_msg_id=reply_msg_id,
+                matched_text=raw_text,
+                decision="aggregate_listing_success_queue_buyers",
+            )
+            await _send_next_storage_bag_aggregate_buy(success["id"])
+            return True
         buy_command = f"{CMD_STORAGE_BAG_BUY} {success['id']}"
         _storage_bag_transfer_state["buy_command"] = buy_command
         _storage_bag_transfer_state["step"] = "buying"
@@ -1789,6 +2063,20 @@ async def _handle_storage_bag_buy_reply(raw_text, *, reply_msg_id=0, family="sto
         )
         if moved_count:
             _storage_transfer_log(f"已同步本地储物袋数据：买卖转移 {moved_count} 项")
+        if _storage_bag_transfer_state.get("aggregate_buyers"):
+            next_index = int(_storage_bag_transfer_state.get("aggregate_buy_index") or 0) + 1
+            _storage_bag_transfer_state["aggregate_buy_index"] = next_index
+            buyers = _storage_bag_transfer_state.get("aggregate_buyers") or []
+            if next_index < len(buyers):
+                await _send_next_storage_bag_aggregate_buy(str(_storage_bag_transfer_state.get("listing_id") or ""))
+                return True
+            if _storage_bag_transfer_state.get("gift_items"):
+                _storage_transfer_log("聚合购买完成，准备执行赠送物品")
+                await _start_storage_bag_gift_phase()
+                return True
+            _finalize_storage_bag_transfer(True, f"储物袋聚合转移完成：购买成功 {next_index}/{len(buyers)}")
+            await send_audit_log(f"✅ 储物袋聚合转移完成：购买成功 {next_index}/{len(buyers)}", limit=240)
+            return True
         if _storage_bag_transfer_state.get("gift_items"):
             _storage_transfer_log("购买成功，准备执行赠送物品")
             await _start_storage_bag_gift_phase()

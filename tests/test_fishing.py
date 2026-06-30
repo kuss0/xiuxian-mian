@@ -455,36 +455,59 @@ class FishingLabTests(unittest.TestCase):
     def test_fishing_behavior_scheduler_emits_command_not_send(self):
         from model.features import fishing_behavior
 
+        now = 1_700_000_000.0
         snapshot = {
             "fishing_enabled": True,
             "next_fishing_time": 0,
             "fishing_pond": "青溪浅滩",
             "fishing_bait": "凡饵",
             "fishing_daily_limit": 20,
-            "fishing_daily_day": "",
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
             "fishing_daily_count": 0,
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
         }
-        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
 
         self.assertTrue(effect.handled)
         self.assertEqual(".钓鱼 青溪浅滩 凡饵", effect.command)
-        self.assertIn("fishing_daily_day", effect.updates)
         self.assertFalse(effect.storage_deltas)
+
+    def test_fishing_behavior_scheduler_queries_basket_before_uncalibrated_day(self):
+        from model.features import fishing_behavior
+
+        now = _local_ts(2026, 6, 28, 8, 0, 0)
+        snapshot = {
+            "fishing_enabled": True,
+            "next_fishing_time": 0,
+            "fishing_pond": "青溪浅滩",
+            "fishing_bait": "凡饵",
+            "fishing_daily_limit": 20,
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
+            "fishing_daily_count": 1,
+            "fishing_basket_calibrated_day": "",
+        }
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
+
+        self.assertTrue(effect.handled)
+        self.assertEqual(".鱼篓", effect.command)
+        self.assertIn("鱼篓校准", effect.updates["fishing_last_result"])
 
     def test_fishing_behavior_scheduler_does_not_auto_open_old_fish(self):
         from model.features import fishing_behavior
 
+        now = 1_700_000_000.0
         snapshot = {
             "fishing_enabled": True,
             "next_fishing_time": 0,
             "fishing_pond": "青溪浅滩",
             "fishing_bait": "凡饵",
             "fishing_daily_limit": 20,
-            "fishing_daily_day": "",
+            "fishing_daily_day": fishing_behavior.get_day_key(now),
             "fishing_daily_count": 0,
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(now),
             "fishing_pending_open_fish": "青鳞小鲫",
         }
-        effect = fishing_behavior.decide_scheduler(snapshot, 1_700_000_000.0)
+        effect = fishing_behavior.decide_scheduler(snapshot, now)
 
         self.assertTrue(effect.handled)
         self.assertNotEqual(".开鱼 青鳞小鲫", effect.command)
@@ -894,8 +917,9 @@ class FishingLabTests(unittest.TestCase):
             "fishing_pond": "青溪浅滩",
             "fishing_bait": "凡饵",
             "fishing_daily_limit": 20,
-            "fishing_daily_day": "",
+            "fishing_daily_day": fishing_behavior.get_day_key(1_700_000_000.0),
             "fishing_daily_count": 1,
+            "fishing_basket_calibrated_day": fishing_behavior.get_day_key(1_700_000_000.0),
             "fishing_phase": "opening",
             "fishing_pending_open_fish": "银须灵鲢",
         }

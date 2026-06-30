@@ -783,6 +783,13 @@
     "event_type": "edit",
     "text": "【周天星斗大阵-成】\n星光汇聚，大阵已成！\n参与者: @David, @rexy1205\n所有参与者已获得【星力加持】BUFF，持续 6 小时，并进入 12 小时的冷却期！"
   },
+  "pet.formation.success": {
+    "source": "user:2026-06-30",
+    "module": "pet",
+    "family": "pet_formation",
+    "event_type": "message",
+    "text": "剑阵已成！\n你消耗了 2000 点修为，布下了【大庚剑阵】！\n在接下来的 720 分钟内，当你御使神雷版飞剑时，战力将大幅提升！"
+  },
   "fishing.status.start": {
     "source": "data/messages/2026-06-23.log:65",
     "module": "fishing",

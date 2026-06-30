@@ -682,6 +682,38 @@ def _apply_manifest_delta(raw_text, now):
     return True
 
 
+def _clear_manifest_snapshot_prayer(now):
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    changed = False
+    for key, value in (("has_prayer", False), ("prayer_name", ""), ("manifest_cost", "")):
+        if snapshot.get(key) != value:
+            snapshot[key] = value
+            changed = True
+    if changed:
+        snapshot["updated_at"] = float(now or time.time())
+        state["small_world_panel_snapshot"] = snapshot
+    return changed
+
+
+def _has_ready_manifest_snapshot(now):
+    if not state.get("small_world_manifest_enabled"):
+        return False
+    snapshot = state.get("small_world_panel_snapshot")
+    if not isinstance(snapshot, dict):
+        return False
+    if not snapshot.get("has_prayer") or snapshot.get("has_wait"):
+        return False
+    try:
+        updated_at = float(snapshot.get("updated_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        updated_at = 0
+    if updated_at <= 0:
+        return False
+    return float(now or time.time()) - updated_at <= SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC
+
+
 def _parse_small_world_panel(text):
     raw_text = str(text or "")
     if "境界不足" in raw_text and "紫府小世界" in raw_text:
@@ -1623,6 +1655,7 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
                 allow_plain=True,
             )
         _apply_manifest_delta(raw_text, now)
+        _clear_manifest_snapshot_prayer(now)
         wait_sec, _wait_text = _parse_wait_from_text(raw_text)
         _clear_chain_pending()
         state["small_world_refresh_count"] = 0
@@ -1833,6 +1866,15 @@ async def _run_small_world_scheduler(now):
 
     next_time = float(state.get("next_small_world_time", 0) or 0)
     if await _maybe_send_barrier_or_query(now):
+        return
+
+    if phase == "idle" and _chain_enabled() and _has_ready_manifest_snapshot(now):
+        state["small_world_refresh_count"] = 0
+        state["small_world_manifest_cost_text"] = str(
+            (state.get("small_world_panel_snapshot") or {}).get("manifest_cost") or ""
+        ).strip()
+        save_state()
+        await _send_manifest(now)
         return
 
     if next_time > 0 and now < next_time:

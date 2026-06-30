@@ -20,6 +20,7 @@ from .config import (
     CMD_NODE_SEARCH,
     CMD_PET_WARM,
     CMD_PET_TRIAL,
+    CMD_PET_FORMATION,
     CMD_RANCH,
     CMD_SECOND_SOUL_TRAIN,
     CMD_WENDAO,
@@ -122,6 +123,11 @@ ACTION_SPECS = {
         "commands": (CMD_PET_WARM,),
         "kind": ACTION_KIND_HIGH_RISK,
         "label": "温养器灵",
+    },
+    "pet_formation": {
+        "commands": (CMD_PET_FORMATION,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "布下剑阵",
     },
     "ranch": {
         "commands": (CMD_RANCH,),
@@ -428,6 +434,7 @@ FAMILY_TO_ACTION_KEYS = {
     "concubine_reacquire": ("concubine_reacquire",),
     "pet_trial": ("pet_trial",),
     "pet_warm": ("pet_warm",),
+    "pet_formation": ("pet_formation",),
     "ranch": ("ranch",),
     "wild_training": ("wild_training",),
     "second_soul_train": ("second_soul_train",),

@@ -6,6 +6,7 @@ from .config import (
     CHECKIN_WINDOW_END_HOUR_UTC,
     CHECKIN_WINDOW_START_HOUR_UTC,
     CMD_PET_WARM,
+    CMD_PET_FORMATION,
     CMD_PET_TRIAL,
     DEFAULT_PET_NAME,
     DIVINATION_DEFAULT_DAILY_LIMIT,
@@ -28,13 +29,13 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "small_world_barrier_min_stock", "small_world_barrier_guard_before_min", "small_world_barrier_min_interval_hours", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "small_world_barrier_min_stock", "small_world_barrier_guard_before_min", "small_world_barrier_min_interval_hours", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
-    "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_warm_time", "next_pet_trial_time", "next_ranch_time", "next_wild_training_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
+    "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_warm_time", "next_pet_trial_time", "next_pet_formation_time", "next_ranch_time", "next_wild_training_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
     "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_explore_rift_time", "next_wendao_time", "next_formation_time", "formation_cooldown_until", "next_deep_retreat_time",
     "next_second_soul_time", "second_soul_heart_demon_deadline", "next_duel_time", "next_fishing_time",
     "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
@@ -44,9 +45,9 @@ IDENTITY_RUNTIME_COLUMNS = [
     "sect_teach_reply_to_msg_id", "last_checkin_msg_id", "last_sect_teach_msg_id", "checkin_cleanup_msg_ids",
     "tree_maturing_logged", "tree_harvest_followup_due_at", "tree_harvest_inflight_until", "tree_last_harvest_result_msg_id", "tree_last_harvest_reply_to_msg_id", "tree_bootstrap_check_due_at", "last_tree_status_sent_at",
     "tree_pulse_mode_seen", "tree_pulse_last_panel_at", "tree_pulse_progress", "tree_pulse_main", "tree_pulse_aux", "tree_pulse_reverse", "tree_pulse_neutral", "tree_pulse_stability", "tree_pulse_stability_max", "tree_pulse_turbidity", "tree_pulse_turbidity_max", "tree_pulse_daily_used", "tree_pulse_daily_limit", "tree_pulse_rush_used", "tree_pulse_rush_limit", "tree_pulse_last_action", "tree_pulse_last_error", "tree_pulse_blocked_until",
-    "last_tower_msg_id", "last_tower_command_sent_at", "tower_reply_due_at", "tower_retry_count", "pet_last_error", "pet_warm_last_error", "pet_trial_last_error",
+    "last_tower_msg_id", "last_tower_command_sent_at", "tower_reply_due_at", "tower_retry_count", "pet_last_error", "pet_warm_last_error", "pet_trial_last_error", "pet_formation_last_error", "pet_formation_retry_count",
     "ranch_reply_to_msg_id", "ranch_reply_due_at", "ranch_retry_count", "ranch_last_msg_id", "ranch_last_result", "ranch_last_error", "ranch_return_pending", "ranch_return_seen_msg_id", "ranch_return_wait_since", "ranch_return_last_notified_at",
-    "wild_training_strategy", "wild_training_reply_to_msg_id", "wild_training_reply_due_at", "wild_training_retry_count", "wild_training_last_msg_id", "wild_training_last_result", "wild_training_last_result_at", "wild_training_last_error",
+    "wild_training_strategy", "wild_training_reply_to_msg_id", "wild_training_reply_due_at", "wild_training_retry_count", "wild_training_last_msg_id", "wild_training_last_result", "wild_training_last_result_at", "wild_training_last_error", "wild_training_tianxing_prepare_retry_at",
     "stargazer_last_panel_msg_id", "stargazer_last_action", "stargazer_queued_action", "stargazer_idle_slot_count", "stargazer_dim_slot_count", "stargazer_ready_slot_count",
     "stargazer_busy_until", "stargazer_followup_due_at", "stargazer_wait_full_collect", "stargazer_collect_ready", "stargazer_soothe_before_collect",
     "guanxing_last_query_msg_id", "guanxing_last_panel_msg_id", "guanxing_panel_slot_key", "guanxing_last_panel_seen_at", "guanxing_last_shift_msg_id", "guanxing_last_shift_slot_key", "guanxing_last_shift_target", "guanxing_last_error",
@@ -61,7 +62,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "small_world_preach_reply_to_msg_id", "small_world_preach_due_at", "small_world_god_cooldown_until", "small_world_pending_god_action", "small_world_pending_god_reason", "small_world_pending_god_priority", "small_world_pending_god_at", "small_world_last_god_action", "small_world_last_god_sent_at", "small_world_last_disaster_wave_at", "small_world_barrier_msg_id", "small_world_barrier_due_at", "small_world_last_barrier_sent_at", "small_world_phase", "small_world_query_msg_id", "small_world_manifest_msg_id", "small_world_manifest_cost_text", "small_world_harvest_msg_id", "small_world_refine_msg_id", "small_world_refresh_count", "small_world_pending_incense", "small_world_incense_stock", "small_world_faith_value", "small_world_panel_snapshot", "small_world_last_panel_at", "small_world_last_error",
     "resource_shortage_backoffs", "action_guard_sessions",
     "yuanying_phase", "yuanying_probe_pending", "yuanying_waiting_logged", "yuanying_protect_logged", "yuanying_summary_sent_at", "last_yuanying_summary_msg_id", "last_yuanying_command_time",
-    "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required",
+    "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required", "explore_rift_tianxing_prepare_retry_at",
     "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_rebirth_choice_mode", "explore_rift_rebirth_preferred_root_type", "explore_rift_rebirth_preferred_attrs", "explore_rift_rebirth_blind_index", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
     "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_last_msg_id", "duel_last_result", "duel_last_error",
@@ -76,7 +77,7 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "pet_trial_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
     "fishing_auto_chum_enabled", "fishing_auto_buy_bait_enabled", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
@@ -245,6 +246,7 @@ IDENTITY_STATE_TEMPLATE = {
     "pet_enabled": False,
     "pet_warm_enabled": False,
     "pet_trial_enabled": False,
+    "pet_formation_enabled": False,
     "ranch_enabled": False,
     "wild_training_enabled": False,
     "quiz_enabled": False,
@@ -328,9 +330,12 @@ IDENTITY_STATE_TEMPLATE = {
     "next_pet_time": 0,
     "next_pet_warm_time": 0,
     "next_pet_trial_time": 0,
+    "next_pet_formation_time": 0,
     "pet_last_error": "",
     "pet_warm_last_error": "",
     "pet_trial_last_error": "",
+    "pet_formation_last_error": "",
+    "pet_formation_retry_count": 0,
 
     # 放养/野外历练模块
     "next_ranch_time": 0,
@@ -353,6 +358,7 @@ IDENTITY_STATE_TEMPLATE = {
     "wild_training_last_result": "",
     "wild_training_last_result_at": 0,
     "wild_training_last_error": "",
+    "wild_training_tianxing_prepare_retry_at": 0,
 
     # 观星台模块
     "next_stargazer_panel_time": 0,
@@ -581,6 +587,7 @@ IDENTITY_STATE_TEMPLATE = {
     "explore_rift_last_error": "",
     "explore_rift_last_result_key": "",
     "explore_rift_manual_required": False,
+    "explore_rift_tianxing_prepare_retry_at": 0,
     "explore_rift_nascent_escape_weak_until": 0,
     "explore_rift_rebirth_required": False,
     "explore_rift_rebirth_phase": "idle",
@@ -2281,6 +2288,10 @@ def get_pet_trial_command(send_as_id=None):
     return f"{CMD_PET_TRIAL} {get_pet_trial_name(send_as_id)}"
 
 
+def get_pet_formation_command(send_as_id=None):
+    return CMD_PET_FORMATION
+
+
 def set_pet_name(send_as_id, pet_name):
     send_as_id = int(send_as_id)
     update_send_as_profile(send_as_id, pet_name=pet_name)
@@ -2574,6 +2585,7 @@ __all__ = [
     "get_pet_warm_command",
     "get_pet_trial_name",
     "get_pet_trial_command",
+    "get_pet_formation_command",
     "get_stargazer_star_choice",
     "get_divination_daily_limit",
     "get_divination_pending_exchanges",

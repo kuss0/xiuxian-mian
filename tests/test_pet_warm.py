@@ -99,6 +99,7 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             ("pet_enabled", "next_pet_time", "pet_last_error"),
             ("pet_trial_enabled", "next_pet_trial_time", "pet_trial_last_error"),
             ("pet_warm_enabled", "next_pet_warm_time", "pet_warm_last_error"),
+            ("pet_formation_enabled", "next_pet_formation_time", "pet_formation_last_error"),
         ]
         state_module.ensure_identity_registered(send_as_id)
 
@@ -107,6 +108,7 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 state_module.state["pet_enabled"] = False
                 state_module.state["pet_trial_enabled"] = False
                 state_module.state["pet_warm_enabled"] = False
+                state_module.state["pet_formation_enabled"] = False
                 state_module.state["pending_tasks"] = {}
                 state_module.state[enabled_key] = True
                 state_module.state[next_key] = "冷却数据异常"
@@ -205,6 +207,94 @@ class PetWarmTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(now + 1 + pet.PET_WARM_CD + 120, state_module.state["next_pet_warm_time"])
             self.assertIn("等待回执", state_module.state["pet_warm_last_error"])
+
+    async def test_pet_formation_scheduler_uses_module_managed_retry(self):
+        send_as_id = 8659059194
+        now = 8100.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_formation_enabled"] = True
+            state_module.state["next_pet_formation_time"] = now - 1
+
+            with (
+                patch.object(pet, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7005, sent_at=now + 1))) as send_mock,
+                patch.object(pet, "save_state"),
+                patch.object(pet, "console_log"),
+            ):
+                await pet.run_pet_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                ".布下剑阵",
+                track=True,
+                max_retry=0,
+                reply_timeout=pet.PET_REPLY_TIMEOUT_SEC,
+                source_module="布下剑阵",
+            )
+            self.assertEqual(now + 1 + pet.PET_REPLY_TIMEOUT_SEC, state_module.state["next_pet_formation_time"])
+            self.assertIn("等待回执", state_module.state["pet_formation_last_error"])
+            self.assertEqual(0, state_module.state["pet_formation_retry_count"])
+
+    async def test_pet_formation_timeout_retries_once_then_backs_off(self):
+        send_as_id = 8659059194
+        now = 8200.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_formation_enabled"] = True
+            state_module.state["next_pet_formation_time"] = now - 1
+            state_module.state["pet_formation_last_error"] = "布下剑阵已发送，等待回执确认"
+            state_module.state["pet_formation_retry_count"] = 0
+            state_module.state["pending_tasks"] = {}
+
+            with (
+                patch.object(pet, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7006, sent_at=now + 1))) as send_mock,
+                patch.object(pet, "save_state"),
+                patch.object(pet, "console_log"),
+            ):
+                await pet.run_pet_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(1, state_module.state["pet_formation_retry_count"])
+
+            state_module.state["next_pet_formation_time"] = now + 60
+            state_module.state["pet_formation_last_error"] = "布下剑阵已发送，等待回执确认"
+            state_module.state["pet_formation_retry_count"] = 1
+            with (
+                patch.object(pet, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(pet, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(pet, "save_state"),
+            ):
+                await pet.run_pet_scheduler(now + 61)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_awaited_once()
+            self.assertEqual(0, state_module.state["pet_formation_retry_count"])
+            self.assertIn("补发已达 1 次上限", state_module.state["pet_formation_last_error"])
+            self.assertEqual(now + 61 + pet.PET_FORMATION_RETRY_BACKOFF_SEC, state_module.state["next_pet_formation_time"])
+
+    async def test_pet_formation_success_sets_twelve_hour_timer(self):
+        send_as_id = 8659059194
+        now = 8300.0
+        state_module.ensure_identity_registered(send_as_id)
+        text = (
+            "剑阵已成！\n"
+            "你消耗了 2000 点修为，布下了【大庚剑阵】！\n"
+            "在接下来的 720 分钟内，当你御使神雷版飞剑时，战力将大幅提升！"
+        )
+        reply_to = SimpleNamespace(raw_text=".布下剑阵")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["pet_formation_enabled"] = True
+            state_module.state["pet_formation_last_error"] = "布下剑阵已发送，等待回执确认"
+            state_module.state["pet_formation_retry_count"] = 1
+            with patch.object(pet, "save_state"):
+                handled = await pet.handle_pet_formation_reply(text, now, reply_to)
+
+            self.assertTrue(handled)
+            self.assertEqual(now + pet.PET_FORMATION_BUFF_SEC, state_module.state["next_pet_formation_time"])
+            self.assertEqual("", state_module.state["pet_formation_last_error"])
+            self.assertEqual(0, state_module.state["pet_formation_retry_count"])
 
     async def test_warm_success_sets_six_hour_timer(self):
         send_as_id = 8659059191
