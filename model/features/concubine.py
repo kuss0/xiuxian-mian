@@ -263,11 +263,19 @@ def _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at):
     state["concubine_heart_choice_retry_count"] = 0
 
 
+def _set_heart_pending_deadline(due_at):
+    due_at = float(due_at or 0)
+    if due_at > 0:
+        state["concubine_heart_due_at"] = due_at
+    return due_at
+
+
 def _wait_for_existing_heart_choice(now):
     sent_at = float(state.get("concubine_heart_choice_sent_at", 0) or 0)
     _set_phase("heart_choice_reply_pending")
     ack_timeout = _heart_choice_reply_timeout_sec()
     state["next_concubine_time"] = max(float(now) + ack_timeout, sent_at + ack_timeout)
+    _set_heart_pending_deadline(state["next_concubine_time"])
     return state["next_concubine_time"]
 
 
@@ -441,6 +449,7 @@ def _activate_heart_choice_round(now, prompt_msg_id, round_no):
         return
     _set_phase("heart_choice_pending")
     state["next_concubine_time"] = now + _heart_next_choice_delay()
+    _set_heart_pending_deadline(state["next_concubine_time"])
     _schedule_heart_choice_followup(
         get_current_identity_id(),
         state["next_concubine_time"],
@@ -3445,6 +3454,7 @@ async def _send_heart_command(now):
     state["concubine_heart_round"] = 0
     _clear_heart_choice_guard()
     state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
+    _set_heart_pending_deadline(state["next_concubine_time"])
     _record_concubine_event(
         "共历心劫已发送",
         kind="changed",
@@ -3669,6 +3679,7 @@ async def _send_heart_choice(now):
     _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
     _set_phase("heart_choice_reply_pending")
     state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
+    _set_heart_pending_deadline(state["next_concubine_time"])
     _record_concubine_event(
         "心劫抉择已发送",
         kind="changed",
@@ -3704,6 +3715,7 @@ async def _retry_heart_choice_once(now):
     state["concubine_heart_choice_sent_at"] = sent_at
     _set_phase("heart_choice_reply_pending")
     state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_FINAL_TIMEOUT_SEC
+    _set_heart_pending_deadline(state["next_concubine_time"])
     if not msg:
         state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 补发失败，等待回合推进"
         _record_concubine_event(

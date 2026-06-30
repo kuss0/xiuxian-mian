@@ -2351,6 +2351,9 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         send_as_id = self._prepare_identity()
         prompt_msg_id = 9387665
 
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_due_at"] = now - 60
+
         with state_module.use_identity(send_as_id), \
              patch.object(concubine.random, "uniform", return_value=2), \
              patch.object(concubine, "_schedule_heart_choice_followup", return_value=True) as mock_followup:
@@ -2360,6 +2363,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_prompt_msg_id"])
         self.assertEqual(2, state_module.state["concubine_heart_round"])
         self.assertEqual(now + 2, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 2, state_module.state["concubine_heart_due_at"])
         mock_followup.assert_called_once_with(send_as_id, now + 2, prompt_msg_id, 2)
 
     def test_heart_choice_round_replay_does_not_regress_same_prompt(self):
@@ -2435,6 +2439,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
         self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_choice_prompt_msg_id"])
         self.assertEqual(2, state_module.state["concubine_heart_choice_round"])
+        self.assertEqual(now + 30, state_module.state["concubine_heart_due_at"])
         self.assertTrue(any(
             event.get("workflow") == "concubine"
             and event.get("decision") == "heart_choice_sent"
@@ -2470,6 +2475,7 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         mock_send.assert_not_awaited()
         self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
         self.assertEqual(now + 30, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 30, state_module.state["concubine_heart_due_at"])
         self.assertIn("已发送 .稳", state_module.state["concubine_heart_last_error"])
         self.assertTrue(any(
             event.get("workflow") == "concubine"
