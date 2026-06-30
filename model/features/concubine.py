@@ -3691,6 +3691,10 @@ async def handle_concubine_status_reply(text, now, reply_to, matched_family=None
         or int(state.get("concubine_gift_status_msg_id", 0) or 0) > 0
     )
     if phase not in {"status_pending", "gift_status_pending"}:
+        if matched_family == "concubine_status" and CMD_CONCUBINE_STATUS not in orig_cmd:
+            console_log(f"🌸 忽略缺少命令锚点的侍妾状态回复（phase={phase}）。")
+            _record_concubine_ignored_reply("侍妾状态", reason="concubine_status_missing_command_anchor", phase=phase, reply_to=reply_to, current_msg_id=current_msg_id)
+            return False
         if phase in {"greet_pending", "gift_bag_pending", "gift_pending", "dream_pending", "fragment_pending", "puzzle_pending", "reacquire_pending", "tianji_pending", "heart_pending", "heart_choice_pending", "heart_choice_reply_pending"} | CONCUBINE_VOYAGE_PENDING_PHASES:
             console_log(f"🌸 忽略非等待期侍妾状态回复（phase={phase}）。")
             _record_concubine_ignored_reply("侍妾状态", reason="concubine_phase_mismatch", phase=phase, reply_to=reply_to, current_msg_id=current_msg_id)

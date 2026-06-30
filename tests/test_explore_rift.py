@@ -623,6 +623,58 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
+    async def test_scheduler_sends_explore_rift_same_tick_after_tianxing_release(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+
+        async def release_explore(*_args, **_kwargs):
+            state_module.state["tianxing_timeline_state"] = {
+                "released_routes": {
+                    "探索": {
+                        "released_at": now,
+                        "plan_id": "test",
+                        "reason": "探索改命已确认",
+                        "basis": "change_fate",
+                    }
+                }
+            }
+            return {"phase": "downstream_released", "changed": True}
+
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "tianji_value": 9,
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "auto_change_fate_enabled": True,
+                "auto_predict_enabled": True,
+                "timeline_enabled": True,
+                "timeline_dry_run_enabled": False,
+                "strategy_dry_run_enabled": False,
+                "min_tianji_for_change": 6,
+            }
+            fake_msg = SimpleNamespace(id=22028, sent_at=now)
+            with (
+                patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock(side_effect=release_explore)) as timeline_mock,
+                patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            timeline_mock.assert_awaited_once()
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            self.assertEqual(22028, state_module.state["explore_rift_reply_to_msg_id"])
+
     async def test_scheduler_prepares_tianxing_timeline_inside_future_explore_rift_lead_window(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -767,7 +819,45 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
 
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
-            self.assertEqual(now + 1800 + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
+            self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
+            self.assertIn("避免逆命", state_module.state["explore_rift_last_error"])
+
+    async def test_scheduler_keeps_due_explore_rift_retrying_when_tianxing_prediction_will_be_consumed(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        due_at = now + 180
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = due_at
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 8 * 3600,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 9,
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "auto_change_fate_enabled": True,
+                "auto_predict_enabled": True,
+                "timeline_enabled": True,
+                "strategy_dry_run_enabled": False,
+                "route_prepare_lead_sec": 300,
+            }
+            with (
+                patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
             self.assertIn("避免逆命", state_module.state["explore_rift_last_error"])
 
     async def test_pending_reply_clears_initial_timeout_and_waits_default_cd(self):

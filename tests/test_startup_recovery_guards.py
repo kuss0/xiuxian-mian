@@ -63,7 +63,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             if key.endswith("_enabled") or key in {"is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed"}:
                 state_module.state[key] = False
 
-    def test_startup_spread_uses_normal_wild_training_cd_fallback(self):
+    def test_startup_spread_uses_short_wild_training_recovery_probe(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
         with state_module.use_identity(send_as_id):
@@ -71,12 +71,30 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             state_module.state["wild_training_enabled"] = True
             state_module.state["next_wild_training_time"] = now - 1
 
-        with patch.object(control.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC):
+        with patch.object(control.random, "uniform", return_value=300):
             changed = control.spread_overdue_runtime_timers(now, reason="test")
 
         self.assertEqual(1, changed)
         with state_module.use_identity(send_as_id):
-            self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+            self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
+
+    def test_startup_spread_recovers_wild_training_from_recent_real_result(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        result_at = now - 30 * 60
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_last_result"] = "修为+12000"
+            state_module.state["wild_training_last_result_at"] = result_at
+            state_module.state["next_wild_training_time"] = now - 1
+
+        with patch.object(control.random, "uniform", return_value=300):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
 
     def test_startup_spread_does_not_stretch_fishing_timer(self):
         now = 1_700_000_000.0
@@ -107,7 +125,7 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 600, state_module.state["next_concubine_time"])
 
-    def test_initialize_wild_training_unknown_timer_uses_normal_cycle(self):
+    def test_initialize_wild_training_unknown_timer_uses_short_recovery_probe(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
         with state_module.use_identity(send_as_id):
@@ -118,14 +136,14 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             state_module.state["wild_training_reply_due_at"] = now - 1
             state_module.state["wild_training_retry_count"] = 1
 
-        with patch.object(control.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC):
+        with patch.object(control.random, "uniform", return_value=300):
             control.initialize_identity_runtime(send_as_id, now)
 
         with state_module.use_identity(send_as_id):
             self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
             self.assertEqual(0, state_module.state["wild_training_retry_count"])
-            self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+            self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
 
     def test_initialize_explore_rift_unknown_timer_schedules_recovery(self):
         now = 1_700_000_000.0

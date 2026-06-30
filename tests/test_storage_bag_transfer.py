@@ -689,6 +689,19 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(reply_context["send_as_id"])
         self.assertEqual(8325841058, reply_context["reply_to_sender_id"])
 
+    async def test_resolve_event_reply_treats_reload_disconnect_as_no_reply(self):
+        event = SimpleNamespace(
+            get_reply_message=AsyncMock(side_effect=ConnectionError("Cannot send requests while disconnected"))
+        )
+
+        with patch.object(app, "_get_event_reply_header_msg_id", return_value=9966202), \
+                patch.object(app, "get_reply_context", return_value={}):
+            resolved_reply, reply_context = await app._resolve_event_reply(event)
+
+        self.assertEqual(9966202, resolved_reply.id)
+        self.assertEqual("", resolved_reply.raw_text)
+        self.assertEqual(0, reply_context.get("reply_to_sender_id", 0))
+
     async def test_storage_bag_sync_uses_background_task_wrapper(self):
         def close_coro(coro):
             coro.close()

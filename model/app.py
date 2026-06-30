@@ -787,7 +787,9 @@ async def _resolve_event_reply(event):
     try:
         reply_to = await event.get_reply_message()
     except Exception as exc:
-        if is_account_session_error(exc):
+        if "Cannot send requests while disconnected" in str(exc):
+            reply_to = None
+        elif is_account_session_error(exc):
             event_client = getattr(event, "client", None)
             for account_id, tc in get_all_clients().items():
                 if event_client is tc:

@@ -338,8 +338,16 @@ def read_journal_matches(service: str, window_sec: int, limit: int, *, service_s
         timeout=12.0,
     )
     lines = [line for line in stdout.splitlines() if line.strip()]
-    hard = [line for line in lines if is_hard_journal_line(line)]
-    warn = [line for line in lines if is_warn_journal_line(line)]
+    hard = [
+        line
+        for index, line in enumerate(lines)
+        if not _is_benign_disconnected_traceback_block(lines, index) and is_hard_journal_line(line)
+    ]
+    warn = [
+        line
+        for index, line in enumerate(lines)
+        if not _is_benign_disconnected_traceback_block(lines, index) and is_warn_journal_line(line)
+    ]
     max_items = max(1, int(limit or 1))
     return {
         "service": service,
@@ -352,6 +360,16 @@ def read_journal_matches(service: str, window_sec: int, limit: int, *, service_s
         "hard": hard[-max_items:],
         "warn": warn[-max_items:],
     }
+
+
+def _is_benign_disconnected_traceback_block(lines: list[str], index: int) -> bool:
+    text = str(lines[index] if 0 <= index < len(lines) else "")
+    if "Cannot send requests while disconnected" in text:
+        return True
+    if "Traceback (most recent call last)" not in text:
+        return False
+    tail = "\n".join(str(line or "") for line in lines[index:index + 40])
+    return "Cannot send requests while disconnected" in tail
 
 
 def is_hard_journal_line(line: str) -> bool:
@@ -714,6 +732,17 @@ def module_error_needs_attention(text: object) -> bool:
     return bool(MODULE_ERROR_ATTENTION_PATTERN.search(raw))
 
 
+def module_error_is_retryable_warning(field: str, text: object, payload: dict[str, object]) -> bool:
+    raw = str(text or "").strip()
+    if str(field or "") != "auto_last_error" or not raw:
+        return False
+    if "补发已达" in raw or "上限" in raw:
+        return False
+    retry_count = positive_int((payload or {}).get("auto_retry_count"))
+    pending_msg_id = positive_int((payload or {}).get("auto_pending_msg_id"))
+    return retry_count > 0 or pending_msg_id > 0
+
+
 def add_module_detail(details: list[str], label: str, value: object, *, limit: int = 80) -> None:
     text = short_value(value, limit)
     if text:
@@ -747,7 +776,10 @@ def summarize_json_state(field: str, payload: dict[str, object], now: float, det
         if value not in (None, ""):
             add_module_detail(details, label, value)
             if module_error_needs_attention(value):
-                error = True
+                if module_error_is_retryable_warning(key, value, payload):
+                    warn = True
+                else:
+                    error = True
     for key, label in (
         ("current_prediction_until", "推命到期"),
         ("current_change_until", "改命到期"),

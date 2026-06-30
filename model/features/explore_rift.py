@@ -935,7 +935,10 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         return True
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
-        state["next_explore_rift_time"] = blocked_until + CD_BUFFER_SEC
+        if due_at <= now:
+            state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+        else:
+            state["next_explore_rift_time"] = min(float(due_at), float(now + RETRY_MAX_SEC))
         state["explore_rift_last_error"] = str(preflight.get("reason") or "天星预检阻断")
         save_state()
         return False
@@ -950,10 +953,13 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         if not windows:
             return True
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
+        followup = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now)
+        if followup.get("route_allowed"):
+            return True
         if due_at <= now:
             state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
         state["explore_rift_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
-        state["explore_rift_last_error"] = "" if timeline_result.get("changed") else str(preflight.get("reason") or "")
+        state["explore_rift_last_error"] = "" if timeline_result.get("changed") else str(followup.get("reason") or preflight.get("reason") or "")
         save_state()
         return False
     if due_at <= now:

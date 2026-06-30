@@ -739,7 +739,10 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
         return True
 
 
-async def _send_active_summary_query(spec, now):
+async def _send_active_summary_query(spec, now, *, probe_reserved=False):
+    if not probe_reserved:
+        state[spec.probe_pending_key] = False
+        save_state()
     await delete_summary_trigger_msg(spec)
     state[spec.probe_pending_key] = False
     msg = await send_game_command(
@@ -757,6 +760,23 @@ async def _send_active_summary_query(spec, now):
     state[spec.last_summary_msg_id_key] = int(msg.id)
     save_state()
     return True
+
+
+async def _calibrate_probe_timeout_once(spec, now):
+    async with _get_phaseful_launch_lock(spec):
+        if _phase(spec) != "waiting_summary":
+            return False
+        if not state.get(spec.probe_pending_key):
+            return False
+        if state[spec.summary_sent_at_key] <= 0:
+            return False
+        if now - state[spec.summary_sent_at_key] < spec.summary_timeout_sec:
+            return False
+        state[spec.probe_pending_key] = False
+        save_state()
+        await send_audit_log(f"{spec.title} 续轮指令超时无确认，改用状态查询校准。")
+        await _send_active_summary_query(spec, now, probe_reserved=True)
+        return True
 
 
 async def _delay_relaunch_without_status_query(spec, now, audit_text):
@@ -867,8 +887,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] > 0 and now - state[spec.summary_sent_at_key] >= spec.summary_timeout_sec:
         if state.get(spec.probe_pending_key):
-            await send_audit_log(f"{spec.title} 续轮指令超时无确认，改用状态查询校准。")
-            await _send_active_summary_query(spec, now)
+            await _calibrate_probe_timeout_once(spec, now)
             return
         await _fallback_to_normal_cd(spec, now, spec.waiting_timeout_audit)
         return

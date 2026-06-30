@@ -215,8 +215,9 @@ from .app_replica import (
     format_log_group_replica_panel,
 )
 from .features.wild_training import (
-    WILD_TRAINING_CYCLE_MAX_SEC,
     WILD_TRAINING_CYCLE_MIN_SEC,
+    WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
+    WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
     clear_wild_training_state,
     get_wild_training_status_text,
     schedule_wild_training_initial_check,
@@ -468,7 +469,15 @@ def _has_stale_tianti_daily_marker(today_key):
 
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
-        return now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC)
+        try:
+            last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            last_result_at = 0
+        if last_result_at > 0:
+            true_due = last_result_at + WILD_TRAINING_CYCLE_MIN_SEC
+            if true_due > now:
+                return true_due
+        return now + random.uniform(WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC, WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC)
 
     if timer_key == "next_tianti_climb_time" and _is_tianti_ready_to_climb_snapshot():
         status_time = float(state.get("next_tianti_status_time", 0) or 0)
@@ -3210,7 +3219,10 @@ def initialize_identity_runtime(send_as_id, now=None):
             state["wild_training_reply_to_msg_id"] = 0
             state["wild_training_reply_due_at"] = 0
             state["wild_training_retry_count"] = 0
-            state["next_wild_training_time"] = now + random.uniform(WILD_TRAINING_CYCLE_MIN_SEC, WILD_TRAINING_CYCLE_MAX_SEC)
+            state["next_wild_training_time"] = now + random.uniform(
+                WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
+                WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
+            )
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:

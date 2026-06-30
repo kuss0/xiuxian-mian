@@ -1,4 +1,5 @@
 import copy
+import asyncio
 import sys
 import time
 import unittest
@@ -909,6 +910,42 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertTrue(
                 any("续轮指令超时无确认" in str(call.args[0]) for call in audit_mock.await_args_list)
             )
+
+    async def test_summary_launch_timeout_calibration_is_single_flight(self):
+        send_as_id = 8659059234
+        now = 1_700_000_411.0
+        self._prepare_identity(send_as_id, "LaunchTimeoutSingleFlight")
+
+        async def slow_query(*_args, **_kwargs):
+            await asyncio.sleep(0.01)
+            return SimpleNamespace(id=910, sent_at=now)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "waiting_summary"
+            state_module.state["deep_retreat_summary_sent_at"] = now - deep_retreat.SUMMARY_TIMEOUT_SEC - 1
+            state_module.state["last_deep_retreat_summary_msg_id"] = 908
+            state_module.state["deep_retreat_probe_pending"] = True
+
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(side_effect=slow_query)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+                patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock()),
+            ):
+                await asyncio.gather(
+                    deep_retreat.run_deep_retreat_scheduler(now),
+                    deep_retreat.run_deep_retreat_scheduler(now),
+                )
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual(1, sum("续轮指令超时无确认" in str(call.args[0]) for call in audit_mock.await_args_list))
+            self.assertFalse(state_module.state["deep_retreat_probe_pending"])
 
     async def test_deep_retreat_summary_due_waits_for_passive_trigger_before_grace_expires(self):
         send_as_id = 8659059202

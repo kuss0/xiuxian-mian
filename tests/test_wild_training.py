@@ -171,6 +171,43 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🏞️ 野外历练结果", second_args[0])
         self.assertNotIn("priority", second_kwargs)
 
+    async def test_tianxing_change_fate_escape_result_records_reward_and_no_loss(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        text = (
+            "【野外历练 · 改命脱险】\n"
+            "命盘【贪狼】照命，主偏财夺势。\n"
+            "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
+            "【改命待发】此道改命尚可维持 22小时54分钟\n"
+            "【天星偏转】 趋吉偏转，材料显化上扬\n"
+            "@WalterWA2000 遭遇 荒古鳞兽，本已要负伤折返，司命盘却替你撬开了一线退路。\n"
+            "【改命回天】你强行拨正命轨，硬从凶数中抢回一线生机。\n"
+            "你虽未能尽取机缘，却仍带回了 【灵石】x571，且 本次未损修为。"
+        )
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 深入", id=101)
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+            handled = await wild_training.handle_wild_training_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="wild_training",
+                current_msg_id=201,
+            )
+
+        self.assertTrue(handled)
+        self.assertIn("天机+1", state_module.state["wild_training_last_result"])
+        self.assertIn("贡献+30", state_module.state["wild_training_last_result"])
+        self.assertIn("灵石x571", state_module.state["wild_training_last_result"])
+        self.assertIn("未损修为", state_module.state["wild_training_last_result"])
+        first_args, first_kwargs = audit_mock.await_args_list[0]
+        self.assertIn("🌌 天星探索结果｜野外历练", first_args[0])
+        self.assertIn("灵石x571", first_args[0])
+        self.assertEqual("high", first_kwargs["priority"])
+
     async def test_recent_completed_result_with_stale_due_timer_is_rescheduled_not_sent(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_100.0
@@ -415,6 +452,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         timeline_mock.assert_awaited_once()
         self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
+        self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
         send_mock.assert_not_awaited()
         self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["wild_training_last_result"])
 
@@ -457,9 +495,54 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             await wild_training.run_wild_training_scheduler(now)
 
         timeline_mock.assert_awaited_once()
+        self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
         send_mock.assert_awaited_once_with(f"{config.CMD_WILD_TRAINING} 谨慎", track=False)
         self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
         self.assertEqual(202, state_module.state["wild_training_reply_to_msg_id"])
+
+    async def test_scheduler_falls_back_to_cautious_when_tianxing_change_fate_conflicts(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+            identity_state["wild_training_strategy"] = "深入"
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_change": "闭关",
+                "current_change_until": now + 3600,
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "tianji_value": 42,
+            }
+            identity_state["tianxing_auto_config"] = {
+                "auto_change_fate_enabled": True,
+                "auto_predict_enabled": True,
+                "timeline_enabled": True,
+                "timeline_dry_run_enabled": False,
+                "strategy_dry_run_enabled": False,
+                "min_tianji_for_change": 6,
+            }
+        sent_msg = SimpleNamespace(id=203, sent_at=now)
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "change_fate_conflict", "changed": False})) as timeline_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock, \
+             patch.object(wild_training, "console_log"), \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        timeline_mock.assert_awaited_once()
+        self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
+        send_mock.assert_awaited_once_with(f"{config.CMD_WILD_TRAINING} 谨慎", track=False)
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+        self.assertEqual(203, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_prepares_tianxing_timeline_inside_future_wild_training_lead_window(self):
         send_as_id = self._prepare_identity()
@@ -498,6 +581,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         timeline_mock.assert_awaited_once()
         self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
+        self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
         self.assertEqual(now, timeline_mock.await_args.kwargs["windows"][0]["start_at"])
         self.assertGreaterEqual(timeline_mock.await_args.kwargs["windows"][0]["end_at"], due_at)
         send_mock.assert_not_awaited()
@@ -655,12 +739,96 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id), \
              patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
              patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
              patch.object(wild_training, "save_state"):
             await wild_training.run_wild_training_scheduler(now)
 
         timeline_mock.assert_not_awaited()
         send_mock.assert_not_awaited()
-        self.assertEqual(now + 1800 + wild_training.CD_BUFFER_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("避免逆命", state_module.state["wild_training_last_error"])
+
+    async def test_scheduler_keeps_future_wild_training_due_when_other_prediction_active(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        due_at = now + 240
+        with state_module.use_identity(send_as_id) as identity_state:
+            state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = due_at
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 8 * 3600,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 9,
+            }
+            identity_state["tianxing_auto_config"] = {
+                "auto_change_fate_enabled": True,
+                "auto_predict_enabled": True,
+                "timeline_enabled": True,
+                "strategy_dry_run_enabled": False,
+                "route_prepare_lead_sec": 300,
+            }
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        timeline_mock.assert_not_awaited()
+        send_mock.assert_not_awaited()
+        self.assertEqual(
+            min(due_at, now + wild_training.WILD_TRAINING_RETRY_MAX_SEC),
+            state_module.state["next_wild_training_time"],
+        )
+        self.assertIn("避免逆命", state_module.state["wild_training_last_error"])
+
+    async def test_scheduler_keeps_near_future_wild_training_due_when_other_prediction_active(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        due_at = now + 120
+        with state_module.use_identity(send_as_id) as identity_state:
+            state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = due_at
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["贪狼"],
+                "fixed_star": "贪狼",
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 8 * 3600,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 9,
+            }
+            identity_state["tianxing_auto_config"] = {
+                "auto_change_fate_enabled": True,
+                "auto_predict_enabled": True,
+                "timeline_enabled": True,
+                "strategy_dry_run_enabled": False,
+                "route_prepare_lead_sec": 300,
+            }
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        timeline_mock.assert_not_awaited()
+        send_mock.assert_not_awaited()
+        self.assertEqual(due_at, state_module.state["next_wild_training_time"])
         self.assertIn("避免逆命", state_module.state["wild_training_last_error"])
 
     async def test_started_timeout_recovers_final_edit_from_message_log(self):

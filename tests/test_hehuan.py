@@ -308,7 +308,7 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertEqual(0, reminder["next_index"])
         self.assertEqual(now, reminder["next_reminder_at"])
 
-    def test_cooldown_without_success_time_schedules_bounded_retry(self):
+    def test_cooldown_without_success_time_blocks_for_one_hour(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             state_module.state["hehuan_enabled"] = True
@@ -326,9 +326,11 @@ class HehuanManualPlanTests(unittest.TestCase):
             observed = state_module.state["hehuan_observation"]
 
         self.assertTrue(changed)
-        self.assertEqual(1, observed["auto_retry_count"])
-        self.assertEqual(now + 120, observed["auto_next_time"])
-        self.assertIn("缺少成功时间", observed["auto_retry_reason"])
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertEqual("", observed["auto_retry_reason"])
+        self.assertEqual(now + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+        self.assertEqual(observed["next_hehuan_time"], observed["auto_next_time"])
+        self.assertIn("1小时冷却", observed["auto_last_error"])
 
     def test_cooldown_with_success_time_uses_success_plus_one_hour(self):
         now = 1_780_000_000.0

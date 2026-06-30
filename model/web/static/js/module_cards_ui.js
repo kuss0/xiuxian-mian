@@ -480,13 +480,13 @@
             settingCheckbox('daily_set_star_enabled', '日切定命', txConfig.daily_set_star_enabled)+
             settingCheckbox('route_special_star_enabled', '特化命星', txConfig.route_special_star_enabled)+
             settingCheckbox('auto_predict_enabled', '自动推命', txConfig.auto_predict_enabled)+
-            settingCheckbox('auto_change_fate_enabled', '自动改命', txConfig.auto_change_fate_enabled)+
+            settingCheckbox('auto_change_fate_enabled', '自动探索改命', txConfig.auto_change_fate_enabled)+
             settingCheckbox('strategy_dry_run_enabled', '命令试运行', txConfig.strategy_dry_run_enabled)+
             '<button type="button" class="btn btn-secondary" data-save-tianxing-config="1">保存设置</button>'
           )+
           settingSection(
             '动作前置',
-            '野外、裂缝、炼制前先补推命/改命；确认后才放行。',
+            '野外、裂缝、炼制前先补必要前置；自动改命仅用于探索兜底，确认后才放行。',
             settingCheckbox('timeline_enabled', '启用时间线', txConfig.timeline_enabled)+
             settingCheckbox('timeline_dry_run_enabled', '时间线试运行', txConfig.timeline_dry_run_enabled)+
             settingCheckbox('allow_prediction_override_enabled', '允许改押推命', txConfig.allow_prediction_override_enabled)+

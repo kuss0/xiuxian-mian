@@ -3491,6 +3491,68 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(panel_msg_id, state_module.state["concubine_last_panel_msg_id"])
         self.assertEqual("凌玉灵", state_module.state["concubine_name"])
 
+    async def test_external_same_name_status_panel_without_identity_context_is_ignored(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=30, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        panel_text = (
+            "你的道心侍妾: 【墨彩环】 (状态: 随行中)\n\n"
+            "情缘值: 3744\n"
+            "【第二期机缘】\n"
+            "- 梦图拼片: 虚天 2/4 | 苍坤 1/4\n"
+            "命令: .入梦寻图、.残图、.拼图 虚天/苍坤"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_name"] = "墨彩环"
+            identity_state["concubine_affinity"] = 30
+            identity_state["concubine_fragment_count"] = 0
+            identity_state["concubine_fragment_total"] = 4
+            identity_state["concubine_last_panel_msg_id"] = 11197905
+
+        with patch.object(passive_inbox, "_save_passive_stats"), \
+             patch.object(passive_inbox, "save_state") as save_mock:
+            handled = await passive_inbox.handle_passive_module_card(
+                panel_text,
+                now=now,
+                reply_context={"family": "concubine_status", "reply_to_sender_id": 123456789},
+                event=SimpleNamespace(id=11197518, chat_id=-1001680975844),
+                event_type="message",
+            )
+
+        self.assertFalse(handled)
+        save_mock.assert_not_called()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(30, state_module.state["concubine_affinity"])
+            self.assertEqual(0, state_module.state["concubine_fragment_count"])
+            self.assertEqual(11197905, state_module.state["concubine_last_panel_msg_id"])
+
+    async def test_status_handler_ignores_idle_panel_without_command_anchor(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=30, dream_due_at=now + 3600, tianji_due_at=now + 3600)
+        panel_text = (
+            "你的道心侍妾: 【墨彩环】 (状态: 随行中)\n\n"
+            "情缘值: 3744\n"
+            "【第二期机缘】\n"
+            "- 梦图拼片: 虚天 2/4 | 苍坤 1/4"
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_name"] = "墨彩环"
+            identity_state["concubine_affinity"] = 30
+            identity_state["concubine_phase"] = "idle"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state") as save_mock:
+            handled = await concubine.handle_concubine_status_reply(
+                panel_text,
+                now,
+                SimpleNamespace(raw_text="", id=11197517),
+                matched_family="concubine_status",
+                current_msg_id=11197518,
+            )
+
+        self.assertFalse(handled)
+        save_mock.assert_not_called()
+        self.assertEqual(30, state_module.state["concubine_affinity"])
+
     async def test_scheduler_uses_passively_refreshed_panel_for_heart(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=320, dream_due_at=now + 3600, tianji_due_at=now + 3600)

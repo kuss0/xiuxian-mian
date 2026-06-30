@@ -20,7 +20,9 @@ from .tianxing import (
 
 
 WILD_TRAINING_CYCLE_MIN_SEC = 2 * 3600
-WILD_TRAINING_CYCLE_MAX_SEC = 3 * 3600
+WILD_TRAINING_CYCLE_MAX_SEC = 2 * 3600
+WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC = 2 * 60
+WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC = 10 * 60
 WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
@@ -34,12 +36,15 @@ WILD_TRAINING_RESULT_TITLES = (
     "【野外历练 · 妖兽遭遇】",
     "【野外历练 · 负伤而归】",
     "【野外历练 · 灵机暗藏】",
+    "【野外历练 · 改命脱险】",
 )
-WILD_TRAINING_RESULT_MARKERS = ("【野外历练", "修为", "获得", "负伤", "妖兽", "灵机")
+WILD_TRAINING_RESULT_MARKERS = ("【野外历练", "修为", "获得", "带回", "负伤", "妖兽", "灵机", "改命")
 WILD_TRAINING_CD_KEYWORDS = ("山中灵机未复", "冷却", "请在", "等待")
 RE_WILD_TRAINING_XIUWEI = re.compile(r"修为(?:折损)?\s*([+-]\s*[\d,]+)")
-RE_WILD_TRAINING_REWARD = re.compile(r"获得\s+【([^】]+)】x(\d+)")
+RE_WILD_TRAINING_REWARD = re.compile(r"(?:获得|带回了?)\s+【([^】]+)】x(\d+)")
 RE_WILD_TRAINING_START_STRATEGY = re.compile(r"选择【([^】]+)】")
+RE_WILD_TRAINING_TIANJI = re.compile(r"天机值\s*([+-]\s*\d+)")
+RE_WILD_TRAINING_CONTRIB = re.compile(r"宗门贡献\s*([+-]\s*\d+)")
 
 
 def normalize_wild_training_strategy(strategy):
@@ -225,6 +230,9 @@ def _extract_result_title(text):
     for title in WILD_TRAINING_RESULT_TITLES:
         if raw_text.startswith(title):
             return title.replace("【野外历练 · ", "").replace("】", "")
+    match = re.match(r"^【野外历练\s*·\s*([^】]+)】", raw_text)
+    if match:
+        return match.group(1).strip()
     return ""
 
 
@@ -251,9 +259,17 @@ def _result_summary(text):
     xiuwei_match = RE_WILD_TRAINING_XIUWEI.search(raw_text)
     if xiuwei_match:
         parts.append(f"修为{xiuwei_match.group(1).replace(' ', '')}")
+    tianji_match = RE_WILD_TRAINING_TIANJI.search(raw_text)
+    if tianji_match:
+        parts.append(f"天机{tianji_match.group(1).replace(' ', '')}")
+    contrib_match = RE_WILD_TRAINING_CONTRIB.search(raw_text)
+    if contrib_match:
+        parts.append(f"贡献{contrib_match.group(1).replace(' ', '')}")
     rewards = [f"{name}x{count}" for name, count in RE_WILD_TRAINING_REWARD.findall(raw_text)]
     if rewards:
         parts.append("奖励:" + "、".join(rewards))
+    if "未损修为" in raw_text:
+        parts.append("未损修为")
     if parts:
         return " ｜ ".join(parts)
     return _extract_result_title(raw_text) or "未知结果"
@@ -407,12 +423,21 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         return True
     blocked_until = float(preflight.get("blocked_until", 0) or 0)
     if blocked_until > now:
-        state["next_wild_training_time"] = blocked_until + CD_BUFFER_SEC
+        if due_at <= now:
+            _schedule_retry(now)
+        else:
+            state["next_wild_training_time"] = min(float(due_at), float(now + WILD_TRAINING_RETRY_MAX_SEC))
         state["wild_training_last_error"] = str(preflight.get("reason") or "野外历练天星预检阻断")
         save_state()
         return False
     if preflight.get("timeline_required"):
-        windows = build_tianxing_consume_window("探索", now=now, due_at=max(due_at, now), reason="野外历练")
+        windows = build_tianxing_consume_window(
+            "探索",
+            now=now,
+            due_at=max(due_at, now),
+            reason="野外历练",
+            require_change_fate=True,
+        )
         if not windows:
             return True
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
@@ -424,7 +449,7 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
             due_at <= now
             and not _has_active_tianxing_explore_change(now)
             and str(followup.get("stage") or "") == "timeline_waiting"
-            and phase in {"idle", "completed", "dry_run", "blocked_replan"}
+            and phase in {"idle", "completed", "dry_run", "blocked_replan", "observe_only", "need_tianji_for_change", "change_fate_conflict"}
         ):
             state["wild_training_last_result"] = "天星无探索改命，野外降级谨慎"
             state["wild_training_last_result_at"] = 0
@@ -491,7 +516,13 @@ async def run_wild_training_scheduler(now):
     except (TypeError, ValueError, OverflowError):
         next_wild_training_time = 0
     if next_wild_training_time > now:
-        windows = build_tianxing_consume_window("探索", now=now, due_at=next_wild_training_time, reason="野外历练")
+        windows = build_tianxing_consume_window(
+            "探索",
+            now=now,
+            due_at=next_wild_training_time,
+            reason="野外历练",
+            require_change_fate=True,
+        )
         if windows and not await _prepare_wild_training_tianxing_route(now, due_at=next_wild_training_time):
             return
     if cd_blocks(state.get("next_wild_training_time", 0), now, 0):

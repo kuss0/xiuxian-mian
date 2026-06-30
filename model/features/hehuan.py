@@ -224,6 +224,18 @@ def _schedule_hehuan_retry(observed, now, reason):
     return observed
 
 
+def _block_hehuan_until(observed, until_ts, reason):
+    observed = normalize_hehuan_observation(observed)
+    observed["auto_retry_count"] = 0
+    observed["auto_retry_reason"] = ""
+    observed["auto_last_action"] = "warm"
+    observed["auto_last_error"] = str(reason or "")
+    observed["next_hehuan_time"] = float(until_ts)
+    observed["auto_next_time"] = float(until_ts)
+    _reset_hehuan_auto_pending(observed)
+    return observed
+
+
 def _hehuan_valuable_items_from_parsed(parsed):
     items = []
     insight = str((parsed or {}).get("last_insight") or "").strip()
@@ -759,7 +771,12 @@ def apply_hehuan_passive(text, now=None, family=""):
             else:
                 observed = _schedule_hehuan_retry(observed, now, "心神尚未恢复")
         else:
-            observed = _schedule_hehuan_retry(observed, now, "心神尚未恢复且缺少成功时间")
+            corrected_next_time = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
+            observed = _block_hehuan_until(
+                observed,
+                corrected_next_time,
+                "心神尚未恢复，缺少成功时间，已按1小时冷却保守校准",
+            )
         auto_next_handled = True
     elif result == "pending":
         observed = _schedule_hehuan_retry(observed, now, "温养结算无最终推进")
