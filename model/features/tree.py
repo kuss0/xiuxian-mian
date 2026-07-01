@@ -28,6 +28,7 @@ from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_account, get_identity_enabled, get_identity_ids, get_identity_state, get_pending_command, get_send_as_tags, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
+from ._phaseful import get_phaseful_summary_risk_reason
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import apply_storage_bag_item_deltas
 
@@ -61,6 +62,8 @@ TREE_PULSE_ACTION_FOLLOWUP_MIN_SEC = 75
 TREE_PULSE_ACTION_FOLLOWUP_MAX_SEC = 150
 TREE_PULSE_BLOCKED_CHECK_MIN_SEC = 30 * 60
 TREE_PULSE_BLOCKED_CHECK_MAX_SEC = 60 * 60
+TREE_PULSE_PHASEFUL_DEFER_MIN_SEC = 60
+TREE_PULSE_PHASEFUL_DEFER_MAX_SEC = 180
 TREE_PULSE_LOW_STABILITY_THRESHOLD = 85
 TREE_PULSE_HIGH_TURBIDITY_THRESHOLD = 60
 TREE_NORMAL_PANEL_RECOVERY_SPREAD_MIN_SEC = 45 * 60
@@ -269,6 +272,21 @@ def _schedule_tree_pulse_blocked_check(now=None):
     state["tree_pulse_blocked_until"] = now + delay
     state["next_irr_time"] = now + delay
     return delay
+
+
+def _defer_tree_pulse_for_phaseful_summary(now, action):
+    reason = get_phaseful_summary_risk_reason(now, lead_sec=60)
+    if not reason:
+        return False
+    delay = random.uniform(TREE_PULSE_PHASEFUL_DEFER_MIN_SEC, TREE_PULSE_PHASEFUL_DEFER_MAX_SEC)
+    state["next_irr_time"] = float(now + delay)
+    state["tree_pulse_last_error"] = f"{reason}，定脉延后发送"
+    console_log(
+        f"🌳 灵树定脉避让结算：{action}｜{reason}，延后到 {fmt_abs_ts(state['next_irr_time'])}",
+        scope="identity",
+        limit=180,
+    )
+    return True
 
 
 def _choose_tree_pulse_command(parsed):
@@ -1417,6 +1435,12 @@ async def run_tree_scheduler(now):
                 save_state()
                 await send_audit_log("⏳ 入侵中，灵树定脉已暂停。")
         elif has_pending_tree_action:
+            return
+        elif _defer_tree_pulse_for_phaseful_summary(
+            now,
+            "查询定脉面板" if not _tree_pulse_panel_is_recent(now) else "发送定脉动作",
+        ):
+            save_state()
             return
         elif not _tree_pulse_panel_is_recent(now):
             msg = await send_game_command(

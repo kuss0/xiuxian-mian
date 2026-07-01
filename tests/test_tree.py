@@ -314,6 +314,30 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(state_module.state["next_irr_time"], now + 1 + tree.TREE_PULSE_STATUS_SPREAD_MIN_SEC)
             self.assertLessEqual(state_module.state["next_irr_time"], now + 1 + tree.TREE_PULSE_STATUS_SPREAD_MAX_SEC)
 
+    async def test_tree_scheduler_defers_pulse_panel_during_phaseful_summary_risk(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["next_irr_time"] = now - 1
+            state_module.state["tree_pulse_last_panel_at"] = 0
+
+            with (
+                patch.object(tree, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"),
+                patch.object(tree.random, "uniform", return_value=90),
+                patch.object(tree, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tree, "save_state"),
+            ):
+                await tree.run_tree_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + 90, state_module.state["next_irr_time"])
+            self.assertIn("定脉延后发送", state_module.state["tree_pulse_last_error"])
+
     async def test_tree_scheduler_never_sends_legacy_irrigation_for_pulse_mode(self):
         now = 1000.0
         identity_id = 3800619925
@@ -369,6 +393,39 @@ class TreeTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 source_module="灵树",
             )
             self.assertEqual(now + 2 + 10 * 60, state_module.state["next_irr_time"])
+
+    async def test_tree_scheduler_defers_pulse_action_during_phaseful_summary_risk(self):
+        now = 1000.0
+        identity_id = 3800619925
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="growrdick")
+        with state_module.use_identity(identity_id):
+            state_module.state["tree_enabled"] = True
+            state_module.state["is_maturing"] = False
+            state_module.state["is_invading"] = False
+            state_module.state["next_irr_time"] = now - 1
+            state_module.state["tree_pulse_last_panel_at"] = now - 60
+            state_module.state["tree_pulse_progress"] = 50.0
+            state_module.state["tree_pulse_main"] = "木"
+            state_module.state["tree_pulse_aux"] = "水"
+            state_module.state["tree_pulse_reverse"] = "火"
+            state_module.state["tree_pulse_neutral"] = "土/金"
+            state_module.state["tree_pulse_stability"] = 62
+            state_module.state["tree_pulse_turbidity"] = 0
+            state_module.state["tree_pulse_daily_used"] = 0
+            state_module.state["tree_pulse_daily_limit"] = 6
+
+            with (
+                patch.object(tree, "get_phaseful_summary_risk_reason", return_value="元婴临近归位结算"),
+                patch.object(tree.random, "uniform", return_value=120),
+                patch.object(tree, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tree, "save_state"),
+            ):
+                await tree.run_tree_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(now + 120, state_module.state["next_irr_time"])
+            self.assertIn("定脉延后发送", state_module.state["tree_pulse_last_error"])
 
     async def test_tree_scheduler_treats_parameterized_pulse_action_as_pending(self):
         now = 1000.0
