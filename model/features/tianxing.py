@@ -1655,10 +1655,15 @@ def apply_tianxing_passive(text, now=None, family=""):
             observed["current_prediction_until"] = 0
         elif prediction_hit_text and consumed_route and not _normalize_route_choice(observed.get("current_prediction"), ""):
             observed["current_prediction"] = consumed_route
-    elif parsed.get("result") == "modifier":
+    elif parsed.get("result") in {"modifier", "change_triggered"}:
         observed_route = _normalize_route_choice(parsed.get("last_route"), "")
         if observed_route:
-            _consume_tianxing_released_route(observed_route, now, reason="route_result_observed")
+            _consume_tianxing_released_route(observed_route, now, reason="route_result_observed_without_prediction")
+        if observed_route and previous_prediction == observed_route:
+            observed["current_prediction"] = ""
+            observed["current_prediction_until"] = 0
+            observed["prediction_consumed_route"] = ""
+            observed["prediction_consumed_at"] = 0
     for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain"):
         if parsed.get(key) is not None:
             observed[key] = int(parsed.get(key) or 0)
@@ -2796,10 +2801,20 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             if not fixed_star:
                 star_gate_blocks_plan = True
     elif dominant_route and current_prediction == dominant_route and prediction_until > now and prediction_unconsumed:
-        if dominant_is_farm and config.get("auto_predict_enabled") and not _has_fresh_prediction_evidence(dominant_route, observed, timeline, now):
+        prediction_is_fresh = _has_fresh_prediction_evidence(dominant_route, observed, timeline, now)
+        consume_needs_fresh_prediction = bool(
+            next_consume_requires_change
+            and next_consume_route == dominant_route
+            and not dominant_is_farm
+        )
+        if (
+            config.get("auto_predict_enabled")
+            and not prediction_is_fresh
+            and (dominant_is_farm or consume_needs_fresh_prediction)
+        ):
             should_predict = True
             stage = "need_predict_probe"
-            predict_reason = f"{dominant_route} 推命只来自面板或旧状态，攒天机前先复核推命再放行。"
+            predict_reason = f"{dominant_route} 推命只来自面板或旧状态，路线消费前先复核推命再放行。"
             _append_tianxing_step(
                 steps,
                 "predict",

@@ -928,6 +928,47 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertNotIn("探索", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
 
+    def test_change_triggered_without_prediction_text_clears_stale_prediction(self):
+        now = 1_780_000_000.0
+        text = (
+            "【野外历练 · 改命脱险】\n"
+            "命盘【太阴】照命，主趋吉避凶。\n"
+            "【改命待发】此道改命尚可维持 23小时55分钟\n"
+            "【天星偏转】 趋吉偏转，材料显化上扬\n"
+            "@WalterWA2000 遭遇 噬灵魔猿，本已要负伤折返，司命盘却替你撬开了一线退路。\n"
+            "【改命回天】你强行拨正命轨，硬从凶数中抢回一线生机。\n"
+            "你虽未能尽取机缘，却仍带回了 【四级妖丹】x1，且 本次未损修为。"
+        )
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 600,
+                "current_change": "探索",
+                "current_change_until": now + 12 * 3600,
+                "tianji_value": 42,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step": {"action": "release_downstream", "route": "探索", "status": "released", "release_basis": "change_fate"},
+                "released_routes": {
+                    "探索": {"released_at": now - 20, "plan_id": "old", "reason": "old release", "basis": "change_fate"},
+                },
+            }
+
+            self.assertTrue(tianxing.apply_tianxing_passive(text, now=now))
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("", observed["current_change"])
+        self.assertEqual(0, observed["current_change_until"])
+        self.assertNotIn("探索", timeline["released_routes"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+
     def test_route_preflight_does_not_block_non_tianxing_identity(self):
         now = 1_780_000_000.0
         state_module.update_send_as_profile(self.identity_id, sect_name="散修")
@@ -1133,6 +1174,46 @@ class TianxingManualPlanTests(unittest.TestCase):
             [("predict", "闭关"), ("change_fate", "探索"), ("release_downstream", "探索")],
             [(step["action"], step["arg"]) for step in plan["steps"]],
         )
+
+    def test_timeline_plan_probes_stale_prediction_before_change_fate_consume(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "last_action": "命盘偏转",
+                "last_result": "change_triggered",
+                "fixed_star": "太阴",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 7 * 3600,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[{
+                    "route": "探索",
+                    "kind": "consume",
+                    "start_at": now,
+                    "end_at": now + 60,
+                    "weight": 10,
+                    "reason": "野外历练",
+                    "require_change_fate": True,
+                }],
+                config={
+                    "auto_predict_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+        self.assertEqual("need_predict_probe", plan["stage"])
+        self.assertEqual(
+            [("predict", "探索"), ("change_fate", "探索"), ("release_downstream", "探索")],
+            [(step["action"], step["arg"]) for step in plan["steps"]],
+        )
+        self.assertTrue(plan["steps"][0].get("probe_existing_prediction"))
 
     def test_timeline_plan_never_auto_changes_fate_for_retreat(self):
         now = 1_780_000_000.0
@@ -2150,11 +2231,11 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
         send_mock.assert_awaited_once()
-        self.assertEqual(".改命 探索", send_mock.await_args.args[0])
+        self.assertEqual(".推命 探索", send_mock.await_args.args[0])
         self.assertEqual("sent_waiting_ack", result["phase"])
         self.assertEqual("sent_waiting_ack", timeline["phase"])
         self.assertEqual("探索", timeline["route"])
-        self.assertEqual("change_fate", timeline["active_step"]["action"])
+        self.assertEqual("predict", timeline["active_step"]["action"])
 
     async def test_timeline_releases_fresh_panel_prediction_without_probe(self):
         now = 1_780_000_000.0
@@ -2530,8 +2611,9 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual("探索", plan["release_route"])
-        self.assertEqual(["release_downstream"], [step["action"] for step in plan["steps"]])
-        self.assertEqual("change_fate", plan["steps"][0]["release_basis"])
+        self.assertEqual(["predict", "release_downstream"], [step["action"] for step in plan["steps"]])
+        self.assertTrue(plan["steps"][0].get("probe_existing_prediction"))
+        self.assertEqual("change_fate", plan["steps"][1]["release_basis"])
 
     async def test_timeline_confirmed_prediction_immediately_releases_downstream(self):
         now = 1_780_000_000.0
