@@ -34,6 +34,7 @@ from .config import (
     REPLICA_ACTIVE_TTL_SEC,
     REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC,
     REPLICA_FAILURE_GRACE_SEC,
+    REPLICA_LUOYUN_SUCCESS_COOLDOWN_SEC,
     REPLICA_SUCCESS_COOLDOWN_SEC,
     REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC,
     TZ_LOCAL,
@@ -98,6 +99,7 @@ _REPLICA_TEAM_NOTICE_TTL_SEC = 6 * 3600
 _LUOYUN_CD_REMINDER_INTERVAL_SEC = 3600
 _HUANGLONG_CONSCRIPTION_QUERY_HOUR = 12
 _HUANGLONG_CONSCRIPTION_QUERY_MINUTE = 5
+_REPLICA_COOLDOWN_END_RE = re.compile(r"冷却结束[:：]\s*(?P<ts>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})")
 
 
 def _get_replica_success_cooldown_sec(replica_kind):
@@ -111,6 +113,8 @@ def _get_replica_success_cooldown_sec(replica_kind):
         return REPLICA_CANGKUN_SUCCESS_COOLDOWN_SEC
     if replica_kind == _REPLICA_KIND_ZHUIMO:
         return REPLICA_ZHUIMO_SUCCESS_COOLDOWN_SEC
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        return REPLICA_LUOYUN_SUCCESS_COOLDOWN_SEC
     return REPLICA_SUCCESS_COOLDOWN_SEC
 
 
@@ -3923,6 +3927,115 @@ def _get_identity_id_by_replica_username(username, *, include_disabled=True):
         profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
         if profile_username == username:
             return int(identity_id)
+    return 0
+
+
+def _parse_replica_cooldown_until_ts(text):
+    match = _REPLICA_COOLDOWN_END_RE.search(str(text or ""))
+    if not match:
+        return 0.0
+    try:
+        return datetime.strptime(match.group("ts"), "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _parse_replica_cooldown_wait_sec(text, now=None):
+    wait_sec = int(parse_wait_time(str(text or "")) or 0)
+    if wait_sec > 0:
+        return wait_sec
+    until_ts = _parse_replica_cooldown_until_ts(text)
+    if until_ts <= 0 or now is None:
+        return 0
+    return max(0, int(until_ts - float(now or 0)))
+
+
+def _find_replica_identity_id_by_sender_id(sender_id):
+    try:
+        raw_sender_id = int(sender_id or 0)
+    except (TypeError, ValueError):
+        return 0
+    if raw_sender_id == 0:
+        return 0
+    candidates = [raw_sender_id]
+    if raw_sender_id < 0:
+        sender_abs = str(abs(raw_sender_id))
+        try:
+            candidates.append(int(sender_abs))
+        except ValueError:
+            pass
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            try:
+                candidates.append(int(sender_abs[3:]))
+            except ValueError:
+                pass
+    identity_ids = []
+    for raw_identity_id in [
+        *get_replica_participant_identity_ids(),
+        *get_replica_dispatch_participant_identity_ids(),
+        *get_identity_ids(),
+    ]:
+        try:
+            identity_id = int(raw_identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id > 0 and identity_id not in identity_ids:
+            identity_ids.append(identity_id)
+    for candidate in candidates:
+        try:
+            normalized_candidate = int(candidate or 0)
+        except (TypeError, ValueError):
+            continue
+        if normalized_candidate <= 0:
+            continue
+        for identity_id in identity_ids:
+            if normalized_candidate == identity_id:
+                return identity_id
+            try:
+                account_id = int(get_identity_account(identity_id) or 0)
+            except (TypeError, ValueError):
+                account_id = 0
+            if normalized_candidate == account_id:
+                return identity_id
+    return 0
+
+
+def _get_replica_message_sender_username(message):
+    if message is None:
+        return ""
+    for attr in ("sender_username", "username"):
+        username = _normalize_replica_username(getattr(message, attr, "") or "")
+        if username:
+            return username
+    sender = getattr(message, "sender", None)
+    username = _normalize_replica_username(getattr(sender, "username", "") or "")
+    if username:
+        return username
+    return ""
+
+
+def _resolve_replica_identity_id_from_reply_context(event=None, reply_to=None, reply_context=None):
+    reply_context = reply_context if isinstance(reply_context, dict) else {}
+    for key in ("send_as_id",):
+        try:
+            identity_id = int(reply_context.get(key) or 0)
+        except (TypeError, ValueError):
+            identity_id = 0
+        if identity_id > 0:
+            return identity_id
+    for key in ("reply_to_sender_id",):
+        identity_id = _find_replica_identity_id_by_sender_id(reply_context.get(key))
+        if identity_id > 0:
+            return identity_id
+    for message in (reply_to, event):
+        identity_id = _find_replica_identity_id_by_reply_sender(message)
+        if identity_id > 0:
+            return identity_id
+        username = _get_replica_message_sender_username(message)
+        if username:
+            identity_id = _get_identity_id_by_replica_username(username)
+            if identity_id > 0:
+                return identity_id
     return 0
 
 
@@ -8755,7 +8868,7 @@ def _get_active_replica_team_identity_ids_for_usernames(usernames, now, replica_
     return identity_ids
 
 
-def _parse_replica_join_reply(text, reply_to=None):
+def _parse_replica_join_reply(text, reply_to=None, now=None):
     raw_text = str(text or "")
     room_id, replica_kind = _parse_replica_join_command(getattr(reply_to, "raw_text", "") or "")
     replica_kind = replica_kind or _infer_replica_kind_from_text(raw_text, default=_REPLICA_KIND_VIRTUAL_HALL)
@@ -8781,7 +8894,7 @@ def _parse_replica_join_reply(text, reply_to=None):
             )
         )
     ):
-        return {"kind": "cooldown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "team_professions_by_username": {}, "wait_sec": parse_wait_time(raw_text), "reason": "cooldown"}
+        return {"kind": "cooldown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": [], "team_professions_by_username": {}, "wait_sec": _parse_replica_cooldown_wait_sec(raw_text, now), "reason": "cooldown"}
     return {"kind": "unknown", "replica_kind": replica_kind, "room_id": room_id, "team_usernames": team_usernames, "team_professions_by_username": team_professions_by_username, "wait_sec": 0, "reason": ""}
 
 
@@ -9005,10 +9118,11 @@ def _mark_replica_join_cooldown(identity_id, room_id, wait_sec, now, msg_id=0, r
     state_item = _get_replica_kind_state(record, replica_kind, create=True)
     if _preserve_confirmed_replica_join(records, record, state_item, room_id, now, msg_id=msg_id, replica_kind=replica_kind):
         return
+    cooldown_until = float(now or 0) + max(0, int(wait_sec or 0))
     state_item.update({
         "participating": False,
         "room_id": str(room_id or state_item.get("room_id") or ""),
-        "cooldown_until": float(now or 0) + max(0, int(wait_sec or 0)),
+        "cooldown_until": cooldown_until,
         "team_usernames": [],
         "team_identity_ids": [],
         "team_professions_by_username": {},
@@ -9024,6 +9138,8 @@ def _mark_replica_join_cooldown(identity_id, room_id, wait_sec, now, msg_id=0, r
         "updated_at": float(now or 0),
     })
     _save_replica_run_records(records)
+    if replica_kind == _REPLICA_KIND_LUOYUN:
+        _mark_luoyun_cd_reminder_watch([identity_id], cooldown_until, now=now)
 
 
 def _find_replica_identity_id_by_reply_sender(event):
@@ -9031,22 +9147,7 @@ def _find_replica_identity_id_by_reply_sender(event):
         sender_id = int(getattr(event, "sender_id", 0) or 0)
     except (TypeError, ValueError):
         return 0
-    if sender_id <= 0:
-        return 0
-    participant_ids = []
-    for identity_id in [*get_replica_participant_identity_ids(), *get_replica_dispatch_participant_identity_ids()]:
-        if int(identity_id or 0) not in participant_ids:
-            participant_ids.append(int(identity_id or 0))
-    for identity_id in participant_ids:
-        try:
-            normalized_id = int(identity_id or 0)
-        except (TypeError, ValueError):
-            continue
-        if sender_id == normalized_id:
-            return normalized_id
-        if sender_id == int(get_identity_account(normalized_id) or 0):
-            return normalized_id
-    return 0
+    return _find_replica_identity_id_by_sender_id(sender_id)
 
 
 async def _find_replica_identity_ids_by_sender(event):
@@ -10526,6 +10627,29 @@ async def _apply_virtual_hall_auto_team_snapshot(flow, snapshot, now, allow_miss
     return True
 
 
+def _maybe_absorb_replica_open_cooldown_without_flow(event, text, now, reply_to=None, reply_context=None, open_failure=""):
+    if "开房冷却中" not in str(open_failure or ""):
+        return False
+    replica_kind = _infer_replica_kind_from_text(text)
+    if replica_kind not in _REPLICA_KINDS:
+        return False
+    wait_sec = _parse_replica_cooldown_wait_sec(text, now)
+    if wait_sec <= 0:
+        return False
+    identity_id = _resolve_replica_identity_id_from_reply_context(event, reply_to=reply_to, reply_context=reply_context)
+    if identity_id <= 0:
+        return False
+    _mark_replica_join_cooldown(
+        identity_id,
+        "",
+        wait_sec,
+        now,
+        msg_id=int(getattr(event, "id", 0) or 0),
+        replica_kind=replica_kind,
+    )
+    return True
+
+
 async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, reply_context=None, event_type="message"):
     text = str(text or "")
     now = float(now or time.time())
@@ -10575,7 +10699,7 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
         if not flow and failure_kind:
             flow = _find_unique_lightweight_open_flow(replica_kind=failure_kind, now=now)
         if flow:
-            wait_sec = parse_wait_time(text) if "开房冷却中" in open_failure else 0
+            wait_sec = _parse_replica_cooldown_wait_sec(text, now) if "开房冷却中" in open_failure else 0
             if wait_sec > 0:
                 _mark_replica_join_cooldown(
                     int(flow.get("leader_identity_id") or 0),
@@ -10604,6 +10728,15 @@ async def _handle_virtual_hall_auto_game_event(event, text, now, reply_to=None, 
                 ),
             )
             _remove_lightweight_open_flow(flow.get("flow_id"))
+            return True
+        if _maybe_absorb_replica_open_cooldown_without_flow(
+            event,
+            text,
+            now,
+            reply_to=reply_to,
+            reply_context=reply_context,
+            open_failure=open_failure,
+        ):
             return True
     entered_kind = _parse_replica_entered_kind(text)
     if entered_kind:
@@ -12322,7 +12455,7 @@ async def _handle_replica_join_reply(text, now, reply_to, matched_family=None, e
     reply_command = str(getattr(reply_to, "raw_text", "") or "").strip()
     if matched_family != "replica_join" and not _parse_replica_join_room_id(reply_command):
         return False
-    parsed = _parse_replica_join_reply(text, reply_to)
+    parsed = _parse_replica_join_reply(text, reply_to, now=now)
     kind = parsed.get("kind")
     if kind == "unknown":
         return False

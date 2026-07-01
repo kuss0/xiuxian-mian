@@ -1429,6 +1429,58 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("落云秘圃 CD 已到", audit_mock.await_args_list[0].args[0])
         self.assertEqual("high", audit_mock.await_args_list[0].kwargs["priority"])
 
+    def test_luoyun_success_cooldown_uses_48_hours(self):
+        identity_id = self._register_replica_identity(991251, "luoyun", realm="结丹后期", sect_name="落云宗")
+        now = 1000.0
+
+        app_replica._mark_replica_success_cooldown(
+            [identity_id],
+            now,
+            source_msg_id=7001,
+            replica_kind=app_replica._REPLICA_KIND_LUOYUN,
+            completed_room_id="91",
+        )
+
+        records = state_module.get_replica_run_state()["by_identity"]
+        cooldown_until = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_LUOYUN]["cooldown_until"]
+        self.assertEqual(now + app_replica.REPLICA_LUOYUN_SUCCESS_COOLDOWN_SEC, cooldown_until)
+
+    def test_luoyun_open_cooldown_without_flow_updates_identity_and_reminder(self):
+        identity_id = self._register_replica_identity(3800619925, "growrdick", realm="结丹后期", sect_name="落云宗")
+        event = self._prepare_replica_group([identity_id])
+        event.id = 11263331
+        cooldown_until = datetime(2026, 7, 3, 7, 23, 7, tzinfo=app_replica.TZ_LOCAL).timestamp()
+        now = datetime(2026, 7, 1, 9, 55, 15, tzinfo=app_replica.TZ_LOCAL).timestamp()
+        reply_to = SimpleNamespace(
+            id=11263328,
+            raw_text=".开启落云秘圃",
+            sender_id=-1003800619925,
+            sender=SimpleNamespace(username="growrdick"),
+        )
+        text = (
+            "你尚在落云秘圃冷却中，无法立即开启新副本。\n"
+            "冷却结束：2026-07-03 07:23:07"
+        )
+
+        handled = asyncio.run(app_replica._handle_virtual_hall_auto_game_event(
+            event,
+            text,
+            now,
+            reply_to=reply_to,
+            reply_context={
+                "reply_to_msg_id": 11263328,
+                "reply_to_sender_id": -1003800619925,
+                "send_as_id": 0,
+            },
+        ))
+
+        self.assertTrue(handled)
+        records = state_module.get_replica_run_state()["by_identity"]
+        saved_until = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_LUOYUN]["cooldown_until"]
+        self.assertEqual(cooldown_until, saved_until)
+        reminder = state_module.get_replica_run_state()["luoyun_cd_reminders"][str(identity_id)]
+        self.assertEqual(cooldown_until, reminder["cooldown_until"])
+
     def test_huanglong_conscription_notice_parses_real_reply_once(self):
         text = (
             "【黄龙山宗门征调 · 2026-06-13】\n"
