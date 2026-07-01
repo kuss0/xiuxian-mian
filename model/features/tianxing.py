@@ -47,6 +47,8 @@ TIANXING_CRAFT_FARM_LEGACY_INTERVAL_MIN_SEC = 3 * 60
 TIANXING_CRAFT_FARM_LEGACY_INTERVAL_MAX_SEC = 7 * 60
 TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC = 2 * 60
 TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC = 5 * 60
+TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MIN_SEC = 30 * 60
+TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MAX_SEC = 60 * 60
 TIANXING_STARS = ("紫微", "天府", "太阴", "贪狼")
 TIANXING_ROUTES = ("闭关", "炼制", "探索", "斗法")
 TIANXING_AUTO_CHANGE_FATE_ROUTES = ("探索",)
@@ -214,6 +216,9 @@ def _default_tianxing_auto_config():
         "craft_farm_interval_sec": TIANXING_CRAFT_FARM_RETRY_SEC,
         "craft_farm_interval_min_sec": TIANXING_CRAFT_FARM_INTERVAL_MIN_SEC,
         "craft_farm_interval_max_sec": TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC,
+        "craft_farm_off_window_enabled": True,
+        "craft_farm_off_window_interval_min_sec": TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MIN_SEC,
+        "craft_farm_off_window_interval_max_sec": TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MAX_SEC,
         "craft_farm_reply_timeout_sec": TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC,
         "duel_route_enabled": False,
         "allow_prediction_override_enabled": False,
@@ -390,8 +395,27 @@ def _craft_interval_bounds(config):
     return int(min_sec), int(max_sec)
 
 
-def _craft_farm_interval_sec(config):
-    min_sec, max_sec = _craft_interval_bounds(config)
+def _craft_off_window_interval_bounds(config):
+    config = config or {}
+    min_sec = _coerce_int_range(
+        config.get("craft_farm_off_window_interval_min_sec"),
+        TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MIN_SEC,
+        60,
+        6 * 60 * 60,
+    )
+    max_sec = _coerce_int_range(
+        config.get("craft_farm_off_window_interval_max_sec"),
+        TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MAX_SEC,
+        60,
+        6 * 60 * 60,
+    )
+    if max_sec < min_sec:
+        max_sec = min_sec
+    return int(min_sec), int(max_sec)
+
+
+def _craft_farm_interval_sec(config, *, off_window=False):
+    min_sec, max_sec = _craft_off_window_interval_bounds(config) if off_window else _craft_interval_bounds(config)
     if min_sec >= max_sec:
         return float(min_sec)
     return float(random.uniform(min_sec, max_sec))
@@ -425,6 +449,7 @@ def normalize_tianxing_auto_config(value=None):
         "retreat_farm_auto_donate_lingshi",
         "craft_farm_enabled",
         "craft_farm_dry_run_enabled",
+        "craft_farm_off_window_enabled",
         "duel_route_enabled",
         "allow_prediction_override_enabled",
         "consume_conflicting_prediction_enabled",
@@ -493,6 +518,22 @@ def normalize_tianxing_auto_config(value=None):
     config["craft_farm_interval_min_sec"] = min_interval
     config["craft_farm_interval_max_sec"] = max_interval
     config["craft_farm_interval_sec"] = min_interval if min_interval == max_interval else default["craft_farm_interval_sec"]
+    off_min_interval = _coerce_int_range(
+        config.get("craft_farm_off_window_interval_min_sec"),
+        default["craft_farm_off_window_interval_min_sec"],
+        60,
+        6 * 60 * 60,
+    )
+    off_max_interval = _coerce_int_range(
+        config.get("craft_farm_off_window_interval_max_sec"),
+        default["craft_farm_off_window_interval_max_sec"],
+        60,
+        6 * 60 * 60,
+    )
+    if off_max_interval < off_min_interval:
+        off_max_interval = off_min_interval
+    config["craft_farm_off_window_interval_min_sec"] = int(off_min_interval)
+    config["craft_farm_off_window_interval_max_sec"] = int(off_max_interval)
     config["craft_farm_reply_timeout_sec"] = _coerce_int_range(config.get("craft_farm_reply_timeout_sec"), default["craft_farm_reply_timeout_sec"], 30, 30 * 60)
     config["route_prepare_lead_sec"] = _coerce_int_range(config.get("route_prepare_lead_sec"), default["route_prepare_lead_sec"], 30, 60 * 60)
     config["target_tianji_daily"] = _coerce_int_range(config.get("target_tianji_daily"), default["target_tianji_daily"], 0, 999)
@@ -1325,7 +1366,7 @@ def _should_wake_tianxing_timeline(observed, config, now):
         return False
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     active_status = str((timeline.get("active_step") or {}).get("status") or "").strip()
-    if timeline.get("phase") in {"state_confirmed", "downstream_released", "waiting_send", "blocked_replan"} or active_status in {"confirmed", "released", "pending"}:
+    if timeline.get("phase") in {"state_confirmed", "downstream_released", "waiting_send"} or active_status in {"confirmed", "released", "pending"}:
         return True
     if active_status in {"sending", "sent_waiting_ack", "ack_timeout"}:
         active_step = timeline.get("active_step") or {}
@@ -1337,7 +1378,25 @@ def _should_wake_tianxing_timeline(observed, config, now):
         )
         if wake_at > 0 and wake_at <= float(now):
             return True
-    windows = build_tianxing_farm_window(now=now, config=config, reason="天星自动调度")
+    craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
+    craft_next_time = float(craft_farm.get("next_time", 0) or 0)
+    craft_phase = str(craft_farm.get("phase") or "").strip()
+    if craft_next_time > float(now) and craft_phase in {
+        "waiting",
+        "complete",
+        "daily_limit_reached",
+        "dry_run",
+        "prediction_conflict",
+        "timeline_waiting",
+        "sent_waiting_reply",
+        "crafting_waiting_final",
+        "calibrating",
+        "send_blocked",
+    }:
+        return False
+    if timeline.get("phase") == "blocked_replan":
+        return float(timeline.get("blocked_until", 0) or 0) <= float(now)
+    windows, _off_window = _build_tianxing_craft_farm_windows(now, config, reason="天星自动调度")
     if not windows:
         return False
     plan = build_tianxing_timeline_plan(now=now, windows=windows, observed=observed, config=config)
@@ -2008,6 +2067,23 @@ def next_tianxing_farm_window_start(*, now=None, config=None):
             if start_at > now:
                 candidates.append(start_at)
     return min(candidates) if candidates else 0.0
+
+
+def _build_tianxing_craft_farm_windows(now, config, *, reason="天星炼制攒点"):
+    now = float(now if now is not None else time.time())
+    config = normalize_tianxing_auto_config(config)
+    windows = build_tianxing_farm_window(now=now, config=config, reason=reason)
+    if windows or not config.get("craft_farm_off_window_enabled"):
+        return windows, False
+    min_sec, max_sec = _craft_off_window_interval_bounds(config)
+    return ([{
+        "route": "炼制",
+        "kind": "farm",
+        "start_at": now,
+        "end_at": now + max(min_sec, min(max_sec, 2 * 3600)),
+        "weight": 2,
+        "reason": "窗口外低频炼制攒点",
+    }], True)
 
 
 def build_tianxing_consume_window(route, *, now=None, due_at=0, config=None, reason="路线动作", require_change_fate=False):
@@ -4303,16 +4379,8 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             next_time=_tianxing_pause_block_until(now, observed=observed, config=config),
         )
 
-    windows = build_tianxing_farm_window(now=now, config=config, reason="天星炼制攒点")
-    if not windows:
-        next_window = next_tianxing_farm_window_start(now=now, config=config)
-        return _craft_farm_result(
-            "outside_window",
-            active=True,
-            reason="当前不在炼制攒天机窗口。",
-            next_time=next_window or now + _status_backoff_sec(config),
-        )
-
+    windows, off_window_active = _build_tianxing_craft_farm_windows(now, config, reason="天星炼制攒点")
+    interval_sec = lambda: _craft_farm_interval_sec(config, off_window=off_window_active)
     target_tianji = int(config.get("target_tianji_daily", 0) or 0)
     current_tianji = int(observed.get("tianji_value", 0) or 0)
     farm = _current_craft_farm_state()
@@ -4320,11 +4388,11 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
     unpredicted_shortage_reason = _craft_farm_unpredicted_shortage_reason(now, config, observed, estimated_tianji)
     daily_limit = int(config.get("craft_farm_daily_limit", 0) or 0)
     if target_tianji <= 0:
-        return _craft_farm_result("target_disabled", active=True, reason="日目标天机为 0，不主动炼制攒点。")
+        return _craft_farm_result("target_disabled", active=True, reason="日目标天机为 0，不主动炼制攒点。", next_time=now + _status_backoff_sec(config))
     if estimated_tianji >= target_tianji:
-        return _craft_farm_result("target_reached", active=True, reason=f"天机值 {estimated_tianji} 已达到目标 {target_tianji}。")
+        return _craft_farm_result("target_reached", active=True, reason=f"天机值 {estimated_tianji} 已达到目标 {target_tianji}。", next_time=now + _status_backoff_sec(config))
     if daily_limit > 0 and int(farm.get("daily_count", 0) or 0) >= daily_limit:
-        return _craft_farm_result("daily_limit_reached", active=True, reason=f"炼制攒点今日已达 {daily_limit} 轮。")
+        return _craft_farm_result("daily_limit_reached", active=True, reason=f"炼制攒点今日已达 {daily_limit} 轮。", next_time=now + _status_backoff_sec(config))
 
     explore_block = _craft_farm_explore_consume_block(now, config)
     if explore_block:
@@ -4334,7 +4402,16 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             takeover=False,
             handoff=True,
             reason=explore_block.get("reason") or "探索消费窗口临近，炼制攒点让路。",
-            next_time=explore_block.get("blocked_until") or now + _craft_farm_interval_sec(config),
+            next_time=explore_block.get("blocked_until") or now + interval_sec(),
+        )
+
+    if not windows:
+        next_window = next_tianxing_farm_window_start(now=now, config=config)
+        return _craft_farm_result(
+            "outside_window",
+            active=True,
+            reason="当前不在炼制攒天机窗口，窗口外低频炼制未开启。",
+            next_time=next_window or now + _status_backoff_sec(config),
         )
 
     next_time = float(farm.get("next_time", 0) or 0)
@@ -4353,7 +4430,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
                     handoff=dry_run,
                     reason="已有闭关推命未应验；先按闭关路线消费该推命，再回到炼制攒点。",
                     action="consume_prediction",
-                    next_time=now + _craft_farm_interval_sec(config),
+                    next_time=now + interval_sec(),
                     dry_run=dry_run,
                 )
             return _craft_farm_result(
@@ -4412,7 +4489,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
                 reason=unpredicted_shortage_reason,
                 action="craft",
                 command=command,
-                next_time=now + _craft_farm_interval_sec(config),
+                next_time=now + interval_sec(),
                 dry_run=dry_run,
                 allow_prediction_conflict=True,
                 item=item,
@@ -4425,7 +4502,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
                 handoff=dry_run,
                 reason=preflight.get("reason") or "等待天星时间线确认炼制路线。",
                 action="timeline",
-                next_time=now + _craft_farm_interval_sec(config),
+                next_time=now + interval_sec(),
                 timeline_required=True,
                 dry_run=dry_run,
             )
@@ -4435,7 +4512,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             takeover=False,
             handoff=True,
             reason=preflight.get("reason") or "天星预检阻断炼制攒点。",
-            next_time=preflight.get("blocked_until") or now + _craft_farm_interval_sec(config),
+            next_time=preflight.get("blocked_until") or now + interval_sec(),
             dry_run=dry_run,
         )
 
@@ -4445,18 +4522,25 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
         active=True,
         takeover=not dry_run,
         handoff=dry_run,
-        reason=f"炼制路线已确认，发送炼制 {item} 获取天机点。",
+        reason=(
+            f"炼制路线已确认，发送炼制 {item} 获取天机点。"
+            if not off_window_active
+            else f"窗口外低频补点，发送炼制 {item} 获取天机点。"
+        ),
         action="craft",
         command=command,
-        next_time=now + _craft_farm_interval_sec(config),
+        next_time=now + interval_sec(),
         dry_run=dry_run,
         allow_prediction_conflict=False,
+        off_window=off_window_active,
     )
 
 
 async def run_tianxing_craft_farm_scheduler(now, *, config=None):
     now = float(now if now is not None else time.time())
     config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
+    plan_windows, run_off_window_active = _build_tianxing_craft_farm_windows(now, config, reason="天星炼制攒点")
+    interval_sec = lambda: _craft_farm_interval_sec(config, off_window=run_off_window_active)
     plan = build_tianxing_craft_farm_plan(now=now, config=config)
     farm = _current_craft_farm_state()
     if not plan.get("active"):
@@ -4502,7 +4586,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
         farm["phase"] = "consume_prediction"
         farm["last_result"] = str(consume_result.get("stage") or "")
         farm["last_error"] = consume_result.get("reason") or ""
-        farm["next_time"] = float(consume_result.get("next_time", 0) or now + _craft_farm_interval_sec(config))
+        farm["next_time"] = float(consume_result.get("next_time", 0) or now + interval_sec())
         _craft_farm_audit(
             farm,
             now,
@@ -4532,7 +4616,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
     if plan.get("timeline_required"):
         timeline_result = await run_tianxing_timeline_scheduler(
             now,
-            windows=build_tianxing_farm_window(now=now, config=config, reason="天星炼制攒点"),
+            windows=plan_windows,
             config=config,
         )
         current_timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
@@ -4561,7 +4645,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             followup_sec = (
                 TIANXING_CRAFT_FARM_RETRY_SEC
                 if timeline_phase in {"state_confirmed", "downstream_released", "waiting_send", "calibrating", "blocked_replan", "completed"}
-                else _craft_farm_interval_sec(config)
+                else interval_sec()
             )
             farm["next_time"] = float(now + followup_sec)
         _craft_farm_audit(farm, now, "timeline_waiting", phase=timeline_result.get("phase"), reason=timeline_result.get("reason"))
@@ -4604,7 +4688,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             farm["last_command"] = ""
             farm["last_result"] = str(final_preflight.get("stage") or "final_preflight_blocked")
             farm["last_error"] = final_preflight.get("reason") or "发送前路线复核未通过。"
-            farm["next_time"] = float(final_preflight.get("blocked_until") or now + _craft_farm_interval_sec(config))
+            farm["next_time"] = float(final_preflight.get("blocked_until") or now + interval_sec())
             _craft_farm_audit(farm, now, "final_preflight_blocked", stage=final_preflight.get("stage"), reason=farm["last_error"])
             _set_tianxing_craft_farm_state(farm, now)
             save_state()
@@ -4620,7 +4704,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
     )
     if not msg:
         farm["phase"] = "send_blocked"
-        farm["next_time"] = float(now + _craft_farm_interval_sec(config))
+        farm["next_time"] = float(now + interval_sec())
         farm["last_error"] = f"{command} 发送失败或被安全策略拦截。"
         _craft_farm_audit(farm, now, "send_blocked", command=command)
         _set_tianxing_craft_farm_state(farm, now)

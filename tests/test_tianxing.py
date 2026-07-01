@@ -2756,6 +2756,9 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("02:00-05:00,06:00-11:50,14:30-17:30,23:00-23:35", config["farm_windows_text"])
         self.assertEqual(120, config["craft_farm_interval_min_sec"])
         self.assertEqual(300, config["craft_farm_interval_max_sec"])
+        self.assertTrue(config["craft_farm_off_window_enabled"])
+        self.assertEqual(1800, config["craft_farm_off_window_interval_min_sec"])
+        self.assertEqual(3600, config["craft_farm_off_window_interval_max_sec"])
         self.assertFalse(config["duel_route_enabled"])
         self.assertFalse(config["consume_conflicting_prediction_enabled"])
         self.assertFalse(config["route_special_star_enabled"])
@@ -2823,6 +2826,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                     "farm_windows_text": "02:00-05:00,06:00-09:00,15:00-16:00",
                     "craft_farm_enabled": True,
                     "craft_farm_dry_run_enabled": False,
+                    "craft_farm_off_window_enabled": False,
                     "target_tianji_daily": 42,
                 },
             )
@@ -2830,6 +2834,105 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("outside_window", plan["stage"])
         self.assertTrue(plan["active"])
         self.assertEqual(local_ts(15), plan["next_time"])
+
+    def test_craft_farm_outside_window_low_frequency_runs_when_enabled(self):
+        now = local_ts(12)
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=12)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "released_routes": {
+                    "炼制": {"released_at": now, "plan_id": "test", "reason": "炼制已放行", "basis": "prediction"}
+                }
+            }
+            with patch.object(tianxing.random, "uniform", return_value=2400):
+                plan = tianxing.build_tianxing_craft_farm_plan(
+                    now=now,
+                    config={
+                        "timeline_enabled": True,
+                        "farm_route": "炼制",
+                        "farm_window_enabled": True,
+                        "farm_windows_text": "02:00-05:00,06:00-09:00,15:00-16:00",
+                        "craft_farm_enabled": True,
+                        "craft_farm_dry_run_enabled": False,
+                        "craft_farm_off_window_enabled": True,
+                        "craft_farm_off_window_interval_min_sec": 1800,
+                        "craft_farm_off_window_interval_max_sec": 3600,
+                        "target_tianji_daily": 42,
+                    },
+                )
+
+        self.assertEqual("send_craft", plan["stage"])
+        self.assertTrue(plan["off_window"])
+        self.assertEqual(".炼制 玄铁剑", plan["command"])
+        self.assertEqual(now + 2400, plan["next_time"])
+        self.assertIn("窗口外低频", plan["reason"])
+
+    def test_craft_farm_outside_window_still_yields_to_explore_consume(self):
+        now = local_ts(12)
+        due_at = now + 240
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=12)
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = due_at
+            plan = tianxing.build_tianxing_craft_farm_plan(
+                now=now,
+                config={
+                    "timeline_enabled": True,
+                    "farm_route": "炼制",
+                    "farm_window_enabled": True,
+                    "farm_windows_text": "02:00-05:00,06:00-09:00,15:00-16:00",
+                    "craft_farm_enabled": True,
+                    "craft_farm_dry_run_enabled": False,
+                    "craft_farm_off_window_enabled": True,
+                    "target_tianji_daily": 42,
+                    "route_prepare_lead_sec": 300,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+        self.assertEqual("waiting_consume_window", plan["stage"])
+        self.assertEqual("", plan["command"])
+        self.assertIn("探寻裂缝", plan["reason"])
+
+    def test_timeline_wake_respects_future_craft_wait(self):
+        now = local_ts(12)
+        config = tianxing.normalize_tianxing_auto_config({
+            "timeline_enabled": True,
+            "auto_predict_enabled": True,
+            "craft_farm_enabled": True,
+            "craft_farm_dry_run_enabled": False,
+            "craft_farm_off_window_enabled": True,
+            "farm_route": "炼制",
+            "farm_windows_text": "02:00-05:00,06:00-09:00,15:00-16:00",
+        })
+        observed = {
+            "last_observed_at": now - 60,
+            "available_stars": ["太阴", "贪狼"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "太阴",
+            "fixed_star_day": tianxing.get_day_key(now),
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "current_change": "探索",
+            "current_change_until": now + 12 * 3600,
+            "tianji_value": 31,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "blocked_replan",
+                "route": "探索",
+                "craft_farm": {
+                    "phase": "waiting",
+                    "next_time": now + 3600,
+                    "last_error": "探索消费窗口临近，炼制攒点让路。",
+                },
+            }
+            should_wake = tianxing._should_wake_tianxing_timeline(observed, config, now)
+
+        self.assertFalse(should_wake)
 
     def test_craft_farm_interval_uses_configured_random_range(self):
         now = local_ts(3)
@@ -3985,6 +4088,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 "auto_predict_enabled": True,
                 "craft_farm_enabled": True,
                 "craft_farm_dry_run_enabled": False,
+                "craft_farm_off_window_enabled": False,
                 "farm_route": "炼制",
                 "farm_window_enabled": True,
                 "farm_windows_text": "02:00-03:00",

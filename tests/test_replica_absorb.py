@@ -1553,6 +1553,62 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(send_mock.await_args.kwargs["track"])
         self.assertEqual(identity_id, send_mock.await_args.kwargs["send_as_id"])
 
+    def test_huanglong_decision_stage_parses_real_prompts(self):
+        first = (
+            "【黄龙山大战·第一幕：雾海布阵】\n"
+            "1 · 隐阵诱敌：借黄龙山地势故布疑阵。\n"
+            "2 · 固守峰顶：稳固主峰禁制。\n"
+            "3 · 外谷游杀：率小队出谷截杀前锋。\n"
+            "请队长使用 .黄龙抉择 1/2/3。"
+        )
+        second = (
+            "【第一幕结果】\n阵势：114 ｜ 军心：104 ｜ 敌警：18 ｜ 战果：14 ｜ 情报：10\n"
+            "【第二幕：内应暴露】\n"
+            "1 · 当场擒杀：求稳不深挖。\n"
+            "2 · 搜魂逼供：冒险搜魂。\n"
+            "3 · 将计就计：诱敌发力。\n"
+            "请队长使用 .黄龙抉择 1/2/3。"
+        )
+        final = (
+            "【黄龙山大战·神师将至】\n"
+            "1 · 夺宝即退：撤出前沿。\n"
+            "2 · 断后护撤：死守片刻。\n"
+            "3 · 贪功追击：继续追杀。\n"
+            "当前战线：阵势：8 ｜ 军心：19 ｜ 敌警：103 ｜ 战果：46 ｜ 情报：12\n"
+            "请队长使用 .黄龙抉择 1/2/3。"
+        )
+
+        first_stage = app_replica._get_huanglong_decision_stage(first)
+        second_stage = app_replica._get_huanglong_decision_stage(second)
+        final_stage = app_replica._get_huanglong_decision_stage(final)
+
+        self.assertEqual("第一幕：雾海布阵", first_stage["title"])
+        self.assertIn(("1 隐阵诱敌", ".黄龙抉择 1"), first_stage["commands"])
+        self.assertEqual("第二幕：内应暴露", second_stage["title"])
+        self.assertEqual(18, second_stage["status"]["alert"])
+        self.assertEqual("神师将至", final_stage["title"])
+        self.assertEqual(103, final_stage["status"]["alert"])
+        self.assertIn("夺宝即退", app_replica._format_huanglong_decision_advice(final_stage, final))
+
+    def test_huanglong_settlement_text_is_classified_and_titled(self):
+        success = (
+            "【黄龙山大战·夺宝即退】\n"
+            "你们在大阵残火与烟尘间果断撤退。\n"
+            "每位队员获得 7200修为、716贡献。\n"
+            "最终状态：阵势：8 ｜ 军心：19 ｜ 敌警：103 ｜ 战果：46 ｜ 情报：12"
+        )
+        failure = (
+            "【黄龙山大战·战线崩解】\n"
+            "虽未守住前线，众人仍自死斗中有所领悟：每位队员获得 2400修为、140贡献。\n"
+            "最终状态：阵势：50 ｜ 军心：55 ｜ 敌警：94 ｜ 战果：62 ｜ 情报：26"
+        )
+
+        self.assertTrue(app_replica._is_replica_settlement_text(success))
+        self.assertEqual(app_replica._REPLICA_KIND_HUANGLONG, app_replica._parse_replica_settlement_kind(success))
+        self.assertEqual("夺宝即退", app_replica._get_replica_settlement_title(app_replica._REPLICA_KIND_HUANGLONG, success))
+        self.assertEqual(app_replica._REPLICA_KIND_HUANGLONG, app_replica._parse_replica_settlement_kind(failure))
+        self.assertEqual("战线崩解", app_replica._get_replica_settlement_title(app_replica._REPLICA_KIND_HUANGLONG, failure))
+
     def test_log_group_replica_summary_keeps_query_buttons_without_listener(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         state_module.set_replica_participant_identity_ids([leader_id])

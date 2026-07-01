@@ -1474,6 +1474,111 @@ def _get_zhuimo_decision_stage(text):
     return {}
 
 
+def _parse_huanglong_status_snapshot(text):
+    raw_text = str(text or "")
+    match = re.search(
+        r"阵势[:：](?P<formation>\d+)\s*｜\s*军心[:：](?P<morale>\d+)\s*｜\s*敌警[:：](?P<alert>\d+)\s*｜\s*战果[:：](?P<merit>\d+)\s*｜\s*情报[:：](?P<intel>\d+)",
+        raw_text,
+    )
+    if not match:
+        return {}
+    result = {}
+    for key, value in match.groupdict().items():
+        try:
+            result[key] = int(value)
+        except (TypeError, ValueError):
+            result[key] = 0
+    return result
+
+
+def _get_huanglong_decision_stage(text):
+    raw_text = str(text or "")
+    if "黄龙山抉择：" in raw_text and "兜底命令" in raw_text:
+        return {}
+    if ".黄龙抉择" not in raw_text:
+        return {}
+    is_leader_prompt = "请队长使用" in raw_text or "队长使用" in raw_text
+    if not is_leader_prompt:
+        return {}
+    title = ""
+    title_match = re.search(r"【黄龙山大战·([^】]+)】", raw_text)
+    if title_match:
+        title = title_match.group(1).strip()
+    if not title:
+        second_match = re.search(r"【(第二幕[^】]+)】", raw_text)
+        if second_match:
+            title = second_match.group(1).strip()
+    if not title:
+        titles = [item.strip() for item in re.findall(r"【([^】]+)】", raw_text) if item.strip()]
+        title = titles[-1] if titles else "后续抉择"
+    option_match = re.search(r"\.黄龙抉择\s*([0-9][0-9\s/／、]*)", raw_text)
+    options = []
+    seen = set()
+    if option_match:
+        for option in re.findall(r"\d+", option_match.group(1)):
+            if option in seen:
+                continue
+            seen.add(option)
+            options.append(option)
+    if not options:
+        for option in re.findall(r"\.黄龙抉择\s+(\d+)", raw_text):
+            if option in seen:
+                continue
+            seen.add(option)
+            options.append(option)
+    if not options:
+        return {}
+    label_map = {}
+    for option, label in re.findall(r"(?m)^\s*(\d+)\s*[·.、]\s*([^：:\n]+)", raw_text):
+        label_map[str(option).strip()] = str(label or "").strip()
+    stage_key = hashlib.sha1((title + ":" + "/".join(options)).encode("utf-8", errors="ignore")).hexdigest()[:8]
+    return {
+        "stage": "huanglong:" + stage_key,
+        "title": title,
+        "commands": tuple(
+            (
+                f"{option} {label_map.get(option) or '路线'}".strip(),
+                f".黄龙抉择 {option}",
+            )
+            for option in options
+        ),
+        "status": _parse_huanglong_status_snapshot(raw_text),
+    }
+
+
+def _format_huanglong_decision_advice(stage_info, text, *, html=False):
+    stage_info = stage_info if isinstance(stage_info, dict) else {}
+    title = str(stage_info.get("title") or "")
+    status = stage_info.get("status") if isinstance(stage_info.get("status"), dict) else _parse_huanglong_status_snapshot(text)
+    formation = status.get("formation")
+    morale = status.get("morale")
+    alert = status.get("alert")
+    merit = status.get("merit")
+    intel = status.get("intel")
+    advice = ""
+    if "第一幕" in title:
+        advice = "建议：默认选1隐阵诱敌；保守开局可选2固守峰顶，3外谷游杀偏贪。"
+    elif "第二幕" in title or "内应" in title:
+        advice = "建议：默认选3将计就计拿情报；队伍偏弱或只求稳可手动选1。"
+    elif "神师将至" in title:
+        if (
+            formation is not None
+            and morale is not None
+            and alert is not None
+            and formation >= 70
+            and morale >= 70
+            and alert < 85
+        ):
+            advice = f"建议：可考虑选3贪功追击；当前阵势 {formation}、军心 {morale}、敌警 {alert}。"
+        elif formation is not None and morale is not None and alert is not None:
+            advice = f"建议：选1夺宝即退；当前阵势 {formation}、军心 {morale}、敌警 {alert}，追击风险偏高。"
+        else:
+            advice = "建议：默认选1夺宝即退；3只在阵势/军心都高且敌警低时手动贪。"
+    if advice and merit is not None and intel is not None:
+        advice += f" 战果 {merit}，情报 {intel}。"
+    return escape(advice) if html and advice else advice
+
+
 def _format_zhuimo_decision_advice(stage_info, text, *, html=False):
     stage = str((stage_info or {}).get("stage") or "")
     if stage == "first":
@@ -1784,6 +1889,7 @@ def _is_replica_settlement_text(text):
         or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔失败")
         or _has_replica_bracket_title(raw_text, exact="登顶昆吾山")
         or _is_luoyun_settlement_text(raw_text)
+        or _is_huanglong_settlement_text(raw_text)
         or (_has_replica_bracket_title(raw_text, exact="后殿冲关止步") and "结算所得早已锁定" in raw_text)
         or any(keyword in raw_text for keyword in ("挑战成功", "通关成功", "试炼成功", "探索完成"))
         or bool(_parse_cangkun_success_kind(raw_text))
@@ -1824,10 +1930,19 @@ def _is_luoyun_settlement_text(text):
     )
 
 
+def _is_huanglong_settlement_text(text):
+    raw_text = str(text or "")
+    if "【黄龙山大战·" not in raw_text:
+        return False
+    return "每位队员获得" in raw_text and ("最终状态" in raw_text or "战线崩解" in raw_text)
+
+
 def _parse_replica_settlement_kind(text):
     raw_text = str(text or "")
     if _is_luoyun_settlement_text(raw_text):
         return _REPLICA_KIND_LUOYUN
+    if _is_huanglong_settlement_text(raw_text):
+        return _REPLICA_KIND_HUANGLONG
     if _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔成功") or _has_replica_bracket_title(raw_text, exact="坠魔谷·封魔失败"):
         return _REPLICA_KIND_ZHUIMO
     if _has_replica_bracket_title(raw_text, exact="登顶昆吾山"):
@@ -1861,6 +1976,10 @@ def _get_cangkun_settlement_title(text):
 def _get_replica_settlement_title(replica_kind, text):
     if replica_kind == _REPLICA_KIND_CANGKUN:
         return _get_cangkun_settlement_title(text)
+    if replica_kind == _REPLICA_KIND_HUANGLONG:
+        match = re.search(r"【黄龙山大战·([^】]+)】", str(text or ""))
+        if match:
+            return match.group(1).strip() or "已结算"
     raw_text = str(text or "")
     match = re.search(r"[【\[]([^】\]\n]*(?:战利品结算|结算|冲关止步|挑战成功|通关成功|试炼成功|探索完成|封魔成功|封魔失败|登顶昆吾山)[^】\]\n]*)[】\]]", raw_text)
     if replica_kind == _REPLICA_KIND_LUOYUN and not match:
@@ -2407,6 +2526,114 @@ def _build_zhuimo_decision_buttons(stage_info, leader_identity_id, event, text, 
         if button:
             buttons.append(button)
     return _chunk_replica_buttons(buttons, cols=3)
+
+
+def _make_huanglong_decision_scope(event, text, leader_username="", now=None):
+    leader_username = _normalize_replica_username(leader_username) or _parse_replica_leader_username(text)
+    room_id = _get_latest_replica_room_id(_REPLICA_KIND_HUANGLONG, now=now, leader_username=leader_username)
+    if room_id:
+        return f"room:{room_id}"
+    elif leader_username:
+        return f"leader:{leader_username}"
+    chat_id = int(getattr(event, "chat_id", 0) or 0)
+    return f"chat:{chat_id}"
+
+
+def _make_huanglong_decision_notice_key(event, text, stage_info, leader_username="", now=None):
+    stage_info = stage_info if isinstance(stage_info, dict) else {}
+    stage = str(stage_info.get("stage") or "").strip()
+    commands_key = "|".join(str(command or "").strip() for _label, command in stage_info.get("commands") or ())
+    commands_digest = hashlib.sha1(commands_key.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    scope = _make_huanglong_decision_scope(event, text, leader_username=leader_username, now=now)
+    return f"huanglong:{scope}:{stage}:{commands_digest}"
+
+
+def _build_huanglong_decision_buttons(stage_info, leader_identity_id, event, text, now=None, source_key="", stage_scope=""):
+    stage_info = stage_info if isinstance(stage_info, dict) else {}
+    leader_identity_id = int(leader_identity_id or 0)
+    if leader_identity_id <= 0:
+        return []
+    source_key = str(source_key or "").strip() or _make_huanglong_decision_notice_key(event, text, stage_info, now=now)
+    stage_scope = str(stage_scope or "").strip() or ("huanglong:" + _make_huanglong_decision_scope(event, text, now=now))
+    source_msg_id = int(getattr(event, "id", 0) or 0)
+    buttons = []
+    for label, command in stage_info.get("commands") or ():
+        button = _game_command_action_button(
+            label,
+            command,
+            leader_identity_id,
+            source_msg_id=source_msg_id,
+            token_key=f"huanglong:{source_key}:{leader_identity_id}:{command}",
+            exclusive_key=f"huanglong:{source_key}",
+            stage_guard_scope=stage_scope,
+            stage_guard_key=source_key,
+        )
+        if button:
+            buttons.append(button)
+    return _chunk_replica_buttons(buttons, cols=3)
+
+
+async def _maybe_send_huanglong_decision_notice(event, text, now):
+    stage_info = _get_huanglong_decision_stage(text)
+    if not stage_info:
+        return False
+    parsed_leader_username = _parse_replica_leader_username(text)
+    leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_HUANGLONG, now=now)
+    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    if leader_identity_id <= 0:
+        return False
+    if parsed_leader_username:
+        active_team_ids = _get_active_replica_team_identity_ids_for_usernames(
+            [parsed_leader_username],
+            now,
+            replica_kind=_REPLICA_KIND_HUANGLONG,
+        )
+        if active_team_ids and leader_identity_id not in active_team_ids:
+            return False
+    notice_key = _make_huanglong_decision_notice_key(event, text, stage_info, leader_username=leader_username, now=now)
+    stage_scope = "huanglong:" + _make_huanglong_decision_scope(
+        event,
+        text,
+        leader_username=leader_username,
+        now=now,
+    )
+    _set_cangkun_stage_guard_current(stage_scope, notice_key, now)
+    if not _mark_xutian_decision_notice_once(notice_key, now):
+        return False
+    buttons = _build_huanglong_decision_buttons(
+        stage_info,
+        leader_identity_id,
+        event,
+        text,
+        now=now,
+        source_key=notice_key,
+        stage_scope=stage_scope,
+    )
+    if not buttons:
+        return False
+    commands_text = "\n".join(mono(command) for _label, command in stage_info.get("commands") or ())
+    advice_text = _format_huanglong_decision_advice(stage_info, text, html=True)
+    notice_text = (
+        f"黄龙山抉择：{stage_info.get('title') or '未知阶段'}｜队长 {mono(leader_username)}\n"
+        + (f"{advice_text}\n" if advice_text else "")
+        + f"请选择一个按钮；兜底命令：\n{commands_text}"
+    )
+    if await _send_replica_kind_notice(
+        _REPLICA_KIND_HUANGLONG,
+        notice_text,
+        now,
+        html=True,
+        buttons=buttons,
+    ):
+        return True
+    return await send_audit_log(
+        notice_text,
+        scope="identity",
+        send_as_id=leader_identity_id,
+        priority="medium",
+        limit=700,
+        buttons=buttons,
+    )
 
 
 async def _maybe_send_zhuimo_decision_notice(event, text, now):
@@ -9813,6 +10040,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
     xutian_decision_stage = _get_xutian_decision_stage(text)
     cangkun_decision_stage = _get_cangkun_decision_stage(text)
     zhuimo_decision_stage = _get_zhuimo_decision_stage(text)
+    huanglong_decision_stage = _get_huanglong_decision_stage(text)
     zhuimo_progress_text = _is_zhuimo_progress_text(text)
     kunwu_decision_stage = _get_kunwu_decision_stage(text)
     luoyun_decision_stage = _get_luoyun_decision_stage(text)
@@ -9830,6 +10058,7 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
         not xutian_decision_stage
         and not cangkun_decision_stage
         and not zhuimo_decision_stage
+        and not huanglong_decision_stage
         and not zhuimo_progress_text
         and not kunwu_decision_stage
         and not luoyun_decision_stage
@@ -9899,6 +10128,23 @@ async def _handle_replica_progress_event(event, now, event_type="message"):
             usernames=_extract_replica_usernames(text),
         )
         zhuimo_notice_sent = bool(await _maybe_send_zhuimo_decision_notice(event, text, now))
+    huanglong_notice_sent = False
+    if huanglong_decision_stage:
+        parsed_leader_username = _parse_replica_leader_username(text)
+        leader_username = parsed_leader_username or _get_latest_replica_leader_username(_REPLICA_KIND_HUANGLONG, now=now)
+        _mark_replica_team_entered(
+            _REPLICA_KIND_HUANGLONG,
+            now,
+            source_msg_id=getattr(event, "id", 0),
+            leader_username=leader_username,
+        )
+        _mark_latest_lightweight_room_entered(
+            _REPLICA_KIND_HUANGLONG,
+            now=now,
+            require_recent_enter_request=False,
+            usernames=_extract_replica_usernames(text),
+        )
+        huanglong_notice_sent = bool(await _maybe_send_huanglong_decision_notice(event, text, now))
     zhuimo_progress_notice_sent = False
     if zhuimo_progress_text and not zhuimo_decision_stage and replica_settlement_kind != _REPLICA_KIND_ZHUIMO:
         zhuimo_progress_notice_sent = bool(await _send_zhuimo_progress_notice(event, text, now))
