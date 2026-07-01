@@ -2746,6 +2746,38 @@ def _timeline_should_replan_for_window_route(timeline, windows, now, horizon_hou
     return True, f"旧天星时间线 {active_route} 发送队列超时且无消息ID，新窗口为 {_format_list(sorted(target_routes))}，已重算。"
 
 
+def _timeline_should_replan_empty_block(timeline, windows, observed, config, now, horizon_hours):
+    if not windows:
+        return False, ""
+    if list((timeline or {}).get("steps") or []):
+        return False, ""
+    if dict((timeline or {}).get("active_step") or {}):
+        return False, ""
+    if float((timeline or {}).get("blocked_until", 0) or 0) <= float(now):
+        return False, ""
+    phase = str((timeline or {}).get("phase") or "").strip()
+    if phase not in {
+        "ready_prediction",
+        "observe_only",
+        "need_change_fate",
+        "need_tianji_for_change",
+        "auto_change_fate_route_forbidden",
+        "change_fate_conflict",
+    }:
+        return False, ""
+    plan = build_tianxing_timeline_plan(
+        now=now,
+        horizon_hours=horizon_hours,
+        windows=windows or [],
+        observed=observed,
+        config=config,
+    )
+    if not plan.get("steps"):
+        return False, ""
+    actions = _format_list([str(step.get("action") or "") for step in plan.get("steps") or [] if isinstance(step, dict)])
+    return True, f"旧天星时间线为空阻塞计划，最新状态已可执行 {actions or '后续步骤'}，立即重算。"
+
+
 def _set_timeline_step(timeline, index, step):
     steps = list(timeline.get("steps") or [])
     if 0 <= int(index) < len(steps):
@@ -3149,6 +3181,15 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
 
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     should_replan, replan_reason = _timeline_should_replan_for_window_route(timeline, windows or [], now, horizon_hours)
+    if not should_replan:
+        should_replan, replan_reason = _timeline_should_replan_empty_block(
+            timeline,
+            windows or [],
+            observed,
+            effective_config,
+            now,
+            horizon_hours,
+        )
     if should_replan:
         timeline["phase"] = "blocked_replan"
         timeline["active_step_index"] = -1

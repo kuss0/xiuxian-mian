@@ -2195,6 +2195,55 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual("change_fate", plan["steps"][-1]["release_basis"])
 
+    async def test_scheduler_replans_stale_empty_ready_prediction_for_required_change(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, tianji_value=9, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_action": "推命",
+                "last_result": "success",
+                "last_route": "探索",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "闭关",
+                "current_change_until": now - 60,
+            })
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "old-ready",
+                "phase": "ready_prediction",
+                "route": "探索",
+                "reason": "探索 推命已由近期真实回复确认，无需重复押注。",
+                "steps": [],
+                "active_step_index": -1,
+                "active_step": {},
+                "blocked_until": now + 3600,
+            }
+            with patch.object(tianxing, "save_state"), patch.object(
+                tianxing,
+                "send_game_command",
+                new=AsyncMock(return_value=SimpleNamespace(id=12345, sent_at=now + 1)),
+            ) as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(
+                    now,
+                    windows=[{
+                        "route": "探索",
+                        "kind": "consume",
+                        "start_at": now,
+                        "end_at": now + 60,
+                        "weight": 10,
+                        "reason": "野外历练",
+                        "require_change_fate": True,
+                    }],
+                )
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("sent_waiting_ack", result["phase"])
+        send_mock.assert_awaited_once()
+        self.assertEqual(".改命 探索", send_mock.await_args.args[0])
+        self.assertEqual("change_fate", timeline["active_step"]["action"])
+        self.assertEqual("探索", timeline["active_step"]["arg"])
+        self.assertEqual("sent_waiting_ack", timeline["active_step"]["status"])
+
     def test_consume_window_lacking_tianji_does_not_override_prediction(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
