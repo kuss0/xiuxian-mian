@@ -114,9 +114,16 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
-    def _register(self, identity_id, *, label="", world_boss_enabled=True):
+    def _register(self, identity_id, *, label="", world_boss_enabled=True, realm="", battle_power_value=0):
         state_module.ensure_identity_registered(identity_id)
-        state_module.update_send_as_profile(identity_id, username=label or str(identity_id), label=label or str(identity_id), enabled=True)
+        state_module.update_send_as_profile(
+            identity_id,
+            username=label or str(identity_id),
+            label=label or str(identity_id),
+            realm=realm,
+            battle_power_value=battle_power_value,
+            enabled=True,
+        )
         identity_state = state_module.get_identity_state(identity_id)
         identity_state["world_boss_enabled"] = bool(world_boss_enabled)
         return identity_state
@@ -196,7 +203,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual("护阵", world_boss.choose_world_boss_action(3907536807, identity_state, run_state, now=now))
 
-    def test_safe_phase_two_allows_only_named_strong_attackers(self):
+    def test_safe_phase_two_allows_named_and_yuanying_strong_attackers(self):
         now = 1_781_318_800.0
         run_state = world_boss._blank_run_state(now)
         run_state.update(
@@ -209,12 +216,36 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
                 "zhen": 90,
             }
         )
+        yuanying_id = 3800619925
+        self._register(yuanying_id, label="丁丁", realm="元婴后期", battle_power_value=8_000_000)
         wa_state = {"world_boss_action_count": 0, "world_boss_action_limit": 5, "world_boss_attack_count": 0}
+        yuanying_state = {"world_boss_action_count": 0, "world_boss_action_limit": 5, "world_boss_attack_count": 0}
         normal_state = {"world_boss_action_count": 0, "world_boss_action_limit": 5, "world_boss_attack_count": 0}
 
         self.assertEqual("强攻", world_boss.choose_world_boss_action(8659059191, wa_state, run_state, now=now))
         self.assertEqual("强攻", world_boss.choose_world_boss_action(301299112, wa_state, run_state, now=now))
+        self.assertEqual("强攻", world_boss.choose_world_boss_action(yuanying_id, yuanying_state, run_state, now=now))
         self.assertIn(world_boss.choose_world_boss_action(123456789, normal_state, run_state, now=now), {"镇魂", "护阵"})
+
+    def test_safe_phase_three_allows_finish_window_for_strong_attackers(self):
+        now = 1_781_318_805.0
+        run_state = world_boss._blank_run_state(now)
+        run_state.update(
+            {
+                "active": True,
+                "last_status_at": now,
+                "phase": "第三阶段·万魂归劫",
+                "hp_percent": 8,
+                "moya": 43,
+                "zhen": 71,
+                "summary": {"镇魂": 10, "护阵": 5, "强攻": 0, "破幡": 9},
+            }
+        )
+        identity_id = 7538826434
+        self._register(identity_id, label="Lsfnqy", realm="元婴后期", battle_power_value=14_035_000)
+        identity_state = {"world_boss_action_count": 1, "world_boss_action_limit": 5, "world_boss_attack_count": 0}
+
+        self.assertEqual("强攻", world_boss.choose_world_boss_action(identity_id, identity_state, run_state, now=now))
 
     def test_maintenance_prefers_suppress_when_moya_is_high_even_if_zhen_is_low(self):
         now = 1_781_318_900.0
@@ -432,7 +463,8 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("world_boss:2026-06-13:test", first_send_args.kwargs["chain_id"])
         self.assertEqual(1, identity_state["world_boss_action_count"])
         self.assertEqual(1, second_state["world_boss_action_count"])
-        self.assertEqual("镇魂", identity_state["world_boss_pending_action"])
+        self.assertEqual("破幡", identity_state["world_boss_pending_action"])
+        self.assertEqual("镇魂", second_state["world_boss_pending_action"])
         identity_call_index = next(
             index for index, call in enumerate(send_mock.await_args_list) if call.kwargs["send_as_id"] == identity_id
         )
@@ -543,6 +575,24 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(["破幡"] * 11 + [""] * 14, first_round)
         self.assertEqual([""] * 25, second_round)
+
+    def test_opening_break_flag_prioritizes_yuanying_and_huashen_identities(self):
+        normal_ids = [3_300_000_000 + index for index in range(24)]
+        for identity_id in normal_ids:
+            self._register(identity_id, label=f"结丹{identity_id}", realm="结丹后期")
+        yuanying_id = 8_000_000_001
+        huashen_id = 8_000_000_002
+        self._register(yuanying_id, label="元婴大号", realm="元婴后期", battle_power_value=14_000_000)
+        self._register(huashen_id, label="化神大号", realm="化神初期", battle_power_value=266_000_000)
+
+        for identity_id in normal_ids + [yuanying_id, huashen_id]:
+            state_module.get_identity_state(identity_id)["world_boss_action_count"] = 0
+
+        opening_order = world_boss._opening_identity_order()
+        self.assertEqual([huashen_id, yuanying_id], opening_order[:2])
+        self.assertEqual("破幡", world_boss._opening_action_for_identity(huashen_id, state_module.get_identity_state(huashen_id)))
+        self.assertEqual("破幡", world_boss._opening_action_for_identity(yuanying_id, state_module.get_identity_state(yuanying_id)))
+        self.assertEqual("", world_boss._opening_action_for_identity(normal_ids[10], state_module.get_identity_state(normal_ids[10])))
 
     async def test_open_broadcast_message_id_starts_new_event_even_with_same_text(self):
         identity_id = 8659059191

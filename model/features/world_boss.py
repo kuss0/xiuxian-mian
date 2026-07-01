@@ -15,6 +15,8 @@ from ..config import (
 from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import (
+    REALM_SORT_INDEX,
+    YUANYING_MIN_REALM_INDEX,
     get_current_identity_id,
     get_identity_enabled,
     get_identity_ids,
@@ -58,6 +60,8 @@ WORLD_BOSS_RESCUE_ZHEN_THRESHOLD = 10
 WORLD_BOSS_PHASE_TWO_CRITICAL_ZHEN = 35
 WORLD_BOSS_PHASE_TWO_GUARD_MOYA_LIMIT = 95
 WORLD_BOSS_OPENING_GROUP_SIZE = 11
+WORLD_BOSS_STRONG_MIN_REALM = "元婴初期"
+WORLD_BOSS_STRONG_MIN_REALM_INDEX = YUANYING_MIN_REALM_INDEX
 WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {WORLD_BOSS_STATUS_QUERY_COMMAND}
@@ -699,11 +703,61 @@ def _enabled_identity_ids():
     return result
 
 
+def _opening_strategy_active(run_state):
+    phase = str(run_state.get("phase") or "")
+    return not phase or "第一阶段" in phase
+
+
+def _identity_profile(identity_id):
+    profile = get_send_as_profile(identity_id)
+    return profile if isinstance(profile, dict) else {}
+
+
+def _identity_realm_index(identity_id):
+    profile = _identity_profile(identity_id)
+    realm = str(profile.get("realm") or "").strip()
+    return REALM_SORT_INDEX.get(realm, -1)
+
+
+def _identity_battle_power_value(identity_id):
+    profile = _identity_profile(identity_id)
+    return max(0, _coerce_int(profile.get("battle_power_value"), 0))
+
+
+def _strong_attacker(identity_id):
+    identity_id = int(identity_id or 0)
+    if identity_id in WORLD_BOSS_STRONG_ATTACK_IDS:
+        return True
+    profile = _identity_profile(identity_id)
+    candidates = {
+        str(profile.get("username") or "").strip().lower(),
+        str(profile.get("label") or "").strip().lower(),
+    }
+    if any(candidate in WORLD_BOSS_STRONG_ATTACK_NAMES for candidate in candidates if candidate):
+        return True
+    realm_index = _identity_realm_index(identity_id)
+    return realm_index >= WORLD_BOSS_STRONG_MIN_REALM_INDEX
+
+
+def _strong_attacker_priority_key(identity_id):
+    return (
+        0 if _strong_attacker(identity_id) else 1,
+        -_identity_realm_index(identity_id),
+        -_identity_battle_power_value(identity_id),
+        int(identity_id or 0),
+    )
+
+
+def _opening_identity_order():
+    enabled_ids = _enabled_identity_ids()
+    return sorted(enabled_ids, key=_strong_attacker_priority_key)
+
+
 def _opening_action_for_identity(identity_id, identity_state):
     action_count = _coerce_int(identity_state.get("world_boss_action_count"), 0)
     if action_count != 0:
         return ""
-    enabled_ids = sorted(_enabled_identity_ids())
+    enabled_ids = _opening_identity_order()
     if not enabled_ids:
         return ""
     try:
@@ -712,22 +766,6 @@ def _opening_action_for_identity(identity_id, identity_state):
         return ""
     group_size = min(WORLD_BOSS_OPENING_GROUP_SIZE, max(1, (len(enabled_ids) + 1) // 2))
     return "破幡" if index < group_size else ""
-
-
-def _opening_strategy_active(run_state):
-    phase = str(run_state.get("phase") or "")
-    return not phase or "第一阶段" in phase
-
-
-def _strong_attacker(identity_id):
-    if int(identity_id or 0) in WORLD_BOSS_STRONG_ATTACK_IDS:
-        return True
-    profile = get_send_as_profile(identity_id)
-    candidates = {
-        str(profile.get("username") or "").strip().lower(),
-        str(profile.get("label") or "").strip().lower(),
-    }
-    return any(candidate in WORLD_BOSS_STRONG_ATTACK_NAMES for candidate in candidates if candidate)
 
 
 def _identity_label(identity_id):
@@ -760,14 +798,19 @@ def _status_event_key(now, current_msg_id=0):
 
 def _strong_attack_allowed(run_state):
     phase = str(run_state.get("phase") or "")
-    if "第二阶段" not in phase:
+    is_phase_two = "第二阶段" in phase
+    is_phase_three = "第三阶段" in phase
+    if not is_phase_two and not is_phase_three:
         return False
     hp = _coerce_int(run_state.get("hp_percent"), -1)
     moya = _coerce_int(run_state.get("moya"), -1)
     zhen = _coerce_int(run_state.get("zhen"), -1)
     if hp < 0 or hp > 80:
         return False
-    return 0 <= moya <= 70 and zhen >= 75
+    if not 0 <= moya <= 70:
+        return False
+    zhen_floor = 70 if is_phase_three else 75
+    return zhen >= zhen_floor
 
 
 def _priority_window_key(run_state):
@@ -988,7 +1031,17 @@ def _select_identity_and_action(run_state, now, *, allow_new_actions=True):
     candidates.sort()
     pending_candidates.sort()
     if _strong_attack_allowed(run_state):
-        candidates.sort(key=lambda item: (0 if _strong_attacker(item[4]) else 1, item[0], item[1], item[2], item[4]))
+        candidates.sort(key=lambda item: (*_strong_attacker_priority_key(item[4]), item[0], item[1], item[2]))
+    elif _opening_strategy_active(run_state):
+        candidates.sort(
+            key=lambda item: (
+                0 if _opening_action_for_identity(item[4], item[5]) else 1,
+                *_strong_attacker_priority_key(item[4]),
+                item[0],
+                item[1],
+                item[2],
+            )
+        )
     search_order = candidates if allow_new_actions and candidates else pending_candidates
     for _last_at, _count, _retry_count, _action_seq, identity_id, identity_state, pending_action in search_order:
         if pending_action:
