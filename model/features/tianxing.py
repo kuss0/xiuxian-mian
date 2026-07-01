@@ -2753,10 +2753,12 @@ def _timeline_should_replan_empty_block(timeline, windows, observed, config, now
         return False, ""
     if dict((timeline or {}).get("active_step") or {}):
         return False, ""
-    if float((timeline or {}).get("blocked_until", 0) or 0) <= float(now):
-        return False, ""
     phase = str((timeline or {}).get("phase") or "").strip()
-    if phase not in {
+    blocked_until = float((timeline or {}).get("blocked_until", 0) or 0)
+    if phase == "blocked_replan":
+        if blocked_until > float(now):
+            return False, ""
+    elif phase in {
         "ready_prediction",
         "observe_only",
         "need_change_fate",
@@ -2764,6 +2766,9 @@ def _timeline_should_replan_empty_block(timeline, windows, observed, config, now
         "auto_change_fate_route_forbidden",
         "change_fate_conflict",
     }:
+        if blocked_until <= float(now):
+            return False, ""
+    else:
         return False, ""
     plan = build_tianxing_timeline_plan(
         now=now,

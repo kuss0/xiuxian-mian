@@ -2607,6 +2607,33 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("downstream_released", released["phase"])
         self.assertTrue(tianxing.is_tianxing_route_released("闭关", now=now + 81))
 
+    async def test_timeline_replans_consumed_empty_blocked_replan_when_due(self):
+        now = 1_780_000_000.0
+        first_msg = SimpleNamespace(id=9201, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-consumed",
+                "phase": "blocked_replan",
+                "route": "探索",
+                "active_step_index": -1,
+                "active_step": {},
+                "steps": [],
+                "blocked_until": now - 1,
+                "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+            }
+
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command", return_value=first_msg) as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now))
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("sent_waiting_ack", result["phase"])
+        self.assertEqual("闭关", timeline["route"])
+        self.assertEqual("predict", timeline["active_step"]["action"])
+        self.assertEqual("闭关", timeline["active_step"]["arg"])
+        self.assertEqual(".推命 闭关", send_mock.await_args.args[0])
+
     def test_ui_snapshot_exposes_timeline_state(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
