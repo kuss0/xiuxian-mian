@@ -196,7 +196,24 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         self.assertEqual(1, changed)
         with state_module.use_identity(send_as_id):
             self.assertEqual("queued_launch", state_module.state["deep_retreat_phase"])
-            self.assertEqual(now - 1, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(now - 180, state_module.state["next_deep_retreat_time"])
+
+    def test_startup_spread_clamps_polluted_phaseful_queued_launch_deadline(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["last_deep_retreat_command_time"] = now - 300
+            state_module.state["next_deep_retreat_time"] = now + 1800
+
+        with patch.object(control.random, "uniform", return_value=900):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("queued_launch", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 1, state_module.state["next_deep_retreat_time"])
 
     def test_startup_spread_does_not_stretch_fishing_timer(self):
         now = 1_700_000_000.0

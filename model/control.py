@@ -646,14 +646,17 @@ def _recover_phaseful_queued_launch_deadline(timer_key, now):
         deadline = float(state.get(timer_key, 0) or 0)
     except (TypeError, ValueError, OverflowError):
         deadline = 0.0
-    if deadline > 0:
-        return deadline
     try:
         queued_at = float(state.get(last_command_key, 0) or 0)
     except (TypeError, ValueError, OverflowError):
         queued_at = 0.0
     if queued_at > 0:
-        return queued_at + RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC
+        queued_deadline = queued_at + RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC
+        if deadline > 0:
+            return min(deadline, queued_deadline)
+        return queued_deadline
+    if deadline > 0:
+        return deadline
     return float(now or time.time()) + RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC
 
 
