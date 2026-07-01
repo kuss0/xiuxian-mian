@@ -1,7 +1,9 @@
 import asyncio
 import hashlib
+import json
 import re
 import time
+from collections import deque
 from datetime import datetime
 
 from ..config import (
@@ -10,6 +12,7 @@ from ..config import (
     CMD_QINGYUANZI_GUARD,
     CMD_QINGYUANZI_SUPPRESS,
     CMD_WORLD_BOSS_STATUS,
+    MESSAGES_DIR,
     TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
@@ -53,7 +56,9 @@ WORLD_BOSS_STATUS_STALE_SEC = 120
 WORLD_BOSS_STATUS_QUERY_GAP_SEC = 3 * 60
 WORLD_BOSS_EVENT_TTL_SEC = 35 * 60
 WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC = 45
-WORLD_BOSS_RECOVERY_PROBE_MIN_GAP_SEC = 15 * 60
+WORLD_BOSS_RECOVERY_LOG_GAP_MIN_SEC = 8 * 60
+WORLD_BOSS_RECOVERY_LOG_LOOKBACK_SEC = 2 * 3600
+WORLD_BOSS_RECOVERY_LOG_TAIL_LINES = 2500
 WORLD_BOSS_RECOVERY_PENDING_TTL_SEC = WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC * (WORLD_BOSS_STATUS_MAX_RETRIES + 1) + 30
 WORLD_BOSS_STRONG_ATTACK_LIMIT = 5
 WORLD_BOSS_DEFAULT_ACTION_LIMIT = 5
@@ -485,6 +490,61 @@ def _recovery_probe_pending(run_state, now):
     return probe_at > 0 and float(now) - probe_at <= WORLD_BOSS_RECOVERY_PENDING_TTL_SEC
 
 
+def _parse_message_log_epoch(raw_ts):
+    text = str(raw_ts or "")[:19]
+    if not text:
+        return 0.0
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _message_log_path_for_day(day_key):
+    return f"{MESSAGES_DIR}/{day_key}.log"
+
+
+def _recent_message_log_epochs(now):
+    now = float(now or time.time())
+    day_keys = [get_day_key(now)]
+    previous_day = get_day_key(now - 24 * 3600)
+    if previous_day not in day_keys:
+        day_keys.append(previous_day)
+    epochs = []
+    cutoff = now - WORLD_BOSS_RECOVERY_LOG_LOOKBACK_SEC
+    for day_key in day_keys:
+        try:
+            with open(_message_log_path_for_day(day_key), "r", encoding="utf-8", errors="replace") as handle:
+                lines = deque(handle, maxlen=WORLD_BOSS_RECOVERY_LOG_TAIL_LINES)
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            epoch = _parse_message_log_epoch(payload.get("ts"))
+            if cutoff <= epoch <= now:
+                epochs.append(epoch)
+    return sorted(set(epochs))
+
+
+def _recent_message_log_gap_since(reference_at, now):
+    """Return True when recent game-message logs show a real listener outage."""
+    reference_at = float(reference_at or 0)
+    epochs = _recent_message_log_epochs(now)
+    if len(epochs) < 2:
+        return False
+    for previous, current in zip(epochs, epochs[1:]):
+        if current <= reference_at:
+            continue
+        if current - previous >= WORLD_BOSS_RECOVERY_LOG_GAP_MIN_SEC:
+            return True
+    return False
+
+
 def _recovery_probe_due(run_state, now):
     global _WORLD_BOSS_RECOVERY_PROBE_DONE
     if _WORLD_BOSS_RECOVERY_PROBE_DONE or bool(run_state.get("active")):
@@ -492,7 +552,7 @@ def _recovery_probe_due(run_state, now):
     if float(now) < _WORLD_BOSS_RECOVERY_BOOT_AT + WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC:
         return False
     probe_at = _coerce_float(run_state.get("fallback_status_at"), 0)
-    if probe_at > 0 and float(now) - probe_at < WORLD_BOSS_RECOVERY_PROBE_MIN_GAP_SEC:
+    if not _recent_message_log_gap_since(probe_at, now):
         _WORLD_BOSS_RECOVERY_PROBE_DONE = True
         return False
     return True

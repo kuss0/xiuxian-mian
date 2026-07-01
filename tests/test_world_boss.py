@@ -881,6 +881,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "_recent_message_log_gap_since", return_value=True),
             patch.object(
                 world_boss,
                 "send_game_command",
@@ -903,6 +904,53 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(world_boss.get_day_key(due_now + 1), run_state["fallback_status_day"])
         self.assertEqual(due_now + 1, run_state["fallback_status_at"])
         self.assertTrue(world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE)
+
+    async def test_scheduler_skips_recovery_probe_without_recent_listener_gap(self):
+        identity_id = 301299112
+        self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 13, 20, 30, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        world_boss._WORLD_BOSS_RECOVERY_BOOT_AT = now
+        world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE = False
+        state_module.set_world_boss_run_state(
+            {
+                "active": False,
+                "event_key": "",
+                "fallback_status_day": world_boss.get_day_key(now),
+                "fallback_status_at": now - 30 * 60,
+                "next_status_query_at": 0,
+            }
+        )
+        due_now = now + world_boss.WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC + 1
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "_recent_message_log_gap_since", return_value=False) as gap_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(due_now)
+
+        send_mock.assert_not_awaited()
+        gap_mock.assert_called_once()
+        self.assertTrue(world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE)
+        run_state = state_module.get_world_boss_run_state()
+        self.assertEqual(now - 30 * 60, run_state["fallback_status_at"])
+        self.assertEqual(0, run_state["next_status_query_at"])
+
+    def test_recent_message_log_gap_detection_only_counts_after_reference(self):
+        now = 1_780_500_000.0
+        reference_at = now - 1000
+        with patch.object(
+            world_boss,
+            "_recent_message_log_epochs",
+            return_value=[now - 2000, now - 1400, now - 900, now - 870],
+        ):
+            self.assertTrue(world_boss._recent_message_log_gap_since(reference_at, now))
+        with patch.object(
+            world_boss,
+            "_recent_message_log_epochs",
+            return_value=[now - 2000, now - 1400, now - 990, now - 970],
+        ):
+            self.assertFalse(world_boss._recent_message_log_gap_since(reference_at, now))
 
     async def test_recovery_probe_status_reply_starts_active_event(self):
         identity_id = 301299112
