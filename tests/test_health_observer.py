@@ -146,6 +146,11 @@ class HealthObserverTests(unittest.TestCase):
                 "Jul 02 02:02:55 pve python[235521]: [WalterWA2000] 🧯 指令 .卜筮问天 超时无响应，交由模块状态机继续。"
             )
         )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jul 02 03:33:42 pve python[266008]: [xuruode6] 🧘 深度闭关 续轮指令超时无确认，改用状态查询校准。"
+            )
+        )
 
     def test_journal_since_is_not_before_current_service_start(self):
         start_epoch = health_observer.parse_local_ts("2026-06-06 14:38:55")

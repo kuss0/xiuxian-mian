@@ -343,8 +343,73 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
 
             send_mock.assert_not_awaited()
             self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
-            self.assertIn("回复超时", state_module.state["mulan_last_error"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertEqual("idle", state_module.state["mulan_phase"])
+            self.assertIn("搜集无回复", state_module.state["mulan_last_result"])
             self.assertGreater(state_module.state["next_mulan_time"], now)
+
+    async def test_stale_collect_pending_without_anchor_recovers_without_send(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "collect_pending"
+            state_module.state["mulan_reply_to_msg_id"] = 0
+            state_module.state["mulan_reply_due_at"] = 0
+            state_module.state["mulan_last_error"] = "collect_pending 回复超时"
+            state_module.state["next_mulan_time"] = now + 600
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["mulan_phase"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertEqual("搜集无回复，等待重试", state_module.state["mulan_last_result"])
+            self.assertEqual(now + 600, state_module.state["next_mulan_time"])
+
+    async def test_phaseful_risk_defers_send_without_pending(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"),
+                patch.object(mulan.random, "uniform", return_value=90),
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
+            self.assertEqual(now + 90, state_module.state["next_mulan_time"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertIn("延后发送", state_module.state["mulan_last_result"])
+
+    async def test_global_send_block_uses_identity_without_name_error(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "get_phaseful_summary_risk_reason", return_value=""),
+                patch.object(mulan, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(mulan, "was_last_game_send_blocked_by_global", return_value=True) as blocked_mock,
+                patch.object(mulan.random, "uniform", return_value=600),
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            blocked_mock.assert_called_once_with(identity_id, ".搜集军报")
+            self.assertEqual("全局暂停，等待恢复错峰", state_module.state["mulan_last_result"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertEqual(now + 600, state_module.state["next_mulan_time"])
 
     async def test_cd_reply_uses_real_wait_text(self):
         identity_id = self._prepare_identity()
