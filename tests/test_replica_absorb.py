@@ -1586,9 +1586,16 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn(("1 隐阵诱敌", ".黄龙抉择 1"), first_stage["commands"])
         self.assertEqual("第二幕：内应暴露", second_stage["title"])
         self.assertEqual(18, second_stage["status"]["alert"])
+        self.assertIn("避开2", app_replica._format_huanglong_decision_advice(second_stage, second))
         self.assertEqual("神师将至", final_stage["title"])
         self.assertEqual(103, final_stage["status"]["alert"])
         self.assertIn("夺宝即退", app_replica._format_huanglong_decision_advice(final_stage, final))
+
+        negative_status = app_replica._parse_huanglong_status_snapshot(
+            "最终状态：阵势：-13 ｜ 军心：19 ｜ 敌警：127 ｜ 战果：52 ｜ 情报：18"
+        )
+        self.assertEqual(-13, negative_status["formation"])
+        self.assertEqual(127, negative_status["alert"])
 
     def test_huanglong_settlement_text_is_classified_and_titled(self):
         success = (

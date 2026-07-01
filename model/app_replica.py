@@ -1477,7 +1477,7 @@ def _get_zhuimo_decision_stage(text):
 def _parse_huanglong_status_snapshot(text):
     raw_text = str(text or "")
     match = re.search(
-        r"阵势[:：](?P<formation>\d+)\s*｜\s*军心[:：](?P<morale>\d+)\s*｜\s*敌警[:：](?P<alert>\d+)\s*｜\s*战果[:：](?P<merit>\d+)\s*｜\s*情报[:：](?P<intel>\d+)",
+        r"阵势[:：](?P<formation>-?\d+)\s*｜\s*军心[:：](?P<morale>-?\d+)\s*｜\s*敌警[:：](?P<alert>-?\d+)\s*｜\s*战果[:：](?P<merit>-?\d+)\s*｜\s*情报[:：](?P<intel>-?\d+)",
         raw_text,
     )
     if not match:
@@ -1559,7 +1559,7 @@ def _format_huanglong_decision_advice(stage_info, text, *, html=False):
     if "第一幕" in title:
         advice = "建议：默认选1隐阵诱敌；保守开局可选2固守峰顶，3外谷游杀偏贪。"
     elif "第二幕" in title or "内应" in title:
-        advice = "建议：默认选3将计就计拿情报；队伍偏弱或只求稳可手动选1。"
+        advice = "建议：默认选3将计就计拿情报；队伍偏弱或只求稳可选1，避开2搜魂逼供。"
     elif "神师将至" in title:
         if (
             formation is not None
