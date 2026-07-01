@@ -152,6 +152,7 @@ from .features.wild_training import (
     WILD_TRAINING_RETRY_MAX_SEC,
     WILD_TRAINING_RETRY_MIN_SEC,
     handle_wild_training_reply,
+    run_wild_training_phaseful_cleanup_scheduler,
     run_wild_training_scheduler,
 )
 from .persistence import (
@@ -269,6 +270,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
 )
 _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS = (
     run_concubine_phaseful_cleanup_scheduler,
+    run_wild_training_phaseful_cleanup_scheduler,
 )
 _GLOBAL_SCHEDULERS = (
     ("delayed_actions", drain_due_actions),

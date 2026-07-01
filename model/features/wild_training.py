@@ -535,45 +535,58 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     return False
 
 
+async def _cleanup_wild_training_pending_timeout(now):
+    reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
+    if reply_to_msg_id <= 0:
+        return False
+    if now < float(state.get("wild_training_reply_due_at", 0) or 0):
+        return False
+    recovered = _recover_wild_training_from_message_log(now)
+    if recovered == "result":
+        save_state()
+        await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
+        return True
+    if recovered == "start" and now < float(state.get("wild_training_reply_due_at", 0) or 0):
+        save_state()
+        console_log(
+            f"🏞️ 野外历练日志补偿：已出发，继续等待结果编辑（msg_id={state['wild_training_reply_to_msg_id']}）",
+            scope="identity",
+        )
+        return True
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    if str(state.get("wild_training_last_result") or "").startswith("已出发"):
+        _schedule_next(now)
+        state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
+        state["wild_training_last_result_at"] = float(now or 0)
+        state["wild_training_last_error"] = ""
+        save_state()
+        console_log(f"🏞️ 野外历练{state['wild_training_last_result']}", scope="identity")
+        return True
+    if int(state.get("wild_training_retry_count", 0) or 0) < 1:
+        state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
+        _schedule_retry(now)
+        state["wild_training_last_error"] = f"野外历练回复超时，准备补发一次，原消息ID={reply_to_msg_id}"
+    else:
+        _schedule_next(now)
+        state["wild_training_last_error"] = f"野外历练补发后仍无回复，进入下一轮，原消息ID={reply_to_msg_id}"
+    save_state()
+    await send_audit_log(f"⚠️ {state['wild_training_last_error']}", scope="identity")
+    return True
+
+
+async def run_wild_training_phaseful_cleanup_scheduler(now):
+    if not state.get("wild_training_enabled"):
+        return False
+    async with _wild_training_lock():
+        return await _cleanup_wild_training_pending_timeout(now)
+
+
 async def _run_wild_training_scheduler_unlocked(now):
     if not state.get("wild_training_enabled"):
         return
 
-    reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
-    if reply_to_msg_id > 0:
-        if now < float(state.get("wild_training_reply_due_at", 0) or 0):
-            return
-        recovered = _recover_wild_training_from_message_log(now)
-        if recovered == "result":
-            save_state()
-            await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
-            return
-        if recovered == "start" and now < float(state.get("wild_training_reply_due_at", 0) or 0):
-            save_state()
-            console_log(
-                f"🏞️ 野外历练日志补偿：已出发，继续等待结果编辑（msg_id={state['wild_training_reply_to_msg_id']}）",
-                scope="identity",
-            )
-            return
-        state["wild_training_reply_to_msg_id"] = 0
-        state["wild_training_reply_due_at"] = 0
-        if str(state.get("wild_training_last_result") or "").startswith("已出发"):
-            _schedule_next(now)
-            state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
-            state["wild_training_last_result_at"] = float(now or 0)
-            state["wild_training_last_error"] = ""
-            save_state()
-            console_log(f"🏞️ 野外历练{state['wild_training_last_result']}", scope="identity")
-            return
-        elif int(state.get("wild_training_retry_count", 0) or 0) < 1:
-            state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
-            _schedule_retry(now)
-            state["wild_training_last_error"] = f"野外历练回复超时，准备补发一次，原消息ID={reply_to_msg_id}"
-        else:
-            _schedule_next(now)
-            state["wild_training_last_error"] = f"野外历练补发后仍无回复，进入下一轮，原消息ID={reply_to_msg_id}"
-        save_state()
-        await send_audit_log(f"⚠️ {state['wild_training_last_error']}", scope="identity")
+    if await _cleanup_wild_training_pending_timeout(now):
         return
 
     try:
@@ -650,6 +663,7 @@ __all__ = [
     "get_wild_training_status_text",
     "handle_wild_training_reply",
     "normalize_wild_training_strategy",
+    "run_wild_training_phaseful_cleanup_scheduler",
     "run_wild_training_scheduler",
     "schedule_wild_training_initial_check",
 ]
