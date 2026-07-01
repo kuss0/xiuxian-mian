@@ -1445,6 +1445,42 @@ class ReplicaAbsorbTests(unittest.TestCase):
         cooldown_until = records[str(identity_id)]["replica_states"][app_replica._REPLICA_KIND_LUOYUN]["cooldown_until"]
         self.assertEqual(now + app_replica.REPLICA_LUOYUN_SUCCESS_COOLDOWN_SEC, cooldown_until)
 
+    def test_luoyun_cd_reminder_tracks_only_luoyun_leader(self):
+        leader_id = self._register_replica_identity(991252, "growrdick", realm="结丹后期", sect_name="落云宗")
+        other_luoyun_id = self._register_replica_identity(991253, "otherluoyun", realm="结丹后期", sect_name="落云宗")
+        non_luoyun_id = self._register_replica_identity(991254, "wa2000", realm="化神初期", sect_name="天星宗")
+        now = 1000.0
+
+        app_replica._mark_replica_success_cooldown(
+            [leader_id, other_luoyun_id, non_luoyun_id],
+            now,
+            source_msg_id=7001,
+            leader_username="@growrdick",
+            replica_kind=app_replica._REPLICA_KIND_LUOYUN,
+            completed_room_id="91",
+        )
+
+        reminders = state_module.get_replica_run_state()["luoyun_cd_reminders"]
+        self.assertEqual([str(leader_id)], sorted(reminders.keys()))
+
+    def test_luoyun_cd_reminder_scheduler_prunes_non_luoyun_records(self):
+        luoyun_id = self._register_replica_identity(991255, "growrdick", realm="结丹后期", sect_name="落云宗")
+        non_luoyun_id = self._register_replica_identity(991256, "wa2000", realm="化神初期", sect_name="天星宗")
+        now = 1000.0
+        state_module.set_replica_run_state({
+            "luoyun_cd_reminders": {
+                str(luoyun_id): {"identity_id": luoyun_id, "cooldown_until": now + 3600},
+                str(non_luoyun_id): {"identity_id": non_luoyun_id, "cooldown_until": now + 3600},
+            },
+        })
+
+        sent = asyncio.run(app_replica.run_luoyun_cd_reminder_scheduler(now))
+
+        reminders = state_module.get_replica_run_state()["luoyun_cd_reminders"]
+        self.assertEqual(0, sent)
+        self.assertIn(str(luoyun_id), reminders)
+        self.assertNotIn(str(non_luoyun_id), reminders)
+
     def test_luoyun_open_cooldown_without_flow_updates_identity_and_reminder(self):
         identity_id = self._register_replica_identity(3800619925, "growrdick", realm="结丹后期", sect_name="落云宗")
         event = self._prepare_replica_group([identity_id])

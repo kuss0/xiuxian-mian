@@ -6665,6 +6665,31 @@ def _save_luoyun_cd_reminder_records(records):
     _save_replica_run_state_dict(run_state)
 
 
+def _is_luoyun_cd_watch_identity(identity_id):
+    try:
+        identity_id = int(identity_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if identity_id <= 0:
+        return False
+    profile = get_send_as_profile(identity_id)
+    return _normalize_replica_sect_name(profile.get("sect_name") or "") == _LUOYUN_REQUIRED_SECT
+
+
+def _get_luoyun_cd_watch_identity_ids(identity_ids, leader_username=""):
+    normalized_ids = _normalize_replica_identity_ids(identity_ids or [])
+    leader_id = _get_identity_id_by_replica_username(leader_username) if leader_username else 0
+    if leader_id > 0 and _is_luoyun_cd_watch_identity(leader_id):
+        return [leader_id]
+    watch_ids = [identity_id for identity_id in normalized_ids if _is_luoyun_cd_watch_identity(identity_id)]
+    if not watch_ids:
+        return []
+    return sorted(
+        watch_ids,
+        key=lambda identity_id: _normalize_replica_username(get_send_as_profile(identity_id).get("username") or str(identity_id)),
+    )[:1]
+
+
 def _mark_luoyun_cd_reminder_watch(identity_ids, cooldown_until, now=None):
     cooldown_until = float(cooldown_until or 0)
     if cooldown_until <= 0:
@@ -6672,7 +6697,12 @@ def _mark_luoyun_cd_reminder_watch(identity_ids, cooldown_until, now=None):
     now = float(now or time.time())
     records = dict(_get_luoyun_cd_reminder_records())
     changed = False
-    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
+    requested_ids = _normalize_replica_identity_ids(identity_ids or [])
+    watch_ids = _get_luoyun_cd_watch_identity_ids(requested_ids)
+    for identity_id in requested_ids:
+        if identity_id not in watch_ids and records.pop(str(identity_id), None) is not None:
+            changed = True
+    for identity_id in watch_ids:
         key = str(identity_id)
         item = records.get(key)
         item = dict(item) if isinstance(item, dict) else {}
@@ -6714,6 +6744,10 @@ async def run_luoyun_cd_reminder_scheduler(now):
         except (TypeError, ValueError):
             identity_id = 0
         if identity_id <= 0 or identity_id not in get_identity_ids():
+            reminders.pop(raw_identity_id, None)
+            changed = True
+            continue
+        if not _is_luoyun_cd_watch_identity(identity_id):
             reminders.pop(raw_identity_id, None)
             changed = True
             continue
@@ -9468,7 +9502,11 @@ def _mark_replica_success_cooldown(identity_ids, now, source_msg_id=0, leader_us
     if changed:
         _save_replica_run_records(records)
         if replica_kind == _REPLICA_KIND_LUOYUN:
-            _mark_luoyun_cd_reminder_watch(identity_ids, cooldown_until, now=now)
+            _mark_luoyun_cd_reminder_watch(
+                _get_luoyun_cd_watch_identity_ids(identity_ids, leader_username=leader_username),
+                cooldown_until,
+                now=now,
+            )
 
 
 def _mark_replica_failure_pending(identity_ids, now, replica_kind=_REPLICA_KIND_VIRTUAL_HALL):
