@@ -2159,6 +2159,42 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], [step["action"] for step in plan["steps"]])
         self.assertIn("天机值不足", plan["predict_reason"])
 
+    def test_consume_window_adds_change_fate_when_stale_change_expired(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, tianji_value=9, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_action": "推命",
+                "last_result": "success",
+                "last_route": "探索",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "闭关",
+                "current_change_until": now - 60,
+            })
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[{
+                    "route": "探索",
+                    "kind": "consume",
+                    "start_at": now,
+                    "end_at": now + 60,
+                    "weight": 10,
+                    "reason": "野外历练",
+                    "require_change_fate": True,
+                }],
+                config=state_module.state["tianxing_auto_config"],
+            )
+
+        self.assertEqual("ready_prediction", plan["stage"])
+        self.assertEqual("探索", plan["recommended_change_route"])
+        self.assertEqual("探索", plan["release_route"])
+        self.assertEqual(
+            [("change_fate", "探索"), ("release_downstream", "探索")],
+            [(step["action"], step["arg"]) for step in plan["steps"]],
+        )
+        self.assertEqual("change_fate", plan["steps"][-1]["release_basis"])
+
     def test_consume_window_lacking_tianji_does_not_override_prediction(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):

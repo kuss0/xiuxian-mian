@@ -2425,8 +2425,9 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
     current_prediction = str(observed.get("current_prediction") or "").strip()
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
     prediction_unconsumed = _has_active_unconsumed_prediction(current_prediction, observed, now) if current_prediction else False
-    current_change = str(observed.get("current_change") or "").strip()
+    raw_current_change = str(observed.get("current_change") or "").strip()
     change_until = float(observed.get("current_change_until", 0) or 0)
+    current_change = raw_current_change if raw_current_change and change_until > now else ""
     fixed_star = str(observed.get("fixed_star") or "").strip()
     tianji_value = int(observed.get("tianji_value", 0) or 0)
     min_tianji = int(config.get("min_tianji_for_change", 6) or 6)
@@ -2482,7 +2483,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         and (needs_star_observe or (target_star and target_star != fixed_star))
     )
     star_gate_blocks_plan = False
-    active_change_route = current_change if current_change and change_until > now else ""
+    active_change_route = current_change
     consume_change_ready = bool(next_consume_route and active_change_route == next_consume_route)
     consume_change_conflicted = bool(next_consume_route and active_change_route and active_change_route != next_consume_route)
     consume_change_can_be_prepared = bool(
@@ -2566,7 +2567,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         predict_reason = f"{dominant_route} 只有消费窗口，没有稳定攒天机窗口，不建议盲发推命。"
 
     if not star_gate_blocks_plan and not blocked_by_conflict and next_consume_route:
-        if current_change == next_consume_route and change_until > now:
+        if active_change_route == next_consume_route:
             recommended_change_route = next_consume_route
             change_reason = f"{recommended_change_route} 改命已待发。"
             release_route = recommended_change_route
@@ -2592,14 +2593,14 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             if next_consume_requires_change:
                 stage = "need_change_fate"
                 predict_reason = f"{next_consume_route} 需要先确认改命，当前自动改命关闭。"
-        elif current_change and change_until > now:
-            recommended_change_route = current_change
-            change_reason = f"已有 {current_change} 改命待发，不覆盖。"
+        elif active_change_route:
+            recommended_change_route = active_change_route
+            change_reason = f"已有 {active_change_route} 改命待发，不覆盖。"
             if next_consume_requires_change:
                 stage = "change_fate_conflict"
                 blocked_until = change_until
                 predict_reason = (
-                    f"{next_consume_route} 需要探索改命，但当前已有 {current_change} 改命待发；"
+                    f"{next_consume_route} 需要探索改命，但当前已有 {active_change_route} 改命待发；"
                     "本轮不放行需要改命兜底的探索动作。"
                 )
         elif tianji_value < min_tianji:
@@ -2626,7 +2627,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
                 for step in steps
             )
             if (
-                (current_change == release_route and change_until > now)
+                (active_change_route == release_route)
                 or has_change_step
                 or (next_consume_requires_change and next_consume_route == release_route)
             ):
