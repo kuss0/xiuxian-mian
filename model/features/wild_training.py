@@ -340,6 +340,17 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     _schedule_next(now)
 
 
+def _is_duplicate_wild_training_result(raw_text, msg_id):
+    msg_id = int(msg_id or 0)
+    if msg_id <= 0:
+        return False
+    if int(state.get("wild_training_last_msg_id", 0) or 0) != msg_id:
+        return False
+    if float(state.get("wild_training_last_result_at", 0) or 0) <= 0:
+        return False
+    return str(state.get("wild_training_last_result") or "") == _result_summary(raw_text)
+
+
 async def _send_tianxing_wild_training_result_audit(raw_text):
     if not looks_like_tianxing_route_result(raw_text):
         return False
@@ -478,6 +489,10 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
 
     if not _is_result_notice(raw_text):
         return False
+
+    if _is_duplicate_wild_training_result(raw_text, msg_id):
+        console_log(f"🏞️ 野外历练重复结果已忽略（msg_id={msg_id}）", scope="identity")
+        return True
 
     _apply_wild_training_result(raw_text, now, msg_id)
     save_state()
