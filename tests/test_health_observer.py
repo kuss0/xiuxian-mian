@@ -279,6 +279,46 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertTrue(any("guarded command repeated" in item["message"] for item in result["alerts"]))
 
+    def test_business_message_analysis_allows_one_small_world_refresh_round(self):
+        now = 1_780_500_000.0
+        sender_id = 301299112
+        events = [
+            {
+                "event_type": "sent",
+                "_epoch": now - 1200 + index * 120,
+                "message_id": 500 + index,
+                "sender_id": sender_id,
+                "text": ".小世界",
+                "family": "small_world_query",
+                "source_module": "小世界",
+            }
+            for index in range(9)
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 3600)
+
+        self.assertFalse(any("guarded command repeated" in item["message"] for item in result["alerts"]))
+
+    def test_business_message_analysis_flags_small_world_beyond_one_refresh_round(self):
+        now = 1_780_500_000.0
+        sender_id = 301299112
+        events = [
+            {
+                "event_type": "sent",
+                "_epoch": now - 1800 + index * 120,
+                "message_id": 600 + index,
+                "sender_id": sender_id,
+                "text": ".小世界",
+                "family": "small_world_query",
+                "source_module": "小世界",
+            }
+            for index in range(10)
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 3600)
+
+        self.assertTrue(any("guarded command repeated" in item["message"] for item in result["alerts"]))
+
     def test_business_db_state_flags_overdue_pending_and_stuck_phase(self):
         now = 1_780_500_000.0
         with tempfile.TemporaryDirectory() as tmp_dir:

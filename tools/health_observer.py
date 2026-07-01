@@ -39,6 +39,12 @@ COOLDOWN_REPLY_PATTERN = re.compile(
 MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
 BENIGN_MODULE_ERROR_PATTERN = re.compile(r"今日.*已达上限|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次")
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
+GUARDED_COMMAND_REPEAT_ALERT_MIN = 4
+GUARDED_COMMAND_REPEAT_ALERT_MIN_BY_COMMAND = {
+    # One small-world prayer refresh round can legitimately send:
+    # initial panel + post-tool panel + up to 7 refresh panels.
+    ".小世界": 10,
+}
 GUARDED_BUSINESS_PREFIXES = (
     ".入梦寻图",
     ".天机代卜",
@@ -608,7 +614,8 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
     for (sender_id, text), items in sorted(grouped.items()):
         if text == ".卜筮问天" and is_expected_divination_query_chain(items):
             continue
-        if len(items) >= 4:
+        alert_min = GUARDED_COMMAND_REPEAT_ALERT_MIN_BY_COMMAND.get(text, GUARDED_COMMAND_REPEAT_ALERT_MIN)
+        if len(items) >= alert_min:
             repeated_command_samples.append({
                 "kind": "guarded_command",
                 "identity_id": sender_id,
