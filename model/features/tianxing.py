@@ -2467,6 +2467,54 @@ def _consume_tianxing_released_route(route, now, reason="route_result_consumed")
     return changed
 
 
+def mark_tianxing_route_result_unknown(route, *, now=None, reason=""):
+    """Conservatively invalidate a released route when the downstream result text is lost."""
+    now = float(now if now is not None else time.time())
+    route = _normalize_route_choice(route, "")
+    if route not in TIANXING_ROUTES:
+        return False
+    if not state.get("tianxing_enabled") or not is_module_available("天星宗"):
+        return False
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    changed = False
+    summary_reason = str(reason or "下游路线结果未留存").strip()
+
+    if _has_active_unconsumed_prediction(route, observed, now):
+        observed["prediction_consumed_route"] = route
+        observed["prediction_consumed_at"] = now
+        observed["current_prediction"] = ""
+        observed["current_prediction_until"] = 0
+        changed = True
+
+    current_change = _normalize_route_choice(observed.get("current_change"), "")
+    change_until = float(observed.get("current_change_until", 0) or 0)
+    if current_change == route and change_until > now:
+        observed["current_change"] = ""
+        observed["current_change_until"] = 0
+        changed = True
+
+    if changed:
+        observed["last_observed_at"] = now
+        observed["last_action"] = route
+        observed["last_result"] = "unknown_result"
+        observed["last_route"] = route
+        observed["last_summary"] = f"{route}结果未留存，已按保守策略重算天星路线"
+        observed["last_error"] = summary_reason
+        observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
+        observed["recent"].append({
+            "ts": now,
+            "action": observed.get("last_action", ""),
+            "result": observed.get("last_result", ""),
+            "summary": observed.get("last_summary", ""),
+        })
+        observed["recent"] = observed["recent"][-8:]
+        state["tianxing_observation"] = observed
+
+    timeline_changed = _consume_tianxing_released_route(route, now, reason=summary_reason)
+    return bool(changed or timeline_changed)
+
+
 def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, observed=None, config=None):
     now = float(now if now is not None else time.time())
     horizon_hours = _coerce_float_range(horizon_hours, 8, 1, 24)
@@ -5059,6 +5107,7 @@ __all__ = [
     "is_tianxing_automation_paused",
     "is_tianxing_route_released",
     "looks_like_tianxing_text",
+    "mark_tianxing_route_result_unknown",
     "note_tianxing_retreat_force_exit_summary",
     "normalize_tianxing_auto_config",
     "normalize_tianxing_observation",

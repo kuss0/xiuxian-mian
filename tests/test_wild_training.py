@@ -366,6 +366,74 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已按正常周期恢复", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
+    async def test_tianxing_started_timeout_invalidates_uncertain_explore_release(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        state_module.update_send_as_profile(send_as_id, username="wild", sect_name="天星宗")
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 201
+            identity_state["wild_training_reply_due_at"] = now - 1
+            identity_state["wild_training_last_msg_id"] = 201
+            identity_state["wild_training_last_result"] = "已出发：深入"
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "current_prediction": "探索",
+                "current_prediction_until": now + 7 * 3600,
+                "current_prediction_set_at": now - 300,
+                "current_change": "探索",
+                "current_change_until": now + 22 * 3600,
+                "tianji_value": 36,
+            }
+            identity_state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "release_downstream",
+                    "route": "探索",
+                    "arg": "探索",
+                    "status": "released",
+                    "release_basis": "change_fate",
+                },
+                "released_routes": {
+                    "探索": {
+                        "released_at": now - 30,
+                        "basis": "change_fate",
+                    }
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+             patch.object(wild_training, "console_log"), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+            await wild_training.run_wild_training_scheduler(now)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+            released = tianxing.is_tianxing_route_released("探索", now=now + 1, require_change_fate=True)
+
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("结果编辑未留存", state_module.state["wild_training_last_result"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("探索", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertEqual("", observed["current_change"])
+        self.assertEqual(0, observed["current_change_until"])
+        self.assertEqual("unknown_result", observed["last_result"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertNotIn("探索", timeline["released_routes"])
+        self.assertIn("放行已被下游动作消费", timeline["last_error"])
+        self.assertFalse(released)
+        audit_mock.assert_awaited_once()
+        args, kwargs = audit_mock.await_args
+        self.assertIn("天星探索结果未留存", args[0])
+        self.assertEqual("high", kwargs["priority"])
+
     async def test_unanswered_command_still_retries_once(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

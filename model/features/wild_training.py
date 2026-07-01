@@ -16,6 +16,7 @@ from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
+    mark_tianxing_route_result_unknown,
     normalize_tianxing_observation,
     run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
@@ -563,12 +564,23 @@ async def _cleanup_wild_training_pending_timeout(now):
     state["wild_training_reply_to_msg_id"] = 0
     state["wild_training_reply_due_at"] = 0
     if str(state.get("wild_training_last_result") or "").startswith("已出发"):
+        tianxing_unknown = mark_tianxing_route_result_unknown(
+            "探索",
+            now=now,
+            reason="野外历练结果编辑未留存",
+        )
         _schedule_next(now)
         state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
         state["wild_training_last_result_at"] = float(now or 0)
         state["wild_training_last_error"] = ""
         save_state()
         console_log(f"🏞️ 野外历练{state['wild_training_last_result']}", scope="identity")
+        if tianxing_unknown:
+            await send_audit_log(
+                "🌌 天星探索结果未留存：已保守清理探索推命/改命缓存，下一次探索前会重新预检。",
+                scope="identity",
+                priority="high",
+            )
         return True
     if int(state.get("wild_training_retry_count", 0) or 0) < 1:
         state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
