@@ -4590,9 +4590,9 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
     farm_phase = str(farm.get("phase") or "").strip()
     farm_next_time = float(farm.get("next_time", 0) or 0)
     craft_command, item = _craft_farm_command(config)
-    if farm_phase in {"waiting", "waiting_consume_window", "send_blocked"} and farm_next_time > now:
+    if farm_phase == "send_blocked" and farm_next_time > now:
         return _craft_farm_result(
-            "waiting_consume_window" if farm_phase != "send_blocked" else "send_blocked_waiting",
+            "send_blocked_waiting",
             active=True,
             takeover=False,
             handoff=True,

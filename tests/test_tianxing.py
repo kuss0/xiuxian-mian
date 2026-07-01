@@ -3975,8 +3975,9 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(9410, craft["last_msg_id"])
         self.assertIn("不重复炼制", craft["last_error"])
 
-    async def test_consume_craft_prediction_respects_waiting_consume_window(self):
+    async def test_consume_craft_prediction_takes_over_waiting_consume_window(self):
         now = 1_780_000_000.0
+        sent_msg = SimpleNamespace(id=9412, sent_at=now)
         with state_module.use_identity(self.identity_id):
             self._prepare_identity(now, tianji_value=39)
             state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
@@ -3992,7 +3993,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 },
             }
             with (
-                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
                 patch.object(tianxing, "save_state"),
             ):
                 result = await tianxing.run_tianxing_consume_craft_prediction(
@@ -4006,11 +4007,14 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                         craft_farm_item="玄铁剑",
                     ),
                 )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
 
-        self.assertEqual("waiting_consume_window", result["stage"])
-        self.assertEqual("waiting_consume_window", result["action"])
-        self.assertEqual(now + 60, result["next_time"])
-        send_mock.assert_not_awaited()
+        self.assertEqual("sent_waiting_reply", result["stage"])
+        self.assertEqual("consume_craft_prediction", result["action"])
+        send_mock.assert_awaited_once()
+        self.assertEqual(".炼制 玄铁剑", send_mock.await_args.args[0])
+        self.assertEqual("sent_waiting_reply", craft["phase"])
+        self.assertEqual(9412, craft["last_msg_id"])
 
     async def test_consume_craft_prediction_calibrates_expired_send_block_instead_of_recrafting(self):
         now = 1_780_000_000.0
