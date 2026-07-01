@@ -1785,6 +1785,34 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(1, len(handle_calls))
         self.assertEqual(".加入副本 @first", handle_calls[0].args[0].raw_text)
 
+    def test_game_command_button_send_unknown_locks_exclusive_stage(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        action = {
+            "type": "game_command",
+            "payload": {
+                "command": ".苍坤抉择 2",
+                "identity_id": leader_id,
+                "exclusive_key": "cangkun:room-47:first-stage",
+                "source_msg_id": 88001,
+            },
+        }
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock:
+                first_ok, first_message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                second_ok, second_message = await app_replica._execute_replica_button_action(action, actor_id=123456)
+                return first_ok, first_message, second_ok, second_message, send_mock.await_args_list
+
+        first_ok, first_message, second_ok, second_message, send_calls = asyncio.run(run_test())
+
+        self.assertTrue(first_ok)
+        self.assertIn("发送结果未知", first_message)
+        self.assertTrue(second_ok)
+        self.assertIn("本阶段已处理过", second_message)
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".苍坤抉择 2", send_calls[0].args[0])
+        self.assertTrue(app_replica._is_replica_button_exclusive_group_executed("cangkun:room-47:first-stage"))
+
     def test_log_group_open_button_can_open_explicit_non_kunwu_kind(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         event = self._prepare_replica_group([leader_id])
@@ -4117,6 +4145,59 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertNotEqual(send_calls[0].kwargs["op_id"], send_calls[1].kwargs["op_id"])
         self.assertNotEqual(send_calls[0].kwargs["chain_id"], send_calls[1].kwargs["chain_id"])
 
+    def test_kunwu_auto_choice_send_unknown_keeps_stage_key(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        state_module.set_replica_participant_identity_ids([leader_id])
+        now = 2000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "entered",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "entered_at": now - 5,
+            "updated_at": now - 5,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+        stage_info = {
+            "stage": "road:test",
+            "title": "昆吾山第1层",
+            "commands": (("岔路1 朱果", ".选择 岔路1"), ("岔路2 捷径", ".选择 岔路2")),
+        }
+        event = SimpleNamespace(id=8816, chat_id=-100123, raw_text="昆吾山第1层")
+
+        async def run_test():
+            with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock:
+                first = await app_replica._send_kunwu_auto_choice_command(
+                    stage_info,
+                    event,
+                    event.raw_text,
+                    leader_id,
+                    ".选择 岔路1",
+                    now,
+                    leader_username="@leader",
+                )
+                second = await app_replica._send_kunwu_auto_choice_command(
+                    stage_info,
+                    event,
+                    event.raw_text,
+                    leader_id,
+                    ".选择 岔路1",
+                    now + 1,
+                    leader_username="@leader",
+                )
+                return first, second, send_mock.await_args_list
+
+        first, second, send_calls = asyncio.run(run_test())
+
+        self.assertTrue(first["send_unknown"])
+        self.assertFalse(first["sent"])
+        self.assertTrue(second["deduped"])
+        self.assertEqual(1, len(send_calls))
+        self.assertEqual(".选择 岔路1", send_calls[0].args[0])
+
     def test_kunwu_auto_choice_retry_skips_when_new_stage_is_current(self):
         leader_id = self._register_replica_identity(991201, "leader")
         state_module.set_replica_participant_identity_ids([leader_id])
@@ -5692,6 +5773,38 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(".开启苍坤洞府", send_args.args[0])
         self.assertIn("已用 @leader 发送 .开启苍坤洞府", reply_text)
 
+    def test_lightweight_open_send_unknown_keeps_pending_flow(self):
+        leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
+        event = self._prepare_replica_group([leader_id])
+        event.sender_id = 4242
+        event.raw_text = ".开启副本 @leader 苍"
+        state_module.set_storage_bag_records({str(leader_id): {"items": {"苍坤残图": 1}, "sections": {}}})
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=1000.0), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock:
+                handled = await app_replica._handle_lightweight_open_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, send_mock.await_args, reply_text, self._button_texts(buttons)
+
+        handled, send_args, reply_text, button_texts = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(".开启苍坤洞府", send_args.args[0])
+        self.assertIn("发送结果未知", reply_text)
+        self.assertIn("等待开房广播", reply_text)
+        self.assertIn("解散副本", button_texts)
+        pending = state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"]
+        self.assertEqual(1, len(pending))
+        flow = next(iter(pending.values()))
+        self.assertEqual(0, flow["open_command_msg_id"])
+        self.assertEqual(1000.0, flow["open_send_unknown_at"])
+        self.assertEqual("opening", flow["phase"])
+
     def test_lightweight_open_command_accepts_short_kind_for_multi_ticket_opener(self):
         leader_id = self._register_replica_identity(991201, "leader", realm="结丹初期")
         event = self._prepare_replica_group([leader_id])
@@ -5995,6 +6108,50 @@ class ReplicaAbsorbTests(unittest.TestCase):
         handled, reply_text = asyncio.run(run_test())
         self.assertTrue(handled)
         self.assertIn("没有已记录的副本房间", reply_text)
+
+    def test_lightweight_join_send_unknown_records_pending_identity_and_room(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        first_id = self._register_replica_identity(991202, "first")
+        event = self._prepare_replica_group([leader_id, first_id])
+        event.raw_text = ".加入副本 @first"
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=now), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=804))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock:
+                handled = await app_replica._handle_lightweight_join_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                return handled, send_mock.await_args, reply_text
+
+        handled, send_args, reply_text = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(".加入昆吾山 88", send_args.args[0])
+        self.assertIn("已请求加入昆吾山 88", reply_text)
+        self.assertIn("发送结果未知，等待游戏回包：@first", reply_text)
+        room = app_replica._get_lightweight_last_room(event.chat_id, now=now)
+        self.assertEqual(["@first"], room["join_requested_usernames"])
+        self.assertEqual(["@first"], room["join_unknown_usernames"])
+        state_item = state_module.get_replica_run_state()["by_identity"][str(first_id)]["replica_states"][app_replica._REPLICA_KIND_KUNWU]
+        self.assertEqual("88", state_item["dispatch_pending_room_id"])
+        self.assertEqual(0, state_item["dispatch_pending_msg_id"])
+        self.assertGreater(state_item["dispatch_pending_until"], now)
+        self.assertEqual("pending", state_module.get_replica_run_state()["by_identity"][str(first_id)]["last_join_result"])
 
     def test_lightweight_open_cangkun_rejects_low_realm_with_reason(self):
         leader_id = self._register_replica_identity(991201, "leader", realm="筑基后期")
@@ -6347,6 +6504,48 @@ class ReplicaAbsorbTests(unittest.TestCase):
         duplicate_handled, duplicate_text = asyncio.run(run_duplicate())
         self.assertTrue(duplicate_handled)
         self.assertIn("已确认进入", duplicate_text)
+
+    def test_lightweight_enter_send_unknown_marks_pending_without_enter_button(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        event.raw_text = ".进入昆吾山"
+        now = 1000.0
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "88",
+            "replica_kind": app_replica._REPLICA_KIND_KUNWU,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_at": now,
+            "updated_at": now,
+            "expires_at": now + app_replica._REPLICA_LIGHTWEIGHT_ROOM_TTL_SEC,
+        })
+
+        async def run_test():
+            with patch("model.app_replica.time.time", return_value=now), \
+                    patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=None)) as send_mock:
+                handled = await app_replica._handle_lightweight_enter_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, send_mock.await_args, reply_text, self._button_texts(buttons)
+
+        handled, send_args, reply_text, button_texts = asyncio.run(run_test())
+
+        self.assertTrue(handled)
+        self.assertEqual(".进入昆吾山", send_args.args[0])
+        self.assertIn("发送结果未知", reply_text)
+        self.assertIn("等待游戏确认进入", reply_text)
+        self.assertNotIn("进入昆吾山", button_texts)
+        self.assertIn("解散副本", button_texts)
+        saved_room = app_replica._get_lightweight_last_room(event.chat_id, now=now)
+        self.assertEqual(now, saved_room["enter_requested_at"])
+        self.assertEqual(0, saved_room["enter_msg_id"])
+        self.assertEqual(now, saved_room["enter_send_unknown_at"])
 
     def test_lightweight_enter_command_blocks_cangkun_confirmed_low_sense(self):
         leader_id = self._register_replica_identity(991201, "leader")
@@ -7040,7 +7239,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(2.0, app_replica._get_lightweight_retry_delay_sec("open", now=now + 3))
         self.assertEqual(12.0, app_replica._get_lightweight_retry_delay_sec("open", now=now + 9))
 
-    def test_lightweight_open_fast_retry_resends_once_while_unconfirmed(self):
+    def test_lightweight_open_fast_retry_disabled_by_default(self):
         leader_id = self._register_replica_identity(991201, "leader")
         now = time.time()
         app_replica._upsert_lightweight_open_flow({
@@ -7062,7 +7261,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=779))) as send_mock, \
                     patch("model.app_replica.send_audit_log", new=AsyncMock()):
-                first = await app_replica._retry_lightweight_game_command_once(
+                retried = await app_replica._retry_lightweight_game_command_once(
                     "open",
                     leader_id,
                     app_replica._REPLICA_KIND_CANGKUN,
@@ -7073,32 +7272,15 @@ class ReplicaAbsorbTests(unittest.TestCase):
                     778,
                     delay_sec=0,
                 )
-                second = await app_replica._retry_lightweight_game_command_once(
-                    "open",
-                    leader_id,
-                    app_replica._REPLICA_KIND_CANGKUN,
-                    "open-flow",
-                    ".开启苍坤洞府",
-                    -100777,
-                    88006,
-                    778,
-                    delay_sec=0,
-                )
-                return first, second, send_mock.await_args_list
+                return retried, send_mock.await_args_list
 
-        first, second, send_calls = asyncio.run(run_test())
+        retried, send_calls = asyncio.run(run_test())
 
-        self.assertTrue(first)
-        self.assertFalse(second)
-        self.assertEqual(1, len(send_calls))
-        self.assertEqual(".开启苍坤洞府", send_calls[0].args[0])
-        self.assertEqual(leader_id, send_calls[0].kwargs["send_as_id"])
-        self.assertEqual("retry", send_calls[0].kwargs["priority"])
-        self.assertEqual("自动副本", send_calls[0].kwargs["source_module"])
-        self.assertEqual("replica_lightweight_open:cangkun:open-flow", send_calls[0].kwargs["chain_id"])
+        self.assertFalse(retried)
+        self.assertEqual([], send_calls)
         flow = state_module.get_replica_run_state()["lightweight_dungeon"]["pending_open"]["open-flow"]
-        self.assertEqual(779, flow["open_retry_msg_id"])
-        self.assertEqual(779, flow["open_command_msg_id"])
+        self.assertNotIn("open_retry_msg_id", flow)
+        self.assertEqual(778, flow["open_command_msg_id"])
 
     def test_lightweight_open_fast_retry_skips_after_opened_room_is_recorded(self):
         leader_id = self._register_replica_identity(991201, "leader")
@@ -7152,7 +7334,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(0, send_count)
 
-    def test_lightweight_join_fast_retry_resends_once_while_unconfirmed(self):
+    def test_lightweight_join_fast_retry_disabled_by_default(self):
         leader_id = self._register_replica_identity(991201, "leader")
         first_id = self._register_replica_identity(991202, "first")
         now = time.time()
@@ -7172,7 +7354,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=779))) as send_mock, \
                     patch("model.app_replica.send_audit_log", new=AsyncMock()):
-                first = await app_replica._retry_lightweight_game_command_once(
+                retried = await app_replica._retry_lightweight_game_command_once(
                     "join",
                     first_id,
                     app_replica._REPLICA_KIND_CANGKUN,
@@ -7183,29 +7365,12 @@ class ReplicaAbsorbTests(unittest.TestCase):
                     778,
                     delay_sec=0,
                 )
-                second = await app_replica._retry_lightweight_game_command_once(
-                    "join",
-                    first_id,
-                    app_replica._REPLICA_KIND_CANGKUN,
-                    "16",
-                    ".加入苍坤洞府 16",
-                    -100777,
-                    88006,
-                    778,
-                    delay_sec=0,
-                )
-                return first, second, send_mock.await_args_list
+                return retried, send_mock.await_args_list
 
-        first, second, send_calls = asyncio.run(run_test())
+        retried, send_calls = asyncio.run(run_test())
 
-        self.assertTrue(first)
-        self.assertFalse(second)
-        self.assertEqual(1, len(send_calls))
-        self.assertEqual(".加入苍坤洞府 16", send_calls[0].args[0])
-        self.assertEqual(first_id, send_calls[0].kwargs["send_as_id"])
-        self.assertEqual("retry", send_calls[0].kwargs["priority"])
-        self.assertEqual("自动副本", send_calls[0].kwargs["source_module"])
-        self.assertEqual("replica_lightweight_room:cangkun:16", send_calls[0].kwargs["chain_id"])
+        self.assertFalse(retried)
+        self.assertEqual([], send_calls)
 
     def test_lightweight_join_fast_retry_skips_after_join_success(self):
         leader_id = self._register_replica_identity(991201, "leader")
@@ -7253,7 +7418,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertFalse(handled)
         self.assertEqual(0, send_count)
 
-    def test_lightweight_enter_fast_retry_resends_once_while_unconfirmed(self):
+    def test_lightweight_enter_fast_retry_disabled_by_default(self):
         leader_id = self._register_replica_identity(991201, "leader")
         now = time.time()
         app_replica._set_lightweight_last_room({
@@ -7274,7 +7439,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         async def run_test():
             with patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=779))) as send_mock, \
                     patch("model.app_replica.send_audit_log", new=AsyncMock()):
-                first = await app_replica._retry_lightweight_game_command_once(
+                retried = await app_replica._retry_lightweight_game_command_once(
                     "enter",
                     leader_id,
                     app_replica._REPLICA_KIND_VIRTUAL_HALL,
@@ -7285,27 +7450,14 @@ class ReplicaAbsorbTests(unittest.TestCase):
                     778,
                     delay_sec=0,
                 )
-                second = await app_replica._retry_lightweight_game_command_once(
-                    "enter",
-                    leader_id,
-                    app_replica._REPLICA_KIND_VIRTUAL_HALL,
-                    "88",
-                    ".进入虚天殿",
-                    -100777,
-                    88006,
-                    778,
-                    delay_sec=0,
-                )
-                return first, second, send_mock.await_args_list
+                return retried, send_mock.await_args_list
 
-        first, second, send_calls = asyncio.run(run_test())
+        retried, send_calls = asyncio.run(run_test())
 
-        self.assertTrue(first)
-        self.assertFalse(second)
-        self.assertEqual(1, len(send_calls))
-        self.assertEqual(".进入虚天殿", send_calls[0].args[0])
+        self.assertFalse(retried)
+        self.assertEqual([], send_calls)
         saved_room = app_replica._get_lightweight_last_room(-100777, now=now + 1)
-        self.assertEqual(779, saved_room["enter_retry_msg_id"])
+        self.assertNotIn("enter_retry_msg_id", saved_room)
 
     def test_lightweight_dissolve_fast_retry_resends_once_while_pending(self):
         leader_id = self._register_replica_identity(991201, "leader")
@@ -7641,8 +7793,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         handled, calls, low_join_reply = asyncio.run(run_low_join())
         self.assertTrue(handled)
-        self.assertEqual(1, len(calls))
-        self.assertEqual(shield_id, calls[0].kwargs["send_as_id"])
+        self.assertEqual(0, len(calls))
+        self.assertIn("@shield(pending)", low_join_reply)
         self.assertIn("@low(苍坤要求结丹初期及以上，当前境界：筑基后期)", low_join_reply)
 
         async def run_dissolve():

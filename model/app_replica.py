@@ -248,6 +248,7 @@ _REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC = {
     "enter": 12.0,
     "dissolve": 8.0,
 }
+_REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS = frozenset({"dissolve"})
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_TTL_SEC = 5 * 60
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_MAX = 300
 _ZHUIMO_PROGRESS_ACK_DELAY_SEC = 35.0
@@ -2261,8 +2262,7 @@ async def _send_kunwu_auto_choice_command(stage_info, event, text, identity_id, 
     )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
-        return {"sent": False, "deduped": False, "failed": True, "key": key, "identity_id": identity_id, "command": command}
-    _schedule_kunwu_auto_choice_retry(key, scope, identity_id, room_id, command, source_msg_id, msg_id, chain_id)
+        return {"sent": False, "deduped": False, "send_unknown": True, "key": key, "identity_id": identity_id, "command": command}
     return {"sent": True, "deduped": False, "key": key, "identity_id": identity_id, "command": command, "msg_id": msg_id}
 
 
@@ -2741,6 +2741,8 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
             return True, "阶段已过期，未发送。"
         if exclusive_key and _is_replica_button_exclusive_group_executed(exclusive_key):
             return True, "本阶段已处理过。"
+        if exclusive_key:
+            _mark_replica_button_exclusive_group_executed(exclusive_key, actor_id=actor_id, command=command)
         msg = await send_game_command(
             command,
             track=False,
@@ -2751,11 +2753,11 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
                 chain_id=f"replica_button:{identity_id}",
             ),
         )
-        if msg:
+        msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
+        if msg_id > 0:
             _maybe_track_replica_game_command_progress(payload, msg, actor_id=actor_id)
-        if msg and exclusive_key:
-            _mark_replica_button_exclusive_group_executed(exclusive_key, actor_id=actor_id, command=command)
-        return bool(msg), f"已发送：{command}" if msg else f"发送失败：{command}"
+            return True, f"已发送：{command}"
+        return True, f"发送结果未知，已锁定本阶段等待回包：{command}"
     return False, "未知按钮动作。"
 
 
@@ -10973,6 +10975,8 @@ def _should_fast_retry_lightweight_dissolve(identity_id, replica_kind, room_id, 
 
 def _should_fast_retry_lightweight_game_command(action, identity_id, replica_kind, room_id, chat_id, first_msg_id, now):
     action = str(action or "").strip()
+    if action not in _REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS:
+        return False
     if action == "open":
         return _should_fast_retry_lightweight_open(identity_id, replica_kind, room_id, chat_id, first_msg_id, now)
     if action == "join":
@@ -11065,6 +11069,9 @@ async def _retry_lightweight_game_command_once(action, identity_id, replica_kind
 
 
 def _schedule_lightweight_game_command_fast_retry(action, identity_id, replica_kind, room_id, command, chat_id, source_msg_id, first_msg_id, delay_sec=None):
+    action = str(action or "").strip()
+    if action not in _REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS:
+        return False
     if delay_sec is None:
         delay_sec = _get_lightweight_retry_delay_sec(action)
     _fire_and_forget(
@@ -11080,6 +11087,7 @@ def _schedule_lightweight_game_command_fast_retry(action, identity_id, replica_k
             delay_sec=delay_sec,
         )
     )
+    return True
 
 
 async def _run_lightweight_room_auto_dissolve(room_snapshot, delay):
@@ -11606,9 +11614,19 @@ async def _handle_lightweight_open_command(event):
     )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
-        _remove_lightweight_open_flow(flow.get("flow_id"))
-        blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送失败"
-        text = f"{escape(command)} 发送失败：{escape(selector)}（{escape(blocked_reason)}）\n\n" + _format_lightweight_next_commands(_format_lightweight_open_command_for_identity(identity_id, replica_kind), html=True)
+        unknown_at = time.time()
+        flow.update({
+            "open_command_msg_id": 0,
+            "open_send_unknown_at": unknown_at,
+            "updated_at": unknown_at,
+            "last_error": "开房发送结果未知，等待开房广播",
+        })
+        _upsert_lightweight_open_flow(flow)
+        blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送结果未知"
+        text = (
+            f"{escape(command)} 已请求：{escape(selector)}（{escape(blocked_reason)}），等待开房广播；未重复发送。\n\n"
+            + _format_lightweight_next_commands(".查询副本", ".解散副本", html=True)
+        )
         await _send_replica_group_message(
             event.client,
             event.chat_id,
@@ -11616,7 +11634,7 @@ async def _handle_lightweight_open_command(event):
             parse_mode="html",
             listener_account_id=listener_account_id,
             log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, identity_id=identity_id, now=now),
+            buttons=_build_lightweight_open_flow_action_buttons(flow),
         )
         return True
     flow.update({"open_command_msg_id": msg_id, "updated_at": time.time()})
@@ -11794,6 +11812,7 @@ async def _handle_lightweight_join_command(event):
             )
             return True
     sent_usernames = []
+    unknown_usernames = []
     skipped = []
     seen_identity_ids = set()
     for selector in selectors:
@@ -11814,6 +11833,11 @@ async def _handle_lightweight_join_command(event):
         if blocked_reason:
             skipped.append(_format_replica_skipped_selector(selector, blocked_reason))
             continue
+        reserve_now = time.time()
+        allowed, reserve_reason = _reserve_external_dispatch_join(identity_id, replica_kind, room_id, event, reserve_now)
+        if not allowed:
+            skipped.append(_format_replica_skipped_selector(selector, reserve_reason))
+            continue
         msg = await send_game_command(
             command,
             track=False,
@@ -11824,7 +11848,17 @@ async def _handle_lightweight_join_command(event):
                 chain_id=f"replica_lightweight_room:{replica_kind}:{room_id}",
             ),
         )
-        if msg:
+        sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
+        profile_username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or selector)
+        sent_msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
+        if sent_msg_id > 0:
+            _mark_external_dispatch_join_sent(
+                identity_id,
+                replica_kind,
+                room_id,
+                sent_msg_id,
+                sent_at,
+            )
             _schedule_lightweight_game_command_fast_retry(
                 "join",
                 identity_id,
@@ -11833,17 +11867,27 @@ async def _handle_lightweight_join_command(event):
                 command,
                 int(getattr(event, "chat_id", 0) or 0),
                 int(getattr(event, "id", 0) or 0),
-                int(getattr(msg, "id", 0) or 0),
+                sent_msg_id,
             )
-            sent_usernames.append(_normalize_replica_username(get_send_as_profile(identity_id).get("username") or selector))
+            sent_usernames.append(profile_username)
         else:
-            blocked_reason = _get_replica_identity_block_reason(identity_id) or "发送失败"
-            skipped.append(_format_replica_skipped_selector(selector, blocked_reason))
-    room["join_requested_usernames"] = _normalize_replica_username_list((room.get("join_requested_usernames") or []) + sent_usernames)
+            _mark_external_dispatch_join_sent(identity_id, replica_kind, room_id, 0, sent_at)
+            unknown_usernames.append(profile_username)
+    requested_usernames = sent_usernames + unknown_usernames
+    room["join_requested_usernames"] = _normalize_replica_username_list((room.get("join_requested_usernames") or []) + requested_usernames)
+    if unknown_usernames:
+        room["join_unknown_usernames"] = _normalize_replica_username_list((room.get("join_unknown_usernames") or []) + unknown_usernames)
     room["updated_at"] = time.time()
     _set_lightweight_last_room(room)
-    action_label = "已发送加入" if sent_usernames else "未发送加入"
-    summary = f"{action_label}{_REPLICA_KIND_META[replica_kind]['name']} {room_id}：{' '.join(sent_usernames) if sent_usernames else '无'}"
+    if unknown_usernames:
+        action_label = "已请求加入"
+    else:
+        action_label = "已发送加入" if sent_usernames else "未发送加入"
+    summary = f"{action_label}{_REPLICA_KIND_META[replica_kind]['name']} {room_id}：{' '.join(requested_usernames) if requested_usernames else '无'}"
+    if sent_usernames and unknown_usernames:
+        summary += f"\n已发出：{' '.join(sent_usernames)}"
+    if unknown_usernames:
+        summary += f"\n发送结果未知，等待游戏回包：{' '.join(unknown_usernames)}"
     if skipped:
         summary += f"\n未发送：{' '.join(skipped)}"
     enter_actionable = _is_lightweight_room_enter_actionable(room)
@@ -12031,8 +12075,19 @@ async def _handle_lightweight_enter_command(event):
     )
     msg_id = int(getattr(msg, "id", 0) or 0) if msg else 0
     if msg_id <= 0:
-        blocked_reason = _get_replica_identity_block_reason(leader_identity_id, allow_dungeon_quiet=True) or "发送失败"
-        text = f"{escape(command)} 发送失败：{escape(blocked_reason)}\n\n" + _format_lightweight_next_commands(command, ".解散副本", html=True)
+        unknown_at = time.time()
+        room.update({
+            "enter_requested_at": unknown_at,
+            "enter_msg_id": 0,
+            "enter_send_unknown_at": unknown_at,
+            "updated_at": unknown_at,
+        })
+        _set_lightweight_last_room(room)
+        blocked_reason = _get_replica_identity_block_reason(leader_identity_id, allow_dungeon_quiet=True) or "发送结果未知"
+        text = (
+            f"{escape(command)} 已请求：{escape(blocked_reason)}，等待游戏确认进入；未重复发送。\n\n"
+            + _format_lightweight_next_commands(".查询副本", ".解散副本", html=True)
+        )
         await _send_replica_group_message(
             event.client,
             event.chat_id,
@@ -12040,7 +12095,7 @@ async def _handle_lightweight_enter_command(event):
             parse_mode="html",
             listener_account_id=listener_account_id,
             log_text=_strip_html_code_tags(text),
-            buttons=_build_lightweight_room_action_buttons(room, include_enter=True, include_dissolve=True, include_query=True),
+            buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
         )
         return True
     room.update({
