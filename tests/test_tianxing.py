@@ -3975,6 +3975,85 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(9410, craft["last_msg_id"])
         self.assertIn("不重复炼制", craft["last_error"])
 
+    async def test_consume_craft_prediction_respects_waiting_consume_window(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=39)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "waiting",
+                    "started_at": now - 3600,
+                    "next_time": now + 60,
+                    "last_action": "waiting_consume_window",
+                    "last_command": "",
+                    "last_error": "等待野外消费窗口",
+                },
+            }
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_consume_craft_prediction(
+                    now,
+                    reason="野外历练前消费炼制推命",
+                    config=self._active_config(
+                        now,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                    ),
+                )
+
+        self.assertEqual("waiting_consume_window", result["stage"])
+        self.assertEqual("waiting_consume_window", result["action"])
+        self.assertEqual(now + 60, result["next_time"])
+        send_mock.assert_not_awaited()
+
+    async def test_consume_craft_prediction_calibrates_expired_send_block_instead_of_recrafting(self):
+        now = 1_780_000_000.0
+        sent_msg = SimpleNamespace(id=9411, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=39)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "send_blocked",
+                    "started_at": now - 3600,
+                    "next_time": now - 1,
+                    "last_action": "consume_craft_prediction",
+                    "last_command": ".炼制 玄铁剑",
+                    "last_error": ".炼制 玄铁剑 发送失败或被安全策略拦截。",
+                },
+            }
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_consume_craft_prediction(
+                    now,
+                    reason="野外历练前消费炼制推命",
+                    config=self._active_config(
+                        now,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                    ),
+                )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        self.assertEqual("waiting_calibration", result["stage"])
+        self.assertEqual("consume_craft_prediction_calibration", result["action"])
+        send_mock.assert_awaited_once()
+        self.assertEqual(".天机盘", send_mock.await_args.args[0])
+        self.assertEqual("calibrating", craft["phase"])
+        self.assertEqual("consume_craft_prediction_calibration", craft["last_action"])
+        self.assertEqual(9411, craft["last_msg_id"])
+
     async def test_consume_craft_prediction_defers_expired_calibration_during_phaseful_summary(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):

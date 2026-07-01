@@ -4589,6 +4589,18 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
     farm = _current_craft_farm_state()
     farm_phase = str(farm.get("phase") or "").strip()
     farm_next_time = float(farm.get("next_time", 0) or 0)
+    craft_command, item = _craft_farm_command(config)
+    if farm_phase in {"waiting", "waiting_consume_window", "send_blocked"} and farm_next_time > now:
+        return _craft_farm_result(
+            "waiting_consume_window" if farm_phase != "send_blocked" else "send_blocked_waiting",
+            active=True,
+            takeover=False,
+            handoff=True,
+            reason=farm.get("last_error") or "炼制推命消费已有等待窗口，暂不重复炼制。",
+            action=farm.get("last_action") or farm_phase,
+            command=farm.get("last_command") or craft_command,
+            next_time=farm_next_time,
+        )
     if farm_phase in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"} and farm_next_time > now:
         return _craft_farm_result(
             "waiting_reply",
@@ -4607,7 +4619,15 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
             reason=farm.get("last_error") or "闭关/元婴结算窗口内，先炼制消费推命延后。",
             next_time=farm_next_time,
         )
-    if farm_phase in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"} and farm_next_time <= now:
+    should_calibrate = farm_phase in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"} and farm_next_time <= now
+    if (
+        farm_phase == "send_blocked"
+        and farm_next_time <= now
+        and str(farm.get("last_action") or "") in {"consume_craft_prediction", "consume_craft_prediction_calibration"}
+        and str(farm.get("last_command") or "") in {craft_command, CMD_TIANXING_PANEL}
+    ):
+        should_calibrate = True
+    if should_calibrate:
         command = CMD_TIANXING_PANEL
         if not farm.get("started_at"):
             farm["started_at"] = float(now)
@@ -4685,7 +4705,7 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
             msg_id=farm["last_msg_id"],
         )
 
-    command, item = _craft_farm_command(config)
+    command = craft_command
     if not farm.get("started_at"):
         farm["started_at"] = float(now)
         farm["start_tianji"] = int(observed.get("tianji_value", 0) or 0)
