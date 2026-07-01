@@ -1986,6 +1986,15 @@ def _pending_log_replay_spec(phase):
             "current_msg_id": True,
             "match_message_id": True,
         }
+    if phase == "heart_choice_pending":
+        return {
+            "state_key": "concubine_heart_prompt_msg_id",
+            "command": CMD_CONCUBINE_HEART_STEADY,
+            "family": "concubine_heart",
+            "handler": handle_concubine_heart_reply,
+            "current_msg_id": True,
+            "match_message_id": True,
+        }
     if phase == "voyage_pending":
         return {
             "state_key": "concubine_voyage_msg_id",
@@ -2100,7 +2109,7 @@ async def _recover_concubine_pending_from_message_log(now, phase):
         return False
     recovery_key = _concubine_recovered_reply_key(phase, logged_reply)
     if (
-        phase == "heart_choice_reply_pending"
+        phase in {"heart_choice_pending", "heart_choice_reply_pending"}
         and recovery_key
         and recovery_key == str(state.get("concubine_last_recovered_reply_key") or "")
     ):
@@ -2129,7 +2138,7 @@ async def _recover_concubine_pending_from_message_log(now, phase):
     state_changed = _phase() != before_phase or float(state.get("next_concubine_time", 0) or 0) != before_next
     if not handled and not state_changed:
         return False
-    if phase == "heart_choice_reply_pending":
+    if phase in {"heart_choice_pending", "heart_choice_reply_pending"}:
         state["concubine_last_recovered_reply_key"] = recovery_key
         state["concubine_last_recovered_reply_at"] = float(now or 0)
     await send_audit_log(
@@ -3738,20 +3747,23 @@ async def _send_heart_choice(now):
     )
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
-        state["concubine_heart_last_error"] = "发送 .稳 失败"
-        state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
+        _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
+        _set_phase("heart_choice_reply_pending")
+        state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
+        _set_heart_pending_deadline(state["next_concubine_time"])
+        state["concubine_heart_last_error"] = f"心劫第 {round_no} 轮 .稳 发送未确认，等待回合推进"
         _record_concubine_event(
-            "心劫抉择发送失败",
-            kind="skipped",
-            reason="concubine_send_failed",
-            phase=_phase(),
+            "心劫抉择发送未确认",
+            kind="changed",
+            reason="concubine_send_unconfirmed",
+            phase="heart_choice_reply_pending",
             command=CMD_CONCUBINE_HEART_STEADY,
             detail=f"prompt_msg_id={prompt_msg_id}｜round={round_no}",
-            decision="heart_choice_send_failed",
-            workflow_status="failed",
+            decision="heart_choice_send_unconfirmed",
+            workflow_status="pending",
         )
         save_state()
-        return False
+        return True
     _mark_heart_choice_sent(prompt_msg_id, round_no, sent_at)
     _set_phase("heart_choice_reply_pending")
     state["next_concubine_time"] = sent_at + CONCUBINE_HEART_CHOICE_ACK_TIMEOUT_SEC
@@ -4938,6 +4950,8 @@ async def _run_concubine_scheduler(now):
     if phase == "heart_choice_pending":
         next_time = float(state.get("next_concubine_time", 0) or 0)
         if next_time > now:
+            return
+        if await _recover_concubine_pending_from_message_log(now, phase):
             return
         if int(state.get("concubine_heart_round", 0) or 0) in {1, 2, 3}:
             await _send_heart_choice(now)

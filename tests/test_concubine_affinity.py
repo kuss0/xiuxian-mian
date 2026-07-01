@@ -1598,6 +1598,55 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now - 7, state_module.state["next_concubine_time"])
         self.assertTrue(state_module.state["concubine_last_recovered_reply_key"])
 
+    async def test_heart_choice_pending_recovers_edit_before_resending_old_round(self):
+        now = 1_700_000_900.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 901
+        edit_text = (
+            "【坠魔心劫·第1轮已定】\n"
+            "你稳守灵台，不贪快功，魔影首轮试探未能动你分毫。\n\n"
+            "【坠魔心劫·第2轮】\n"
+            "幻境再变，请继续回复 .稳 / .狠 / .骗。"
+        )
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_heart_msg_id"] = 800
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 1
+            identity_state["next_concubine_time"] = now - 1
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(
+                tmpdir,
+                [
+                    {
+                        "ts": self._log_ts(now - 10),
+                        "event_type": "edit",
+                        "message_id": prompt_msg_id,
+                        "reply_to_msg_id": 800,
+                        "text": edit_text,
+                    }
+                ],
+                now,
+            )
+            with state_module.use_identity(send_as_id), \
+                 patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_audit_log", new=AsyncMock()), \
+                 patch.object(concubine.random, "uniform", return_value=4), \
+                 patch.object(concubine, "_schedule_heart_choice_followup", return_value=True), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock()) as mock_send:
+                await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_not_awaited()
+        self.assertEqual("heart_choice_pending", state_module.state["concubine_phase"])
+        self.assertEqual(2, state_module.state["concubine_heart_round"])
+        self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_prompt_msg_id"])
+        self.assertEqual(now - 6, state_module.state["next_concubine_time"])
+        self.assertTrue(state_module.state["concubine_last_recovered_reply_key"])
+
     async def test_heart_choice_log_recovery_is_idempotent_for_same_edit(self):
         now = 1_700_000_900.0
         send_as_id = self._prepare_identity()
@@ -2519,6 +2568,40 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             and event.get("command") == config.CMD_CONCUBINE_HEART_STEADY
             and event.get("msg_id") == sent_msg.id
             and "prompt_msg_id=9387665" in event.get("detail", {}).get("detail", "")
+            for event in workflow_events
+        ))
+
+    async def test_heart_choice_send_timeout_waits_for_progress_recovery(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        prompt_msg_id = 9387665
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_heart_enabled"] = True
+            identity_state["concubine_phase"] = "heart_choice_pending"
+            identity_state["concubine_heart_prompt_msg_id"] = prompt_msg_id
+            identity_state["concubine_heart_round"] = 2
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with state_module.use_identity(send_as_id), \
+                 patch.object(workflow_log, "WORKFLOW_LOG_DIR", tmpdir), \
+                 patch.object(concubine.time, "time", return_value=now), \
+                 patch.object(concubine, "save_state"), \
+                 patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send:
+                sent = await concubine._send_heart_choice(now)
+                workflow_events = _read_workflow_events(tmpdir)
+
+        self.assertTrue(sent)
+        mock_send.assert_awaited_once()
+        self.assertEqual("heart_choice_reply_pending", state_module.state["concubine_phase"])
+        self.assertEqual(prompt_msg_id, state_module.state["concubine_heart_choice_prompt_msg_id"])
+        self.assertEqual(2, state_module.state["concubine_heart_choice_round"])
+        self.assertEqual(now, state_module.state["concubine_heart_choice_sent_at"])
+        self.assertEqual(now + 30, state_module.state["next_concubine_time"])
+        self.assertEqual(now + 30, state_module.state["concubine_heart_due_at"])
+        self.assertIn("发送未确认", state_module.state["concubine_heart_last_error"])
+        self.assertTrue(any(
+            event.get("workflow") == "concubine"
+            and event.get("decision") == "heart_choice_send_unconfirmed"
             for event in workflow_events
         ))
 
