@@ -3863,6 +3863,8 @@ def get_identity_ui_snapshot(send_as_id):
                 "pending_ids": identity_state.get("mulan_pending_ids") or "1,2,3",
                 "current_id": int(identity_state.get("mulan_current_id", 0) or 0),
                 "public_id": int(identity_state.get("mulan_public_id", 0) or 0),
+                "public_text": identity_state.get("mulan_public_text") or "",
+                "support_action": identity_state.get("mulan_support_action") or "",
                 "last_command": identity_state.get("mulan_last_command") or "",
                 "last_result": identity_state.get("mulan_last_result") or "",
                 "last_error": identity_state.get("mulan_last_error") or "",

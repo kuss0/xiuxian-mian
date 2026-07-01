@@ -323,7 +323,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_tree_bootstrap_check": {"manifest_names": ("灵树",), "helper": True},
     "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
     "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
-    "run_mulan_scheduler": {"manifest_names": ("慕兰",), "helper": False},
+    "run_mulan_scheduler": {"manifest_names": ("慕兰烽烟",), "helper": False},
     "run_duel_scheduler": {"manifest_names": ("斗法",), "helper": False},
     "run_fishing_scheduler": {"manifest_names": ("灵溪垂钓",), "helper": False},
     "run_wild_training_scheduler": {"manifest_names": ("野外历练",), "helper": False},
@@ -1102,9 +1102,18 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=1):
                 continue
             if not state.get("wild_training_enabled"):
                 continue
+            pending_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
+            try:
+                reply_due_at = float(state.get("wild_training_reply_due_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                reply_due_at = 0.0
+            if pending_msg_id > 0 and 0 < reply_due_at <= scheduler_now:
+                await run_wild_training_phaseful_cleanup_scheduler(scheduler_now)
+                processed += 1
+                continue
             if int(state.get("wild_training_retry_count", 0) or 0) <= 0:
                 continue
-            if int(state.get("wild_training_reply_to_msg_id", 0) or 0) > 0:
+            if pending_msg_id > 0:
                 continue
             try:
                 next_time = float(state.get("next_wild_training_time", 0) or 0)
@@ -1266,7 +1275,14 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
     # client than the one that sent the command. The reply_to message id is the
     # authoritative owner here; requiring the owner client would leave pending
     # tasks uncleared and trigger retry storms.
-    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {"concubine_heart", "divination", "explore_rift", "wendao", "wild_training"}
+    allow_reprocessed_edit = kind_scope == "edit" and matched_family in {
+        "concubine_heart",
+        "divination",
+        "explore_rift",
+        "mulan_support",
+        "wendao",
+        "wild_training",
+    }
     already_consumed = bool(matched_family) and not allow_reprocessed_edit and _has_runtime_message_consumed(event, matched_family)
     with use_identity(routed_identity_id):
         is_reply_to_me = is_reply_to_identity_message(reply_to, routed_identity_id) or (

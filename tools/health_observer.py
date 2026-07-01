@@ -226,7 +226,7 @@ MODULE_HEALTH_SPECS = [
     },
     {
         "key": "mulan",
-        "label": "慕兰",
+        "label": "慕兰烽烟",
         "enabled": "mulan_enabled",
         "phase_fields": (("mulan_phase", "阶段"),),
         "pending_fields": (("mulan_reply_to_msg_id", "回复"),),

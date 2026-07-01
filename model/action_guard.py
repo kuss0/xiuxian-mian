@@ -20,6 +20,8 @@ from .config import (
     CMD_MULAN_JUDGE,
     CMD_MULAN_PUBLISH,
     CMD_MULAN_SHADOW,
+    CMD_MULAN_SUPPORT,
+    CMD_MULAN_WAR_PANEL,
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET_WARM,
@@ -313,9 +315,9 @@ ACTION_SPECS = {
         "ttl_sec": 30 * 60,
     },
     "mulan_collect": {
-        "commands": (CMD_MULAN_COLLECT, CMD_MULAN_SHADOW),
+        "commands": (CMD_MULAN_COLLECT, CMD_MULAN_SHADOW, CMD_MULAN_WAR_PANEL),
         "kind": ACTION_KIND_CHAIN,
-        "label": "慕兰搜集军报",
+        "label": "慕兰烽烟校准",
         "max_attempts": 1,
         "ttl_sec": 30 * 60,
     },
@@ -330,6 +332,13 @@ ACTION_SPECS = {
         "commands": (CMD_MULAN_PUBLISH,),
         "kind": ACTION_KIND_HIGH_RISK,
         "label": "慕兰公开军报",
+        "max_attempts": 1,
+        "ttl_sec": 24 * 3600,
+    },
+    "mulan_support": {
+        "commands": (CMD_MULAN_SUPPORT,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "慕兰支援",
         "max_attempts": 1,
         "ttl_sec": 24 * 3600,
     },
@@ -490,6 +499,7 @@ FAMILY_TO_ACTION_KEYS = {
     "mulan_collect": ("mulan_collect",),
     "mulan_judge": ("mulan_judge",),
     "mulan_publish": ("mulan_publish",),
+    "mulan_support": ("mulan_support",),
     "tianxing_panel": ("tianxing_panel",),
     "tianxing_observe": ("tianxing_observe",),
     "tianxing_set_star": ("tianxing_set_star",),
@@ -779,11 +789,12 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
         if last_observed_at >= pending_sent_at:
             return False
         return pending_deadline_at > now
-    if action_key in {"mulan_collect", "mulan_judge", "mulan_publish"}:
+    if action_key in {"mulan_collect", "mulan_judge", "mulan_publish", "mulan_support"}:
         phase_by_action = {
-            "mulan_collect": {"collect_pending"},
+            "mulan_collect": {"collect_pending", "panel_pending"},
             "mulan_judge": {"judge_pending"},
             "mulan_publish": {"publish_pending"},
+            "mulan_support": {"support_pending"},
         }
         return (
             _int_state(identity_state, "mulan_reply_to_msg_id") > 0

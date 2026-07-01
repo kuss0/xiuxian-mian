@@ -526,7 +526,7 @@ class MessageContractTests(unittest.TestCase):
         self.assertTrue(rows["灵树"]["strict"])
         self.assertFalse(rows["灵树"]["archived"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])
-        self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰"]["readiness"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰烽烟"]["readiness"])
 
     def test_report_tool_json_output_can_include_gap_classes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

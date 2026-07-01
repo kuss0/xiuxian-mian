@@ -414,6 +414,38 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         scheduler_mock.assert_not_awaited()
 
+    async def test_due_wild_training_retry_fast_scan_cleans_overdue_pending(self):
+        identity_id = 991786
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["wild_training_reply_to_msg_id"] = 11294100
+            state_module.state["wild_training_reply_due_at"] = now - 10
+            state_module.state["next_wild_training_time"] = now + 20 * 60
+
+        seen = []
+
+        async def fake_cleanup(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_wild_training_phaseful_cleanup_scheduler", new=AsyncMock(side_effect=fake_cleanup)) as cleanup_mock,
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now)
+
+        cleanup_mock.assert_awaited_once_with(now)
+        scheduler_mock.assert_not_awaited()
+        self.assertEqual([(identity_id, now)], seen)
+
     async def test_due_wild_training_retry_fast_scan_clamps_stretched_retry_timer(self):
         identity_id = 991785
         now = 1_700_000_000.0

@@ -103,6 +103,8 @@ from .config import (
     CMD_MULAN_JUDGE,
     CMD_MULAN_PUBLISH,
     CMD_MULAN_SHADOW,
+    CMD_MULAN_SUPPORT,
+    CMD_MULAN_WAR_PANEL,
     CMD_FISHING,
     CMD_FISHING_BUY_BAIT,
     CMD_FISHING_CANCEL,
@@ -635,7 +637,7 @@ def _schedule_module_immediate_retry(module_name, now):
     if module_name == "问道":
         state["next_wendao_time"] = retry_at
         return retry_at
-    if module_name == "慕兰":
+    if module_name in {"慕兰", "慕兰烽烟"}:
         state["next_mulan_time"] = retry_at
         return retry_at
     if module_name == "斗法":
@@ -1162,7 +1164,7 @@ def _disable_wendao_module_state():
 def _disable_mulan_module_state():
     state["mulan_enabled"] = False
     clear_mulan_state(persist=False, keep_last_error=True)
-    _clear_pending_tasks_by_commands({CMD_MULAN_SHADOW, CMD_MULAN_COLLECT, CMD_MULAN_JUDGE, CMD_MULAN_PUBLISH})
+    _clear_pending_tasks_by_commands({CMD_MULAN_SHADOW, CMD_MULAN_WAR_PANEL, CMD_MULAN_COLLECT, CMD_MULAN_JUDGE, CMD_MULAN_PUBLISH, CMD_MULAN_SUPPORT})
 
 
 def _disable_duel_module_state():
@@ -1475,8 +1477,11 @@ def _manual_enable_mulan_module_state(now):
     state["mulan_reply_to_msg_id"] = 0
     state["mulan_reply_due_at"] = 0
     state["mulan_pending_ids"] = ""
+    state["mulan_report_texts"] = {}
     state["mulan_current_id"] = 0
     state["mulan_public_id"] = 0
+    state["mulan_public_text"] = ""
+    state["mulan_support_action"] = ""
     state["mulan_sent_at"] = 0
     state["next_mulan_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
 
@@ -1724,10 +1729,12 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_EXPLORE_RIFT: "探寻裂缝",
     CMD_WENDAO: "问道",
     CMD_DUEL: "斗法",
-    CMD_MULAN_SHADOW: "慕兰",
-    CMD_MULAN_COLLECT: "慕兰",
-    CMD_MULAN_JUDGE: "慕兰",
-    CMD_MULAN_PUBLISH: "慕兰",
+    CMD_MULAN_SHADOW: "慕兰烽烟",
+    CMD_MULAN_WAR_PANEL: "慕兰烽烟",
+    CMD_MULAN_COLLECT: "慕兰烽烟",
+    CMD_MULAN_JUDGE: "慕兰烽烟",
+    CMD_MULAN_PUBLISH: "慕兰烽烟",
+    CMD_MULAN_SUPPORT: "慕兰烽烟",
     CMD_NORMAL_RETREAT: "天星宗",
     CMD_DEEP_RETREAT_FORCE_EXIT: "深度闭关",
     CMD_USE_HEQI_DAN: "天星宗",
@@ -1766,6 +1773,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "合欢宗": (_manual_enable_hehuan_module_state, _manual_disable_hehuan_module_state),
     "天星宗": (_manual_enable_tianxing_module_state, _manual_disable_tianxing_module_state),
     "阴罗宗": (_manual_enable_yinluo_module_state, _manual_disable_yinluo_module_state),
+    "慕兰烽烟": (_manual_enable_mulan_module_state, _manual_disable_mulan_module_state),
     "慕兰": (_manual_enable_mulan_module_state, _manual_disable_mulan_module_state),
     "真仙试锋": (_manual_enable_world_boss_module_state, _manual_disable_world_boss_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
@@ -1804,6 +1812,7 @@ MODULE_DISABLE_HANDLERS = {
     "合欢宗": _disable_hehuan_module_state,
     "天星宗": _disable_tianxing_module_state,
     "阴罗宗": _disable_yinluo_module_state,
+    "慕兰烽烟": _disable_mulan_module_state,
     "慕兰": _disable_mulan_module_state,
     "真仙试锋": _manual_disable_world_boss_module_state,
     "南陇侯": _disable_nanlong_module_state,
@@ -2066,6 +2075,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "合欢宗": get_hehuan_status_text,
         "天星宗": get_tianxing_status_text,
         "阴罗宗": get_yinluo_status_text,
+        "慕兰烽烟": get_mulan_status_text,
         "慕兰": get_mulan_status_text,
         "真仙试锋": get_world_boss_status_text,
         "南陇侯": get_nanlong_status_text,
@@ -3752,9 +3762,11 @@ def _get_pending_task_module_name(command):
     if raw_command == CMD_PET_FORMATION:
         return "布下剑阵"
     if raw_command == CMD_MULAN_JUDGE or raw_command.startswith(f"{CMD_MULAN_JUDGE} "):
-        return "慕兰"
+        return "慕兰烽烟"
     if raw_command == CMD_MULAN_PUBLISH or raw_command.startswith(f"{CMD_MULAN_PUBLISH} "):
-        return "慕兰"
+        return "慕兰烽烟"
+    if raw_command == CMD_MULAN_SUPPORT or raw_command.startswith(f"{CMD_MULAN_SUPPORT} "):
+        return "慕兰烽烟"
     if raw_command.startswith(CMD_EXCHANGE_HEQI_DAN_PREFIX) or raw_command.startswith(CMD_SECT_DONATE_LINGSHI_PREFIX):
         return "天星宗"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")

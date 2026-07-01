@@ -336,6 +336,7 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     state["wild_training_last_result"] = _result_summary(raw_text)
     state["wild_training_last_result_at"] = float(now or 0)
     state["wild_training_last_error"] = ""
+    state["wild_training_retry_count"] = 0
     _schedule_next(now)
 
 
@@ -573,6 +574,7 @@ async def _cleanup_wild_training_pending_timeout(now):
         state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
         state["wild_training_last_result_at"] = float(now or 0)
         state["wild_training_last_error"] = ""
+        state["wild_training_retry_count"] = 0
         save_state()
         console_log(f"🏞️ 野外历练{state['wild_training_last_result']}", scope="identity")
         if tianxing_unknown:
@@ -583,10 +585,15 @@ async def _cleanup_wild_training_pending_timeout(now):
             )
         return True
     if int(state.get("wild_training_retry_count", 0) or 0) < 1:
+        state["wild_training_reply_to_msg_id"] = 0
+        state["wild_training_reply_due_at"] = 0
         state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
         _schedule_retry(now)
         state["wild_training_last_error"] = f"野外历练回复超时，准备补发一次，原消息ID={reply_to_msg_id}"
     else:
+        state["wild_training_reply_to_msg_id"] = 0
+        state["wild_training_reply_due_at"] = 0
+        state["wild_training_retry_count"] = 0
         _schedule_next(now)
         state["wild_training_last_error"] = f"野外历练补发后仍无回复，进入下一轮，原消息ID={reply_to_msg_id}"
     save_state()

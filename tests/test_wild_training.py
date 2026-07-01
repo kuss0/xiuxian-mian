@@ -366,6 +366,50 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已按正常周期恢复", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
+    async def test_sent_timeout_clears_stale_pending_before_retry(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 201
+            identity_state["wild_training_reply_due_at"] = now - 1
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["wild_training_last_result"] = "已发送：深入"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+            await wild_training.run_wild_training_scheduler(now)
+
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(1, state_module.state["wild_training_retry_count"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("准备补发一次", state_module.state["wild_training_last_error"])
+
+    async def test_retry_timeout_clears_pending_and_resets_retry_for_next_cycle(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 201
+            identity_state["wild_training_reply_due_at"] = now - 1
+            identity_state["wild_training_retry_count"] = 1
+            identity_state["wild_training_last_result"] = "已发送：深入"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+            await wild_training.run_wild_training_scheduler(now)
+
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(0, state_module.state["wild_training_retry_count"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("进入下一轮", state_module.state["wild_training_last_error"])
+
     async def test_tianxing_started_timeout_invalidates_uncertain_explore_release(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

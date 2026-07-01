@@ -269,9 +269,11 @@ CMD_REBIRTH_SELECT_PREFIX = ".重生"
 CMD_WENDAO = ".问道"
 CMD_DUEL = ".斗法"
 CMD_MULAN_SHADOW = ".慕兰谍影"
+CMD_MULAN_WAR_PANEL = ".边境军功"
 CMD_MULAN_COLLECT = ".搜集军报"
 CMD_MULAN_JUDGE = ".辨报"
 CMD_MULAN_PUBLISH = ".公开军报"
+CMD_MULAN_SUPPORT = ".支援慕兰"
 CMD_FISHING = ".钓鱼"
 CMD_FISHING_STATUS = ".钓鱼状态"
 CMD_FISHING_BUY_BAIT = ".买鱼饵"
@@ -483,9 +485,11 @@ SCRIPT_COMMANDS = [
     CMD_WENDAO,
     CMD_DUEL,
     CMD_MULAN_SHADOW,
+    CMD_MULAN_WAR_PANEL,
     CMD_MULAN_COLLECT,
     CMD_MULAN_JUDGE,
     CMD_MULAN_PUBLISH,
+    CMD_MULAN_SUPPORT,
     CMD_FISHING,
     CMD_FISHING_STATUS,
     CMD_FISHING_BUY_BAIT,
@@ -582,7 +586,7 @@ SCRIPT_COMMANDS = [
     "1",
 ]
 DIVINATION_DEFAULT_DAILY_LIMIT = 6
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "布下剑阵", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "慕兰", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "灵溪垂钓", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "布下剑阵", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "慕兰烽烟", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "灵溪垂钓", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -605,6 +609,7 @@ MODULE_KEY_MAP = {
     "合欢宗": "hehuan_enabled",
     "天星宗": "tianxing_enabled",
     "阴罗宗": "yinluo_enabled",
+    "慕兰烽烟": "mulan_enabled",
     "慕兰": "mulan_enabled",
     "真仙试锋": "world_boss_enabled",
     "南陇侯": "nanlong_enabled",

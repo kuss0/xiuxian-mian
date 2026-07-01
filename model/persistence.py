@@ -910,10 +910,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_reply_due_at REAL NOT NULL DEFAULT 0")
     if "mulan_pending_ids" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_pending_ids TEXT NOT NULL DEFAULT ''")
+    if "mulan_report_texts" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_report_texts TEXT NOT NULL DEFAULT '{}'")
     if "mulan_current_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_current_id INTEGER NOT NULL DEFAULT 0")
     if "mulan_public_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_public_id INTEGER NOT NULL DEFAULT 0")
+    if "mulan_public_text" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_public_text TEXT NOT NULL DEFAULT ''")
+    if "mulan_support_action" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_support_action TEXT NOT NULL DEFAULT ''")
     if "mulan_sent_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_sent_at REAL NOT NULL DEFAULT 0")
     if "mulan_last_msg_id" not in runtime_columns:
@@ -1650,8 +1656,11 @@ def init_db():
             mulan_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             mulan_reply_due_at REAL NOT NULL DEFAULT 0,
             mulan_pending_ids TEXT NOT NULL DEFAULT '',
+            mulan_report_texts TEXT NOT NULL DEFAULT '{}',
             mulan_current_id INTEGER NOT NULL DEFAULT 0,
             mulan_public_id INTEGER NOT NULL DEFAULT 0,
+            mulan_public_text TEXT NOT NULL DEFAULT '',
+            mulan_support_action TEXT NOT NULL DEFAULT '',
             mulan_sent_at REAL NOT NULL DEFAULT 0,
             mulan_last_msg_id INTEGER NOT NULL DEFAULT 0,
             mulan_last_command TEXT NOT NULL DEFAULT '',
@@ -2490,6 +2499,11 @@ _META_STATE_CODEC = {
         lambda: float(_meta_state.get("dungeon_quiet_last_log_at", 0) or 0),
         lambda value: str(value),
         lambda value: _set_meta_value("dungeon_quiet_last_log_at", _decode_meta_float(value, 0)),
+    ),
+    "mulan_intel_state": (
+        lambda: _meta_state.get("mulan_intel_state") if isinstance(_meta_state.get("mulan_intel_state"), dict) else {},
+        _encode_meta_json,
+        lambda value: _set_meta_value("mulan_intel_state", _decode_meta_json(value, {})),
     ),
     "quiz_learning_watchers": (
         get_quiz_learning_watchers,
