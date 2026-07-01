@@ -556,6 +556,47 @@ class HealthObserverTests(unittest.TestCase):
         hehuan = next(item for item in summary if item["module"] == "hehuan")
         self.assertEqual("warn", hehuan["status"])
 
+    def test_module_summary_treats_tianxing_existing_prediction_cooldown_as_state(self):
+        now = 1_780_500_000.0
+        observation = json.dumps({
+            "last_action": "推命",
+            "last_result": "cooldown",
+            "last_summary": "推命尚未应验 探索",
+            "last_error": "推命尚未应验",
+            "fixed_star": "贪狼",
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "tianji_value": 38,
+            "auto_last_error": "天星宗自动动作回复超时，暂缓重试；不继续推进下游。",
+            "auto_pending_action": "",
+        }, ensure_ascii=False)
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, tianxing_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    tianxing_observation TEXT NOT NULL DEFAULT '{}',
+                    tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
+                    tianxing_auto_config TEXT NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(42, 'tutuerduoxiao', '小耳朵图图')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, tianxing_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id, tianxing_observation) VALUES(42, ?)", (observation,))
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        tianxing = next(item for item in summary if item["module"] == "tianxing")
+        self.assertEqual("ok", tianxing["status"])
+        self.assertTrue(any("推命:探索" in item for item in tianxing["details"]))
+        self.assertFalse(any(item.startswith("错误:") or item.startswith("自动错误:") for item in tianxing["details"]))
+
     def test_health_payload_and_markdown_include_score_risks_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             cfg = health_observer.ObserverConfig(

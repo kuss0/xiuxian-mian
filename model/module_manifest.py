@@ -397,6 +397,9 @@ REPLY_FAMILY_TO_MODULE = {
     for manifest in _MANIFESTS
     for family in tuple(manifest.reply_families or ())
 }
+REPLY_FAMILY_TO_MODULE.update({
+    "heavenly_pardon": "全局安全",
+})
 WORKFLOW_TO_MODULE = {
     workflow: manifest.name
     for manifest in _MANIFESTS

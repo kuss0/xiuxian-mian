@@ -46,6 +46,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self._queue_snapshot = (
             runtime._GAME_LAST_SEND_AT,
             copy.deepcopy(runtime._MODULE_LAST_SEND_AT),
+            copy.deepcopy(runtime._IDENTITY_LAST_SEND_AT),
             runtime._GAME_SEND_QUEUE_SEQ,
             copy.deepcopy(runtime._GAME_SEND_QUEUE_ITEMS),
         )
@@ -58,12 +59,54 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         runtime._GAME_LAST_SEND_AT = self._queue_snapshot[0]
         runtime._MODULE_LAST_SEND_AT.clear()
         runtime._MODULE_LAST_SEND_AT.update(self._queue_snapshot[1])
-        runtime._GAME_SEND_QUEUE_SEQ = self._queue_snapshot[2]
+        runtime._IDENTITY_LAST_SEND_AT.clear()
+        runtime._IDENTITY_LAST_SEND_AT.update(self._queue_snapshot[2])
+        runtime._GAME_SEND_QUEUE_SEQ = self._queue_snapshot[3]
         runtime._GAME_SEND_QUEUE_ITEMS.clear()
-        runtime._GAME_SEND_QUEUE_ITEMS.update(copy.deepcopy(self._queue_snapshot[3]))
+        runtime._GAME_SEND_QUEUE_ITEMS.update(copy.deepcopy(self._queue_snapshot[4]))
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         super().tearDown()
+
+    async def test_identity_gap_applies_after_whitelisted_burst_send(self):
+        send_as_id = 301299112
+        runtime._GAME_LAST_SEND_AT = 0.0
+        runtime._MODULE_LAST_SEND_AT.clear()
+        runtime._IDENTITY_LAST_SEND_AT.clear()
+        sleeps = []
+        clock = {"mono": 100.0}
+
+        async def fake_sleep(delay):
+            delay = float(delay or 0)
+            sleeps.append(delay)
+            clock["mono"] += delay
+
+        with (
+            patch.object(runtime.time, "monotonic", side_effect=lambda: clock["mono"]),
+            patch.object(runtime.random, "uniform", return_value=0.0),
+            patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+            patch.object(runtime.asyncio, "sleep", new=fake_sleep),
+        ):
+            async with runtime._send_slot(
+                runtime.SEND_PRIORITY_EVENT_BURST,
+                command=".提竿",
+                send_as_id=send_as_id,
+                intent={"source_module": "灵溪垂钓"},
+            ):
+                self.assertEqual(100.0, clock["mono"])
+
+            self.assertEqual(0.0, runtime._GAME_LAST_SEND_AT)
+            self.assertEqual(100.0, runtime._IDENTITY_LAST_SEND_AT[send_as_id])
+
+            async with runtime._send_slot(
+                runtime.SEND_PRIORITY_NORMAL,
+                command=".定命 太阴",
+                send_as_id=send_as_id,
+                intent={"source_module": "天星宗"},
+            ):
+                self.assertEqual(110.0, clock["mono"])
+
+        self.assertGreaterEqual(sum(sleeps), runtime.IDENTITY_SEND_GAP_MIN_SEC)
 
     async def test_send_rpc_timeout_releases_global_send_lock(self):
         send_as_id = 301299112
@@ -82,6 +125,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "get_global_enabled", return_value=True),
                 patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
                 patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
                 patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
                 patch.object(runtime, "is_identity_weak", return_value=False),
                 patch.object(runtime, "action_guard_before_send", return_value=(True, "")),

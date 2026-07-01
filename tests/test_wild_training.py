@@ -303,10 +303,10 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(handled)
         self.assertEqual("", observed["current_change"])
         self.assertEqual(0, observed["current_change_until"])
-        self.assertEqual("", observed["current_prediction"])
-        self.assertEqual(0, observed["current_prediction_until"])
-        self.assertEqual("探索", observed["prediction_consumed_route"])
-        self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertEqual("探索", observed["current_prediction"])
+        self.assertGreater(observed["current_prediction_until"], now)
+        self.assertEqual("", observed["prediction_consumed_route"])
+        self.assertEqual(0, observed["prediction_consumed_at"])
         self.assertEqual(23, observed["tianji_value"])
         self.assertEqual(1, observed["last_tianji_gain"])
         self.assertEqual(30, observed["last_contrib_gain"])
@@ -477,6 +477,70 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         args, kwargs = audit_mock.await_args
         self.assertIn("天星探索结果未留存", args[0])
         self.assertEqual("high", kwargs["priority"])
+
+    async def test_tianxing_retry_cd_invalidates_uncertain_explore_release(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_900.0
+        state_module.update_send_as_profile(send_as_id, username="wild", sect_name="天星宗")
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 301
+            identity_state["wild_training_reply_due_at"] = now + 60
+            identity_state["wild_training_retry_count"] = 1
+            identity_state["wild_training_last_msg_id"] = 301
+            identity_state["wild_training_last_result"] = "已发送：深入"
+            identity_state["tianxing_enabled"] = True
+            identity_state["tianxing_observation"] = {
+                "current_prediction": "探索",
+                "current_prediction_until": now + 7 * 3600,
+                "current_prediction_set_at": now - 300,
+                "current_change": "探索",
+                "current_change_until": now + 22 * 3600,
+                "tianji_value": 36,
+            }
+            identity_state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "release_downstream",
+                    "route": "探索",
+                    "arg": "探索",
+                    "status": "released",
+                    "release_basis": "change_fate",
+                },
+                "released_routes": {
+                    "探索": {
+                        "released_at": now - 30,
+                        "basis": "change_fate",
+                    }
+                },
+            }
+
+            with patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training.random, "uniform", return_value=10), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+                handled = await wild_training.handle_wild_training_reply(
+                    "【野外历练】\n山中灵机未复，请在 1小时32分钟1秒 后再来。",
+                    now,
+                    SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 深入", id=301),
+                    matched_family="wild_training",
+                    current_msg_id=401,
+                )
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(handled)
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("探索", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertEqual("", observed["current_change"])
+        self.assertEqual(0, observed["current_change_until"])
+        self.assertEqual("unknown_result", observed["last_result"])
+        self.assertNotIn("探索", timeline["released_routes"])
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertGreaterEqual(audit_mock.await_count, 2)
+        self.assertIn("天星探索结果不确定", audit_mock.await_args_list[-1].args[0])
+        self.assertEqual("high", audit_mock.await_args_list[-1].kwargs["priority"])
 
     async def test_unanswered_command_still_retries_once(self):
         send_as_id = self._prepare_identity()

@@ -264,6 +264,7 @@ MODULE_SEND_GAP_MIN_SEC = {
     "灵溪垂钓": 2.0,
     "储物袋": 5.0,
 }
+IDENTITY_SEND_GAP_MIN_SEC = 10.0
 
 P0_SEND_GAP_MIN_SEC = 20.0
 P0_SEND_GAP_MAX_SEC = 30.0
@@ -283,9 +284,12 @@ NORMAL_SEND_GAP_MAX_SEC = 40.0
 _GAME_SEND_LOCK = asyncio.Lock()
 _GAME_LAST_SEND_AT = 0.0
 _MODULE_LAST_SEND_AT = {}
+_IDENTITY_LAST_SEND_AT = {}
 _GAME_SEND_QUEUE_SEQ = 0
 _GAME_SEND_QUEUE_ITEMS = {}
 _GAME_COMMAND_SENT_OBSERVERS = []
+_GAME_COMMAND_PRE_SEND_GUARDS = []
+_GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
 _LOG_BOT_UPDATE_OFFSET = None
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
 LOG_BOT_READ_TIMEOUT_SEC = 8
@@ -346,6 +350,11 @@ def register_game_command_sent_observer(observer):
         _GAME_COMMAND_SENT_OBSERVERS.append(observer)
 
 
+def register_game_command_pre_send_guard(guard):
+    if callable(guard) and guard not in _GAME_COMMAND_PRE_SEND_GUARDS:
+        _GAME_COMMAND_PRE_SEND_GUARDS.append(guard)
+
+
 def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **metadata):
     for observer in list(_GAME_COMMAND_SENT_OBSERVERS):
         try:
@@ -354,6 +363,43 @@ def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **
             observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id)
         except Exception:
             traceback.print_exc()
+
+
+def _normalize_pre_send_guard_result(result):
+    if isinstance(result, dict):
+        allowed = bool(result.get("allowed", True))
+        reason = str(result.get("reason") or "").strip()
+        code = str(result.get("code") or "").strip()
+        return allowed, reason, code
+    if isinstance(result, tuple):
+        allowed = bool(result[0]) if result else True
+        reason = str(result[1] if len(result) > 1 else "" or "").strip()
+        code = str(result[2] if len(result) > 2 else "" or "").strip()
+        return allowed, reason, code
+    if result is False:
+        return False, "", ""
+    return True, "", ""
+
+
+async def _run_game_command_pre_send_guards(command, *, send_as_id, priority, intent=None):
+    for guard in list(_GAME_COMMAND_PRE_SEND_GUARDS):
+        try:
+            result = guard(
+                command,
+                send_as_id=send_as_id,
+                priority=priority,
+                intent=_compact_send_intent(intent),
+                now=time.time(),
+            )
+            if asyncio.iscoroutine(result):
+                result = await result
+        except Exception:
+            traceback.print_exc()
+            continue
+        allowed, reason, code = _normalize_pre_send_guard_result(result)
+        if not allowed:
+            return False, reason or "发送前守卫拦截", code or getattr(guard, "__name__", "pre_send_guard")
+    return True, "", ""
 
 
 # ============== 天尊健康状态 ==============
@@ -585,6 +631,23 @@ def _module_send_gap_ready_at(intent=None, now_mono=None):
     return max(now_mono, last_at + min_gap)
 
 
+def _identity_send_gap_ready_at(send_as_id=None, now_mono=None):
+    try:
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if send_as_id <= 0:
+        return 0.0
+    min_gap = float(IDENTITY_SEND_GAP_MIN_SEC or 0.0)
+    if min_gap <= 0:
+        return 0.0
+    last_at = float(_IDENTITY_LAST_SEND_AT.get(send_as_id, 0.0) or 0.0)
+    if last_at <= 0:
+        return 0.0
+    now_mono = time.monotonic() if now_mono is None else float(now_mono)
+    return max(now_mono, last_at + min_gap)
+
+
 def _build_send_not_before(priority):
     min_gap, max_gap = _get_send_gap_range(priority)
     now_mono = time.monotonic()
@@ -625,8 +688,11 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
     min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
     module_gap = _module_send_gap_min_sec(intent)
     module_name = str(_compact_send_intent(intent).get("source_module") or "").strip()
+    identity_id = int(send_as_id or 0)
+    identity_gap = float(IDENTITY_SEND_GAP_MIN_SEC or 0.0) if identity_id > 0 else 0.0
     slot_anchor = None
     module_anchor = None
+    identity_anchor = None
     not_before = 0.0
     _GAME_SEND_QUEUE_SEQ += 1
     queue_token = _GAME_SEND_QUEUE_SEQ
@@ -643,12 +709,21 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
             await _GAME_SEND_LOCK.acquire()
             now_mono = time.monotonic()
             current_module_last = float(_MODULE_LAST_SEND_AT.get(module_name, 0.0) or 0.0) if module_name else 0.0
-            if not_before <= 0 or slot_anchor != _GAME_LAST_SEND_AT or module_anchor != current_module_last:
+            current_identity_last = float(_IDENTITY_LAST_SEND_AT.get(identity_id, 0.0) or 0.0) if identity_id > 0 else 0.0
+            if (
+                not_before <= 0
+                or slot_anchor != _GAME_LAST_SEND_AT
+                or module_anchor != current_module_last
+                or identity_anchor != current_identity_last
+            ):
                 slot_anchor = _GAME_LAST_SEND_AT
                 module_anchor = current_module_last
+                identity_anchor = current_identity_last
                 not_before = max(now_mono, _GAME_LAST_SEND_AT) + random.uniform(min_gap, max_gap)
                 if module_gap > 0 and current_module_last > 0:
                     not_before = max(not_before, current_module_last + module_gap)
+                if identity_gap > 0 and current_identity_last > 0:
+                    not_before = max(not_before, current_identity_last + identity_gap)
             ready_at = not_before
             _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["not_before_mono"] = ready_at
             wait = ready_at - now_mono
@@ -657,10 +732,13 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
                 try:
                     yield
                 finally:
+                    sent_mono = time.monotonic()
                     if not bypass_gap:
-                        _GAME_LAST_SEND_AT = time.monotonic()
+                        _GAME_LAST_SEND_AT = sent_mono
                     if module_gap > 0 and module_name:
-                        _MODULE_LAST_SEND_AT[module_name] = time.monotonic()
+                        _MODULE_LAST_SEND_AT[module_name] = sent_mono
+                    if identity_gap > 0 and identity_id > 0:
+                        _IDENTITY_LAST_SEND_AT[identity_id] = sent_mono
                     _GAME_SEND_LOCK.release()
                 return
             _GAME_SEND_LOCK.release()
@@ -777,6 +855,7 @@ REPLY_FAMILY_COMMANDS = {
     "storage_bag_listing": {".上架"},
     "storage_bag_buy": {".购买"},
     "storage_bag_gift": {".赠送"},
+    "heavenly_pardon": {".赎罪"},
     "replica_join": {CMD_REPLICA_JOIN, CMD_REPLICA_ZHUIMO_JOIN, CMD_REPLICA_HUANGLONG_JOIN, CMD_REPLICA_CANGKUN_JOIN, CMD_REPLICA_KUNWU_JOIN, CMD_REPLICA_LUOYUN_JOIN},
 }
 COMMAND_TO_REPLY_FAMILY = {
@@ -2662,6 +2741,25 @@ async def send_game_command(
             await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
             return None
 
+        pre_guard_allowed, pre_guard_reason, pre_guard_code = await _run_game_command_pre_send_guards(
+            command,
+            send_as_id=send_as_id,
+            priority=send_priority,
+            intent=send_intent,
+        )
+        if not pre_guard_allowed:
+            guard_key = (int(send_as_id or 0), pre_guard_code, str(command or "").strip())
+            now = time.time()
+            if now - float(_GAME_PRE_SEND_GUARD_BLOCK_LAST.get(guard_key, 0) or 0) >= 300:
+                _GAME_PRE_SEND_GUARD_BLOCK_LAST[guard_key] = now
+                await send_audit_log(
+                    f"🧭 路线保护拦截：{_truncate_log_text(command, limit=32)}｜{pre_guard_reason}",
+                    scope="identity",
+                    send_as_id=send_as_id,
+                    limit=260,
+                )
+            return None
+
         guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
         if not guard_allowed:
             if action_guard_should_log_block(command, send_as_id=send_as_id):
@@ -2694,6 +2792,24 @@ async def send_game_command(
                 return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+                return None
+            pre_guard_allowed, pre_guard_reason, pre_guard_code = await _run_game_command_pre_send_guards(
+                command,
+                send_as_id=send_as_id,
+                priority=send_priority,
+                intent=send_intent,
+            )
+            if not pre_guard_allowed:
+                guard_key = (int(send_as_id or 0), pre_guard_code, str(command or "").strip())
+                now = time.time()
+                if now - float(_GAME_PRE_SEND_GUARD_BLOCK_LAST.get(guard_key, 0) or 0) >= 300:
+                    _GAME_PRE_SEND_GUARD_BLOCK_LAST[guard_key] = now
+                    await send_audit_log(
+                        f"🧭 路线保护拦截：{_truncate_log_text(command, limit=32)}｜{pre_guard_reason}",
+                        scope="identity",
+                        send_as_id=send_as_id,
+                        limit=260,
+                    )
                 return None
             guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
             if not guard_allowed:

@@ -435,6 +435,15 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
     raw_text = str(text or "").strip()
     msg_id = int(current_msg_id or getattr(reply_to, "id", 0) or 0)
     if has_wait_time(raw_text) and any(keyword in raw_text for keyword in WILD_TRAINING_CD_KEYWORDS):
+        previous_result = str(state.get("wild_training_last_result") or "").strip()
+        previous_retry_count = int(state.get("wild_training_retry_count", 0) or 0)
+        tianxing_unknown = False
+        if previous_retry_count > 0 or previous_result.startswith("已出发"):
+            tianxing_unknown = mark_tianxing_route_result_unknown(
+                "探索",
+                now=now,
+                reason="野外历练补发撞冷却，上一轮结果可能已被服端结算",
+            )
         wait_sec = parse_wait_time(raw_text)
         state["next_wild_training_time"] = float(now + wait_sec + CD_BUFFER_SEC + random.uniform(10, 60))
         state["wild_training_reply_to_msg_id"] = 0
@@ -446,6 +455,12 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
         state["wild_training_last_error"] = ""
         save_state()
         await send_audit_log(f"🏞️ 野外历练 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity")
+        if tianxing_unknown:
+            await send_audit_log(
+                "🌌 天星探索结果不确定：野外补发撞冷却，已保守清理探索推命/改命缓存并等待下一轮预检。",
+                scope="identity",
+                priority="high",
+            )
         return True
 
     if _is_start_notice(raw_text):

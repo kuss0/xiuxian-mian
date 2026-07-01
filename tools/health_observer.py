@@ -768,6 +768,34 @@ def module_error_is_retryable_warning(field: str, text: object, payload: dict[st
     return retry_count > 0 or pending_msg_id > 0
 
 
+def normalize_json_state_for_health(field: str, payload: dict[str, object]) -> dict[str, object]:
+    if not payload:
+        return {}
+    normalized = dict(payload)
+    if str(field or "") != "tianxing_observation":
+        return normalized
+
+    last_action = str(normalized.get("last_action") or "").strip()
+    last_result = str(normalized.get("last_result") or "").strip()
+    last_error = str(normalized.get("last_error") or "").strip()
+    if last_result == "cooldown" and (
+        (last_action == "推命" and last_error == "推命尚未应验")
+        or (last_action == "改命" and last_error == "改命尚未耗尽")
+    ):
+        normalized["last_error"] = ""
+        last_error = ""
+
+    auto_last_error = str(normalized.get("auto_last_error") or "").strip()
+    if (
+        last_result == "cooldown"
+        and not str(normalized.get("auto_pending_action") or "").strip()
+        and not last_error
+        and auto_last_error == "天星宗自动动作回复超时，暂缓重试；不继续推进下游。"
+    ):
+        normalized["auto_last_error"] = ""
+    return normalized
+
+
 def add_module_detail(details: list[str], label: str, value: object, *, limit: int = 80) -> None:
     text = short_value(value, limit)
     if text:
@@ -867,6 +895,7 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
 
             for field in spec.get("json_fields", ()):
                 json_payload = parse_json_dict(value_for(str(field)))
+                json_payload = normalize_json_state_for_health(str(field), json_payload)
                 json_warn, json_error = summarize_json_state(str(field), json_payload, now, details, evidence)
                 warn = warn or json_warn
                 error = error or json_error

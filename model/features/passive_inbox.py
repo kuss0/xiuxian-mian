@@ -14,6 +14,7 @@ from ..timing import get_checkin_day_key, get_day_key, has_wait_time, parse_wait
 from ..verified_event import VerifiedGameEvent
 from . import checkin as checkin_mod
 from . import concubine as concubine_mod
+from . import heavenly_ban as heavenly_ban_mod
 from . import hehuan as hehuan_mod
 from . import pet as pet_mod
 from . import second_soul as second_soul_mod
@@ -1385,6 +1386,56 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
         target_id = _identity_from_reply_sender_id(reply_to_sender_id)
         if target_id is not None:
             target_route_source = _route_source(event_type, "reply_sender")
+
+    pardon_result = await heavenly_ban_mod.handle_heavenly_pardon_text(
+        raw_text,
+        now=now,
+        identity_id_hint=target_id or 0,
+        source="passive_inbox",
+    )
+    if pardon_result.get("handled"):
+        _record_passive_event(
+            "changed",
+            module="heavenly_pardon",
+            identity_id=pardon_result.get("identity_id") or 0,
+            summary="heavenly_pardon",
+            matched_text="天道赦免",
+            decision="identity_restored" if pardon_result.get("matched") else "unmatched_pardon",
+            chat_id=observed_chat_id,
+            msg_id=observed_msg_id,
+            reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+            reply_to_sender_id=reply_to_sender_id,
+            root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+            event_type=event_type,
+            route_source=target_route_source or event_type or "passive_match",
+            source_message_id=source_message_id,
+        )
+        return True
+
+    ban_result = await heavenly_ban_mod.handle_heavenly_ban_text(
+        raw_text,
+        now=now,
+        identity_id_hint=target_id or 0,
+        source="passive_inbox",
+    )
+    if ban_result.get("handled"):
+        _record_passive_event(
+            "changed",
+            module="heavenly_ban",
+            identity_id=ban_result.get("identity_id") or 0,
+            summary="heavenly_ban",
+            matched_text="天道封禁",
+            decision="identity_disabled" if ban_result.get("matched") else "unmatched_ban",
+            chat_id=observed_chat_id,
+            msg_id=observed_msg_id,
+            reply_to_msg_id=(reply_context or {}).get("reply_to_msg_id", 0),
+            reply_to_sender_id=reply_to_sender_id,
+            root_msg_id=(reply_context or {}).get("root_msg_id", 0),
+            event_type=event_type,
+            route_source=target_route_source or event_type or "passive_match",
+            source_message_id=source_message_id,
+        )
+        return True
 
     storage_changed, storage_identity_id = _apply_storage_bag_passive(raw_text, now)
     if storage_changed:

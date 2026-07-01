@@ -115,6 +115,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_start"))
         self.assertEqual("周天星斗", module_manifest.get_module_name_for_reply_family("formation_assist"))
         self.assertEqual("布下剑阵", module_manifest.get_module_name_for_reply_family("pet_formation"))
+        self.assertEqual("全局安全", module_manifest.get_module_name_for_reply_family("heavenly_pardon"))
 
     def test_reply_families_have_single_behavior_owner(self):
         owners = {}

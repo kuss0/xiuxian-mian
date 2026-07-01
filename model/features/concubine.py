@@ -49,6 +49,7 @@ from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console
 from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from . import workflow_log
+from . import heavenly_ban as heavenly_ban_mod
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
 from .storage_bag import CMD_STORAGE_BAG, apply_storage_bag_item_deltas, parse_storage_bag_reply, resolve_storage_bag_identity_id
 from ..action_guard import close_action as close_action_guard
@@ -78,6 +79,14 @@ CONCUBINE_MAIN_PENDING_COMMANDS = CONCUBINE_PENDING_COMMANDS - {
     CMD_CONCUBINE_VOYAGE_RETURN,
     CMD_CONCUBINE_VOYAGE_STATUS,
 }
+CONCUBINE_ERROR_KEYS = (
+    "concubine_last_error",
+    "concubine_tianji_last_error",
+    "concubine_greet_last_error",
+    "concubine_gift_last_error",
+    "concubine_heart_last_error",
+    "concubine_voyage_last_error",
+)
 CONCUBINE_REACQUIRE_COMMANDS = {CMD_CONCUBINE_SECT_MARRY, CMD_CONCUBINE_ROMANCE}
 IDENTITY_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 
@@ -1704,10 +1713,15 @@ def _is_current_heart_prompt_message(reply_to=None, current_msg_id=0):
     return _msg_id_int(current_msg_id) == expected_msg_id or _msg_id_int(getattr(reply_to, "id", 0)) == expected_msg_id
 
 
+def _is_heavenly_ban_text(text):
+    return heavenly_ban_mod.is_heavenly_ban_text(text)
+
+
 def _is_strong_dream_terminal_text(text):
     raw_text = str(text or "")
     return (
         _is_dream_cooldown_text(raw_text)
+        or _is_heavenly_ban_text(raw_text)
         or "修为不足，共梦寻图" in raw_text
         or "【入梦寻图】" in raw_text
         or ("【全群异闻·" in raw_text and "残图】" in raw_text)
@@ -3126,6 +3140,13 @@ def clear_concubine_tianji_state(*, persist=False, keep_last_error=False):
 
 
 def restore_concubine_runtime(now):
+    ban_texts = _persisted_heavenly_ban_texts()
+    if ban_texts:
+        identity_id = int(get_current_identity_id() or 0)
+        _clear_persisted_heavenly_ban_runtime()
+        _fire_and_forget(_recover_persisted_heavenly_ban(now, ban_texts=ban_texts, identity_id_hint=identity_id))
+        mark_dirty()
+        return 0
     if _clear_expired_tianji_chain(now):
         mark_dirty()
     if _phase() in CONCUBINE_HEART_ACTIVE_PHASES:
@@ -3872,6 +3893,22 @@ async def handle_concubine_dream_reply(text, now, reply_to, matched_family=None)
     voyage = _parse_voyage_text(raw_text, now)
     if voyage and voyage.get("status") == "sailing":
         _apply_voyage_blocked_action(voyage, now, error_key="concubine_last_error", label="入梦寻图")
+        save_state()
+        return True
+
+    if _is_heavenly_ban_text(raw_text):
+        await heavenly_ban_mod.handle_heavenly_ban_text(
+            raw_text,
+            now=now,
+            identity_id_hint=get_current_identity_id(),
+            source="concubine_dream",
+        )
+        state["concubine_dream_due_at"] = 0
+        state["next_concubine_time"] = 0
+        state["concubine_last_error"] = "入梦寻图触发天道封禁，已停用该身份并清空待发任务"
+        reset_resource_shortage(CONCUBINE_DREAM_RESOURCE_KEY)
+        _set_phase("idle")
+        _clear_pending_msg_ids()
         save_state()
         return True
 
@@ -4783,6 +4820,35 @@ async def run_concubine_phaseful_cleanup_scheduler(now):
         await _run_concubine_phaseful_cleanup_scheduler(now)
 
 
+def _persisted_heavenly_ban_texts():
+    return [str(state.get(key) or "").strip() for key in CONCUBINE_ERROR_KEYS if heavenly_ban_mod.is_heavenly_ban_text(state.get(key))]
+
+
+def _clear_persisted_heavenly_ban_runtime():
+    for key in CONCUBINE_ERROR_KEYS:
+        if heavenly_ban_mod.is_heavenly_ban_text(state.get(key)):
+            state[key] = ""
+    state["concubine_dream_due_at"] = 0
+    state["next_concubine_time"] = 0
+    _set_phase("idle")
+    _clear_pending_msg_ids()
+
+
+async def _recover_persisted_heavenly_ban(now, *, ban_texts=None, identity_id_hint=0):
+    ban_texts = [str(item or "").strip() for item in (ban_texts or _persisted_heavenly_ban_texts()) if str(item or "").strip()]
+    if not ban_texts:
+        return False
+    await heavenly_ban_mod.handle_heavenly_ban_text(
+        "\n".join(ban_texts),
+        now=now,
+        identity_id_hint=identity_id_hint or get_current_identity_id(),
+        source="concubine_recovery",
+    )
+    _clear_persisted_heavenly_ban_runtime()
+    save_state()
+    return True
+
+
 async def _run_concubine_phaseful_cleanup_scheduler(now):
     if (
         not state.get("concubine_enabled", False)
@@ -4815,6 +4881,9 @@ async def _run_concubine_phaseful_cleanup_scheduler(now):
 
 
 async def _run_concubine_scheduler(now):
+    if await _recover_persisted_heavenly_ban(now):
+        return
+
     if (
         not state.get("concubine_enabled", False)
         and not state.get("concubine_tianji_enabled", False)
