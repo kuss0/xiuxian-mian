@@ -111,6 +111,39 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 1, state_module.state["next_wild_training_time"])
 
+    def test_startup_spread_keeps_expired_tianxing_craft_prediction_wild_training_immediate(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["next_wild_training_time"] = now - 1
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 3600,
+                "current_change": "",
+                "current_change_until": 0,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "blocked_replan",
+                "route": "炼制",
+                "craft_farm": {
+                    "phase": "sent_waiting_reply",
+                    "next_time": now - 60,
+                    "last_action": "consume_craft_prediction",
+                },
+            }
+
+        with patch.object(control.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(now + 1, state_module.state["next_wild_training_time"])
+
     def test_startup_spread_recovers_wild_training_from_recent_real_result(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()

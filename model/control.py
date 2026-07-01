@@ -560,6 +560,60 @@ def _has_released_tianxing_explore_downstream(now):
     return prediction_until > float(now or 0) and change_until > float(now or 0)
 
 
+def _has_tianxing_wild_training_route_pressure(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    if _state_positive_int("wild_training_reply_to_msg_id"):
+        return False
+    observation = state.get("tianxing_observation") if isinstance(state.get("tianxing_observation"), dict) else {}
+    timeline = state.get("tianxing_timeline_state") if isinstance(state.get("tianxing_timeline_state"), dict) else {}
+    try:
+        prediction_until = float(observation.get("current_prediction_until", 0) or 0)
+        change_until = float(observation.get("current_change_until", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        prediction_until = 0.0
+        change_until = 0.0
+    current_prediction = str(observation.get("current_prediction") or "").strip()
+    current_change = str(observation.get("current_change") or "").strip()
+    if current_prediction in {"探索", "炼制"} and prediction_until > float(now or 0):
+        return True
+    if current_change == "探索" and change_until > float(now or 0):
+        return True
+    if str(timeline.get("route") or "").strip() != "探索":
+        return False
+    return str(timeline.get("phase") or "").strip() in {
+        "waiting_send",
+        "sent_waiting_ack",
+        "phaseful_deferred",
+        "downstream_released",
+    }
+
+
+def _has_expired_tianxing_craft_prediction_wait(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    if _state_positive_int("wild_training_reply_to_msg_id"):
+        return False
+    observation = state.get("tianxing_observation") if isinstance(state.get("tianxing_observation"), dict) else {}
+    if str(observation.get("current_prediction") or "").strip() != "炼制":
+        return False
+    try:
+        prediction_until = float(observation.get("current_prediction_until", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        prediction_until = 0.0
+    if prediction_until <= float(now or 0):
+        return False
+    timeline = state.get("tianxing_timeline_state") if isinstance(state.get("tianxing_timeline_state"), dict) else {}
+    craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
+    if str(craft_farm.get("phase") or "").strip() not in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"}:
+        return False
+    try:
+        next_time = float(craft_farm.get("next_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_time = 0.0
+    return 0 < next_time <= float(now or 0)
+
+
 def _has_stale_tianti_daily_marker(today_key):
     last_wenxin_day = str(state.get("tianti_last_wenxin_day") or "")
     trigger_key = str(state.get("tianti_wenxin_last_trigger_key") or "")
@@ -572,6 +626,10 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
         if _has_released_tianxing_explore_downstream(now):
             return now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+        if _has_expired_tianxing_craft_prediction_wait(now):
+            return now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+        if _has_tianxing_wild_training_route_pressure(now):
+            return now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
         try:
             retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         except (TypeError, ValueError, OverflowError):
