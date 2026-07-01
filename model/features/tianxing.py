@@ -421,6 +421,11 @@ def _craft_farm_interval_sec(config, *, off_window=False):
     return float(random.uniform(min_sec, max_sec))
 
 
+def _current_craft_farm_interval_sec(config, now):
+    _windows, off_window_active = _build_tianxing_craft_farm_windows(now, config, reason="天星炼制攒点间隔")
+    return _craft_farm_interval_sec(config, off_window=off_window_active)
+
+
 def normalize_tianxing_auto_config(value=None):
     default = _default_tianxing_auto_config()
     config = copy.deepcopy(default)
@@ -3702,7 +3707,7 @@ def _update_craft_farm_from_parsed(parsed, observed, now, family=""):
             else:
                 farm["phase"] = "ready"
                 farm["handoff_ready"] = False
-                farm["next_time"] = float(now + _craft_farm_interval_sec(config))
+                farm["next_time"] = float(now + _current_craft_farm_interval_sec(config, now))
             _craft_farm_audit(
                 farm,
                 now,
@@ -4490,6 +4495,16 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             takeover=False,
             handoff=True,
             reason=farm.get("last_error") or "炼制攒点等待天星时间线确认。",
+            next_time=next_time,
+            dry_run=dry_run,
+        )
+    if farm_phase == "ready" and next_time > now:
+        return _craft_farm_result(
+            "waiting_interval",
+            active=True,
+            takeover=False,
+            handoff=True,
+            reason="炼制攒点等待下一次间隔。",
             next_time=next_time,
             dry_run=dry_run,
         )

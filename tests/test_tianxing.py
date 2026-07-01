@@ -3740,9 +3740,52 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                     config=state_module.state["tianxing_auto_config"],
                 )
 
-        self.assertEqual("timeline_required", result["stage"])
-        self.assertGreaterEqual(timeline_mock.await_count, 1)
+        self.assertEqual("waiting_interval", result["stage"])
+        timeline_mock.assert_not_awaited()
         send_mock.assert_not_awaited()
+
+    def test_craft_farm_result_uses_off_window_interval(self):
+        now = local_ts(12)
+        hit_text = (
+            "炼制结束！\n"
+            "共开炉 1 次，成功 1 次。\n"
+            "最终获得【玄铁剑】x1！\n"
+            "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30"
+        )
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=3)
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "farm_route": "炼制",
+                "farm_window_enabled": True,
+                "farm_windows_text": "02:00-05:00,06:00-09:00,15:00-16:00",
+                "craft_farm_enabled": True,
+                "craft_farm_dry_run_enabled": False,
+                "craft_farm_off_window_enabled": True,
+                "craft_farm_off_window_interval_min_sec": 1800,
+                "craft_farm_off_window_interval_max_sec": 1800,
+                "target_tianji_daily": 42,
+            }
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "released_routes": {
+                    "炼制": {"released_at": now - 10, "plan_id": "test", "reason": "炼制已放行", "basis": "prediction"}
+                },
+                "craft_farm": {
+                    "phase": "crafting_waiting_final",
+                    "started_at": now - 20,
+                    "target_tianji": 42,
+                    "daily_limit": 42,
+                    "last_command": ".炼制 玄铁剑",
+                },
+            }
+            self.assertTrue(tianxing.apply_tianxing_passive(hit_text, now=now, family="tianxing_craft_farm"))
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        self.assertEqual("ready", craft["phase"])
+        self.assertEqual(now + 1800, craft["next_time"])
 
     async def test_craft_farm_waiting_reply_preserves_pending_phase_without_resend(self):
         now = 1_780_000_000.0
