@@ -2934,6 +2934,48 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(should_wake)
 
+    def test_timeline_wake_recovers_stale_craft_consume_wait(self):
+        now = local_ts(12)
+        config = tianxing.normalize_tianxing_auto_config({
+            "timeline_enabled": True,
+            "auto_predict_enabled": True,
+            "craft_farm_enabled": True,
+            "craft_farm_dry_run_enabled": False,
+            "craft_farm_off_window_enabled": True,
+            "farm_route": "炼制",
+            "farm_windows_text": "02:00-05:00,06:00-09:00,15:00-16:00",
+            "route_prepare_lead_sec": 300,
+        })
+        observed = {
+            "last_observed_at": now - 60,
+            "available_stars": ["太阴", "贪狼"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "太阴",
+            "fixed_star_day": tianxing.get_day_key(now),
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "current_change": "探索",
+            "current_change_until": now + 12 * 3600,
+            "tianji_value": 31,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["next_wild_training_time"] = now + 2 * 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "blocked_replan",
+                "route": "探索",
+                "craft_farm": {
+                    "phase": "waiting",
+                    "next_time": now + 3600,
+                    "last_action": "waiting_consume_window",
+                    "last_error": "探索消费窗口在推命锁定期内且已有探索改命待发，炼制攒点让路。",
+                },
+            }
+            should_wake = tianxing._should_wake_tianxing_timeline(observed, config, now)
+
+        self.assertTrue(should_wake)
+
     def test_craft_farm_interval_uses_configured_random_range(self):
         now = local_ts(3)
         with state_module.use_identity(self.identity_id):

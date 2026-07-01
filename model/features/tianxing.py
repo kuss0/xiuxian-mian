@@ -1393,6 +1393,8 @@ def _should_wake_tianxing_timeline(observed, config, now):
         "calibrating",
         "send_blocked",
     }:
+        if _craft_farm_stale_consume_wait_should_wake(craft_farm, now, config):
+            return True
         return False
     if timeline.get("phase") == "blocked_replan":
         return float(timeline.get("blocked_until", 0) or 0) <= float(now)
@@ -4271,6 +4273,41 @@ def _state_int(key):
         return 0
 
 
+def _craft_farm_explore_module_specs():
+    return (
+        ("野外历练", "wild_training_enabled", "next_wild_training_time", ("wild_training_reply_to_msg_id",), "wild_training_reply_due_at"),
+        (
+            "探寻裂缝",
+            "explore_rift_enabled",
+            "next_explore_rift_time",
+            ("explore_rift_reply_to_msg_id", "explore_rift_pending_result_msg_id", "explore_rift_fatal_msg_id"),
+            "explore_rift_reply_due_at",
+        ),
+    )
+
+
+def _has_explore_consume_timer():
+    for _label, enabled_key, next_key, pending_keys, _due_key in _craft_farm_explore_module_specs():
+        if not state.get(enabled_key):
+            continue
+        if _state_float(next_key) > 0:
+            return True
+        if any(_state_int(key) > 0 for key in pending_keys):
+            return True
+    return False
+
+
+def _craft_farm_stale_consume_wait_should_wake(craft_farm, now, config):
+    craft_farm = normalize_tianxing_craft_farm_state(craft_farm)
+    if str(craft_farm.get("phase") or "").strip() != "waiting":
+        return False
+    if str(craft_farm.get("last_action") or "").strip() != "waiting_consume_window":
+        return False
+    if not _has_explore_consume_timer():
+        return False
+    return not bool(_craft_farm_explore_consume_block(now, config))
+
+
 def _craft_farm_explore_consume_block(now, config):
     now = float(now or 0)
     lead_sec = int((config or {}).get("route_prepare_lead_sec", 5 * 60) or 5 * 60)
@@ -4290,17 +4327,7 @@ def _craft_farm_explore_consume_block(now, config):
     tianji_value = int(observed.get("tianji_value", 0) or 0)
     min_tianji = int((config or {}).get("min_tianji_for_change", 6) or 6)
     candidates = []
-    module_specs = (
-        ("野外历练", "wild_training_enabled", "next_wild_training_time", ("wild_training_reply_to_msg_id",), "wild_training_reply_due_at"),
-        (
-            "探寻裂缝",
-            "explore_rift_enabled",
-            "next_explore_rift_time",
-            ("explore_rift_reply_to_msg_id", "explore_rift_pending_result_msg_id", "explore_rift_fatal_msg_id"),
-            "explore_rift_reply_due_at",
-        ),
-    )
-    for label, enabled_key, next_key, pending_keys, due_key in module_specs:
+    for label, enabled_key, next_key, pending_keys, due_key in _craft_farm_explore_module_specs():
         if not state.get(enabled_key):
             continue
         pending = any(_state_int(key) > 0 for key in pending_keys)
