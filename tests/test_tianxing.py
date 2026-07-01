@@ -3888,6 +3888,52 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sent_waiting_reply", craft["phase"])
         self.assertEqual("玄铁剑", craft["last_item"])
 
+    async def test_craft_farm_waits_when_explore_route_lease_is_active(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=2)
+            state_module.state["tianxing_observation"]["current_prediction"] = "探索"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_observation"]["current_change"] = "探索"
+            state_module.state["tianxing_observation"]["current_change_until"] = now + 12 * 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step": {
+                    "action": "release_downstream",
+                    "arg": "探索",
+                    "route": "探索",
+                    "status": "released",
+                    "released_at": now - 10,
+                    "release_basis": "change_fate",
+                },
+                "released_routes": {
+                    "探索": {"released_at": now - 10, "plan_id": "test", "reason": "探索已放行", "basis": "change_fate"}
+                },
+            }
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_craft_farm_scheduler(
+                    now,
+                    config=self._active_config(
+                        now,
+                        timeline_enabled=True,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                        craft_farm_daily_limit=42,
+                        min_tianji_for_change=3,
+                    ),
+                )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        self.assertEqual("route_lease_waiting", result["stage"])
+        send_mock.assert_not_awaited()
+        self.assertEqual("waiting_consume_window", craft["phase"])
+        self.assertIn("天星已放行 探索", craft["last_error"])
+
     async def test_craft_farm_does_not_reuse_release_after_prediction_is_consumed(self):
         now = 1_780_000_000.0
         hit_text = (

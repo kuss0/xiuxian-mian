@@ -84,7 +84,7 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
-from .features.tianxing import run_tianxing_daily_bootstrap_scheduler, run_tianxing_scheduler
+from .features.tianxing import is_tianxing_route_released, run_tianxing_daily_bootstrap_scheduler, run_tianxing_scheduler
 from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
@@ -1112,16 +1112,24 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=1):
                 await run_wild_training_phaseful_cleanup_scheduler(scheduler_now)
                 processed += 1
                 continue
-            if int(state.get("wild_training_retry_count", 0) or 0) <= 0:
-                continue
             if pending_msg_id > 0:
                 continue
+            retry_count = int(state.get("wild_training_retry_count", 0) or 0)
             try:
                 next_time = float(state.get("next_wild_training_time", 0) or 0)
             except (TypeError, ValueError, OverflowError):
                 next_time = 0.0
+            explore_released = bool(is_tianxing_route_released("探索", now=scheduler_now, require_change_fate=True))
+            if explore_released and next_time > scheduler_now:
+                last_result = str(state.get("wild_training_last_result") or "")
+                last_error = str(state.get("wild_training_last_error") or "")
+                if "天星时间线" in last_result or "天星时间线" in last_error:
+                    state["next_wild_training_time"] = scheduler_now
+                    state["wild_training_last_error"] = "天星探索已放行，恢复错峰计时已压回立即消费窗口"
+                    next_time = scheduler_now
+                    mark_dirty()
             if next_time <= 0 or next_time > scheduler_now:
-                if next_time > scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5:
+                if retry_count > 0 and next_time > scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5:
                     state["next_wild_training_time"] = scheduler_now + WILD_TRAINING_RETRY_MIN_SEC
                     state["wild_training_last_error"] = "野外历练补发计时器被恢复错峰拉长，已压回短补发窗口"
                     mark_dirty()

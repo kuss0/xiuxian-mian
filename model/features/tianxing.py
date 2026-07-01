@@ -5010,6 +5010,19 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
         return plan
 
     if str(plan.get("action") or "") == "craft":
+        lease = _active_tianxing_route_lease(now)
+        lease_route = _normalize_route_choice((lease or {}).get("route"), "")
+        if lease_route and lease_route != "炼制":
+            farm["phase"] = "waiting_consume_window"
+            farm["last_command"] = ""
+            farm["last_result"] = "route_lease_waiting"
+            farm["last_error"] = f"天星已放行 {lease_route}，炼制攒点让路等待下游消费。"
+            farm["next_time"] = float(now + min(60, interval_sec()))
+            _craft_farm_audit(farm, now, "route_lease_waiting", route=lease_route, reason=farm["last_error"])
+            _set_tianxing_craft_farm_state(farm, now)
+            save_state()
+            return dict(plan, stage="route_lease_waiting", command="", reason=farm["last_error"], next_time=farm["next_time"])
+
         final_preflight = build_tianxing_route_preflight_plan("炼制", reason="天星炼制攒点发送前复核", now=now, config=config)
         if (
             not final_preflight.get("route_allowed")

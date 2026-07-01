@@ -391,6 +391,72 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(first_identity_id, now)], seen)
 
+    async def test_due_wild_training_fast_scan_runs_due_normal_cycle(self):
+        identity_id = 991787
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["next_wild_training_time"] = now - 10
+
+        seen = []
+
+        async def fake_wild_training_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock(side_effect=fake_wild_training_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+        self.assertEqual([(identity_id, now)], seen)
+
+    async def test_due_wild_training_fast_scan_clamps_released_tianxing_route_after_recovery_spread(self):
+        identity_id = 991788
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["next_wild_training_time"] = now + 600
+            state_module.state["wild_training_last_result"] = "天星时间线：sent_waiting_ack"
+            state_module.state["wild_training_last_error"] = "野外历练 需等待天星时间线确认 探索 改命后放行。"
+
+        seen = []
+
+        async def fake_wild_training_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "is_tianxing_route_released", return_value=True),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock(side_effect=fake_wild_training_scheduler)) as scheduler_mock,
+            patch.object(app, "mark_dirty") as mark_dirty_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+        mark_dirty_mock.assert_called_once()
+        self.assertEqual([(identity_id, now)], seen)
+        with state_module.use_identity(identity_id):
+            self.assertEqual(now, state_module.state["next_wild_training_time"])
+            self.assertIn("立即消费窗口", state_module.state["wild_training_last_error"])
+
     async def test_due_wild_training_retry_fast_scan_skips_inflight_reply(self):
         identity_id = 991784
         now = 1_700_000_000.0
