@@ -571,6 +571,104 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🕳 探寻裂缝结果", second_args[0])
         self.assertNotIn("priority", second_kwargs)
 
+    async def test_late_pending_edit_after_terminal_result_does_not_regress_result(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 22027
+            state_module.state["explore_rift_reply_due_at"] = now + 30
+            with (
+                patch.object(explore_rift.random, "uniform", return_value=0),
+                patch.object(explore_rift, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                pending = await explore_rift.handle_explore_rift_reply(
+                    "你运转全身法力，撕开一道漆黑的空间裂缝，将元婴送入其中探寻机缘...",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=22028,
+                )
+                terminal = await explore_rift.handle_explore_rift_reply(
+                    "【探寻成功】\n你的元婴满载而归，为你带来了：【法则碎片·木】, 【九天神雷木】！",
+                    now + 5,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=22028,
+                )
+                late_pending = await explore_rift.handle_explore_rift_reply(
+                    "元婴在无尽的虚空中穿行，成功捕获了几缕逸散的法则本源！",
+                    now + 6,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=22028,
+                )
+
+            self.assertTrue(pending)
+            self.assertTrue(terminal)
+            self.assertTrue(late_pending)
+            self.assertEqual("奖励：法则碎片·木x1、九天神雷木x1", state_module.state["explore_rift_last_result"])
+            self.assertEqual(0, state_module.state["explore_rift_pending_result_msg_id"])
+            self.assertTrue(str(state_module.state["explore_rift_last_result_key"]).startswith("22028:"))
+
+    async def test_modifier_only_tianxing_result_consumes_released_route_without_clearing_change(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["explore_rift_reply_to_msg_id"] = 22027
+            state_module.state["explore_rift_reply_due_at"] = now + 30
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 1800,
+                "current_prediction_set_at": now - 600,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 12,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step": {
+                    "action": "release_downstream",
+                    "route": "探索",
+                    "status": "released",
+                    "release_basis": "change_fate",
+                },
+                "released_routes": {
+                    "探索": {"released_at": now - 30, "plan_id": "test", "basis": "change_fate"},
+                },
+            }
+            with (
+                patch.object(explore_rift.random, "uniform", return_value=0),
+                patch.object(explore_rift, "save_state"),
+                patch.object(storage_bag, "save_state"),
+                patch.object(explore_rift, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await explore_rift.handle_explore_rift_reply(
+                    "【探寻成功】\n"
+                    "命盘【太阴】照命，主趋吉避凶，探索更易避祸，斗法更善脱身。\n"
+                    "【改命待发】此道改命尚可维持 16小时22分钟\n"
+                    "【天星偏转】 凶险偏移，珍稀显化上扬\n"
+                    "你的元婴满载而归，为你带来了：【法则碎片·木】, 【九天神雷木】！",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
+                    matched_family="explore_rift",
+                    result_msg_id=22028,
+                )
+
+            self.assertTrue(handled)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+            self.assertEqual("探索", observed["current_prediction"])
+            self.assertEqual("探索", observed["current_change"])
+            self.assertNotIn("探索", timeline["released_routes"])
+            self.assertEqual("blocked_replan", timeline["phase"])
+
     async def test_scheduler_sends_explore_rift_with_reply_tracking_metadata(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -984,6 +1082,40 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state_module.state["explore_rift_enabled"])
             self.assertIn("auto模式", state_module.state["explore_rift_last_error"])
             self.assertGreater(state_module.state["next_explore_rift_time"], now)
+
+    async def test_scheduler_allows_high_xiuwei_when_tianxing_explore_change_ready(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "fixed_star": "太阴",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 1800,
+                "current_prediction_set_at": now - 300,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 9,
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "strategy_dry_run_enabled": False,
+            }
+            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            with (
+                patch.object(explore_rift, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".探寻裂缝", track=False, max_retry=0, source_module="探寻裂缝")
+            self.assertEqual(22027, state_module.state["explore_rift_reply_to_msg_id"])
+            self.assertEqual("已发送", state_module.state["explore_rift_last_result"])
+            self.assertEqual("", state_module.state["explore_rift_last_error"])
 
     async def test_scheduler_blocks_missing_current_xiuwei_without_sending(self):
         identity_id = self._prepare_identity(xiuwei_current=0)

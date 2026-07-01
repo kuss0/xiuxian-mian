@@ -132,6 +132,27 @@ def looks_like_tianxing_route_result(text):
     return any(marker in raw_text for marker in TIANXING_ROUTE_RESULT_MARKERS)
 
 
+def _infer_route_from_modifier_text(text):
+    raw_text = str(text or "")
+    if any(
+        marker in raw_text
+        for marker in (
+            "【野外历练",
+            "此为 NPC 历练",
+            "此为玩家对 NPC 历练",
+            "空间裂缝",
+            "【探寻成功】",
+            "【激战得胜】",
+            "【遭遇风暴】",
+            "【不敌败退】",
+            "元婴满载而归",
+            "元婴在无尽的虚空",
+        )
+    ):
+        return "探索"
+    return ""
+
+
 def _default_tianxing_observation():
     return {
         "last_observed_at": 0,
@@ -1201,6 +1222,9 @@ def parse_tianxing_text(text, now=None, family=""):
         if star_match:
             star_effect = f"{star_match.group('star').strip()} {star_match.group('desc').strip()}".strip()
         parsed.update(action="命盘偏转", result=result, summary=_short_summary(raw_text), last_star_effect=star_effect)
+        route = _infer_route_from_modifier_text(raw_text)
+        if route:
+            parsed["last_route"] = route
         tianji_gain_match = RE_TIANJI_GAIN.search(raw_text)
         contrib_gain_match = RE_CONTRIB_GAIN.search(raw_text)
         calamity_gain_match = RE_CALAMITY_GAIN.search(raw_text)
@@ -1538,6 +1562,10 @@ def apply_tianxing_passive(text, now=None, family=""):
             prediction_consumed_this_text = True
         observed["current_prediction"] = ""
         observed["current_prediction_until"] = 0
+    elif parsed.get("result") == "modifier":
+        observed_route = _normalize_route_choice(parsed.get("last_route"), "")
+        if observed_route:
+            _consume_tianxing_released_route(observed_route, now, reason="route_result_observed")
     for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain"):
         if parsed.get(key) is not None:
             observed[key] = int(parsed.get(key) or 0)

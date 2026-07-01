@@ -214,6 +214,13 @@ def _set_explore_rift_pending_result(result_msg_id, now=None):
     return changed
 
 
+def _has_terminal_result_for_msg(result_msg_id):
+    result_msg_id = int(result_msg_id or 0)
+    if result_msg_id <= 0:
+        return False
+    return str(state.get("explore_rift_last_result_key") or "").startswith(f"{result_msg_id}:")
+
+
 def clear_explore_rift_state(*, persist=False, keep_last_error=False):
     last_error = state.get("explore_rift_last_error") if keep_last_error else ""
     state["next_explore_rift_time"] = 0
@@ -245,6 +252,16 @@ def _set_explore_rift_error(message, *, next_delay=None, now=None, persist=True)
 
 def _explore_rift_next_time_blocks(now):
     return cd_blocks(state.get("next_explore_rift_time", 0), now, 0)
+
+
+def _tianxing_explore_change_ready(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    preflight = build_tianxing_route_preflight_plan("探索", reason="探寻裂缝", now=now, require_change_fate=True)
+    return bool(
+        preflight.get("route_allowed")
+        and str(preflight.get("stage") or "") in {"change_fate_active", "timeline_released"}
+    )
 
 
 def _is_explore_rift_reply(reply_to=None, matched_family=None):
@@ -846,6 +863,8 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         return True
 
     if EXPLORE_RIFT_PENDING_KEYWORD in raw_text:
+        if _has_terminal_result_for_msg(result_msg_id):
+            return True
         if result_msg_id > 0:
             _set_explore_rift_pending_result(result_msg_id, now=now)
         state["explore_rift_last_result"] = "探寻中"
@@ -908,6 +927,8 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         return True
 
     if any(keyword in raw_text for keyword in ("时空异兽", "探寻机缘", "成功捕获了几缕逸散的法则本源")):
+        if _has_terminal_result_for_msg(result_msg_id):
+            return True
         if result_msg_id > 0:
             _set_explore_rift_pending_result(result_msg_id, now=now)
         state["explore_rift_last_result"] = "探寻中"
@@ -1034,7 +1055,7 @@ async def run_explore_rift_scheduler(now):
             _set_explore_rift_error("修为未知，等待身份资料确认后再探寻", next_delay=RETRY_MAX_SEC, now=now)
         return
 
-    if xiuwei_current >= EXPLORE_RIFT_XIUWEI_LIMIT:
+    if xiuwei_current >= EXPLORE_RIFT_XIUWEI_LIMIT and not _tianxing_explore_change_ready(now):
         if not _explore_rift_next_time_blocks(now):
             _set_explore_rift_error("auto模式修为>=500000，暂不探寻", next_delay=RETRY_MAX_SEC, now=now)
         return
