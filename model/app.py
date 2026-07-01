@@ -237,6 +237,7 @@ UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
 HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANZUN_BOT_NAME_MARKER = "天尊"
 TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
+DUE_WILD_TRAINING_MAX_PER_TICK = 5
 
 _PHASEFUL_IDENTITY_SCHEDULERS = (
     run_deep_retreat_scheduler,
@@ -1085,7 +1086,7 @@ async def _run_identity_schedulers(now):
                 await scheduler(identity_now)
 
 
-async def _run_due_wild_training_retry_schedulers(now, *, limit=1):
+async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAINING_MAX_PER_TICK):
     processed = 0
     for identity_id in get_identity_ids():
         if processed >= int(limit or 1):
@@ -1239,7 +1240,7 @@ async def _run_tianxing_daily_bootstrap_identity_schedulers(now, *, limit=TIANXI
             if has_phaseful_summary_block(scheduler_now):
                 continue
             result = await run_tianxing_daily_bootstrap_scheduler(scheduler_now)
-            if (result or {}).get("active"):
+            if (result or {}).get("active") and (result or {}).get("command"):
                 processed += 1
 
 

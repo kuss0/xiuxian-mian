@@ -391,6 +391,36 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(first_identity_id, now)], seen)
 
+    async def test_due_wild_training_fast_scan_defaults_to_small_batch(self):
+        identity_ids = [991790 + idx for idx in range(3)]
+        now = 1_700_000_000.0
+        for identity_id in identity_ids:
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["wild_training_enabled"] = True
+                state_module.state["wild_training_retry_count"] = 0
+                state_module.state["wild_training_reply_to_msg_id"] = 0
+                state_module.state["next_wild_training_time"] = now - 10
+
+        seen = []
+
+        async def fake_wild_training_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=identity_ids),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock(side_effect=fake_wild_training_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now)
+
+        self.assertEqual(3, scheduler_mock.await_count)
+        self.assertEqual([(identity_id, now) for identity_id in identity_ids], seen)
+
     async def test_due_wild_training_fast_scan_runs_due_normal_cycle(self):
         identity_id = 991787
         now = 1_700_000_000.0
@@ -539,6 +569,44 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             self.assertEqual(now + 120, state_module.state["next_wild_training_time"])
             self.assertIn("短补发窗口", state_module.state["wild_training_last_error"])
+
+    async def test_tianxing_daily_bootstrap_pending_does_not_consume_send_limit(self):
+        first_identity_id = 991793
+        second_identity_id = 991794
+        third_identity_id = 991795
+        now = 1_700_000_000.0
+        for identity_id in (first_identity_id, second_identity_id, third_identity_id):
+            state_module.ensure_identity_registered(identity_id)
+
+        seen = []
+
+        async def fake_tianxing_daily_bootstrap(scheduler_now):
+            current_id = state_module.get_current_identity_id()
+            seen.append((current_id, scheduler_now))
+            if current_id == first_identity_id:
+                return {"active": True, "reason": "pending"}
+            return {"active": True, "action": "observe", "command": ".观命"}
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[first_identity_id, second_identity_id, third_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_tianxing_daily_bootstrap_scheduler", new=AsyncMock(side_effect=fake_tianxing_daily_bootstrap)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_tianxing_daily_bootstrap_identity_schedulers(now, limit=2)
+
+        self.assertEqual(3, scheduler_mock.await_count)
+        self.assertEqual(
+            [
+                (first_identity_id, now),
+                (second_identity_id, now),
+                (third_identity_id, now),
+            ],
+            seen,
+        )
 
     async def test_main_loop_runs_phaseful_pass_even_when_identity_background_is_separate(self):
         stop_event = asyncio.Event()
