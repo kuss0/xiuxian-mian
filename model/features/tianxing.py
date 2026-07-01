@@ -4607,6 +4607,83 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
             reason=farm.get("last_error") or "闭关/元婴结算窗口内，先炼制消费推命延后。",
             next_time=farm_next_time,
         )
+    if farm_phase in {"sent_waiting_reply", "crafting_waiting_final", "calibrating"} and farm_next_time <= now:
+        command = CMD_TIANXING_PANEL
+        if not farm.get("started_at"):
+            farm["started_at"] = float(now)
+            farm["start_tianji"] = int(observed.get("tianji_value", 0) or 0)
+            farm["estimated_tianji"] = int(observed.get("tianji_value", 0) or 0)
+        farm["target_tianji"] = int(config.get("target_tianji_daily", 0) or 0)
+        farm["daily_limit"] = int(config.get("craft_farm_daily_limit", 0) or 0)
+        farm["last_action"] = "consume_craft_prediction_calibration"
+        farm["last_command"] = command
+        farm["last_error"] = "炼制推命消费回复超时，查盘校准；不重复炼制。"
+        farm["handoff_ready"] = True
+        payload = _defer_tianxing_farm_for_phaseful_summary(
+            farm,
+            now,
+            kind="craft",
+            action="消费炼制推命校准",
+            command=command,
+        )
+        if payload:
+            return _craft_farm_result(
+                "phaseful_deferred",
+                active=True,
+                takeover=True,
+                handoff=True,
+                reason=payload["error"],
+                action="consume_craft_prediction_calibration",
+                command=command,
+                next_time=payload["next_time"],
+            )
+
+        msg = await send_game_command(
+            command,
+            track=True,
+            max_retry=0,
+            priority="normal",
+            source_module="天星宗",
+            op_id=f"tianxing-consume-craft-calibration-{int(now)}",
+        )
+        if not msg:
+            farm["phase"] = "send_blocked"
+            farm["next_time"] = float(now + _craft_farm_interval_sec(config))
+            farm["last_error"] = f"{command} 发送失败或被安全策略拦截。"
+            _craft_farm_audit(farm, now, "consume_craft_prediction_calibration_blocked", command=command, reason=reason)
+            _set_tianxing_craft_farm_state(farm, now)
+            save_state()
+            return _craft_farm_result(
+                "send_blocked",
+                active=True,
+                takeover=False,
+                handoff=True,
+                reason=farm["last_error"],
+                action="consume_craft_prediction_calibration",
+                command=command,
+                next_time=farm["next_time"],
+            )
+
+        sent_at = float(getattr(msg, "sent_at", 0) or now)
+        farm["phase"] = "calibrating"
+        farm["last_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        farm["next_time"] = float(sent_at + int(config.get("craft_farm_reply_timeout_sec", TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC) or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC))
+        farm["last_result"] = "waiting_calibration"
+        farm["last_error"] = "炼制推命消费回复超时，查盘校准；不重复炼制。"
+        _craft_farm_audit(farm, sent_at, "consume_craft_prediction_calibration_sent", command=command, msg_id=farm["last_msg_id"], reason=reason)
+        _set_tianxing_craft_farm_state(farm, sent_at)
+        save_state()
+        return _craft_farm_result(
+            "waiting_calibration",
+            active=True,
+            takeover=True,
+            handoff=True,
+            reason=farm["last_error"],
+            action="consume_craft_prediction_calibration",
+            command=command,
+            next_time=farm["next_time"],
+            msg_id=farm["last_msg_id"],
+        )
 
     command, item = _craft_farm_command(config)
     if not farm.get("started_at"):

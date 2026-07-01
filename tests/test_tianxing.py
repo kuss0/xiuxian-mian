@@ -3932,6 +3932,90 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("consume_craft_prediction", craft["last_action"])
         self.assertEqual(9409, craft["last_msg_id"])
 
+    async def test_consume_craft_prediction_calibrates_expired_wait_instead_of_recrafting(self):
+        now = 1_780_000_000.0
+        sent_msg = SimpleNamespace(id=9410, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=39)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "sent_waiting_reply",
+                    "started_at": now - 3600,
+                    "next_time": now - 1,
+                    "last_action": "consume_craft_prediction",
+                    "last_command": ".炼制 玄铁剑",
+                    "last_msg_id": 9409,
+                },
+            }
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_consume_craft_prediction(
+                    now,
+                    reason="野外历练前消费炼制推命",
+                    config=self._active_config(
+                        now,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                    ),
+                )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        self.assertEqual("waiting_calibration", result["stage"])
+        self.assertEqual("consume_craft_prediction_calibration", result["action"])
+        send_mock.assert_awaited_once()
+        self.assertEqual(".天机盘", send_mock.await_args.args[0])
+        self.assertEqual("calibrating", craft["phase"])
+        self.assertEqual("consume_craft_prediction_calibration", craft["last_action"])
+        self.assertEqual(9410, craft["last_msg_id"])
+        self.assertIn("不重复炼制", craft["last_error"])
+
+    async def test_consume_craft_prediction_defers_expired_calibration_during_phaseful_summary(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=39)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "sent_waiting_reply",
+                    "started_at": now - 3600,
+                    "next_time": now - 1,
+                    "last_action": "consume_craft_prediction",
+                    "last_command": ".炼制 玄铁剑",
+                    "last_msg_id": 9409,
+                },
+            }
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"),
+                patch.object(tianxing.random, "uniform", return_value=80),
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_consume_craft_prediction(
+                    now,
+                    reason="野外历练前消费炼制推命",
+                    config=self._active_config(
+                        now,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                    ),
+                )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        send_mock.assert_not_awaited()
+        self.assertEqual("phaseful_deferred", result["stage"])
+        self.assertEqual("phaseful_deferred", craft["phase"])
+        self.assertEqual(now + 80, craft["next_time"])
+        self.assertIn("深度闭关临近归位结算", craft["last_error"])
+
     async def test_craft_farm_sends_unpredicted_craft_when_tianji_short(self):
         now = 1_780_000_000.0
         sent_msg = SimpleNamespace(id=9402, sent_at=now)
