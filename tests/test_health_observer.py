@@ -50,6 +50,31 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("error", status)
         self.assertIn("xiuxian.service not running: inactive/dead", reasons)
 
+    def test_health_payload_flags_foreign_xiuxian_process(self):
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service",),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-02 01:30:00",
+            "status": "error",
+            "services": {"xiuxian.service": {"ActiveState": "active", "SubState": "running"}},
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {"message_state": {}, "db_state": {}},
+            "foreign_xiuxian_processes": [{"pid": 123, "cmdline": "/opt/xiuxian/xiuxian.py", "legacy": True}],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        self.assertTrue(any(item["code"] == "foreign_xiuxian_process" for item in payload["risk_reasons"]))
+
     def test_warn_line_ignores_no_resend_context(self):
         self.assertFalse(health_observer.is_warn_journal_line("启动校验：查询灵树状态（无补发）。"))
         self.assertFalse(health_observer.is_warn_journal_line("状态确认，不补发。"))
@@ -116,6 +141,11 @@ class HealthObserverTests(unittest.TestCase):
                 "Jun 17 00:16:54 pve python[44241]: [xueuode5] ⚠️ 共历心劫抉择无回合推进，已停止旧 prompt；按长冷却等待 12:09:31。"
             )
         )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "Jul 02 02:02:55 pve python[235521]: [WalterWA2000] 🧯 指令 .卜筮问天 超时无响应，交由模块状态机继续。"
+            )
+        )
 
     def test_journal_since_is_not_before_current_service_start(self):
         start_epoch = health_observer.parse_local_ts("2026-06-06 14:38:55")
@@ -124,6 +154,35 @@ class HealthObserverTests(unittest.TestCase):
                 "2026-06-06 14:38:55",
                 health_observer.journal_since_text(600, service_start_epoch=start_epoch),
             )
+
+    def test_watchdog_journal_filter_uses_reset_marker_for_watchdog_only(self):
+        service_start = health_observer.parse_local_ts("2026-07-02 01:30:00")
+        reset_at = health_observer.parse_local_ts("2026-07-02 01:35:00")
+
+        self.assertEqual(
+            reset_at,
+            health_observer.journal_filter_start_epoch(
+                "xiuxian-safety-watchdog.service",
+                service_start_epoch=service_start,
+                watchdog_reset_epoch=reset_at,
+            ),
+        )
+        self.assertEqual(
+            service_start,
+            health_observer.journal_filter_start_epoch(
+                "xiuxian.service",
+                service_start_epoch=service_start,
+                watchdog_reset_epoch=reset_at,
+            ),
+        )
+
+    def test_read_safety_reset_epoch_from_marker(self):
+        reset_at = health_observer.parse_local_ts("2026-07-02 01:35:00")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            marker = Path(tmp_dir) / "safety_watchdog_reset.json"
+            marker.write_text(json.dumps({"reset_at_epoch": reset_at}), encoding="utf-8")
+            with patch.dict(os.environ, {"XIUXIAN_STATE_DIR": tmp_dir}, clear=True):
+                self.assertEqual(reset_at, health_observer.read_safety_reset_epoch(Path("/repo")))
 
     def test_parse_systemd_start_timestamp(self):
         self.assertEqual(
@@ -556,6 +615,84 @@ class HealthObserverTests(unittest.TestCase):
         hehuan = next(item for item in summary if item["module"] == "hehuan")
         self.assertEqual("warn", hehuan["status"])
 
+    def test_module_summary_treats_scheduled_auto_send_failure_as_warn(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, hehuan_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    hehuan_observation TEXT NOT NULL DEFAULT '{}',
+                    concubine_partner_kind TEXT NOT NULL DEFAULT '',
+                    concubine_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_reply_due_at REAL NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, hehuan_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, hehuan_observation) VALUES(42, ?)",
+                (json.dumps({
+                    "last_observed_at": now - 60,
+                    "last_action": "双修 温养",
+                    "last_result": "success",
+                    "last_summary": "温养双修成功",
+                    "auto_last_error": "10分钟内没有吧唧发言，锚点发送失败或被安全策略拦截",
+                    "auto_last_error_at": now - 10,
+                    "auto_next_time": now + 300,
+                }, ensure_ascii=False),),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        hehuan = next(item for item in summary if item["module"] == "hehuan")
+        self.assertEqual("warn", hehuan["status"])
+
+    def test_module_summary_ignores_legacy_hehuan_auto_error_after_success(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, hehuan_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    hehuan_observation TEXT NOT NULL DEFAULT '{}',
+                    concubine_partner_kind TEXT NOT NULL DEFAULT '',
+                    concubine_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    concubine_reply_due_at REAL NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, hehuan_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, hehuan_observation) VALUES(42, ?)",
+                (json.dumps({
+                    "last_observed_at": now - 30,
+                    "last_action": "双修 温养",
+                    "last_result": "success",
+                    "last_summary": "温养双修成功",
+                    "auto_last_error": "10分钟内没有吧唧发言，锚点发送失败或被安全策略拦截",
+                    "auto_next_time": now + 300,
+                }, ensure_ascii=False),),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        hehuan = next(item for item in summary if item["module"] == "hehuan")
+        self.assertEqual("ok", hehuan["status"])
+        self.assertFalse(any(item.startswith("自动错误:") for item in hehuan["details"]))
+
     def test_module_summary_treats_tianxing_existing_prediction_cooldown_as_state(self):
         now = 1_780_500_000.0
         observation = json.dumps({
@@ -596,6 +733,48 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("ok", tianxing["status"])
         self.assertTrue(any("推命:探索" in item for item in tianxing["details"]))
         self.assertFalse(any(item.startswith("错误:") or item.startswith("自动错误:") for item in tianxing["details"]))
+
+    def test_module_summary_ignores_tianxing_send_failure_when_prediction_is_stable(self):
+        now = 1_780_500_000.0
+        observation = json.dumps({
+            "last_observed_at": now - 30,
+            "last_action": "推命",
+            "last_result": "cooldown",
+            "last_summary": "推命尚未应验 探索",
+            "last_error": "",
+            "fixed_star": "贪狼",
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "tianji_value": 38,
+            "auto_last_error": "天星宗自动命令发送失败或被安全策略拦截",
+            "auto_pending_action": "",
+            "auto_pending_msg_id": 0,
+        }, ensure_ascii=False)
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, tianxing_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    tianxing_observation TEXT NOT NULL DEFAULT '{}',
+                    tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
+                    tianxing_auto_config TEXT NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(42, 'tutuerduoxiao', '小耳朵图图')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, tianxing_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id, tianxing_observation) VALUES(42, ?)", (observation,))
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        tianxing = next(item for item in summary if item["module"] == "tianxing")
+        self.assertEqual("ok", tianxing["status"])
+        self.assertFalse(any(item.startswith("自动错误:") for item in tianxing["details"]))
 
     def test_health_payload_and_markdown_include_score_risks_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

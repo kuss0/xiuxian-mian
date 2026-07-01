@@ -32,7 +32,7 @@ from .app_replica import (
     run_luoyun_cd_reminder_scheduler,
 )
 from .config import BOT_SILENCE_TIMEOUT_SEC, CMD_IDENTITY_INFO, client, create_account_client, get_all_clients, get_registered_client, is_account_offline, mark_account_offline, register_client
-from .control import enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
+from .control import clear_transient_send_failures_for_global_recovery, enforce_identity_module_availability, handle_identity_info_reply, handle_log_group_command, handle_passive_identity_profile_card, handle_realm_breakthrough_broadcast, hydrate_identity_profile, initialize_identity_runtime, register_message_box_shadow_payload_provider, run_identity_info_followup_scheduler, run_startup_account_integrity_check, scan_startup_timeout_tasks, spread_overdue_runtime_timers, toggle_global_enabled
 from .module_manifest import is_module_archived
 from .features.checkin import handle_checkin_reply, handle_sect_teach_reply, run_checkin_scheduler
 from .features._phaseful import has_phaseful_summary_block, observe_phaseful_identity_message
@@ -1877,12 +1877,14 @@ async def bootstrap():
     if not any_loaded:
         for identity_id in identity_ids:
             initialize_identity_runtime(identity_id, now)
+        clear_transient_send_failures_for_global_recovery(now)
         spread_overdue_runtime_timers(now, reason="启动初始化")
         save_state()
     else:
         for identity_id in identity_ids:
             initialize_identity_runtime(identity_id, now)
             mark_dirty()
+        clear_transient_send_failures_for_global_recovery(now)
         spread_overdue_runtime_timers(now, reason="启动恢复")
         save_state()
 

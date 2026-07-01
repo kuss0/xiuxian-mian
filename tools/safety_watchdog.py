@@ -156,6 +156,7 @@ FISHING_SHORT_WINDOW_PRIORITIES = {"urgent_reactive", "event_burst"}
 FISHING_START_REPEAT_MIN_GAP_SEC = 30
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TZ_LOCAL = timezone(timedelta(hours=8))
+LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 
 BOT_REPLY_HARD_STOP_KEYWORDS = (
     "TG FloodWait",
@@ -1439,6 +1440,60 @@ def find_journal_breach(service_name: str, since: str = "10 minutes ago") -> str
     return ""
 
 
+def read_proc_cmdline(pid: int) -> str:
+    try:
+        return (Path("/proc") / str(int(pid)) / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def find_legacy_xiuxian_processes(project_root: Path) -> list[dict[str, object]]:
+    current_script = str(Path(project_root).resolve() / "xiuxian.py")
+    legacy_scripts = {str(root / "xiuxian.py") for root in LEGACY_PROJECT_ROOTS}
+    rows: list[dict[str, object]] = []
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return rows
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        cmdline = read_proc_cmdline(pid)
+        if "xiuxian.py" not in cmdline:
+            continue
+        if current_script in cmdline:
+            continue
+        if any(script in cmdline for script in legacy_scripts):
+            rows.append({"pid": pid, "cmdline": cmdline[:500]})
+    return rows
+
+
+def stop_legacy_xiuxian_processes(processes: list[dict[str, object]]) -> str:
+    stopped = []
+    failed = []
+    for item in processes:
+        try:
+            pid = int(item.get("pid", 0) or 0)
+        except (TypeError, ValueError):
+            pid = 0
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 9)
+            stopped.append(pid)
+        except ProcessLookupError:
+            continue
+        except Exception as exc:
+            failed.append(f"{pid}:{exc}")
+    parts = []
+    if stopped:
+        parts.append(f"stopped legacy xiuxian pids={','.join(str(pid) for pid in stopped)}")
+    if failed:
+        parts.append(f"legacy stop failed={';'.join(failed)[:160]}")
+    return "; ".join(parts) or "legacy xiuxian already gone"
+
+
 def state_db_path(project_root: Path) -> Path:
     return project_root / "data" / "state" / "chaogu_state.db"
 
@@ -1627,6 +1682,8 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
         return
     else:
         actions.append(disable_global_switch(cfg.project_root))
+        if reason.startswith("legacy xiuxian process:"):
+            actions.append(stop_legacy_xiuxian_processes(find_legacy_xiuxian_processes(cfg.project_root)))
         if cfg.action == "stop":
             actions.append(stop_service(cfg.service_name))
     write_fuse_marker(cfg.project_root, reason, actions)
@@ -1646,6 +1703,10 @@ def current_log_file(project_root: Path) -> Path:
 
 def check_once(cfg: WatchdogConfig) -> str:
     now = time.time()
+    legacy_processes = find_legacy_xiuxian_processes(cfg.project_root)
+    if legacy_processes:
+        sample = legacy_processes[0]
+        return f"legacy xiuxian process: pid={sample.get('pid')} {sample.get('cmdline')}"
     events = read_recent_log_lines(current_log_file(cfg.project_root), cfg.max_lines)
     reset_after = get_reset_after_epoch(cfg.project_root)
     if reset_after > 0:

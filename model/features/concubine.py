@@ -45,7 +45,7 @@ from ..config import (
 )
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from . import workflow_log
@@ -3294,6 +3294,24 @@ async def _send_dream_command(now):
     msg = await send_game_command(CMD_CONCUBINE_DREAM, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        if was_last_game_send_blocked_by_global(get_current_identity_id(), CMD_CONCUBINE_DREAM):
+            state["concubine_last_error"] = ""
+            _set_phase("idle")
+            retry_at = sent_at + random.uniform(10 * 60, 30 * 60)
+            if float(state.get("concubine_dream_due_at", 0) or 0) <= sent_at:
+                state["concubine_dream_due_at"] = retry_at
+            state["next_concubine_time"] = retry_at
+            _record_concubine_event(
+                "入梦寻图全局暂停错峰",
+                kind="skipped",
+                reason="global_disabled",
+                phase="idle",
+                command=CMD_CONCUBINE_DREAM,
+                decision="dream_global_disabled",
+                workflow_status="deferred",
+            )
+            save_state()
+            return False
         state["concubine_last_error"] = "发送 .入梦寻图 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "dream_pending")
@@ -3401,6 +3419,14 @@ async def _send_tianji_command(now):
     msg = await send_game_command(CMD_CONCUBINE_TIANJI, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        if was_last_game_send_blocked_by_global(get_current_identity_id(), CMD_CONCUBINE_TIANJI):
+            state["concubine_tianji_last_error"] = ""
+            _set_phase("idle")
+            if float(state.get("concubine_tianji_due_at", 0) or 0) <= sent_at:
+                state["concubine_tianji_due_at"] = sent_at + random.uniform(10 * 60, 30 * 60)
+            state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
+            save_state()
+            return False
         state["concubine_tianji_last_error"] = "发送 .天机代卜 失败"
         _set_phase("idle")
         retry_at = _schedule_status_recheck(sent_at)

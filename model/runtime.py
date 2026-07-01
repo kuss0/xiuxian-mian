@@ -290,6 +290,7 @@ _GAME_SEND_QUEUE_ITEMS = {}
 _GAME_COMMAND_SENT_OBSERVERS = []
 _GAME_COMMAND_PRE_SEND_GUARDS = []
 _GAME_PRE_SEND_GUARD_BLOCK_LAST = {}
+_GAME_SEND_BLOCK_LAST = {}
 _LOG_BOT_UPDATE_OFFSET = None
 LOG_BOT_CONNECT_TIMEOUT_SEC = 3
 LOG_BOT_READ_TIMEOUT_SEC = 8
@@ -363,6 +364,68 @@ def _notify_game_command_sent_observers(command, send_as_id, sent_at, msg_id, **
             observer(int(send_as_id or 0), command, now=sent_at, msg_id=msg_id)
         except Exception:
             traceback.print_exc()
+
+
+def _record_game_send_block(send_as_id, command, code, reason):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    raw_command = str(command or "").strip()
+    payload = {
+        "send_as_id": identity_id,
+        "command": raw_command,
+        "code": str(code or "blocked").strip() or "blocked",
+        "reason": str(reason or "").strip(),
+        "at": time.time(),
+    }
+    _GAME_SEND_BLOCK_LAST[(identity_id, raw_command)] = payload
+    _GAME_SEND_BLOCK_LAST[(identity_id, "")] = payload
+    return payload
+
+
+def _clear_game_send_block(send_as_id, command):
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    raw_command = str(command or "").strip()
+    _GAME_SEND_BLOCK_LAST.pop((identity_id, raw_command), None)
+    latest = _GAME_SEND_BLOCK_LAST.get((identity_id, ""))
+    if latest and str(latest.get("command") or "") == raw_command:
+        _GAME_SEND_BLOCK_LAST.pop((identity_id, ""), None)
+
+
+def get_last_game_send_block(send_as_id=None, command=None, *, max_age_sec=300):
+    if send_as_id is None:
+        send_as_id = get_current_identity_id()
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    raw_command = str(command or "").strip()
+    candidates = []
+    if raw_command:
+        candidates.append((identity_id, raw_command))
+    candidates.append((identity_id, ""))
+    now = time.time()
+    for key in candidates:
+        payload = _GAME_SEND_BLOCK_LAST.get(key)
+        if not payload:
+            continue
+        if raw_command and str(payload.get("command") or "") != raw_command:
+            continue
+        try:
+            age = now - float(payload.get("at", 0) or 0)
+        except (TypeError, ValueError):
+            age = max_age_sec + 1
+        if age <= max(1, float(max_age_sec or 0)):
+            return dict(payload)
+    return {}
+
+
+def was_last_game_send_blocked_by_global(send_as_id=None, command=None, *, max_age_sec=300):
+    return str(get_last_game_send_block(send_as_id, command, max_age_sec=max_age_sec).get("code") or "") == "global_disabled"
 
 
 def _normalize_pre_send_guard_result(result):
@@ -2718,9 +2781,11 @@ async def send_game_command(
 
     try:
         if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+            _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
             return None
 
         if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
+            _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
             return None
 
         if account_id and is_account_offline(account_id):
@@ -2730,15 +2795,18 @@ async def send_game_command(
                 account_id=account_id,
                 reason=get_account_offline_reason(account_id) or "账号离线",
             )
+            _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
             return None
 
         if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
             await _log_weakness_blocked(command, send_as_id=send_as_id)
+            _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
             return None
 
         _refresh_bot_health_timeout_before_send()
         if _bot_health_blocks_send(send_priority):
             await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+            _record_game_send_block(send_as_id, command, "bot_health", "Bot 健康暂停")
             return None
 
         pre_guard_allowed, pre_guard_reason, pre_guard_code = await _run_game_command_pre_send_guards(
@@ -2758,6 +2826,7 @@ async def send_game_command(
                     send_as_id=send_as_id,
                     limit=260,
                 )
+            _record_game_send_block(send_as_id, command, pre_guard_code or "pre_send_guard", pre_guard_reason)
             return None
 
         guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
@@ -2769,13 +2838,16 @@ async def send_game_command(
                     send_as_id=send_as_id,
                     limit=260,
                 )
+            _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
             return None
 
         async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent):
             if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
+                _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
                 return None
 
             if await _dungeon_quiet_blocks_send(command, send_priority, send_as_id=send_as_id):
+                _record_game_send_block(send_as_id, command, "dungeon_quiet", "副本安静期")
                 return None
 
             _refresh_bot_health_timeout_before_send()
@@ -2786,12 +2858,15 @@ async def send_game_command(
                     account_id=account_id,
                     reason=get_account_offline_reason(account_id) or "账号离线",
                 )
+                _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
                 return None
             if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
                 await _log_weakness_blocked(command, send_as_id=send_as_id)
+                _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
                 return None
             if _bot_health_blocks_send(send_priority):
                 await _log_bot_health_blocked_send(command, send_as_id=send_as_id)
+                _record_game_send_block(send_as_id, command, "bot_health", "Bot 健康暂停")
                 return None
             pre_guard_allowed, pre_guard_reason, pre_guard_code = await _run_game_command_pre_send_guards(
                 command,
@@ -2810,6 +2885,7 @@ async def send_game_command(
                         send_as_id=send_as_id,
                         limit=260,
                     )
+                _record_game_send_block(send_as_id, command, pre_guard_code or "pre_send_guard", pre_guard_reason)
                 return None
             guard_allowed, guard_reason = action_guard_before_send(command, send_as_id=send_as_id)
             if not guard_allowed:
@@ -2820,6 +2896,7 @@ async def send_game_command(
                         send_as_id=send_as_id,
                         limit=260,
                     )
+                _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
                 return None
 
             if account_id:
@@ -2834,6 +2911,7 @@ async def send_game_command(
                         reason=reason,
                         force=True,
                     )
+                    _record_game_send_block(send_as_id, command, "account_client_missing", reason)
                     return None
                 try:
                     await asyncio.wait_for(_ensure_account_client_ready(active_client), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
@@ -2858,6 +2936,7 @@ async def send_game_command(
                             send_as_id=send_as_id,
                             limit=240,
                         )
+                    _record_game_send_block(send_as_id, command, "account_client_not_ready", reason)
                     return None
             else:
                 active_client = _get_any_authed_client()
@@ -2899,6 +2978,7 @@ async def send_game_command(
                     f"⏸ TG FloodWait {int(flood_err.seconds)}s，普通指令已暂停等待恢复：{_truncate_log_text(command, limit=24)}",
                     scope="identity", send_as_id=send_as_id, limit=220,
                 )
+                _record_game_send_block(send_as_id, command, "flood_wait", f"TG FloodWait {int(flood_err.seconds)}s")
                 return None
             except asyncio.TimeoutError:
                 await send_audit_log(
@@ -2911,6 +2991,7 @@ async def send_game_command(
                     send_as_id=send_as_id,
                     limit=240,
                 )
+                _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
                 return None
             msg_id = _extract_sent_message_id(result)
             if msg_id <= 0:
@@ -2969,6 +3050,7 @@ async def send_game_command(
                 max_retry=max_retry,
                 **send_intent,
             )
+            _clear_game_send_block(send_as_id, command)
             return msg
     except asyncio.TimeoutError:
         await send_audit_log(
@@ -2981,6 +3063,7 @@ async def send_game_command(
             send_as_id=send_as_id,
             limit=240,
         )
+        _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
         return None
     except Exception as e:
         if account_id and _is_account_session_error(e):
@@ -2993,6 +3076,7 @@ async def send_game_command(
                 reason=reason,
                 force=True,
             )
+            _record_game_send_block(send_as_id, command, "account_session_error", reason)
             return None
         await send_audit_log(
             (
@@ -3004,6 +3088,7 @@ async def send_game_command(
             send_as_id=send_as_id,
             limit=240,
         )
+        _record_game_send_block(send_as_id, command, "send_exception", _truncate_log_text(e, limit=120))
         return None
 
 

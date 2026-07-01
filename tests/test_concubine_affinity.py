@@ -592,6 +592,27 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 90, state_module.state["next_concubine_time"])
         self.assertIn("入梦寻图等待闭关/元婴结算", state_module.state["concubine_last_error"])
 
+    async def test_dream_send_blocked_by_global_is_deferred_without_error(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now + 3600)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_last_snapshot_at"] = now
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state") as save_mock, \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)) as mock_send, \
+             patch.object(concubine, "was_last_game_send_blocked_by_global", return_value=True), \
+             patch.object(concubine.time, "time", return_value=now), \
+             patch.object(concubine.random, "uniform", return_value=600):
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_DREAM, track=False)
+        save_mock.assert_called()
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual("", state_module.state["concubine_last_error"])
+        self.assertEqual(now + 600, state_module.state["concubine_dream_due_at"])
+        self.assertEqual(now + 600, state_module.state["next_concubine_time"])
+
     async def test_scheduler_calibrates_status_after_dream_pending_timeout_before_retry(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now - 1, tianji_due_at=now + 3600)

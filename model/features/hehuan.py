@@ -63,6 +63,7 @@ HEHUAN_OBSERVATION_TIME_KEYS = (
     "contract_until",
     "heart_seal_until",
     "auto_next_time",
+    "auto_last_error_at",
     "auto_pending_sent_at",
     "auto_pending_deadline_at",
     "auto_anchor_requested_at",
@@ -116,6 +117,7 @@ def _default_hehuan_observation():
         "auto_next_time": 0,
         "auto_last_action": "",
         "auto_last_error": "",
+        "auto_last_error_at": 0,
         "auto_retry_count": 0,
         "auto_retry_reason": "",
         "auto_retry_max_interval_min": HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN,
@@ -180,6 +182,21 @@ def normalize_hehuan_observation(value=None):
         )
     except (TypeError, ValueError, OverflowError):
         observed["auto_retry_max_interval_min"] = HEHUAN_RETRY_DEFAULT_MAX_INTERVAL_MIN
+    auto_error = str(observed.get("auto_last_error") or "").strip()
+    last_result = str(observed.get("last_result") or "").strip().lower()
+    if not auto_error:
+        observed["auto_last_error_at"] = 0
+    elif (
+        last_result == "success"
+        and int(observed.get("auto_pending_msg_id", 0) or 0) <= 0
+        and int(observed.get("auto_retry_count", 0) or 0) <= 0
+        and (
+            float(observed.get("auto_last_error_at", 0) or 0) <= 0
+            or float(observed.get("auto_last_error_at", 0) or 0) <= float(observed.get("last_observed_at", 0) or 0)
+        )
+    ):
+        observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
     return observed
 
 
@@ -213,23 +230,27 @@ def _schedule_hehuan_retry(observed, now, reason):
         _reset_hehuan_auto_pending(observed)
         observed["auto_last_action"] = "warm"
         observed["auto_last_error"] = f"{reason}，补发已达 {HEHUAN_AUTO_RETRY_LIMIT} 次上限"
+        observed["auto_last_error_at"] = float(now)
         observed["auto_next_time"] = float(now + HEHUAN_AUTO_BLOCK_BACKOFF_SEC)
         return observed
     observed["auto_retry_count"] = retry_count + 1
     observed["auto_retry_reason"] = str(reason or "retry")
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = str(reason or "")
+    observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
     observed["auto_next_time"] = float(now + _hehuan_retry_delay_sec(observed))
     _reset_hehuan_auto_pending(observed)
     return observed
 
 
-def _block_hehuan_until(observed, until_ts, reason):
+def _block_hehuan_until(observed, until_ts, reason, now=None):
+    now = float(now if now is not None else time.time())
     observed = normalize_hehuan_observation(observed)
     observed["auto_retry_count"] = 0
     observed["auto_retry_reason"] = ""
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = str(reason or "")
+    observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
     observed["next_hehuan_time"] = float(until_ts)
     observed["auto_next_time"] = float(until_ts)
     _reset_hehuan_auto_pending(observed)
@@ -751,6 +772,7 @@ def apply_hehuan_passive(text, now=None, family=""):
         observed["next_hehuan_time"] = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
         observed["auto_next_time"] = observed["next_hehuan_time"]
         observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
         _reset_hehuan_retry(observed)
         observed = _queue_hehuan_valuable_drop_reminders(observed, parsed, now)
         auto_next_handled = True
@@ -761,6 +783,7 @@ def apply_hehuan_passive(text, now=None, family=""):
             observed["next_hehuan_time"] = parsed_next_time
             observed["auto_next_time"] = max(parsed_next_time, now + 60)
             observed["auto_last_error"] = "心神尚未恢复，已按真实等待时间校准"
+            observed["auto_last_error_at"] = float(now)
             _reset_hehuan_auto_pending(observed)
         elif last_success_at > 0:
             corrected_next_time = float(last_success_at + HEHUAN_WARM_OBSERVED_CD_SEC)
@@ -768,6 +791,7 @@ def apply_hehuan_passive(text, now=None, family=""):
                 observed["next_hehuan_time"] = corrected_next_time
                 observed["auto_next_time"] = corrected_next_time
                 observed["auto_last_error"] = "心神尚未恢复，已按上次成功+1小时校准"
+                observed["auto_last_error_at"] = float(now)
                 _reset_hehuan_auto_pending(observed)
             else:
                 corrected_next_time = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
@@ -775,6 +799,7 @@ def apply_hehuan_passive(text, now=None, family=""):
                     observed,
                     corrected_next_time,
                     "心神尚未恢复，上次成功冷却已失效，已按当前+1小时保守校准",
+                    now=now,
                 )
         else:
             corrected_next_time = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
@@ -782,6 +807,7 @@ def apply_hehuan_passive(text, now=None, family=""):
                 observed,
                 corrected_next_time,
                 "心神尚未恢复，缺少成功时间，已按1小时冷却保守校准",
+                now=now,
             )
         auto_next_handled = True
     elif result == "pending":
@@ -793,6 +819,7 @@ def apply_hehuan_passive(text, now=None, family=""):
         else:
             observed["auto_next_time"] = min(float(observed.get("auto_next_time") or 0) or now + 60, now + 60)
         observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
     observed["recent"].append({
         "ts": now,
         "path": observed["last_path"],
@@ -808,6 +835,7 @@ def apply_hehuan_passive(text, now=None, family=""):
 def _set_hehuan_auto_block(observed, now, reason, next_time=None):
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = str(reason or "")
+    observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
     observed["auto_next_time"] = float(next_time or now + HEHUAN_AUTO_BLOCK_BACKOFF_SEC)
     _reset_hehuan_auto_pending(observed)
     state["hehuan_observation"] = observed
@@ -819,30 +847,7 @@ async def _ensure_hehuan_reply_anchor(observed, now):
     if anchor_msg_id > 0:
         return anchor_msg_id, ""
 
-    baiji_identity_id = find_baiji_identity_id()
-    if baiji_identity_id <= 0:
-        return 0, "10分钟内没有吧唧发言，且未找到吧唧身份用于创建回复锚点"
-    if int(baiji_identity_id) == int(get_current_identity_id() or 0):
-        return 0, "当前身份是吧唧，不能对自己的锚点自动温养"
-
-    anchor_msg = await send_game_command(
-        HEHUAN_ANCHOR_TEXT,
-        track=False,
-        send_as_id=baiji_identity_id,
-        max_retry=0,
-        priority="normal",
-        source_module="合欢宗",
-        op_id=f"hehuan-anchor-{int(now)}",
-        delete_policy="manual_keep",
-    )
-    if not anchor_msg:
-        return 0, "10分钟内没有吧唧发言，锚点发送失败或被安全策略拦截"
-
-    anchor_msg_id = int(getattr(anchor_msg, "id", 0) or 0)
-    if anchor_msg_id <= 0:
-        return 0, "吧唧锚点发送后未返回消息ID"
-    observed["auto_anchor_requested_at"] = float(now)
-    return anchor_msg_id, ""
+    return 0, ""
 
 
 def _has_unresolved_hehuan_pending(observed, now):
@@ -899,21 +904,24 @@ async def run_hehuan_scheduler(now):
         return
 
     anchor_msg_id, anchor_error = await _ensure_hehuan_reply_anchor(observed, now)
-    if anchor_msg_id <= 0:
+    if anchor_msg_id <= 0 and anchor_error:
         _set_hehuan_auto_block(observed, now, anchor_error or "缺少吧唧回复锚点", now + 5 * 60)
         return
 
     retry_delay_sec = max(1.0, float(_hehuan_retry_delay_sec(observed)))
+    send_kwargs = {}
+    if anchor_msg_id > 0:
+        send_kwargs["reply_to"] = anchor_msg_id
     msg = await send_game_command(
         plan["command"],
         track=True,
-        reply_to=anchor_msg_id,
         max_retry=0,
         priority="normal",
         source_module="合欢宗",
         op_id=f"hehuan-auto-warm-{int(now)}",
         reply_timeout=max(1, int(retry_delay_sec)),
         delete_policy="manual_keep",
+        **send_kwargs,
     )
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     if not msg:
@@ -924,10 +932,11 @@ async def run_hehuan_scheduler(now):
     sent_at = now if sent_at_dirty or parsed_sent_at <= 0 else parsed_sent_at
     observed["auto_last_action"] = "warm"
     observed["auto_last_error"] = ""
+    observed["auto_last_error_at"] = 0
     observed["auto_pending_msg_id"] = int(getattr(msg, "id", 0) or 0)
     observed["auto_pending_sent_at"] = float(sent_at)
     observed["auto_pending_deadline_at"] = float(sent_at + retry_delay_sec)
-    observed["auto_reply_anchor_msg_id"] = int(anchor_msg_id)
+    observed["auto_reply_anchor_msg_id"] = int(anchor_msg_id or 0)
     observed["auto_next_time"] = observed["auto_pending_deadline_at"]
     state["hehuan_observation"] = observed
     save_state()

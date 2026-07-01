@@ -72,6 +72,17 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
+    def test_check_once_reports_legacy_xiuxian_process_before_log_scan(self):
+        cfg = self._config()
+        with patch.object(
+            safety_watchdog,
+            "find_legacy_xiuxian_processes",
+            return_value=[{"pid": 123, "cmdline": "/opt/xiuxian/xiuxian.py"}],
+        ):
+            breach = safety_watchdog.check_once(cfg)
+
+        self.assertIn("legacy xiuxian process: pid=123", breach)
+
     def test_small_world_direct_repeat_still_fuses(self):
         now = time.time()
         sender_id = 8659059191

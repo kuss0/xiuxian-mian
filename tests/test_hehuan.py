@@ -588,9 +588,8 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("补发已达", observed["auto_last_error"])
             self.assertEqual(0, observed["auto_pending_msg_id"])
 
-    async def test_scheduler_creates_baiji_anchor_when_recent_anchor_missing(self):
+    async def test_scheduler_sends_bare_warm_when_recent_anchor_missing(self):
         now = 1_780_000_000.0
-        anchor_msg = SimpleNamespace(id=8802, sent_at=now)
         warm_msg = SimpleNamespace(id=9002, sent_at=now + 1)
         with state_module.use_identity(self.identity_id):
             state_module.state["hehuan_enabled"] = True
@@ -604,18 +603,15 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             with (
                 patch.object(hehuan, "save_state"),
                 patch.object(hehuan, "find_recent_baiji_anchor_msg_id", return_value=0),
-                patch.object(hehuan, "find_baiji_identity_id", return_value=hehuan.HEHUAN_BAIJI_SEND_AS_ID),
-                patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=[anchor_msg, warm_msg])) as send_mock,
+                patch.object(hehuan, "send_game_command", new=AsyncMock(return_value=warm_msg)) as send_mock,
             ):
                 await hehuan.run_hehuan_scheduler(now)
 
-            self.assertEqual(2, send_mock.await_count)
-            anchor_call = send_mock.await_args_list[0]
-            warm_call = send_mock.await_args_list[1]
-            self.assertEqual(hehuan.HEHUAN_ANCHOR_TEXT, anchor_call.args[0])
-            self.assertEqual(hehuan.HEHUAN_BAIJI_SEND_AS_ID, anchor_call.kwargs["send_as_id"])
+            self.assertEqual(1, send_mock.await_count)
+            warm_call = send_mock.await_args_list[0]
             self.assertEqual(".双修 温养", warm_call.args[0])
-            self.assertEqual(8802, warm_call.kwargs["reply_to"])
+            self.assertNotIn("reply_to", warm_call.kwargs)
+            self.assertEqual(0, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
 
     async def test_scheduler_sends_valuable_drop_reminders_three_times(self):
         now = 1_780_000_000.0

@@ -92,6 +92,36 @@ class ControlBoolCoercionTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 600, state_module.state["next_concubine_time"])
 
+    def test_global_resume_clears_transient_send_failures_before_spread(self):
+        now = 1_700_000_000.0
+        send_as_id = 990315
+        state_module.set_global_enabled(False)
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, enabled=True)
+        with state_module.use_identity(send_as_id):
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "basket"
+            state_module.state["fishing_reply_to_msg_id"] = 123
+            state_module.state["fishing_reply_due_at"] = now - 10
+            state_module.state["fishing_last_error"] = "发送失败：.鱼篓"
+            state_module.state["next_fishing_time"] = now - 1
+
+        with (
+            patch.object(control.time, "time", return_value=now),
+            patch.object(control.random, "uniform", return_value=600),
+            patch.object(control, "save_state"),
+            patch.object(control, "console_log"),
+            patch.object(control, "send_audit_log", new=AsyncMock()),
+        ):
+            ok, message = asyncio.run(control.toggle_global_enabled(True, source="test"))
+
+        self.assertTrue(ok, message)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("", state_module.state["fishing_last_error"])
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(now + 600, state_module.state["next_fishing_time"])
+
     def test_direct_identity_module_toggle_treats_form_false_string_as_disabled(self):
         send_as_id = 990321
         state_module.ensure_identity_registered(send_as_id)

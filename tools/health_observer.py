@@ -24,6 +24,7 @@ from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
+LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
@@ -31,7 +32,7 @@ BENIGN_HARD_CONTEXT_PATTERN = re.compile(
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
-    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|共历心劫抉择无回合推进，已停止旧 prompt|准备补发一次|结果编辑未留存，已按正常周期恢复"
+    r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|共历心劫抉择无回合推进，已停止旧 prompt|准备补发一次|结果编辑未留存，已按正常周期恢复|交由模块状态机继续"
 )
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
@@ -299,6 +300,14 @@ def parse_systemd_start_timestamp(raw: str) -> float:
     return parse_local_ts(f"{match.group(1)} {match.group(2)}")
 
 
+def parse_optional_epoch(value: object) -> float:
+    try:
+        epoch = float(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return epoch if epoch > 0 else 0.0
+
+
 def run_command(args: list[str], *, timeout: float = 8.0) -> tuple[int, str, str]:
     try:
         proc = subprocess.run(
@@ -312,6 +321,40 @@ def run_command(args: list[str], *, timeout: float = 8.0) -> tuple[int, str, str
     except Exception as exc:
         return 127, "", str(exc)
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def read_proc_cmdline(pid: int) -> str:
+    try:
+        return (Path("/proc") / str(int(pid)) / "cmdline").read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def read_foreign_xiuxian_processes(project_root: Path) -> list[dict[str, object]]:
+    current_script = str(Path(project_root).resolve() / "xiuxian.py")
+    legacy_scripts = {str(root / "xiuxian.py") for root in LEGACY_PROJECT_ROOTS}
+    rows: list[dict[str, object]] = []
+    proc_root = Path("/proc")
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return rows
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        cmdline = read_proc_cmdline(pid)
+        if "xiuxian.py" not in cmdline:
+            continue
+        if current_script in cmdline:
+            continue
+        legacy = any(script in cmdline for script in legacy_scripts)
+        rows.append({
+            "pid": pid,
+            "cmdline": cmdline[:500],
+            "legacy": legacy,
+        })
+    return rows
 
 
 def parse_systemctl_show(output: str) -> dict[str, dict[str, str]]:
@@ -386,6 +429,14 @@ def read_journal_matches(service: str, window_sec: int, limit: int, *, service_s
     }
 
 
+def journal_filter_start_epoch(service: str, *, service_start_epoch: float = 0.0, watchdog_reset_epoch: float = 0.0) -> float:
+    start_epoch = parse_optional_epoch(service_start_epoch)
+    reset_epoch = parse_optional_epoch(watchdog_reset_epoch)
+    if reset_epoch > 0 and "watchdog" in str(service or "").lower():
+        start_epoch = max(start_epoch, reset_epoch)
+    return start_epoch
+
+
 def _is_benign_disconnected_traceback_block(lines: list[str], index: int) -> bool:
     text = str(lines[index] if 0 <= index < len(lines) else "")
     if "Cannot send requests while disconnected" in text:
@@ -440,10 +491,43 @@ def safety_watchdog_fused_path(project_root: Path) -> Path:
     return state_db_path(project_root).parent / "safety_watchdog_fused.json"
 
 
+def safety_watchdog_reset_path(project_root: Path) -> Path:
+    return state_db_path(project_root).parent / "safety_watchdog_reset.json"
+
+
+def read_safety_reset_epoch(project_root: Path) -> float:
+    path = safety_watchdog_reset_path(project_root)
+    if not path.exists():
+        return 0.0
+    payload: dict[str, object] = {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            payload = loaded
+    except Exception:
+        payload = {}
+    reset_at_epoch = parse_optional_epoch(payload.get("reset_at_epoch"))
+    if reset_at_epoch > 0:
+        return reset_at_epoch
+    reset_at = parse_local_ts(str(payload.get("reset_at") or ""))
+    if reset_at > 0:
+        return reset_at
+    try:
+        return float(path.stat().st_mtime)
+    except OSError:
+        return 0.0
+
+
 def read_safety_state(project_root: Path) -> dict[str, object]:
     path = safety_watchdog_fused_path(project_root)
+    reset_epoch = read_safety_reset_epoch(project_root)
+    reset_info = {
+        "reset_path": str(safety_watchdog_reset_path(project_root)),
+        "reset_at_epoch": reset_epoch,
+        "reset_at_ts": local_ts(reset_epoch) if reset_epoch > 0 else "",
+    }
     if not path.exists():
-        return {"fused": False, "path": str(path)}
+        return {"fused": False, "path": str(path), **reset_info}
     payload: dict[str, object] = {}
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -463,6 +547,7 @@ def read_safety_state(project_root: Path) -> dict[str, object]:
         "reason": str(payload.get("reason") or payload.get("message") or "")[:240],
         "action": str(payload.get("action") or "")[:80],
         "payload": {key: payload.get(key) for key in ("reason", "action", "command", "identity_id") if key in payload},
+        **reset_info,
     }
 
 
@@ -763,16 +848,34 @@ def module_error_is_retryable_warning(field: str, text: object, payload: dict[st
         return False
     if "补发已达" in raw or "上限" in raw:
         return False
+    if "发送失败或被安全策略拦截" in raw and positive_epoch((payload or {}).get("auto_next_time")) > 0:
+        return True
     retry_count = positive_int((payload or {}).get("auto_retry_count"))
     pending_msg_id = positive_int((payload or {}).get("auto_pending_msg_id"))
     return retry_count > 0 or pending_msg_id > 0
 
 
-def normalize_json_state_for_health(field: str, payload: dict[str, object]) -> dict[str, object]:
+def normalize_json_state_for_health(field: str, payload: dict[str, object], now: float | None = None) -> dict[str, object]:
     if not payload:
         return {}
     normalized = dict(payload)
-    if str(field or "") != "tianxing_observation":
+    field_name = str(field or "")
+    if field_name == "hehuan_observation":
+        auto_last_error = str(normalized.get("auto_last_error") or "").strip()
+        auto_error_at = positive_epoch(normalized.get("auto_last_error_at"))
+        last_observed_at = positive_epoch(normalized.get("last_observed_at"))
+        if (
+            auto_last_error
+            and str(normalized.get("last_result") or "").strip().lower() == "success"
+            and positive_int(normalized.get("auto_pending_msg_id")) <= 0
+            and positive_int(normalized.get("auto_retry_count")) <= 0
+            and (auto_error_at <= 0 or auto_error_at <= last_observed_at)
+        ):
+            normalized["auto_last_error"] = ""
+            normalized["auto_last_error_at"] = 0
+        return normalized
+
+    if field_name != "tianxing_observation":
         return normalized
 
     last_action = str(normalized.get("last_action") or "").strip()
@@ -793,6 +896,29 @@ def normalize_json_state_for_health(field: str, payload: dict[str, object]) -> d
         and auto_last_error == "天星宗自动动作回复超时，暂缓重试；不继续推进下游。"
     ):
         normalized["auto_last_error"] = ""
+        normalized["auto_last_error_at"] = 0
+        auto_last_error = ""
+    auto_error_at = positive_epoch(normalized.get("auto_last_error_at"))
+    if (
+        auto_last_error
+        and "发送失败或被安全策略拦截" in auto_last_error
+        and not str(normalized.get("auto_pending_action") or "").strip()
+        and positive_int(normalized.get("auto_pending_msg_id")) <= 0
+        and (
+            (
+                auto_error_at <= 0
+                and last_result == "cooldown"
+                and positive_epoch(normalized.get("current_prediction_until")) > 0
+                and not str(normalized.get("last_error") or "").strip()
+            )
+            or (
+                auto_error_at > 0
+                and positive_epoch(normalized.get("last_observed_at")) >= auto_error_at
+            )
+        )
+    ):
+        normalized["auto_last_error"] = ""
+        normalized["auto_last_error_at"] = 0
     return normalized
 
 
@@ -895,7 +1021,7 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
 
             for field in spec.get("json_fields", ()):
                 json_payload = parse_json_dict(value_for(str(field)))
-                json_payload = normalize_json_state_for_health(str(field), json_payload)
+                json_payload = normalize_json_state_for_health(str(field), json_payload, now=now)
                 json_warn, json_error = summarize_json_state(str(field), json_payload, now, details, evidence)
                 warn = warn or json_warn
                 error = error or json_error
@@ -1243,6 +1369,16 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
     if safety.get("fused"):
         add_risk("safety_watchdog_fused", "safety watchdog fused marker exists", "critical", 40, path=safety.get("path"), reason=safety.get("reason"))
 
+    foreign_processes = snapshot.get("foreign_xiuxian_processes")
+    if isinstance(foreign_processes, list) and foreign_processes:
+        add_risk(
+            "foreign_xiuxian_process",
+            f"foreign xiuxian processes running: {len(foreign_processes)}",
+            "critical",
+            45,
+            sample=foreign_processes[:6],
+        )
+
     journals = snapshot.get("journals") if isinstance(snapshot.get("journals"), list) else []
     hard_total = sum(int(item.get("hard_count") or 0) for item in journals if isinstance(item, dict))
     warn_total = sum(int(item.get("warn_count") or 0) for item in journals if isinstance(item, dict))
@@ -1339,6 +1475,9 @@ def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
     safety = snapshot.get("safety") if isinstance(snapshot.get("safety"), dict) else {}
     if safety.get("fused"):
         refs.append({"kind": "safety_watchdog_fused", "path": safety.get("path"), "reason": safety.get("reason")})
+    foreign_processes = snapshot.get("foreign_xiuxian_processes")
+    if isinstance(foreign_processes, list) and foreign_processes:
+        refs.append({"kind": "foreign_xiuxian_processes", "sample": foreign_processes[:8]})
     journals = snapshot.get("journals") if isinstance(snapshot.get("journals"), list) else []
     for item in journals:
         if not isinstance(item, dict):
@@ -1452,13 +1591,19 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
     now = time.time()
     service_states = read_service_states(cfg.services)
     safety = read_safety_state(cfg.project_root)
+    watchdog_reset_epoch = parse_optional_epoch(safety.get("reset_at_epoch"))
+    foreign_processes = read_foreign_xiuxian_processes(cfg.project_root)
     journals = [
         read_journal_matches(
             service,
             cfg.journal_window_sec,
             cfg.max_journal_matches,
-            service_start_epoch=parse_systemd_start_timestamp(
-                service_states.get(service, {}).get("ExecMainStartTimestamp", "")
+            service_start_epoch=journal_filter_start_epoch(
+                service,
+                service_start_epoch=parse_systemd_start_timestamp(
+                    service_states.get(service, {}).get("ExecMainStartTimestamp", "")
+                ),
+                watchdog_reset_epoch=watchdog_reset_epoch,
             ),
         )
         for service in cfg.services
@@ -1471,6 +1616,9 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
         status = "error"
     if safety.get("fused"):
         reasons.append("safety watchdog fused marker exists")
+    if foreign_processes:
+        status = "error"
+        reasons.append(f"foreign xiuxian processes running: {len(foreign_processes)}")
     snapshot = {
         "ts": local_ts(),
         "epoch": now,
@@ -1478,6 +1626,7 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
         "reasons": reasons,
         "services": service_states,
         "safety": safety,
+        "foreign_xiuxian_processes": foreign_processes,
         "journals": journals,
         "business": business,
         "policy": "read-only: no game commands, no Tianjige API calls",

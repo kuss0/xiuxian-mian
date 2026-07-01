@@ -362,7 +362,9 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_irr_time",
     "next_guard_time",
     "next_pet_time",
+    "next_pet_warm_time",
     "next_pet_trial_time",
+    "next_pet_formation_time",
     "next_ranch_time",
     "next_wild_training_time",
     "next_stargazer_panel_time",
@@ -388,6 +390,66 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_deep_retreat_time",
     "next_second_soul_time",
     "next_taiyi_cycle_time",
+)
+
+RECOVERY_TRANSIENT_SEND_FAILURE_SPECS = (
+    {
+        "error_field": "mulan_last_error",
+        "timer_field": "next_mulan_time",
+        "markers": ("发送失败",),
+        "clear_fields": ("mulan_reply_to_msg_id", "mulan_reply_due_at"),
+        "result_field": "mulan_last_result",
+    },
+    {
+        "error_field": "fishing_last_error",
+        "timer_field": "next_fishing_time",
+        "markers": ("发送失败：",),
+        "clear_fields": ("fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_pending_action"),
+        "phase_field": "fishing_phase",
+        "phase_value": "idle",
+        "result_field": "fishing_last_result",
+    },
+    {
+        "error_field": "wild_training_last_error",
+        "timer_field": "next_wild_training_time",
+        "markers": ("野外历练发送失败", "野外历练补发发送失败"),
+        "clear_fields": ("wild_training_reply_to_msg_id", "wild_training_reply_due_at"),
+        "counter_fields": ("wild_training_retry_count",),
+        "result_field": "wild_training_last_result",
+    },
+    {
+        "error_field": "pet_formation_last_error",
+        "timer_field": "next_pet_formation_time",
+        "markers": ("布下剑阵发送失败",),
+        "counter_fields": ("pet_formation_retry_count",),
+    },
+    {
+        "error_field": "pet_last_error",
+        "timer_field": "next_pet_time",
+        "markers": ("法宝发送失败",),
+    },
+    {
+        "error_field": "pet_trial_last_error",
+        "timer_field": "next_pet_trial_time",
+        "markers": ("器灵试炼发送失败",),
+    },
+    {
+        "error_field": "pet_warm_last_error",
+        "timer_field": "next_pet_warm_time",
+        "markers": ("温养器灵发送失败",),
+    },
+    {
+        "error_field": "concubine_tianji_last_error",
+        "timer_field": "next_concubine_time",
+        "markers": ("发送 .天机代卜 失败",),
+    },
+    {
+        "error_field": "concubine_last_error",
+        "timer_field": "next_concubine_time",
+        "markers": ("发送 .入梦寻图 失败",),
+        "phase_field": "concubine_phase",
+        "phase_value": "idle",
+    },
 )
 
 TREE_HARVESTED_MATURING_STALE_SEC = 30 * 3600
@@ -678,6 +740,54 @@ def spread_overdue_runtime_timers(now=None, *, reason="recovery", window_sec=Non
             f"🧯 {reason} 错峰：{len(affected_identity_ids)} 个身份 / {changed_count} 个到期计时器已按恢复策略摊开",
             scope="global",
             limit=220,
+        )
+    return changed_count
+
+
+def clear_transient_send_failures_for_global_recovery(now=None):
+    """全局熔断恢复前清掉暂停期造成的发送失败假状态，并错峰重试。"""
+    if now is None:
+        now = time.time()
+    now = float(now)
+    changed_count = 0
+    affected_identity_ids = set()
+    for identity_id in get_identity_ids():
+        if not has_identity(identity_id) or not get_identity_enabled(identity_id):
+            continue
+        with use_identity(identity_id):
+            for spec in RECOVERY_TRANSIENT_SEND_FAILURE_SPECS:
+                error_field = str(spec.get("error_field") or "")
+                error_text = str(state.get(error_field) or "").strip()
+                if not error_text:
+                    continue
+                markers = tuple(str(item or "") for item in spec.get("markers", ()) if str(item or ""))
+                if markers and not any(marker in error_text for marker in markers):
+                    continue
+
+                state[error_field] = ""
+                for field in spec.get("clear_fields", ()):
+                    if field:
+                        state[str(field)] = 0 if str(field).endswith(("_id", "_at", "_due_at")) else ""
+                for field in spec.get("counter_fields", ()):
+                    if field:
+                        state[str(field)] = 0
+                phase_field = str(spec.get("phase_field") or "")
+                if phase_field:
+                    state[phase_field] = str(spec.get("phase_value") or "idle")
+                result_field = str(spec.get("result_field") or "")
+                if result_field:
+                    state[result_field] = "全局暂停后恢复错峰"
+                timer_field = str(spec.get("timer_field") or "")
+                if timer_field:
+                    state[timer_field] = _spread_recovery_timer_value(timer_field, now, now + RECOVERY_SPREAD_MAX_SEC)
+                changed_count += 1
+                affected_identity_ids.add(int(identity_id))
+    if changed_count > 0:
+        mark_dirty()
+        console_log(
+            f"🧹 全局恢复清障：{len(affected_identity_ids)} 个身份 / {changed_count} 个暂停期发送失败已清理并错峰",
+            scope="global",
+            limit=240,
         )
     return changed_count
 
@@ -4887,6 +4997,7 @@ async def toggle_global_enabled(enabled, *, source="ui", actor_id=None):
             with use_identity(identity_id):
                 _clear_startup_module_alerts()
     if enabled:
+        clear_transient_send_failures_for_global_recovery(now)
         spread_overdue_runtime_timers(now, reason="全局恢复")
         _reset_safety_watchdog_fuse_marker(now)
     save_state()

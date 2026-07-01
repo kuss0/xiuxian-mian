@@ -23,6 +23,7 @@ from ..runtime import (
     console_log,
     send_audit_log,
     send_game_command,
+    was_last_game_send_blocked_by_global,
 )
 from ..state import (
     get_current_identity_id,
@@ -887,6 +888,17 @@ async def _send_fishing_command_locked(command, now):
         mark_dirty()
     msg = await send_game_command(command, **send_kwargs)
     if not msg:
+        if was_last_game_send_blocked_by_global(get_current_identity_id(), command):
+            _apply_updates({
+                "fishing_phase": "idle",
+                "fishing_reply_to_msg_id": 0,
+                "fishing_reply_due_at": 0,
+                "fishing_pending_action": "",
+                "fishing_last_error": "",
+                "fishing_last_result": "全局暂停，等待恢复错峰",
+                "next_fishing_time": float(now + random.uniform(10 * 60, 30 * 60)),
+            })
+            return False
         effect = fishing_behavior.build_send_failure_effect(command, now)
         _apply_effect(effect)
         await _emit_effect_audits(effect)

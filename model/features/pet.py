@@ -5,7 +5,7 @@ import time
 
 from ..config import CD_BUFFER_SEC, CMD_PET, CMD_PET_WARM, CMD_PET_TRIAL, CMD_PET_FORMATION, PET_CD, PET_TRIAL_CD, RETRY_MAX_SEC
 from ..persistence import save_state
-from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
+from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_pending_command, get_pet_command, get_pet_name, get_pet_warm_command, get_pet_warm_name, get_pet_trial_command, get_pet_trial_name, get_pet_formation_command, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .resource_backoff import record_resource_shortage, reset_resource_shortage
@@ -364,6 +364,11 @@ async def _run_pet_scheduler(now):
         )
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
+            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_formation_command()):
+                state["pet_formation_last_error"] = ""
+                state["pet_formation_retry_count"] = 0
+                _set_pet_formation_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
+                return
             state["pet_formation_last_error"] = "布下剑阵发送失败"
             state["pet_formation_retry_count"] = 0
             _set_pet_formation_next_time(sent_at + RETRY_MAX_SEC)
@@ -382,6 +387,10 @@ async def _run_pet_scheduler(now):
         msg = await send_game_command(get_pet_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
+            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_command()):
+                state["pet_last_error"] = ""
+                _set_pet_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
+                return
             state["pet_last_error"] = "法宝发送失败"
             _set_pet_next_time(sent_at + RETRY_MAX_SEC)
             await send_audit_log("❌ 法宝发送失败，稍后重试。")
@@ -399,6 +408,10 @@ async def _run_pet_scheduler(now):
         msg = await send_game_command(get_pet_trial_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
+            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_trial_command()):
+                state["pet_trial_last_error"] = ""
+                _set_pet_trial_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
+                return
             state["pet_trial_last_error"] = "器灵试炼发送失败"
             _set_pet_trial_next_time(sent_at + RETRY_MAX_SEC)
             await send_audit_log("❌ 器灵试炼发送失败，稍后重试。")
@@ -416,6 +429,10 @@ async def _run_pet_scheduler(now):
         msg = await send_game_command(get_pet_warm_command(), track=True, max_retry=1, reply_timeout=PET_REPLY_TIMEOUT_SEC)
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
+            if was_last_game_send_blocked_by_global(get_current_identity_id(), get_pet_warm_command()):
+                state["pet_warm_last_error"] = ""
+                _set_pet_warm_next_time(sent_at + random.uniform(10 * 60, 30 * 60))
+                return
             state["pet_warm_last_error"] = "温养器灵发送失败"
             _set_pet_warm_next_time(sent_at + RETRY_MAX_SEC)
             await send_audit_log("❌ 温养器灵发送失败，稍后重试。")

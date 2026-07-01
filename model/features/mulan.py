@@ -21,7 +21,7 @@ from ..config import (
 )
 from ..action_guard import close_action as close_action_guard_action
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import _meta_state, get_current_identity_id, get_identity_account, has_identity, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
@@ -568,6 +568,13 @@ async def _send_mulan_command(command, now, phase):
 
     msg = await send_game_command(command, track=False, max_retry=0, source_module="慕兰烽烟")
     if not msg:
+        if was_last_game_send_blocked_by_global(identity_id, command):
+            state["next_mulan_time"] = float(now + random.uniform(10 * 60, 30 * 60))
+            state["mulan_last_command"] = command
+            state["mulan_last_result"] = "全局暂停，等待恢复错峰"
+            state["mulan_last_error"] = ""
+            save_state()
+            return False
         state["next_mulan_time"] = float(now + RETRY_MAX_SEC)
         state["mulan_last_command"] = command
         state["mulan_last_error"] = f"{command} 发送失败"

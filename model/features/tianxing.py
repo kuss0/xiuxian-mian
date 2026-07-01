@@ -94,6 +94,7 @@ TIANXING_OBSERVATION_TIME_KEYS = (
     "prediction_consumed_at",
     "current_change_until",
     "auto_next_time",
+    "auto_last_error_at",
     "auto_pending_sent_at",
     "auto_pending_due_at",
     "automation_paused_until",
@@ -188,6 +189,7 @@ def _default_tianxing_observation():
         "auto_next_time": 0,
         "auto_last_action": "",
         "auto_last_error": "",
+        "auto_last_error_at": 0,
         "auto_last_plan": "",
         "auto_last_plan_at": 0,
         "auto_pending_action": "",
@@ -780,6 +782,30 @@ def normalize_tianxing_observation(value=None):
         and auto_last_error == "天星宗自动动作回复超时，暂缓重试；不继续推进下游。"
     ):
         observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
+        auto_last_error = ""
+    auto_error_at = float(observed.get("auto_last_error_at", 0) or 0)
+    if not auto_last_error:
+        observed["auto_last_error_at"] = 0
+    elif (
+        "发送失败或被安全策略拦截" in auto_last_error
+        and not str(observed.get("auto_pending_action") or "").strip()
+        and int(observed.get("auto_pending_msg_id", 0) or 0) <= 0
+        and (
+            (
+                auto_error_at <= 0
+                and last_result == "cooldown"
+                and float(observed.get("current_prediction_until", 0) or 0) > 0
+                and not last_error
+            )
+            or (
+                auto_error_at > 0
+                and float(observed.get("last_observed_at", 0) or 0) >= auto_error_at
+            )
+        )
+    ):
+        observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
     return observed
 
 
@@ -1606,6 +1632,7 @@ def apply_tianxing_passive(text, now=None, family=""):
     if _auto_pending_matches_parsed(observed, parsed):
         _clear_tianxing_auto_pending(observed)
     observed["auto_last_error"] = ""
+    observed["auto_last_error_at"] = 0
     if int(observed.get("calamity_count", 0) or 0) > 0:
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     elif not observed.get("fixed_star"):
@@ -1782,6 +1809,7 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None, allow_predictio
 def _set_tianxing_auto_wait(observed, now, action, next_time=None, error=""):
     observed["auto_last_action"] = str(action or "")
     observed["auto_last_error"] = str(error or "")
+    observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
     observed["auto_next_time"] = float(next_time or now + TIANXING_AUTO_BLOCK_BACKOFF_SEC)
     state["tianxing_observation"] = observed
     save_state()
@@ -1824,6 +1852,7 @@ def _note_tianxing_auto_pending(observed, now, plan, config):
     observed["auto_pending_due_at"] = float(now + max(15, timeout))
     observed["auto_last_action"] = action
     observed["auto_last_error"] = ""
+    observed["auto_last_error_at"] = 0
     observed["auto_last_plan"] = command
     observed["auto_last_plan_at"] = float(now)
     observed["auto_next_time"] = observed["auto_pending_due_at"]
@@ -1841,6 +1870,7 @@ def _handle_tianxing_auto_pending(observed, now):
     observed["auto_last_action"] = action
     observed["auto_last_plan"] = command
     observed["auto_last_error"] = "天星宗自动动作回复超时，暂缓重试；不继续推进下游。"
+    observed["auto_last_error_at"] = float(now)
     observed["auto_next_time"] = float(now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC)
     state["tianxing_observation"] = observed
     save_state()
@@ -1901,6 +1931,7 @@ def _apply_tianxing_pause_wait(observed, now, config=None):
     ):
         observed["auto_last_action"] = "paused"
         observed["auto_last_error"] = "天星自动调度已暂停；等待日志群 .天星恢复。"
+        observed["auto_last_error_at"] = float(now)
         observed["auto_last_plan"] = ""
         observed["auto_last_plan_at"] = float(now)
         observed["auto_next_time"] = next_time
@@ -1920,6 +1951,7 @@ def set_tianxing_automation_paused(paused=True, *, now=None, duration_sec=0, rea
         _clear_tianxing_auto_pending(observed)
         observed["auto_last_action"] = "paused"
         observed["auto_last_error"] = "天星自动调度已暂停；手动恢复前不接管路线。"
+        observed["auto_last_error_at"] = float(now)
         observed["auto_last_plan"] = ""
         observed["auto_last_plan_at"] = float(now)
         observed["auto_next_time"] = _tianxing_pause_block_until(now, observed=observed)
@@ -1930,6 +1962,7 @@ def set_tianxing_automation_paused(paused=True, *, now=None, duration_sec=0, rea
         _clear_tianxing_auto_pending(observed)
         observed["auto_last_action"] = "resumed"
         observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
         observed["auto_last_plan"] = ""
         observed["auto_last_plan_at"] = float(now)
         observed["auto_next_time"] = float(now)
@@ -4994,6 +5027,7 @@ def _record_tianxing_dry_run(observed, now, plan, config):
     command = str(plan.get("command") or "")
     observed["auto_last_action"] = f"dry_run_{action}" if action else "dry_run"
     observed["auto_last_error"] = "试运行：只记录，不发送。"
+    observed["auto_last_error_at"] = float(now)
     observed["auto_last_plan"] = command or plan.get("reason") or ""
     observed["auto_last_plan_at"] = float(now)
     observed["auto_next_time"] = float(now + _status_backoff_sec(config))
@@ -5082,6 +5116,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             observed = normalize_tianxing_observation(state.get("tianxing_observation"))
             observed["auto_last_action"] = "timeline"
             observed["auto_last_error"] = timeline_result.get("reason") or ""
+            observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
             observed["auto_last_plan"] = timeline_result.get("timeline_phase") or timeline_result.get("phase") or ""
             observed["auto_last_plan_at"] = float(now)
             observed["auto_next_time"] = float(timeline_result.get("next_time", 0) or now + min(60, _craft_farm_interval_sec(config)))
@@ -5095,6 +5130,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             observed = normalize_tianxing_observation(state.get("tianxing_observation"))
             observed["auto_last_action"] = "craft_farm"
             observed["auto_last_error"] = craft_result.get("reason") or ""
+            observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
             observed["auto_last_plan"] = craft_result.get("stage") or ""
             observed["auto_last_plan_at"] = float(now)
             observed["auto_next_time"] = float(craft_result.get("next_time", 0) or now + _craft_farm_interval_sec(config))
@@ -5154,6 +5190,7 @@ async def _run_tianxing_scheduler_unlocked(now):
     observed["auto_pending_due_at"] = float(sent_at + int(config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC))
     observed["auto_last_action"] = action
     observed["auto_last_error"] = ""
+    observed["auto_last_error_at"] = 0
     observed["auto_last_plan"] = plan.get("command") or ""
     observed["auto_last_plan_at"] = float(sent_at)
     observed["auto_next_time"] = observed["auto_pending_due_at"]

@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -714,6 +714,7 @@ class StartupStateLoadSafetyTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app, "run_startup_account_integrity_check", return_value={"audit_lines": []}),
             patch.object(app, "initialize_identity_runtime") as init_mock,
             patch.object(app, "scan_startup_timeout_tasks") as scan_mock,
+            patch.object(app, "clear_transient_send_failures_for_global_recovery") as clear_mock,
             patch.object(app, "spread_overdue_runtime_timers") as spread_mock,
             patch.object(app, "save_state") as save_mock,
         ):
@@ -722,8 +723,61 @@ class StartupStateLoadSafetyTests(unittest.IsolatedAsyncioTestCase):
         ui_mock.assert_awaited_once()
         init_mock.assert_not_called()
         scan_mock.assert_not_called()
+        clear_mock.assert_not_called()
         spread_mock.assert_not_called()
         save_mock.assert_not_called()
+
+    async def test_bootstrap_clears_transient_send_failures_before_recovery_spread(self):
+        state_module._meta_state.clear()
+        state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+        state_module.ensure_identity_registered(990702)
+        state_module.set_global_enabled(True)
+        with state_module.use_identity(990702):
+            state_module.state["next_pet_time"] = 1_700_000_000.0
+
+        class FakeClient:
+            async def connect(self):
+                return None
+
+            def is_connected(self):
+                return False
+
+        call_order = []
+
+        def clear_side_effect(now):
+            call_order.append("clear")
+            return 1
+
+        def spread_side_effect(now, *, reason):
+            call_order.append("spread")
+            return 1
+
+        with (
+            patch.object(app, "load_state", return_value=True),
+            patch.object(app, "get_accounts", return_value={}),
+            patch.object(app, "client", FakeClient()),
+            patch.object(app, "get_all_clients", return_value={}),
+            patch.object(app, "start_ui_server", new=AsyncMock()) as ui_mock,
+            patch.object(app, "run_startup_account_integrity_check", return_value={"audit_lines": []}),
+            patch.object(app, "restore_guanxing_round_runtime", return_value=({}, False)),
+            patch.object(app, "scan_startup_timeout_tasks", return_value={"closed_count": 0, "affected_identity_ids": [], "alerts": []}) as scan_mock,
+            patch.object(app, "initialize_identity_runtime") as init_mock,
+            patch.object(app, "clear_transient_send_failures_for_global_recovery", side_effect=clear_side_effect) as clear_mock,
+            patch.object(app, "spread_overdue_runtime_timers", side_effect=spread_side_effect) as spread_mock,
+            patch.object(app, "save_state") as save_mock,
+            patch.object(app, "send_audit_log", new=lambda *args, **kwargs: "audit"),
+            patch.object(app, "_fire_and_forget") as fire_mock,
+        ):
+            await app.bootstrap()
+
+        ui_mock.assert_awaited_once()
+        scan_mock.assert_called_once()
+        init_mock.assert_called_once_with(990702, ANY)
+        clear_mock.assert_called_once()
+        spread_mock.assert_called_once()
+        save_mock.assert_called_once()
+        fire_mock.assert_called_once_with("audit")
+        self.assertEqual(["clear", "spread"], call_order)
 
 
 if __name__ == "__main__":

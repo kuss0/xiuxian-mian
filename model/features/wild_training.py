@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..config import CD_BUFFER_SEC, CMD_WILD_TRAINING, MESSAGES_DIR, TZ_LOCAL, WILD_TRAINING_STRATEGIES
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
@@ -663,9 +663,19 @@ async def _run_wild_training_scheduler_unlocked(now):
         return
 
     strategy = _effective_wild_training_strategy(now)
-    msg = await send_game_command(get_wild_training_command(strategy), track=False)
+    command = get_wild_training_command(strategy)
+    msg = await send_game_command(command, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
+        if was_last_game_send_blocked_by_global(get_current_identity_id(), command):
+            state["wild_training_retry_count"] = 0
+            state["wild_training_reply_to_msg_id"] = 0
+            state["wild_training_reply_due_at"] = 0
+            state["wild_training_last_result"] = "全局暂停，等待恢复错峰"
+            state["wild_training_last_error"] = ""
+            state["next_wild_training_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
+            save_state()
+            return
         retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         if await _defer_wild_training_for_dungeon_quiet(
             sent_at,

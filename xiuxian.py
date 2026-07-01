@@ -1,4 +1,5 @@
 import asyncio
+import os
 import signal
 import subprocess
 import sys
@@ -13,6 +14,8 @@ WORKER_ARG = "--worker"
 SCAN_INTERVAL_SEC = 2
 RELOAD_STABLE_SEC = 10
 WORKER_STOP_TIMEOUT_SEC = 20
+LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
+LEGACY_PROCESS_SCAN_INTERVAL_SEC = 2
 
 
 def _watched_files():
@@ -55,6 +58,47 @@ def _spawn_worker():
     )
 
 
+def _read_proc_cmdline(pid):
+    try:
+        raw = Path("/proc") / str(pid) / "cmdline"
+        return raw.read_bytes().replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+
+
+def _legacy_xiuxian_pids():
+    current_pid = os.getpid()
+    current_worker = str(PROJECT_ROOT / "xiuxian.py")
+    legacy_scripts = {str(root / "xiuxian.py") for root in LEGACY_PROJECT_ROOTS}
+    pids = []
+    proc_root = Path("/proc")
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == current_pid:
+            continue
+        cmdline = _read_proc_cmdline(pid)
+        if "xiuxian.py" not in cmdline:
+            continue
+        if current_worker in cmdline:
+            continue
+        if any(script in cmdline for script in legacy_scripts):
+            pids.append((pid, cmdline))
+    return pids
+
+
+def _stop_legacy_xiuxian_processes():
+    for pid, cmdline in _legacy_xiuxian_pids():
+        try:
+            os.kill(pid, signal.SIGKILL)
+            print(f"已终止旧 xiuxian 实例 pid={pid}: {cmdline}", flush=True)
+        except ProcessLookupError:
+            continue
+        except Exception as exc:
+            print(f"终止旧 xiuxian 实例失败 pid={pid}: {exc}", flush=True)
+
+
 def _stop_worker(worker):
     if worker is None or worker.poll() is not None:
         return
@@ -78,13 +122,20 @@ def _run_supervisor():
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
 
+    _stop_legacy_xiuxian_processes()
     worker = _spawn_worker()
     current_fingerprint = _code_fingerprint()
     pending_fingerprint = None
     pending_since = 0
+    last_legacy_scan = 0.0
 
     try:
         while not stop_requested:
+            now = time.time()
+            if now - last_legacy_scan >= LEGACY_PROCESS_SCAN_INTERVAL_SEC:
+                last_legacy_scan = now
+                _stop_legacy_xiuxian_processes()
+
             if worker.poll() is not None:
                 print(f"worker 已退出，退出码：{worker.returncode}", flush=True)
                 if _code_syntax_ok():
@@ -96,7 +147,6 @@ def _run_supervisor():
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
-            now = time.time()
             fingerprint = _code_fingerprint()
             if fingerprint != current_fingerprint:
                 if fingerprint != pending_fingerprint:
