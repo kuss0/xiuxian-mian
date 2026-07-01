@@ -106,6 +106,41 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(201, state_module.state["wild_training_last_msg_id"])
         self.assertEqual("已出发：谨慎", state_module.state["wild_training_last_result"])
 
+    async def test_pending_command_waits_without_resending_before_timeout(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["wild_training_reply_to_msg_id"] = 101
+            identity_state["wild_training_reply_due_at"] = now + 30
+            identity_state["wild_training_last_result"] = "已发送：谨慎"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertEqual(101, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+
+    async def test_started_notice_waits_for_final_edit_without_resending(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["wild_training_reply_to_msg_id"] = 201
+            identity_state["wild_training_reply_due_at"] = now + wild_training.WILD_TRAINING_REPLY_TIMEOUT_SEC
+            identity_state["wild_training_last_msg_id"] = 201
+            identity_state["wild_training_last_result"] = "已出发：谨慎"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertEqual(201, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("已出发：谨慎", state_module.state["wild_training_last_result"])
+
     async def test_final_edit_clears_pending_and_records_rewards(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_010.0

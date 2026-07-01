@@ -164,6 +164,13 @@ def _guard_recent_completed_result(now):
     return True
 
 
+def _has_active_wild_training_pending(now):
+    reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
+    if reply_to_msg_id <= 0:
+        return False
+    return float(state.get("wild_training_reply_due_at", 0) or 0) > float(now or 0)
+
+
 async def _defer_wild_training_for_dungeon_quiet(now, *, action):
     next_time = _schedule_after_dungeon_quiet(now)
     if next_time <= 0:
@@ -587,6 +594,8 @@ async def _run_wild_training_scheduler_unlocked(now):
         return
 
     if await _cleanup_wild_training_pending_timeout(now):
+        return
+    if _has_active_wild_training_pending(now):
         return
 
     try:
