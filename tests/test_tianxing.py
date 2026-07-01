@@ -3280,6 +3280,45 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(plan["next_time"], due_at)
         self.assertIn("野外历练", plan["reason"])
 
+    def test_craft_farm_calibrates_expired_send_block_before_explore_window(self):
+        now = 1_780_000_000.0
+        due_at = now + 240
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=39)
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["next_wild_training_time"] = due_at
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "send_blocked",
+                    "started_at": now - 3600,
+                    "next_time": now - 1,
+                    "last_action": "consume_craft_prediction",
+                    "last_command": ".炼制 玄铁剑",
+                    "last_error": ".炼制 玄铁剑 发送失败或被安全策略拦截。",
+                }
+            }
+            plan = tianxing.build_tianxing_craft_farm_plan(
+                now=now,
+                config=self._active_config(
+                    now,
+                    timeline_enabled=True,
+                    farm_route="炼制",
+                    craft_farm_enabled=True,
+                    craft_farm_dry_run_enabled=False,
+                    craft_farm_item="玄铁剑",
+                    craft_farm_daily_limit=42,
+                    route_prepare_lead_sec=300,
+                ),
+            )
+
+        self.assertEqual("calibrate_panel", plan["stage"])
+        self.assertTrue(plan["active"])
+        self.assertTrue(plan["takeover"])
+        self.assertEqual(".天机盘", plan["command"])
+        self.assertIn("不重复炼制", plan["reason"])
+
     def test_craft_farm_does_not_yield_to_distant_wild_training_inside_prediction_lock(self):
         now = 1_780_000_000.0
         due_at = now + 2 * 3600

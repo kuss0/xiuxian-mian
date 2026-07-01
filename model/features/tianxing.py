@@ -4956,6 +4956,8 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
     current_tianji = int(observed.get("tianji_value", 0) or 0)
     farm = _current_craft_farm_state()
     estimated_tianji = max(current_tianji, int(farm.get("estimated_tianji", 0) or 0))
+    next_time = float(farm.get("next_time", 0) or 0)
+    farm_phase = str(farm.get("phase") or "").strip()
     unpredicted_override_reason = _craft_farm_unpredicted_override_reason(now, config, observed, estimated_tianji)
     daily_limit = int(config.get("craft_farm_daily_limit", 0) or 0)
     if target_tianji <= 0:
@@ -4964,6 +4966,28 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
         return _craft_farm_result("target_reached", active=True, reason=f"天机值 {estimated_tianji} 已达到目标 {target_tianji}。", next_time=now + _status_backoff_sec(config))
     if daily_limit > 0 and int(farm.get("daily_count", 0) or 0) >= daily_limit:
         return _craft_farm_result("daily_limit_reached", active=True, reason=f"炼制攒点今日已达 {daily_limit} 轮。", next_time=now + _status_backoff_sec(config))
+
+    if farm_phase == "send_blocked":
+        if next_time > now:
+            return _craft_farm_result(
+                "send_blocked_waiting",
+                active=True,
+                takeover=False,
+                handoff=True,
+                reason=farm.get("last_error") or "炼制攒点发送被拦截，等待短重试窗口。",
+                next_time=next_time,
+            )
+        return _craft_farm_result(
+            "calibrate_panel",
+            active=True,
+            takeover=not bool(config.get("craft_farm_dry_run_enabled")),
+            handoff=bool(config.get("craft_farm_dry_run_enabled")),
+            reason="炼制攒点发送被拦截后已到重试点，先查盘校准；不重复炼制。",
+            action="panel",
+            command=CMD_TIANXING_PANEL,
+            next_time=now + int(config.get("craft_farm_reply_timeout_sec", TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC) or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC),
+            dry_run=bool(config.get("craft_farm_dry_run_enabled")),
+        )
 
     explore_block = _craft_farm_explore_consume_block(now, config)
     if explore_block:
@@ -4985,9 +5009,7 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             next_time=next_window or now + _status_backoff_sec(config),
         )
 
-    next_time = float(farm.get("next_time", 0) or 0)
     dry_run = bool(config.get("craft_farm_dry_run_enabled"))
-    farm_phase = str(farm.get("phase") or "").strip()
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     if timeline.get("phase") == "prediction_conflict" and float(timeline.get("blocked_until", 0) or 0) > now:
         current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
