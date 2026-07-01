@@ -19,7 +19,7 @@ from ..config import (
 from ..action_guard import close_action as close_action_guard_action
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import get_current_identity_id, state
+from ..state import get_current_identity_id, get_identity_account, has_identity, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
 
@@ -240,6 +240,28 @@ def clear_mulan_state(*, persist=False, keep_last_error=False):
         mark_dirty()
 
 
+def _mulan_unavailable_reason():
+    identity_id = int(get_current_identity_id() or 0)
+    if identity_id <= 0 or not has_identity(identity_id):
+        return f"身份不存在：{identity_id or 'unknown'}"
+    if int(get_identity_account(identity_id) or 0) <= 0:
+        return f"身份未绑定账号：{identity_id}"
+    return ""
+
+
+async def _disable_mulan_for_unavailable_identity(reason):
+    _clear_mulan_pending()
+    state["mulan_enabled"] = False
+    state["mulan_phase"] = MULAN_PHASE_IDLE
+    state["mulan_pending_ids"] = ""
+    state["mulan_current_id"] = 0
+    state["mulan_public_id"] = 0
+    state["next_mulan_time"] = 0
+    state["mulan_last_error"] = str(reason or "身份不可发送")
+    save_state()
+    await send_audit_log(f"⚠️ 慕兰已暂停：{state['mulan_last_error']}。", scope="identity", limit=220)
+
+
 def get_mulan_status_text():
     lines = [
         "🕵️ 慕兰",
@@ -262,6 +284,11 @@ def get_mulan_status_text():
 
 
 async def _send_mulan_command(command, now, phase):
+    unavailable_reason = _mulan_unavailable_reason()
+    if unavailable_reason:
+        await _disable_mulan_for_unavailable_identity(unavailable_reason)
+        return False
+
     msg = await send_game_command(command, track=False, max_retry=0, source_module="慕兰")
     if not msg:
         state["next_mulan_time"] = float(now + RETRY_MAX_SEC)

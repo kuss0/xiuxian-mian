@@ -26,6 +26,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
 
     def _prepare_identity(self, identity_id=8659059191):
         state_module.ensure_identity_registered(identity_id)
+        state_module.set_identity_account(identity_id, identity_id)
         return identity_id
 
     def test_parse_collect_ids_defaults_to_123(self):
@@ -65,6 +66,27 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("collect_pending", state_module.state["mulan_phase"])
             self.assertEqual(1001, state_module.state["mulan_reply_to_msg_id"])
             self.assertEqual(now + mulan.MULAN_REPLY_TIMEOUT_SEC, state_module.state["mulan_reply_due_at"])
+
+    async def test_scheduler_disables_when_identity_has_no_account_mapping(self):
+        identity_id = 3711993781
+        state_module.ensure_identity_registered(identity_id)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()) as audit_mock,
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            audit_mock.assert_awaited_once()
+            self.assertFalse(state_module.state["mulan_enabled"])
+            self.assertEqual("idle", state_module.state["mulan_phase"])
+            self.assertEqual(0, state_module.state["next_mulan_time"])
+            self.assertIn("未绑定账号", state_module.state["mulan_last_error"])
 
     async def test_suspicious_then_reliable_publishes_and_stops_judging(self):
         identity_id = self._prepare_identity()
