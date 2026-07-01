@@ -238,6 +238,9 @@ HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANZUN_BOT_NAME_MARKER = "天尊"
 TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
 DUE_WILD_TRAINING_MAX_PER_TICK = 5
+DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC = 90
+DUE_WILD_TRAINING_DIAG_INTERVAL_SEC = 120
+_due_wild_training_last_diag_at = 0.0
 
 _PHASEFUL_IDENTITY_SCHEDULERS = (
     run_deep_retreat_scheduler,
@@ -1087,6 +1090,7 @@ async def _run_identity_schedulers(now):
 
 
 async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAINING_MAX_PER_TICK):
+    global _due_wild_training_last_diag_at
     candidates = []
     for scan_index, identity_id in enumerate(get_identity_ids()):
         if not get_identity_enabled(identity_id):
@@ -1135,16 +1139,68 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             priority = 1 if state.get("tianxing_enabled") else 2
             candidates.append((priority, next_time, scan_index, identity_id, scheduler_now, "run"))
 
+    if candidates and float(now or 0) - _due_wild_training_last_diag_at >= DUE_WILD_TRAINING_DIAG_INTERVAL_SEC:
+        _due_wild_training_last_diag_at = float(now or time.time())
+        preview = []
+        for _priority, due_at, _scan_index, identity_id, _scheduler_now, action in sorted(candidates)[:5]:
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
+            preview.append(f"@{username}:{action}/{overdue}s")
+        console_log(
+            f"🏞️ 到期野外扫描候选 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
+            scope="global",
+        )
+
     processed = 0
     for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
         if processed >= int(limit or 1):
             break
-        with use_identity(identity_id):
-            if action == "cleanup":
-                await run_wild_training_phaseful_cleanup_scheduler(max(float(scheduler_now or 0), time.time()))
-            else:
-                await run_wild_training_scheduler(max(float(scheduler_now or 0), time.time()))
+        try:
+            await asyncio.wait_for(
+                _run_due_wild_training_candidate(identity_id, scheduler_now, action),
+                timeout=max(1, float(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC or 0)),
+            )
+        except asyncio.TimeoutError:
+            with use_identity(identity_id):
+                _record_due_wild_training_candidate_failure(
+                    action,
+                    now=time.time(),
+                    reason=f"到期野外扫描执行超时（>{int(DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
+                )
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            console_log(f"🏞️ 到期野外扫描超时：@{username} {action}", scope="global")
+        except Exception as exc:
+            with use_identity(identity_id):
+                _record_due_wild_training_candidate_failure(
+                    action,
+                    now=time.time(),
+                    reason=f"到期野外扫描异常：{str(exc)[:160]}",
+                )
+            print("due wild training scheduler failed:")
+            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         processed += 1
+
+
+async def _run_due_wild_training_candidate(identity_id, scheduler_now, action):
+    with use_identity(identity_id):
+        candidate_now = max(float(scheduler_now or 0), time.time())
+        if action == "cleanup":
+            await run_wild_training_phaseful_cleanup_scheduler(candidate_now)
+        else:
+            await run_wild_training_scheduler(candidate_now)
+
+
+def _record_due_wild_training_candidate_failure(action, *, now, reason):
+    state["wild_training_last_error"] = str(reason or "到期野外扫描失败")
+    state["wild_training_last_result_at"] = 0
+    if action == "cleanup":
+        if int(state.get("wild_training_reply_to_msg_id", 0) or 0) > 0:
+            state["wild_training_reply_due_at"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
+    else:
+        state["next_wild_training_time"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
+    mark_dirty()
 
 
 async def _run_phaseful_identity_schedulers(now):

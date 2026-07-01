@@ -455,6 +455,51 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(earlier_identity_id, now)], seen)
 
+    async def test_due_wild_training_fast_scan_timeout_does_not_block_next_candidate(self):
+        stuck_identity_id = 991798
+        next_identity_id = 991799
+        now = 1_700_000_000.0
+        for identity_id, due_at in (
+            (stuck_identity_id, now - 300),
+            (next_identity_id, now - 200),
+        ):
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["wild_training_enabled"] = True
+                state_module.state["wild_training_retry_count"] = 0
+                state_module.state["wild_training_reply_to_msg_id"] = 0
+                state_module.state["next_wild_training_time"] = due_at
+
+        seen = []
+
+        async def fake_wild_training_scheduler(scheduler_now):
+            current_id = state_module.get_current_identity_id()
+            seen.append((current_id, scheduler_now))
+            if current_id == stuck_identity_id:
+                await asyncio.sleep(60)
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[stuck_identity_id, next_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock(side_effect=fake_wild_training_scheduler)) as scheduler_mock,
+            patch.object(app, "DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC", 0.01),
+            patch.object(app, "DUE_WILD_TRAINING_DIAG_INTERVAL_SEC", 999999),
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=2)
+
+        self.assertEqual(2, scheduler_mock.await_count)
+        self.assertEqual(
+            [(stuck_identity_id, now), (next_identity_id, now)],
+            seen,
+        )
+        with state_module.use_identity(stuck_identity_id):
+            self.assertEqual(now + 120, state_module.state["next_wild_training_time"])
+            self.assertIn("执行超时", state_module.state["wild_training_last_error"])
+
     async def test_due_wild_training_fast_scan_runs_due_normal_cycle(self):
         identity_id = 991787
         now = 1_700_000_000.0
