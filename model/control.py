@@ -462,6 +462,33 @@ def _has_fresh_tianti_recovery_status(now):
     return seen_at > 0 and float(now or 0) - seen_at <= TIANTI_RECOVERY_STATUS_FRESH_SEC
 
 
+def _has_released_tianxing_explore_downstream(now):
+    if not state.get("tianxing_enabled"):
+        return False
+    if _state_positive_int("wild_training_reply_to_msg_id"):
+        return False
+    observation = state.get("tianxing_observation") if isinstance(state.get("tianxing_observation"), dict) else {}
+    timeline = state.get("tianxing_timeline_state") if isinstance(state.get("tianxing_timeline_state"), dict) else {}
+    if str(timeline.get("phase") or "").strip() != "downstream_released":
+        return False
+    if str(timeline.get("route") or "").strip() != "探索":
+        return False
+    released_routes = timeline.get("released_routes") if isinstance(timeline.get("released_routes"), dict) else {}
+    released_explore = released_routes.get("探索") if isinstance(released_routes.get("探索"), dict) else {}
+    if not released_explore:
+        return False
+    if str(observation.get("current_prediction") or "").strip() != "探索":
+        return False
+    if str(observation.get("current_change") or "").strip() != "探索":
+        return False
+    try:
+        prediction_until = float(observation.get("current_prediction_until", 0) or 0)
+        change_until = float(observation.get("current_change_until", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return prediction_until > float(now or 0) and change_until > float(now or 0)
+
+
 def _has_stale_tianti_daily_marker(today_key):
     last_wenxin_day = str(state.get("tianti_last_wenxin_day") or "")
     trigger_key = str(state.get("tianti_wenxin_last_trigger_key") or "")
@@ -472,6 +499,8 @@ def _has_stale_tianti_daily_marker(today_key):
 
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
+        if _has_released_tianxing_explore_downstream(now):
+            return now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
         try:
             retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         except (TypeError, ValueError, OverflowError):

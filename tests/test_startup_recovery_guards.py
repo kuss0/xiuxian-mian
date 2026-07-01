@@ -78,6 +78,39 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 300, state_module.state["next_wild_training_time"])
 
+    def test_startup_spread_keeps_released_tianxing_wild_training_immediate(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["next_wild_training_time"] = now - 1
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["tianxing_observation"] = {
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "探索",
+                "current_change_until": now + 24 * 3600,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "route": "探索",
+                "released_routes": {
+                    "探索": {
+                        "released_at": now - 60,
+                        "basis": "change_fate",
+                    }
+                },
+            }
+
+        with patch.object(control.random, "uniform", return_value=300):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(now + 1, state_module.state["next_wild_training_time"])
+
     def test_startup_spread_recovers_wild_training_from_recent_real_result(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
