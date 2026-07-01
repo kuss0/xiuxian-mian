@@ -1,11 +1,13 @@
 import atexit
 import asyncio
 import copy
+import json
 import os
 import sys
 import tempfile
 import unittest
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -221,6 +223,7 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn(".玩法总览", html_text)
         self.assertIn(".上线预检", html_text)
         self.assertIn(".运行健康", html_text)
+        self.assertIn(".深入汇总", html_text)
         self.assertIn(".发送健康码", html_text)
         self.assertIn("日志推送", html_text)
         self.assertIn(".日志推送状态", html_text)
@@ -245,6 +248,84 @@ class LogGroupDisplayTests(unittest.TestCase):
         self.assertIn("已停用", html_text)
         self.assertIn(".苍坤洞府 123 @用户名", html_text)
         self.assertIn("只读", html_text)
+
+    def test_wild_deep_summary_reads_sent_logs_and_missing_results(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            state_module.ensure_identity_registered(8659059191)
+            state_module.update_send_as_profile(8659059191, username="WalterWA2000", label="wa2000")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                log_path = Path(tmpdir) / "2026-07-01.log"
+                rows = [
+                    {
+                        "ts": "2026-07-01 08:00:00 UTC+8",
+                        "event_type": "sent",
+                        "message_id": 100,
+                        "sender_id": 8659059191,
+                        "reply_to_msg_id": 0,
+                        "text": ".野外历练 深入",
+                    },
+                    {
+                        "ts": "2026-07-01 08:00:02 UTC+8",
+                        "event_type": "message",
+                        "message_id": 101,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 100,
+                        "text": "【野外历练】\n@WalterWA2000 选择【深入】策略，正向荒野深处行去...",
+                    },
+                    {
+                        "ts": "2026-07-01 08:00:06 UTC+8",
+                        "event_type": "edit",
+                        "message_id": 101,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 100,
+                        "text": "【野外历练 · 妖兽遭遇】\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n获得修为 +45000，获得 【养魂木】x2。",
+                    },
+                    {
+                        "ts": "2026-07-01 10:00:00 UTC+8",
+                        "event_type": "sent",
+                        "message_id": 200,
+                        "sender_id": 8659059191,
+                        "reply_to_msg_id": 0,
+                        "text": ".野外历练 深入",
+                    },
+                    {
+                        "ts": "2026-07-01 10:00:02 UTC+8",
+                        "event_type": "message",
+                        "message_id": 201,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 200,
+                        "text": "【野外历练】\n@WalterWA2000 选择【深入】策略，正向荒野深处行去...",
+                    },
+                    {
+                        "ts": "2026-07-01 10:00:03 UTC+8",
+                        "event_type": "message",
+                        "message_id": 202,
+                        "sender_id": 999,
+                        "reply_to_msg_id": 0,
+                        "text": ".野外历练 深入",
+                    },
+                ]
+                log_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+                with patch.object(control, "MESSAGES_DIR", tmpdir):
+                    text = control._format_wild_deep_summary_text(
+                        explicit_identity_id=8659059191,
+                        now=datetime(2026, 7, 1, 12, 0, tzinfo=control.TZ_LOCAL).timestamp(),
+                    )
+
+            self.assertIn("深入次数: 2", text)
+            self.assertIn("已结算: 1", text)
+            self.assertIn("结果缺失: 1", text)
+            self.assertIn("修为+45,000", text)
+            self.assertIn("天机+1", text)
+            self.assertIn("贡献+30", text)
+            self.assertIn("养魂木x2", text)
+            self.assertIn("msg=200", text)
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(meta_snapshot))
 
     def test_storage_bag_simple_find_uses_desensitized_totals(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)

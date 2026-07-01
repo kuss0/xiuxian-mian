@@ -315,6 +315,7 @@ RE_CMD_DUNGEON_HELP = re.compile(r"^\.副本帮助$")
 RE_CMD_STORAGE_BAG_REPORT = re.compile(r"^\.(储物袋汇总|储物袋盘点|材料汇总)(?:\s+([\s\S]+))?$")
 RE_CMD_STORAGE_BAG_SIMPLE_FIND = re.compile(r"^\.(?:还有多少)\s+([\s\S]+?)\s*$")
 RE_CMD_STORAGE_BAG_API_REFRESH = re.compile(r"^\.(?:更新储物袋|刷新储物袋|储物袋更新|储物袋刷新)$")
+RE_CMD_WILD_DEEP_SUMMARY = re.compile(r"^\.(?:深入汇总|深入战绩|野外深入汇总)(?:\s+([\s\S]+))?$")
 RE_CMD_HEHUAN_MANUAL = re.compile(r"^\.合欢(?:温养|双修温养)$")
 RE_CMD_TIANXING_AUTOMATION_CONTROL = re.compile(r"^\.天星(?:自动)?(暂停|恢复)(?:\s+(\S+))?$")
 RE_CMD_TIANXING_MANUAL = re.compile(r"^\.天星(查盘|观命|定命|推命|改命|消劫)(?:\s+(\S+))?$")
@@ -2787,6 +2788,314 @@ def _format_runtime_health_detail_text():
     return "\n".join(lines)
 
 
+def _parse_log_ts_epoch(raw_ts):
+    text = str(raw_ts or "")[:19]
+    if not text:
+        return 0.0
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _day_log_path(day_key):
+    return Path(MESSAGES_DIR) / f"{day_key}.log"
+
+
+def _iter_message_log_payloads(day_keys):
+    for day_key in day_keys:
+        path = _day_log_path(day_key)
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(payload, dict):
+                        yield payload
+        except OSError:
+            continue
+
+
+def _parse_wild_deep_summary_args(raw_args, explicit_identity_id=None, now=None):
+    now = float(now or time.time())
+    today = datetime.fromtimestamp(now, TZ_LOCAL).date()
+    args_text = RE_WHITESPACE.sub(" ", str(raw_args or "").strip())
+    identity_id = int(explicit_identity_id or 0) or None
+
+    if args_text in {"帮助", "help", "-h", "--help"}:
+        return None, (
+            "【深入汇总】\n"
+            ".深入汇总\n"
+            ".深入汇总 @wa2000\n"
+            ".深入汇总 昨天\n"
+            ".深入汇总 近3天\n\n"
+            "只读解析消息日志里的脚本自动 .野外历练 深入，不发送游戏命令。"
+        )
+
+    since_day = today
+    until_day = today
+    recent_match = RE_STORAGE_BAG_RECENT_DAYS.search(args_text)
+    if "昨天" in args_text or "昨日" in args_text:
+        since_day = today - timedelta(days=1)
+        until_day = since_day
+        args_text = args_text.replace("昨天", " ").replace("昨日", " ")
+    elif "今天" in args_text or "今日" in args_text:
+        args_text = args_text.replace("今天", " ").replace("今日", " ")
+    elif recent_match:
+        days = max(1, min(14, int(recent_match.group(1))))
+        since_day = today - timedelta(days=days - 1)
+        until_day = today
+        args_text = f"{args_text[:recent_match.start()]} {args_text[recent_match.end():]}"
+    else:
+        day_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", args_text)
+        if day_match:
+            try:
+                since_day = datetime.strptime(day_match.group(1), "%Y-%m-%d").date()
+                until_day = since_day
+                args_text = f"{args_text[:day_match.start()]} {args_text[day_match.end():]}"
+            except ValueError:
+                pass
+
+    selector = RE_WHITESPACE.sub(" ", args_text).strip()
+    if selector and identity_id is None:
+        resolved_id = resolve_identity_selector(selector)
+        if resolved_id is None:
+            return None, f"❌ 找不到身份：{selector}"
+        identity_id = int(resolved_id)
+
+    return {
+        "since_day": since_day,
+        "until_day": until_day,
+        "identity_id": identity_id,
+    }, ""
+
+
+def _fmt_signed_number(value):
+    value = int(value or 0)
+    return f"{value:+,}" if value else "0"
+
+
+def _parse_wild_deep_result_text(text):
+    raw = str(text or "")
+    xiuwei = 0
+    xiuwei_known = False
+    for pattern in (
+        r"获得修为\s*\+?([\d,]+)",
+        r"修为\s*([+-]\s*[\d,]+)",
+        r"修为折损\s*-\s*([\d,]+)",
+    ):
+        match = re.search(pattern, raw)
+        if not match:
+            continue
+        number_text = str(match.group(1) or "").replace(",", "").replace(" ", "")
+        try:
+            number = int(number_text)
+        except ValueError:
+            continue
+        if "折损" in pattern and number > 0:
+            number = -number
+        xiuwei += number
+        xiuwei_known = True
+        break
+    if "修为未损" in raw or "未损修为" in raw:
+        xiuwei_known = True
+
+    tianji = 0
+    match = re.search(r"天机(?:值)?\s*([+-]\s*\d+)", raw)
+    if match:
+        tianji = int(str(match.group(1)).replace(" ", ""))
+
+    contrib = 0
+    match = re.search(r"宗门贡献\s*([+-]\s*\d+)", raw)
+    if match:
+        contrib = int(str(match.group(1)).replace(" ", ""))
+
+    rewards = {}
+    for item, count_text in re.findall(r"【([^】]+)】x\s*(\d+)", raw):
+        item_name = str(item or "").strip()
+        if not item_name:
+            continue
+        rewards[item_name] = rewards.get(item_name, 0) + int(count_text)
+
+    outcome = "未知"
+    if "改命脱险" in raw or "改命回天" in raw:
+        outcome = "改命脱险"
+    elif "灵机暗藏" in raw:
+        outcome = "灵机"
+    elif "负伤而归" in raw:
+        outcome = "负伤"
+    elif "妖兽遭遇" in raw:
+        outcome = "胜"
+
+    return {
+        "xiuwei": xiuwei,
+        "xiuwei_known": xiuwei_known,
+        "tianji": tianji,
+        "contrib": contrib,
+        "rewards": rewards,
+        "outcome": outcome,
+        "tianxing": ("推命命中" in raw or "天机值" in raw or "命盘" in raw),
+    }
+
+
+def _identity_name_for_summary(identity_id):
+    identity_id = int(identity_id or 0)
+    if has_identity(identity_id):
+        return get_identity_display_name(identity_id)
+    return f"身份{identity_id}"
+
+
+def _format_reward_counter(rewards, limit=6):
+    items = sorted((str(name), int(count or 0)) for name, count in (rewards or {}).items() if int(count or 0) > 0)
+    if not items:
+        return "无"
+    head = [f"{name}x{count}" for name, count in items[:limit]]
+    if len(items) > limit:
+        head.append(f"等{len(items)}种")
+    return "、".join(head)
+
+
+def _format_wild_deep_summary_text(raw_args="", explicit_identity_id=None, now=None):
+    options, message = _parse_wild_deep_summary_args(raw_args, explicit_identity_id=explicit_identity_id, now=now)
+    if options is None:
+        return message
+
+    since_day = options["since_day"]
+    until_day = options["until_day"]
+    identity_filter = options.get("identity_id")
+    day_count = (until_day - since_day).days + 1
+    day_keys = [(since_day + timedelta(days=offset)).isoformat() for offset in range(max(0, day_count))]
+    since_epoch = datetime.combine(since_day, datetime.min.time(), tzinfo=TZ_LOCAL).timestamp()
+    until_epoch = datetime.combine(until_day + timedelta(days=1), datetime.min.time(), tzinfo=TZ_LOCAL).timestamp()
+
+    payloads = []
+    sent_records = {}
+    start_by_sent = {}
+    final_by_start = {}
+    final_by_sent = {}
+    for payload in _iter_message_log_payloads(day_keys):
+        epoch = _parse_log_ts_epoch(payload.get("ts"))
+        if not (since_epoch <= epoch < until_epoch):
+            continue
+        payloads.append(payload)
+        text = str(payload.get("text") or "").strip()
+        event_type = str(payload.get("event_type") or "").strip()
+        msg_id = int(payload.get("message_id") or 0)
+        reply_to = int(payload.get("reply_to_msg_id") or 0)
+        sender_id = int(payload.get("sender_id") or 0)
+        if event_type == "sent" and text == f"{CMD_WILD_TRAINING} 深入":
+            if identity_filter and sender_id != int(identity_filter):
+                continue
+            sent_records[msg_id] = {
+                "msg_id": msg_id,
+                "identity_id": sender_id,
+                "sent_at": epoch,
+                "sent_ts": str(payload.get("ts") or "")[:19],
+            }
+        if "【野外历练" not in text:
+            continue
+        is_final = "【野外历练 ·" in text
+        if event_type == "message" and reply_to > 0:
+            if text.startswith("【野外历练】"):
+                start_by_sent.setdefault(reply_to, {"msg_id": msg_id, "text": text, "at": epoch})
+            elif is_final:
+                final_by_sent[reply_to] = {"msg_id": msg_id, "text": text, "at": epoch}
+        elif event_type == "edit" and is_final and msg_id > 0:
+            final_by_start[msg_id] = {"msg_id": msg_id, "text": text, "at": epoch}
+
+    total = {
+        "sent": len(sent_records),
+        "done": 0,
+        "missing": 0,
+        "xiuwei": 0,
+        "tianji": 0,
+        "contrib": 0,
+        "tianxing": 0,
+        "rewards": {},
+        "outcomes": {},
+    }
+    per_identity = {}
+    missing_samples = []
+    recent_records = []
+
+    for sent_id, sent in sorted(sent_records.items(), key=lambda item: item[1]["sent_at"]):
+        identity_id = int(sent["identity_id"])
+        bucket = per_identity.setdefault(identity_id, {
+            "sent": 0,
+            "done": 0,
+            "missing": 0,
+            "xiuwei": 0,
+            "tianji": 0,
+            "contrib": 0,
+            "tianxing": 0,
+            "rewards": {},
+            "outcomes": {},
+            "last": "",
+        })
+        bucket["sent"] += 1
+        start = start_by_sent.get(sent_id) or {}
+        result = final_by_start.get(int(start.get("msg_id") or 0)) or final_by_sent.get(sent_id)
+        if not result:
+            bucket["missing"] += 1
+            total["missing"] += 1
+            if len(missing_samples) < 5:
+                missing_samples.append(f"{sent['sent_ts']} {_identity_name_for_summary(identity_id)} msg={sent_id}")
+            continue
+
+        parsed = _parse_wild_deep_result_text(result.get("text") or "")
+        bucket["done"] += 1
+        total["done"] += 1
+        for target in (bucket, total):
+            target["xiuwei"] += int(parsed["xiuwei"])
+            target["tianji"] += int(parsed["tianji"])
+            target["contrib"] += int(parsed["contrib"])
+            if parsed["tianxing"]:
+                target["tianxing"] += 1
+            outcome = parsed["outcome"]
+            target["outcomes"][outcome] = target["outcomes"].get(outcome, 0) + 1
+            for item, count in parsed["rewards"].items():
+                target["rewards"][item] = target["rewards"].get(item, 0) + int(count)
+        bucket["last"] = f"{sent['sent_ts']} {parsed['outcome']} 修为{_fmt_signed_number(parsed['xiuwei'])}"
+        recent_records.append((sent["sent_at"], _identity_name_for_summary(identity_id), parsed))
+
+    range_text = since_day.isoformat() if since_day == until_day else f"{since_day.isoformat()}~{until_day.isoformat()}"
+    title_identity = f"｜{_identity_name_for_summary(identity_filter)}" if identity_filter else ""
+    lines = [
+        f"范围: {range_text}{title_identity}",
+        f"深入次数: {total['sent']}｜已结算: {total['done']}｜结果缺失: {total['missing']}",
+        f"收益: 修为{_fmt_signed_number(total['xiuwei'])}｜天机{_fmt_signed_number(total['tianji'])}｜贡献{_fmt_signed_number(total['contrib'])}｜天星命中 {total['tianxing']}",
+        f"奖励: {_format_reward_counter(total['rewards'], limit=10)}",
+    ]
+    if total["outcomes"]:
+        outcome_text = "、".join(f"{name}{count}" for name, count in sorted(total["outcomes"].items()))
+        lines.append(f"结果: {outcome_text}")
+
+    if per_identity:
+        lines.extend(["", "账号明细:"])
+        sorted_rows = sorted(per_identity.items(), key=lambda item: (-item[1]["done"], -item[1]["xiuwei"], _identity_name_for_summary(item[0])))
+        for identity_id, row in sorted_rows[:18]:
+            missing_text = f" 缺{row['missing']}" if row["missing"] else ""
+            lines.append(
+                f"- {_identity_name_for_summary(identity_id)}: {row['done']}/{row['sent']}{missing_text}｜"
+                f"修为{_fmt_signed_number(row['xiuwei'])}｜天机{_fmt_signed_number(row['tianji'])}｜"
+                f"{_format_reward_counter(row['rewards'], limit=4)}"
+            )
+            if row.get("last"):
+                lines.append(f"  最近: {row['last']}")
+        if len(sorted_rows) > 18:
+            lines.append(f"- 其余 {len(sorted_rows) - 18} 个账号已省略")
+    else:
+        lines.extend(["", "账号明细: 无"])
+
+    if missing_samples:
+        lines.extend(["", "缺失样本:"])
+        lines.extend(f"- {sample}" for sample in missing_samples)
+
+    return "\n".join(lines)
+
+
 def _format_log_group_help_html(send_as_id=None):
     suffix = ""
     if send_as_id is not None:
@@ -2815,6 +3124,7 @@ def _format_log_group_help_html(send_as_id=None):
         ".运行健康",
         ".健康详情",
         ".玩法总览",
+        ".深入汇总",
         ".发送健康码",
         ".日志群分析",
         ".webmini分析",
@@ -5343,6 +5653,16 @@ async def handle_log_group_command(event):
             "日志群分析",
             _format_analysis_report_text("log_group"),
             error_prefix="❌ 日志群分析发送失败",
+        )
+        return True
+
+    wild_deep_summary_match = RE_CMD_WILD_DEEP_SUMMARY.match(text)
+    if wild_deep_summary_match:
+        await _reply_log_group_card(
+            event,
+            "深入汇总",
+            _format_wild_deep_summary_text(wild_deep_summary_match.group(1) or "", explicit_identity_id=explicit_identity_id),
+            error_prefix="❌ 深入汇总发送失败",
         )
         return True
 
