@@ -179,6 +179,7 @@ from .log_retention import cleanup_message_logs
 from .timing import fmt_abs_ts, fmt_remaining, has_wait_time, parse_wait_time
 from .action_guard import (
     before_send as action_guard_before_send,
+    close_by_family as action_guard_close_by_family,
     get_next_allowed_at as action_guard_next_allowed_at,
     is_guarded_command as action_guard_is_guarded_command,
     note_sent as action_guard_note_sent,
@@ -1851,12 +1852,13 @@ _low_priority_audit_seq = 0
 
 def _stateful_no_retry_timeout_is_module_managed(item, family=""):
     source_module = str((item or {}).get("source_module") or "").strip()
-    return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗", "布下剑阵"} or str(family or "").strip() in {
+    return source_module in {"卜筮问天", "真仙试锋", "小世界", "合欢宗", "布下剑阵", "天星宗"} or str(family or "").strip() in {
         "divination",
         "world_boss",
         "small_world_query",
         "hehuan_dual",
         "pet_formation",
+        "tianxing_craft_farm",
     }
 _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
 _recent_dungeon_quiet_send_blocks = {}
@@ -3282,6 +3284,8 @@ async def run_retry_scheduler(now, send_as_id=None):
                         continue
                     if retry_limit <= 0:
                         if _stateful_no_retry_timeout_is_module_managed(current_item, family):
+                            if family:
+                                action_guard_close_by_family(family, send_as_id=identity_id, reason="module_managed_timeout", now=now)
                             console_log(
                                 f"🧯 指令 {_truncate_log_text(cmd, limit=40)} 超时无响应，交由模块状态机继续。",
                                 scope="identity",
