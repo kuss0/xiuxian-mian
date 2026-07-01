@@ -11,7 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import state as state_module
 from model import ui
-from model.features import explore_rift, storage_bag
+from model.features import explore_rift, storage_bag, tianxing
 from model.real_message_replay import get_real_message_text
 
 
@@ -474,6 +474,29 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["explore_rift_reply_to_msg_id"] = 22027
             state_module.state["explore_rift_reply_due_at"] = now + 30
             state_module.state["explore_rift_pending_result_msg_id"] = 22028
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 600,
+                "current_change": "探索",
+                "current_change_until": now + 3600,
+                "tianji_value": 12,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "active_step": {
+                    "action": "release_downstream",
+                    "route": "探索",
+                    "arg": "探索",
+                    "status": "released",
+                    "release_basis": "change_fate",
+                },
+                "released_routes": {
+                    "探索": {"released_at": now - 30, "plan_id": "test", "basis": "change_fate"},
+                },
+            }
             with (
                 patch.object(explore_rift.random, "uniform", return_value=0),
                 patch.object(explore_rift, "save_state"),
@@ -483,6 +506,7 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
                 handled = await explore_rift.handle_explore_rift_reply(
                     "【改命回天】\n"
                     "命盘【太阴】照命，改命待发。\n"
+                    "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
                     "你避开虚空噬体，修为未损，并平安带回：【法则碎片·木】x2、【空间之核】x1。",
                     now,
                     reply_to=SimpleNamespace(id=22027, raw_text=".探寻裂缝"),
@@ -501,6 +525,16 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             records = state_module.get_storage_bag_records()
             self.assertEqual(2, records[str(identity_id)]["items"]["法则碎片·木"])
             self.assertEqual(1, records[str(identity_id)]["items"]["空间之核"])
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+            self.assertEqual("", observed["current_prediction"])
+            self.assertEqual(0, observed["current_prediction_until"])
+            self.assertEqual("", observed["current_change"])
+            self.assertEqual(0, observed["current_change_until"])
+            self.assertEqual("探索", observed["prediction_consumed_route"])
+            self.assertEqual(now, observed["prediction_consumed_at"])
+            self.assertNotIn("探索", timeline["released_routes"])
+            self.assertEqual("blocked_replan", timeline["phase"])
 
     async def test_tianxing_explore_result_reports_high_priority_before_normal_audit(self):
         identity_id = self._prepare_identity()

@@ -820,6 +820,54 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertFalse(plan["route_allowed"])
         self.assertTrue(plan["timeline_required"])
 
+    def test_timeline_rebuilds_explore_change_after_previous_explore_was_consumed(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "fixed_star": "太阴",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 600,
+                "prediction_consumed_route": "探索",
+                "prediction_consumed_at": now - 30,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 36,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "blocked_replan",
+                "route": "探索",
+                "blocked_until": now,
+                "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+                "released_routes": {},
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[{
+                    "route": "探索",
+                    "kind": "consume",
+                    "start_at": now,
+                    "end_at": now + 60,
+                    "weight": 10,
+                    "reason": "探寻裂缝",
+                    "require_change_fate": True,
+                }],
+                config={
+                    "auto_predict_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "timeline_enabled": True,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+        self.assertEqual("need_predict_consume", plan["stage"])
+        self.assertEqual(
+            [("predict", "探索"), ("change_fate", "探索"), ("release_downstream", "探索")],
+            [(step["action"], step["arg"]) for step in plan["steps"]],
+        )
+        self.assertEqual("change_fate", plan["steps"][-1]["release_basis"])
+
     def test_tianxing_result_consumes_prediction_and_downstream_release(self):
         now = 1_780_000_000.0
         text = (

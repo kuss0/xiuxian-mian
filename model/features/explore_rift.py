@@ -28,6 +28,7 @@ from ..state import (
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .storage_bag import apply_storage_bag_item_deltas
 from .tianxing import (
+    apply_tianxing_passive,
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
@@ -334,6 +335,11 @@ async def _send_tianxing_explore_rift_result_audit(raw_text, result_summary):
         limit=260,
     )
     return True
+
+
+def _apply_tianxing_explore_rift_result(raw_text, now):
+    if looks_like_tianxing_route_result(raw_text):
+        apply_tianxing_passive(raw_text, now=now)
 
 
 def _is_explore_rift_terminal_success(raw_text):
@@ -852,6 +858,7 @@ async def handle_explore_rift_reply(text, now, reply_to=None, matched_family=Non
         result_key = _make_result_key(result_msg_id, final_title, raw_text)
         if state.get("explore_rift_last_result_key") == result_key:
             return True
+        _apply_tianxing_explore_rift_result(raw_text, now)
         if final_title == EXPLORE_RIFT_FATAL_TITLE:
             _clear_explore_rift_pending()
             state["explore_rift_fatal_msg_id"] = result_msg_id
