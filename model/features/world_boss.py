@@ -950,6 +950,8 @@ def choose_world_boss_action(identity_id, identity_state, run_state, now=None):
         summary = _normalize_summary(run_state.get("summary"))
         if attack_count < WORLD_BOSS_STRONG_ATTACK_LIMIT and summary.get("强攻", 0) < WORLD_BOSS_STRONG_ATTACK_LIMIT:
             return "强攻"
+    if _strong_attacker(identity_id):
+        return ""
     return _choose_maintenance_action(run_state)
 
 
