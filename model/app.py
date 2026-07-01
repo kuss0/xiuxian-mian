@@ -1087,10 +1087,8 @@ async def _run_identity_schedulers(now):
 
 
 async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAINING_MAX_PER_TICK):
-    processed = 0
-    for identity_id in get_identity_ids():
-        if processed >= int(limit or 1):
-            break
+    candidates = []
+    for scan_index, identity_id in enumerate(get_identity_ids()):
         if not get_identity_enabled(identity_id):
             continue
         if _is_identity_account_offline(identity_id):
@@ -1110,8 +1108,7 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             except (TypeError, ValueError, OverflowError):
                 reply_due_at = 0.0
             if pending_msg_id > 0 and 0 < reply_due_at <= scheduler_now:
-                await run_wild_training_phaseful_cleanup_scheduler(scheduler_now)
-                processed += 1
+                candidates.append((0, reply_due_at, scan_index, identity_id, scheduler_now, "cleanup"))
                 continue
             if pending_msg_id > 0:
                 continue
@@ -1135,8 +1132,19 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                     state["wild_training_last_error"] = "野外历练补发计时器被恢复错峰拉长，已压回短补发窗口"
                     mark_dirty()
                 continue
-            await run_wild_training_scheduler(scheduler_now)
-            processed += 1
+            priority = 1 if state.get("tianxing_enabled") else 2
+            candidates.append((priority, next_time, scan_index, identity_id, scheduler_now, "run"))
+
+    processed = 0
+    for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
+        if processed >= int(limit or 1):
+            break
+        with use_identity(identity_id):
+            if action == "cleanup":
+                await run_wild_training_phaseful_cleanup_scheduler(max(float(scheduler_now or 0), time.time()))
+            else:
+                await run_wild_training_scheduler(max(float(scheduler_now or 0), time.time()))
+        processed += 1
 
 
 async def _run_phaseful_identity_schedulers(now):

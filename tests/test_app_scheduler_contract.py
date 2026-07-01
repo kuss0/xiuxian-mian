@@ -421,6 +421,40 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, scheduler_mock.await_count)
         self.assertEqual([(identity_id, now) for identity_id in identity_ids], seen)
 
+    async def test_due_wild_training_fast_scan_prioritizes_earliest_due(self):
+        later_identity_id = 991796
+        earlier_identity_id = 991797
+        now = 1_700_000_000.0
+        for identity_id, due_at in (
+            (later_identity_id, now - 10),
+            (earlier_identity_id, now - 300),
+        ):
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["wild_training_enabled"] = True
+                state_module.state["wild_training_retry_count"] = 0
+                state_module.state["wild_training_reply_to_msg_id"] = 0
+                state_module.state["next_wild_training_time"] = due_at
+
+        seen = []
+
+        async def fake_wild_training_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[later_identity_id, earlier_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock(side_effect=fake_wild_training_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+        self.assertEqual([(earlier_identity_id, now)], seen)
+
     async def test_due_wild_training_fast_scan_runs_due_normal_cycle(self):
         identity_id = 991787
         now = 1_700_000_000.0
