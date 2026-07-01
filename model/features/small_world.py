@@ -15,6 +15,7 @@ from ..config import (
     SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC,
 )
 from ..action_guard import close_action as close_action_guard_action
+from ..action_guard import get_blocked_until as get_action_guard_blocked_until
 from ..action_guard import note_remote_block as note_action_guard_remote_block
 from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
@@ -1057,6 +1058,18 @@ async def _send_small_world_relief(now, reason):
 
 async def _send_query(now, reason, *, refresh_attempt=None):
     started_at = float(now or time.time())
+    blocked_until, guard_reason = get_action_guard_blocked_until(
+        CMD_SMALL_WORLD_QUERY,
+        send_as_id=get_current_identity_id(),
+        now=started_at,
+    )
+    if blocked_until > started_at:
+        state["small_world_query_msg_id"] = 0
+        state["next_small_world_time"] = float(blocked_until)
+        state["small_world_last_error"] = f"{reason}延后至安全窗后复查: {guard_reason or '安全锁短窗'}"
+        save_state()
+        return True
+
     _set_phase("query_pending")
     state["small_world_query_msg_id"] = 0
     state["next_small_world_time"] = started_at + SMALL_WORLD_PENDING_TIMEOUT_SEC

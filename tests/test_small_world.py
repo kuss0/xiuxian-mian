@@ -67,12 +67,15 @@ class _StateIsolationMixin:
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
         self._passive_stats_snapshot = copy.deepcopy(passive_inbox._passive_stats)
         self._observed_passive_snapshot = dict(passive_inbox._observed_passive_events)
+        self._action_guard_recent_snapshot = dict(action_guard._recent_closed_command_guards)
 
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
         passive_inbox._passive_stats = self._passive_stats_snapshot
         passive_inbox._observed_passive_events = self._observed_passive_snapshot
+        action_guard._recent_closed_command_guards.clear()
+        action_guard._recent_closed_command_guards.update(self._action_guard_recent_snapshot)
         super().tearDown()
 
 
@@ -897,6 +900,33 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("query_pending", state_module.state["small_world_phase"])
             self.assertEqual(7607, state_module.state["small_world_query_msg_id"])
             self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
+
+    async def test_send_query_defers_when_same_command_guard_active(self):
+        send_as_id = 8659059298
+        now = 3270.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_phase"] = "idle"
+            action_guard.note_sent(small_world.CMD_SMALL_WORLD_QUERY, send_as_id, 7608, sent_at=now - 30)
+            action_guard.close_action("small_world_query", send_as_id=send_as_id, now=now - 20)
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                sent = await small_world._send_query(now, "收割后复查")
+
+            self.assertTrue(sent)
+            send_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(
+                now - 30 + action_guard.POST_CLOSE_REPEAT_GUARD_SEC,
+                state_module.state["next_small_world_time"],
+            )
+            self.assertIn("延后至安全窗后复查", state_module.state["small_world_last_error"])
 
     async def test_manifest_timeout_closes_chain_without_resending(self):
         send_as_id = 8659059300

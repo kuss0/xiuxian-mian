@@ -961,6 +961,41 @@ def get_next_allowed_at(command, send_as_id=None):
         return float(session.get("next_allowed_at", 0) or 0)
 
 
+def get_blocked_until(command, send_as_id=None, now=None):
+    action_key = resolve_action_key(command)
+    if not action_key or not has_identity(send_as_id):
+        return 0.0, ""
+    now = float(now if now is not None else time.time())
+    spec = _spec(action_key)
+    label = str(spec.get("label") or action_key)
+    with use_identity(send_as_id) as identity_state:
+        quiet_reason = _rebirth_quiet_reason(identity_state, now)
+        if quiet_reason and not _is_rebirth_recovery_command(command):
+            return now + 60, f"{quiet_reason}，普通指令静默"
+
+        sessions = _get_sessions(identity_state)
+        session = sessions.get(action_key)
+        if isinstance(session, dict) and not _is_expired(session, now, spec):
+            if _has_remote_block(session, now):
+                return float(session.get("remote_block_until", 0) or 0), _remote_block_reason(session, action_key, now)
+
+        recent_guard_until = _recent_closed_command_guard_until(send_as_id, action_key, command, now)
+        if recent_guard_until > now:
+            wait_sec = int(max(1, recent_guard_until - now))
+            return recent_guard_until, f"{label} 同命令短窗保护，剩余约 {wait_sec}s"
+
+        if isinstance(session, dict) and not _is_expired(session, now, spec):
+            if _runtime_has_inflight_action(action_key, identity_state, now):
+                deadline = float(session.get("next_allowed_at", 0) or 0)
+                return deadline, f"{label} 等待游戏回复/结算中，暂不补发"
+            attempt = int(session.get("attempt", 0) or 0)
+            next_allowed_at = float(session.get("next_allowed_at", 0) or 0)
+            if attempt > 0 and next_allowed_at > now:
+                wait_sec = int(max(1, next_allowed_at - now))
+                return next_allowed_at, f"{label} 安全补发等待中，剩余约 {wait_sec}s"
+    return 0.0, ""
+
+
 def close_action(action_key, send_as_id=None, reason="reply", now=None):
     action_key = str(action_key or "").strip()
     if not action_key or not has_identity(send_as_id):
