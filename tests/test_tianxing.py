@@ -4829,6 +4829,112 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("downstream_released", timeline["phase"])
         self.assertEqual("craft_farm", observed["auto_last_action"])
 
+    async def test_craft_farm_defers_send_during_phaseful_summary_window(self):
+        now = local_ts(2, 30, year=2026, month=7, day=2)
+        config = {
+            "timeline_enabled": True,
+            "timeline_dry_run_enabled": False,
+            "auto_predict_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "target_tianji_daily": 10,
+            "craft_farm_enabled": True,
+            "craft_farm_dry_run_enabled": False,
+            "craft_farm_daily_limit": 42,
+            "craft_farm_item": "玄铁剑",
+            "craft_farm_off_window_enabled": False,
+            "farm_route": "炼制",
+            "farm_window_enabled": True,
+            "farm_windows_text": "02:00-05:00",
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_auto_config"] = config
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["太阴", "贪狼", "天府"],
+                "available_stars_day": tianxing.get_day_key(now),
+                "fixed_star": "太阴",
+                "fixed_star_day": tianxing.get_day_key(now),
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 3600,
+                "current_change": "",
+                "current_change_until": 0,
+                "calamity_count": 0,
+                "tianji_value": 0,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "downstream_released",
+                "route": "炼制",
+                "released_routes": {
+                    "炼制": {
+                        "released_at": now - 1,
+                        "basis": "prediction",
+                    },
+                },
+            }
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock, \
+                 patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"), \
+                 patch.object(tianxing.random, "uniform", return_value=90):
+                result = await tianxing.run_tianxing_craft_farm_scheduler(now, config=config)
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        send_mock.assert_not_awaited()
+        self.assertEqual("phaseful_deferred", result["stage"])
+        self.assertEqual("phaseful_deferred", craft["phase"])
+        self.assertEqual(now + 90, craft["next_time"])
+        self.assertIn("深度闭关临近归位结算", craft["last_error"])
+
+    async def test_timeline_step_defers_send_during_phaseful_summary_window(self):
+        now = 1_780_000_000.0
+        config = {
+            "timeline_enabled": True,
+            "timeline_dry_run_enabled": False,
+            "auto_predict_enabled": True,
+        }
+        step = {
+            "action": "predict",
+            "arg": "探索",
+            "route": "探索",
+            "status": "pending",
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_auto_config"] = config
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["太阴", "贪狼"],
+                "available_stars_day": tianxing.get_day_key(now),
+                "fixed_star": "太阴",
+                "fixed_star_day": tianxing.get_day_key(now),
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "calamity_count": 0,
+                "tianji_value": 3,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "waiting_send",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": dict(step),
+                "steps": [dict(step)],
+            }
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock, \
+                 patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="元婴归位待结算"), \
+                 patch.object(tianxing.random, "uniform", return_value=75):
+                result = await tianxing.run_tianxing_timeline_scheduler(now, config=config)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        send_mock.assert_not_awaited()
+        self.assertEqual("phaseful_deferred", result["phase"])
+        self.assertEqual("phaseful_deferred", timeline["phase"])
+        self.assertEqual(now + 75, timeline["blocked_until"])
+        self.assertEqual("pending", timeline["active_step"]["status"])
+        self.assertIn("元婴归位待结算", timeline["last_error"])
+
     async def test_scheduler_waits_for_pending_auto_panel_without_resend(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):

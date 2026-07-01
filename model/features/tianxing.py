@@ -26,9 +26,10 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import register_game_command_pre_send_guard, send_game_command
+from ..runtime import console_log, register_game_command_pre_send_guard, send_game_command
 from ..state import get_current_identity_id, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
+from ._phaseful import get_phaseful_summary_risk_reason
 
 
 TIANXING_PREDICTION_SEC = 8 * 3600
@@ -57,6 +58,8 @@ TIANXING_CRAFT_FARM_INTERVAL_MAX_SEC = 5 * 60
 TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MIN_SEC = 30 * 60
 TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MAX_SEC = 60 * 60
 TIANXING_ROUTE_LEASE_GUARD_MAX_AGE_SEC = 30 * 60
+TIANXING_PHASEFUL_DEFER_MIN_SEC = 60
+TIANXING_PHASEFUL_DEFER_MAX_SEC = 180
 TIANXING_STARS = ("紫微", "天府", "太阴", "贪狼")
 TIANXING_ROUTES = ("闭关", "炼制", "探索", "斗法")
 TIANXING_AUTO_CHANGE_FATE_ROUTES = ("探索",)
@@ -1861,6 +1864,68 @@ def _set_tianxing_auto_wait(observed, now, action, next_time=None, error=""):
     save_state()
 
 
+def _tianxing_phaseful_defer_payload(now, action):
+    reason = get_phaseful_summary_risk_reason(now, lead_sec=60)
+    if not reason:
+        return {}
+    defer_until = float(now + random.uniform(TIANXING_PHASEFUL_DEFER_MIN_SEC, TIANXING_PHASEFUL_DEFER_MAX_SEC))
+    action = str(action or "自动命令").strip() or "自动命令"
+    return {
+        "reason": reason,
+        "next_time": defer_until,
+        "error": f"{reason}，天星{action}延后发送",
+    }
+
+
+def _log_tianxing_phaseful_defer(action, command, payload):
+    if not payload:
+        return
+    command = str(command or "").strip() or "未生成命令"
+    console_log(
+        f"🌌 天星避让结算：{action}｜{command}｜{payload['reason']}，延后到 {fmt_abs_ts(payload['next_time'])}",
+        scope="identity",
+        limit=180,
+    )
+
+
+def _defer_tianxing_timeline_step_for_phaseful_summary(timeline, step, now, action, command):
+    payload = _tianxing_phaseful_defer_payload(now, "时间线前置命令")
+    if not payload:
+        return False
+    step = dict(step or {})
+    step["status"] = "pending"
+    step["deferred_at"] = float(now)
+    step["last_error"] = payload["error"]
+    timeline["phase"] = "phaseful_deferred"
+    timeline["blocked_until"] = payload["next_time"]
+    timeline["last_error"] = payload["error"]
+    timeline["updated_at"] = float(now)
+    _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+    _timeline_audit(timeline, now, "phaseful_deferred", action=action, command=command, reason=payload["reason"], next_time=payload["next_time"])
+    _log_tianxing_phaseful_defer("时间线", command, payload)
+    return True
+
+
+def _defer_tianxing_farm_for_phaseful_summary(farm, now, *, kind, action, command):
+    payload = _tianxing_phaseful_defer_payload(now, action)
+    if not payload:
+        return {}
+    farm["phase"] = "phaseful_deferred"
+    farm["next_time"] = payload["next_time"]
+    farm["last_command"] = str(command or "").strip()
+    farm["last_error"] = payload["error"]
+    farm["last_result"] = "phaseful_deferred"
+    if kind == "retreat":
+        _retreat_farm_audit(farm, now, "phaseful_deferred", action=action, command=command, reason=payload["reason"], next_time=payload["next_time"])
+        _set_tianxing_retreat_farm_state(farm, now)
+    else:
+        _craft_farm_audit(farm, now, "phaseful_deferred", action=action, command=command, reason=payload["reason"], next_time=payload["next_time"])
+        _set_tianxing_craft_farm_state(farm, now)
+    save_state()
+    _log_tianxing_phaseful_defer(action, command, payload)
+    return payload
+
+
 _TIANXING_AUTO_PENDING_ACTIONS = {
     "panel": "天机盘",
     "observe": "观命",
@@ -1877,6 +1942,20 @@ def _clear_tianxing_auto_pending(observed):
     observed["auto_pending_msg_id"] = 0
     observed["auto_pending_sent_at"] = 0
     observed["auto_pending_due_at"] = 0
+
+
+def _defer_tianxing_auto_plan_for_phaseful_summary(observed, now, plan):
+    action = str((plan or {}).get("action") or "auto").strip()
+    command = str((plan or {}).get("command") or "").strip()
+    payload = _tianxing_phaseful_defer_payload(now, "自动命令")
+    if not payload:
+        return False
+    _clear_tianxing_auto_pending(observed)
+    observed["auto_last_plan"] = command
+    observed["auto_last_plan_at"] = float(now)
+    _set_tianxing_auto_wait(observed, now, action, payload["next_time"], payload["error"])
+    _log_tianxing_phaseful_defer("自动调度", command, payload)
+    return True
 
 
 def _auto_pending_matches_parsed(observed, parsed):
@@ -3350,6 +3429,9 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         _timeline_audit(timeline, now, "send_blocked", action=action, arg=arg, reason=step["last_error"])
         return timeline
 
+    if _defer_tianxing_timeline_step_for_phaseful_summary(timeline, step, now, action, plan.get("command") or ""):
+        return timeline
+
     step = dict(step or {})
     step["status"] = "sending"
     step["send_started_at"] = float(now)
@@ -4132,6 +4214,16 @@ def build_tianxing_retreat_farm_plan(*, now=None, deep_retreat_phase="", config=
             next_time=next_time,
             dry_run=dry_run,
         )
+    if farm_phase == "phaseful_deferred" and next_time > now:
+        return _retreat_farm_result(
+            "waiting_phaseful_deferred",
+            active=True,
+            takeover=False,
+            handoff=True,
+            reason=farm.get("last_error") or "闭关/元婴结算窗口内，普通闭关攒点延后。",
+            next_time=next_time,
+            dry_run=dry_run,
+        )
     if farm_phase in {"calibrating", "sent_waiting_reply"}:
         if next_time > now:
             stage = "waiting_calibration" if farm_phase == "calibrating" else "waiting_retreat_reply"
@@ -4368,8 +4460,13 @@ async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", con
         save_state()
         return plan
 
-    if plan.get("stage") in {"waiting_prediction_conflict", "waiting_timeline"}:
-        farm["phase"] = "prediction_conflict" if plan.get("stage") == "waiting_prediction_conflict" else "timeline_waiting"
+    if plan.get("stage") in {"waiting_prediction_conflict", "waiting_timeline", "waiting_phaseful_deferred"}:
+        if plan.get("stage") == "waiting_prediction_conflict":
+            farm["phase"] = "prediction_conflict"
+        elif plan.get("stage") == "waiting_phaseful_deferred":
+            farm["phase"] = "phaseful_deferred"
+        else:
+            farm["phase"] = "timeline_waiting"
         farm["last_result"] = plan.get("stage") or ""
         _retreat_farm_audit(farm, now, farm["phase"], reason=plan.get("reason"))
         _set_tianxing_retreat_farm_state(farm, now)
@@ -4411,6 +4508,16 @@ async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", con
 
     source_module = "深度闭关" if command == CMD_DEEP_RETREAT_FORCE_EXIT else "天星宗"
     priority = "chain" if _is_tianxing_retreat_chain_command(command) else "normal"
+    payload = _defer_tianxing_farm_for_phaseful_summary(
+        farm,
+        now,
+        kind="retreat",
+        action=plan.get("action") or plan.get("stage") or "普通闭关攒点",
+        command=command,
+    )
+    if payload:
+        return dict(plan, stage="phaseful_deferred", reason=payload["error"], next_time=payload["next_time"])
+
     msg = await send_game_command(
         command,
         track=True,
@@ -4491,6 +4598,15 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
             reason="炼制推命消费已发送，等待炼制回复或查盘校准。",
             next_time=farm_next_time,
         )
+    if farm_phase == "phaseful_deferred" and farm_next_time > now:
+        return _craft_farm_result(
+            "phaseful_deferred",
+            active=True,
+            takeover=True,
+            handoff=True,
+            reason=farm.get("last_error") or "闭关/元婴结算窗口内，先炼制消费推命延后。",
+            next_time=farm_next_time,
+        )
 
     command, item = _craft_farm_command(config)
     if not farm.get("started_at"):
@@ -4522,6 +4638,25 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
             command=command,
             next_time=farm["next_time"],
             dry_run=True,
+        )
+
+    payload = _defer_tianxing_farm_for_phaseful_summary(
+        farm,
+        now,
+        kind="craft",
+        action="消费炼制推命",
+        command=command,
+    )
+    if payload:
+        return _craft_farm_result(
+            "phaseful_deferred",
+            active=True,
+            takeover=True,
+            handoff=True,
+            reason=payload["error"],
+            action="consume_craft_prediction",
+            command=command,
+            next_time=payload["next_time"],
         )
 
     msg = await send_game_command(
@@ -4791,6 +4926,16 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             next_time=next_time,
             dry_run=dry_run,
         )
+    if farm_phase == "phaseful_deferred" and next_time > now:
+        return _craft_farm_result(
+            "waiting_phaseful_deferred",
+            active=True,
+            takeover=False,
+            handoff=True,
+            reason=farm.get("last_error") or "闭关/元婴结算窗口内，炼制攒点延后。",
+            next_time=next_time,
+            dry_run=dry_run,
+        )
     if farm_phase == "ready" and next_time > now:
         return _craft_farm_result(
             "waiting_interval",
@@ -4954,8 +5099,13 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             next_time=farm["next_time"],
         )
 
-    if plan.get("stage") in {"waiting_prediction_conflict", "waiting_timeline"}:
-        farm["phase"] = "prediction_conflict" if plan.get("stage") == "waiting_prediction_conflict" else "timeline_waiting"
+    if plan.get("stage") in {"waiting_prediction_conflict", "waiting_timeline", "waiting_phaseful_deferred"}:
+        if plan.get("stage") == "waiting_prediction_conflict":
+            farm["phase"] = "prediction_conflict"
+        elif plan.get("stage") == "waiting_phaseful_deferred":
+            farm["phase"] = "phaseful_deferred"
+        else:
+            farm["phase"] = "timeline_waiting"
         farm["last_result"] = plan.get("stage") or ""
         _craft_farm_audit(farm, now, farm["phase"], reason=plan.get("reason"))
         _set_tianxing_craft_farm_state(farm, now)
@@ -5055,6 +5205,16 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
             _set_tianxing_craft_farm_state(farm, now)
             save_state()
             return dict(plan, stage="final_preflight_blocked", command="", reason=farm["last_error"], next_time=farm["next_time"])
+
+    payload = _defer_tianxing_farm_for_phaseful_summary(
+        farm,
+        now,
+        kind="craft",
+        action=plan.get("action") or plan.get("stage") or "炼制攒点",
+        command=command,
+    )
+    if payload:
+        return dict(plan, stage="phaseful_deferred", reason=payload["error"], next_time=payload["next_time"])
 
     msg = await send_game_command(
         command,
@@ -5292,6 +5452,9 @@ async def _run_tianxing_scheduler_unlocked(now):
 
 async def _execute_tianxing_auto_plan(plan, observed, config, now):
     action = str((plan or {}).get("action") or "")
+    if _defer_tianxing_auto_plan_for_phaseful_summary(observed, now, plan):
+        return
+
     _note_tianxing_auto_pending(observed, now, plan, config)
     state["tianxing_observation"] = observed
     save_state()
