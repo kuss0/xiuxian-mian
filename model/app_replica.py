@@ -1559,7 +1559,7 @@ def _format_huanglong_decision_advice(stage_info, text, *, html=False):
     if "第一幕" in title:
         advice = "建议：默认选1隐阵诱敌；保守开局可选2固守峰顶，3外谷游杀偏贪。"
     elif "第二幕" in title or "内应" in title:
-        advice = "建议：默认选3将计就计拿情报；队伍偏弱或只求稳可选1，避开2搜魂逼供。"
+        advice = "建议：默认选3将计就计拿情报；队伍偏弱或只求稳可选1，2搜魂逼供高风险不默认。"
     elif "神师将至" in title:
         if (
             formation is not None
