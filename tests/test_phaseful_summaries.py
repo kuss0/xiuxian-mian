@@ -1556,6 +1556,56 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 state_module.state["next_deep_retreat_time"],
             )
 
+    async def test_deep_retreat_waits_for_active_tianxing_explore_timeline(self):
+        send_as_id = 8659059247
+        now = 1_700_000_486.0
+        self._prepare_identity(send_as_id, "TianxingExploreTimeline")
+        state_module.update_send_as_profile(send_as_id, username="TianxingExploreTimeline", sect_name="天星宗")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-explore",
+                "phase": "sending",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "predict",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".推命 探索",
+                    "status": "sending",
+                    "send_started_at": now - 20,
+                    "ack_due_at": now + 70,
+                },
+                "steps": [{
+                    "action": "predict",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".推命 探索",
+                    "status": "sending",
+                    "send_started_at": now - 20,
+                    "ack_due_at": now + 70,
+                }],
+            }
+            state_module.state["tianxing_auto_config"] = self._active_tianxing_farm_config(now)
+
+            with (
+                patch.object(deep_retreat, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock,
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(deep_retreat, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            timeline_mock.assert_not_awaited()
+            send_mock.assert_not_awaited()
+            self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 70 + deep_retreat.CD_BUFFER_SEC, state_module.state["next_deep_retreat_time"])
+
     async def test_deep_retreat_blocks_when_other_tianxing_prediction_active(self):
         send_as_id = 8659059243
         now = 1_700_000_487.0

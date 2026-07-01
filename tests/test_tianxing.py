@@ -2034,6 +2034,39 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sending", result["phase"])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 1))
 
+    async def test_timeline_send_wait_timeout_closes_guard_placeholder(self):
+        now = 1_780_000_000.0
+
+        async def slow_send(*_args, **_kwargs):
+            await asyncio.sleep(10)
+
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
+            state_module.state["action_guard_sessions"] = {
+                "tianxing_predict": {
+                    "action_key": "tianxing_predict",
+                    "kind": "high_risk",
+                    "label": "天星推命",
+                    "attempt": 0,
+                    "first_sent_at": 0,
+                    "last_sent_at": 0,
+                    "next_allowed_at": 0,
+                    "last_msg_id": 0,
+                    "last_command": ".推命 闭关",
+                }
+            }
+            config = dict(state_module.state["tianxing_auto_config"])
+            config["send_timeout_sec"] = 1
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", new=slow_send):
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now), config=config)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("ack_timeout", result["phase"])
+        self.assertEqual("ack_timeout", timeline["active_step"]["status"])
+        self.assertEqual("send_wait_timeout", timeline["audit"][-1]["event"])
+        self.assertNotIn("tianxing_predict", state_module.state["action_guard_sessions"])
+        self.assertIn("超过 1s", timeline["last_error"])
+
     def test_timeline_set_star_rejection_replans_to_observe(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):

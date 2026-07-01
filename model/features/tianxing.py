@@ -43,6 +43,7 @@ TIANXING_DAILY_BOOTSTRAP_RETRY_SEC = 2 * 60
 TIANXING_DAILY_STAR_CORRECTION_WINDOW_SEC = 6 * 3600
 TIANXING_TIMELINE_ACK_TIMEOUT_SEC = 90
 TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC = 5 * 60
+TIANXING_TIMELINE_SEND_TIMEOUT_SEC = 35
 TIANXING_RETREAT_FARM_REPLY_TIMEOUT_SEC = 90
 TIANXING_RETREAT_FARM_RETRY_SEC = 5 * 60
 TIANXING_RETREAT_FARM_CALIBRATION_DELAY_SEC = 60
@@ -265,6 +266,7 @@ def _default_tianxing_auto_config():
         "status_backoff_hours": 6,
         "ack_timeout_sec": TIANXING_TIMELINE_ACK_TIMEOUT_SEC,
         "calibration_backoff_sec": TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC,
+        "send_timeout_sec": TIANXING_TIMELINE_SEND_TIMEOUT_SEC,
         "max_replans_per_day": 3,
     }
 
@@ -586,6 +588,7 @@ def normalize_tianxing_auto_config(value=None):
     config["status_backoff_hours"] = _coerce_float_range(config.get("status_backoff_hours"), default["status_backoff_hours"], 1, 24)
     config["ack_timeout_sec"] = _coerce_int_range(config.get("ack_timeout_sec"), default["ack_timeout_sec"], 15, 15 * 60)
     config["calibration_backoff_sec"] = _coerce_int_range(config.get("calibration_backoff_sec"), default["calibration_backoff_sec"], 60, 60 * 60)
+    config["send_timeout_sec"] = _coerce_int_range(config.get("send_timeout_sec"), default["send_timeout_sec"], 1, 5 * 60)
     config["max_replans_per_day"] = _coerce_int_range(config.get("max_replans_per_day"), default["max_replans_per_day"], 0, 99)
     return config
 
@@ -2579,6 +2582,32 @@ def _close_tianxing_guards_from_observation(observed, now):
     return closed
 
 
+def _tianxing_reply_family_for_action(action):
+    action = str(action or "").strip()
+    return {
+        "panel": "tianxing_panel",
+        "observe": "tianxing_observe",
+        "set_star": "tianxing_set_star",
+        "predict": "tianxing_predict",
+        "change_fate": "tianxing_change_fate",
+        "clear_calamity": "tianxing_clear_calamity",
+    }.get(action, "")
+
+
+def _close_tianxing_guard_for_timeline_step(step, now, *, reason="timeline_send_unknown"):
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return False
+    family = _tianxing_reply_family_for_action((step or {}).get("action"))
+    if not family:
+        return False
+    try:
+        from .. import action_guard
+    except Exception:
+        return False
+    return bool(action_guard.close_by_family(family, send_as_id=send_as_id, reason=reason, now=now))
+
+
 def _prune_tianxing_released_routes(observed, now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     released = dict(timeline.get("released_routes") or {})
@@ -3404,6 +3433,24 @@ def _schedule_tianxing_timeline_calibration(timeline, now):
     return timeline
 
 
+def _mark_tianxing_timeline_send_unknown(timeline, step, now, config, *, reason, event="send_unknown_calibration_wait"):
+    step = dict(step or {})
+    step["status"] = "ack_timeout"
+    step["timeout_at"] = float(now)
+    step["calibration_due_at"] = float(
+        now + int(config.get("calibration_backoff_sec", TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC) or TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC)
+    )
+    step["last_error"] = str(reason or "天星时间线发送未确认，等待查盘校准；不重复发送。")
+    timeline["phase"] = "ack_timeout"
+    timeline["blocked_until"] = step["calibration_due_at"]
+    timeline["last_error"] = step["last_error"]
+    timeline["updated_at"] = float(now)
+    _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+    _close_tianxing_guard_for_timeline_step(step, now, reason=event)
+    _timeline_audit(timeline, now, event, action=step.get("action"), arg=step.get("arg"), reason=step["last_error"])
+    return timeline
+
+
 async def _send_tianxing_timeline_step(timeline, step, now, config):
     action = str((step or {}).get("action") or "").strip()
     arg = str((step or {}).get("arg") or "").strip()
@@ -3444,14 +3491,40 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
     state["tianxing_timeline_state"] = timeline
     save_state()
 
-    msg = await send_game_command(
-        plan["command"],
-        track=True,
-        max_retry=0,
-        priority="normal",
-        source_module="天星宗",
-        op_id=f"tianxing-timeline-{action}-{int(now)}",
-    )
+    send_timeout = int(config.get("send_timeout_sec", TIANXING_TIMELINE_SEND_TIMEOUT_SEC) or TIANXING_TIMELINE_SEND_TIMEOUT_SEC)
+    try:
+        msg = await asyncio.wait_for(
+            send_game_command(
+                plan["command"],
+                track=True,
+                max_retry=0,
+                priority="normal",
+                source_module="天星宗",
+                op_id=f"tianxing-timeline-{action}-{int(now)}",
+            ),
+            timeout=max(1, send_timeout),
+        )
+    except asyncio.TimeoutError:
+        return _mark_tianxing_timeline_send_unknown(
+            timeline,
+            step,
+            now,
+            config,
+            reason=f"天星时间线发送等待超过 {send_timeout}s，等待查盘校准；不重复发送。",
+            event="send_wait_timeout",
+        )
+    except asyncio.CancelledError:
+        _mark_tianxing_timeline_send_unknown(
+            timeline,
+            step,
+            now,
+            config,
+            reason="天星时间线发送被外层调度取消，等待查盘校准；不重复发送。",
+            event="send_cancelled",
+        )
+        state["tianxing_timeline_state"] = timeline
+        save_state()
+        raise
     step = dict(step or {})
     sent_at = float(now)
     if msg:
@@ -3459,17 +3532,13 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         if not sent_at_dirty and parsed_sent_at > 0:
             sent_at = parsed_sent_at
     if not msg:
-        step["status"] = "ack_timeout"
-        step["timeout_at"] = float(now)
-        step["calibration_due_at"] = float(now + int(config.get("calibration_backoff_sec", TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC) or TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC))
-        step["last_error"] = "天星时间线发送未返回消息ID，等待查盘校准；不重复发送。"
-        timeline["phase"] = "ack_timeout"
-        timeline["blocked_until"] = step["calibration_due_at"]
-        timeline["last_error"] = step["last_error"]
-        timeline["updated_at"] = float(now)
-        _set_timeline_step(timeline, _timeline_active_index(timeline), step)
-        _timeline_audit(timeline, now, "send_unknown_calibration_wait", action=action, arg=arg, reason=step["last_error"])
-        return timeline
+        return _mark_tianxing_timeline_send_unknown(
+            timeline,
+            step,
+            now,
+            config,
+            reason="天星时间线发送未返回消息ID，等待查盘校准；不重复发送。",
+        )
 
     step["status"] = "sent_waiting_ack"
     step["send_msg_id"] = int(getattr(msg, "id", 0) or 0)

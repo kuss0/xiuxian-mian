@@ -625,12 +625,54 @@ def _deep_retreat_tianxing_retreat_farm_block_until(now):
     return 0.0
 
 
+def _deep_retreat_tianxing_timeline_block_until(now):
+    if not state.get("tianxing_enabled"):
+        return 0.0
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    active_step = dict(timeline.get("active_step") or {})
+    phase = str(timeline.get("phase") or "").strip()
+    active_status = str(active_step.get("status") or "").strip()
+    if phase in {"idle", "completed", "downstream_released", "state_confirmed", "blocked_replan", "prediction_conflict"} and active_status not in {
+        "pending",
+        "sending",
+        "sent_waiting_ack",
+        "ack_timeout",
+    }:
+        return 0.0
+    if active_status in {"pending", "sending", "sent_waiting_ack", "ack_timeout"} or phase in {
+        "waiting_send",
+        "sending",
+        "sent_waiting_ack",
+        "ack_timeout",
+        "calibrating",
+        "phaseful_deferred",
+    }:
+        candidates = [
+            float(active_step.get("ack_due_at", 0) or 0),
+            float(active_step.get("calibration_due_at", 0) or 0),
+            float(timeline.get("blocked_until", 0) or 0),
+        ]
+        future = [item for item in candidates if item > float(now)]
+        if future:
+            return max(future)
+        return float(now) + DEEP_RETREAT_TIANXING_RETRY_MIN_SEC
+    return 0.0
+
+
 async def _run_deep_retreat_tianxing_gate(now):
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     if not _deep_retreat_launch_due_for_tianxing(now, config=config):
         return True
     due_at = _deep_retreat_tianxing_consume_due_at(now, config) or float(state.get("next_deep_retreat_time", 0) or now)
     phase = str(state.get("deep_retreat_phase") or "idle")
+    timeline_block_until = _deep_retreat_tianxing_timeline_block_until(now)
+    if timeline_block_until > now:
+        if phase == "running" and due_at > now and timeline_block_until <= due_at:
+            state["next_deep_retreat_time"] = due_at
+        else:
+            state["next_deep_retreat_time"] = timeline_block_until + CD_BUFFER_SEC
+        save_state()
+        return False
     retreat_farm_block_until = _deep_retreat_tianxing_retreat_farm_block_until(now)
     if retreat_farm_block_until > now:
         if phase == "running" and due_at > now and retreat_farm_block_until <= due_at:
