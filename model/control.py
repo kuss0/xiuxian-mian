@@ -356,6 +356,7 @@ RECOVERY_READY_MIN_SEC = 30
 RECOVERY_READY_MAX_SEC = 90
 RECOVERY_PHASEFUL_IDLE_MIN_SEC = 10 * 60
 RECOVERY_PHASEFUL_IDLE_MAX_SEC = 30 * 60
+RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC = 120
 TIANTI_RECOVERY_STATUS_FRESH_SEC = 30 * 60
 TAIYI_PRESEND_RECOVERY_MAX_SEC = 300
 RECOVERY_SPREAD_TIMER_KEYS = (
@@ -391,6 +392,10 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_second_soul_time",
     "next_taiyi_cycle_time",
 )
+PHASEFUL_RECOVERY_TIMER_META = {
+    "next_yuanying_time": ("yuanying_enabled", "yuanying_phase", "last_yuanying_command_time"),
+    "next_deep_retreat_time": ("deep_retreat_enabled", "deep_retreat_phase", "last_deep_retreat_command_time"),
+}
 
 RECOVERY_TRANSIENT_SEND_FAILURE_SPECS = (
     {
@@ -622,6 +627,36 @@ def _has_stale_tianti_daily_marker(today_key):
     return bool(trigger_key and not trigger_key.startswith(f"{today_key}|"))
 
 
+def _phaseful_recovery_meta(timer_key):
+    meta = PHASEFUL_RECOVERY_TIMER_META.get(timer_key)
+    if not meta:
+        return None
+    enabled_key, phase_key, last_command_key = meta
+    if not state.get(enabled_key):
+        return None
+    return enabled_key, phase_key, last_command_key
+
+
+def _recover_phaseful_queued_launch_deadline(timer_key, now):
+    meta = _phaseful_recovery_meta(timer_key)
+    if not meta:
+        return 0.0
+    _enabled_key, _phase_key, last_command_key = meta
+    try:
+        deadline = float(state.get(timer_key, 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        deadline = 0.0
+    if deadline > 0:
+        return deadline
+    try:
+        queued_at = float(state.get(last_command_key, 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        queued_at = 0.0
+    if queued_at > 0:
+        return queued_at + RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC
+    return float(now or time.time()) + RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC
+
+
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
         if _has_released_tianxing_explore_downstream(now):
@@ -653,14 +688,13 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
         state["next_tianti_status_time"] = now + random.uniform(RECOVERY_READY_MIN_SEC, RECOVERY_READY_MAX_SEC)
         return now + RECOVERY_SPREAD_MAX_SEC + random.uniform(60, 600)
 
-    phaseful_timer_meta = {
-        "next_yuanying_time": ("yuanying_enabled", "yuanying_phase"),
-        "next_deep_retreat_time": ("deep_retreat_enabled", "deep_retreat_phase"),
-    }
-    phaseful_meta = phaseful_timer_meta.get(timer_key)
-    if phaseful_meta and state.get(phaseful_meta[0]):
-        phase = str(state.get(phaseful_meta[1]) or "idle")
-        if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}:
+    phaseful_meta = _phaseful_recovery_meta(timer_key)
+    if phaseful_meta:
+        _enabled_key, phase_key, _last_command_key = phaseful_meta
+        phase = str(state.get(phase_key) or "idle")
+        if phase == "queued_launch":
+            return _recover_phaseful_queued_launch_deadline(timer_key, now)
+        if phase in {"launching", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}:
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         if phase == "idle":
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
@@ -3765,6 +3799,10 @@ def _restore_phaseful_runtime(module_name, now):
         recover_idle()
         return
     next_time = float(state.get(next_time_key, 0) or 0)
+    if phase == "queued_launch":
+        deadline = _recover_phaseful_queued_launch_deadline(next_time_key, now)
+        state[next_time_key] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC if deadline <= now else deadline
+        return
     if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"} and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
         state[next_time_key] = now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         return

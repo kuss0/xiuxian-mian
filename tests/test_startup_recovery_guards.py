@@ -180,6 +180,24 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
             self.assertEqual(1, state_module.state["wild_training_retry_count"])
 
+    def test_startup_spread_preserves_phaseful_queued_launch_deadline(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["last_deep_retreat_command_time"] = now - 300
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+        with patch.object(control.random, "uniform", return_value=900):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("queued_launch", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now - 1, state_module.state["next_deep_retreat_time"])
+
     def test_startup_spread_does_not_stretch_fishing_timer(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
@@ -729,6 +747,23 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual("idle", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 120, state_module.state["next_deep_retreat_time"])
             self.assertEqual(now - 3600, state_module.state["last_deep_retreat_command_time"])
+
+    def test_phaseful_queued_launch_recovery_stays_immediate_when_deadline_expired(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "queued_launch"
+            state_module.state["last_deep_retreat_command_time"] = now - 300
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+        with patch.object(control.random, "uniform", return_value=900):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("queued_launch", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 1, state_module.state["next_deep_retreat_time"])
 
     def test_phaseful_invalid_recovery_resets_to_short_idle_spread(self):
         now = 1_700_000_000.0
