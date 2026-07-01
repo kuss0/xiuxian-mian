@@ -1491,6 +1491,7 @@ def apply_tianxing_passive(text, now=None, family=""):
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     previous_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
+    prediction_consumed_this_text = False
     today_key = get_day_key(now)
     observed["last_observed_at"] = now
     for key in ("last_action", "last_result", "last_summary", "last_error", "fixed_star", "current_prediction", "current_change", "last_route", "last_star_effect", "available_stars_source"):
@@ -1534,11 +1535,16 @@ def apply_tianxing_passive(text, now=None, family=""):
             observed["prediction_consumed_route"] = consumed_route
             observed["prediction_consumed_at"] = now
             _consume_tianxing_released_route(consumed_route, now)
+            prediction_consumed_this_text = True
         observed["current_prediction"] = ""
         observed["current_prediction_until"] = 0
     for key in ("tianji_value", "calamity_count", "hit_count", "miss_count", "change_count", "last_tianji_gain", "last_contrib_gain", "last_bonus_gain"):
         if parsed.get(key) is not None:
             observed[key] = int(parsed.get(key) or 0)
+    passive_gain_family = family != "tianxing_craft_farm" and not str(family or "").startswith("tianxing_retreat_farm")
+    tianji_gain = int(parsed.get("last_tianji_gain", 0) or 0)
+    if passive_gain_family and prediction_consumed_this_text and tianji_gain > 0 and parsed.get("tianji_value") is None:
+        observed["tianji_value"] = int(observed.get("tianji_value", 0) or 0) + tianji_gain
     if parsed.get("calamity_delta") is not None:
         observed["calamity_count"] = max(0, int(observed.get("calamity_count", 0) or 0) + int(parsed.get("calamity_delta") or 0))
     if parsed.get("action") == "消劫" and parsed.get("result") == "success":

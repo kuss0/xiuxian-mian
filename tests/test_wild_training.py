@@ -307,6 +307,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["current_prediction_until"])
         self.assertEqual("探索", observed["prediction_consumed_route"])
         self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertEqual(23, observed["tianji_value"])
         self.assertEqual(1, observed["last_tianji_gain"])
         self.assertEqual(30, observed["last_contrib_gain"])
         self.assertEqual("blocked_replan", timeline["phase"])
