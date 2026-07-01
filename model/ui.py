@@ -3912,6 +3912,7 @@ def get_identity_ui_snapshot(send_as_id):
                 "stargazer_followup_due_at": fmt_abs_ts(stargazer_followup_due_at),
                 "stargazer_collect_due_at": fmt_abs_ts(identity_state.get("stargazer_collect_due_at", 0)),
                 "next_quiz_time": fmt_abs_ts(identity_state.get("next_quiz_time", 0)),
+                "quiz_deadline_at": fmt_abs_ts(identity_state.get("quiz_deadline_at", 0)),
                 "next_checkin_time": fmt_abs_ts(identity_state.get("next_checkin_time", 0)),
                 "next_tower_time": fmt_abs_ts(identity_state.get("next_tower_time", 0)),
                 "next_deep_retreat_time": fmt_abs_ts(identity_state.get("next_deep_retreat_time", 0)),

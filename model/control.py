@@ -1243,6 +1243,7 @@ def _manual_enable_quiz_module_state(now):
     state["quiz_answer"] = ""
     state["quiz_last_error"] = ""
     state["quiz_last_matched_at"] = 0
+    state["quiz_deadline_at"] = 0
 
 
 def _disable_jiyin_module_state():

@@ -130,7 +130,13 @@ def get_db_conn():
 
 
 def _schema_columns_cache_key(conn):
-    return (os.path.abspath(DB_FILE), id(conn))
+    return (
+        os.path.abspath(DB_FILE),
+        id(conn),
+        tuple(IDENTITY_MODULE_COLUMNS),
+        tuple(IDENTITY_TIMER_COLUMNS),
+        tuple(IDENTITY_RUNTIME_COLUMNS),
+    )
 
 
 def _mark_schema_columns_ensured(conn):
@@ -798,6 +804,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_error TEXT NOT NULL DEFAULT ''")
     if "quiz_last_matched_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_last_matched_at REAL NOT NULL DEFAULT 0")
+    if "quiz_deadline_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN quiz_deadline_at REAL NOT NULL DEFAULT 0")
     if "jiyin_reply_to_msg_id" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
     if "jiyin_last_error" not in runtime_columns:
@@ -1452,6 +1460,7 @@ def init_db():
             quiz_answer_method TEXT NOT NULL DEFAULT '',
             quiz_last_error TEXT NOT NULL DEFAULT '',
             quiz_last_matched_at REAL NOT NULL DEFAULT 0,
+            quiz_deadline_at REAL NOT NULL DEFAULT 0,
             jiyin_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
             jiyin_last_error TEXT NOT NULL DEFAULT '',
             concubine_phase TEXT NOT NULL DEFAULT 'idle',

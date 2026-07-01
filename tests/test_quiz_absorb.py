@@ -165,6 +165,42 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("未找到按钮", error)
         send_answer.assert_awaited_once_with("C", 123)
 
+    async def test_queued_answer_near_deadline_does_not_send_late(self):
+        identity_id = 10001
+        now = 1_700_000_100.0
+        question = "韩立在内殿对付玄骨时，最能克制魔修的手段是什么？"
+        options = {"A": "辟邪神雷", "B": "青竹蜂云剑", "C": "虚天鼎", "D": "掌天瓶"}
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="li", enabled=True)
+        with state_module.use_identity(identity_id):
+            state_module.state["quiz_enabled"] = True
+            state_module.state["quiz_question"] = question
+            state_module.state["quiz_options"] = options
+            state_module.state["quiz_answer"] = "A"
+            state_module.state["quiz_phase"] = quiz.QUIZ_PHASE_QUEUED_ANSWER
+            state_module.state["quiz_reply_to_msg_id"] = 9451968
+            state_module.state["quiz_chat_id"] = -1001680975844
+            state_module.state["next_quiz_time"] = now - 1
+            state_module.state["quiz_deadline_at"] = now + 3
+            state_module.state["quiz_retry_count"] = 0
+
+            send_answer_mock = AsyncMock()
+            audit_mock = AsyncMock()
+            with (
+                patch.object(quiz, "_send_quiz_answer", new=send_answer_mock),
+                patch.object(quiz, "_click_quiz_answer_button", new=AsyncMock(return_value=(False, "late"))),
+                patch.object(quiz, "send_audit_log", new=audit_mock),
+                patch.object(quiz, "save_state"),
+            ):
+                await quiz.run_quiz_scheduler(now)
+
+            self.assertEqual(0, state_module.state["quiz_reply_to_msg_id"])
+            self.assertEqual("", state_module.state["quiz_phase"])
+            self.assertEqual("题目已过安全作答窗口", state_module.state["quiz_last_error"])
+
+        send_answer_mock.assert_not_awaited()
+        self.assertIn("安全作答窗口", audit_mock.await_args.args[0])
+
     async def test_real_timeout_result_clears_pending_and_prevents_retry(self):
         identity_id = 10001
         question = "乾蓝冰焰在原著中最初是封附在何种通天灵宝之外？"
@@ -312,6 +348,7 @@ class QuizAiAssistTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("pending_button_ai", state_module.state["quiz_answer_method"])
             self.assertEqual("ai:claude:0.93", state_module.state["quiz_match_mode"])
             self.assertEqual(1_700_000_025.0, state_module.state["next_quiz_time"])
+            self.assertEqual(1_700_000_300.0, state_module.state["quiz_deadline_at"])
             self.assertIn("AI已排队作答", audit_mock.await_args.args[0])
 
     async def test_ai_auto_mode_caps_delay_to_safety_window_after_ai_wait(self):
@@ -350,6 +387,7 @@ class QuizAiAssistTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual("B", state_module.state["quiz_answer"])
             self.assertEqual(1_700_000_018.0, state_module.state["next_quiz_time"])
+            self.assertEqual(1_700_000_030.0, state_module.state["quiz_deadline_at"])
             self.assertEqual(17.0, suggest_mock.await_args.kwargs["decision_timeout_sec"])
 
 

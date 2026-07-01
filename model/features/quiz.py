@@ -45,6 +45,7 @@ QUIZ_ANSWER_CONFIRM_TIMEOUT_SEC = 60
 QUIZ_ANSWER_MAX_RETRY_COUNT = 1
 QUIZ_ANSWER_DELAY_MIN_SEC = 20
 QUIZ_ANSWER_DELAY_MAX_SEC = 50
+QUIZ_ANSWER_DEADLINE_MARGIN_SEC = 5
 QUIZ_PHASE_QUEUED_ANSWER = "queued_answer"
 QUIZ_PHASE_WAITING_RESULT = "waiting_result"
 QUIZ_ANSWER_METHOD_BUTTON = "button"
@@ -359,6 +360,13 @@ def _get_quiz_pending_state():
     )
 
 
+def _get_quiz_deadline_at():
+    try:
+        return float(state.get("quiz_deadline_at", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _get_quiz_retry_count():
     try:
         return int(state.get("quiz_retry_count", 0) or 0)
@@ -401,6 +409,7 @@ def _set_quiz_pending(
     phase="",
     chat_id=0,
     answer_method="",
+    question_deadline_at=0,
 ):
     state["quiz_question"] = question
     state["quiz_options"] = dict(options or {})
@@ -414,6 +423,20 @@ def _set_quiz_pending(
     state["quiz_answer_method"] = str(answer_method or "")
     state["quiz_last_error"] = last_error
     state["quiz_last_matched_at"] = last_matched_at
+    state["quiz_deadline_at"] = float(question_deadline_at or 0)
+
+
+def _cap_quiz_answer_due_at(now, timeout_sec, delay):
+    now = float(now or time.time())
+    timeout_sec = max(1.0, float(timeout_sec or QUIZ_REPLY_TIMEOUT_SEC))
+    deadline_at = now + timeout_sec
+    latest_due_at = max(now, deadline_at - QUIZ_ANSWER_DEADLINE_MARGIN_SEC)
+    return min(now + max(0.0, float(delay or 0)), latest_due_at), deadline_at
+
+
+def _quiz_deadline_blocks_send(now):
+    deadline_at = _get_quiz_deadline_at()
+    return deadline_at > 0 and float(now or time.time()) > deadline_at - QUIZ_ANSWER_DEADLINE_MARGIN_SEC
 
 
 def _set_quiz_error_and_save(message):
@@ -572,6 +595,17 @@ async def _handle_quiz_queued_answer_due(now):
     if answer not in {"A", "B", "C", "D"}:
         await _handle_quiz_pending_timeout(now)
         return
+    if _quiz_deadline_blocks_send(now):
+        deadline_at = _get_quiz_deadline_at()
+        state["quiz_last_error"] = "题目已过安全作答窗口"
+        await send_audit_log(
+            f"⚠️ 玄骨考校已过安全作答窗口，停止发送｜提交 {answer_detail}｜截止 {fmt_abs_ts(deadline_at)}｜题目：{question}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=520,
+        )
+        clear_quiz_state(persist=True, keep_last_error=True)
+        return
 
     ok, answer_method, reply_msg, fallback_error = await _send_quiz_answer_with_fallback(
         identity_id,
@@ -613,6 +647,17 @@ async def _handle_quiz_answer_confirmation_timeout(now):
     reply_to_msg_id = int(state.get("quiz_reply_to_msg_id", 0) or 0)
     retry_count = _get_quiz_retry_count()
     identity_id = get_current_identity_id()
+    if _quiz_deadline_blocks_send(now):
+        deadline_at = _get_quiz_deadline_at()
+        state["quiz_last_error"] = "题目已过安全作答窗口，停止重试"
+        await send_audit_log(
+            f"⚠️ 玄骨考校已过安全作答窗口，停止重试｜提交 {answer_detail}｜截止 {fmt_abs_ts(deadline_at)}｜题目：{question}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=520,
+        )
+        clear_quiz_state(persist=True, keep_last_error=True)
+        return
 
     if retry_count >= QUIZ_ANSWER_MAX_RETRY_COUNT:
         state["quiz_last_error"] = f"作答发送失败：未收到正确/错误结果，已重试 {retry_count} 次"
@@ -668,7 +713,8 @@ async def _handle_quiz_answer_confirmation_timeout(now):
 
 
 def get_quiz_status_text():
-    reply_to_msg_id, deadline = _get_quiz_pending_state()
+    reply_to_msg_id, next_check_at = _get_quiz_pending_state()
+    deadline_at = _get_quiz_deadline_at()
     lines = [
         "🦴 玄骨考校",
         f"- 当前题目：{state.get('quiz_question') or '暂无'}",
@@ -678,7 +724,8 @@ def get_quiz_status_text():
         f"- 作答方式：{state.get('quiz_answer_method') or '未作答'}",
         f"- 待回复消息ID：{reply_to_msg_id or '无'}",
         f"- 重试次数：{_get_quiz_retry_count()}/{QUIZ_ANSWER_MAX_RETRY_COUNT}",
-        f"- 下次检查：{fmt_abs_ts(deadline)}（{fmt_remaining(deadline)}）",
+        f"- 下次检查：{fmt_abs_ts(next_check_at)}（{fmt_remaining(next_check_at)}）",
+        f"- 题目截止：{fmt_abs_ts(deadline_at)}（{fmt_remaining(deadline_at)}）",
         f"- 最近错误：{state.get('quiz_last_error') or '无'}",
     ]
     return "\n".join(lines)
@@ -698,6 +745,7 @@ def clear_quiz_state(*, persist=False, keep_last_error=False):
     if not keep_last_error:
         state["quiz_last_error"] = ""
     state["quiz_last_matched_at"] = 0
+    state["quiz_deadline_at"] = 0
     if persist:
         save_state()
     else:
@@ -1206,18 +1254,21 @@ async def _handle_quiz_ai_assist(parsed, identity_id, reply_to_msg_id, now, chat
         )
         return False
     schedule_base = now + elapsed_wall
+    question_deadline_at = now + timeout_sec
+    scheduled_at = min(schedule_base + delay, max(schedule_base, question_deadline_at - QUIZ_ANSWER_DEADLINE_MARGIN_SEC))
     _set_quiz_pending(
         parsed["question"],
         parsed["options"],
         answer,
         reply_to_msg_id,
-        schedule_base + delay,
+        scheduled_at,
         last_error="",
         last_matched_at=schedule_base,
         match_mode=f"ai:{result.get('provider') or config.get('provider') or 'unknown'}:{confidence:.2f}",
         phase=QUIZ_PHASE_QUEUED_ANSWER,
         chat_id=chat_id,
         answer_method="pending_button_ai",
+        question_deadline_at=question_deadline_at,
     )
     save_state()
     await send_audit_log(
@@ -1241,6 +1292,7 @@ async def handle_quiz_prompt(text, now, event):
 
     reply_to_msg_id = int(getattr(event, "id", 0) or 0)
     answer, match_mode = _match_quiz_answer(parsed["question"], parsed["options"])
+    question_deadline_at = now + float(parsed["timeout_sec"])
     if not answer:
         chat_id = getattr(event, "chat_id", 0)
         _set_quiz_pending(
@@ -1248,29 +1300,32 @@ async def handle_quiz_prompt(text, now, event):
             parsed["options"],
             "",
             reply_to_msg_id,
-            now + float(parsed["timeout_sec"]),
+            question_deadline_at,
             last_error="题库未命中",
             last_matched_at=0,
             chat_id=chat_id,
+            question_deadline_at=question_deadline_at,
         )
         save_state()
         await _handle_quiz_ai_assist(parsed, identity_id, reply_to_msg_id, now, chat_id)
         return True
 
     delay = _quiz_answer_delay(parsed.get("timeout_sec") or QUIZ_REPLY_TIMEOUT_SEC)
+    scheduled_at, question_deadline_at = _cap_quiz_answer_due_at(now, parsed.get("timeout_sec") or QUIZ_REPLY_TIMEOUT_SEC, delay)
 
     _set_quiz_pending(
         parsed["question"],
         parsed["options"],
         answer,
         reply_to_msg_id,
-        now + delay,
+        scheduled_at,
         last_error="",
         last_matched_at=now,
         match_mode=match_mode,
         phase=QUIZ_PHASE_QUEUED_ANSWER,
         chat_id=getattr(event, "chat_id", 0),
         answer_method="pending_button",
+        question_deadline_at=question_deadline_at,
     )
     save_state()
 
