@@ -4277,6 +4277,14 @@ def _craft_farm_explore_consume_block(now, config):
     prediction_lock_lookahead_sec = max(lead_sec, TIANXING_PREDICTION_SEC + lead_sec)
     interval_sec = _craft_interval_bounds(config)[0]
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
+    prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+    prediction_unconsumed = _has_active_unconsumed_prediction(current_prediction, observed, now) if current_prediction else False
+    explore_prediction_locked = bool(
+        current_prediction == "探索"
+        and prediction_until > now
+        and prediction_unconsumed
+    )
     current_change = _normalize_route_choice(observed.get("current_change"), "")
     change_until = float(observed.get("current_change_until", 0) or 0)
     tianji_value = int(observed.get("tianji_value", 0) or 0)
@@ -4304,7 +4312,13 @@ def _craft_farm_explore_consume_block(now, config):
         due_at = _state_float(next_key)
         if due_at <= 0:
             continue
-        if due_at <= now + prediction_lock_lookahead_sec:
+        if due_at <= now + lead_sec:
+            if current_change != "探索" and tianji_value < min_tianji:
+                continue
+            block_until = max(now + interval_sec, due_at + TIANXING_TIME_BUFFER_SEC)
+            candidates.append((block_until, f"{label}探索消费窗口临近（{fmt_abs_ts(due_at)}），炼制攒点让路。"))
+            continue
+        if explore_prediction_locked and due_at <= now + prediction_lock_lookahead_sec:
             if current_change == "探索" and change_until > now:
                 block_until = max(now + interval_sec, due_at + TIANXING_TIME_BUFFER_SEC)
                 candidates.append((block_until, f"{label}探索消费窗口在推命锁定期内且已有探索改命待发，炼制攒点让路。"))

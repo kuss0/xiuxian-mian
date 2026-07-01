@@ -2999,6 +2999,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
             self._prepare_identity(now, tianji_value=12)
             state_module.state["wild_training_enabled"] = True
             state_module.state["next_wild_training_time"] = due_at
+            state_module.state["tianxing_observation"]["current_prediction"] = "探索"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 8 * 3600
             plan = tianxing.build_tianxing_craft_farm_plan(
                 now=now,
                 config=self._active_config(
@@ -3017,6 +3019,33 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("waiting_consume_window", plan["stage"])
         self.assertEqual("", plan["command"])
         self.assertIn("推命锁定期", plan["reason"])
+
+    def test_craft_farm_does_not_yield_to_consumed_explore_prediction_lock(self):
+        now = 1_780_000_000.0
+        due_at = now + 2 * 3600
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=31)
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["next_wild_training_time"] = due_at
+            state_module.state["tianxing_observation"]["current_change"] = "探索"
+            state_module.state["tianxing_observation"]["current_change_until"] = now + 12 * 3600
+            plan = tianxing.build_tianxing_craft_farm_plan(
+                now=now,
+                config=self._active_config(
+                    now,
+                    timeline_enabled=True,
+                    farm_route="炼制",
+                    craft_farm_enabled=True,
+                    craft_farm_dry_run_enabled=False,
+                    craft_farm_item="玄铁剑",
+                    craft_farm_daily_limit=42,
+                    craft_farm_off_window_enabled=True,
+                    route_prepare_lead_sec=300,
+                    min_tianji_for_change=6,
+                ),
+            )
+
+        self.assertNotEqual("waiting_consume_window", plan["stage"])
 
     def test_craft_farm_yields_to_overdue_explore_rift_consume_window(self):
         now = 1_780_000_000.0
