@@ -3377,9 +3377,23 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
     active_step = dict(timeline.get("active_step") or {})
     active_status = str(active_step.get("status") or "")
     if active_status == "sending":
-        started_at = float(active_step.get("send_started_at", 0) or active_step.get("sent_at", 0) or 0)
+        started_at = float(
+            active_step.get("send_started_at", 0)
+            or active_step.get("sent_at", 0)
+            or active_step.get("updated_at", 0)
+            or timeline.get("updated_at", 0)
+            or 0
+        )
         ack_timeout = int(effective_config.get("ack_timeout_sec", TIANXING_TIMELINE_ACK_TIMEOUT_SEC) or TIANXING_TIMELINE_ACK_TIMEOUT_SEC)
-        if started_at <= 0 or now < started_at + ack_timeout:
+        if started_at <= 0:
+            started_at = float(now)
+            active_step["send_started_at"] = started_at
+            timeline["updated_at"] = float(now)
+            _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
+            state["tianxing_timeline_state"] = timeline
+            save_state()
+            return {"phase": "sending", "changed": True, "reason": "天星前置命令发送态缺少时间戳，已补记录并继续等待。"}
+        if now < started_at + ack_timeout:
             return {"phase": "sending", "changed": False, "reason": "天星前置命令正在发送队列中，等待返回或真实回复。"}
         active_step["status"] = "ack_timeout"
         active_step["timeout_at"] = float(now)

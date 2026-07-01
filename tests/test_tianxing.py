@@ -2592,6 +2592,46 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("calibration_timeout", timeline["steps"][1]["status"])
         self.assertIn("不连续查盘", timeline["last_error"])
 
+    async def test_timeline_sending_without_step_timestamp_times_out_from_timeline_updated_at(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-stale-sending",
+                "phase": "sending",
+                "route": "探索",
+                "updated_at": now - 20,
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "predict",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".推命 探索",
+                    "status": "sending",
+                    "send_msg_id": 0,
+                    "sent_at": 0,
+                },
+                "steps": [
+                    {
+                        "action": "predict",
+                        "arg": "探索",
+                        "route": "探索",
+                        "command": ".推命 探索",
+                        "status": "sending",
+                        "send_msg_id": 0,
+                        "sent_at": 0,
+                    },
+                ],
+            }
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now))
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("ack_timeout", result["phase"])
+        self.assertEqual("ack_timeout", timeline["active_step"]["status"])
+        self.assertGreater(timeline["active_step"]["calibration_due_at"], now)
+        send_mock.assert_not_called()
+
     async def test_timeline_ignores_stale_reply_before_sent_at(self):
         now = 1_780_000_000.0
         first_msg = SimpleNamespace(id=9101, sent_at=now)
