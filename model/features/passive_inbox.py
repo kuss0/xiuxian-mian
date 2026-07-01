@@ -1001,6 +1001,7 @@ def _apply_concubine_passive(text, now, family, current_msg_id=0):
     if family == "concubine_tianji" and "天机链路尚未重铸" in raw_text:
         wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else concubine_mod.CONCUBINE_TIANJI_CD_SEC
         state["concubine_tianji_due_at"] = float(now + wait_sec + concubine_mod.CD_BUFFER_SEC)
+        concubine_mod._clear_expired_tianji_chain(now)
         state["concubine_tianji_last_error"] = ""
         state["concubine_phase"] = "idle"
         state["concubine_tianji_msg_id"] = 0

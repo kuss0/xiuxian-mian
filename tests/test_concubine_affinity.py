@@ -170,6 +170,8 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
             identity_state["concubine_phase"] = "tianji_pending"
             identity_state["concubine_tianji_msg_id"] = 124
             identity_state["concubine_tianji_last_error"] = "pending"
+            identity_state["concubine_tianji_chain"] = "心劫前兆"
+            identity_state["concubine_tianji_chain_due_at"] = now - 60
 
         with state_module.use_identity(send_as_id), \
              patch.object(concubine, "save_state"), \
@@ -186,6 +188,8 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["concubine_tianji_msg_id"])
         self.assertEqual("", state_module.state["concubine_tianji_last_error"])
         self.assertEqual(now + 24 + config.CD_BUFFER_SEC, state_module.state["concubine_tianji_due_at"])
+        self.assertEqual("", state_module.state["concubine_tianji_chain"])
+        self.assertEqual(0, state_module.state["concubine_tianji_chain_due_at"])
         self.assertEqual(state_module.state["concubine_tianji_due_at"], state_module.state["next_concubine_time"])
 
     async def test_affinity_gain_clears_tianji_block_after_threshold(self):
@@ -619,6 +623,53 @@ class ConcubineAffinityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("tianji_pending", state_module.state["concubine_phase"])
         self.assertEqual(993, state_module.state["concubine_tianji_msg_id"])
         self.assertEqual(0, state_module.state["concubine_dream_msg_id"])
+
+    async def test_tianji_sent_without_reply_keeps_long_cooldown_and_calibrates_status(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity(affinity=1000, dream_due_at=now + 3600, tianji_due_at=now - 1)
+        sent_msg = SimpleNamespace(id=994, sent_at=now)
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["concubine_tianji_chain"] = "心劫前兆"
+            identity_state["concubine_tianji_chain_due_at"] = now - 60
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=sent_msg)) as mock_send:
+            await concubine.run_concubine_scheduler(now)
+
+        mock_send.assert_awaited_once_with(config.CMD_CONCUBINE_TIANJI, track=False)
+        provisional_due = now + config.CONCUBINE_TIANJI_CD_SEC + config.CD_BUFFER_SEC
+        self.assertEqual(provisional_due, state_module.state["concubine_tianji_due_at"])
+        self.assertEqual("", state_module.state["concubine_tianji_chain"])
+        self.assertEqual(0, state_module.state["concubine_tianji_chain_due_at"])
+
+        timeout_now = now + config.CONCUBINE_PHASE_TIMEOUT_SEC + 1
+        with tempfile.TemporaryDirectory() as tmpdir, \
+             state_module.use_identity(send_as_id), \
+             patch.object(concubine, "MESSAGES_DIR", tmpdir), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_audit_log", new=AsyncMock()), \
+             patch.object(concubine.random, "uniform", return_value=60), \
+             patch.object(concubine, "send_game_command", new=AsyncMock()) as timeout_send:
+            await concubine.run_concubine_scheduler(timeout_now)
+
+        timeout_send.assert_not_awaited()
+        self.assertEqual("idle", state_module.state["concubine_phase"])
+        self.assertEqual(provisional_due, state_module.state["concubine_tianji_due_at"])
+        self.assertIn("tianji_pending 等待回复超时", state_module.state["concubine_tianji_last_error"])
+        self.assertEqual(timeout_now + 60, state_module.state["next_concubine_time"])
+
+        status_msg = SimpleNamespace(id=995, sent_at=timeout_now + 61)
+        with state_module.use_identity(send_as_id), \
+             patch.object(concubine, "save_state"), \
+             patch.object(concubine, "send_game_command", new=AsyncMock(return_value=status_msg)) as status_send:
+            await concubine.run_concubine_scheduler(timeout_now + 61)
+
+        status_send.assert_awaited_once_with(config.CMD_CONCUBINE_STATUS, track=False)
+        self.assertEqual("status_pending", state_module.state["concubine_phase"])
+        self.assertEqual(995, state_module.state["concubine_status_msg_id"])
+        self.assertEqual(provisional_due, state_module.state["concubine_tianji_due_at"])
 
     async def test_scheduler_calibrates_status_after_tianji_pending_timeout_before_retry(self):
         now = 1_700_000_000.0

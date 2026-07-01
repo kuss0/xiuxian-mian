@@ -1243,7 +1243,9 @@ def _backoff_after_pending_timeout(now, phase):
     elif phase == "dream_pending":
         state["concubine_dream_due_at"] = retry_at
     elif phase == "tianji_pending":
-        state["concubine_tianji_due_at"] = retry_at
+        if float(state.get("concubine_tianji_due_at", 0) or 0) <= float(now):
+            state["concubine_tianji_due_at"] = float(now) + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC
+        _clear_expired_tianji_chain(now)
     elif phase in {"heart_pending", "heart_choice_pending", "heart_choice_reply_pending"}:
         state["concubine_heart_due_at"] = retry_at
     elif phase in {"fragment_pending", "puzzle_pending"}:
@@ -2172,6 +2174,30 @@ def _parse_tianji_chain(raw_text, now):
     return name, due_at
 
 
+def _is_tianji_timeout_calibration_error(value):
+    text = str(value or "")
+    return "tianji_pending 等待回复超时" in text or "天机代卜等待回复超时" in text
+
+
+def _clear_expired_tianji_chain(now):
+    chain = str(state.get("concubine_tianji_chain") or "").strip()
+    chain_due_at = float(state.get("concubine_tianji_chain_due_at", 0) or 0)
+    if not chain and chain_due_at <= 0:
+        return False
+    if chain and chain_due_at > float(now or 0):
+        return False
+    state["concubine_tianji_chain"] = ""
+    state["concubine_tianji_chain_due_at"] = 0
+    return True
+
+
+def _set_tianji_provisional_cooldown(sent_at):
+    due_at = float(sent_at or time.time()) + CONCUBINE_TIANJI_CD_SEC + CD_BUFFER_SEC
+    state["concubine_tianji_due_at"] = max(float(state.get("concubine_tianji_due_at", 0) or 0), due_at)
+    _clear_expired_tianji_chain(sent_at)
+    return state["concubine_tianji_due_at"]
+
+
 def _normalize_fragment_kind(raw_kind):
     text = str(raw_kind or "").strip().lower()
     if text == DREAM_KIND_CANGKUN or "苍坤" in text:
@@ -2670,10 +2696,8 @@ def _needs_active_status_calibration(now):
     if _has_recent_concubine_status_panel(now):
         _clear_status_calibration_timeout_errors()
         return False
-    if _has_tianji_due_action(now):
-        last_error = str(state.get("concubine_tianji_last_error") or "")
-        if "tianji_pending 等待回复超时" in last_error or "天机代卜等待回复超时" in last_error:
-            return True
+    if state.get("concubine_tianji_enabled") and _is_tianji_timeout_calibration_error(state.get("concubine_tianji_last_error")):
+        return True
     if state.get("concubine_enabled") and _has_main_due_action(now):
         last_error = str(state.get("concubine_last_error") or "")
         if "dream_pending 等待回复超时" in last_error or "入梦寻图等待回复超时" in last_error:
@@ -2684,7 +2708,7 @@ def _needs_active_status_calibration(now):
 
 
 def _active_status_calibration_context(now):
-    if _has_tianji_due_action(now):
+    if _has_tianji_due_action(now) or _is_tianji_timeout_calibration_error(state.get("concubine_tianji_last_error")):
         return "天机代卜", "concubine_tianji_last_error"
     if state.get("concubine_enabled") and _has_main_due_action(now):
         return "入梦寻图", "concubine_last_error"
@@ -2696,7 +2720,7 @@ def _active_status_calibration_context(now):
 def _clear_status_calibration_timeout_errors():
     changed = False
     tianji_error = str(state.get("concubine_tianji_last_error") or "")
-    if "tianji_pending 等待回复超时" in tianji_error or "天机代卜等待回复超时" in tianji_error:
+    if _is_tianji_timeout_calibration_error(tianji_error):
         state["concubine_tianji_last_error"] = ""
         changed = True
     main_error = str(state.get("concubine_last_error") or "")
@@ -3102,6 +3126,8 @@ def clear_concubine_tianji_state(*, persist=False, keep_last_error=False):
 
 
 def restore_concubine_runtime(now):
+    if _clear_expired_tianji_chain(now):
+        mark_dirty()
     if _phase() in CONCUBINE_HEART_ACTIVE_PHASES:
         _close_heart_chain_without_settlement(now, f"{_phase()}_startup_restore")
         mark_dirty()
@@ -3356,7 +3382,9 @@ async def _send_tianji_command(now):
     if not msg:
         state["concubine_tianji_last_error"] = "发送 .天机代卜 失败"
         _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "tianji_pending")
+        retry_at = _schedule_status_recheck(sent_at)
+        if float(state.get("concubine_tianji_due_at", 0) or 0) <= sent_at:
+            state["concubine_tianji_due_at"] = retry_at
         _record_concubine_event(
             "天机代卜发送失败",
             kind="skipped",
@@ -3370,6 +3398,7 @@ async def _send_tianji_command(now):
         return False
     _set_phase("tianji_pending")
     state["concubine_tianji_msg_id"] = int(getattr(msg, "id", 0) or 0)
+    _set_tianji_provisional_cooldown(sent_at)
     state["next_concubine_time"] = sent_at + CONCUBINE_PHASE_TIMEOUT_SEC
     _record_concubine_event(
         "天机代卜已发送",
@@ -4211,6 +4240,7 @@ async def handle_concubine_tianji_reply(text, now, reply_to, matched_family=None
     if "天机链路尚未重铸" in raw_text:
         wait_sec = parse_wait_time(raw_text) if has_wait_time(raw_text) else CONCUBINE_TIANJI_CD_SEC
         state["concubine_tianji_due_at"] = now + wait_sec + CD_BUFFER_SEC
+        _clear_expired_tianji_chain(now)
         state["concubine_tianji_last_error"] = ""
         reset_resource_shortage(CONCUBINE_TIANJI_RESOURCE_KEY)
         _set_phase("idle")
@@ -4793,6 +4823,9 @@ async def _run_concubine_scheduler(now):
         and not _has_voyage_runtime_state(now)
     ):
         return
+
+    if _clear_expired_tianji_chain(now):
+        save_state()
 
     if _has_active_nanlong_pending(now):
         state["concubine_last_error"] = "南陇侯抉择中，侍妾模块暂缓"
