@@ -75,6 +75,7 @@ class ModuleManifestTests(unittest.TestCase):
                 "天机代卜",
                 "共历心劫",
                 "侍妾远航",
+                "慕兰",
                 "南陇侯",
                 "问道",
                 "斗法",
@@ -103,6 +104,9 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("天星宗", module_manifest.get_module_name_for_reply_family("tianxing_panel"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_banner"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_reply_family("yinluo_daily_sacrifice"))
+        self.assertEqual("慕兰", module_manifest.get_module_name_for_reply_family("mulan_collect"))
+        self.assertEqual("慕兰", module_manifest.get_module_name_for_reply_family("mulan_judge"))
+        self.assertEqual("慕兰", module_manifest.get_module_name_for_reply_family("mulan_publish"))
         self.assertEqual("点卯", module_manifest.get_module_name_for_reply_family("checkin"))
         self.assertEqual("宗门传功", module_manifest.get_module_name_for_reply_family("sect_teach"))
         self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_reply_family("explore_rift"))
@@ -231,6 +235,7 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual("合欢宗", module_manifest.get_module_name_for_replay_module("hehuan"))
         self.assertEqual("天星宗", module_manifest.get_module_name_for_replay_module("tianxing"))
         self.assertEqual("阴罗宗", module_manifest.get_module_name_for_replay_module("yinluo"))
+        self.assertEqual("慕兰", module_manifest.get_module_name_for_replay_module("mulan"))
         self.assertEqual("观星台", module_manifest.get_module_name_for_replay_module("stargazer"))
         self.assertEqual("探寻裂缝", module_manifest.get_module_name_for_replay_module("explore_rift"))
         self.assertEqual("问道", module_manifest.get_module_name_for_replay_module("wendao"))
@@ -379,15 +384,15 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(38, summary["totals"]["active_modules"])
+        self.assertEqual(39, summary["totals"]["active_modules"])
         self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(94, summary["totals"]["reply_families"])
+        self.assertEqual(98, summary["totals"]["reply_families"])
         self.assertEqual(0, summary["totals"]["archived_reply_families"])
         self.assertEqual(92, summary["totals"]["covered_sample_families"])
-        self.assertEqual(2, summary["totals"]["missing_sample_families"])
+        self.assertEqual(6, summary["totals"]["missing_sample_families"])
         self.assertEqual(33, summary["totals"]["sample_complete_modules"])
         self.assertEqual(2, summary["totals"]["sample_partial_modules"])
-        self.assertEqual(0, summary["totals"]["sample_missing_modules"])
+        self.assertEqual(1, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["天星宗"]["readiness"])
@@ -396,6 +401,8 @@ class ModuleManifestTests(unittest.TestCase):
         self.assertEqual([], rows["灵树"]["missing_sample_families"])
         self.assertFalse(rows["灵树"]["archived"])
         self.assertEqual([], rows["天星宗"]["missing_sample_families"])
+        self.assertEqual(module_manifest.READINESS_SAMPLE_MISSING, rows["慕兰"]["readiness"])
+        self.assertEqual(["mulan_panel", "mulan_collect", "mulan_judge", "mulan_publish"], rows["慕兰"]["missing_sample_families"])
         self.assertEqual([], rows["布下剑阵"]["missing_sample_families"])
         self.assertEqual([], rows["第二元神"]["missing_sample_families"])
         self.assertEqual(["hehuan_escape"], rows["合欢宗"]["missing_sample_families"])

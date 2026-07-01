@@ -24,6 +24,7 @@ IMPORTANT_RUNTIME_SCHEDULER_COVERAGE = {
     "run_hehuan_scheduler": {"hehuan", "hehuan_dual"},
     "run_tianxing_scheduler": {"tianxing"},
     "run_yinluo_scheduler": {"yinluo"},
+    "run_mulan_scheduler": {"mulan"},
     "run_small_world_scheduler": {
         "small_world_preach",
         "small_world_relief",
@@ -80,6 +81,8 @@ class AppSchedulerContractTests(unittest.TestCase):
 
         self.assertLess(_index(ordinary, "run_tianxing_scheduler"), _index(ordinary, "run_wild_training_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_small_world_scheduler"))
+        self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_mulan_scheduler"))
+        self.assertLess(_index(ordinary, "run_mulan_scheduler"), _index(ordinary, "run_small_world_scheduler"))
         self.assertLess(_index(ordinary, "run_small_world_scheduler"), _index(ordinary, "run_explore_rift_scheduler"))
         self.assertLess(_index(ordinary, "run_yinluo_scheduler"), _index(ordinary, "run_wendao_scheduler"))
         self.assertLess(_index(ordinary, "run_wendao_scheduler"), _index(ordinary, "run_tree_bootstrap_check"))
@@ -192,6 +195,7 @@ class AppSchedulerContractTests(unittest.TestCase):
                 "deep_retreat",
                 "yuanying",
                 "yinluo",
+                "mulan",
                 "small_world",
                 "wendao",
                 "taiyi",

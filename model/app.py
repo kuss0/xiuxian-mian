@@ -86,6 +86,7 @@ from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
 from .features.tianxing import run_tianxing_scheduler
 from .features.yinluo import run_yinluo_scheduler
+from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
 from .features.small_world import (
     handle_small_world_barrier_reply,
@@ -254,6 +255,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_hehuan_scheduler,
     run_nanlong_scheduler,
     run_yinluo_scheduler,
+    run_mulan_scheduler,
     run_small_world_scheduler,
     run_explore_rift_scheduler,
     run_wendao_scheduler,
@@ -321,6 +323,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_tree_bootstrap_check": {"manifest_names": ("灵树",), "helper": True},
     "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
     "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
+    "run_mulan_scheduler": {"manifest_names": ("慕兰",), "helper": False},
     "run_duel_scheduler": {"manifest_names": ("斗法",), "helper": False},
     "run_fishing_scheduler": {"manifest_names": ("灵溪垂钓",), "helper": False},
     "run_wild_training_scheduler": {"manifest_names": ("野外历练",), "helper": False},
@@ -1362,6 +1365,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
             if not yuanying_done:
                 handled_any = await handle_yuanying_status_reply(text, now, reply_to, matched_family=matched_family) or handled_any
             handled_any = await handle_wendao_reply(
+                text,
+                now,
+                reply_to,
+                matched_family=matched_family,
+                result_msg_id=event.id,
+            ) or handled_any
+            handled_any = await handle_mulan_reply(
                 text,
                 now,
                 reply_to,

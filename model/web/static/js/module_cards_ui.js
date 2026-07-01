@@ -177,7 +177,7 @@
     if(normalized === '日常'){
       return 0;
     }
-    if(['合欢宗','天星宗','阴罗宗'].indexOf(normalized) >= 0){
+    if(['合欢宗','天星宗','阴罗宗','慕兰'].indexOf(normalized) >= 0){
       return 1;
     }
     if(normalized === '灵溪垂钓'){
@@ -582,6 +582,24 @@
             currentChoiceText('已放行', txReleasedRoutes)+
             currentChoiceText('最近审计', txAuditText)+
             currentChoiceText('最近错误', txTimeline.last_error || '无')
+          );
+      }else if(module.name === '慕兰'){
+        var mulan = identity.mulan || {};
+        moduleNote = '<div class="module-note">阶段：'+esc(mulan.phase || 'idle')+
+          '｜下次 '+esc(mulan.next_time || '未设置')+
+          '｜当前 '+esc(mulan.current_id || '无')+
+          '｜公开 '+esc(mulan.public_id || '无')+'</div>';
+        settingsTools =
+          settingSection(
+            '自动谍影',
+            '直接搜集军报，再按候选编号辨报；判为可靠时立即公开该编号，剩余编号不再继续辨。全部可疑或未识别时不公开。',
+            renderModuleToggle('慕兰','开关')+
+            currentChoiceText('候选编号', mulan.pending_ids || '1,2,3')+
+            currentChoiceText('待回复', mulan.reply_to_msg_id ? String(mulan.reply_to_msg_id)+' / '+(mulan.reply_due_at || '未设置') : '无')+
+            currentChoiceText('最近命令', mulan.last_command || '无')+
+            currentChoiceText('最近结果', mulan.last_result || '无')+
+            currentChoiceText('最近异常', mulan.last_error || '无')+
+            currentChoiceText('完成轮次', String(mulan.cycle_count || 0))
           );
       }else if(module.name === '玄骨考校'){
         moduleNote = '<div class="module-note">极阴：'+esc(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置')+

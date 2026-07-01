@@ -29,14 +29,14 @@ _current_identity_id = contextvars.ContextVar("current_identity_id", default=0)
 _identity_context_active = contextvars.ContextVar("identity_context_active", default=False)
 
 IDENTITY_MODULE_COLUMNS = [
-    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "small_world_barrier_min_stock", "small_world_barrier_guard_before_min", "small_world_barrier_min_interval_hours", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "mulan_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "small_world_barrier_min_stock", "small_world_barrier_guard_before_min", "small_world_barrier_min_interval_hours", "divination_enabled", "divination_daily_limit", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
     "checkin_teach_count", "checkin_teach_day", "last_checkin_done_day", "last_tower_day", "last_guanxing_done_day",
 ]
 IDENTITY_TIMER_COLUMNS = [
     "next_irr_time", "next_guard_time", "next_pet_time", "next_pet_warm_time", "next_pet_trial_time", "next_pet_formation_time", "next_ranch_time", "next_wild_training_time", "next_stargazer_panel_time", "stargazer_collect_due_at", "next_tianti_status_time", "next_tianti_wenxin_time", "next_tianti_climb_time", "next_tianti_gangfeng_time", "next_checkin_time", "next_sect_teach_time",
-    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_explore_rift_time", "next_wendao_time", "next_formation_time", "formation_cooldown_until", "next_deep_retreat_time",
+    "next_tower_time", "next_quiz_time", "next_jiyin_time", "next_concubine_time", "next_nanlong_time", "next_small_world_time", "next_yuanying_time", "next_explore_rift_time", "next_wendao_time", "next_mulan_time", "next_formation_time", "formation_cooldown_until", "next_deep_retreat_time",
     "next_second_soul_time", "second_soul_heart_demon_deadline", "next_duel_time", "next_fishing_time",
     "next_taiyi_cycle_time", "taiyi_phase_entered_at", "taiyi_freeze_until",
     "weak_until",
@@ -65,6 +65,7 @@ IDENTITY_RUNTIME_COLUMNS = [
     "explore_rift_reply_to_msg_id", "explore_rift_reply_due_at", "explore_rift_pending_result_msg_id", "explore_rift_last_msg_id", "explore_rift_last_result", "explore_rift_last_error", "explore_rift_last_result_key", "explore_rift_manual_required", "explore_rift_tianxing_prepare_retry_at",
     "explore_rift_nascent_escape_weak_until", "explore_rift_rebirth_required", "explore_rift_rebirth_phase", "explore_rift_rebirth_due_at", "explore_rift_rebirth_request_msg_id", "explore_rift_rebirth_options_msg_id", "explore_rift_rebirth_select_msg_id", "explore_rift_rebirth_options_text", "explore_rift_rebirth_selected_index", "explore_rift_rebirth_last_result", "explore_rift_rebirth_last_error", "explore_rift_rebirth_choice_mode", "explore_rift_rebirth_preferred_root_type", "explore_rift_rebirth_preferred_attrs", "explore_rift_rebirth_blind_index", "explore_rift_fatal_msg_id", "explore_rift_fatal_confirm_due_at",
     "wendao_reply_to_msg_id", "wendao_reply_due_at", "wendao_pending_result_msg_id", "wendao_sent_at", "wendao_last_msg_id", "wendao_last_result", "wendao_last_error",
+    "mulan_phase", "mulan_reply_to_msg_id", "mulan_reply_due_at", "mulan_pending_ids", "mulan_current_id", "mulan_public_id", "mulan_sent_at", "mulan_last_msg_id", "mulan_last_command", "mulan_last_result", "mulan_last_error", "mulan_cycle_count",
     "duel_target", "duel_total_count", "duel_completed_count", "duel_reply_to_msg_id", "duel_reply_due_at", "duel_open_msg_id", "duel_magic_due_at", "duel_magic_sent_at", "duel_started_at", "duel_last_msg_id", "duel_last_result", "duel_last_error",
     "fishing_pond", "fishing_bait", "fishing_daily_limit", "fishing_daily_day", "fishing_daily_count", "fishing_basket_calibrated_day", "fishing_auto_chum_enabled", "fishing_chum_name", "fishing_chum_names", "fishing_chum_day", "fishing_chum_counts", "fishing_auto_buy_bait_enabled", "fishing_auto_buy_bait_count", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled", "fishing_cancel_after_sec", "fishing_transfer_target_id", "fishing_transfer_due_at", "fishing_caught_fish_json", "fishing_valuable_drop_reminders", "fishing_phase", "fishing_reply_to_msg_id", "fishing_reply_due_at", "fishing_status_msg_id", "fishing_pending_action", "fishing_pending_open_fish", "fishing_forced_buy_bait", "fishing_forced_buy_count", "fishing_started_at", "fishing_active_chum_name", "fishing_chum_rods_remaining", "fishing_last_msg_id", "fishing_last_result", "fishing_last_error",
     "deep_retreat_phase", "deep_retreat_probe_pending", "deep_retreat_waiting_logged", "deep_retreat_protect_logged", "deep_retreat_summary_sent_at", "last_deep_retreat_summary_msg_id", "last_deep_retreat_command_time",
@@ -77,7 +78,7 @@ IDENTITY_RUNTIME_COLUMNS = [
 ]
 IDENTITY_JSON_COLUMNS = {"checkin_cleanup_msg_ids", "identity_info_reply_msg_ids", "quiz_options", "identity_info_primary_payload", "hehuan_observation", "tianxing_observation", "tianxing_auto_config", "tianxing_timeline_state", "yinluo_observation", "taiyi_failure_history", "small_world_panel_snapshot", "resource_shortage_backoffs", "action_guard_sessions", "fishing_valuable_drop_reminders"}
 IDENTITY_BOOL_FIELDS = {
-    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
+    "tree_enabled", "pet_enabled", "pet_warm_enabled", "pet_trial_enabled", "pet_formation_enabled", "ranch_enabled", "wild_training_enabled", "stargazer_enabled", "guanxing_enabled", "formation_enabled", "tianti_enabled", "tianti_wenxin_enabled", "tianti_gangfeng_enabled", "quiz_enabled", "jiyin_enabled", "concubine_enabled", "concubine_tianji_enabled", "concubine_heart_enabled", "concubine_voyage_enabled", "concubine_auto_reacquire", "hehuan_enabled", "tianxing_enabled", "yinluo_enabled", "mulan_enabled", "world_boss_enabled", "nanlong_enabled", "yuanying_enabled", "explore_rift_enabled", "deep_retreat_enabled", "small_world_enabled", "small_world_preach_enabled", "small_world_manifest_enabled", "small_world_harvest_enabled", "small_world_refine_enabled", "small_world_refresh_enabled", "small_world_barrier_enabled", "divination_enabled", "checkin_enabled", "sect_teach_enabled", "tower_enabled", "dungeon_join_enabled",
     "second_soul_enabled", "second_soul_auto_choice_enabled", "taiyi_enabled", "taiyi_node_search_enabled", "wendao_enabled", "duel_enabled", "fishing_enabled",
     "fishing_auto_chum_enabled", "fishing_auto_buy_bait_enabled", "fishing_auto_probe_enabled", "fishing_auto_open_fish_enabled",
     "is_maturing", "is_invading", "is_harvested", "pending_irrigation", "tree_bootstrap_check_needed",
@@ -259,6 +260,7 @@ IDENTITY_STATE_TEMPLATE = {
     "hehuan_enabled": False,
     "tianxing_enabled": False,
     "yinluo_enabled": False,
+    "mulan_enabled": False,
     "world_boss_enabled": False,
     "nanlong_enabled": False,
     "tianti_enabled": False,
@@ -616,6 +618,21 @@ IDENTITY_STATE_TEMPLATE = {
     "wendao_last_msg_id": 0,
     "wendao_last_result": "",
     "wendao_last_error": "",
+
+    # 慕兰谍影模块
+    "next_mulan_time": 0,
+    "mulan_phase": "idle",  # idle|collect_pending|ready_to_judge|judge_pending|ready_to_publish|publish_pending|cooldown
+    "mulan_reply_to_msg_id": 0,
+    "mulan_reply_due_at": 0,
+    "mulan_pending_ids": "",
+    "mulan_current_id": 0,
+    "mulan_public_id": 0,
+    "mulan_sent_at": 0,
+    "mulan_last_msg_id": 0,
+    "mulan_last_command": "",
+    "mulan_last_result": "",
+    "mulan_last_error": "",
+    "mulan_cycle_count": 0,
 
     # 斗法模块（实际发起命令为 .斗法）
     "next_duel_time": 0,

@@ -215,6 +215,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN tianxing_enabled INTEGER NOT NULL DEFAULT 0")
     if "yinluo_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN yinluo_enabled INTEGER NOT NULL DEFAULT 0")
+    if "mulan_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN mulan_enabled INTEGER NOT NULL DEFAULT 0")
     if "world_boss_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN world_boss_enabled INTEGER NOT NULL DEFAULT 0")
     if "nanlong_enabled" not in module_columns:
@@ -361,6 +363,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_explore_rift_time REAL NOT NULL DEFAULT 0")
     if "next_wendao_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_wendao_time REAL NOT NULL DEFAULT 0")
+    if "next_mulan_time" not in timer_columns:
+        conn.execute("ALTER TABLE identity_timers ADD COLUMN next_mulan_time REAL NOT NULL DEFAULT 0")
     if "next_duel_time" not in timer_columns:
         conn.execute("ALTER TABLE identity_timers ADD COLUMN next_duel_time REAL NOT NULL DEFAULT 0")
     if "next_fishing_time" not in timer_columns:
@@ -898,6 +902,30 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_result TEXT NOT NULL DEFAULT ''")
     if "wendao_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wendao_last_error TEXT NOT NULL DEFAULT ''")
+    if "mulan_phase" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_phase TEXT NOT NULL DEFAULT 'idle'")
+    if "mulan_reply_to_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_reply_to_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "mulan_reply_due_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_reply_due_at REAL NOT NULL DEFAULT 0")
+    if "mulan_pending_ids" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_pending_ids TEXT NOT NULL DEFAULT ''")
+    if "mulan_current_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_current_id INTEGER NOT NULL DEFAULT 0")
+    if "mulan_public_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_public_id INTEGER NOT NULL DEFAULT 0")
+    if "mulan_sent_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_sent_at REAL NOT NULL DEFAULT 0")
+    if "mulan_last_msg_id" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_msg_id INTEGER NOT NULL DEFAULT 0")
+    if "mulan_last_command" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_command TEXT NOT NULL DEFAULT ''")
+    if "mulan_last_result" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_result TEXT NOT NULL DEFAULT ''")
+    if "mulan_last_error" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_last_error TEXT NOT NULL DEFAULT ''")
+    if "mulan_cycle_count" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN mulan_cycle_count INTEGER NOT NULL DEFAULT 0")
     if "duel_target" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN duel_target TEXT NOT NULL DEFAULT ''")
     if "duel_total_count" not in runtime_columns:
@@ -1253,6 +1281,7 @@ def init_db():
             hehuan_enabled INTEGER NOT NULL DEFAULT 0,
             tianxing_enabled INTEGER NOT NULL DEFAULT 0,
             yinluo_enabled INTEGER NOT NULL DEFAULT 0,
+            mulan_enabled INTEGER NOT NULL DEFAULT 0,
             world_boss_enabled INTEGER NOT NULL DEFAULT 0,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             explore_rift_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1319,6 +1348,7 @@ def init_db():
             next_yuanying_time REAL NOT NULL,
             next_explore_rift_time REAL NOT NULL DEFAULT 0,
             next_wendao_time REAL NOT NULL DEFAULT 0,
+            next_mulan_time REAL NOT NULL DEFAULT 0,
             next_duel_time REAL NOT NULL DEFAULT 0,
             next_fishing_time REAL NOT NULL DEFAULT 0,
             next_formation_time REAL NOT NULL DEFAULT 0,
@@ -1616,6 +1646,18 @@ def init_db():
             wendao_last_msg_id INTEGER NOT NULL DEFAULT 0,
             wendao_last_result TEXT NOT NULL DEFAULT '',
             wendao_last_error TEXT NOT NULL DEFAULT '',
+            mulan_phase TEXT NOT NULL DEFAULT 'idle',
+            mulan_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+            mulan_reply_due_at REAL NOT NULL DEFAULT 0,
+            mulan_pending_ids TEXT NOT NULL DEFAULT '',
+            mulan_current_id INTEGER NOT NULL DEFAULT 0,
+            mulan_public_id INTEGER NOT NULL DEFAULT 0,
+            mulan_sent_at REAL NOT NULL DEFAULT 0,
+            mulan_last_msg_id INTEGER NOT NULL DEFAULT 0,
+            mulan_last_command TEXT NOT NULL DEFAULT '',
+            mulan_last_result TEXT NOT NULL DEFAULT '',
+            mulan_last_error TEXT NOT NULL DEFAULT '',
+            mulan_cycle_count INTEGER NOT NULL DEFAULT 0,
             duel_target TEXT NOT NULL DEFAULT '',
             duel_total_count INTEGER NOT NULL DEFAULT 0,
             duel_completed_count INTEGER NOT NULL DEFAULT 0,

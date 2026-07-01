@@ -99,6 +99,10 @@ from .config import (
     CMD_WILD_TRAINING,
     CMD_WENDAO,
     CMD_DUEL,
+    CMD_MULAN_COLLECT,
+    CMD_MULAN_JUDGE,
+    CMD_MULAN_PUBLISH,
+    CMD_MULAN_SHADOW,
     CMD_FISHING,
     CMD_FISHING_BUY_BAIT,
     CMD_FISHING_CANCEL,
@@ -205,6 +209,7 @@ from .features.explore_rift import (
     schedule_explore_rift_initial_check,
 )
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
+from .features.mulan import clear_mulan_state, get_mulan_status_text, schedule_mulan_initial_check
 from .features.duel import apply_duel_config, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
 from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
@@ -375,6 +380,7 @@ RECOVERY_SPREAD_TIMER_KEYS = (
     "next_yuanying_time",
     "next_explore_rift_time",
     "next_wendao_time",
+    "next_mulan_time",
     "next_duel_time",
     "next_deep_retreat_time",
     "next_second_soul_time",
@@ -627,6 +633,9 @@ def _schedule_module_immediate_retry(module_name, now):
         return retry_at
     if module_name == "问道":
         state["next_wendao_time"] = retry_at
+        return retry_at
+    if module_name == "慕兰":
+        state["next_mulan_time"] = retry_at
         return retry_at
     if module_name == "斗法":
         state["next_duel_time"] = retry_at
@@ -1149,6 +1158,12 @@ def _disable_wendao_module_state():
     _clear_pending_tasks_by_commands({CMD_WENDAO})
 
 
+def _disable_mulan_module_state():
+    state["mulan_enabled"] = False
+    clear_mulan_state(persist=False, keep_last_error=True)
+    _clear_pending_tasks_by_commands({CMD_MULAN_SHADOW, CMD_MULAN_COLLECT, CMD_MULAN_JUDGE, CMD_MULAN_PUBLISH})
+
+
 def _disable_duel_module_state():
     state["duel_enabled"] = False
     clear_duel_state(persist=False, keep_last_error=True, keep_config=True)
@@ -1446,6 +1461,25 @@ def _manual_enable_wendao_module_state(now):
     state["next_wendao_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
 
 
+def _manual_disable_mulan_module_state():
+    _disable_mulan_module_state()
+
+
+def _manual_enable_mulan_module_state(now):
+    state["mulan_enabled"] = True
+    state["mulan_last_error"] = ""
+    if float(state.get("next_mulan_time", 0) or 0) > now:
+        return
+    state["mulan_phase"] = "idle"
+    state["mulan_reply_to_msg_id"] = 0
+    state["mulan_reply_due_at"] = 0
+    state["mulan_pending_ids"] = ""
+    state["mulan_current_id"] = 0
+    state["mulan_public_id"] = 0
+    state["mulan_sent_at"] = 0
+    state["next_mulan_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+
+
 def _manual_disable_duel_module_state():
     _disable_duel_module_state()
 
@@ -1689,6 +1723,10 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_EXPLORE_RIFT: "探寻裂缝",
     CMD_WENDAO: "问道",
     CMD_DUEL: "斗法",
+    CMD_MULAN_SHADOW: "慕兰",
+    CMD_MULAN_COLLECT: "慕兰",
+    CMD_MULAN_JUDGE: "慕兰",
+    CMD_MULAN_PUBLISH: "慕兰",
     CMD_NORMAL_RETREAT: "天星宗",
     CMD_DEEP_RETREAT_FORCE_EXIT: "深度闭关",
     CMD_USE_HEQI_DAN: "天星宗",
@@ -1727,6 +1765,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "合欢宗": (_manual_enable_hehuan_module_state, _manual_disable_hehuan_module_state),
     "天星宗": (_manual_enable_tianxing_module_state, _manual_disable_tianxing_module_state),
     "阴罗宗": (_manual_enable_yinluo_module_state, _manual_disable_yinluo_module_state),
+    "慕兰": (_manual_enable_mulan_module_state, _manual_disable_mulan_module_state),
     "真仙试锋": (_manual_enable_world_boss_module_state, _manual_disable_world_boss_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
@@ -1764,6 +1803,7 @@ MODULE_DISABLE_HANDLERS = {
     "合欢宗": _disable_hehuan_module_state,
     "天星宗": _disable_tianxing_module_state,
     "阴罗宗": _disable_yinluo_module_state,
+    "慕兰": _disable_mulan_module_state,
     "真仙试锋": _manual_disable_world_boss_module_state,
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
@@ -2025,6 +2065,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "合欢宗": get_hehuan_status_text,
         "天星宗": get_tianxing_status_text,
         "阴罗宗": get_yinluo_status_text,
+        "慕兰": get_mulan_status_text,
         "真仙试锋": get_world_boss_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
@@ -3327,6 +3368,8 @@ def initialize_identity_runtime(send_as_id, now=None):
             schedule_explore_rift_initial_check(now, persist=False, keep_last_error=True)
         if state.get("wendao_enabled") and float(state.get("next_wendao_time", 0) or 0) <= 0:
             schedule_wendao_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("mulan_enabled") and float(state.get("next_mulan_time", 0) or 0) <= 0:
+            schedule_mulan_initial_check(now, persist=False, keep_last_error=True)
         if state.get("duel_enabled") and float(state.get("next_duel_time", 0) or 0) <= 0:
             schedule_duel_initial_check(now, persist=False, keep_last_error=True)
         if state.get("fishing_enabled") and float(state.get("next_fishing_time", 0) or 0) <= 0:
@@ -3398,6 +3441,10 @@ def _get_pending_task_module_name(command):
         return "器灵试炼"
     if raw_command == CMD_PET_FORMATION:
         return "布下剑阵"
+    if raw_command == CMD_MULAN_JUDGE or raw_command.startswith(f"{CMD_MULAN_JUDGE} "):
+        return "慕兰"
+    if raw_command == CMD_MULAN_PUBLISH or raw_command.startswith(f"{CMD_MULAN_PUBLISH} "):
+        return "慕兰"
     if raw_command.startswith(CMD_EXCHANGE_HEQI_DAN_PREFIX) or raw_command.startswith(CMD_SECT_DONATE_LINGSHI_PREFIX):
         return "天星宗"
     return PENDING_TASK_COMMAND_TO_MODULE.get(raw_command, "")

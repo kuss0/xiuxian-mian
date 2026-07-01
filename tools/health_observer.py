@@ -219,6 +219,17 @@ MODULE_HEALTH_SPECS = [
         "last_error_fields": (("wendao_last_error", "错误"),),
     },
     {
+        "key": "mulan",
+        "label": "慕兰",
+        "enabled": "mulan_enabled",
+        "phase_fields": (("mulan_phase", "阶段"),),
+        "pending_fields": (("mulan_reply_to_msg_id", "回复"),),
+        "due_fields": (("mulan_reply_due_at", "回复截止"),),
+        "next_fields": (("next_mulan_time", "下次"),),
+        "last_result_fields": (("mulan_last_result", "结果"), ("mulan_last_command", "命令")),
+        "last_error_fields": (("mulan_last_error", "错误"),),
+    },
+    {
         "key": "duel",
         "label": "斗法",
         "enabled": "duel_enabled",
