@@ -1,6 +1,7 @@
 import random
 import re
 import time
+from datetime import datetime, timedelta
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -13,10 +14,12 @@ from ..config import (
     MULAN_JITTER_MIN_SEC,
     MULAN_REPLY_TIMEOUT_SEC,
     RETRY_MAX_SEC,
+    TZ_LOCAL,
 )
+from ..action_guard import close_action as close_action_guard_action
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
-from ..state import state
+from ..state import get_current_identity_id, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 
 
@@ -68,6 +71,20 @@ SUSPICIOUS_KEYWORDS = (
     "可疑",
 )
 CD_KEYWORDS = ("尚未", "冷却", "稍后", "后再", "不可频繁")
+DONE_KEYWORDS = (
+    "今日已",
+    "今天已",
+    "本日已",
+    "已经提交",
+    "已提交",
+    "已经公开",
+    "已公开",
+    "不可重复",
+    "无需重复",
+    "莫要重复",
+    "没有可公开",
+    "暂无可公开",
+)
 
 
 def _parse_int(value, default=0):
@@ -139,6 +156,39 @@ def _pending_command_family(reply_to=None, matched_family=None):
     if orig_cmd == CMD_MULAN_JUDGE or orig_cmd.startswith(f"{CMD_MULAN_JUDGE} "):
         return "mulan_judge"
     return ""
+
+
+def _action_key_for_family(family):
+    if family in {"mulan_collect", "mulan_panel"}:
+        return "mulan_collect"
+    if family == "mulan_judge":
+        return "mulan_judge"
+    if family == "mulan_publish":
+        return "mulan_publish"
+    return ""
+
+
+def _close_mulan_action_guard(family, now):
+    action_key = _action_key_for_family(family)
+    if action_key:
+        close_action_guard_action(action_key, send_as_id=get_current_identity_id(), now=now, reason="mulan_reply")
+
+
+def _daily_done_delay_sec(now):
+    current = datetime.fromtimestamp(float(now or time.time()), TZ_LOCAL)
+    tomorrow = (current + timedelta(days=1)).replace(hour=0, minute=10, second=0, microsecond=0)
+    delay = (tomorrow - current).total_seconds()
+    delay += random.uniform(MULAN_JITTER_MIN_SEC, MULAN_JITTER_MAX_SEC)
+    return max(60, delay)
+
+
+def _is_daily_done_text(text):
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return False
+    if not ("军报" in raw_text or "慕兰" in raw_text):
+        return False
+    return any(keyword in raw_text for keyword in DONE_KEYWORDS)
 
 
 def _schedule_next_mulan(now, delay_sec=None):
@@ -242,11 +292,19 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
     family = _pending_command_family(reply_to=reply_to, matched_family=matched_family)
     if not family:
         return False
+    _close_mulan_action_guard(family, now)
 
     raw_text = str(text or "").strip()
     result_msg_id = int(result_msg_id or 0)
     if result_msg_id > 0:
         state["mulan_last_msg_id"] = result_msg_id
+
+    if _is_daily_done_text(raw_text):
+        _finish_mulan_cycle(now, "今日已完成", delay_sec=_daily_done_delay_sec(now))
+        state["mulan_last_error"] = ""
+        save_state()
+        await send_audit_log("🕵️ 慕兰今日已完成，已排到明日再查。", scope="identity", limit=180)
+        return True
 
     if has_wait_time(raw_text) and any(keyword in raw_text for keyword in CD_KEYWORDS):
         wait_sec = parse_wait_time(raw_text)

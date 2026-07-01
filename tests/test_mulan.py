@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import action_guard
 from model import state as state_module
 from model.features import mulan
 
@@ -40,6 +41,12 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("reliable", mulan.classify_mulan_judgement("研判较高，情报可靠，可公开。"))
         self.assertEqual("suspicious", mulan.classify_mulan_judgement("研判可疑，不可靠。"))
         self.assertEqual("unknown", mulan.classify_mulan_judgement("长老沉吟不语。"))
+
+    def test_action_guard_resolves_mulan_commands(self):
+        self.assertEqual("mulan_collect", action_guard.resolve_action_key(".搜集军报"))
+        self.assertEqual("mulan_collect", action_guard.resolve_action_key(".慕兰谍影"))
+        self.assertEqual("mulan_judge", action_guard.resolve_action_key(".辨报 2"))
+        self.assertEqual("mulan_publish", action_guard.resolve_action_key(".公开军报 2"))
 
     async def test_scheduler_starts_with_collect_command(self):
         identity_id = self._prepare_identity()
@@ -192,6 +199,45 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual(now + 3723 + mulan.CD_BUFFER_SEC, state_module.state["next_mulan_time"])
             self.assertEqual("冷却中", state_module.state["mulan_last_result"])
+
+    async def test_daily_done_reply_finishes_without_judging(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "collect_pending"
+            state_module.state["mulan_reply_to_msg_id"] = 1001
+            state_module.state["mulan_reply_due_at"] = now + 60
+            action_guard.note_sent(".搜集军报", identity_id, 1001, sent_at=now - 10)
+            self.assertIn("mulan_collect", state_module.state["action_guard_sessions"])
+
+            with (
+                patch.object(mulan.random, "uniform", return_value=60),
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()),
+            ):
+                handled = await mulan.handle_mulan_reply(
+                    "今日军报已经提交，不可重复公开。",
+                    now,
+                    reply_to=SimpleNamespace(id=1001, raw_text=".搜集军报"),
+                    matched_family="mulan_collect",
+                    result_msg_id=1002,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertEqual("今日已完成", state_module.state["mulan_last_result"])
+            self.assertEqual("", state_module.state["mulan_pending_ids"])
+            self.assertEqual(0, state_module.state["mulan_current_id"])
+            self.assertNotIn("mulan_collect", state_module.state["action_guard_sessions"])
+
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now + 1)
+
+            send_mock.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -52,6 +52,9 @@ WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC = 0
 WORLD_BOSS_STATUS_STALE_SEC = 120
 WORLD_BOSS_STATUS_QUERY_GAP_SEC = 3 * 60
 WORLD_BOSS_EVENT_TTL_SEC = 35 * 60
+WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC = 45
+WORLD_BOSS_RECOVERY_PROBE_MIN_GAP_SEC = 15 * 60
+WORLD_BOSS_RECOVERY_PENDING_TTL_SEC = WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC * (WORLD_BOSS_STATUS_MAX_RETRIES + 1) + 30
 WORLD_BOSS_STRONG_ATTACK_LIMIT = 5
 WORLD_BOSS_DEFAULT_ACTION_LIMIT = 5
 WORLD_BOSS_PROGRESS_LOG_GAP_SEC = 5 * 60
@@ -90,6 +93,8 @@ RE_PARTICIPANTS = re.compile(r"参战[:：]\s*(\d+)\s*人")
 
 _WORLD_BOSS_SCHEDULER_LOCK = asyncio.Lock()
 _WORLD_BOSS_ROUND_TASK = None
+_WORLD_BOSS_RECOVERY_BOOT_AT = time.time()
+_WORLD_BOSS_RECOVERY_PROBE_DONE = False
 
 
 def _empty_summary():
@@ -127,6 +132,7 @@ def _blank_run_state(now=None):
         "last_result": "",
         "participants": 0,
         "fallback_status_day": "",
+        "fallback_status_at": 0,
         "last_priority_window_key": "",
     }
 
@@ -179,6 +185,7 @@ def _normalize_run_state(raw=None, now=None):
         "next_status_query_at",
         "last_summary_log_at",
         "last_conclusion_at",
+        "fallback_status_at",
     ):
         record[key] = max(0.0, _coerce_float(record.get(key), 0))
     for key in ("hp_percent", "fanhun", "break_progress", "moya", "zhen", "last_status_msg_id", "last_summary_log_total", "participants"):
@@ -441,6 +448,7 @@ def _archive_inactive_event_state(run_state, now, reason):
     last_conclusion_at = _coerce_float(run_state.get("last_conclusion_at"), 0)
     participants = _coerce_int(run_state.get("participants"), 0)
     fallback_status_day = str(run_state.get("fallback_status_day") or "").strip()
+    fallback_status_at = _coerce_float(run_state.get("fallback_status_at"), 0)
     run_state.clear()
     run_state.update(_blank_run_state(now))
     run_state["last_result"] = last_result
@@ -448,6 +456,7 @@ def _archive_inactive_event_state(run_state, now, reason):
     run_state["last_conclusion_at"] = last_conclusion_at
     run_state["participants"] = participants
     run_state["fallback_status_day"] = fallback_status_day
+    run_state["fallback_status_at"] = fallback_status_at
 
 
 def _status_retry_allowed(run_state, now):
@@ -460,6 +469,33 @@ def _status_retry_allowed(run_state, now):
             return True
         return float(now) - opened_at <= WORLD_BOSS_EVENT_TTL_SEC
     return False
+
+
+def _mark_recovery_probe_attempt(run_state, now):
+    global _WORLD_BOSS_RECOVERY_PROBE_DONE
+    _WORLD_BOSS_RECOVERY_PROBE_DONE = True
+    run_state["fallback_status_day"] = get_day_key(now)
+    run_state["fallback_status_at"] = float(now)
+
+
+def _recovery_probe_pending(run_state, now):
+    if bool(run_state.get("active")):
+        return False
+    probe_at = _coerce_float(run_state.get("fallback_status_at"), 0)
+    return probe_at > 0 and float(now) - probe_at <= WORLD_BOSS_RECOVERY_PENDING_TTL_SEC
+
+
+def _recovery_probe_due(run_state, now):
+    global _WORLD_BOSS_RECOVERY_PROBE_DONE
+    if _WORLD_BOSS_RECOVERY_PROBE_DONE or bool(run_state.get("active")):
+        return False
+    if float(now) < _WORLD_BOSS_RECOVERY_BOOT_AT + WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC:
+        return False
+    probe_at = _coerce_float(run_state.get("fallback_status_at"), 0)
+    if probe_at > 0 and float(now) - probe_at < WORLD_BOSS_RECOVERY_PROBE_MIN_GAP_SEC:
+        _WORLD_BOSS_RECOVERY_PROBE_DONE = True
+        return False
+    return True
 
 
 def _clear_all_world_boss_pending(reason=""):
@@ -1184,6 +1220,9 @@ async def _mark_inactive(now):
         run_state["active"] = False
         run_state["closed_at"] = float(now)
         run_state["last_result"] = run_state.get("last_result") or "已结束"
+    _mark_recovery_probe_attempt(run_state, now)
+    run_state["next_status_query_at"] = 0
+    run_state["next_action_at"] = 0
     for identity_id in get_identity_ids():
         try:
             identity_state = get_identity_state(identity_id)
@@ -1339,8 +1378,9 @@ async def handle_world_boss_broadcast(text, now, event=None):
     return False
 
 
-async def _send_status_query(identity_id, now, run_state, reason):
-    if not _status_retry_allowed(run_state, now):
+async def _send_status_query(identity_id, now, run_state, reason, *, allow_inactive_probe=False):
+    recovery_probe = bool(allow_inactive_probe and not run_state.get("active"))
+    if not recovery_probe and not _status_retry_allowed(run_state, now):
         _clear_all_world_boss_pending("战况查询已过期")
         run_state["next_status_query_at"] = 0
         run_state["next_action_at"] = 0
@@ -1358,11 +1398,16 @@ async def _send_status_query(identity_id, now, run_state, reason):
             _clear_world_boss_pending_action(identity_state)
             identity_state["world_boss_last_error"] = "战况查询无回复，补查已达上限"
         clear_pending_tasks_by_commands({WORLD_BOSS_STATUS_QUERY_COMMAND}, send_as_id=identity_id)
-        run_state["next_status_query_at"] = float(now) + WORLD_BOSS_STATUS_QUERY_GAP_SEC
-        run_state["next_action_at"] = max(
-            _coerce_float(run_state.get("next_action_at"), 0),
-            run_state["next_status_query_at"],
-        )
+        if recovery_probe:
+            _mark_recovery_probe_attempt(run_state, now)
+            run_state["next_status_query_at"] = 0
+            run_state["next_action_at"] = 0
+        else:
+            run_state["next_status_query_at"] = float(now) + WORLD_BOSS_STATUS_QUERY_GAP_SEC
+            run_state["next_action_at"] = max(
+                _coerce_float(run_state.get("next_action_at"), 0),
+                run_state["next_status_query_at"],
+            )
         _set_run_state(run_state)
         console_log(
             f"🗡 真仙试锋[{_identity_label(identity_id)}] 战况查询无回复，补查已达上限，暂停本轮战况补查。",
@@ -1385,10 +1430,14 @@ async def _send_status_query(identity_id, now, run_state, reason):
         chain_id=chain_id,
     )
     sent_at = _coerce_float(getattr(msg, "sent_at", 0), 0) or time.time()
+    if recovery_probe:
+        _mark_recovery_probe_attempt(run_state, sent_at)
     if not msg:
         if identity_state is not None:
             identity_state["world_boss_last_error"] = f"{reason}战况查询发送失败"
         run_state["next_status_query_at"] = sent_at + WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC
+        if recovery_probe:
+            run_state["next_action_at"] = 0
         _set_run_state(run_state)
         return False
     if identity_state is not None:
@@ -1400,7 +1449,10 @@ async def _send_status_query(identity_id, now, run_state, reason):
             identity_state["world_boss_pending_action_seq"] = 0
         identity_state["world_boss_last_error"] = ""
     run_state["next_status_query_at"] = sent_at + WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC
-    run_state["next_action_at"] = max(_coerce_float(run_state.get("next_action_at"), 0), sent_at + WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC)
+    if recovery_probe:
+        run_state["next_action_at"] = 0
+    else:
+        run_state["next_action_at"] = max(_coerce_float(run_state.get("next_action_at"), 0), sent_at + WORLD_BOSS_STATUS_AFTER_QUERY_GAP_SEC)
     _set_run_state(run_state)
     if is_retry:
         console_log(
@@ -1604,12 +1656,31 @@ async def run_world_boss_scheduler(now):
             if _clear_stale_inactive_event_pending(run_state, now):
                 return
             if _has_any_pending_status():
+                if _recovery_probe_pending(run_state, now):
+                    if not _has_due_pending_status(now):
+                        _set_run_state(run_state, persist=False)
+                        return
+                    status_identity_id, _identity_state = _pending_status_identity(now)
+                    if status_identity_id:
+                        await _send_status_query(
+                            status_identity_id,
+                            now,
+                            run_state,
+                            "服务恢复探测无回复",
+                            allow_inactive_probe=True,
+                        )
+                    else:
+                        _set_run_state(run_state, persist=False)
+                    return
                 _clear_all_world_boss_pending("未观测到进行中事件，停止战况补查")
                 run_state["next_status_query_at"] = 0
                 run_state["next_action_at"] = 0
                 _set_run_state(run_state, persist=False)
                 return
             if _clear_inactive_world_boss_status_residue(run_state, now):
+                return
+            if _recovery_probe_due(run_state, now):
+                await _send_status_query(enabled_ids[0], now, run_state, "服务恢复探测", allow_inactive_probe=True)
                 return
             _set_run_state(run_state, persist=False)
             return

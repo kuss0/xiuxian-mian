@@ -16,6 +16,10 @@ from .config import (
     CMD_REBIRTH_REQUEST,
     CMD_REBIRTH_SELECT_PREFIX,
     CMD_HEHUAN_DUAL,
+    CMD_MULAN_COLLECT,
+    CMD_MULAN_JUDGE,
+    CMD_MULAN_PUBLISH,
+    CMD_MULAN_SHADOW,
     CMD_NODE_DEFINE,
     CMD_NODE_SEARCH,
     CMD_PET_WARM,
@@ -308,6 +312,27 @@ ACTION_SPECS = {
         "max_attempts": 1,
         "ttl_sec": 30 * 60,
     },
+    "mulan_collect": {
+        "commands": (CMD_MULAN_COLLECT, CMD_MULAN_SHADOW),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "慕兰搜集军报",
+        "max_attempts": 1,
+        "ttl_sec": 30 * 60,
+    },
+    "mulan_judge": {
+        "commands": (CMD_MULAN_JUDGE,),
+        "kind": ACTION_KIND_CHAIN,
+        "label": "慕兰辨报",
+        "max_attempts": 1,
+        "ttl_sec": 10 * 60,
+    },
+    "mulan_publish": {
+        "commands": (CMD_MULAN_PUBLISH,),
+        "kind": ACTION_KIND_HIGH_RISK,
+        "label": "慕兰公开军报",
+        "max_attempts": 1,
+        "ttl_sec": 24 * 3600,
+    },
     "tianxing_panel": {
         "commands": (CMD_TIANXING_PANEL,),
         "kind": ACTION_KIND_STATUS,
@@ -461,6 +486,10 @@ FAMILY_TO_ACTION_KEYS = {
     "wendao": ("wendao",),
     "explore_rift": ("explore_rift",),
     "hehuan_dual": ("hehuan_dual",),
+    "mulan_panel": ("mulan_collect",),
+    "mulan_collect": ("mulan_collect",),
+    "mulan_judge": ("mulan_judge",),
+    "mulan_publish": ("mulan_publish",),
     "tianxing_panel": ("tianxing_panel",),
     "tianxing_observe": ("tianxing_observe",),
     "tianxing_set_star": ("tianxing_set_star",),
@@ -750,6 +779,17 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
         if last_observed_at >= pending_sent_at:
             return False
         return pending_deadline_at > now
+    if action_key in {"mulan_collect", "mulan_judge", "mulan_publish"}:
+        phase_by_action = {
+            "mulan_collect": {"collect_pending"},
+            "mulan_judge": {"judge_pending"},
+            "mulan_publish": {"publish_pending"},
+        }
+        return (
+            _int_state(identity_state, "mulan_reply_to_msg_id") > 0
+            and _float_state(identity_state, "mulan_reply_due_at") > now
+            and _phase_is(identity_state, "mulan_phase", phase_by_action[action_key])
+        )
     if action_key == "explore_rift":
         if _int_state(identity_state, "explore_rift_reply_to_msg_id") > 0 and _float_state(identity_state, "explore_rift_reply_due_at") > now:
             return True

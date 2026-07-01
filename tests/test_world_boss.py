@@ -101,6 +101,9 @@ CONCLUSION_TEXT = (
 class WorldBossTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._world_boss_recovery_boot_at = world_boss._WORLD_BOSS_RECOVERY_BOOT_AT
+        self._world_boss_recovery_probe_done = world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE
+        world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE = True
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
@@ -111,6 +114,8 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         if task is not None and not task.done():
             task.cancel()
         world_boss._WORLD_BOSS_ROUND_TASK = None
+        world_boss._WORLD_BOSS_RECOVERY_BOOT_AT = self._world_boss_recovery_boot_at
+        world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE = self._world_boss_recovery_probe_done
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
 
@@ -865,6 +870,114 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
             await world_boss.run_world_boss_scheduler(now + 5)
 
         send_mock.assert_not_awaited()
+
+    async def test_scheduler_sends_recovery_status_probe_after_boot_delay(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 13, 18, 12, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        world_boss._WORLD_BOSS_RECOVERY_BOOT_AT = now
+        world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE = False
+        due_now = now + world_boss.WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC + 1
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(
+                world_boss,
+                "send_game_command",
+                new=AsyncMock(return_value=SimpleNamespace(id=9101, sent_at=due_now + 1)),
+            ) as send_mock,
+        ):
+            await world_boss.run_world_boss_scheduler(now + world_boss.WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC - 1)
+            send_mock.assert_not_awaited()
+            await world_boss.run_world_boss_scheduler(due_now)
+
+        send_mock.assert_awaited_once()
+        call = send_mock.await_args
+        self.assertEqual(".世界boss", call.args[0])
+        self.assertEqual("event_burst", call.kwargs["priority"])
+        self.assertEqual("真仙试锋", call.kwargs["source_module"])
+        self.assertEqual(9101, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("status", identity_state["world_boss_pending_action"])
+        run_state = state_module.get_world_boss_run_state()
+        self.assertFalse(run_state["active"])
+        self.assertEqual(world_boss.get_day_key(due_now + 1), run_state["fallback_status_day"])
+        self.assertEqual(due_now + 1, run_state["fallback_status_at"])
+        self.assertTrue(world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE)
+
+    async def test_recovery_probe_status_reply_starts_active_event(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.time.time()
+        identity_state["world_boss_pending_msg_id"] = 9101
+        identity_state["world_boss_pending_action"] = "status"
+        identity_state["world_boss_pending_since"] = now - 10
+        state_module.set_world_boss_run_state(
+            {
+                "active": False,
+                "event_key": "",
+                "fallback_status_day": world_boss.get_day_key(now),
+                "fallback_status_at": now - 10,
+                "next_status_query_at": now + world_boss.WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC,
+            }
+        )
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_audit_log", new=AsyncMock()),
+        ):
+            handled = await world_boss.handle_world_boss_reply(
+                STATUS_TEXT,
+                now,
+                matched_family="world_boss",
+                reply_context={"send_as_id": identity_id, "family": "world_boss"},
+                current_msg_id=9602,
+            )
+
+        self.assertTrue(handled)
+        run_state = state_module.get_world_boss_run_state()
+        self.assertTrue(run_state["active"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertEqual("", identity_state["world_boss_pending_action"])
+
+    async def test_recovery_probe_inactive_reply_marks_done_without_immediate_requery(self):
+        identity_id = 301299112
+        identity_state = self._register(identity_id, label="jfdffdddd")
+        now = world_boss.datetime(2026, 6, 13, 18, 12, tzinfo=world_boss.TZ_LOCAL).timestamp()
+        identity_state["world_boss_pending_msg_id"] = 9101
+        identity_state["world_boss_pending_action"] = "status"
+        identity_state["world_boss_pending_since"] = now - 10
+        state_module.set_world_boss_run_state(
+            {
+                "active": False,
+                "event_key": "",
+                "fallback_status_day": world_boss.get_day_key(now),
+                "fallback_status_at": now - 10,
+                "next_status_query_at": now + world_boss.WORLD_BOSS_STATUS_PENDING_TIMEOUT_SEC,
+            }
+        )
+        world_boss._WORLD_BOSS_RECOVERY_BOOT_AT = now - world_boss.WORLD_BOSS_RECOVERY_PROBE_DELAY_SEC - 10
+        world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE = False
+
+        with (
+            patch.object(world_boss, "save_state", return_value=True),
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
+        ):
+            handled = await world_boss.handle_world_boss_reply(
+                "当前没有进行中的【真仙试锋】。",
+                now,
+                matched_family="world_boss",
+                reply_context={"send_as_id": identity_id, "family": "world_boss"},
+                current_msg_id=9603,
+            )
+            await world_boss.run_world_boss_scheduler(now + 5)
+
+        self.assertTrue(handled)
+        send_mock.assert_not_awaited()
+        run_state = state_module.get_world_boss_run_state()
+        self.assertFalse(run_state["active"])
+        self.assertEqual(0, run_state["next_status_query_at"])
+        self.assertEqual(0, identity_state["world_boss_pending_msg_id"])
+        self.assertTrue(world_boss._WORLD_BOSS_RECOVERY_PROBE_DONE)
 
     async def test_scheduler_clears_inactive_status_residue_without_resending(self):
         identity_id = 301299112
