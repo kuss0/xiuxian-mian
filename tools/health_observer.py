@@ -285,6 +285,10 @@ def local_ts(epoch: float | None = None) -> str:
     return datetime.fromtimestamp(epoch or time.time()).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def local_day_key(epoch: float | None = None) -> str:
+    return datetime.fromtimestamp(epoch or time.time()).strftime("%Y-%m-%d")
+
+
 def parse_local_ts(raw: str) -> float:
     text = str(raw or "")[:19]
     try:
@@ -878,6 +882,12 @@ def normalize_json_state_for_health(field: str, payload: dict[str, object], now:
     if field_name != "tianxing_observation":
         return normalized
 
+    fixed_star = str(normalized.get("fixed_star") or "").strip()
+    fixed_star_day = str(normalized.get("fixed_star_day") or "").strip()
+    if fixed_star and fixed_star_day and fixed_star_day != local_day_key(now):
+        normalized["stale_fixed_star"] = fixed_star
+        normalized["fixed_star"] = ""
+
     last_action = str(normalized.get("last_action") or "").strip()
     last_result = str(normalized.get("last_result") or "").strip()
     last_error = str(normalized.get("last_error") or "").strip()
@@ -936,6 +946,7 @@ def summarize_json_state(field: str, payload: dict[str, object], now: float, det
     error = False
     for key, label in (
         ("fixed_star", "定命"),
+        ("stale_fixed_star", "旧定命"),
         ("current_prediction", "推命"),
         ("current_change", "改命"),
         ("tianji_value", "天机"),
@@ -1089,7 +1100,7 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                 text = str(value_for(str(field)) or "").strip()
                 if text:
                     add_module_detail(details, str(label_text), text)
-                    if module_error_needs_attention(text):
+                    if enabled and module_error_needs_attention(text):
                         error = True
 
             if not enabled and not pending and not flags and not error and not warn:

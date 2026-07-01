@@ -474,6 +474,38 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("ok", concubine["status"])
         self.assertTrue(concubine["due"][0]["stale_without_pending"])
 
+    def test_module_summary_ignores_disabled_module_stale_last_error(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, fishing_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_fishing_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    fishing_phase TEXT NOT NULL DEFAULT 'idle',
+                    fishing_last_result TEXT NOT NULL DEFAULT '',
+                    fishing_last_error TEXT NOT NULL DEFAULT '',
+                    fishing_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    fishing_status_msg_id INTEGER NOT NULL DEFAULT 0,
+                    fishing_reply_due_at REAL NOT NULL DEFAULT 0,
+                    fishing_transfer_due_at REAL NOT NULL DEFAULT 0
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'fisher')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, fishing_enabled) VALUES(42, 0)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_fishing_time) VALUES(42, 0)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, fishing_last_result, fishing_last_error) VALUES(42, '已发送：.收竿', '回复超时：11305511')"
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        self.assertFalse(any(item["module"] == "fishing" for item in summary))
+
     def test_module_summary_ignores_stale_heart_due_during_unrelated_concubine_phase(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
@@ -775,6 +807,46 @@ class HealthObserverTests(unittest.TestCase):
         tianxing = next(item for item in summary if item["module"] == "tianxing")
         self.assertEqual("ok", tianxing["status"])
         self.assertFalse(any(item.startswith("自动错误:") for item in tianxing["details"]))
+
+    def test_module_summary_marks_stale_tianxing_fixed_star(self):
+        now = health_observer.parse_local_ts("2026-07-02 02:00:00")
+        observation = json.dumps({
+            "last_observed_at": now - 30,
+            "last_action": "观命",
+            "last_result": "success",
+            "available_stars": ["贪狼", "天府", "紫微"],
+            "available_stars_day": "2026-07-02",
+            "fixed_star": "贪狼",
+            "fixed_star_day": "2026-07-01",
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "tianji_value": 38,
+        }, ensure_ascii=False)
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, tianxing_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    tianxing_observation TEXT NOT NULL DEFAULT '{}',
+                    tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
+                    tianxing_auto_config TEXT NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(42, 'tutuerduoxiao', '小耳朵图图')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, tianxing_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id, tianxing_observation) VALUES(42, ?)", (observation,))
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        tianxing = next(item for item in summary if item["module"] == "tianxing")
+        self.assertFalse(any(item == "定命:贪狼" for item in tianxing["details"]))
+        self.assertTrue(any(item == "旧定命:贪狼" for item in tianxing["details"]))
 
     def test_health_payload_and_markdown_include_score_risks_and_evidence(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

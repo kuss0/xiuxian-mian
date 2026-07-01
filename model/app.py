@@ -84,7 +84,7 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
-from .features.tianxing import run_tianxing_scheduler
+from .features.tianxing import run_tianxing_daily_bootstrap_scheduler, run_tianxing_scheduler
 from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
@@ -236,6 +236,7 @@ UNKNOWN_GAME_BOT_LEARN_THRESHOLD = 3
 UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
 HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANZUN_BOT_NAME_MARKER = "天尊"
+TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
 
 _PHASEFUL_IDENTITY_SCHEDULERS = (
     run_deep_retreat_scheduler,
@@ -1214,6 +1215,26 @@ async def _run_global_schedulers(now):
             await scheduler(now)
 
 
+async def _run_tianxing_daily_bootstrap_identity_schedulers(now, *, limit=TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK):
+    processed = 0
+    for identity_id in get_identity_ids():
+        if processed >= int(limit or 1):
+            break
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            scheduler_now = max(float(now or 0), time.time())
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            result = await run_tianxing_daily_bootstrap_scheduler(scheduler_now)
+            if (result or {}).get("active"):
+                processed += 1
+
+
 async def _run_identity_schedulers_background(now):
     await _run_identity_schedulers(now)
 
@@ -1962,6 +1983,7 @@ async def main_loop(stop_event=None):
         await _run_due_wild_training_retry_schedulers(now)
         await run_rare_daily_report_scheduler(now)
         await _run_phaseful_identity_schedulers(time.time())
+        await _run_tianxing_daily_bootstrap_identity_schedulers(time.time())
         await _run_global_schedulers(now)
         await run_quiz_learning_scheduler(now)
         await run_retry_scheduler(now)

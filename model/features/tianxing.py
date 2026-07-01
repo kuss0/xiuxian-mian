@@ -4,6 +4,7 @@ import math
 import random
 import re
 import time
+from datetime import datetime
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -22,6 +23,7 @@ from ..config import (
     CMD_WILD_TRAINING,
     CMD_EXCHANGE_HEQI_DAN_PREFIX,
     CMD_SECT_DONATE_LINGSHI_PREFIX,
+    TZ_LOCAL,
 )
 from ..persistence import save_state
 from ..runtime import register_game_command_pre_send_guard, send_game_command
@@ -36,6 +38,8 @@ TIANXING_OBSERVATION_STALE_SEC = 24 * 3600
 TIANXING_AUTO_STATUS_BACKOFF_SEC = 6 * 3600
 TIANXING_AUTO_BLOCK_BACKOFF_SEC = 60 * 60
 TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC = 30 * 60
+TIANXING_DAILY_BOOTSTRAP_RETRY_SEC = 2 * 60
+TIANXING_DAILY_STAR_CORRECTION_WINDOW_SEC = 6 * 3600
 TIANXING_TIMELINE_ACK_TIMEOUT_SEC = 90
 TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC = 5 * 60
 TIANXING_RETREAT_FARM_REPLY_TIMEOUT_SEC = 90
@@ -260,6 +264,9 @@ def _default_tianxing_auto_config():
         "calibration_backoff_sec": TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC,
         "max_replans_per_day": 3,
     }
+
+
+_TIANXING_LEGACY_BAD_STAR_PRIORITY = ("天府", "贪狼", "太阴", "紫微")
 
 
 def _coerce_bool(value, default=False):
@@ -489,6 +496,8 @@ def normalize_tianxing_auto_config(value=None):
     ):
         config[key] = _coerce_bool(config.get(key), default.get(key, False))
     config["star_priority"] = _normalize_choice_list(config.get("star_priority"), TIANXING_STARS, default["star_priority"])
+    if tuple(config["star_priority"]) == _TIANXING_LEGACY_BAD_STAR_PRIORITY:
+        config["star_priority"] = list(default["star_priority"])
     config["route_priority"] = _normalize_choice_list(config.get("route_priority"), TIANXING_ROUTES, default["route_priority"])
     config["change_route_priority"] = _normalize_choice_list(config.get("change_route_priority"), TIANXING_AUTO_CHANGE_FATE_ROUTES, default["change_route_priority"])
     config["predict_route"] = _normalize_route_choice(config.get("predict_route"), default["predict_route"])
@@ -827,12 +836,44 @@ def _fixed_star_day_matches(observed, now):
     return not day_key or day_key == get_day_key(now)
 
 
+def _effective_fixed_star(observed, now):
+    observed = observed if isinstance(observed, dict) else {}
+    fixed_star = str(observed.get("fixed_star") or "").strip()
+    if fixed_star and _fixed_star_day_matches(observed, now):
+        return fixed_star
+    return ""
+
+
 def _choose_daily_star(available_stars, config):
     stars = [str(item).strip() for item in available_stars or [] if str(item or "").strip()]
     for star in normalize_tianxing_auto_config(config).get("star_priority") or []:
         if star in stars:
             return star
     return stars[0] if stars else ""
+
+
+def _seconds_since_local_day_start(now):
+    local_dt = datetime.fromtimestamp(float(now or 0), TZ_LOCAL)
+    return local_dt.hour * 3600 + local_dt.minute * 60 + local_dt.second
+
+
+def _in_daily_star_correction_window(now):
+    elapsed = _seconds_since_local_day_start(now)
+    return 0 <= elapsed <= TIANXING_DAILY_STAR_CORRECTION_WINDOW_SEC
+
+
+def _should_correct_daily_fixed_star(observed, desired_star, now):
+    observed = observed if isinstance(observed, dict) else {}
+    desired_star = str(desired_star or "").strip()
+    if not desired_star:
+        return False
+    if not _in_daily_star_correction_window(now):
+        return False
+    today_key = get_day_key(now)
+    if str(observed.get("fixed_star_day") or "").strip() != today_key:
+        return False
+    fixed_star = _effective_fixed_star(observed, now)
+    return bool(fixed_star and fixed_star != desired_star)
 
 
 def _has_available_stars_today(observed, now):
@@ -1635,7 +1676,7 @@ def apply_tianxing_passive(text, now=None, family=""):
     observed["auto_last_error_at"] = 0
     if int(observed.get("calamity_count", 0) or 0) > 0:
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
-    elif not observed.get("fixed_star"):
+    elif not _effective_fixed_star(observed, now):
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
     elif _should_wake_tianxing_timeline(observed, config, now):
         observed["auto_next_time"] = min(float(observed.get("auto_next_time", 0) or 0) or now + 60, now + 60)
@@ -1746,7 +1787,7 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None, allow_predictio
         star = arg
         if star not in TIANXING_STARS:
             return _manual_block(action, "定命必须指定：紫微、天府、太阴、贪狼。")
-        fixed_star = str(observed.get("fixed_star") or "").strip()
+        fixed_star = _effective_fixed_star(observed, now)
         fixed_star_day = str(observed.get("fixed_star_day") or "").strip()
         if fixed_star == star and (not fixed_star_day or fixed_star_day == get_day_key(now)):
             return _manual_block(action, f"当前已是目标命星：{fixed_star}，不重复定命。")
@@ -1871,7 +1912,7 @@ def _handle_tianxing_auto_pending(observed, now):
     observed["auto_last_plan"] = command
     observed["auto_last_error"] = "天星宗自动动作回复超时，暂缓重试；不继续推进下游。"
     observed["auto_last_error_at"] = float(now)
-    observed["auto_next_time"] = float(now + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC)
+    observed["auto_next_time"] = float(now + _tianxing_send_fail_backoff_sec(action, observed, now))
     state["tianxing_observation"] = observed
     save_state()
     return True
@@ -2037,9 +2078,7 @@ def _build_tianxing_strategy_plan(observed, config, now):
     if not _has_recent_observation(observed, now):
         return _manual_block("idle", "缺少近期天星宗状态。")
 
-    fixed_star = str(observed.get("fixed_star") or "").strip()
-    if fixed_star and not _fixed_star_day_matches(observed, now):
-        fixed_star = ""
+    fixed_star = _effective_fixed_star(observed, now)
     available_stars = _available_stars_for_day(observed, now)
     if config.get("timeline_enabled"):
         return _manual_block("timeline_required", "定命/推命/改命需由上层时间线规划器授权，当前自动调度不直接发送。")
@@ -2652,7 +2691,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
     raw_current_change = str(observed.get("current_change") or "").strip()
     change_until = float(observed.get("current_change_until", 0) or 0)
     current_change = raw_current_change if raw_current_change and change_until > now else ""
-    fixed_star = str(observed.get("fixed_star") or "").strip()
+    fixed_star = _effective_fixed_star(observed, now)
     tianji_value = int(observed.get("tianji_value", 0) or 0)
     min_tianji = int(config.get("min_tianji_for_change", 6) or 6)
 
@@ -3045,7 +3084,7 @@ def _timeline_step_is_confirmed(step, observed, now):
     if sent_at > 0 and observed_at > 0 and observed_at + 0.001 < sent_at:
         return False
     if action == "set_star":
-        return bool(arg) and str((observed or {}).get("fixed_star") or "").strip() == arg
+        return bool(arg) and _effective_fixed_star(observed, now) == arg
     if action == "predict":
         return (
             bool(arg)
@@ -5044,19 +5083,80 @@ def _build_tianxing_daily_plan(observed, config, now):
         and config.get("auto_observe_enabled")
         and not _has_available_stars_today(observed, now)
     ):
-        return build_tianxing_manual_plan("observe", now=now)
+        plan = build_tianxing_manual_plan("observe", now=now)
+        if plan.get("allowed"):
+            plan["daily_bootstrap"] = True
+        return plan
 
     available_stars = _available_stars_for_day(observed, now)
+    desired_star = _choose_daily_star(available_stars, config)
     if (
         config.get("daily_set_star_enabled")
         and config.get("auto_set_star_enabled")
         and str(observed.get("available_stars_day") or "").strip() == today_key
-        and str(observed.get("fixed_star_day") or "").strip() != today_key
+        and (
+            str(observed.get("fixed_star_day") or "").strip() != today_key
+            or _should_correct_daily_fixed_star(observed, desired_star, now)
+        )
     ):
-        star = _choose_daily_star(available_stars, config)
+        star = desired_star
         if star:
-            return build_tianxing_manual_plan("set_star", star, now=now)
+            plan = build_tianxing_manual_plan("set_star", star, now=now)
+            if plan.get("allowed"):
+                plan["daily_bootstrap"] = True
+            return plan
     return {}
+
+
+def _is_daily_bootstrap_action(action):
+    return str(action or "").strip() in {"observe", "set_star"}
+
+
+def _daily_bootstrap_retry_until(observed, now):
+    observed = observed if isinstance(observed, dict) else {}
+    error_at = float(observed.get("auto_last_error_at", 0) or 0)
+    if error_at <= 0:
+        return 0.0
+    return float(error_at + TIANXING_DAILY_BOOTSTRAP_RETRY_SEC)
+
+
+def _daily_plan_should_wait_for_backoff(plan, observed, now):
+    if not (plan or {}).get("allowed"):
+        return False
+    action = str((plan or {}).get("action") or "").strip()
+    if action not in {"observe", "set_star", "predict", "change_fate"}:
+        return False
+    auto_next_time = float((observed or {}).get("auto_next_time", 0) or 0)
+    if auto_next_time <= now:
+        return False
+    last_action = str((observed or {}).get("auto_last_action") or "").strip()
+    last_error = str((observed or {}).get("auto_last_error") or "").strip()
+    if last_action != action or not last_error:
+        return False
+    if _is_daily_bootstrap_action(action) and (plan or {}).get("daily_bootstrap"):
+        retry_until = _daily_bootstrap_retry_until(observed, now)
+        return retry_until <= 0 or now < retry_until
+    return True
+
+
+def _tianxing_send_fail_backoff_sec(action, observed, now):
+    if _is_daily_bootstrap_action(action):
+        today_key = get_day_key(now)
+        if action == "observe" and not _has_available_stars_today(observed, now):
+            return TIANXING_DAILY_BOOTSTRAP_RETRY_SEC
+        if action == "set_star":
+            fixed_day = str((observed or {}).get("fixed_star_day") or "").strip()
+            if fixed_day != today_key:
+                return TIANXING_DAILY_BOOTSTRAP_RETRY_SEC
+            if _in_daily_star_correction_window(now) and _has_available_stars_today(observed, now):
+                return TIANXING_DAILY_BOOTSTRAP_RETRY_SEC
+    return TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC
+
+
+def _tianxing_auto_send_priority(plan):
+    if (plan or {}).get("daily_bootstrap") and _is_daily_bootstrap_action((plan or {}).get("action")):
+        return "reactive"
+    return "normal"
 
 
 async def _run_tianxing_scheduler_unlocked(now):
@@ -5083,6 +5183,8 @@ async def _run_tianxing_scheduler_unlocked(now):
     daily_plan = _build_tianxing_daily_plan(observed, config, now)
     auto_next_time = float(observed.get("auto_next_time", 0) or 0)
     if auto_next_time > 0 and now < auto_next_time:
+        if _daily_plan_should_wait_for_backoff(daily_plan, observed, now):
+            return
         if not daily_plan and not _should_wake_tianxing_timeline(observed, config, now):
             return
 
@@ -5105,7 +5207,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             )
             return
     elif (
-        not observed.get("fixed_star")
+        not _effective_fixed_star(observed, now)
         and str(observed.get("available_stars_source") or "").strip() != "observe"
         and config.get("auto_observe_enabled")
     ):
@@ -5157,6 +5259,11 @@ async def _run_tianxing_scheduler_unlocked(now):
         _record_tianxing_dry_run(observed, now, plan, config)
         return
 
+    await _execute_tianxing_auto_plan(plan, observed, config, now)
+
+
+async def _execute_tianxing_auto_plan(plan, observed, config, now):
+    action = str((plan or {}).get("action") or "")
     _note_tianxing_auto_pending(observed, now, plan, config)
     state["tianxing_observation"] = observed
     save_state()
@@ -5165,7 +5272,7 @@ async def _run_tianxing_scheduler_unlocked(now):
         plan["command"],
         track=True,
         max_retry=0,
-        priority="normal",
+        priority=_tianxing_auto_send_priority(plan),
         source_module="天星宗",
         op_id=f"tianxing-auto-{action}-{int(now)}",
     )
@@ -5180,7 +5287,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             observed,
             now,
             action,
-            sent_at + TIANXING_AUTO_SEND_FAIL_BACKOFF_SEC,
+            sent_at + _tianxing_send_fail_backoff_sec(action, observed, now),
             "天星宗自动命令发送失败或被安全策略拦截",
         )
         return
@@ -5196,6 +5303,43 @@ async def _run_tianxing_scheduler_unlocked(now):
     observed["auto_next_time"] = observed["auto_pending_due_at"]
     state["tianxing_observation"] = observed
     save_state()
+
+
+async def _run_tianxing_daily_bootstrap_scheduler_unlocked(now):
+    """Run only the 0点日切观命/定命 preflight for the current identity."""
+    now = float(now if now is not None else time.time())
+    if not state.get("tianxing_enabled"):
+        return {"active": False, "reason": "disabled"}
+    if not is_module_available("天星宗"):
+        return {"active": False, "reason": "unavailable"}
+    dirty_fields = _dirty_tianxing_time_fields(state.get("tianxing_observation"))
+    if dirty_fields:
+        return {"active": False, "reason": f"dirty:{','.join(dirty_fields)}"}
+
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    if is_tianxing_automation_paused(now=now, observed=observed):
+        _apply_tianxing_pause_wait(observed, now, config=config)
+        return {"active": False, "reason": "paused"}
+    if _handle_tianxing_auto_pending(observed, now):
+        return {"active": True, "reason": "pending"}
+
+    plan = _build_tianxing_daily_plan(observed, config, now)
+    if not plan.get("allowed") or not plan.get("daily_bootstrap"):
+        return {"active": False, "reason": plan.get("reason") or "no_daily_bootstrap"}
+    if _daily_plan_should_wait_for_backoff(plan, observed, now):
+        return {"active": False, "reason": "backoff", "next_time": observed.get("auto_next_time", 0)}
+    if str(plan.get("action") or "") in {"set_star", "predict", "change_fate"} and config.get("strategy_dry_run_enabled"):
+        _record_tianxing_dry_run(observed, now, plan, config)
+        return {"active": True, "reason": "dry_run"}
+
+    await _execute_tianxing_auto_plan(plan, observed, config, now)
+    return {"active": True, "action": plan.get("action") or "", "command": plan.get("command") or ""}
+
+
+async def run_tianxing_daily_bootstrap_scheduler(now):
+    async with _auto_lock():
+        return await _run_tianxing_daily_bootstrap_scheduler_unlocked(now)
 
 
 async def run_tianxing_scheduler(now):
@@ -5242,12 +5386,18 @@ def get_tianxing_status_text():
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
     pause_state = get_tianxing_automation_pause_state(observed=observed)
+    effective_fixed_star = _effective_fixed_star(observed, time.time())
+    fixed_star_text = effective_fixed_star or (
+        f"未定（旧：{observed.get('fixed_star')} / {observed.get('fixed_star_day') or '未知日期'}）"
+        if observed.get("fixed_star")
+        else "未记录"
+    )
     lines = [
         "🌌 天星宗",
         f"- 模块：{'开启' if state.get('tianxing_enabled') else '关闭'}（被动观察，手动动作受控发送）",
         f"- 自动接管：{_format_tianxing_pause_line(pause_state)}",
         "- 命令：.观命｜.定命 <紫微|天府|太阴|贪狼>｜.推命/.改命 <闭关|炼制|探索|斗法>｜.天机盘｜.消劫",
-        f"- 命星：可选 {_format_list(observed.get('available_stars'))}｜已定 {observed.get('fixed_star') or '未记录'}",
+        f"- 命星：可选 {_format_list(observed.get('available_stars'))}｜已定 {fixed_star_text}",
         f"- 推命：{observed.get('current_prediction') or '无'}｜{fmt_abs_ts(observed.get('current_prediction_until', 0))}（{fmt_remaining(observed.get('current_prediction_until', 0))}）",
         f"- 改命：{observed.get('current_change') or '无'}｜{fmt_abs_ts(observed.get('current_change_until', 0))}（{fmt_remaining(observed.get('current_change_until', 0))}）",
         f"- 天机/逆命劫：{observed.get('tianji_value', 0)} / {observed.get('calamity_count', 0)}",
@@ -5308,6 +5458,7 @@ __all__ = [
     "run_tianxing_retreat_farm_scheduler",
     "run_tianxing_craft_farm_scheduler",
     "run_tianxing_consume_craft_prediction",
+    "run_tianxing_daily_bootstrap_scheduler",
     "run_tianxing_scheduler",
     "run_tianxing_timeline_scheduler",
     "set_tianxing_auto_config",

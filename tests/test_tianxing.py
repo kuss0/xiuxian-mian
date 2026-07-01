@@ -4322,6 +4322,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".观命", send_mock.await_args.args[0])
         self.assertEqual("天星宗", send_mock.await_args.kwargs["source_module"])
+        self.assertEqual("reactive", send_mock.await_args.kwargs["priority"])
         self.assertEqual("observe", observed["auto_last_action"])
         self.assertEqual("observe", observed["auto_pending_action"])
         self.assertEqual(".观命", observed["auto_pending_command"])
@@ -4350,7 +4351,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
     async def test_scheduler_bypasses_future_auto_time_for_daily_set_star(self):
         now = local_ts(0, 2, year=2026, month=6, day=30)
         observation = {
-            "last_observed_at": now - 30,
+            "last_observed_at": now - 90,
             "available_stars": ["紫微", "贪狼", "天府"],
             "available_stars_source": "observe",
             "available_stars_day": tianxing.get_day_key(now),
@@ -4373,7 +4374,270 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         send_mock.assert_awaited_once()
         self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("reactive", send_mock.await_args.kwargs["priority"])
         self.assertEqual("set_star", observed["auto_last_action"])
+
+    async def test_scheduler_treats_yesterday_fixed_star_as_unset_for_daily_set_star(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "贪狼",
+            "fixed_star_day": tianxing.get_day_key(now - 86400),
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 6 * 3600,
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "timeline_enabled": True,
+            "auto_set_star_enabled": True,
+            "daily_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+        })
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("set_star", observed["auto_last_action"])
+
+    async def test_scheduler_respects_set_star_send_failure_backoff(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 90,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "贪狼",
+            "fixed_star_day": tianxing.get_day_key(now - 86400),
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 1800,
+            "auto_last_action": "set_star",
+            "auto_last_error": "天星宗自动命令发送失败或被安全策略拦截",
+            "auto_last_error_at": now - 60,
+            "auto_last_plan": ".定命 贪狼",
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "timeline_enabled": True,
+            "auto_set_star_enabled": True,
+            "daily_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+        })
+
+        send_mock.assert_not_called()
+        self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
+
+    async def test_scheduler_retries_daily_set_star_after_short_bootstrap_backoff(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "贪狼",
+            "fixed_star_day": tianxing.get_day_key(now - 86400),
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 1800,
+            "auto_last_action": "set_star",
+            "auto_last_error": "天星宗自动命令发送失败或被安全策略拦截",
+            "auto_last_error_at": now - tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC - 1,
+            "auto_last_plan": ".定命 贪狼",
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "timeline_enabled": True,
+            "auto_set_star_enabled": True,
+            "daily_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+        })
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("reactive", send_mock.await_args.kwargs["priority"])
+        self.assertEqual("set_star", observed["auto_last_action"])
+
+    async def test_scheduler_corrects_wrong_same_day_star_during_bootstrap_window(self):
+        now = local_ts(2, 30, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "天府",
+            "fixed_star_day": tianxing.get_day_key(now),
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 6 * 3600,
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "timeline_enabled": True,
+            "auto_set_star_enabled": True,
+            "daily_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+        })
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("reactive", send_mock.await_args.kwargs["priority"])
+        self.assertEqual("set_star", observed["auto_last_action"])
+
+    async def test_scheduler_does_not_correct_same_day_star_after_bootstrap_window(self):
+        now = local_ts(7, 0, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "天府",
+            "fixed_star_day": tianxing.get_day_key(now),
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 6 * 3600,
+        }
+
+        send_mock, observed = await self._run_with_observation(observation, now=now, config={
+            "timeline_enabled": True,
+            "auto_set_star_enabled": True,
+            "daily_set_star_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+        })
+
+        send_mock.assert_not_called()
+        self.assertNotEqual("set_star", observed.get("auto_last_action"))
+
+    async def test_daily_set_star_send_failure_uses_short_bootstrap_backoff(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "",
+            "fixed_star_day": "",
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now - 1,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = observation
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "auto_set_star_enabled": True,
+                "daily_set_star_enabled": True,
+                "strategy_dry_run_enabled": False,
+                "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+            }
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=None) as send_mock:
+                await tianxing.run_tianxing_scheduler(now)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
+        self.assertEqual(now + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
+
+    async def test_daily_wrong_star_correction_send_failure_uses_short_bootstrap_backoff(self):
+        now = local_ts(2, 30, year=2026, month=6, day=30)
+        observation = {
+            "last_observed_at": now - 30,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "天府",
+            "fixed_star_day": tianxing.get_day_key(now),
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now - 1,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = observation
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "auto_set_star_enabled": True,
+                "daily_set_star_enabled": True,
+                "strategy_dry_run_enabled": False,
+                "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+            }
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=None) as send_mock:
+                await tianxing.run_tianxing_scheduler(now)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
+        self.assertEqual("天星宗自动命令发送失败或被安全策略拦截", observed["auto_last_error"])
+        self.assertEqual(now + tianxing.TIANXING_DAILY_BOOTSTRAP_RETRY_SEC, observed["auto_next_time"])
+
+    async def test_action_guard_closes_tianxing_set_star_when_module_has_no_pending(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now + 5,
+                "auto_pending_action": "",
+                "auto_pending_sent_at": 0,
+                "auto_pending_due_at": 0,
+            }
+            action_guard.note_sent(".定命 贪狼", self.identity_id, 9102, sent_at=now)
+
+        allowed, reason = action_guard.before_send(".定命 贪狼", send_as_id=self.identity_id, now=now + 10)
+
+        self.assertTrue(allowed, reason)
+
+    async def test_action_guard_allows_tianxing_preclaim_without_sent_message_id(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 30,
+                "auto_pending_action": "set_star",
+                "auto_pending_msg_id": 0,
+                "auto_pending_sent_at": now,
+                "auto_pending_due_at": now + 90,
+            }
+
+        allowed, reason = action_guard.before_send(".定命 贪狼", send_as_id=self.identity_id, now=now + 1)
+
+        self.assertTrue(allowed, reason)
+
+    async def test_action_guard_blocks_tianxing_pending_with_sent_message_id(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 30,
+                "auto_pending_action": "set_star",
+                "auto_pending_msg_id": 9102,
+                "auto_pending_sent_at": now,
+                "auto_pending_due_at": now + 90,
+            }
+
+        allowed, reason = action_guard.before_send(".定命 贪狼", send_as_id=self.identity_id, now=now + 1)
+
+        self.assertFalse(allowed)
+        self.assertIn("等待游戏回复", reason)
 
     async def test_scheduler_drains_pending_release_even_outside_farm_window(self):
         now = 1_780_000_000.0

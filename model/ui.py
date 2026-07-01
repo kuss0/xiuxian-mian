@@ -215,7 +215,7 @@ from .state import (
     update_send_as_profile,
     use_identity,
 )
-from .timing import fmt_abs_ts
+from .timing import fmt_abs_ts, get_day_key
 
 _ui_server = None
 _STORAGE_BAG_TRANSFER_METHODS = {"basic", "gift", "blocked", "unknown"}
@@ -3757,6 +3757,13 @@ def get_identity_ui_snapshot(send_as_id):
         tianxing_auto_config = normalize_tianxing_auto_config(identity_state.get("tianxing_auto_config"))
         tianxing_timeline = _format_tianxing_timeline_ui(identity_state.get("tianxing_timeline_state"))
         tianxing_pause_state = get_tianxing_automation_pause_state(observed=tianxing_observation)
+        tianxing_fixed_star = str(tianxing_observation.get("fixed_star") or "").strip()
+        tianxing_fixed_star_day = str(tianxing_observation.get("fixed_star_day") or "").strip()
+        tianxing_fixed_star_today = (
+            tianxing_fixed_star
+            if tianxing_fixed_star and (not tianxing_fixed_star_day or tianxing_fixed_star_day == get_day_key(time.time()))
+            else ""
+        )
 
         snapshot = {
             "send_as_id": send_as_id,
@@ -3830,7 +3837,9 @@ def get_identity_ui_snapshot(send_as_id):
                 "auto_config": tianxing_auto_config,
                 "timeline": tianxing_timeline,
                 "available_stars": list(tianxing_observation.get("available_stars") or []),
-                "fixed_star": tianxing_observation.get("fixed_star") or "",
+                "fixed_star": tianxing_fixed_star_today,
+                "stale_fixed_star": tianxing_fixed_star if tianxing_fixed_star and not tianxing_fixed_star_today else "",
+                "fixed_star_day": tianxing_fixed_star_day,
                 "current_prediction": tianxing_observation.get("current_prediction") or "",
                 "current_prediction_until": fmt_abs_ts(tianxing_observation.get("current_prediction_until", 0) or 0),
                 "current_change": tianxing_observation.get("current_change") or "",

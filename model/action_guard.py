@@ -801,6 +801,26 @@ def _runtime_has_inflight_action(action_key, identity_state, now):
             and _float_state(identity_state, "mulan_reply_due_at") > now
             and _phase_is(identity_state, "mulan_phase", phase_by_action[action_key])
         )
+    if action_key in {"tianxing_panel", "tianxing_observe", "tianxing_set_star", "tianxing_predict", "tianxing_change_fate", "tianxing_clear_calamity"}:
+        observed = _dict_state(identity_state, "tianxing_observation")
+        expected_pending = {
+            "tianxing_panel": "panel",
+            "tianxing_observe": "observe",
+            "tianxing_set_star": "set_star",
+            "tianxing_predict": "predict",
+            "tianxing_change_fate": "change_fate",
+            "tianxing_clear_calamity": "clear_calamity",
+        }.get(action_key)
+        pending_action = str(observed.get("auto_pending_action") or "").strip()
+        pending_msg_id = _int_dict_state(observed, "auto_pending_msg_id")
+        pending_sent_at = _float_dict_state(observed, "auto_pending_sent_at")
+        pending_due_at = _float_dict_state(observed, "auto_pending_due_at")
+        last_observed_at = _float_dict_state(observed, "last_observed_at")
+        if pending_action != expected_pending or pending_msg_id <= 0 or pending_sent_at <= 0 or pending_due_at <= 0:
+            return False
+        if last_observed_at >= pending_sent_at:
+            return False
+        return pending_due_at > now
     if action_key == "explore_rift":
         if _int_state(identity_state, "explore_rift_reply_to_msg_id") > 0 and _float_state(identity_state, "explore_rift_reply_due_at") > now:
             return True
