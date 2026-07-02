@@ -441,6 +441,8 @@ class TianxingParserTests(unittest.TestCase):
 class TianxingManualPlanTests(unittest.TestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._action_guard_recent_snapshot = dict(action_guard._recent_closed_command_guards)
+        action_guard._recent_closed_command_guards.clear()
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
@@ -456,6 +458,8 @@ class TianxingManualPlanTests(unittest.TestCase):
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        action_guard._recent_closed_command_guards.clear()
+        action_guard._recent_closed_command_guards.update(self._action_guard_recent_snapshot)
 
     def test_panel_and_observe_are_manual_queries_without_prior_observation(self):
         now = 1_780_000_000.0
@@ -1866,6 +1870,8 @@ class TianxingManualPlanTests(unittest.TestCase):
 class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._action_guard_recent_snapshot = dict(action_guard._recent_closed_command_guards)
+        action_guard._recent_closed_command_guards.clear()
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
@@ -1881,6 +1887,8 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        action_guard._recent_closed_command_guards.clear()
+        action_guard._recent_closed_command_guards.update(self._action_guard_recent_snapshot)
 
     def _prepare_timeline_identity(self, now, *, tianji_value=12, auto_change=False, dry_run=False):
         state_module.state["tianxing_enabled"] = True
@@ -1911,6 +1919,12 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         return [
             {"route": "闭关", "kind": "farm", "start_at": now + 60, "end_at": now + 3600, "weight": 8},
         ]
+
+    def _seed_predict_recent_guard(self, now, command=".推命 闭关"):
+        sent_at = float(now - 10)
+        action_guard.note_sent(command, self.identity_id, 99002, sent_at=sent_at)
+        self.assertTrue(action_guard.close_action("tianxing_predict", send_as_id=self.identity_id, reason="test", now=now - 5))
+        return sent_at + action_guard.POST_CLOSE_REPEAT_GUARD_SEC + 2
 
     async def test_timeline_set_star_confirmation_schedules_prompt_replan(self):
         now = 1_780_000_000.0
@@ -2254,6 +2268,26 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_called()
         self.assertEqual("sending", result["phase"])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 1))
+
+    async def test_timeline_waits_for_action_guard_short_window_before_send(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
+            expected_next_time = self._seed_predict_recent_guard(now)
+            with (
+                patch.object(tianxing, "save_state"),
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now))
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        send_mock.assert_not_awaited()
+        self.assertEqual("waiting_send", result["phase"])
+        self.assertEqual("waiting_send", timeline["phase"])
+        self.assertEqual("pending", timeline["active_step"]["status"])
+        self.assertEqual(expected_next_time, timeline["blocked_until"])
+        self.assertEqual(expected_next_time, timeline["active_step"]["guard_until"])
+        self.assertIn("同命令短窗保护", timeline["last_error"])
 
     async def test_timeline_send_queue_timeout_waits_for_calibration(self):
         now = 1_780_000_000.0
@@ -3197,6 +3231,8 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
 class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self._meta_state_snapshot = copy.deepcopy(state_module._meta_state)
+        self._action_guard_recent_snapshot = dict(action_guard._recent_closed_command_guards)
+        action_guard._recent_closed_command_guards.clear()
         state_module._meta_state["identity_ids"] = []
         state_module._meta_state["identity_states"] = {}
         state_module._meta_state["send_as_profiles"] = {}
@@ -3212,6 +3248,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         state_module._meta_state.clear()
         state_module._meta_state.update(copy.deepcopy(self._meta_state_snapshot))
+        action_guard._recent_closed_command_guards.clear()
+        action_guard._recent_closed_command_guards.update(self._action_guard_recent_snapshot)
 
     def _active_config(self, now, **overrides):
         local_time = time.localtime(now)
@@ -3244,6 +3282,12 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
             "calamity_count": 0,
         }
         state_module.state["tianxing_timeline_state"] = {}
+
+    def _seed_craft_recent_guard(self, now, command=".炼制 玄铁剑"):
+        sent_at = float(now - 10)
+        action_guard.note_sent(command, self.identity_id, 99001, sent_at=sent_at)
+        self.assertTrue(action_guard.close_action("tianxing_craft_farm", send_as_id=self.identity_id, reason="test", now=now - 5))
+        return sent_at + action_guard.POST_CLOSE_REPEAT_GUARD_SEC + 2
 
     def test_retreat_farm_defaults_are_closed_and_dry_run(self):
         config = tianxing.normalize_tianxing_auto_config({})
@@ -4231,6 +4275,43 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sent_waiting_reply", craft["phase"])
         self.assertEqual("玄铁剑", craft["last_item"])
 
+    async def test_craft_farm_waits_for_action_guard_short_window_before_send(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=3)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            state_module.state["tianxing_timeline_state"] = {
+                "released_routes": {
+                    "炼制": {"released_at": now, "plan_id": "test", "reason": "炼制已放行", "basis": "prediction"}
+                }
+            }
+            expected_next_time = self._seed_craft_recent_guard(now)
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_craft_farm_scheduler(
+                    now,
+                    config=self._active_config(
+                        now,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                        craft_farm_daily_limit=42,
+                    ),
+                )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        self.assertEqual("action_guard_waiting", result["stage"])
+        self.assertEqual("", result["command"])
+        send_mock.assert_not_awaited()
+        self.assertEqual("ready", craft["phase"])
+        self.assertEqual("action_guard_waiting", craft["last_result"])
+        self.assertEqual(expected_next_time, craft["next_time"])
+        self.assertIn("同命令短窗保护", craft["last_error"])
+
     async def test_consume_craft_prediction_sends_craft_outside_farm_window(self):
         now = 1_780_000_000.0
         sent_msg = SimpleNamespace(id=9409, sent_at=now)
@@ -4265,6 +4346,40 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sent_waiting_reply", craft["phase"])
         self.assertEqual("consume_craft_prediction", craft["last_action"])
         self.assertEqual(9409, craft["last_msg_id"])
+
+    async def test_consume_craft_prediction_waits_for_action_guard_short_window_before_send(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_identity(now, tianji_value=32)
+            state_module.state["tianxing_observation"]["current_prediction"] = "炼制"
+            state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
+            expected_next_time = self._seed_craft_recent_guard(now)
+            with (
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(tianxing, "save_state"),
+            ):
+                result = await tianxing.run_tianxing_consume_craft_prediction(
+                    now,
+                    reason="野外历练前消费炼制推命",
+                    config=self._active_config(
+                        now,
+                        farm_route="炼制",
+                        craft_farm_enabled=True,
+                        craft_farm_dry_run_enabled=False,
+                        craft_farm_item="玄铁剑",
+                        farm_window_start="00:00",
+                        farm_window_duration_min=1,
+                    ),
+                )
+            craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
+
+        self.assertEqual("action_guard_waiting", result["stage"])
+        self.assertEqual("consume_craft_prediction", result["action"])
+        self.assertEqual("", result["command"])
+        send_mock.assert_not_awaited()
+        self.assertEqual("ready", craft["phase"])
+        self.assertEqual(expected_next_time, craft["next_time"])
+        self.assertIn("同命令短窗保护", craft["last_error"])
 
     async def test_consume_craft_prediction_calibrates_expired_wait_instead_of_recrafting(self):
         now = 1_780_000_000.0

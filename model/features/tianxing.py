@@ -2666,6 +2666,30 @@ def _close_tianxing_guard_for_timeline_step(step, now, *, reason="timeline_send_
     return bool(action_guard.close_by_family(family, send_as_id=send_as_id, reason=reason, now=now))
 
 
+def _tianxing_action_guard_wait(command, now):
+    command = str(command or "").strip()
+    if not command:
+        return 0.0, ""
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return 0.0, ""
+    try:
+        from .. import action_guard
+    except Exception:
+        return 0.0, ""
+    try:
+        blocked_until, reason = action_guard.get_timing_blocked_until(command, send_as_id=send_as_id, now=now)
+    except Exception:
+        return 0.0, ""
+    try:
+        blocked_until = float(blocked_until or 0)
+    except (TypeError, ValueError, OverflowError):
+        blocked_until = 0.0
+    if blocked_until <= float(now or time.time()):
+        return 0.0, ""
+    return blocked_until + 2, str(reason or "安全锁短窗保护中，延后发送。").strip()
+
+
 def _prune_tianxing_released_routes(observed, now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     released = dict(timeline.get("released_routes") or {})
@@ -3648,6 +3672,20 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         return timeline
 
     if _defer_tianxing_timeline_step_for_phaseful_summary(timeline, step, now, action, plan.get("command") or ""):
+        return timeline
+
+    guard_next_time, guard_reason = _tianxing_action_guard_wait(plan.get("command") or "", now)
+    if guard_next_time > now:
+        step = dict(step or {})
+        step["status"] = "pending"
+        step["last_error"] = guard_reason
+        step["guard_until"] = float(guard_next_time)
+        timeline["phase"] = "waiting_send"
+        timeline["blocked_until"] = float(guard_next_time)
+        timeline["last_error"] = guard_reason
+        timeline["updated_at"] = float(now)
+        _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+        _timeline_audit(timeline, now, "action_guard_waiting", action=action, arg=arg, reason=guard_reason, next_time=guard_next_time)
         return timeline
 
     step = dict(step or {})
@@ -4761,6 +4799,18 @@ async def run_tianxing_retreat_farm_scheduler(now, *, deep_retreat_phase="", con
     if payload:
         return dict(plan, stage="phaseful_deferred", reason=payload["error"], next_time=payload["next_time"])
 
+    guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
+    if guard_next_time > now:
+        farm["phase"] = "ready"
+        farm["last_command"] = ""
+        farm["last_result"] = "action_guard_waiting"
+        farm["last_error"] = guard_reason
+        farm["next_time"] = float(guard_next_time)
+        _retreat_farm_audit(farm, now, "action_guard_waiting", command=command, reason=guard_reason, next_time=farm["next_time"])
+        _set_tianxing_retreat_farm_state(farm, now)
+        save_state()
+        return dict(plan, stage="action_guard_waiting", command="", reason=guard_reason, next_time=farm["next_time"])
+
     msg = await send_game_command(
         command,
         track=True,
@@ -4901,6 +4951,34 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
                 next_time=payload["next_time"],
             )
 
+        guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
+        if guard_next_time > now:
+            farm["phase"] = "ready"
+            farm["last_command"] = ""
+            farm["last_result"] = "action_guard_waiting"
+            farm["last_error"] = guard_reason
+            farm["next_time"] = float(guard_next_time)
+            _craft_farm_audit(
+                farm,
+                now,
+                "consume_craft_prediction_calibration_guard_wait",
+                command=command,
+                reason=guard_reason,
+                next_time=farm["next_time"],
+            )
+            _set_tianxing_craft_farm_state(farm, now)
+            save_state()
+            return _craft_farm_result(
+                "action_guard_waiting",
+                active=True,
+                takeover=False,
+                handoff=True,
+                reason=guard_reason,
+                action="consume_craft_prediction_calibration",
+                command="",
+                next_time=farm["next_time"],
+            )
+
         msg = await send_game_command(
             command,
             track=True,
@@ -4997,6 +5075,34 @@ async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
             action="consume_craft_prediction",
             command=command,
             next_time=payload["next_time"],
+        )
+
+    guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
+    if guard_next_time > now:
+        farm["phase"] = "ready"
+        farm["last_command"] = ""
+        farm["last_result"] = "action_guard_waiting"
+        farm["last_error"] = guard_reason
+        farm["next_time"] = float(guard_next_time)
+        _craft_farm_audit(
+            farm,
+            now,
+            "consume_craft_prediction_guard_wait",
+            command=command,
+            reason=guard_reason,
+            next_time=farm["next_time"],
+        )
+        _set_tianxing_craft_farm_state(farm, now)
+        save_state()
+        return _craft_farm_result(
+            "action_guard_waiting",
+            active=True,
+            takeover=False,
+            handoff=True,
+            reason=guard_reason,
+            action="consume_craft_prediction",
+            command="",
+            next_time=farm["next_time"],
         )
 
     msg = await send_game_command(
@@ -5583,6 +5689,18 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
     )
     if payload:
         return dict(plan, stage="phaseful_deferred", reason=payload["error"], next_time=payload["next_time"])
+
+    guard_next_time, guard_reason = _tianxing_action_guard_wait(command, now)
+    if guard_next_time > now:
+        farm["phase"] = "ready"
+        farm["last_command"] = ""
+        farm["last_result"] = "action_guard_waiting"
+        farm["last_error"] = guard_reason
+        farm["next_time"] = float(guard_next_time)
+        _craft_farm_audit(farm, now, "action_guard_waiting", command=command, reason=guard_reason, next_time=farm["next_time"])
+        _set_tianxing_craft_farm_state(farm, now)
+        save_state()
+        return dict(plan, stage="action_guard_waiting", command="", reason=guard_reason, next_time=farm["next_time"])
 
     msg = await send_game_command(
         command,
