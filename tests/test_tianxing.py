@@ -476,6 +476,41 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertEqual(".观命", observe["command"])
         self.assertEqual("tianxing_observe", observe["family"])
 
+    def test_route_success_without_prediction_banner_marks_prediction_consumed(self):
+        now = 1_780_000_000.0
+        craft_text = (
+            "炼制结束！\n"
+            "共开炉 1 次，成功 1 次。\n"
+            "最终获得【玄铁剑】x1！\n\n"
+            "命盘【贪狼】照命，主偏财夺势，闭关奇遇与探寻收获更盛，"
+            "斗法更擅夺取战果，但炼制时心火浮躁。"
+        )
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "fixed_star": "贪狼",
+                "current_prediction": "炼制",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 120,
+                "prediction_consumed_route": "",
+                "prediction_consumed_at": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 42,
+            }
+
+            applied = tianxing.apply_tianxing_passive(craft_text, now=now, family="tianxing_craft_farm")
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+            preflight = tianxing.build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now)
+
+        self.assertTrue(applied)
+        self.assertEqual("炼制", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
+        self.assertFalse(tianxing._has_active_craft_prediction(now, observed))
+        self.assertFalse(tianxing._has_active_unconsumed_prediction("炼制", observed, now))
+        self.assertNotEqual("prediction_conflict", preflight["stage"])
+
     def test_set_star_requires_recent_available_star_and_allows_switching_fixed_star(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):

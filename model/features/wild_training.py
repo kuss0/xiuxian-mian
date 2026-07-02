@@ -172,6 +172,7 @@ def _tianxing_timeline_prepare_failed(timeline_result, followup):
     return phase in {
         "ack_timeout",
         "calibrating",
+        "send_blocked",
         "blocked_replan",
         "panel_calibration_timeout_replan",
         "need_tianji_for_change",

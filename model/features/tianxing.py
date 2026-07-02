@@ -1699,6 +1699,12 @@ def apply_tianxing_passive(text, now=None, family=""):
             observed["current_prediction_until"] = 0
         elif prediction_hit_text and consumed_route and not _normalize_route_choice(observed.get("current_prediction"), ""):
             observed["current_prediction"] = consumed_route
+    elif parsed.get("result") in {"success", "failure"}:
+        observed_route = _normalize_route_choice(parsed.get("last_route"), "")
+        if observed_route and previous_prediction == observed_route and _has_active_unconsumed_prediction(observed_route, observed, now):
+            _consume_tianxing_released_route(observed_route, now, reason="route_result_observed_without_prediction")
+            observed["prediction_consumed_route"] = observed_route
+            observed["prediction_consumed_at"] = now
     elif parsed.get("result") in {"modifier", "change_triggered"}:
         observed_route = _normalize_route_choice(parsed.get("last_route"), "")
         if observed_route:
@@ -4865,7 +4871,11 @@ def _has_active_craft_prediction(now, observed=None):
     observed = normalize_tianxing_observation(observed if observed is not None else state.get("tianxing_observation"))
     current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
-    return current_prediction == "炼制" and prediction_until > float(now or time.time())
+    return (
+        current_prediction == "炼制"
+        and prediction_until > float(now or time.time())
+        and not _is_prediction_consumed("炼制", observed, now)
+    )
 
 
 async def run_tianxing_consume_craft_prediction(now, *, reason="", config=None):
