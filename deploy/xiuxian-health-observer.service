@@ -1,12 +1,12 @@
 [Unit]
 Description=Xiuxian read-only runtime health observer
-After=network.target xiuxian.service xiuxian-safety-watchdog.service
-Wants=xiuxian.service xiuxian-safety-watchdog.service
+After=network.target xiuxian.service xiuxian-listener.service xiuxian-safety-watchdog.service
+Wants=xiuxian.service xiuxian-listener.service xiuxian-safety-watchdog.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/xiuxian-main
-ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/tools/health_observer.py --project-root /opt/xiuxian-main --interval 60 --journal-window-sec 600 --max-event-lines 5000
+ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/tools/health_observer.py --project-root /opt/xiuxian-main --service xiuxian.service --service xiuxian-listener.service --service xiuxian-safety-watchdog.service --interval 60 --journal-window-sec 600 --max-event-lines 5000
 Restart=always
 RestartSec=10
 

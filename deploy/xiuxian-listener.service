@@ -1,0 +1,15 @@
+[Unit]
+Description=Xiuxian Telegram message listener sidecar
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/xiuxian-main
+ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/xiuxian.py --listener
+Restart=always
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

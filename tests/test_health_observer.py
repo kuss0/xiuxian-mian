@@ -266,6 +266,47 @@ class HealthObserverTests(unittest.TestCase):
         with patch.dict(os.environ, {"XIUXIAN_DB_FILE": "/tmp/custom.db"}, clear=True):
             self.assertEqual(Path("/tmp/custom.db"), health_observer.state_db_path(project_root))
 
+    def test_listener_heartbeat_path_follows_xiuxian_environment(self):
+        with patch.dict(os.environ, {"XIUXIAN_STATE_DIR": "/var/state"}, clear=True):
+            self.assertEqual(
+                Path("/var/state/listener_heartbeat.json"),
+                health_observer.listener_heartbeat_path(Path("/repo")),
+            )
+        with patch.dict(os.environ, {"XIUXIAN_DATA_DIR": "/srv/xiuxian-data"}, clear=True):
+            self.assertEqual(
+                Path("/srv/xiuxian-data/state/listener_heartbeat.json"),
+                health_observer.listener_heartbeat_path(Path("/repo")),
+            )
+
+    def test_health_payload_flags_stale_listener_heartbeat(self):
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service", "xiuxian-listener.service"),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-02 01:30:00",
+            "status": "ok",
+            "services": {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-listener.service": {"ActiveState": "active", "SubState": "running"},
+            },
+            "listener": {"available": True, "status": "running", "age_sec": 240, "path": "/tmp/listener_heartbeat.json"},
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {"message_state": {}, "db_state": {}},
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        self.assertTrue(any(item["code"] == "listener_heartbeat_stale" for item in payload["risk_reasons"]))
+
     def test_business_message_analysis_flags_repeated_active_status_queries(self):
         now = 1_780_500_000.0
         events = [

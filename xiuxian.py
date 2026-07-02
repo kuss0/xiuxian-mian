@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 MODEL_DIR = PROJECT_ROOT / "model"
 WATCH_FILES = (PROJECT_ROOT / "xiuxian.py",)
 WORKER_ARG = "--worker"
+LISTENER_ARG = "--listener"
 SCAN_INTERVAL_SEC = 2
 RELOAD_STABLE_SEC = 10
 WORKER_STOP_TIMEOUT_SEC = 20
@@ -391,8 +392,21 @@ def _run_worker():
         traceback.print_exc()
 
 
+def _run_listener():
+    from model.listener_sidecar import main
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
+    except Exception:
+        traceback.print_exc()
+
+
 if __name__ == '__main__':
-    if WORKER_ARG in sys.argv[1:]:
+    if LISTENER_ARG in sys.argv[1:]:
+        _run_listener()
+    elif WORKER_ARG in sys.argv[1:]:
         _run_worker()
     else:
         _run_supervisor()

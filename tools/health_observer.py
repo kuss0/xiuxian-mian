@@ -491,6 +491,35 @@ def current_message_log(project_root: Path, now: float | None = None) -> Path:
     return messages_dir / f"{datetime.fromtimestamp(now or time.time()).strftime('%Y-%m-%d')}.log"
 
 
+def listener_heartbeat_path(project_root: Path) -> Path:
+    if os.environ.get("XIUXIAN_STATE_DIR"):
+        state_dir = Path(os.environ["XIUXIAN_STATE_DIR"])
+    elif os.environ.get("XIUXIAN_DATA_DIR"):
+        state_dir = Path(os.environ["XIUXIAN_DATA_DIR"]) / "state"
+    else:
+        state_dir = project_root / "data" / "state"
+    return state_dir / "listener_heartbeat.json"
+
+
+def read_listener_heartbeat(project_root: Path, now: float) -> dict[str, object]:
+    path = listener_heartbeat_path(project_root)
+    if not path.exists():
+        return {"available": False, "path": str(path)}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {"available": False, "path": str(path), "error": str(exc)}
+    if not isinstance(payload, dict):
+        return {"available": False, "path": str(path), "error": "invalid heartbeat payload"}
+    updated_at = parse_optional_epoch(payload.get("updated_at"))
+    last_event_at = parse_optional_epoch(payload.get("last_event_at"))
+    payload["available"] = True
+    payload["path"] = str(path)
+    payload["age_sec"] = int(max(0, float(now or 0) - updated_at)) if updated_at > 0 else None
+    payload["last_event_age_sec"] = int(max(0, float(now or 0) - last_event_at)) if last_event_at > 0 else None
+    return payload
+
+
 def state_db_path(project_root: Path) -> Path:
     if os.environ.get("XIUXIAN_DB_FILE"):
         return Path(os.environ["XIUXIAN_DB_FILE"])
@@ -1425,6 +1454,27 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
                 service=service,
             )
 
+    listener = snapshot.get("listener") if isinstance(snapshot.get("listener"), dict) else {}
+    listener_expected = "xiuxian-listener.service" in services or bool(listener.get("available"))
+    if listener_expected:
+        listener_service = services.get("xiuxian-listener.service") if isinstance(services.get("xiuxian-listener.service"), dict) else {}
+        listener_running = listener_service.get("ActiveState") == "active" and listener_service.get("SubState") == "running"
+        if not listener.get("available"):
+            severity = "error" if listener_running else "warn"
+            add_risk("listener_heartbeat_missing", "listener heartbeat missing", severity, 18 if listener_running else 8, path=listener.get("path"))
+        else:
+            age_sec = listener.get("age_sec")
+            try:
+                age_value = int(age_sec)
+            except Exception:
+                age_value = 999999
+            if age_value > 180:
+                add_risk("listener_heartbeat_stale", f"listener heartbeat stale: {age_value}s", "error", 22, path=listener.get("path"))
+            elif age_value > 90:
+                add_risk("listener_heartbeat_lag", f"listener heartbeat lag: {age_value}s", "warn", 8, path=listener.get("path"))
+            if listener_running and str(listener.get("status") or "") not in {"running", ""}:
+                add_risk("listener_status_not_running", f"listener heartbeat status: {listener.get('status')}", "warn", 8, path=listener.get("path"))
+
     safety = snapshot.get("safety") if isinstance(snapshot.get("safety"), dict) else {}
     if safety.get("fused"):
         add_risk("safety_watchdog_fused", "safety watchdog fused marker exists", "critical", 40, path=safety.get("path"), reason=safety.get("reason"))
@@ -1531,6 +1581,16 @@ def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
             "pending_total": db_state.get("pending_total"),
             "overdue_pending": (db_state.get("overdue_pending") or [])[:5],
             "stuck_phases": (db_state.get("stuck_phases") or [])[:5],
+        })
+    listener = snapshot.get("listener") if isinstance(snapshot.get("listener"), dict) else {}
+    if listener:
+        refs.append({
+            "kind": "listener_heartbeat",
+            "path": listener.get("path"),
+            "available": listener.get("available"),
+            "age_sec": listener.get("age_sec"),
+            "registered_accounts": listener.get("registered_accounts"),
+            "last_event_at": listener.get("last_event_at_text"),
         })
     safety = snapshot.get("safety") if isinstance(snapshot.get("safety"), dict) else {}
     if safety.get("fused"):
@@ -1651,6 +1711,7 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
     now = time.time()
     service_states = read_service_states(cfg.services)
     safety = read_safety_state(cfg.project_root)
+    listener = read_listener_heartbeat(cfg.project_root, now)
     watchdog_reset_epoch = parse_optional_epoch(safety.get("reset_at_epoch"))
     foreign_processes = read_foreign_xiuxian_processes(cfg.project_root)
     journals = [
@@ -1685,6 +1746,7 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
         "status": status,
         "reasons": reasons,
         "services": service_states,
+        "listener": listener,
         "safety": safety,
         "foreign_xiuxian_processes": foreign_processes,
         "journals": journals,

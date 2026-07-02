@@ -107,6 +107,30 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual(123, rows[0]["reply_to_msg_id"])
         self.assertEqual(456, rows[0]["topic_id"])
 
+    def test_game_group_message_log_deduplicates_across_runtime_claim_reset(self):
+        event = SimpleNamespace(
+            id=91021,
+            chat_id=-100910,
+            sender_id=7900199668,
+            raw_text="【跨进程测试】",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(app_message_log, "MESSAGES_DIR", tmpdir), \
+                patch.object(app_message_log, "get_game_group_id", return_value=-100910):
+            app_message_log._append_game_group_message_log(event, event_type="message")
+            app_runtime._runtime_log_claims.clear()
+            app_message_log._append_game_group_message_log(event, event_type="message")
+            rows = [
+                json.loads(line)
+                for line in next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(91021, rows[0]["message_id"])
+
     def test_game_group_message_log_records_listener_account(self):
         listener_client = SimpleNamespace(name="listener")
         event = SimpleNamespace(
@@ -128,6 +152,48 @@ class MessageLogButtonTests(unittest.TestCase):
                 json.loads(line)
                 for line in next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").splitlines()
             ]
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(301299112, rows[0]["listener_account_id"])
+
+    def test_game_group_message_log_listener_filter_does_not_consume_blocked_event(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        listener_client = SimpleNamespace(name="listener")
+        other_client = SimpleNamespace(name="other")
+        blocked_event = SimpleNamespace(
+            id=91012,
+            chat_id=-100910,
+            sender_id=7900199668,
+            client=other_client,
+            raw_text="【测试】",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+        allowed_event = SimpleNamespace(
+            id=91012,
+            chat_id=-100910,
+            sender_id=7900199668,
+            client=listener_client,
+            raw_text="【测试】",
+            reply_to=SimpleNamespace(reply_to_msg_id=0, reply_to_top_id=0),
+            message=SimpleNamespace(buttons=[]),
+        )
+        try:
+            state_module._meta_state["game_group_id"] = -100910
+            state_module.set_game_listener_account_ids([301299112])
+            with tempfile.TemporaryDirectory() as tmpdir, \
+                    patch.object(app_message_log, "MESSAGES_DIR", tmpdir), \
+                    patch.object(app_message_log, "get_game_group_id", return_value=-100910), \
+                    patch.object(app_message_log, "get_all_clients", return_value={301299112: listener_client, 8659059191: other_client}):
+                app_message_log._append_game_group_message_log(blocked_event, event_type="message")
+                app_message_log._append_game_group_message_log(allowed_event, event_type="message")
+                rows = [
+                    json.loads(line)
+                    for line in next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").splitlines()
+                ]
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
 
         self.assertEqual(1, len(rows))
         self.assertEqual(301299112, rows[0]["listener_account_id"])

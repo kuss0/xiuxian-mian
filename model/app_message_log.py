@@ -1,7 +1,11 @@
 import asyncio
+import hashlib
 import json
+import os
+import sqlite3
 import traceback
 from datetime import datetime
+from datetime import timedelta
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
@@ -13,6 +17,7 @@ from .log_retention import cleanup_message_logs
 from .runtime import send_audit_log
 from .state import (
     get_game_group_id,
+    get_game_listener_account_ids,
     get_replica_dispatch_group_ids,
     get_replica_dispatch_listener_account_map,
     get_replica_group_ids,
@@ -26,6 +31,20 @@ _MESSAGE_LOG_BUTTON_TEXT_MAX_LEN = 128
 _REPLICA_BOT_CONNECT_TIMEOUT_SEC = 3
 _REPLICA_BOT_READ_TIMEOUT_SEC = 8
 _REPLICA_BOT_TOTAL_TIMEOUT_SEC = 12
+_MESSAGE_LOG_LEDGER_SCHEMA = """
+CREATE TABLE IF NOT EXISTS message_log_events (
+    event_key TEXT PRIMARY KEY,
+    log_file TEXT NOT NULL,
+    claimed_at TEXT NOT NULL
+)
+"""
+_MESSAGE_LOG_LEDGER_RETENTION_DAYS = 3
+_message_log_ledger_last_cleanup_at = 0.0
+_message_log_ledger_initialized = set()
+
+
+def _message_log_ledger_file():
+    return os.path.join(MESSAGES_DIR, "message-log-events.sqlite3")
 
 
 def _truncate_message_log_button_text(text):
@@ -135,29 +154,85 @@ def _build_message_log_payload(event, *, event_type="message"):
     return now, payload
 
 
-def _write_message_log(log_file, payload):
+def _message_log_event_key(scope, payload):
+    event_type = str((payload or {}).get("event_type") or "message").strip() or "message"
+    chat_id = int((payload or {}).get("chat_id") or 0)
+    message_id = int((payload or {}).get("message_id") or 0)
+    if chat_id == 0 or message_id <= 0:
+        return ""
+    key = f"{scope}:{event_type}:{chat_id}:{message_id}"
+    if event_type == "edit":
+        raw_text = str((payload or {}).get("text") or "")
+        text_hash = hashlib.blake2s(raw_text.encode("utf-8", "surrogatepass"), digest_size=8).hexdigest()
+        key = f"{key}:{text_hash}"
+    return key
+
+
+def _claim_message_log_file_event(log_file, payload, *, scope="game"):
+    global _message_log_ledger_last_cleanup_at
+    event_key = _message_log_event_key(scope, payload)
+    if not event_key:
+        return True
     try:
-        cleanup_message_logs()
-        with open(log_file, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        os.makedirs(MESSAGES_DIR, exist_ok=True)
+        ledger_file = _message_log_ledger_file()
+        with sqlite3.connect(ledger_file, timeout=2.0) as conn:
+            if ledger_file not in _message_log_ledger_initialized:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(_MESSAGE_LOG_LEDGER_SCHEMA)
+                _message_log_ledger_initialized.add(ledger_file)
+            now_ts = datetime.now(TZ_LOCAL)
+            now_epoch = now_ts.timestamp()
+            if now_epoch - _message_log_ledger_last_cleanup_at >= 3600:
+                cutoff = now_ts - timedelta(days=_MESSAGE_LOG_LEDGER_RETENTION_DAYS)
+                conn.execute(
+                    "DELETE FROM message_log_events WHERE claimed_at < ?",
+                    (cutoff.strftime("%Y-%m-%d %H:%M:%S UTC+8"),),
+                )
+                _message_log_ledger_last_cleanup_at = now_epoch
+            try:
+                conn.execute(
+                    "INSERT INTO message_log_events(event_key, log_file, claimed_at) VALUES (?, ?, ?)",
+                    (event_key, os.path.basename(str(log_file or "")), now_ts.strftime("%Y-%m-%d %H:%M:%S UTC+8")),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            return True
     except Exception:
         print(traceback.format_exc())
+        return True
+
+
+def _write_message_log(log_file, payload, *, scope="game"):
+    try:
+        cleanup_message_logs()
+        if not _claim_message_log_file_event(log_file, payload, scope=scope):
+            return False
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        print(traceback.format_exc())
+        return False
 
 
 def _append_game_group_message_log(event, *, event_type="message"):
     if event.chat_id != get_game_group_id():
         return
-    if not _claim_runtime_log_event(event, event_type=event_type):
-        return
-    now, payload = _build_message_log_payload(event, event_type=event_type)
     listener_account_id = _get_group_event_listener_account_id(
         event,
         [get_game_group_id()],
         {},
     )
+    configured_listener_ids = set(get_game_listener_account_ids())
+    if configured_listener_ids and listener_account_id not in configured_listener_ids:
+        return
+    if not _claim_runtime_log_event(event, event_type=event_type):
+        return
+    now, payload = _build_message_log_payload(event, event_type=event_type)
     if listener_account_id:
         payload["listener_account_id"] = listener_account_id
-    _write_message_log(f"{MESSAGES_DIR}/{now.strftime('%Y-%m-%d')}.log", payload)
+    _write_message_log(f"{MESSAGES_DIR}/{now.strftime('%Y-%m-%d')}.log", payload, scope="game")
 
 
 def _get_group_event_listener_account_id(event, group_ids, listener_map):
@@ -229,7 +304,7 @@ def _append_replica_group_message_log(event, *, event_type="message"):
         return True
     now, payload = _build_message_log_payload(event, event_type=event_type)
     payload["listener_account_id"] = listener_account_id
-    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload)
+    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload, scope="replica")
     return True
 
 
@@ -242,7 +317,7 @@ def _append_replica_dispatch_group_message_log(event, *, event_type="message"):
     now, payload = _build_message_log_payload(event, event_type=event_type)
     payload["listener_account_id"] = listener_account_id
     payload["replica_group_role"] = "dispatch"
-    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload)
+    _write_message_log(f"{MESSAGES_DIR}/replica-{now.strftime('%Y-%m-%d')}.log", payload, scope="replica_dispatch")
     return True
 
 
