@@ -88,7 +88,7 @@ IDENTITY_BOOL_FIELDS = {
     "explore_rift_manual_required", "explore_rift_rebirth_required",
     "tree_maturing_logged", "world_boss_exhausted",
 }
-META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
+META_STATE_KEYS = {"my_user_id", "game_group_id", "game_bot_ids", "game_listener_account_ids", "game_topic_id", "forum_topics", "forum_topics_updated_at", "auto_delete_sent_messages", "global_enabled", "tiandao_judgement_enabled", "tiandao_judgement_pending", "tianji_quiz_pending", "divination_pending_exchanges", "divination_run_state", "world_boss_run_state", "guanxing_monitor_enabled", "guanxing_monitor_targets", "guanxing_shift_target", "guanxing_shift_delay_sec", "next_guanxing_monitor_notify_time", "guanxing_monitor_slot_key", "guanxing_monitor_slot_start_at", "guanxing_monitor_slot_end_at", "guanxing_monitor_seen_panel", "guanxing_monitor_matched_keyword", "guanxing_monitor_matched_value", "guanxing_monitor_last_evolution_value", "guanxing_monitor_last_seen_at", "guanxing_monitor_last_notified_slot_key", "guanxing_round_state", "formation_run_state", "replica_group_id", "replica_group_ids", "replica_listener_account_id", "replica_listener_account_map", "replica_dispatch_group_ids", "replica_dispatch_listener_account_map", "replica_participant_identity_ids", "replica_dispatch_participant_identity_ids", "replica_run_state", "replica_virtual_hall_match_enabled_map", "replica_query_aggregator_config", "replica_success_cooldown_hours", "storage_bag_api_config", "storage_bag_records", "storage_bag_item_rules", "tianjige_dao_path_records", "dungeon_join_run_state", "dungeon_quiet_until", "dungeon_quiet_reason", "dungeon_quiet_last_log_at", "mulan_intel_state", "send_as_profiles", "identity_states", "identity_ids", "quiz_learning_watchers", "quiz_ai_config", "accounts", "identity_account_map", "identity_membership_initialized", "delayed_actions_state"}
 REPLICA_SUCCESS_COOLDOWN_HOUR_DEFAULTS = {
     "cangkun": 2.5,
 }
@@ -801,6 +801,7 @@ GLOBAL_STATE_DEFAULTS = {
     "my_user_id": None,
     "game_group_id": int(GAME_GROUP_ID),
     "game_bot_ids": sorted(int(bot_id) for bot_id in GAME_BOT_IDS),
+    "game_listener_account_ids": [],
     "game_topic_id": int(GAME_TOPIC_ID),
     "forum_topics": [],
     "forum_topics_updated_at": 0,
@@ -1743,6 +1744,36 @@ def set_game_group_id(group_id):
     return get_game_group_id()
 
 
+def _normalize_game_listener_account_ids(account_ids):
+    if isinstance(account_ids, str):
+        candidates = account_ids.replace("，", ",").replace("\n", ",").split(",")
+    else:
+        candidates = account_ids or []
+    normalized = []
+    seen = set()
+    for raw_id in candidates:
+        try:
+            account_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if account_id <= 0 or account_id in seen:
+            continue
+        seen.add(account_id)
+        normalized.append(account_id)
+    return normalized
+
+
+def get_game_listener_account_ids():
+    normalized = _normalize_game_listener_account_ids(_meta_state.get("game_listener_account_ids") or [])
+    _meta_state["game_listener_account_ids"] = normalized
+    return list(normalized)
+
+
+def set_game_listener_account_ids(account_ids):
+    _meta_state["game_listener_account_ids"] = _normalize_game_listener_account_ids(account_ids)
+    return get_game_listener_account_ids()
+
+
 def get_game_bot_ids():
     return _normalize_game_bot_ids(_meta_state.get("game_bot_ids") or [])
 
@@ -2553,6 +2584,7 @@ __all__ = [
     "get_current_identity_id",
     "get_game_group_id",
     "get_game_bot_ids",
+    "get_game_listener_account_ids",
     "get_game_topic_id",
     "get_forum_topics",
     "get_forum_topics_updated_at",
@@ -2634,6 +2666,7 @@ __all__ = [
     "resolve_identity_selector_detail",
     "set_game_group_id",
     "set_game_bot_ids",
+    "set_game_listener_account_ids",
     "set_game_topic_id",
     "set_dungeon_join_run_state",
     "set_replica_group_id",

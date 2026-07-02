@@ -150,6 +150,13 @@ def _append_game_group_message_log(event, *, event_type="message"):
     if not _claim_runtime_log_event(event, event_type=event_type):
         return
     now, payload = _build_message_log_payload(event, event_type=event_type)
+    listener_account_id = _get_group_event_listener_account_id(
+        event,
+        [get_game_group_id()],
+        {},
+    )
+    if listener_account_id:
+        payload["listener_account_id"] = listener_account_id
     _write_message_log(f"{MESSAGES_DIR}/{now.strftime('%Y-%m-%d')}.log", payload)
 
 

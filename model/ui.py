@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import traceback
@@ -4868,6 +4869,56 @@ async def ui_delete_identity(send_as_id, actor_id=None):
 
 # ================= 多账号登录 =================
 _pending_login = {}  # {session_key: {mode, status, client, flow_id, ...}}
+_pending_login_locks = {}
+ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC = 10
+ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC = 12
+ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC = 5
+ACCOUNT_LOGIN_QR_REUSE_MIN_REMAINING_SEC = 10
+
+
+def _get_pending_login_lock(session_key):
+    session_key = str(session_key or "")
+    lock = _pending_login_locks.get(session_key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _pending_login_locks[session_key] = lock
+    return lock
+
+
+def _pending_login_api_matches(pending, api_id, api_hash):
+    if not isinstance(pending, dict):
+        return False
+    return (
+        pending.get("api_id") == api_id
+        and str(pending.get("api_hash") or "") == str(api_hash or "")
+    )
+
+
+def _build_pending_qr_payload(pending):
+    pending = pending or {}
+    qr_expires_at = float(pending.get("qr_expires_at", 0) or 0)
+    qr_url = pending.get("qr_url") or ""
+    status = str(pending.get("status") or "waiting_scan")
+    payload = {
+        "status": status,
+        "qr_expires_at": fmt_abs_ts(qr_expires_at),
+        "qr_expires_at_ts": qr_expires_at,
+        "remaining_sec": max(0, int(qr_expires_at - time.time())),
+    }
+    if qr_url:
+        payload.update({
+            "qr_url": qr_url,
+            "qr_svg": _build_qr_svg_markup(qr_url),
+        })
+    return payload
+
+
+def _format_account_login_error(prefix, exc):
+    if isinstance(exc, asyncio.TimeoutError):
+        return f"{prefix}: Telegram 连接超时，请稍后重试"
+    if isinstance(exc, sqlite3.OperationalError):
+        return f"{prefix}: 本地 session 数据库暂不可写，已清理临时登录态，请稍后重试"
+    return f"{prefix}: {exc}"
 
 
 def _get_runtime_accounts_snapshot():
@@ -5054,7 +5105,7 @@ async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_file
     tc = pending.get("client")
     if disconnect and tc:
         try:
-            await tc.disconnect()
+            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
         except Exception:
             pass
 
@@ -5266,35 +5317,50 @@ async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None)
     except ValueError as e:
         return False, str(e), None
 
-    await _clear_pending_login(session_key, remove_temp_files=True)
+    async with _get_pending_login_lock(session_key):
+        pending = _pending_login.get(session_key)
+        if (
+            pending
+            and pending.get("mode") == "phone"
+            and pending.get("status") == "waiting_code"
+            and str(pending.get("phone") or "") == phone
+            and _pending_login_api_matches(pending, parsed_api_id, parsed_api_hash)
+        ):
+            return True, "验证码已发送，请查收", None
 
-    tc = create_account_client(f"pending_{session_key}", api_id=parsed_api_id, api_hash=parsed_api_hash)
-    await tc.connect()
-    try:
-        sent = await tc.send_code_request(phone)
+        await _clear_pending_login(session_key, remove_temp_files=True)
+
+        flow_id = str(time.time_ns())
+        tc = create_account_client(f"pending_{session_key}", api_id=parsed_api_id, api_hash=parsed_api_hash)
         _pending_login[session_key] = {
             "mode": "phone",
-            "status": "waiting_code",
-            "message": "验证码已发送，请查收",
+            "status": "connecting",
+            "message": "正在连接 Telegram 并发送验证码",
             "client": tc,
             "phone": phone,
-            "phone_code_hash": sent.phone_code_hash,
+            "phone_code_hash": "",
             "qr_url": "",
             "qr_expires_at": 0,
             "wait_task": None,
-            "flow_id": str(time.time_ns()),
+            "flow_id": flow_id,
             "account_id": 0,
             "api_id": parsed_api_id,
             "api_hash": parsed_api_hash,
         }
-        return True, "验证码已发送", None
-    except Exception as e:
         try:
-            await tc.disconnect()
-        except Exception:
-            pass
-        _cleanup_pending_temp_session_files(session_key)
-        return False, f"发送验证码失败: {e}", None
+            await asyncio.wait_for(tc.connect(), timeout=ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC)
+            sent = await asyncio.wait_for(tc.send_code_request(phone), timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC)
+            _set_pending_login_state(
+                session_key,
+                flow_id,
+                status="waiting_code",
+                message="验证码已发送，请查收",
+                phone_code_hash=sent.phone_code_hash,
+            )
+            return True, "验证码已发送", None
+        except Exception as e:
+            await _clear_pending_login(session_key, remove_temp_files=True)
+            return False, _format_account_login_error("发送验证码失败", e), None
 
 
 async def ui_account_login_qr_start(session_key, api_id=None, api_hash=None):
@@ -5302,53 +5368,65 @@ async def ui_account_login_qr_start(session_key, api_id=None, api_hash=None):
         parsed_api_id, parsed_api_hash = _parse_account_login_api(api_id, api_hash)
     except ValueError as e:
         return False, str(e), None
-    await _clear_pending_login(session_key, remove_temp_files=True)
 
-    tc = create_account_client(f"pending_{session_key}", api_id=parsed_api_id, api_hash=parsed_api_hash)
-    await tc.connect()
-    try:
-        ignored_ids = []
-        for raw_account_id in get_accounts().keys():
-            try:
-                ignored_ids.append(int(raw_account_id))
-            except (TypeError, ValueError):
-                continue
-        qr_login = await tc.qr_login(ignored_ids=ignored_ids or None)
-        expires_at = float(qr_login.expires.timestamp()) if getattr(qr_login, "expires", None) else 0
+    async with _get_pending_login_lock(session_key):
+        pending = _pending_login.get(session_key)
+        if pending and pending.get("mode") == "qr" and _pending_login_api_matches(pending, parsed_api_id, parsed_api_hash):
+            status = str(pending.get("status") or "")
+            expires_at = float(pending.get("qr_expires_at", 0) or 0)
+            if (
+                status == "waiting_scan"
+                and pending.get("qr_url")
+                and expires_at > time.time() + ACCOUNT_LOGIN_QR_REUSE_MIN_REMAINING_SEC
+            ):
+                return True, "复用当前二维码，请使用 Telegram 扫码确认", _build_pending_qr_payload(pending)
+
+        await _clear_pending_login(session_key, remove_temp_files=True)
+
         flow_id = str(time.time_ns())
+        tc = create_account_client(f"pending_{session_key}", api_id=parsed_api_id, api_hash=parsed_api_hash)
         _pending_login[session_key] = {
             "mode": "qr",
-            "status": "waiting_scan",
-            "message": "请使用已登录 Telegram 的手机扫码确认",
+            "status": "connecting",
+            "message": "正在生成二维码",
             "client": tc,
             "phone": "",
             "phone_code_hash": "",
-            "qr_url": qr_login.url,
-            "qr_expires_at": expires_at,
+            "qr_url": "",
+            "qr_expires_at": 0,
             "wait_task": None,
             "flow_id": flow_id,
             "account_id": 0,
             "api_id": parsed_api_id,
             "api_hash": parsed_api_hash,
         }
-        wait_task = asyncio.create_task(_wait_pending_qr_login(session_key, flow_id, tc, qr_login))
-        _set_pending_login_state(session_key, flow_id, wait_task=wait_task)
-        qr_svg = _build_qr_svg_markup(qr_login.url)
-        return True, "二维码已生成，请使用 Telegram 扫码确认", {
-            "status": "waiting_scan",
-            "qr_url": qr_login.url,
-            "qr_svg": qr_svg,
-            "qr_expires_at": fmt_abs_ts(expires_at),
-            "qr_expires_at_ts": expires_at,
-            "remaining_sec": max(0, int(expires_at - time.time())),
-        }
-    except Exception as e:
         try:
-            await tc.disconnect()
-        except Exception:
-            pass
-        _cleanup_pending_temp_session_files(session_key)
-        return False, f"生成二维码失败: {e}", None
+            await asyncio.wait_for(tc.connect(), timeout=ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC)
+            ignored_ids = []
+            for raw_account_id in get_accounts().keys():
+                try:
+                    ignored_ids.append(int(raw_account_id))
+                except (TypeError, ValueError):
+                    continue
+            qr_login = await asyncio.wait_for(
+                tc.qr_login(ignored_ids=ignored_ids or None),
+                timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC,
+            )
+            expires_at = float(qr_login.expires.timestamp()) if getattr(qr_login, "expires", None) else 0
+            _set_pending_login_state(
+                session_key,
+                flow_id,
+                status="waiting_scan",
+                message="请使用已登录 Telegram 的手机扫码确认",
+                qr_url=qr_login.url,
+                qr_expires_at=expires_at,
+            )
+            wait_task = asyncio.create_task(_wait_pending_qr_login(session_key, flow_id, tc, qr_login))
+            _set_pending_login_state(session_key, flow_id, wait_task=wait_task)
+            return True, "二维码已生成，请使用 Telegram 扫码确认", _build_pending_qr_payload(_pending_login.get(session_key))
+        except Exception as e:
+            await _clear_pending_login(session_key, remove_temp_files=True)
+            return False, _format_account_login_error("生成二维码失败", e), None
 
 
 def ui_account_login_qr_status(session_key):
@@ -5381,51 +5459,56 @@ def ui_account_login_qr_status(session_key):
 
 
 async def ui_account_login_cancel(session_key):
-    await _clear_pending_login(session_key, remove_temp_files=True)
+    async with _get_pending_login_lock(session_key):
+        await _clear_pending_login(session_key, remove_temp_files=True)
     return True, "已取消当前登录流程"
 
 
 async def ui_account_login_verify(code, session_key, password=None):
-    pending = _pending_login.get(session_key)
-    if not pending:
-        return False, "登录会话已过期，请重新开始", None
+    async with _get_pending_login_lock(session_key):
+        pending = _pending_login.get(session_key)
+        if not pending:
+            return False, "登录会话已过期，请重新开始", None
 
-    tc = pending.get("client")
-    mode = str(pending.get("mode") or "phone")
-    phone = pending.get("phone") or ""
-    phone_code_hash = pending.get("phone_code_hash") or ""
-    flow_id = pending.get("flow_id")
-    status = str(pending.get("status") or "")
-    code = (code or "").strip()
+        tc = pending.get("client")
+        mode = str(pending.get("mode") or "phone")
+        phone = pending.get("phone") or ""
+        phone_code_hash = pending.get("phone_code_hash") or ""
+        flow_id = pending.get("flow_id")
+        status = str(pending.get("status") or "")
+        code = (code or "").strip()
 
-    if mode == "qr" and password and status != "need_2fa":
-        return False, "当前二维码登录尚未进入两步验证", None
-
-    try:
-        if password:
-            await tc.sign_in(password=password)
-        elif mode == "phone":
-            await tc.sign_in(phone, code, phone_code_hash=phone_code_hash)
-        else:
+        if mode == "qr" and password and status != "need_2fa":
             return False, "当前二维码登录尚未进入两步验证", None
-    except Exception as e:
-        err_str = str(e)
-        if "Two-steps verification" in err_str or "SessionPasswordNeeded" in err_str or "2FA" in err_str:
-            _set_pending_login_state(session_key, flow_id, status="need_2fa", message="需要两步验证密码")
-            return False, "need_2fa", None
-        await _clear_pending_login(session_key, remove_temp_files=True)
-        return False, f"登录失败: {e}", None
 
-    try:
-        ok, message, account_id = await _finalize_account_login(session_key, tc, flow_id=flow_id)
-    except Exception as e:
-        await _clear_pending_login(session_key, disconnect=False, remove_temp_files=True)
-        return False, f"登录失败: {e}", None
+        try:
+            if password:
+                await asyncio.wait_for(tc.sign_in(password=password), timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC)
+            elif mode == "phone":
+                await asyncio.wait_for(
+                    tc.sign_in(phone, code, phone_code_hash=phone_code_hash),
+                    timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC,
+                )
+            else:
+                return False, "当前二维码登录尚未进入两步验证", None
+        except Exception as e:
+            err_str = str(e)
+            if "Two-steps verification" in err_str or "SessionPasswordNeeded" in err_str or "2FA" in err_str:
+                _set_pending_login_state(session_key, flow_id, status="need_2fa", message="需要两步验证密码")
+                return False, "need_2fa", None
+            await _clear_pending_login(session_key, remove_temp_files=True)
+            return False, _format_account_login_error("登录失败", e), None
 
-    await _clear_pending_login(session_key, disconnect=False, remove_temp_files=False)
-    if not ok:
-        return False, message, None
-    return True, message, account_id
+        try:
+            ok, message, account_id = await _finalize_account_login(session_key, tc, flow_id=flow_id)
+        except Exception as e:
+            await _clear_pending_login(session_key, disconnect=False, remove_temp_files=True)
+            return False, _format_account_login_error("登录失败", e), None
+
+        await _clear_pending_login(session_key, disconnect=False, remove_temp_files=False)
+        if not ok:
+            return False, message, None
+        return True, message, account_id
 
 
 async def ui_get_send_as_peers(account_id):

@@ -3187,6 +3187,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("02:00-05:00,06:00-11:50,14:30-17:30,23:00-23:35", config["farm_windows_text"])
         self.assertEqual(120, config["craft_farm_interval_min_sec"])
         self.assertEqual(300, config["craft_farm_interval_max_sec"])
+        self.assertEqual(75, config["craft_farm_reply_timeout_sec"])
         self.assertTrue(config["craft_farm_off_window_enabled"])
         self.assertEqual(1800, config["craft_farm_off_window_interval_min_sec"])
         self.assertEqual(3600, config["craft_farm_off_window_interval_max_sec"])
@@ -3243,6 +3244,14 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(120, config["craft_farm_interval_min_sec"])
         self.assertEqual(300, config["craft_farm_interval_max_sec"])
+
+    def test_legacy_craft_reply_timeout_migrates_to_current_default(self):
+        config = tianxing.normalize_tianxing_auto_config({
+            "farm_route": "炼制",
+            "craft_farm_reply_timeout_sec": 120,
+        })
+
+        self.assertEqual(75, config["craft_farm_reply_timeout_sec"])
 
     def test_craft_farm_outside_window_schedules_next_preferred_window(self):
         now = local_ts(12)

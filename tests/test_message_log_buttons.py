@@ -107,6 +107,52 @@ class MessageLogButtonTests(unittest.TestCase):
         self.assertEqual(123, rows[0]["reply_to_msg_id"])
         self.assertEqual(456, rows[0]["topic_id"])
 
+    def test_game_group_message_log_records_listener_account(self):
+        listener_client = SimpleNamespace(name="listener")
+        event = SimpleNamespace(
+            id=91011,
+            chat_id=-100910,
+            sender_id=7900199668,
+            client=listener_client,
+            raw_text="【测试】",
+            reply_to=SimpleNamespace(reply_to_msg_id=123, reply_to_top_id=456),
+            message=SimpleNamespace(buttons=[]),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(app_message_log, "MESSAGES_DIR", tmpdir), \
+                patch.object(app_message_log, "get_game_group_id", return_value=-100910), \
+                patch.object(app_message_log, "get_all_clients", return_value={301299112: listener_client}):
+            app_message_log._append_game_group_message_log(event, event_type="message")
+            rows = [
+                json.loads(line)
+                for line in next(Path(tmpdir).glob("*.log")).read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(1, len(rows))
+        self.assertEqual(301299112, rows[0]["listener_account_id"])
+
+    def test_game_group_listener_filter_uses_configured_account_ids(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        listener_client = SimpleNamespace(name="listener")
+        other_client = SimpleNamespace(name="other")
+        try:
+            state_module._meta_state["game_group_id"] = -100910
+            state_module.set_game_listener_account_ids([301299112, 7538826434])
+            allowed_event = SimpleNamespace(chat_id=-100910, client=listener_client)
+            blocked_event = SimpleNamespace(chat_id=-100910, client=other_client)
+
+            with patch.object(app, "get_all_clients", return_value={301299112: listener_client, 8659059191: other_client}):
+                self.assertTrue(app._is_game_group_listener_event(allowed_event))
+                self.assertFalse(app._is_game_group_listener_event(blocked_event))
+
+            state_module.set_game_listener_account_ids([])
+            with patch.object(app, "get_all_clients", return_value={8659059191: other_client}):
+                self.assertTrue(app._is_game_group_listener_event(blocked_event))
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
     def test_game_group_edit_log_keeps_distinct_text_for_same_message(self):
         first_edit = SimpleNamespace(
             id=91002,

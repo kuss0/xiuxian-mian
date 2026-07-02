@@ -67,6 +67,20 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertTrue(persistence.load_state())
                 self.assertEqual(9, state_module.get_divination_daily_limit(identity_id))
 
+    def test_game_listener_account_ids_roundtrip(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                state_module.set_game_listener_account_ids([301299112, "7538826434", 301299112, 0, "bad"])
+
+                self.assertTrue(persistence.save_state())
+                state_module._meta_state.clear()
+                state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+                self._reset_persistence_connection()
+                self.assertTrue(persistence.load_state())
+
+        self.assertEqual([301299112, 7538826434], state_module.get_game_listener_account_ids())
+
     def test_save_state_preserves_external_safety_watchdog_pause(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

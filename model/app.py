@@ -207,6 +207,7 @@ from .state import (
     get_accounts,
     get_game_bot_ids,
     get_game_group_id,
+    get_game_listener_account_ids,
     get_global_enabled,
     get_identity_account,
     get_identity_enabled,
@@ -797,6 +798,35 @@ def _is_identity_owner_event(event, send_as_id):
         if expected_client is None:
             return False
     return getattr(event, "client", None) is expected_client
+
+
+def _get_event_listener_account_id(event):
+    event_client = getattr(event, "client", None)
+    for account_id, account_client in get_all_clients().items():
+        if event_client is account_client:
+            try:
+                return int(account_id or 0)
+            except (TypeError, ValueError):
+                return 0
+    if event_client is client:
+        try:
+            return int(state.get("my_user_id") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _is_game_group_listener_event(event):
+    try:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+    except (TypeError, ValueError):
+        chat_id = 0
+    if chat_id != int(get_game_group_id() or 0):
+        return True
+    listener_ids = set(get_game_listener_account_ids())
+    if not listener_ids:
+        return True
+    return _get_event_listener_account_id(event) in listener_ids
 
 
 async def _resolve_event_reply(event):
@@ -1607,6 +1637,9 @@ async def on_message(event):
         await _handle_replica_dispatch_group_command(event)
         return
 
+    if not _is_game_group_listener_event(event):
+        return
+
     _append_game_group_message_log(event, event_type="message")
 
     if _claim_runtime_event(event, scope="log_group_command"):
@@ -1733,6 +1766,9 @@ async def on_message_edited(event):
             print(traceback.format_exc())
         return
     if _append_replica_dispatch_group_message_log(event, event_type="edit"):
+        return
+
+    if not _is_game_group_listener_event(event):
         return
 
     _append_game_group_message_log(event, event_type="edit")

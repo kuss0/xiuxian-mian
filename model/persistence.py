@@ -21,6 +21,7 @@ from .state import (
     ensure_identity_registered,
     get_game_group_id,
     get_game_bot_ids,
+    get_game_listener_account_ids,
     get_game_topic_id,
     get_forum_topics,
     get_forum_topics_updated_at,
@@ -65,6 +66,7 @@ from .state import (
     set_global_enabled,
     set_tiandao_judgement_enabled,
     set_game_bot_ids,
+    set_game_listener_account_ids,
     get_quiz_learning_watchers,
     set_game_group_id,
     set_game_topic_id,
@@ -2269,6 +2271,11 @@ _META_STATE_CODEC = {
         get_game_bot_ids,
         _encode_meta_json,
         lambda value: set_game_bot_ids(_decode_meta_json(value, [])),
+    ),
+    "game_listener_account_ids": (
+        get_game_listener_account_ids,
+        _encode_meta_json,
+        lambda value: set_game_listener_account_ids(_decode_meta_json(value, [])),
     ),
     "game_topic_id": (
         get_game_topic_id,
