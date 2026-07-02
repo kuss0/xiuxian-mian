@@ -521,7 +521,8 @@ class HealthObserverTests(unittest.TestCase):
                     );
                     CREATE TABLE identity_module_state(
                         send_as_id INTEGER PRIMARY KEY,
-                        wild_training_enabled INTEGER NOT NULL DEFAULT 0
+                        wild_training_enabled INTEGER NOT NULL DEFAULT 0,
+                        deep_retreat_enabled INTEGER NOT NULL DEFAULT 0
                     );
                     CREATE TABLE identity_timers(
                         send_as_id INTEGER PRIMARY KEY,
@@ -546,9 +547,17 @@ class HealthObserverTests(unittest.TestCase):
                     );
                     """
                 )
-                conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(42, 'tester', '测试号')")
-                conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
-                conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now - 60,))
+                for identity_id in range(1, 131):
+                    conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(?, ?, '')", (identity_id, f"active{identity_id}"))
+                    conn.execute("INSERT INTO identity_module_state(send_as_id, deep_retreat_enabled) VALUES(?, 1)", (identity_id,))
+                    conn.execute("INSERT INTO identity_timers(send_as_id, next_deep_retreat_time) VALUES(?, ?)", (identity_id, now + 3600))
+                    conn.execute(
+                        "INSERT INTO identity_runtime_state(send_as_id, deep_retreat_phase) VALUES(?, 'running')",
+                        (identity_id,),
+                    )
+                conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(1000, 'tester', '测试号')")
+                conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(1000, 1)")
+                conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(1000, ?)", (now - 60,))
                 conn.execute(
                     """
                     INSERT INTO identity_runtime_state(
@@ -556,7 +565,7 @@ class HealthObserverTests(unittest.TestCase):
                         wild_training_reply_to_msg_id,
                         wild_training_reply_due_at,
                         wild_training_last_result
-                    ) VALUES(42, 99, ?, '已出发：深入')
+                    ) VALUES(1000, 99, ?, '已出发：深入')
                     """,
                     (now + 300,),
                 )
@@ -568,6 +577,7 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(1, result["module_pending_total"])
         self.assertEqual("wild_training", result["module_pending_samples"][0]["module"])
         self.assertEqual(99, result["module_pending_samples"][0]["pending"][0]["msg_id"])
+        self.assertFalse(any(item["identity_id"] == 1000 for item in result["module_summary"]))
 
     def test_module_summary_ignores_stale_due_without_pending_anchor(self):
         now = 1_780_500_000.0

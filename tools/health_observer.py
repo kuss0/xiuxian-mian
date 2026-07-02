@@ -1327,8 +1327,9 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "phase": "reply_wait",
                         "overdue_sec": int(now - tower_due),
                     })
-            module_summary = build_module_summary(conn, now)
-            module_pending_total, module_pending_samples = summarize_module_pending(module_summary)
+            full_module_summary = build_module_summary(conn, now, limit=1000)
+            module_pending_total, module_pending_samples = summarize_module_pending(full_module_summary)
+            module_summary = full_module_summary[:120]
     except sqlite3.Error as exc:
         return {
             "db_path": str(db_path),
