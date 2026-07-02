@@ -2764,24 +2764,62 @@ def _clear_unconfirmed_timeline_step_for_observed_route_result(observed, now):
     active_action = str(active_step.get("action") or "").strip()
     active_status = str(active_step.get("status") or "").strip()
     active_route = _normalize_route_choice(active_step.get("route") or active_step.get("arg"), "")
-    if active_action not in {"predict", "change_fate"}:
-        return False
-    if active_status not in {"sending", "sent_waiting_ack", "ack_timeout", "send_blocked"}:
-        return False
-    if active_route != observed_route:
-        return False
-
     observed_at = float(observed.get("last_observed_at", 0) or 0)
-    step_at = 0.0
-    for key in ("send_started_at", "sent_at", "timeout_at", "blocked_at"):
-        try:
-            step_at = max(step_at, float(active_step.get(key, 0) or 0))
-        except (TypeError, ValueError, OverflowError):
-            continue
-    if step_at > 0 and observed_at > 0 and observed_at + 0.001 < step_at:
+
+    def _step_latest_mark(step):
+        latest = 0.0
+        for key in ("send_started_at", "sent_at", "timeout_at", "blocked_at"):
+            try:
+                latest = max(latest, float((step or {}).get(key, 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return latest
+
+    def _observed_after_step(step):
+        step_at = _step_latest_mark(step)
+        return not (step_at > 0 and observed_at > 0 and observed_at + 0.001 < step_at)
+
+    active_index = _timeline_active_index(timeline)
+    route_step_index = -1
+    route_step = {}
+    steps = list(timeline.get("steps") or [])
+    for index in range(min(active_index, len(steps)) - 1, -1, -1):
+        candidate = dict(steps[index] or {})
+        candidate_action = str(candidate.get("action") or "").strip()
+        candidate_route = _normalize_route_choice(candidate.get("route") or candidate.get("arg"), "")
+        if candidate_action in {"predict", "change_fate"} and candidate_route == observed_route:
+            route_step_index = index
+            route_step = candidate
+            break
+
+    if active_action in {"predict", "change_fate"}:
+        if active_status not in {"sending", "sent_waiting_ack", "ack_timeout", "send_blocked"}:
+            return False
+        if active_route != observed_route:
+            return False
+        if not _observed_after_step(active_step):
+            return False
+        consumed_status = "consumed_by_observed_route_result"
+        audit_event = "unconfirmed_step_consumed_by_observed_route_result"
+    elif (
+        active_action == "panel"
+        and active_status in {"pending", "sending", "sent_waiting_ack", "ack_timeout", "send_blocked"}
+        and bool(active_step.get("terminal_after_confirm"))
+        and route_step
+        and _observed_after_step(route_step)
+    ):
+        consumed_status = "calibration_consumed_by_observed_route_result"
+        audit_event = "calibration_consumed_by_observed_route_result"
+        if route_step_index >= 0:
+            route_step["status"] = "consumed_by_observed_route_result"
+            route_step["consumed_at"] = float(now or time.time())
+            route_step["last_error"] = f"{observed_route} 路线结果已观察到，停止后续查盘校准。"
+            steps[route_step_index] = route_step
+            timeline["steps"] = steps
+    else:
         return False
 
-    active_step["status"] = "consumed_by_observed_route_result"
+    active_step["status"] = consumed_status
     active_step["consumed_at"] = float(now or time.time())
     active_step["last_error"] = f"{observed_route} 路线结果已观察到，未确认前置步骤停止校准。"
     _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
@@ -2795,7 +2833,7 @@ def _clear_unconfirmed_timeline_step_for_observed_route_result(observed, now):
     _timeline_audit(
         timeline,
         now,
-        "unconfirmed_step_consumed_by_observed_route_result",
+        audit_event,
         route=observed_route,
         action=active_action,
         status=active_status,

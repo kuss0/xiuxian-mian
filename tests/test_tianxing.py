@@ -1996,6 +1996,61 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("consumed_by_observed_route_result", timeline["steps"][0]["status"])
         self.assertEqual("unconfirmed_step_consumed_by_observed_route_result", timeline["audit"][-1]["event"])
 
+    async def test_timeline_clears_panel_calibration_after_route_result_observed(self):
+        now = 1_780_000_000.0
+        route_step = {
+            "action": "change_fate",
+            "arg": "探索",
+            "route": "探索",
+            "command": ".改命 探索",
+            "status": "ack_timeout",
+            "send_msg_id": 0,
+            "send_started_at": now - 120,
+            "timeout_at": now - 120,
+            "calibration_due_at": now - 60,
+        }
+        panel_step = {
+            "action": "panel",
+            "arg": "",
+            "route": "",
+            "command": ".天机盘",
+            "status": "ack_timeout",
+            "send_msg_id": 9104,
+            "sent_at": now - 5,
+            "ack_due_at": now - 2,
+            "calibration_due_at": now - 1,
+            "terminal_after_confirm": True,
+        }
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_observed_at": now - 20,
+                "last_route": "探索",
+                "last_result": "change_triggered",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "",
+                "current_change_until": 0,
+            })
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "ack_timeout",
+                "route": "探索",
+                "active_step_index": 1,
+                "active_step": dict(panel_step),
+                "steps": [dict(route_step), dict(panel_step)],
+                "blocked_until": now - 1,
+            }
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        send_mock.assert_not_called()
+        self.assertEqual("blocked_replan", result["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertEqual("consumed_by_observed_route_result", timeline["steps"][0]["status"])
+        self.assertEqual("calibration_consumed_by_observed_route_result", timeline["steps"][1]["status"])
+        self.assertEqual("calibration_consumed_by_observed_route_result", timeline["audit"][-1]["event"])
+
     async def test_stale_unsent_ack_timeout_replans_when_consume_route_changes(self):
         now = 1_780_000_000.0
         msg = SimpleNamespace(id=9102, sent_at=now)
