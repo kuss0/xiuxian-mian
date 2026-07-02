@@ -114,6 +114,85 @@ class AnalyzeGameRecordsTests(unittest.TestCase):
         self.assertEqual(2, analysis.sent_by_family["non_command"])
         self.assertEqual(1, len(health["duplicate_short_gap"]))
 
+    def test_replica_same_command_distinct_stage_is_not_short_repeat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            messages_dir = Path(tmpdir)
+            rows = [
+                {
+                    "ts": "2026-05-23 10:00:00 UTC+8",
+                    "event_type": "sent",
+                    "message_id": 31,
+                    "chat_id": -1001,
+                    "sender_id": 100,
+                    "topic_id": 1,
+                    "reply_to_msg_id": 0,
+                    "text": ".苍坤抉择 2",
+                    "source_module": "自动副本",
+                    "op_id": "replica_button:9001:100:.苍坤抉择 2",
+                },
+                {
+                    "ts": "2026-05-23 10:00:20 UTC+8",
+                    "event_type": "sent",
+                    "message_id": 32,
+                    "chat_id": -1001,
+                    "sender_id": 100,
+                    "topic_id": 1,
+                    "reply_to_msg_id": 0,
+                    "text": ".苍坤抉择 2",
+                    "source_module": "自动副本",
+                    "op_id": "replica_button:9002:100:.苍坤抉择 2",
+                },
+            ]
+            (messages_dir / "2026-05-23.log").write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+
+            analysis = analyze_game_records.analyze_jsonl_logs(messages_dir)
+            health = analyze_game_records.summarize_sent_health(analysis)
+
+        self.assertEqual(2, health["sent_total"])
+        self.assertEqual(0, len(health["duplicate_short_gap"]))
+
+    def test_replica_same_command_same_stage_is_short_repeat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            messages_dir = Path(tmpdir)
+            rows = [
+                {
+                    "ts": "2026-05-23 10:00:00 UTC+8",
+                    "event_type": "sent",
+                    "message_id": 41,
+                    "chat_id": -1001,
+                    "sender_id": 100,
+                    "topic_id": 1,
+                    "reply_to_msg_id": 0,
+                    "text": ".苍坤抉择 2",
+                    "source_module": "自动副本",
+                    "op_id": "replica_button:9001:100:.苍坤抉择 2",
+                },
+                {
+                    "ts": "2026-05-23 10:00:20 UTC+8",
+                    "event_type": "sent",
+                    "message_id": 42,
+                    "chat_id": -1001,
+                    "sender_id": 100,
+                    "topic_id": 1,
+                    "reply_to_msg_id": 0,
+                    "text": ".苍坤抉择 2",
+                    "source_module": "自动副本",
+                    "op_id": "replica_button:9001:100:.苍坤抉择 2",
+                },
+            ]
+            (messages_dir / "2026-05-23.log").write_text(
+                "\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n",
+                encoding="utf-8",
+            )
+
+            analysis = analyze_game_records.analyze_jsonl_logs(messages_dir)
+            health = analyze_game_records.summarize_sent_health(analysis)
+
+        self.assertEqual(1, len(health["duplicate_short_gap"]))
+
     def test_log_group_command_stats_are_limited_to_configured_chat(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             messages_dir = Path(tmpdir)

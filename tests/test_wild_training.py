@@ -1616,6 +1616,43 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result_ts + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
+    async def test_started_pending_recovers_final_edit_from_message_log_before_timeout(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        result_ts = now - 5
+        entries = [
+            {
+                "ts": self._log_ts(result_ts),
+                "event_type": "edit",
+                "message_id": 201,
+                "reply_to_msg_id": 101,
+                "text": "【野外历练 · 灵机暗藏】\n@wild 获得修为 +392，获得 【清灵草】x1。",
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(send_as_id) as identity_state:
+                identity_state["wild_training_reply_to_msg_id"] = 201
+                identity_state["wild_training_reply_due_at"] = now + 300
+                identity_state["wild_training_last_result"] = "已出发：谨慎"
+
+            with state_module.use_identity(send_as_id), \
+                 patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
+                 patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock:
+                await wild_training.run_wild_training_scheduler(now)
+
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(0, state_module.state["wild_training_retry_count"])
+        self.assertIn("修为+392", state_module.state["wild_training_last_result"])
+        self.assertIn("清灵草x1", state_module.state["wild_training_last_result"])
+        self.assertEqual(result_ts + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
+
     async def test_command_timeout_recovers_start_and_result_from_message_log(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

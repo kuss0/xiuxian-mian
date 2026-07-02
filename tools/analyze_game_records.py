@@ -265,6 +265,9 @@ class SentEvent:
     text: str
     command: str
     family: str
+    source_module: str
+    op_id: str
+    chain_id: str
     source_file: str
     line_no: int
 
@@ -465,7 +468,7 @@ def analyze_jsonl_logs(
                     if command:
                         analysis.focus_sender_commands[sender_id][command] += 1
                 if event_type == "sent":
-                    family = command_family(command) if command else "non_command"
+                    family = str(row.get("family") or "").strip() or (command_family(command) if command else "non_command")
                     sent = SentEvent(
                         ts=ts,
                         epoch=parse_ts_epoch(ts),
@@ -477,6 +480,9 @@ def analyze_jsonl_logs(
                         text=text.strip(),
                         command=command,
                         family=family,
+                        source_module=str(row.get("source_module") or "").strip(),
+                        op_id=str(row.get("op_id") or "").strip(),
+                        chain_id=str(row.get("chain_id") or "").strip(),
                         source_file=log_file.name,
                         line_no=line_no,
                     )
@@ -565,7 +571,7 @@ def summarize_sent_health(analysis: Analysis) -> dict:
         prev_same = prev_by_sender_command.get((item.sender_id, item.text))
         if prev_same and item.epoch and prev_same.epoch:
             gap = item.epoch - prev_same.epoch
-            if 0 <= gap <= 90 and not is_allowed_fast_repeat(item.text):
+            if 0 <= gap <= 90 and not is_allowed_fast_repeat(prev_same, item):
                 duplicate_short_gap.append(format_gap_pair(prev_same, item, gap))
         prev_any = prev_by_sender.get(item.sender_id)
         if prev_any and item.epoch and prev_any.epoch:
@@ -602,13 +608,37 @@ def summarize_sent_health(analysis: Analysis) -> dict:
     }
 
 
-def is_allowed_fast_repeat(text: str) -> bool:
-    command = command_key(text)
+def is_allowed_fast_repeat(prev: SentEvent, cur: SentEvent) -> bool:
+    command = command_key(cur.text)
     if command in {".加入副本", ".加入坠魔谷", ".加入黄龙山", ".加入苍坤洞府", ".加入昆吾山", ".加入落云秘圃"}:
         return True
     if command in {".稳", ".狠", ".骗"}:
         return True
+    if _is_distinct_replica_stage_repeat(prev, cur):
+        return True
     return False
+
+
+def _replica_stage_key(event: SentEvent) -> str:
+    op_id = str(event.op_id or "")
+    if not op_id:
+        return ""
+    parts = op_id.split(":", 3)
+    if len(parts) < 4:
+        return ""
+    if parts[0] not in {"replica_button", "kunwu_auto_choice"}:
+        return ""
+    return f"{parts[0]}:{parts[1]}"
+
+
+def _is_distinct_replica_stage_repeat(prev: SentEvent, cur: SentEvent) -> bool:
+    if cur.source_module != "自动副本" or prev.source_module != "自动副本":
+        return False
+    if command_family(cur.command or command_key(cur.text)) != "replica":
+        return False
+    prev_stage = _replica_stage_key(prev)
+    cur_stage = _replica_stage_key(cur)
+    return bool(prev_stage and cur_stage and prev_stage != cur_stage)
 
 
 def format_gap_pair(prev: SentEvent, cur: SentEvent, gap: float) -> dict:

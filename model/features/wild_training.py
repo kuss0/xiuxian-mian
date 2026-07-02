@@ -678,8 +678,6 @@ async def _cleanup_wild_training_pending_timeout(now):
     reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
     if reply_to_msg_id <= 0:
         return False
-    if now < float(state.get("wild_training_reply_due_at", 0) or 0):
-        return False
     recovered = _recover_wild_training_from_message_log(now)
     if recovered == "result":
         save_state()
@@ -692,6 +690,8 @@ async def _cleanup_wild_training_pending_timeout(now):
             scope="identity",
         )
         return True
+    if now < float(state.get("wild_training_reply_due_at", 0) or 0):
+        return False
     state["wild_training_reply_to_msg_id"] = 0
     state["wild_training_reply_due_at"] = 0
     if str(state.get("wild_training_last_result") or "").startswith("已出发"):
