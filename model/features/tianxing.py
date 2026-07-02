@@ -3367,8 +3367,6 @@ def _timeline_should_replan_for_window_route(timeline, windows, now, horizon_hou
 def _timeline_should_replan_empty_block(timeline, windows, observed, config, now, horizon_hours):
     if not windows:
         return False, ""
-    if list((timeline or {}).get("steps") or []):
-        return False, ""
     if dict((timeline or {}).get("active_step") or {}):
         return False, ""
     phase = str((timeline or {}).get("phase") or "").strip()
@@ -3384,6 +3382,8 @@ def _timeline_should_replan_empty_block(timeline, windows, observed, config, now
         "auto_change_fate_route_forbidden",
         "change_fate_conflict",
     }:
+        if list((timeline or {}).get("steps") or []):
+            return False, ""
         if blocked_until <= float(now):
             return False, ""
     else:

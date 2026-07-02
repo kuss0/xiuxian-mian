@@ -3225,6 +3225,78 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("闭关", timeline["active_step"]["arg"])
         self.assertEqual(".推命 闭关", send_mock.await_args.args[0])
 
+    async def test_timeline_replans_consumed_blocked_replan_with_stale_steps(self):
+        now = 1_780_000_000.0
+        first_msg = SimpleNamespace(id=9202, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update(
+                {
+                    "fixed_star": "太阴",
+                    "available_stars": ["太阴", "贪狼", "天府"],
+                    "available_stars_source": "observe",
+                    "current_prediction": "",
+                    "current_prediction_until": 0,
+                    "prediction_consumed_route": "",
+                    "prediction_consumed_at": 0,
+                    "current_change": "",
+                    "current_change_until": 0,
+                    "tianji_value": 33,
+                }
+            )
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-stale",
+                "phase": "blocked_replan",
+                "route": "探索",
+                "active_step_index": -1,
+                "active_step": {},
+                "steps": [
+                    {
+                        "id": "predict:探索:old",
+                        "action": "predict",
+                        "arg": "探索",
+                        "route": "探索",
+                        "command": ".推命 探索",
+                        "status": "confirmed",
+                    },
+                    {
+                        "id": "change_fate:探索:old",
+                        "action": "change_fate",
+                        "arg": "探索",
+                        "route": "探索",
+                        "command": ".改命 探索",
+                        "status": "confirmed",
+                    },
+                    {
+                        "id": "release_downstream:探索:old",
+                        "action": "release_downstream",
+                        "arg": "探索",
+                        "route": "探索",
+                        "status": "released",
+                    },
+                ],
+                "blocked_until": now - 1,
+                "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+            }
+
+            windows = tianxing.build_tianxing_consume_window(
+                "探索",
+                now=now,
+                due_at=now + 300,
+                reason="野外历练",
+                require_change_fate=True,
+            )
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command", return_value=first_msg) as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now, windows=windows)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("sent_waiting_ack", result["phase"])
+        self.assertEqual("探索", timeline["route"])
+        self.assertEqual("predict", timeline["active_step"]["action"])
+        self.assertEqual("探索", timeline["active_step"]["arg"])
+        self.assertEqual(".推命 探索", send_mock.await_args.args[0])
+
     def test_ui_snapshot_exposes_timeline_state(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
