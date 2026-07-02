@@ -13005,6 +13005,19 @@ async def _handle_lightweight_join_command(event):
         return True
     room = _get_lightweight_last_room(int(getattr(event, "chat_id", 0) or 0), now=time.time())
     if not room:
+        active_flow = _find_active_lightweight_open_flow(int(getattr(event, "chat_id", 0) or 0), now=time.time())
+        if active_flow:
+            text = _format_lightweight_existing_open_notice(active_flow, html=True)
+            await _send_replica_group_message(
+                event.client,
+                event.chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_lightweight_existing_open_notice_buttons(active_flow),
+            )
+            return True
         text = "没有已记录的副本房间，请先开房。\n\n" + _format_lightweight_next_commands(".查询副本", _REPLICA_LIGHTWEIGHT_OPEN_USAGE, html=True)
         await _send_replica_group_message(
             event.client,

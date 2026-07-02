@@ -44,6 +44,19 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
         persistence._db_initialized = False
         persistence._schema_columns_ensured_key = None
 
+    def test_state_db_connection_uses_busy_timeout_and_wal(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                persistence.init_db()
+                conn = persistence.get_db_conn()
+
+                busy_timeout = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+                journal_mode = str(conn.execute("PRAGMA journal_mode").fetchone()[0] or "").lower()
+
+        self.assertEqual(persistence.SQLITE_BUSY_TIMEOUT_MS, int(busy_timeout))
+        self.assertEqual("wal", journal_mode)
+
     def test_divination_daily_limit_roundtrips_as_integer(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

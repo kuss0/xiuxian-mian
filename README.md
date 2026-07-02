@@ -42,7 +42,7 @@
 
 ## 目录结构
 
-- `xiuxian.py`：systemd 入口，启动 supervisor/worker，并在代码稳定变更后做语法检查和 worker 重启。
+- `xiuxian.py`：systemd 入口，启动 supervisor/worker；生产默认不热重载，代码变更上线后显式重启服务。
 - `model/app.py`：Telegram 事件入口、消息路由和 scheduler 主循环。
 - `model/runtime.py`：命令发送、日志推送、回复跟踪、UI 登录 token 等运行工具。
 - `model/state.py`：内存状态模板、profile 和全局配置访问器。
@@ -96,6 +96,7 @@ cp .env.example .env
 - `LOG_BOT_TOKEN`：`LOG_SEND_MODE=bot` 时使用。
 - `CHAOGU_UI_PUBLIC_BASE_URL`：公网访问 UI 时建议显式填写。
 - `TIANDAO_MINIAPP_VERIFY_URL` / `TIANDAO_MINIAPP_BOT_USERNAME`：天道 Mini App 验证配置。
+- `XIUXIAN_HOT_RELOAD`：默认 `0`；只在受控 dev/lab 进程中设为 `1`，允许代码变化后热重载 worker。
 
 不要提交真实 `.env`、Telegram session、live SQLite、消息日志、cookie、token 或任何运行态敏感文件。
 

@@ -116,6 +116,9 @@ _last_flush_time = 0
 _last_save_failed_at = 0.0
 _last_save_error = ""
 SMALL_WORLD_PREACH_DEFAULT_NORMALIZED_KEY = "small_world_preach_default_normalized"
+SQLITE_TIMEOUT_SEC = 15.0
+SQLITE_BUSY_TIMEOUT_MS = int(SQLITE_TIMEOUT_SEC * 1000)
+SQLITE_JOURNAL_MODE = os.environ.get("XIUXIAN_SQLITE_JOURNAL_MODE", "WAL").strip().upper()
 
 LIVE_GUARD_DIR = os.path.abspath(os.environ.get("XIUXIAN_LIVE_GUARD_DIR") or "/root/xiuxian-main-live-guard")
 LIVE_GUARD_DB_FILE = os.path.join(LIVE_GUARD_DIR, "chaogu_state.last-good.db")
@@ -126,12 +129,24 @@ def _safety_watchdog_fused_file():
     return os.path.join(os.path.dirname(os.path.abspath(DB_FILE)), "safety_watchdog_fused.json")
 
 
+def _open_sqlite_conn(db_file=None, *, row_factory=True, set_journal_mode=True):
+    conn = sqlite3.connect(db_file or DB_FILE, timeout=SQLITE_TIMEOUT_SEC)
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+    if set_journal_mode and SQLITE_JOURNAL_MODE:
+        try:
+            conn.execute(f"PRAGMA journal_mode={SQLITE_JOURNAL_MODE}")
+        except sqlite3.OperationalError as exc:
+            print(f"SQLite journal_mode={SQLITE_JOURNAL_MODE} skipped: {exc}", flush=True)
+    if row_factory:
+        conn.row_factory = sqlite3.Row
+    return conn
+
+
 def get_db_conn():
     global _db_conn, _schema_columns_ensured_key
     if _db_conn is None:
         _schema_columns_ensured_key = None
-        _db_conn = sqlite3.connect(DB_FILE)
-        _db_conn.row_factory = sqlite3.Row
+        _db_conn = _open_sqlite_conn(DB_FILE)
     return _db_conn
 
 
@@ -2675,8 +2690,7 @@ def _read_identity_roster_from_db_file(db_file):
         return []
     conn = None
     try:
-        conn = sqlite3.connect(db_file)
-        conn.row_factory = sqlite3.Row
+        conn = _open_sqlite_conn(db_file, set_journal_mode=False)
         return _read_identity_roster_from_conn(conn)
     except Exception:
         return []
@@ -2709,7 +2723,7 @@ def _write_live_guard_backup(conn):
         return
     try:
         os.makedirs(LIVE_GUARD_DIR, exist_ok=True)
-        backup_conn = sqlite3.connect(LIVE_GUARD_DB_FILE)
+        backup_conn = _open_sqlite_conn(LIVE_GUARD_DB_FILE)
         try:
             conn.backup(backup_conn)
         finally:
@@ -2827,7 +2841,7 @@ def has_persisted_identity_rows():
     if not os.path.exists(DB_FILE):
         return False
     try:
-        with sqlite3.connect(DB_FILE) as conn:
+        with _open_sqlite_conn(DB_FILE, row_factory=False, set_journal_mode=False) as conn:
             row = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='identities'"
             ).fetchone()

@@ -10,6 +10,7 @@ Restart=always
 RestartSec=5
 User=root
 Environment=PYTHONUNBUFFERED=1
+Environment=XIUXIAN_HOT_RELOAD=0
 # Let the supervisor drain in-flight reply windows before it stops the worker.
 KillMode=process
 TimeoutStopSec=120

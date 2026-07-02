@@ -33,6 +33,17 @@ def _env_float(name, default, *, minimum=None, maximum=None):
     return value
 
 
+def _env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _hot_reload_enabled():
+    return _env_bool("XIUXIAN_HOT_RELOAD", False)
+
+
 PENDING_DRAIN_POLL_SEC = _env_float("XIUXIAN_PENDING_DRAIN_POLL_SEC", 2, minimum=0.25, maximum=10)
 PENDING_DRAIN_GRACE_SEC = _env_float("XIUXIAN_PENDING_DRAIN_GRACE_SEC", 3, minimum=0, maximum=30)
 RELOAD_PENDING_DRAIN_MAX_SEC = _env_float("XIUXIAN_RELOAD_PENDING_DRAIN_MAX_SEC", 600, minimum=0, maximum=1800)
@@ -328,6 +339,9 @@ def _run_supervisor():
     pending_fingerprint = None
     pending_since = 0
     last_legacy_scan = 0.0
+    hot_reload_enabled = _hot_reload_enabled()
+    if not hot_reload_enabled:
+        print("代码热重载已关闭；生产变更需显式重启服务。", flush=True)
 
     try:
         while not stop_requested:
@@ -347,33 +361,34 @@ def _run_supervisor():
                     time.sleep(SCAN_INTERVAL_SEC)
                     continue
 
-            fingerprint = _code_fingerprint()
-            if fingerprint != current_fingerprint:
-                if fingerprint != pending_fingerprint:
-                    pending_fingerprint = fingerprint
-                    pending_since = now
-                    print("检测到代码变化，等待覆盖完成...", flush=True)
-                elif now - pending_since >= RELOAD_STABLE_SEC:
-                    stable_fingerprint = _code_fingerprint()
-                    if stable_fingerprint != pending_fingerprint:
-                        pending_fingerprint = stable_fingerprint
+            if hot_reload_enabled:
+                fingerprint = _code_fingerprint()
+                if fingerprint != current_fingerprint:
+                    if fingerprint != pending_fingerprint:
+                        pending_fingerprint = fingerprint
                         pending_since = now
-                        continue
-                    if _code_syntax_ok():
-                        print("代码已稳定且语法检查通过，准备重启 worker。", flush=True)
-                        _wait_for_pending_drain("代码热重载前", RELOAD_PENDING_DRAIN_MAX_SEC)
-                        print("重启 worker。", flush=True)
-                        _stop_worker(worker)
-                        worker = _spawn_worker()
-                        current_fingerprint = stable_fingerprint
-                        pending_fingerprint = None
-                        pending_since = 0
-                    else:
-                        print("代码语法检查失败，保留当前 worker。", flush=True)
-                        pending_since = now
-            else:
-                pending_fingerprint = None
-                pending_since = 0
+                        print("检测到代码变化，等待覆盖完成...", flush=True)
+                    elif now - pending_since >= RELOAD_STABLE_SEC:
+                        stable_fingerprint = _code_fingerprint()
+                        if stable_fingerprint != pending_fingerprint:
+                            pending_fingerprint = stable_fingerprint
+                            pending_since = now
+                            continue
+                        if _code_syntax_ok():
+                            print("代码已稳定且语法检查通过，准备重启 worker。", flush=True)
+                            _wait_for_pending_drain("代码热重载前", RELOAD_PENDING_DRAIN_MAX_SEC)
+                            print("重启 worker。", flush=True)
+                            _stop_worker(worker)
+                            worker = _spawn_worker()
+                            current_fingerprint = stable_fingerprint
+                            pending_fingerprint = None
+                            pending_since = 0
+                        else:
+                            print("代码语法检查失败，保留当前 worker。", flush=True)
+                            pending_since = now
+                else:
+                    pending_fingerprint = None
+                    pending_since = 0
 
             time.sleep(SCAN_INTERVAL_SEC)
     finally:

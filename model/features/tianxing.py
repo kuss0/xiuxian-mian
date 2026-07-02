@@ -1639,6 +1639,9 @@ def _should_wake_tianxing_timeline(observed, config, now):
     craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
     craft_next_time = float(craft_farm.get("next_time", 0) or 0)
     craft_phase = str(craft_farm.get("phase") or "").strip()
+    stale_prediction_conflict = bool(_prediction_conflict_stale_reason(observed, now))
+    if timeline.get("phase") == "prediction_conflict" and stale_prediction_conflict:
+        return True
     if _craft_farm_daily_reset_due(craft_farm, now):
         return True
     if craft_next_time > float(now) and craft_phase in {
@@ -1653,6 +1656,8 @@ def _should_wake_tianxing_timeline(observed, config, now):
         "calibrating",
         "send_blocked",
     }:
+        if craft_phase == "prediction_conflict" and stale_prediction_conflict:
+            return True
         if _craft_farm_stale_consume_wait_should_wake(craft_farm, now, config):
             return True
         return False
@@ -1773,6 +1778,11 @@ def has_tianxing_timeline_due_work(now=None):
     if is_tianxing_automation_paused(now=now, observed=observed):
         return False
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    if (
+        str(timeline.get("phase") or "").strip() == "prediction_conflict"
+        and _prediction_conflict_stale_reason(observed, now)
+    ):
+        return True
     if _craft_farm_daily_reset_due(timeline.get("craft_farm"), now):
         return True
     return _timeline_has_existing_work(now)
@@ -2807,6 +2817,58 @@ def _has_active_unconsumed_prediction(route, observed, now=None):
         and _prediction_effective_until(route, observed, now) > now
         and not _is_prediction_consumed(route, observed, now)
     )
+
+
+def _prediction_conflict_stale_reason(observed, now=None):
+    now = float(now if now is not None else time.time())
+    observed = normalize_tianxing_observation(observed)
+    current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
+    if not current_prediction:
+        return "观测中已无有效推命，旧推命冲突已清理。"
+    if _has_active_unconsumed_prediction(current_prediction, observed, now):
+        return ""
+    return f"{current_prediction} 推命已消费或过期，旧推命冲突已清理。"
+
+
+def _clear_stale_tianxing_prediction_conflict(timeline, observed, now=None):
+    now = float(now if now is not None else time.time())
+    timeline = normalize_tianxing_timeline_state(timeline)
+    reason = _prediction_conflict_stale_reason(observed, now)
+    if not reason:
+        return False, timeline
+
+    changed = False
+    if str(timeline.get("phase") or "").strip() == "prediction_conflict":
+        timeline["phase"] = "blocked_replan"
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["blocked_until"] = float(now)
+        timeline["last_error"] = reason
+        timeline["updated_at"] = float(now)
+        _timeline_audit(timeline, now, "stale_prediction_conflict_cleared", reason=reason)
+        changed = True
+
+    craft_farm = normalize_tianxing_craft_farm_state(timeline.get("craft_farm"))
+    if str(craft_farm.get("phase") or "").strip() == "prediction_conflict":
+        craft_farm["phase"] = "ready"
+        craft_farm["next_time"] = float(now)
+        craft_farm["last_result"] = "stale_prediction_conflict_cleared"
+        craft_farm["last_error"] = reason
+        _craft_farm_audit(craft_farm, now, "stale_prediction_conflict_cleared", reason=reason)
+        timeline["craft_farm"] = craft_farm
+        changed = True
+
+    retreat_farm = normalize_tianxing_retreat_farm_state(timeline.get("retreat_farm"))
+    if str(retreat_farm.get("phase") or "").strip() == "prediction_conflict":
+        retreat_farm["phase"] = "ready"
+        retreat_farm["next_time"] = float(now)
+        retreat_farm["last_result"] = "stale_prediction_conflict_cleared"
+        retreat_farm["last_error"] = reason
+        _retreat_farm_audit(retreat_farm, now, "stale_prediction_conflict_cleared", reason=reason)
+        timeline["retreat_farm"] = retreat_farm
+        changed = True
+
+    return changed, timeline
 
 
 def _route_arg_from_command(command, prefix):
@@ -4294,6 +4356,11 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
         save_state()
     if _prune_tianxing_released_routes(observed, now):
         save_state()
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    cleared_conflict, timeline = _clear_stale_tianxing_prediction_conflict(timeline, observed, now)
+    if cleared_conflict:
+        state["tianxing_timeline_state"] = timeline
+        save_state()
     released_from_calibration, timeline = await _release_tianxing_calibration_if_route_ready(
         state.get("tianxing_timeline_state"),
         observed,
@@ -4861,6 +4928,10 @@ def build_tianxing_retreat_farm_plan(*, now=None, deep_retreat_phase="", config=
         return _retreat_farm_result("outside_window", reason="当前不在闭关攒天机窗口。")
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    cleared_conflict, timeline = _clear_stale_tianxing_prediction_conflict(timeline, observed, now)
+    if cleared_conflict:
+        state["tianxing_timeline_state"] = timeline
     target_tianji = int(config.get("target_tianji_daily", 0) or 0)
     current_tianji = int(observed.get("tianji_value", 0) or 0)
     if target_tianji <= 0:
@@ -4873,7 +4944,6 @@ def build_tianxing_retreat_farm_plan(*, now=None, deep_retreat_phase="", config=
     next_time = float(farm.get("next_time", 0) or 0)
     dry_run = bool(config.get("retreat_farm_dry_run_enabled"))
     farm_phase = str(farm.get("phase") or "").strip()
-    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     if timeline.get("phase") == "prediction_conflict" and float(timeline.get("blocked_until", 0) or 0) > now and current_prediction != "闭关":
         return _retreat_farm_result(
             "waiting_prediction_conflict",
@@ -5713,6 +5783,11 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
             reason="天星自动调度已暂停，炼制攒点不接管。",
             next_time=_tianxing_pause_block_until(now, observed=observed, config=config),
         )
+
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    cleared_conflict, timeline = _clear_stale_tianxing_prediction_conflict(timeline, observed, now)
+    if cleared_conflict:
+        state["tianxing_timeline_state"] = timeline
 
     windows, off_window_active = _build_tianxing_craft_farm_windows(now, config, reason="天星炼制攒点")
     interval_sec = lambda: _craft_farm_interval_sec(config, off_window=off_window_active)

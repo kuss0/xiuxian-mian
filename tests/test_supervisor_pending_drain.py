@@ -15,6 +15,14 @@ class SupervisorPendingDrainTests(unittest.TestCase):
         self.addCleanup(tmpdir.cleanup)
         return Path(tmpdir.name) / "state.db"
 
+    def test_hot_reload_is_explicit_opt_in(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(xiuxian._hot_reload_enabled())
+        with patch.dict(os.environ, {"XIUXIAN_HOT_RELOAD": "1"}):
+            self.assertTrue(xiuxian._hot_reload_enabled())
+        with patch.dict(os.environ, {"XIUXIAN_HOT_RELOAD": "0"}):
+            self.assertFalse(xiuxian._hot_reload_enabled())
+
     def test_active_pending_windows_reads_generic_pending_tasks(self):
         db_path = self._db_path()
         now = 1_780_500_000.0

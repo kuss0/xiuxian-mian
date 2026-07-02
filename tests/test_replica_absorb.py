@@ -2046,6 +2046,42 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(1, len(handle_calls))
         self.assertEqual(".加入副本 @first", handle_calls[0].args[0].raw_text)
 
+    def test_lightweight_join_waits_when_open_flow_exists_without_room_broadcast(self):
+        leader_id = self._register_replica_identity(991201, "leader", professions="破军")
+        app_replica._upsert_lightweight_open_flow({
+            "flow_id": "flow-join-wait",
+            "phase": "opening",
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "selector": "@leader",
+            "open_requested_at": time.time(),
+            "updated_at": time.time(),
+            "expires_at": time.time() + 120,
+        })
+        event = SimpleNamespace(
+            id=1234,
+            chat_id=-100777,
+            sender_id=1,
+            client=object(),
+            raw_text=".加入副本 @xuruode4 @growrdick",
+        )
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=700))) as send_mock:
+                handled = await app_replica._handle_lightweight_join_command(event)
+                return handled, send_mock.await_args
+
+        handled, send_args = asyncio.run(run_test())
+        self.assertTrue(handled)
+        text = send_args.args[2]
+        self.assertIn("已有苍坤洞府开房请求", text)
+        self.assertIn("等开房广播出现后再加入", text)
+        self.assertIn(".加入副本 @用户名 @用户名", text)
+
     def test_game_command_button_send_unknown_locks_exclusive_stage(self):
         leader_id = self._register_replica_identity(991201, "leader")
         action = {
