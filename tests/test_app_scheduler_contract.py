@@ -529,7 +529,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once_with(now)
         self.assertEqual([(identity_id, now)], seen)
 
-    async def test_due_wild_training_fast_scan_clamps_released_tianxing_route_after_recovery_spread(self):
+    async def test_due_wild_training_fast_scan_clamps_released_tianxing_route_after_short_retry(self):
         identity_id = 991788
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(identity_id)
@@ -537,7 +537,7 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["wild_training_enabled"] = True
             state_module.state["wild_training_retry_count"] = 0
             state_module.state["wild_training_reply_to_msg_id"] = 0
-            state_module.state["next_wild_training_time"] = now + 600
+            state_module.state["next_wild_training_time"] = now + 120
             state_module.state["wild_training_last_result"] = "天星时间线：sent_waiting_ack"
             state_module.state["wild_training_last_error"] = "野外历练 需等待天星时间线确认 探索 改命后放行。"
 
@@ -565,6 +565,37 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             self.assertEqual(now, state_module.state["next_wild_training_time"])
             self.assertIn("立即消费窗口", state_module.state["wild_training_last_error"])
+
+    async def test_due_wild_training_fast_scan_does_not_clamp_future_cd_for_released_tianxing_route(self):
+        identity_id = 991789
+        now = 1_700_000_000.0
+        future_cd = now + 600
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["next_wild_training_time"] = future_cd
+            state_module.state["wild_training_last_result"] = "天星时间线：downstream_released"
+            state_module.state["wild_training_last_error"] = "野外历练 需等待天星时间线确认 探索 改命后放行。"
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "is_tianxing_route_released", return_value=True),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app, "mark_dirty") as mark_dirty_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_not_awaited()
+        mark_dirty_mock.assert_not_called()
+        with state_module.use_identity(identity_id):
+            self.assertEqual(future_cd, state_module.state["next_wild_training_time"])
 
     async def test_due_wild_training_retry_fast_scan_skips_inflight_reply(self):
         identity_id = 991784
@@ -649,6 +680,170 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 120, state_module.state["next_wild_training_time"])
             self.assertIn("短补发窗口", state_module.state["wild_training_last_error"])
 
+    async def test_due_concubine_fast_scan_prioritizes_earliest_due(self):
+        later_identity_id = 991830
+        earlier_identity_id = 991831
+        now = 1_700_000_000.0
+        for identity_id, due_at in (
+            (later_identity_id, now - 10),
+            (earlier_identity_id, now - 300),
+        ):
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["concubine_enabled"] = True
+                state_module.state["next_concubine_time"] = due_at
+
+        seen = []
+
+        async def fake_concubine_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[later_identity_id, earlier_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_concubine_scheduler", new=AsyncMock(side_effect=fake_concubine_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_concubine_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once_with(now)
+        self.assertEqual([(earlier_identity_id, now)], seen)
+
+    async def test_due_concubine_fast_scan_timeout_does_not_block_next_candidate(self):
+        stuck_identity_id = 991832
+        next_identity_id = 991833
+        now = 1_700_000_000.0
+        for identity_id, due_at in (
+            (stuck_identity_id, now - 300),
+            (next_identity_id, now - 200),
+        ):
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["concubine_enabled"] = True
+                state_module.state["next_concubine_time"] = due_at
+
+        seen = []
+
+        async def fake_concubine_scheduler(scheduler_now):
+            current_id = state_module.get_current_identity_id()
+            seen.append((current_id, scheduler_now))
+            if current_id == stuck_identity_id:
+                await asyncio.sleep(60)
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[stuck_identity_id, next_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_concubine_scheduler", new=AsyncMock(side_effect=fake_concubine_scheduler)) as scheduler_mock,
+            patch.object(app, "DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC", 0.01),
+            patch.object(app, "DUE_CONCUBINE_DIAG_INTERVAL_SEC", 999999),
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_concubine_schedulers(now, limit=2)
+
+        self.assertEqual(2, scheduler_mock.await_count)
+        self.assertEqual(
+            [(stuck_identity_id, now), (next_identity_id, now)],
+            seen,
+        )
+        with state_module.use_identity(stuck_identity_id):
+            self.assertEqual(now + 120, state_module.state["next_concubine_time"])
+            self.assertIn("执行超时", state_module.state["concubine_last_result"])
+            self.assertEqual("", state_module.state["concubine_last_error"])
+
+    async def test_due_concubine_fast_scan_clears_legacy_timeout_error(self):
+        identity_id = 991834
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["next_concubine_time"] = now + 120
+            state_module.state["concubine_reply_to_msg_id"] = 0
+            state_module.state["concubine_last_error"] = "到期侍妾扫描执行超时（>90s），已让出本轮避免阻塞其他身份"
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_concubine_scheduler", new=AsyncMock()) as scheduler_mock,
+        ):
+            await app._run_due_concubine_schedulers(now, limit=1)
+
+        scheduler_mock.assert_not_awaited()
+        with state_module.use_identity(identity_id):
+            self.assertIn("执行超时", state_module.state["concubine_last_result"])
+            self.assertEqual("", state_module.state["concubine_last_error"])
+
+    async def test_due_tianxing_fast_scan_runs_due_auto_time(self):
+        identity_id = 991835
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {"auto_next_time": now - 1}
+
+        seen = []
+
+        async def fake_tianxing_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_tianxing_scheduler", new=AsyncMock(side_effect=fake_tianxing_scheduler)) as scheduler_mock,
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once()
+        self.assertEqual([(identity_id, now)], seen)
+
+    async def test_due_tianxing_fast_scan_runs_craft_override_due(self):
+        identity_id = 991836
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {"auto_next_time": now + 6 * 3600}
+            state_module.state["tianxing_timeline_state"] = {
+                "craft_farm": {
+                    "phase": "prediction_conflict",
+                    "next_time": now + 6 * 3600,
+                },
+            }
+
+        seen = []
+
+        async def fake_tianxing_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "has_tianxing_timeline_due_work", return_value=False),
+            patch.object(app, "has_tianxing_craft_farm_override_due", return_value=True),
+            patch.object(app.time, "time", return_value=now),
+            patch.object(app, "run_tianxing_scheduler", new=AsyncMock(side_effect=fake_tianxing_scheduler)) as scheduler_mock,
+        ):
+            await app._run_due_tianxing_schedulers(now, limit=1)
+
+        scheduler_mock.assert_awaited_once()
+        self.assertEqual([(identity_id, now)], seen)
+
     async def test_tianxing_daily_bootstrap_pending_does_not_consume_send_limit(self):
         first_identity_id = 991793
         second_identity_id = 991794
@@ -701,6 +896,12 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         async def fake_wild_retry(now):
             seen.append(("wild_retry", now))
 
+        async def fake_tianxing_due(now):
+            seen.append(("tianxing_due", now))
+
+        async def fake_concubine_retry(now):
+            seen.append(("concubine_retry", now))
+
         async def fake_rare(now):
             seen.append(("rare", now))
 
@@ -728,7 +929,9 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             patch.object(app, "run_retry_scheduler", new=AsyncMock()),
             patch.object(app, "run_identity_info_followup_scheduler", new=AsyncMock()),
             patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock(side_effect=fake_phaseful)),
+            patch.object(app, "_run_due_tianxing_schedulers", new=AsyncMock(side_effect=fake_tianxing_due)),
             patch.object(app, "_run_due_wild_training_retry_schedulers", new=AsyncMock(side_effect=fake_wild_retry)),
+            patch.object(app, "_run_due_concubine_schedulers", new=AsyncMock(side_effect=fake_concubine_retry)),
             patch.object(app, "_start_identity_schedulers_if_idle", side_effect=fake_start_identity),
             patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
             patch.object(app.time, "time", return_value=200.0),
@@ -737,9 +940,11 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [
-                ("wild_retry", 200.0),
-                ("rare", 200.0),
                 ("phaseful", 200.0),
+                ("tianxing_due", 200.0),
+                ("wild_retry", 200.0),
+                ("concubine_retry", 200.0),
+                ("rare", 200.0),
                 ("global", 200.0),
                 ("phaseful", 200.0),
                 ("start_identity", 200.0),

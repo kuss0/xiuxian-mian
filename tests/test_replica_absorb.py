@@ -206,6 +206,15 @@ class ReplicaAbsorbTests(unittest.TestCase):
                 return app_replica._get_replica_button_action(item.get("callback_data") or "")[1].get("payload", {})
         return {}
 
+    def _button_action_by_text(self, buttons, text):
+        for row in buttons or []:
+            row_items = row if isinstance(row, (list, tuple)) else [row]
+            for item in row_items:
+                if not isinstance(item, dict) or item.get("text") != text:
+                    continue
+                return item, app_replica._get_replica_button_action(item.get("callback_data") or "")[1]
+        return {}, {}
+
     def test_replica_group_listener_falls_back_to_registered_event_client(self):
         listener_client = SimpleNamespace(name="listener")
         state_module.set_replica_group_ids([-100777])
@@ -1190,6 +1199,24 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertEqual(-100777, payload.get("chat_id"))
         self.assertEqual(9001, payload.get("listener_account_id"))
 
+    def test_lightweight_candidates_use_replica_kind_manual_participants(self):
+        allowed_id = self._register_replica_identity(991201, "allowed", professions="御山")
+        skipped_id = self._register_replica_identity(991202, "skipped", professions="灵医")
+        state_module.set_replica_participant_identity_ids([allowed_id, skipped_id])
+        state_module.set_replica_kind_configs({
+            app_replica._REPLICA_KIND_CANGKUN: {
+                "enabled": True,
+                "participant_identity_ids": [allowed_id],
+            },
+        })
+
+        candidates = app_replica._get_lightweight_available_identity_ids(
+            app_replica._REPLICA_KIND_CANGKUN,
+            now=1000.0,
+        )
+
+        self.assertEqual([allowed_id], candidates)
+
     def test_log_group_replica_summary_shows_all_kinds_and_buttons(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         cangkun_id = self._register_replica_identity(991202, "cang", root_attrs="土", professions="御山")
@@ -1405,8 +1432,8 @@ class ReplicaAbsorbTests(unittest.TestCase):
 
         self.assertIn("@xuruode4(破军/御山)", detail)
         self.assertIn("可分配职业：", detail)
-        self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师；缺职业：无", detail)
-        self.assertNotIn("缺职业：破军", detail)
+        self.assertIn("覆盖职业：破军、御山、灵医、影刃；缺职业：咒师", detail)
+        self.assertNotIn("缺职业：无", detail)
 
     def test_luoyun_cd_reminder_repeats_hourly_until_new_cooldown(self):
         identity_id = self._register_replica_identity(991250, "luoyun", realm="结丹后期", sect_name="落云宗")
@@ -1834,6 +1861,75 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("已触发：.解散副本", answer_calls[0].args[1])
         self.assertIn("已处理过", answer_calls[1].args[1])
 
+    def test_lightweight_dissolve_button_requires_confirmation(self):
+        leader_id = self._register_replica_identity(991201, "leader")
+        event = self._prepare_replica_group([leader_id])
+        room = {
+            "phase": "opened",
+            "room_id": "47",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@leader",
+            "opened_at": time.time(),
+            "expires_at": 9999999999,
+            "updated_at": time.time(),
+        }
+        app_replica._set_lightweight_last_room(room)
+        buttons = app_replica._build_lightweight_room_action_buttons(
+            room,
+            include_enter=False,
+            include_dissolve=True,
+            include_query=True,
+        )
+        dissolve_button, dissolve_action = self._button_action_by_text(buttons, "解散副本")
+        self.assertEqual("lightweight_dissolve_confirm_prompt", dissolve_action.get("type"))
+
+        async def run_prompt():
+            with patch("model.app_replica.ADMIN_IDS", frozenset({123456})), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=701))) as send_mock, \
+                    patch("model.app_replica._handle_replica_group_command", new=AsyncMock(return_value=True)) as command_mock, \
+                    patch("model.app_replica.answer_log_bot_callback", new=AsyncMock()) as answer_mock:
+                handled = await app_replica.handle_replica_button_callback({
+                    "id": "cb-dissolve-prompt",
+                    "data": dissolve_button["callback_data"],
+                    "from": {"id": 123456},
+                    "message": {"message_id": 7788, "chat": {"id": event.chat_id}},
+                })
+                sent_text = send_mock.await_args.args[2]
+                sent_buttons = send_mock.await_args.kwargs["buttons"]
+                return handled, command_mock.await_args_list, sent_text, sent_buttons, answer_mock.await_args_list
+
+        handled, command_calls, sent_text, sent_buttons, answer_calls = asyncio.run(run_prompt())
+        self.assertTrue(handled)
+        self.assertEqual([], command_calls)
+        self.assertIn("准备解散苍坤洞府房间 47", sent_text)
+        self.assertIn("确认解散", self._button_texts(sent_buttons))
+        self.assertIn("已发送解散确认", answer_calls[-1].args[1])
+
+        confirm_button, confirm_action = self._button_action_by_text(sent_buttons, "确认解散")
+        self.assertEqual("replica_command", confirm_action.get("type"))
+        self.assertEqual(".解散副本", confirm_action.get("payload", {}).get("command"))
+
+        async def run_confirm():
+            with patch("model.app_replica.ADMIN_IDS", frozenset({123456})), \
+                    patch("model.app_replica._handle_replica_group_command", new=AsyncMock(return_value=True)) as command_mock, \
+                    patch("model.app_replica.answer_log_bot_callback", new=AsyncMock()):
+                handled = await app_replica.handle_replica_button_callback({
+                    "id": "cb-dissolve-confirm",
+                    "data": confirm_button["callback_data"],
+                    "from": {"id": 123456},
+                    "message": {"message_id": 7789, "chat": {"id": event.chat_id}},
+                })
+                return handled, command_mock.await_args_list
+
+        handled, command_calls = asyncio.run(run_confirm())
+        self.assertTrue(handled)
+        self.assertEqual(1, len(command_calls))
+        self.assertEqual(".解散副本", command_calls[0].args[0].raw_text)
+        self.assertEqual(7789, command_calls[0].args[0]._replica_button_message_id)
+
     def test_log_group_room_panel_uses_log_refresh_button(self):
         leader_id = self._register_replica_identity(991201, "leader", root_attrs="金火", professions="破军")
         self._prepare_replica_group([leader_id])
@@ -2186,6 +2282,94 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertIn("无法凑齐五职业", reply_text)
         self.assertIn("缺职业：", reply_text)
+        self.assertNotIn("进入苍坤洞府", button_texts)
+
+    def test_lightweight_join_uses_observed_external_cangkun_profession(self):
+        leader_id = self._register_replica_identity(991201, "jfdffdddd", professions="咒师", realm="元婴后期")
+        yushan_id = self._register_replica_identity(991202, "xuruode4", professions="破军|御山", realm="结丹后期")
+        healer_id = self._register_replica_identity(991203, "myios17", professions="灵医", realm="结丹后期", sect_name="太一门")
+        blade_id = self._register_replica_identity(991204, "xueuode5", professions="影刃", realm="结丹后期")
+        event = self._prepare_replica_group([leader_id, yushan_id, healer_id, blade_id])
+        event.raw_text = ".加入副本 @xuruode4 @myios17 @xueuode5"
+        state_module.set_tianjige_dao_path_records({
+            str(healer_id): {"spiritual_sense": 6956},
+        })
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "325",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@jfdffdddd",
+            "team_usernames": ["@jfdffdddd", "@ccahen"],
+            "team_professions_by_username": {
+                "@jfdffdddd": ["咒师"],
+                "@ccahen": ["破军"],
+            },
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._schedule_lightweight_game_command_fast_retry"), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=800))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=700, sent_at=1002))) as send_mock:
+                handled = await app_replica._handle_lightweight_join_command(event)
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, send_mock.await_count, reply_text, self._button_texts(buttons)
+
+        handled, send_count, reply_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertEqual(3, send_count)
+        self.assertIn("已发送加入苍坤洞府 325：@xuruode4 @myios17 @xueuode5", reply_text)
+        self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师", reply_text)
+        self.assertNotIn("无法凑齐五职业", reply_text)
+        self.assertNotIn("进入苍坤洞府", button_texts)
+
+    def test_lightweight_join_blocks_full_observed_cangkun_team(self):
+        leader_id = self._register_replica_identity(991201, "jfdffdddd", professions="咒师", realm="元婴后期")
+        spare_id = self._register_replica_identity(991202, "xuruode1", professions="影刃", realm="结丹后期")
+        event = self._prepare_replica_group([leader_id, spare_id])
+        event.raw_text = ".加入副本 @xuruode1"
+        app_replica._set_lightweight_last_room({
+            "phase": "opened",
+            "room_id": "326",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": event.chat_id,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@jfdffdddd",
+            "team_usernames": ["@jfdffdddd", "@growrdick", "@PeggyArmstrong_a776", "@xuruode4", "@ccahen"],
+            "team_professions_by_username": {
+                "@jfdffdddd": ["咒师"],
+                "@growrdick": ["灵医"],
+                "@PeggyArmstrong_a776": ["影刃"],
+                "@xuruode4": ["御山"],
+                "@ccahen": ["破军"],
+            },
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        })
+
+        async def run_test():
+            with patch("model.app_replica._get_replica_event_listener_account_id", return_value=9001), \
+                    patch("model.app_replica._claim_runtime_event", return_value=True), \
+                    patch("model.app_replica._send_replica_group_message", new=AsyncMock(return_value=SimpleNamespace(id=800))), \
+                    patch("model.app_replica.send_game_command", new=AsyncMock()) as send_mock:
+                handled = await app_replica._handle_lightweight_join_command(event)
+                send_mock.assert_not_awaited()
+                reply_text = app_replica._send_replica_group_message.await_args.args[2]
+                buttons = app_replica._send_replica_group_message.await_args.kwargs["buttons"]
+                return handled, reply_text, self._button_texts(buttons)
+
+        handled, reply_text, button_texts = asyncio.run(run_test())
+        self.assertTrue(handled)
+        self.assertIn("当前真实队伍已满 5/5", reply_text)
+        self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师", reply_text)
         self.assertNotIn("进入苍坤洞府", button_texts)
 
     def test_cangkun_multi_team_plan_rejects_raw_union_only_team(self):

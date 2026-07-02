@@ -88,6 +88,30 @@ def _close_wild_training_guard(reason, now):
     return bool(action_guard.close_by_family("wild_training", send_as_id=send_as_id, reason=reason, now=now))
 
 
+def _wild_training_action_guard_wait(command, now):
+    command = str(command or "").strip()
+    if not command:
+        return 0.0, ""
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return 0.0, ""
+    try:
+        from .. import action_guard
+    except Exception:
+        return 0.0, ""
+    try:
+        blocked_until, reason = action_guard.get_timing_blocked_until(command, send_as_id=send_as_id, now=now)
+    except Exception:
+        return 0.0, ""
+    try:
+        blocked_until = float(blocked_until or 0)
+    except (TypeError, ValueError, OverflowError):
+        blocked_until = 0.0
+    if blocked_until <= float(now or 0):
+        return 0.0, ""
+    return blocked_until + 2, str(reason or "野外历练安全锁短窗保护中，延后发送").strip()
+
+
 def _has_active_tianxing_explore_change(now):
     if not state.get("tianxing_enabled"):
         return False
@@ -544,7 +568,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
         state["wild_training_retry_count"] = 0
         state["wild_training_last_msg_id"] = msg_id
         state["wild_training_last_result"] = "冷却中"
-        state["wild_training_last_result_at"] = float(now or 0)
+        state["wild_training_last_result_at"] = 0
         state["wild_training_last_error"] = ""
         save_state()
         await send_audit_log(f"🏞️ 野外历练 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity")
@@ -807,6 +831,17 @@ async def _run_wild_training_scheduler_unlocked(now):
             _schedule_retry(sent_at)
             save_state()
             await send_audit_log(f"⏳ {state['wild_training_last_error']}。", scope="identity")
+            return
+        guard_next_time, guard_reason = _wild_training_action_guard_wait(command, sent_at)
+        if guard_next_time > sent_at:
+            state["wild_training_reply_to_msg_id"] = 0
+            state["wild_training_reply_due_at"] = 0
+            state["wild_training_last_result"] = "安全锁短窗等待，未发送"
+            state["wild_training_last_result_at"] = 0
+            state["wild_training_last_error"] = guard_reason
+            state["next_wild_training_time"] = float(guard_next_time)
+            save_state()
+            console_log(f"🏞️ 野外历练安全锁短窗等待，延后至 {fmt_abs_ts(guard_next_time)}：{guard_reason}", scope="identity")
             return
         retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         if await _defer_wild_training_for_dungeon_quiet(

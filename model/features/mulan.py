@@ -21,7 +21,7 @@ from ..config import (
 )
 from ..action_guard import close_action as close_action_guard_action
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import _meta_state, get_current_identity_id, get_identity_account, has_identity, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -30,6 +30,11 @@ from ._phaseful import get_phaseful_summary_risk_reason
 MULAN_DEFAULT_IDS = (1, 2, 3)
 MULAN_RECOVERY_MIN_SEC = 60
 MULAN_RECOVERY_MAX_SEC = 180
+MULAN_PHASEFUL_DEFER_MIN_SEC = 5 * 60
+MULAN_PHASEFUL_DEFER_MAX_SEC = 10 * 60
+MULAN_SEND_QUEUE_TIMEOUT_SEC = 60
+MULAN_SEND_QUEUE_RETRY_MIN_SEC = 2 * 60
+MULAN_SEND_QUEUE_RETRY_MAX_SEC = 5 * 60
 MULAN_PHASE_IDLE = "idle"
 MULAN_PHASE_COLLECT_PENDING = "collect_pending"
 MULAN_PHASE_READY_TO_JUDGE = "ready_to_judge"
@@ -47,6 +52,12 @@ MULAN_PENDING_PHASES = {
     MULAN_PHASE_PUBLISH_PENDING,
     MULAN_PHASE_PANEL_PENDING,
     MULAN_PHASE_SUPPORT_PENDING,
+}
+MULAN_READY_PHASES = {
+    MULAN_PHASE_READY_TO_JUDGE,
+    MULAN_PHASE_READY_TO_PUBLISH,
+    MULAN_PHASE_READY_TO_PANEL,
+    MULAN_PHASE_READY_TO_SUPPORT,
 }
 
 RE_REPORT_ID = re.compile(r"(?:军报|情报|编号|第)?\s*([1-9]\d*)\s*(?:号|：|:|、|\.|．|\)|）)")
@@ -528,7 +539,7 @@ def _defer_mulan_for_phaseful_summary(now, command):
     if not reason:
         return False
     _clear_mulan_pending()
-    state["next_mulan_time"] = float(now + random.uniform(MULAN_RECOVERY_MIN_SEC, MULAN_RECOVERY_MAX_SEC))
+    state["next_mulan_time"] = float(now + random.uniform(MULAN_PHASEFUL_DEFER_MIN_SEC, MULAN_PHASEFUL_DEFER_MAX_SEC))
     state["mulan_last_command"] = str(command or "").strip()
     state["mulan_last_result"] = f"{reason}，慕兰延后发送"
     state["mulan_last_error"] = ""
@@ -552,7 +563,12 @@ def _recover_mulan_unanswered_pending(now, phase, *, reply_to_msg_id=0):
         state["mulan_public_text"] = ""
         _prepare_conservative_support_or_panel(now, "辨报无回复，按文本支援", pending_ids=pending_ids)
         return f"⚠️ 慕兰辨报无回复，消息ID={reply_to_msg_id or '无'}，已按文本支援兜底。"
-    if phase in {MULAN_PHASE_PUBLISH_PENDING, MULAN_PHASE_SUPPORT_PENDING}:
+    if phase == MULAN_PHASE_SUPPORT_PENDING:
+        action = str(state.get("mulan_support_action") or "").strip()
+        _finish_mulan_cycle(now, f"支援结果超时，按今日完成：{action or '未知'}", delay_sec=_daily_done_delay_sec(now))
+        state["mulan_last_error"] = ""
+        return f"⚠️ 慕兰支援结果无回复，消息ID={reply_to_msg_id or '无'}，已按今日完成处理。"
+    if phase == MULAN_PHASE_PUBLISH_PENDING:
         state["mulan_phase"] = MULAN_PHASE_READY_TO_PANEL
         state["mulan_last_result"] = f"{phase} 无回复，准备面板校准"
         state["mulan_last_error"] = ""
@@ -669,12 +685,26 @@ async def _send_mulan_command(command, now, phase):
     if _defer_mulan_for_phaseful_summary(now, command):
         return False
 
-    msg = await send_game_command(command, track=False, max_retry=0, source_module="慕兰烽烟")
+    msg = await send_game_command(
+        command,
+        track=False,
+        max_retry=0,
+        source_module="慕兰烽烟",
+        queue_timeout=MULAN_SEND_QUEUE_TIMEOUT_SEC,
+    )
     if not msg:
         if was_last_game_send_blocked_by_global(identity_id, command):
             state["next_mulan_time"] = float(now + random.uniform(10 * 60, 30 * 60))
             state["mulan_last_command"] = command
             state["mulan_last_result"] = "全局暂停，等待恢复错峰"
+            state["mulan_last_error"] = ""
+            save_state()
+            return False
+        send_block = get_last_game_send_block(identity_id, command)
+        if str(send_block.get("code") or "") == "send_queue_timeout":
+            state["next_mulan_time"] = float(now + random.uniform(MULAN_SEND_QUEUE_RETRY_MIN_SEC, MULAN_SEND_QUEUE_RETRY_MAX_SEC))
+            state["mulan_last_command"] = command
+            state["mulan_last_result"] = "发送队列拥挤，慕兰错峰重试"
             state["mulan_last_error"] = ""
             save_state()
             return False
@@ -946,6 +976,8 @@ async def run_mulan_scheduler(now):
         _recover_mulan_unanswered_pending(now, phase)
         save_state()
         return
+    if phase in MULAN_READY_PHASES and _mulan_next_time_blocks(now):
+        return
     if phase == MULAN_PHASE_READY_TO_JUDGE:
         pending_ids = _decode_ids(state.get("mulan_pending_ids")) or list(MULAN_DEFAULT_IDS)
         public_id, report_text, intel = _known_reliable_report_for_current_ids(now, pending_ids)
@@ -984,6 +1016,18 @@ async def run_mulan_scheduler(now):
         return
 
     if phase == MULAN_PHASE_READY_TO_PANEL:
+        last_command = str(state.get("mulan_last_command") or "").strip()
+        last_result = str(state.get("mulan_last_result") or "").strip()
+        if last_command.startswith(CMD_MULAN_SUPPORT) and (
+            "support_pending 无回复" in last_result
+            or "支援进行中" in last_result
+            or "支援结果超时" in last_result
+        ):
+            action = str(state.get("mulan_support_action") or "").strip()
+            _finish_mulan_cycle(now, f"支援校准旧状态已收束：{action or '未知'}", delay_sec=_daily_done_delay_sec(now))
+            state["mulan_last_error"] = ""
+            save_state()
+            return
         pending_ids = _decode_ids(state.get("mulan_pending_ids")) or list(MULAN_DEFAULT_IDS)
         action = _support_action_from_known_reliable(now, pending_ids)
         if action:

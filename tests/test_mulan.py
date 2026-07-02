@@ -93,7 +93,13 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await mulan.run_mulan_scheduler(now)
 
-            send_mock.assert_awaited_once_with(".搜集军报", track=False, max_retry=0, source_module="慕兰烽烟")
+            send_mock.assert_awaited_once_with(
+                ".搜集军报",
+                track=False,
+                max_retry=0,
+                source_module="慕兰烽烟",
+                queue_timeout=mulan.MULAN_SEND_QUEUE_TIMEOUT_SEC,
+            )
             self.assertEqual("collect_pending", state_module.state["mulan_phase"])
             self.assertEqual(1001, state_module.state["mulan_reply_to_msg_id"])
             self.assertEqual(now + mulan.MULAN_REPLY_TIMEOUT_SEC, state_module.state["mulan_reply_due_at"])
@@ -317,7 +323,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("奇袭", state_module.state["mulan_support_action"])
             self.assertEqual("", state_module.state["mulan_last_error"])
 
-    async def test_support_timeout_uses_panel_calibration(self):
+    async def test_support_timeout_finishes_cycle_without_panel_retry(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -327,13 +333,39 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             state_module.state["mulan_reply_due_at"] = now - 1
             with (
                 patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan.random, "uniform", return_value=0),
                 patch.object(mulan, "save_state"),
                 patch.object(mulan, "send_audit_log", new=AsyncMock()),
             ):
                 await mulan.run_mulan_scheduler(now)
 
             send_mock.assert_not_awaited()
-            self.assertEqual("ready_to_panel", state_module.state["mulan_phase"])
+            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
+            self.assertIn("支援结果超时", state_module.state["mulan_last_result"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertGreater(state_module.state["next_mulan_time"], now)
+
+    async def test_ready_to_panel_from_legacy_support_timeout_finishes_cycle(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "ready_to_panel"
+            state_module.state["mulan_last_command"] = ".支援慕兰 破灯"
+            state_module.state["mulan_last_result"] = "support_pending 无回复，准备面板校准"
+            state_module.state["mulan_support_action"] = "破灯"
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan.random, "uniform", return_value=0),
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("cooldown", state_module.state["mulan_phase"])
+            self.assertIn("支援校准旧状态已收束", state_module.state["mulan_last_result"])
             self.assertEqual("", state_module.state["mulan_last_error"])
 
     async def test_shadow_report_panel_is_parsed_as_reports_not_support_panel(self):
@@ -479,6 +511,25 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["mulan_last_error"])
             self.assertIn("延后发送", state_module.state["mulan_last_result"])
 
+    async def test_ready_support_respects_deferred_next_time(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "ready_to_support"
+            state_module.state["mulan_support_action"] = "护阵"
+            state_module.state["next_mulan_time"] = now + 300
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(mulan, "get_phaseful_summary_risk_reason", return_value="深度闭关临近归位结算"),
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now + 1)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("ready_to_support", state_module.state["mulan_phase"])
+            self.assertEqual(now + 300, state_module.state["next_mulan_time"])
+
     async def test_global_send_block_uses_identity_without_name_error(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -498,6 +549,26 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("全局暂停，等待恢复错峰", state_module.state["mulan_last_result"])
             self.assertEqual("", state_module.state["mulan_last_error"])
             self.assertEqual(now + 600, state_module.state["next_mulan_time"])
+
+    async def test_send_queue_timeout_uses_staggered_retry(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "get_phaseful_summary_risk_reason", return_value=""),
+                patch.object(mulan, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(mulan, "was_last_game_send_blocked_by_global", return_value=False),
+                patch.object(mulan, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}),
+                patch.object(mulan.random, "uniform", return_value=180),
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            self.assertEqual("发送队列拥挤，慕兰错峰重试", state_module.state["mulan_last_result"])
+            self.assertEqual("", state_module.state["mulan_last_error"])
+            self.assertEqual(now + 180, state_module.state["next_mulan_time"])
 
     async def test_cd_reply_uses_real_wait_text(self):
         identity_id = self._prepare_identity()

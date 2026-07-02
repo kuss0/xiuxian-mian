@@ -166,6 +166,49 @@ function renderReplicaParticipantRows(replica, options) {
   }).join('') + '</div>';
 }
 
+function renderReplicaKindManualConfig(replica) {
+  const identities = Array.isArray(replica.identity_options) ? replica.identity_options : [];
+  const kindConfigs = replica.kind_configs || {};
+  const orderedKinds = ['virtual_hall', 'zhuimo', 'huanglong', 'cangkun', 'kunwu', 'luoyun'];
+  const fallbackText = '未单独勾选时沿用全局名单';
+  if (!identities.length) {
+    return '<div class="queue-empty">暂无身份。</div>';
+  }
+  return '<div class="replica-kind-config-list">' + orderedKinds.map(function(kind) {
+    const config = kindConfigs[kind] || {};
+    const enabled = config.enabled !== false;
+    const localIds = new Set((config.participant_identity_ids || []).map(function(id) { return Number(id); }));
+    const dispatchIds = new Set((config.dispatch_participant_identity_ids || []).map(function(id) { return Number(id); }));
+    const name = config.name || kind;
+    const summary = name + ' ｜ 推荐 ' + localIds.size + ' ｜ 主线 ' + dispatchIds.size;
+    const renderIdentityChecks = function(attr, selectedIds) {
+      return '<div class="replica-kind-checks">' + identities.map(function(identity) {
+        const identityId = Number(identity.identity_id || 0);
+        const username = identity.username ? ('@' + String(identity.username).replace(/^@/, '')) : ('ID ' + identityId);
+        const checked = selectedIds.has(identityId) ? ' checked' : '';
+        const disabledText = identity.identity_enabled ? '' : '（停）';
+        return '<label class="checkbox-inline checkbox-inline-small replica-kind-check">'
+          + '<input type="checkbox" ' + attr + '="' + escapeHtml(kind) + '" value="' + escapeHtml(identityId) + '"' + checked + ' />'
+          + '<span>' + escapeHtml((identity.display_name || identityId) + ' ' + username + disabledText) + '</span>'
+          + '</label>';
+      }).join('') + '</div>';
+    };
+    return '<details class="replica-kind-config">'
+      + '<summary>'
+      + '<label class="checkbox-inline checkbox-inline-small">'
+      + '<input type="checkbox" data-replica-kind-enabled="' + escapeHtml(kind) + '"' + (enabled ? ' checked' : '') + ' />'
+      + '<strong>' + escapeHtml(summary) + '</strong>'
+      + '</label>'
+      + '<span>' + escapeHtml(fallbackText) + '</span>'
+      + '</summary>'
+      + '<div class="replica-kind-config-body">'
+      + '<div><div class="queue-section-title">推荐/开房名单</div>' + renderIdentityChecks('data-replica-kind-participant', localIds) + '</div>'
+      + '<div><div class="queue-section-title">主线拉人名单</div>' + renderIdentityChecks('data-replica-kind-dispatch-participant', dispatchIds) + '</div>'
+      + '</div>'
+      + '</details>';
+  }).join('') + '</div>';
+}
+
 function renderReplicaOpeners(replica) {
   const identities = Array.isArray(replica.identity_options) ? replica.identity_options : [];
   const participantIds = new Set((replica.participant_identity_ids || []).map(function(id) { return Number(id); }));
@@ -240,6 +283,10 @@ function renderReplicaConfig(replica) {
     + '<div class="replica-config-grid">'
     + '<label class="form-label">苍坤成功冷却（小时）<input class="text-input" name="replica_cangkun_success_cooldown_hours" type="number" min="0.25" max="24" step="0.25" value="' + escapeHtml(cangkunCooldownHours) + '" /></label>'
     + '</div>'
+    + '</div>'
+    + '<div class="dungeon-section">'
+    + '<div class="queue-section-title">副本手动配置</div>'
+    + renderReplicaKindManualConfig(replica)
     + '</div>'
     + '<div class="dungeon-section">'
     + '<div class="queue-section-title">本地参与身份</div>'
@@ -411,6 +458,31 @@ function collectReplicaConfigPayload() {
   const dispatchParticipantIds = Array.from(form.querySelectorAll('[data-replica-dispatch-participant]:checked')).map(function(input) {
     return input.getAttribute('data-replica-dispatch-participant');
   });
+  const kindConfigs = {};
+  form.querySelectorAll('[data-replica-kind-enabled]').forEach(function(input) {
+    const kind = String(input.getAttribute('data-replica-kind-enabled') || '').trim();
+    if (!kind) {
+      return;
+    }
+    kindConfigs[kind] = kindConfigs[kind] || {participant_identity_ids: [], dispatch_participant_identity_ids: []};
+    kindConfigs[kind].enabled = !!input.checked;
+  });
+  form.querySelectorAll('[data-replica-kind-participant]:checked').forEach(function(input) {
+    const kind = String(input.getAttribute('data-replica-kind-participant') || '').trim();
+    if (!kind) {
+      return;
+    }
+    kindConfigs[kind] = kindConfigs[kind] || {enabled: true, participant_identity_ids: [], dispatch_participant_identity_ids: []};
+    kindConfigs[kind].participant_identity_ids.push(input.value);
+  });
+  form.querySelectorAll('[data-replica-kind-dispatch-participant]:checked').forEach(function(input) {
+    const kind = String(input.getAttribute('data-replica-kind-dispatch-participant') || '').trim();
+    if (!kind) {
+      return;
+    }
+    kindConfigs[kind] = kindConfigs[kind] || {enabled: true, participant_identity_ids: [], dispatch_participant_identity_ids: []};
+    kindConfigs[kind].dispatch_participant_identity_ids.push(input.value);
+  });
   return {
     group_ids: groupIds,
     listener_account_map: listenerMap,
@@ -420,6 +492,7 @@ function collectReplicaConfigPayload() {
     success_cooldown_hours: {cangkun: cangkunCooldown},
     participant_identity_ids: participantIds,
     dispatch_participant_identity_ids: dispatchParticipantIds,
+    kind_configs: kindConfigs,
     virtual_hall_match_enabled_map: {}
   };
 }

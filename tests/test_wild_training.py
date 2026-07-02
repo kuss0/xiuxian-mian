@@ -577,9 +577,52 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("unknown_result", observed["last_result"])
         self.assertNotIn("探索", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertEqual(0, state_module.state["wild_training_last_result_at"])
         self.assertGreaterEqual(audit_mock.await_count, 2)
         self.assertIn("天星探索结果不确定", audit_mock.await_args_list[-1].args[0])
         self.assertEqual("high", audit_mock.await_args_list[-1].kwargs["priority"])
+
+    async def test_short_cd_reply_retries_without_completed_result_guard(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_900.0
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 深入", id=301)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 301
+            identity_state["wild_training_reply_due_at"] = now + 60
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["wild_training_last_result"] = "已发送：深入"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training.random, "uniform", return_value=0), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()):
+            handled = await wild_training.handle_wild_training_reply(
+                "【野外历练】\n山中灵机未复，请在 31秒 后再来。",
+                now,
+                reply_to,
+                matched_family="wild_training",
+                current_msg_id=401,
+            )
+
+        self.assertTrue(handled)
+        retry_at = now + 31 + config.CD_BUFFER_SEC
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(0, state_module.state["wild_training_retry_count"])
+        self.assertEqual("冷却中", state_module.state["wild_training_last_result"])
+        self.assertEqual(0, state_module.state["wild_training_last_result_at"])
+        self.assertEqual(retry_at, state_module.state["next_wild_training_time"])
+
+        sent_msg = SimpleNamespace(id=501, sent_at=retry_at + 1)
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training, "console_log"), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock:
+            await wild_training.run_wild_training_scheduler(retry_at + 1)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(501, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
 
     async def test_unanswered_command_still_retries_once(self):
         send_as_id = self._prepare_identity()
@@ -753,6 +796,36 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("未发送", state_module.state["wild_training_last_error"])
         audit_mock.assert_awaited_once()
+
+    async def test_scheduler_action_guard_short_window_defers_without_consuming_retry(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=None)) as send_mock, \
+             patch.object(wild_training, "get_last_game_send_block", return_value={"code": "action_guard", "reason": "野外历练 同命令短窗保护，剩余约 26s"}), \
+             patch.object(wild_training, "_wild_training_action_guard_wait", return_value=(now + 28, "野外历练 同命令短窗保护，剩余约 26s")), \
+             patch.object(wild_training, "console_log") as console_mock, \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_awaited_once()
+        audit_mock.assert_not_awaited()
+        console_mock.assert_called_once()
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(0, state_module.state["wild_training_retry_count"])
+        self.assertEqual(now + 28, state_module.state["next_wild_training_time"])
+        self.assertEqual("安全锁短窗等待，未发送", state_module.state["wild_training_last_result"])
+        self.assertEqual(0, state_module.state["wild_training_last_result_at"])
+        self.assertIn("同命令短窗保护", state_module.state["wild_training_last_error"])
 
     async def test_scheduler_defers_when_deep_retreat_summary_window_is_due(self):
         send_as_id = self._prepare_identity()

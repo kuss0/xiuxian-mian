@@ -74,7 +74,7 @@ WORLD_BOSS_STRONG_ATTACK_IDS = {8659059191, 301299112}
 WORLD_BOSS_STRONG_ATTACK_NAMES = {"walterwa2000", "wa2000", "jfdffdddd", "吧唧"}
 WORLD_BOSS_PENDING_COMMANDS = set(WORLD_BOSS_ACTION_COMMANDS.values()) | {WORLD_BOSS_STATUS_QUERY_COMMAND}
 WORLD_BOSS_EVENT_PRIORITY = "event_burst"
-WORLD_BOSS_RETRY_PRIORITY = "retry"
+WORLD_BOSS_STATUS_PRIORITY = "reactive"
 
 RE_WORLD_BOSS_OPEN = re.compile(r"【世界通告｜真仙试锋开启】")
 RE_WORLD_BOSS_NOTICE = re.compile(r"【世界通告｜真仙试锋(?P<title>[^】]+)】")
@@ -1484,7 +1484,7 @@ async def _send_status_query(identity_id, now, run_state, reason, *, allow_inact
         max_retry=0,
         reply_timeout=WORLD_BOSS_REPLY_TIMEOUT_SEC,
         send_as_id=identity_id,
-        priority=WORLD_BOSS_RETRY_PRIORITY if is_retry else WORLD_BOSS_EVENT_PRIORITY,
+        priority=WORLD_BOSS_STATUS_PRIORITY,
         source_module=WORLD_BOSS_MODULE_NAME,
         op_id=f"{chain_id}:status:{identity_id}:try{retry_count}:{int(now)}",
         chain_id=chain_id,

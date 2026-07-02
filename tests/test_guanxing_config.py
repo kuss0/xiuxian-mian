@@ -339,6 +339,35 @@ class GuanxingConfigTests(unittest.TestCase):
         self.assertEqual({"cangkun": 3.25}, state_module.get_replica_success_cooldown_hours())
         self.assertEqual(3.25, ui.get_replica_config_snapshot()["success_cooldown_hours"]["cangkun"])
 
+    def test_replica_config_saves_kind_manual_overrides(self):
+        state_module.ensure_identity_registered(101)
+        state_module.ensure_identity_registered(102)
+        payload = {
+            "group_ids": "-100777",
+            "listener_account_map": {"-100777": "9001"},
+            "participant_identity_ids": [101],
+            "virtual_hall_match_enabled_map": {},
+            "kind_configs": {
+                "cangkun": {
+                    "enabled": False,
+                    "participant_identity_ids": [102],
+                    "dispatch_participant_identity_ids": [101],
+                },
+            },
+        }
+
+        with patch.object(ui, "save_state"):
+            ok, message = ui.ui_set_replica_config(payload)
+
+        self.assertTrue(ok, message)
+        kind_config = state_module.get_replica_kind_config("cangkun")
+        self.assertFalse(kind_config["enabled"])
+        self.assertEqual([102], kind_config["participant_identity_ids"])
+        self.assertEqual([101], kind_config["dispatch_participant_identity_ids"])
+        snapshot = ui.get_replica_config_snapshot()["kind_configs"]["cangkun"]
+        self.assertFalse(snapshot["enabled"])
+        self.assertEqual([102], snapshot["participant_identity_ids"])
+
     def test_replica_config_ignores_dispatch_group_overlaps(self):
         state_module.set_game_group_id(-100999)
         payload = {

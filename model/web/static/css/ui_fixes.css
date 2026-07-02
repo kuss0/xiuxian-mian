@@ -575,6 +575,65 @@
   word-break: break-word;
 }
 
+.replica-kind-config-list {
+  display: grid;
+  gap: 8px;
+}
+
+.replica-kind-config {
+  background: #020617;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  color: #94a3b8;
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.replica-kind-config summary {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) max-content;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 10px;
+}
+
+.replica-kind-config summary::-webkit-details-marker {
+  display: none;
+}
+
+.replica-kind-config summary strong {
+  color: #e5e7eb;
+}
+
+.replica-kind-config-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  border-top: 1px solid #1e293b;
+  padding: 10px;
+}
+
+.replica-kind-checks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px;
+  max-height: 180px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.replica-kind-check {
+  min-width: 0;
+}
+
+.replica-kind-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .replica-opener-commands {
   display: flex;
   flex-wrap: wrap;
@@ -694,6 +753,10 @@
     grid-template-columns: minmax(0, 1fr) max-content;
   }
 
+  .replica-kind-config-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .dungeon-announcement-row {
     grid-template-columns: 78px minmax(0, 1fr);
   }
@@ -717,6 +780,7 @@
   .replica-group-row,
   .replica-identity-row,
   .replica-opener-row,
+  .replica-kind-config summary,
   .replica-aggregator-grid {
     grid-template-columns: 1fr;
   }

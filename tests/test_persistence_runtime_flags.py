@@ -385,12 +385,20 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 state_module.set_replica_dispatch_listener_account_map({"-100999": 7003})
                 state_module.set_replica_participant_identity_ids([990101, 990103, 123])
                 state_module.set_replica_dispatch_participant_identity_ids([990101, 123])
+                state_module.set_replica_kind_configs({
+                    "cangkun": {
+                        "enabled": False,
+                        "participant_identity_ids": [990103, 123],
+                        "dispatch_participant_identity_ids": [990101],
+                    },
+                })
                 state_module.set_replica_virtual_hall_match_enabled_map({"-100777": "true", "-100888": "false"})
                 state_module.set_replica_query_aggregator_config({
                     "base_url": "https://example.invalid/api/",
                     "client_id": "client-a",
                     "secret": "secret-a",
                 })
+                state_module.set_replica_success_cooldown_hours({"cangkun": 3.25})
                 state_module.set_replica_run_state({"room": {"status": "active"}})
                 state_module.set_formation_run_state({
                     "active_invites": {"7897745": {"msg_id": 7897745, "owner_username": "@david"}},
@@ -415,6 +423,10 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual({"-100999": 7003}, state_module.get_replica_dispatch_listener_account_map())
                 self.assertEqual([990101, 990103], state_module.get_replica_participant_identity_ids())
                 self.assertEqual([990101], state_module.get_replica_dispatch_participant_identity_ids())
+                cangkun_config = state_module.get_replica_kind_config("cangkun")
+                self.assertFalse(cangkun_config["enabled"])
+                self.assertEqual([990103], cangkun_config["participant_identity_ids"])
+                self.assertEqual([990101], cangkun_config["dispatch_participant_identity_ids"])
                 self.assertEqual({"-100777": True, "-100888": False}, state_module.get_replica_virtual_hall_match_enabled_map())
                 self.assertEqual(
                     {
@@ -424,6 +436,7 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                     },
                     state_module.get_replica_query_aggregator_config(),
                 )
+                self.assertEqual({"cangkun": 3.25}, state_module.get_replica_success_cooldown_hours())
                 self.assertEqual({"room": {"status": "active"}}, state_module.get_replica_run_state())
                 self.assertEqual(
                     {

@@ -39,6 +39,16 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         state_module.ensure_identity_registered(send_as_id)
         state_module.update_send_as_profile(send_as_id, username=username)
 
+    def test_post_summary_wait_exceeds_same_command_guard_window(self):
+        self.assertGreater(
+            deep_retreat.DEEP_RETREAT_SPEC.post_summary_wait_sec,
+            action_guard.POST_CLOSE_REPEAT_GUARD_SEC,
+        )
+        self.assertGreater(
+            yuanying.YUANYING_SPEC.post_summary_wait_sec,
+            action_guard.POST_CLOSE_REPEAT_GUARD_SEC,
+        )
+
     def _active_tianxing_farm_config(self, now):
         local_time = time.localtime(now)
         return {

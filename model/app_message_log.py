@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS message_log_events (
 )
 """
 _MESSAGE_LOG_LEDGER_RETENTION_DAYS = 3
+_MESSAGE_LOG_LEDGER_TIMEOUT_SEC = 5.0
+_MESSAGE_LOG_LEDGER_BUSY_TIMEOUT_MS = 5000
 _message_log_ledger_last_cleanup_at = 0.0
 _message_log_ledger_initialized = set()
 
@@ -176,7 +178,8 @@ def _claim_message_log_file_event(log_file, payload, *, scope="game"):
     try:
         os.makedirs(MESSAGES_DIR, exist_ok=True)
         ledger_file = _message_log_ledger_file()
-        with sqlite3.connect(ledger_file, timeout=2.0) as conn:
+        with sqlite3.connect(ledger_file, timeout=_MESSAGE_LOG_LEDGER_TIMEOUT_SEC) as conn:
+            conn.execute(f"PRAGMA busy_timeout={int(_MESSAGE_LOG_LEDGER_BUSY_TIMEOUT_MS)}")
             if ledger_file not in _message_log_ledger_initialized:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute(_MESSAGE_LOG_LEDGER_SCHEMA)
@@ -198,6 +201,11 @@ def _claim_message_log_file_event(log_file, payload, *, scope="game"):
             except sqlite3.IntegrityError:
                 return False
             return True
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower():
+            return True
+        print(traceback.format_exc())
+        return True
     except Exception:
         print(traceback.format_exc())
         return True

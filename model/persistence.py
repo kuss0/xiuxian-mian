@@ -47,11 +47,13 @@ from .state import (
     get_replica_dispatch_group_ids,
     get_replica_dispatch_listener_account_map,
     get_replica_dispatch_participant_identity_ids,
+    get_replica_kind_configs,
     get_replica_listener_account_id,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
     get_replica_run_state,
+    get_replica_success_cooldown_hours,
     get_replica_virtual_hall_match_enabled_map,
     get_send_as_profile,
     get_storage_bag_api_config,
@@ -85,11 +87,13 @@ from .state import (
     set_replica_dispatch_group_ids,
     set_replica_dispatch_listener_account_map,
     set_replica_dispatch_participant_identity_ids,
+    set_replica_kind_configs,
     set_replica_listener_account_id,
     set_replica_listener_account_map,
     set_replica_participant_identity_ids,
     set_replica_query_aggregator_config,
     set_replica_run_state,
+    set_replica_success_cooldown_hours,
     set_replica_virtual_hall_match_enabled_map,
     set_send_as_profile,
     set_storage_bag_api_config,
@@ -2452,6 +2456,11 @@ _META_STATE_CODEC = {
         _encode_meta_json,
         lambda value: set_replica_dispatch_participant_identity_ids(_decode_meta_json(value, [])),
     ),
+    "replica_kind_configs": (
+        get_replica_kind_configs,
+        _encode_meta_json,
+        lambda value: set_replica_kind_configs(_decode_meta_json(value, {})),
+    ),
     "replica_run_state": (
         get_replica_run_state,
         _encode_meta_json,
@@ -2466,6 +2475,11 @@ _META_STATE_CODEC = {
         get_replica_query_aggregator_config,
         _encode_meta_json,
         lambda value: set_replica_query_aggregator_config(_decode_meta_json(value, {})),
+    ),
+    "replica_success_cooldown_hours": (
+        get_replica_success_cooldown_hours,
+        _encode_meta_json,
+        lambda value: set_replica_success_cooldown_hours(_decode_meta_json(value, {})),
     ),
     "storage_bag_api_config": (
         get_storage_bag_api_config,
@@ -2844,6 +2858,7 @@ def load_state():
         membership_initialized = False
         replica_participant_identity_ids = []
         replica_dispatch_participant_identity_ids = []
+        replica_kind_configs = {}
         replica_group_ids = []
         replica_listener_account_map = {}
         replica_virtual_hall_match_enabled_map = {}
@@ -2859,6 +2874,9 @@ def load_state():
                 continue
             if key == "replica_dispatch_participant_identity_ids":
                 replica_dispatch_participant_identity_ids = _decode_meta_json(meta_map.get(key), [])
+                continue
+            if key == "replica_kind_configs":
+                replica_kind_configs = _decode_meta_json(meta_map.get(key), {})
                 continue
             if key == "replica_virtual_hall_match_enabled_map":
                 replica_virtual_hall_match_enabled_map = _decode_meta_json(meta_map.get(key), {})
@@ -2894,6 +2912,7 @@ def load_state():
             _load_identity_from_db(send_as_id)
         set_replica_participant_identity_ids(replica_participant_identity_ids)
         set_replica_dispatch_participant_identity_ids(replica_dispatch_participant_identity_ids)
+        set_replica_kind_configs(replica_kind_configs)
 
         if not membership_initialized:
             _save_meta_state(conn)

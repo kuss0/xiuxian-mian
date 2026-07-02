@@ -895,7 +895,7 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         call = send_mock.await_args
         self.assertEqual(".世界boss", call.args[0])
-        self.assertEqual("event_burst", call.kwargs["priority"])
+        self.assertEqual("reactive", call.kwargs["priority"])
         self.assertEqual("真仙试锋", call.kwargs["source_module"])
         self.assertEqual(9101, identity_state["world_boss_pending_msg_id"])
         self.assertEqual("status", identity_state["world_boss_pending_action"])
@@ -1089,10 +1089,10 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, send_mock.await_count)
         first_call, retry_call = send_mock.await_args_list
         self.assertEqual(".世界boss", first_call.args[0])
-        self.assertEqual("event_burst", first_call.kwargs["priority"])
+        self.assertEqual("reactive", first_call.kwargs["priority"])
         self.assertTrue(first_call.kwargs["op_id"].endswith(f":status:{identity_id}:try0:{int(now)}"))
         self.assertEqual(".世界boss", retry_call.args[0])
-        self.assertEqual("retry", retry_call.kwargs["priority"])
+        self.assertEqual("reactive", retry_call.kwargs["priority"])
         self.assertTrue(retry_call.kwargs["op_id"].endswith(f":status:{identity_id}:try1:{int(retry_now)}"))
         clear_mock.assert_called_with({".世界boss"}, send_as_id=identity_id)
         self.assertEqual(9102, identity_state["world_boss_pending_msg_id"])

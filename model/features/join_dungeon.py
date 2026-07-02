@@ -4,7 +4,14 @@ import re
 import time
 from collections import deque
 
-from ..config import CMD_DUNGEON_HUANGLONG_JOIN, CMD_DUNGEON_JOIN, CMD_DUNGEON_ZHUIMO_JOIN, CMD_REPLICA_LUOYUN_JOIN
+from ..config import (
+    CMD_DUNGEON_HUANGLONG_JOIN,
+    CMD_DUNGEON_JOIN,
+    CMD_DUNGEON_ZHUIMO_JOIN,
+    CMD_REPLICA_CANGKUN_JOIN,
+    CMD_REPLICA_KUNWU_JOIN,
+    CMD_REPLICA_LUOYUN_JOIN,
+)
 from ..persistence import save_state
 from ..runtime import _fire_and_forget, console_log, send_audit_log, send_game_command
 from ..state import (
@@ -15,6 +22,7 @@ from ..state import (
     get_identity_enabled,
     get_identity_ids,
     get_identity_state,
+    get_replica_kind_config,
     get_send_as_profile,
     set_dungeon_join_run_state,
 )
@@ -27,11 +35,15 @@ from . import workflow_log
 DUNGEON_KIND_VIRTUAL_HALL = "virtual_hall"
 DUNGEON_KIND_ZHUIMO = "zhuimo"
 DUNGEON_KIND_HUANGLONG = "huanglong"
+DUNGEON_KIND_CANGKUN = "cangkun"
+DUNGEON_KIND_KUNWU = "kunwu"
 DUNGEON_KIND_LUOYUN = "luoyun"
 DUNGEON_KIND_META = {
     DUNGEON_KIND_VIRTUAL_HALL: {"name": "虚天殿", "join_command": CMD_DUNGEON_JOIN},
     DUNGEON_KIND_ZHUIMO: {"name": "坠魔谷", "join_command": CMD_DUNGEON_ZHUIMO_JOIN},
     DUNGEON_KIND_HUANGLONG: {"name": "黄龙山", "join_command": CMD_DUNGEON_HUANGLONG_JOIN},
+    DUNGEON_KIND_CANGKUN: {"name": "苍坤洞府", "join_command": CMD_REPLICA_CANGKUN_JOIN},
+    DUNGEON_KIND_KUNWU: {"name": "昆吾山", "join_command": CMD_REPLICA_KUNWU_JOIN},
     DUNGEON_KIND_LUOYUN: {"name": "落云秘圃", "join_command": CMD_REPLICA_LUOYUN_JOIN},
 }
 DUNGEON_INBOX_TTL_SEC = 5 * 60
@@ -53,7 +65,7 @@ _DUNGEON_ID_RE = re.compile(rf"(?:(?:副本|房间)ID\s*[:：]\s*|(?:{_JOIN_COMM
 _UNSUPPORTED_DUNGEON_MARKERS = ("血色试炼", "加入血色试炼", "进入血色试炼", "血色抉择")
 _USERNAME_PATTERN = r"@[^\s，。！？、；：:,.!?()（）【】\[\]]+"
 _USERNAME_RE = re.compile(_USERNAME_PATTERN)
-_JOINED_RE = re.compile(rf"({_USERNAME_PATTERN})\s*已(?:成功)?加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|落云秘圃(?:队伍)?(?:\s*(\d+))?)")
+_JOINED_RE = re.compile(rf"({_USERNAME_PATTERN})\s*已(?:成功)?加入(?:副本\s*(\d+)|坠魔谷(?:\s*(\d+))?|黄龙山(?:队伍)?(?:\s*(\d+))?|苍坤(?:上人)?洞府(?:队伍)?(?:\s*(\d+))?|昆吾山(?:队伍)?(?:\s*(\d+))?|落云秘圃(?:队伍)?(?:\s*(\d+))?)")
 _ROOM_DISSOLVED_RE = re.compile(r"已将副本房间\s*[（(]\s*ID\s*[:：]\s*(\d+)\s*[）)]\s*解散")
 _inbox = deque()
 _by_msg_id = {}
@@ -257,6 +269,11 @@ def _infer_dungeon_kind(text):
     if "副本ID" in raw or "加入副本" in raw:
         return DUNGEON_KIND_VIRTUAL_HALL
     return DUNGEON_KIND_VIRTUAL_HALL
+
+
+def _is_dungeon_kind_enabled(dungeon_kind):
+    dungeon_kind = dungeon_kind if dungeon_kind in DUNGEON_KIND_META else DUNGEON_KIND_VIRTUAL_HALL
+    return bool((get_replica_kind_config(dungeon_kind) or {}).get("enabled", True))
 
 
 def _format_dungeon_join_command(dungeon_id, dungeon_kind=""):
@@ -1219,6 +1236,20 @@ async def handle_dungeon_join_mention(event, text, now=None):
 
     dungeon_id = matched["dungeon_id"]
     dungeon_kind = matched.get("dungeon_kind") or DUNGEON_KIND_VIRTUAL_HALL
+    if not _is_dungeon_kind_enabled(dungeon_kind):
+        _record_dungeon_workflow_event(
+            "join_skipped",
+            status="skipped",
+            dungeon_id=dungeon_id,
+            dungeon_kind=dungeon_kind,
+            chat_id=_event_chat_id(event),
+            msg_id=_event_msg_id(event),
+            text=text,
+            decision="join_guard_dungeon_kind_disabled",
+            detail={"announcement_msg_id": matched["announcement_msg_id"]},
+            now=now,
+        )
+        return True
     join_command = _format_dungeon_join_command(dungeon_id, dungeon_kind)
     handled = False
     for identity_id in identity_ids:

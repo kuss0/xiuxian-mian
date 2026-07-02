@@ -1028,6 +1028,55 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertIn("manifest_pending 等待回复超时", state_module.state["small_world_last_error"])
 
+    async def test_manifest_resource_shortage_clears_ready_snapshot_without_resend(self):
+        send_as_id = 8659059301
+        now = 3360.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 7609
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "邪祟入梦",
+                "manifest_cost": "香火x250",
+                "has_wait": False,
+                "updated_at": now - 30,
+            }
+
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world.handle_small_world_manifest_reply(
+                    "显灵所需香火不足 (需要 250，拥有 96)。",
+                    now,
+                    reply_to=SimpleNamespace(id=7609, raw_text=small_world.CMD_SMALL_WORLD_MANIFEST),
+                    matched_family="small_world_manifest",
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            snapshot = state_module.state["small_world_panel_snapshot"]
+            self.assertFalse(snapshot.get("has_prayer"))
+            self.assertEqual("", snapshot.get("manifest_cost"))
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_MANIFEST_RESOURCE_PAUSE_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            audit_mock.assert_awaited_once()
+            self.assertIn("显灵资源不足（香火）", audit_mock.await_args.args[0])
+            self.assertIn("退避 6 小时", audit_mock.await_args.args[0])
+
+            with patch.object(small_world, "send_game_command", new=AsyncMock()) as send_mock:
+                await small_world.run_small_world_scheduler(now + 30)
+
+            send_mock.assert_not_awaited()
+
     async def test_god_action_send_is_module_managed_without_runtime_retry(self):
         send_as_id = 8659059191
         now = 3360.0

@@ -38,6 +38,7 @@ from .config import (
     CMD_DUNGEON_JOIN,
     CMD_DUNGEON_ZHUIMO_JOIN,
     CMD_REPLICA_CANGKUN_JOIN,
+    CMD_REPLICA_KUNWU_JOIN,
     CMD_REPLICA_LUOYUN_JOIN,
     CMD_TIANTI_GANGFENG,
     MESSAGES_DIR,
@@ -142,6 +143,7 @@ from .state import (
     get_replica_dispatch_participant_identity_ids,
     get_replica_gold_dps_enabled,
     get_replica_group_ids,
+    get_replica_kind_configs,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
@@ -201,6 +203,7 @@ from .state import (
     set_replica_dispatch_listener_account_map,
     set_replica_dispatch_participant_identity_ids,
     set_replica_group_ids,
+    set_replica_kind_configs,
     set_replica_listener_account_map,
     set_replica_participant_identity_ids,
     set_replica_query_aggregator_config,
@@ -272,9 +275,19 @@ _STORAGE_BAG_API_KEEPALIVE_BACKOFF_SEC = 10 * 60
 _STORAGE_BAG_PINNED_ITEM_ORDER = ("天雷竹", "二级妖丹", "金精矿")
 _LOG_FILE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})\.log$")
 _REPLICA_UI_KIND_VIRTUAL_HALL = "virtual_hall"
-_REPLICA_UI_KIND_CANGKUN = "cangkun"
 _REPLICA_UI_KIND_ZHUIMO = "zhuimo"
 _REPLICA_UI_KIND_HUANGLONG = "huanglong"
+_REPLICA_UI_KIND_CANGKUN = "cangkun"
+_REPLICA_UI_KIND_KUNWU = "kunwu"
+_REPLICA_UI_KIND_LUOYUN = "luoyun"
+_REPLICA_UI_KINDS = (
+    _REPLICA_UI_KIND_VIRTUAL_HALL,
+    _REPLICA_UI_KIND_ZHUIMO,
+    _REPLICA_UI_KIND_HUANGLONG,
+    _REPLICA_UI_KIND_CANGKUN,
+    _REPLICA_UI_KIND_KUNWU,
+    _REPLICA_UI_KIND_LUOYUN,
+)
 _REPLICA_UI_OPEN_PRIORITY = (
     _REPLICA_UI_KIND_VIRTUAL_HALL,
     _REPLICA_UI_KIND_CANGKUN,
@@ -286,6 +299,8 @@ _REPLICA_UI_TICKET_META = {
     _REPLICA_UI_KIND_CANGKUN: {"name": "苍坤洞府", "short": "苍", "items": ("苍坤残图",)},
     _REPLICA_UI_KIND_ZHUIMO: {"name": "坠魔谷", "short": "坠", "items": ("坠魔谷禁制令",)},
     _REPLICA_UI_KIND_HUANGLONG: {"name": "黄龙山", "short": "黄", "items": ("黄龙急援令", "黄龙急援令（宗门版）")},
+    _REPLICA_UI_KIND_KUNWU: {"name": "昆吾山", "short": "昆", "items": ("昆吾通行令",)},
+    _REPLICA_UI_KIND_LUOYUN: {"name": "落云秘圃", "short": "落", "items": ()},
 }
 
 
@@ -3118,6 +3133,7 @@ def get_dungeon_join_snapshot():
             {"name": "坠魔谷", "join_command": CMD_DUNGEON_ZHUIMO_JOIN},
             {"name": "黄龙山", "join_command": CMD_DUNGEON_HUANGLONG_JOIN},
             {"name": "苍坤洞府", "join_command": CMD_REPLICA_CANGKUN_JOIN},
+            {"name": "昆吾山", "join_command": CMD_REPLICA_KUNWU_JOIN},
             {"name": "落云秘圃", "join_command": CMD_REPLICA_LUOYUN_JOIN},
         ],
         "recent_announcements": get_dungeon_join_inbox_snapshot(limit=20),
@@ -3265,6 +3281,7 @@ def get_replica_config_snapshot():
     dispatch_participant_ids = get_replica_dispatch_participant_identity_ids()
     match_map = get_replica_virtual_hall_match_enabled_map()
     success_cooldown_hours = get_replica_success_cooldown_hours()
+    kind_configs = get_replica_kind_configs()
     storage_records = get_storage_bag_records()
     identity_options = []
     participant_set = {int(identity_id) for identity_id in participant_ids}
@@ -3322,6 +3339,17 @@ def get_replica_config_snapshot():
         },
         "participant_identity_ids": participant_ids,
         "dispatch_participant_identity_ids": dispatch_participant_ids,
+        "kind_configs": {
+            replica_kind: {
+                "kind": replica_kind,
+                "name": _REPLICA_UI_TICKET_META[replica_kind]["name"],
+                "short": _REPLICA_UI_TICKET_META[replica_kind]["short"],
+                "enabled": bool((kind_configs.get(replica_kind) or {}).get("enabled", True)),
+                "participant_identity_ids": list((kind_configs.get(replica_kind) or {}).get("participant_identity_ids") or []),
+                "dispatch_participant_identity_ids": list((kind_configs.get(replica_kind) or {}).get("dispatch_participant_identity_ids") or []),
+            }
+            for replica_kind in _REPLICA_UI_KINDS
+        },
         "virtual_hall_match_enabled_map": {str(group_id): bool(match_map.get(str(group_id), False)) for group_id in group_ids},
         "success_cooldown_hours": success_cooldown_hours,
         "account_options": _get_replica_account_options(),
@@ -3388,6 +3416,9 @@ def ui_set_replica_config(payload):
     success_cooldown_input = payload.get("success_cooldown_hours")
     if isinstance(success_cooldown_input, dict):
         set_replica_success_cooldown_hours(success_cooldown_input)
+    kind_config_input = payload.get("kind_configs")
+    if isinstance(kind_config_input, dict):
+        set_replica_kind_configs(kind_config_input)
 
     set_replica_group_ids(group_ids)
     set_replica_listener_account_map(listener_map)

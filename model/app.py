@@ -84,7 +84,17 @@ from .features.quiz import handle_quiz_learning_prompt, handle_quiz_prompt, hand
 from .features.tianti import handle_tianti_reply, run_tianti_scheduler
 from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_tiandao_judgement_punishment, run_tiandao_judgement_scheduler
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
-from .features.tianxing import is_tianxing_route_released, run_tianxing_daily_bootstrap_scheduler, run_tianxing_scheduler
+from .features.tianxing import (
+    apply_tianxing_passive,
+    has_tianxing_craft_farm_override_due,
+    has_tianxing_timeline_due_work,
+    is_tianxing_route_released,
+    normalize_tianxing_observation,
+    normalize_tianxing_timeline_state,
+    run_tianxing_daily_bootstrap_scheduler,
+    run_tianxing_scheduler,
+    run_tianxing_timeline_followup_scheduler,
+)
 from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
@@ -238,10 +248,19 @@ UNKNOWN_GAME_BOT_HIT_TTL_SEC = 24 * 3600
 HAN_TIANZUN_BOT_NAME = "韩天尊"
 TIANZUN_BOT_NAME_MARKER = "天尊"
 TIANXING_DAILY_BOOTSTRAP_MAX_PER_TICK = 2
+TIANXING_TIMELINE_FOLLOWUP_MAX_PER_TICK = 4
 DUE_WILD_TRAINING_MAX_PER_TICK = 5
 DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC = 90
 DUE_WILD_TRAINING_DIAG_INTERVAL_SEC = 120
 _due_wild_training_last_diag_at = 0.0
+DUE_CONCUBINE_MAX_PER_TICK = 2
+DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC = 90
+DUE_CONCUBINE_DIAG_INTERVAL_SEC = 180
+_due_concubine_last_diag_at = 0.0
+DUE_TIANXING_MAX_PER_TICK = 2
+DUE_TIANXING_SCHEDULER_TIMEOUT_SEC = 90
+DUE_TIANXING_DIAG_INTERVAL_SEC = 180
+_due_tianxing_last_diag_at = 0.0
 
 _PHASEFUL_IDENTITY_SCHEDULERS = (
     run_deep_retreat_scheduler,
@@ -1155,7 +1174,8 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             if explore_released and next_time > scheduler_now:
                 last_result = str(state.get("wild_training_last_result") or "")
                 last_error = str(state.get("wild_training_last_error") or "")
-                if "天星时间线" in last_result or "天星时间线" in last_error:
+                release_retry_until = scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5
+                if next_time <= release_retry_until and ("天星时间线" in last_result or "天星时间线" in last_error):
                     state["next_wild_training_time"] = scheduler_now
                     state["wild_training_last_error"] = "天星探索已放行，恢复错峰计时已压回立即消费窗口"
                     next_time = scheduler_now
@@ -1231,6 +1251,116 @@ def _record_due_wild_training_candidate_failure(action, *, now, reason):
     else:
         state["next_wild_training_time"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
     mark_dirty()
+
+
+async def _run_due_concubine_schedulers(now, *, limit=DUE_CONCUBINE_MAX_PER_TICK):
+    global _due_concubine_last_diag_at
+    candidates = []
+    for scan_index, identity_id in enumerate(get_identity_ids()):
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            scheduler_now = max(float(now or 0), time.time())
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            if not any(
+                bool(state.get(key))
+                for key in (
+                    "concubine_enabled",
+                    "concubine_tianji_enabled",
+                    "concubine_heart_enabled",
+                    "concubine_voyage_enabled",
+                )
+            ):
+                continue
+            try:
+                next_time = float(state.get("next_concubine_time", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                next_time = 0.0
+            _clear_due_concubine_transient_error_if_stable(scheduler_now, next_time)
+            if next_time <= 0 or next_time > scheduler_now:
+                continue
+            candidates.append((next_time, scan_index, identity_id, scheduler_now))
+
+    if candidates and float(now or 0) - _due_concubine_last_diag_at >= DUE_CONCUBINE_DIAG_INTERVAL_SEC:
+        _due_concubine_last_diag_at = float(now or time.time())
+        preview = []
+        for due_at, _scan_index, identity_id, _scheduler_now in sorted(candidates)[:5]:
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
+            preview.append(f"@{username}:run/{overdue}s")
+        console_log(
+            f"🌸 到期侍妾扫描候选 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
+            scope="global",
+        )
+
+    processed = 0
+    for _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
+        if processed >= int(limit or 1):
+            break
+        try:
+            await asyncio.wait_for(
+                _run_due_concubine_candidate(identity_id, scheduler_now),
+                timeout=max(1, float(DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC or 0)),
+            )
+        except asyncio.TimeoutError:
+            with use_identity(identity_id):
+                _record_due_concubine_candidate_failure(
+                    now=time.time(),
+                    reason=f"到期侍妾扫描执行超时（>{int(DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC)}s），已让出本轮避免阻塞其他身份",
+                    transient=True,
+                )
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            console_log(f"🌸 到期侍妾扫描超时：@{username}", scope="global")
+        except Exception as exc:
+            with use_identity(identity_id):
+                _record_due_concubine_candidate_failure(
+                    now=time.time(),
+                    reason=f"到期侍妾扫描异常：{str(exc)[:160]}",
+                )
+            print("due concubine scheduler failed:")
+            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        processed += 1
+
+
+async def _run_due_concubine_candidate(identity_id, scheduler_now):
+    with use_identity(identity_id):
+        candidate_now = max(float(scheduler_now or 0), time.time())
+        await run_concubine_scheduler(candidate_now)
+
+
+def _record_due_concubine_candidate_failure(*, now, reason, transient=False):
+    if transient:
+        state["concubine_last_result"] = str(reason or "到期侍妾扫描让出本轮")
+        state["concubine_last_error"] = ""
+    else:
+        state["concubine_last_error"] = str(reason or "到期侍妾扫描失败")
+    state["next_concubine_time"] = float(now) + WILD_TRAINING_RETRY_MIN_SEC
+    mark_dirty()
+
+
+def _clear_due_concubine_transient_error_if_stable(now, next_time):
+    last_error = str(state.get("concubine_last_error") or "")
+    if not last_error.startswith("到期侍妾扫描执行超时"):
+        return False
+    if int(state.get("concubine_reply_to_msg_id", 0) or 0) > 0:
+        return False
+    try:
+        next_time = float(next_time or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_time = 0.0
+    if next_time <= float(now or 0):
+        return False
+    state["concubine_last_result"] = last_error
+    state["concubine_last_error"] = ""
+    mark_dirty()
+    return True
 
 
 async def _run_phaseful_identity_schedulers(now):
@@ -1338,6 +1468,145 @@ async def _run_tianxing_daily_bootstrap_identity_schedulers(now, *, limit=TIANXI
                 processed += 1
 
 
+async def _run_tianxing_timeline_followup_identity_schedulers(now, *, limit=TIANXING_TIMELINE_FOLLOWUP_MAX_PER_TICK):
+    candidates = []
+    for scan_index, identity_id in enumerate(get_identity_ids()):
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            scheduler_now = max(float(now or 0), time.time())
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            if not has_tianxing_timeline_due_work(scheduler_now):
+                continue
+            candidates.append((scan_index, identity_id, scheduler_now))
+
+    processed = 0
+    for _scan_index, identity_id, scheduler_now in candidates:
+        if processed >= int(limit or 1):
+            break
+        with use_identity(identity_id):
+            result = await run_tianxing_timeline_followup_scheduler(scheduler_now)
+            if (result or {}).get("active"):
+                processed += 1
+
+
+def _tianxing_fast_due_time(now):
+    due_times = []
+    observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+    try:
+        auto_next_time = float(observed.get("auto_next_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        auto_next_time = 0.0
+    if auto_next_time > 0:
+        due_times.append(auto_next_time)
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
+    try:
+        craft_next_time = float(craft_farm.get("next_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        craft_next_time = 0.0
+    craft_phase = str(craft_farm.get("phase") or "").strip()
+    if craft_next_time > 0 and craft_phase in {
+        "ready",
+        "timeline_waiting",
+        "prediction_conflict",
+        "waiting",
+        "send_blocked",
+        "calibrating",
+        "sent_waiting_reply",
+        "crafting_waiting_final",
+    }:
+        due_times.append(craft_next_time)
+    if has_tianxing_timeline_due_work(now):
+        due_times.append(float(now))
+    if has_tianxing_craft_farm_override_due(now):
+        due_times.append(float(now))
+    due_times = [value for value in due_times if value > 0]
+    if not due_times:
+        return 0.0
+    return min(due_times)
+
+
+async def _run_due_tianxing_schedulers(now, *, limit=DUE_TIANXING_MAX_PER_TICK):
+    global _due_tianxing_last_diag_at
+    candidates = []
+    for scan_index, identity_id in enumerate(get_identity_ids()):
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            scheduler_now = max(float(now or 0), time.time())
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            if not state.get("tianxing_enabled"):
+                continue
+            due_at = _tianxing_fast_due_time(scheduler_now)
+            if due_at <= 0 or due_at > scheduler_now:
+                continue
+            candidates.append((due_at, scan_index, identity_id, scheduler_now))
+
+    if candidates and float(now or 0) - _due_tianxing_last_diag_at >= DUE_TIANXING_DIAG_INTERVAL_SEC:
+        _due_tianxing_last_diag_at = float(now or time.time())
+        preview = []
+        for due_at, _scan_index, identity_id, _scheduler_now in sorted(candidates)[:5]:
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
+            preview.append(f"@{username}:run/{overdue}s")
+        console_log(
+            f"🌌 到期天星扫描候选 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
+            scope="global",
+        )
+
+    processed = 0
+    for _due_at, _scan_index, identity_id, scheduler_now in sorted(candidates):
+        if processed >= int(limit or 1):
+            break
+        try:
+            await asyncio.wait_for(
+                _run_due_tianxing_candidate(identity_id, scheduler_now),
+                timeout=max(1, float(DUE_TIANXING_SCHEDULER_TIMEOUT_SEC or 0)),
+            )
+        except asyncio.TimeoutError:
+            with use_identity(identity_id):
+                observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+                observed["auto_last_action"] = "fast_due"
+                observed["auto_last_plan"] = "timeout_yield"
+                observed["auto_last_plan_at"] = float(time.time())
+                observed["auto_next_time"] = float(time.time() + 60)
+                state["tianxing_observation"] = observed
+                mark_dirty()
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            console_log(f"🌌 到期天星扫描超时：@{username}", scope="global")
+        except Exception as exc:
+            with use_identity(identity_id):
+                observed = normalize_tianxing_observation(state.get("tianxing_observation"))
+                observed["auto_last_action"] = "fast_due"
+                observed["auto_last_error"] = f"到期天星扫描异常：{str(exc)[:160]}"
+                observed["auto_last_error_at"] = float(time.time())
+                observed["auto_next_time"] = float(time.time() + 120)
+                state["tianxing_observation"] = observed
+                mark_dirty()
+            print("due tianxing scheduler failed:")
+            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        processed += 1
+
+
+async def _run_due_tianxing_candidate(identity_id, scheduler_now):
+    with use_identity(identity_id):
+        candidate_now = max(float(scheduler_now or 0), time.time())
+        await run_tianxing_scheduler(candidate_now)
+
+
 async def _run_identity_schedulers_background(now):
     await _run_identity_schedulers(now)
 
@@ -1428,6 +1697,8 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
 
         handled_any = False
         note_identity_weakness(text, now, routed_identity_id, source=matched_family or "reply")
+        if not already_consumed and str(matched_family or "").startswith("tianxing_"):
+            handled_any = apply_tianxing_passive(text, now=now, family=matched_family) or handled_any
         tree_runtime_archived = _is_tree_runtime_archived()
         if not tree_runtime_archived:
             await handle_tree_invasion_end(text, now, is_reply_to_me)
@@ -2089,10 +2360,13 @@ async def main_loop(stop_event=None):
             await _sleep_or_stop(stop_event, 5)
             continue
 
-        await _run_due_wild_training_retry_schedulers(now)
-        await run_rare_daily_report_scheduler(now)
         await _run_phaseful_identity_schedulers(time.time())
         await _run_tianxing_daily_bootstrap_identity_schedulers(time.time())
+        await _run_tianxing_timeline_followup_identity_schedulers(time.time())
+        await _run_due_tianxing_schedulers(now)
+        await _run_due_wild_training_retry_schedulers(now)
+        await _run_due_concubine_schedulers(now)
+        await run_rare_daily_report_scheduler(now)
         await _run_global_schedulers(now)
         await run_quiz_learning_scheduler(now)
         await run_retry_scheduler(now)

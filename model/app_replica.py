@@ -74,6 +74,7 @@ from .state import (
     get_replica_dispatch_listener_account_map,
     get_replica_dispatch_participant_identity_ids,
     get_replica_group_ids,
+    get_replica_kind_config,
     get_replica_listener_account_map,
     get_replica_participant_identity_ids,
     get_replica_query_aggregator_config,
@@ -557,6 +558,8 @@ def _mark_replica_button_action_executed(token, actor_id):
 
 def _should_mark_replica_button_action_executed(action):
     action = action if isinstance(action, dict) else {}
+    if str(action.get("type") or "").strip() == "lightweight_dissolve_confirm_prompt":
+        return False
     if _is_reusable_replica_command_action(action):
         return False
     if str(action.get("type") or "").strip() == "game_command":
@@ -598,7 +601,17 @@ def _make_replica_button_event_id(token_key):
     return int(digest, 16) or 0
 
 
-def _replica_command_action_button(text, command, chat_id, listener_account_id=0, *, token_key="", ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC, exclusive_key=""):
+def _replica_command_action_button(
+    text,
+    command,
+    chat_id,
+    listener_account_id=0,
+    *,
+    token_key="",
+    ttl_sec=_REPLICA_BUTTON_ACTION_TTL_SEC,
+    exclusive_key="",
+    payload_extra=None,
+):
     token_key = token_key or f"replica_command:{chat_id}:{listener_account_id}:{command}"
     payload = {
         "command": str(command or "").strip(),
@@ -606,6 +619,8 @@ def _replica_command_action_button(text, command, chat_id, listener_account_id=0
         "listener_account_id": int(listener_account_id or 0),
         "event_id": _make_replica_button_event_id(token_key),
     }
+    if isinstance(payload_extra, dict):
+        payload.update(payload_extra)
     exclusive_key = str(exclusive_key or "").strip()
     if exclusive_key:
         payload["exclusive_key"] = exclusive_key
@@ -3126,6 +3141,61 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         exclusive_key = str(payload.get("exclusive_key") or "").strip()
         if not command or chat_id == 0:
             return False, "按钮动作缺少副本命令。"
+        if command == ".解散副本":
+            current = _get_lightweight_last_room(chat_id, now=time.time())
+            confirmed = bool(payload.get("lightweight_dissolve_confirmed"))
+            if isinstance(current, dict) and str(current.get("phase") or "") not in {"dissolved", "entered"}:
+                if not confirmed:
+                    event = _make_replica_command_event(
+                        ".解散副本",
+                        chat_id,
+                        actor_id=actor_id,
+                        listener_account_id=listener_account_id,
+                        event_id=_callback_message_id(callback_query),
+                        button_message_id=_callback_message_id(callback_query),
+                        button_actor_id=actor_id,
+                        button_action_type="lightweight_dissolve_confirm_prompt",
+                    )
+                    text = _format_lightweight_dissolve_confirm_prompt(current, html=True)
+                    ok = await _send_replica_group_message(
+                        event.client,
+                        chat_id,
+                        text,
+                        parse_mode="html",
+                        listener_account_id=listener_account_id,
+                        log_text=_strip_html_code_tags(text),
+                        buttons=_build_lightweight_dissolve_confirm_buttons(current),
+                    )
+                    return bool(ok), "已转入解散确认。" if ok else "解散确认发送失败。"
+                expected_room_id = str(payload.get("room_id") or "").strip()
+                expected_kind = str(payload.get("replica_kind") or "").strip()
+                expected_leader = int(payload.get("leader_identity_id") or 0)
+                if (
+                    (expected_room_id and str(current.get("room_id") or "").strip() != expected_room_id)
+                    or (expected_kind and current.get("replica_kind") != expected_kind)
+                    or (expected_leader > 0 and int(current.get("leader_identity_id") or 0) != expected_leader)
+                ):
+                    event = _make_replica_command_event(
+                        ".查询副本",
+                        chat_id,
+                        actor_id=actor_id,
+                        listener_account_id=listener_account_id,
+                        event_id=_callback_message_id(callback_query),
+                        button_message_id=_callback_message_id(callback_query),
+                        button_actor_id=actor_id,
+                        button_action_type=action_type,
+                    )
+                    text = "副本房间已变化，未发送解散命令。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+                    ok = await _send_replica_group_message(
+                        event.client,
+                        chat_id,
+                        text,
+                        parse_mode="html",
+                        listener_account_id=listener_account_id,
+                        log_text=_strip_html_code_tags(text),
+                        buttons=_build_lightweight_room_action_buttons(current, include_enter=True, include_dissolve=True, include_query=True),
+                    )
+                    return bool(ok), "房间已变化，未解散。"
         if exclusive_key and _is_replica_button_exclusive_group_executed(exclusive_key):
             return True, "本房间加入已处理过。"
         event_id = int(payload.get("event_id") or 0)
@@ -3147,6 +3217,87 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         if handled and exclusive_key:
             _mark_replica_button_exclusive_group_executed(exclusive_key, actor_id=actor_id, command=command)
         return bool(handled), f"已触发：{command}" if handled else f"未识别副本命令：{command}"
+    if action_type == "lightweight_dissolve_confirm_prompt":
+        chat_id = int(payload.get("chat_id") or 0)
+        listener_account_id = int(payload.get("listener_account_id") or 0)
+        room_id = str(payload.get("room_id") or "").strip()
+        replica_kind = str(payload.get("replica_kind") or "").strip()
+        leader_identity_id = int(payload.get("leader_identity_id") or 0)
+        if chat_id == 0:
+            return False, "按钮动作缺少副本群。"
+        current = _get_lightweight_last_room(chat_id, now=time.time())
+        if not isinstance(current, dict):
+            event = _make_replica_command_event(
+                ".查询副本",
+                chat_id,
+                actor_id=actor_id,
+                listener_account_id=listener_account_id,
+                event_id=_callback_message_id(callback_query),
+                button_message_id=_callback_message_id(callback_query),
+                button_actor_id=actor_id,
+                button_action_type=action_type,
+            )
+            text = "没有已记录的副本房间可解散。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+            ok = await _send_replica_group_message(
+                event.client,
+                chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_build_lightweight_open_button_rows(chat_id, listener_account_id, now=time.time()),
+            )
+            return bool(ok), "当前没有可解散房间。"
+        if (
+            (room_id and str(current.get("room_id") or "").strip() != room_id)
+            or (replica_kind and current.get("replica_kind") != replica_kind)
+            or (leader_identity_id > 0 and int(current.get("leader_identity_id") or 0) != leader_identity_id)
+        ):
+            event = _make_replica_command_event(
+                ".查询副本",
+                chat_id,
+                actor_id=actor_id,
+                listener_account_id=listener_account_id,
+                event_id=_callback_message_id(callback_query),
+                button_message_id=_callback_message_id(callback_query),
+                button_actor_id=actor_id,
+                button_action_type=action_type,
+            )
+            text = "副本房间已变化，未进入解散确认。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+            ok = await _send_replica_group_message(
+                event.client,
+                chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_build_lightweight_room_action_buttons(current, include_enter=True, include_dissolve=True, include_query=True),
+            )
+            return bool(ok), "房间已变化，已发刷新提示。"
+        phase = str(current.get("phase") or "")
+        if phase in {"dissolved", "entered"}:
+            return True, "该副本房间已结束，未发送解散确认。"
+        event = _make_replica_command_event(
+            ".解散副本",
+            chat_id,
+            actor_id=actor_id,
+            listener_account_id=listener_account_id,
+            event_id=_callback_message_id(callback_query),
+            button_message_id=_callback_message_id(callback_query),
+            button_actor_id=actor_id,
+            button_action_type=action_type,
+        )
+        text = _format_lightweight_dissolve_confirm_prompt(current, html=True)
+        ok = await _send_replica_group_message(
+            event.client,
+            chat_id,
+            text,
+            parse_mode="html",
+            listener_account_id=listener_account_id,
+            log_text=_strip_html_code_tags(text),
+            buttons=_build_lightweight_dissolve_confirm_buttons(current),
+        )
+        return bool(ok), "已发送解散确认。" if ok else "解散确认发送失败。"
     if action_type == "log_group_panel":
         query_text = str(payload.get("query_text") or "").strip()
         chat_id = _callback_message_chat_id(callback_query) or int(payload.get("chat_id") or 0)
@@ -3982,6 +4133,35 @@ def _format_lightweight_dissolve_pending_notice(room, *, html=False):
     return "\n".join(line for line in lines if line)
 
 
+def _format_lightweight_dissolve_confirm_prompt(room, *, html=False):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    replica_name = (_REPLICA_KIND_META.get(replica_kind) or {}).get("name") or "副本"
+    room_id = str(room.get("room_id") or "-")
+    leader_username = _normalize_replica_username(room.get("leader_username") or "")
+    lines = [
+        f"准备解散{replica_name}房间 {room_id}。",
+        "请再次点击【确认解散】才会发送游戏解散命令。",
+    ]
+    if leader_username:
+        lines.insert(1, f"队长：{leader_username}")
+    lines.append(_format_lightweight_next_commands(".解散副本", ".查询副本", html=html))
+    if not html:
+        return "\n".join(line for line in lines if line)
+    return "\n".join(
+        escape(line) if not line.startswith("兜底命令：") and "<code>" not in line else line
+        for line in lines
+        if line
+    )
+
+
+def _build_lightweight_dissolve_confirm_buttons(room):
+    return _compact_replica_button_rows([
+        _lightweight_dissolve_confirm_button(room),
+        _lightweight_query_button(room),
+    ])
+
+
 def _reserve_lightweight_room_dissolve(room, now=None, *, source="", source_msg_id=0, actor_id=0, source_detail=""):
     room = room if isinstance(room, dict) else {}
     chat_id = int(room.get("replica_chat_id") or 0)
@@ -4263,6 +4443,15 @@ def _get_lightweight_room_usernames(room):
     )
 
 
+def _get_lightweight_room_actual_team_usernames(room):
+    room = room if isinstance(room, dict) else {}
+    team_usernames = _normalize_replica_username_list(room.get("team_usernames") or [])
+    if team_usernames:
+        return team_usernames
+    leader_username = _normalize_replica_username(room.get("leader_username") or "")
+    return [leader_username] if leader_username else []
+
+
 def _get_lightweight_room_team_identity_ids(room, now=None):
     room = room if isinstance(room, dict) else {}
     usernames = _get_lightweight_room_usernames(room)
@@ -4507,6 +4696,32 @@ def _get_replica_listener_account_ids():
     return listener_ids
 
 
+def _is_replica_kind_enabled(replica_kind):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if not replica_kind:
+        return True
+    return bool((get_replica_kind_config(replica_kind) or {}).get("enabled", True))
+
+
+def _get_replica_participant_identity_ids_for_kind(replica_kind, *, dispatch=False):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    if replica_kind and not _is_replica_kind_enabled(replica_kind):
+        return []
+    config = get_replica_kind_config(replica_kind) if replica_kind else {}
+    key = "dispatch_participant_identity_ids" if dispatch else "participant_identity_ids"
+    configured_ids = _normalize_replica_identity_ids((config or {}).get(key) or [])
+    if configured_ids:
+        return configured_ids
+    fallback_ids = (
+        _normalize_replica_identity_ids(get_replica_dispatch_participant_identity_ids())
+        if dispatch
+        else _normalize_replica_identity_ids(get_replica_participant_identity_ids())
+    )
+    if fallback_ids:
+        return fallback_ids
+    return [] if dispatch else None
+
+
 def _get_replica_candidate_identity_ids(*, require_username=False, require_ticket=False, participant_identity_ids=None, fallback_to_all=True):
     if participant_identity_ids is None:
         participant_ids = [int(identity_id) for identity_id in get_replica_participant_identity_ids()]
@@ -4737,7 +4952,7 @@ def _lightweight_action_context(item):
     return int(item.get("replica_chat_id") or 0), int(item.get("listener_account_id") or 0)
 
 
-def _lightweight_replica_command_button(item, label, command, *, token_suffix="", exclusive_key=""):
+def _lightweight_replica_command_button(item, label, command, *, token_suffix="", exclusive_key="", payload_extra=None):
     chat_id, listener_account_id = _lightweight_action_context(item)
     if chat_id == 0:
         return {}
@@ -4750,6 +4965,7 @@ def _lightweight_replica_command_button(item, label, command, *, token_suffix=""
         listener_account_id=listener_account_id,
         token_key=token_key,
         exclusive_key=exclusive_key,
+        payload_extra=payload_extra,
     )
 
 
@@ -4757,8 +4973,42 @@ def _lightweight_query_button(item):
     return _lightweight_replica_command_button(item, "刷新副本", ".查询副本", token_suffix="query")
 
 
+def _lightweight_dissolve_confirm_button(item):
+    item = item if isinstance(item, dict) else {}
+    return _lightweight_replica_command_button(
+        item,
+        "确认解散",
+        ".解散副本",
+        token_suffix=f"dissolve-confirm:{item.get('replica_kind') or ''}:{item.get('room_id') or item.get('flow_id') or ''}",
+        payload_extra={
+            "lightweight_dissolve_confirmed": True,
+            "room_id": str(item.get("room_id") or item.get("flow_id") or "").strip(),
+            "replica_kind": str(item.get("replica_kind") or "").strip(),
+            "leader_identity_id": int(item.get("leader_identity_id") or 0),
+        },
+    )
+
+
 def _lightweight_dissolve_button(item):
-    return _lightweight_replica_command_button(item, "解散副本", ".解散副本", token_suffix="dissolve")
+    item = item if isinstance(item, dict) else {}
+    chat_id, listener_account_id = _lightweight_action_context(item)
+    if chat_id == 0:
+        return {}
+    room_id = str(item.get("room_id") or item.get("flow_id") or "").strip()
+    replica_kind = str(item.get("replica_kind") or "").strip()
+    token_key = f"lightweight:{chat_id}:{listener_account_id}:dissolve-prompt:{replica_kind}:{room_id}"
+    return _replica_action_button(
+        "解散副本",
+        "lightweight_dissolve_confirm_prompt",
+        {
+            "chat_id": chat_id,
+            "listener_account_id": listener_account_id,
+            "room_id": room_id,
+            "replica_kind": replica_kind,
+            "leader_identity_id": int(item.get("leader_identity_id") or 0),
+        },
+        token_key=token_key,
+    )
 
 
 def _lightweight_enter_button(room):
@@ -4864,7 +5114,7 @@ def _get_lightweight_virtual_hall_recommendation_action(room):
     gua_record = _get_replica_room_gua_record(_REPLICA_KIND_VIRTUAL_HALL, room_id)
     if not gua_record:
         return {"join_command": "", "join_label": "加入推荐", "include_enter": True}
-    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply_for_kind(_REPLICA_KIND_VIRTUAL_HALL, ""))
     selection = _select_virtual_hall_recommendation(gua_record, candidates)
     if not selection.get("selected_actionable"):
         return {"join_command": "", "join_label": "加入推荐", "include_enter": False}
@@ -4922,7 +5172,7 @@ def _format_virtual_hall_room_not_actionable_notice(room, *, html=False):
     if not gua_record:
         text = f"虚天殿房间 {room_id or '-'} 暂未解析到卦象，未发送自动加入/进入。"
         return escape(text) if html else text
-    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply_for_kind(_REPLICA_KIND_VIRTUAL_HALL, ""))
     recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
     lines = [f"虚天殿房间 {room_id or '-'} 当前配置不建议自动加入/进入。"]
     ideal_text = _format_virtual_hall_ideal_composition(gua_record)
@@ -5052,6 +5302,9 @@ def _build_lightweight_open_button_rows(chat_id, listener_account_id, *, identit
     count_by_kind = {replica_kind: 0 for replica_kind in open_priority}
     for candidate_id in candidate_ids:
         for replica_kind in open_priority:
+            allowed_ids = _get_replica_participant_identity_ids_for_kind(replica_kind)
+            if allowed_ids is not None and int(candidate_id or 0) not in set(allowed_ids):
+                continue
             if count_by_kind.get(replica_kind, 0) >= int(limit_per_kind or 8):
                 continue
             requires_ticket = _replica_kind_requires_ticket(replica_kind)
@@ -5093,6 +5346,9 @@ def _format_lightweight_open_command_sections(*, html=False, limit_per_kind=8, n
     grouped = {replica_kind: [] for replica_kind in open_priority}
     for identity_id in _get_replica_candidate_identity_ids(require_username=True, require_ticket=True):
         for replica_kind in open_priority:
+            allowed_ids = _get_replica_participant_identity_ids_for_kind(replica_kind)
+            if allowed_ids is not None and int(identity_id or 0) not in set(allowed_ids):
+                continue
             if not _replica_kind_requires_ticket(replica_kind):
                 continue
             if not _is_replica_open_requirement_available(identity_id, replica_kind):
@@ -5120,7 +5376,13 @@ def _find_preferred_ticket_opener(replica_kind):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
     if not replica_kind:
         return 0
-    for identity_id in _get_replica_candidate_identity_ids(require_username=True, require_ticket=True):
+    participant_ids = _get_replica_participant_identity_ids_for_kind(replica_kind)
+    for identity_id in _get_replica_candidate_identity_ids(
+        require_username=True,
+        require_ticket=True,
+        participant_identity_ids=participant_ids,
+        fallback_to_all=participant_ids is None,
+    ):
         if not _replica_kind_requires_ticket(replica_kind):
             continue
         if not _is_replica_open_requirement_available(identity_id, replica_kind):
@@ -5671,27 +5933,66 @@ def _get_cangkun_identity_roles(identity_id):
     )
 
 
-def _format_cangkun_raw_profession_coverage(identity_ids, *, professions_by_username=None):
+def _get_cangkun_projected_profession_coverage(identity_ids, *, professions_by_username=None):
     normalized_professions = _normalize_replica_team_professions_by_username(professions_by_username)
     identity_ids_by_username = _get_replica_identity_ids_by_username()
     observed_identity_ids = {
         int(identity_ids_by_username.get(username) or 0)
         for username in normalized_professions
+        if int(identity_ids_by_username.get(username) or 0) > 0
     }
-    covered = {
+    observed_covered = {
         role
         for professions in normalized_professions.values()
         for role in professions
+        if role in _CANGKUN_REQUIRED_PROFESSIONS
     }
-    for identity_id in _normalize_replica_identity_ids(identity_ids or []):
-        username = _normalize_replica_username(get_send_as_profile(identity_id).get("username") or "")
-        if username and normalized_professions.get(username):
+    remaining_roles = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in observed_covered]
+    candidate_ids = [
+        identity_id
+        for identity_id in _normalize_replica_identity_ids(identity_ids or [])
+        if identity_id not in observed_identity_ids
+    ]
+    states = {frozenset()}
+    for identity_id in candidate_ids:
+        roles = [role for role in _get_cangkun_identity_roles(identity_id) if role in remaining_roles]
+        if not roles:
             continue
-        elif identity_id not in observed_identity_ids:
-            covered.update(_get_cangkun_identity_roles(identity_id))
+        next_states = set(states)
+        for covered in states:
+            for role in roles:
+                next_states.add(frozenset(set(covered) | {role}))
+        states = next_states
+    best = max(
+        states,
+        key=lambda covered: (
+            len(covered),
+            tuple(1 if role in covered else 0 for role in _CANGKUN_REQUIRED_PROFESSIONS),
+        ),
+        default=frozenset(),
+    )
+    return set(observed_covered) | set(best)
+
+
+def _format_cangkun_raw_profession_coverage(identity_ids, *, professions_by_username=None):
+    covered = _get_cangkun_projected_profession_coverage(
+        identity_ids,
+        professions_by_username=professions_by_username,
+    )
     covered_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in covered) or "无"
     missing_text = "、".join(role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in covered) or "无"
     return covered_text, missing_text
+
+
+def _cangkun_raw_missing_roles(identity_ids, *, professions_by_username=None):
+    _covered_text, missing_text = _format_cangkun_raw_profession_coverage(
+        identity_ids,
+        professions_by_username=professions_by_username,
+    )
+    if missing_text == "无":
+        return []
+    missing = [role for role in str(missing_text or "").split("、") if role]
+    return [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in set(missing)]
 
 
 def _get_cangkun_available_identity_records(now=None):
@@ -5798,10 +6099,25 @@ def _get_cangkun_team_readiness_snapshot(identity_ids, *, leader_identity_id=0):
 def _get_cangkun_room_readiness_snapshot(room, now=None):
     room = room if isinstance(room, dict) else {}
     team_ids = _get_lightweight_room_team_identity_ids(room, now=now)
-    return _get_cangkun_team_readiness_snapshot(
+    snapshot = _get_cangkun_team_readiness_snapshot(
         team_ids,
         leader_identity_id=int(room.get("leader_identity_id") or 0),
     )
+    observed_professions = _normalize_replica_team_professions_by_username(room.get("team_professions_by_username"))
+    if observed_professions:
+        observed_covered = {
+            role
+            for professions in observed_professions.values()
+            for role in _normalize_replica_profession_list(professions)
+            if role in _CANGKUN_REQUIRED_PROFESSIONS
+        }
+        observed_missing = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in observed_covered]
+        snapshot["missing"] = observed_missing
+        snapshot["profession_ok"] = not observed_missing
+        snapshot["observed_profession_covered"] = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in observed_covered]
+        snapshot["observed_profession_source"] = "team_snapshot"
+        snapshot["actionable"] = not observed_missing and bool(snapshot.get("sense_ok"))
+    return snapshot
 
 
 def _cangkun_join_command_for_team_ids(leader_identity_id, join_identity_ids):
@@ -6023,8 +6339,13 @@ def _get_lightweight_available_identity_ids(replica_kind, now=None):
     replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else _REPLICA_KIND_VIRTUAL_HALL
     now = float(now or time.time())
     records = _cleanup_replica_run_state(now)
+    participant_ids = _get_replica_participant_identity_ids_for_kind(replica_kind)
     identity_ids = []
-    for identity_id in _get_replica_candidate_identity_ids(require_username=True):
+    for identity_id in _get_replica_candidate_identity_ids(
+        require_username=True,
+        participant_identity_ids=participant_ids,
+        fallback_to_all=participant_ids is None,
+    ):
         if _get_replica_identity_kind_status(identity_id, replica_kind, now, records=records) == "可":
             identity_ids.append(int(identity_id or 0))
     return identity_ids
@@ -9460,7 +9781,7 @@ def _format_latest_virtual_hall_recommendation_section(*, html=False):
     room_id = str(gua_record.get("room_id") or "").strip()
     if not room_id:
         return ""
-    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply_for_kind(_REPLICA_KIND_VIRTUAL_HALL, ""))
     recommendations = _build_virtual_hall_recommendations(gua_record, candidates, limit=1)
     return _format_virtual_hall_recommendations(
         room_id,
@@ -10422,6 +10743,15 @@ def _format_replica_query_reply(filter_text="", participant_identity_ids=None, f
     return f"未找到职业为 {mono(query)} 的参与身份" if query else "当前没有已勾选且带 username 的副本参与身份"
 
 
+def _format_replica_query_reply_for_kind(replica_kind, filter_text=""):
+    participant_ids = _get_replica_participant_identity_ids_for_kind(replica_kind)
+    return _format_replica_query_reply(
+        filter_text,
+        participant_identity_ids=participant_ids,
+        fallback_to_all=participant_ids is None,
+    )
+
+
 def _get_replica_query_aggregator_submit_config():
     config = get_replica_query_aggregator_config()
     if not config.get("base_url") or not config.get("client_id") or not config.get("secret"):
@@ -11068,6 +11398,13 @@ async def _maybe_send_virtual_hall_auto_manual_enter_notice(flow, accounting, no
 async def _maybe_send_virtual_hall_auto_missing_dispatch_command(flow, accounting, now):
     if not isinstance(flow, dict) or _virtual_hall_auto_has_pending_kick(flow):
         return False
+    outsiders = list(accounting.get("outsiders") or [])
+    if outsiders:
+        flow["missing_join_blocked_by_outsiders"] = _normalize_replica_username_list(outsiders)
+        flow["missing_join_blocked_at"] = float(now or 0)
+        flow["updated_at"] = float(now or 0)
+        _upsert_virtual_hall_auto_flow(flow)
+        return False
     missing_dispatch = list(accounting.get("missing_dispatch") or [])
     if not missing_dispatch or int(accounting.get("shortage") or 0) > 0:
         return False
@@ -11690,7 +12027,7 @@ async def _run_virtual_hall_match(room_id, client_obj, chat_id, listener_account
         return
     query_sent_at = time.time()
     query_message_id = int(getattr(query_msg, "id", 0) or 0)
-    reply_text = _format_replica_query_reply("")
+    reply_text = _format_replica_query_reply_for_kind(_REPLICA_KIND_VIRTUAL_HALL, "")
     if not reply_text.startswith("未找到") and reply_text != "当前没有已勾选且带 username 的副本参与身份":
         await _maybe_submit_replica_query_reply_to_aggregator(
             query_message_id,
@@ -12265,7 +12602,7 @@ async def _maybe_absorb_lightweight_opened_room(opened_match, opened_text, now, 
         return False
     leader_username = _normalize_replica_username(opened_match.group("leader"))
     leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
-    participant_ids = set(_normalize_replica_identity_ids(get_replica_participant_identity_ids()))
+    participant_ids = set(_normalize_replica_identity_ids(_get_replica_participant_identity_ids_for_kind(replica_kind) or []))
     if leader_identity_id <= 0 or leader_identity_id not in participant_ids:
         return False
     replica_chat_id, listener_account_id = _find_lightweight_replica_notice_target()
@@ -12301,7 +12638,7 @@ async def _send_lightweight_virtual_hall_recommendation(room, opened_text, now, 
     leader_username = _normalize_replica_username(room.get("leader_username") or "")
     if not room_id:
         return False
-    candidates = _parse_replica_query_reply_text(_format_replica_query_reply(""))
+    candidates = _parse_replica_query_reply_text(_format_replica_query_reply_for_kind(_REPLICA_KIND_VIRTUAL_HALL, ""))
     has_available_gold_dps = _has_available_virtual_hall_gold_dps(candidates)
     _mark_virtual_hall_gua_from_opened_text(
         opened_text,
@@ -12744,6 +13081,34 @@ async def _handle_lightweight_join_command(event):
             return True
     if replica_kind == _REPLICA_KIND_CANGKUN:
         now_for_join = time.time()
+        actual_team_usernames = _get_lightweight_room_actual_team_usernames(room)
+        actual_team_count = len(actual_team_usernames)
+        if actual_team_count >= 5:
+            current_team_ids = _get_lightweight_room_team_identity_ids(room, now=now_for_join)
+            covered_text, missing_text = _format_cangkun_raw_profession_coverage(
+                current_team_ids,
+                professions_by_username=room.get("team_professions_by_username"),
+            )
+            team_line = " ".join(actual_team_usernames) or "未知"
+            plain_text = (
+                f"未发送加入苍坤洞府 {room_id or '-'}：当前真实队伍已满 {actual_team_count}/5。\n"
+                f"队伍：{team_line}\n"
+                f"覆盖职业：{covered_text}\n"
+                f"缺职业：{missing_text}\n"
+                + _format_cangkun_spiritual_sense_status(current_team_ids)
+            )
+            commands_text = _format_lightweight_next_commands(".解散副本", ".查询副本", html=True)
+            text = escape(plain_text) + "\n\n" + commands_text
+            await _send_replica_group_message(
+                event.client,
+                event.chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=plain_text + "\n\n" + _strip_html_code_tags(commands_text),
+                buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+            )
+            return True
         current_team_ids = _get_lightweight_room_team_identity_ids(room, now=now_for_join)
         projected_team_ids = list(current_team_ids)
         projected_seen = set(projected_team_ids)
@@ -12759,12 +13124,25 @@ async def _handle_lightweight_join_command(event):
                 continue
             projected_seen.add(identity_id)
             projected_team_ids.append(identity_id)
-        missing = _cangkun_team_missing_roles(projected_team_ids, leader_identity_id=leader_identity_id)
-        if missing:
-            covered_text, missing_text = _format_cangkun_profession_coverage(
+        observed_professions = _normalize_replica_team_professions_by_username(room.get("team_professions_by_username"))
+        if observed_professions:
+            missing = _cangkun_raw_missing_roles(
                 projected_team_ids,
-                leader_identity_id=leader_identity_id,
+                professions_by_username=observed_professions,
             )
+        else:
+            missing = _cangkun_team_missing_roles(projected_team_ids, leader_identity_id=leader_identity_id)
+        if missing:
+            if observed_professions:
+                covered_text, missing_text = _format_cangkun_raw_profession_coverage(
+                    projected_team_ids,
+                    professions_by_username=observed_professions,
+                )
+            else:
+                covered_text, missing_text = _format_cangkun_profession_coverage(
+                    projected_team_ids,
+                    leader_identity_id=leader_identity_id,
+                )
             plain_text = (
                 f"未发送加入苍坤洞府 {room_id or '-'}：当前选择无法凑齐五职业。\n"
                 f"覆盖职业：{covered_text}\n"
@@ -12865,9 +13243,9 @@ async def _handle_lightweight_join_command(event):
     enter_actionable = _is_lightweight_room_enter_actionable(room)
     if replica_kind == _REPLICA_KIND_CANGKUN:
         cangkun_team_ids = _get_lightweight_room_team_identity_ids(room, now=time.time())
-        covered_text, missing_text = _format_cangkun_profession_coverage(
+        covered_text, missing_text = _format_cangkun_raw_profession_coverage(
             cangkun_team_ids,
-            leader_identity_id=leader_identity_id,
+            professions_by_username=room.get("team_professions_by_username"),
         )
         summary += f"\n覆盖职业：{covered_text}"
         if missing_text != "无":
@@ -13543,9 +13921,10 @@ async def _handle_replica_external_dispatch_command(event, participant_identity_
             limit=220,
         )
         return True
+    dispatch_participant_ids = _get_replica_participant_identity_ids_for_kind(replica_kind, dispatch=True)
     identity_ids_by_username = _get_enabled_replica_identity_ids_by_username(
-        participant_identity_ids=participant_identity_ids,
-        fallback_to_all=participant_fallback_to_all,
+        participant_identity_ids=dispatch_participant_ids,
+        fallback_to_all=False,
     )
     command = f"{_REPLICA_KIND_META[replica_kind]['join_command']} {replica_id}"
     seen_identity_ids = set()
@@ -13659,7 +14038,11 @@ async def _handle_replica_dispatch_command(event):
         return False
     if not usernames:
         return True
-    identity_ids_by_username = _get_enabled_replica_identity_ids_by_username()
+    dispatch_participant_ids = _get_replica_participant_identity_ids_for_kind(replica_kind, dispatch=True)
+    identity_ids_by_username = _get_enabled_replica_identity_ids_by_username(
+        participant_identity_ids=dispatch_participant_ids,
+        fallback_to_all=False,
+    )
     seen_identity_ids = set()
     command = f"{_REPLICA_KIND_META[replica_kind]['join_command']} {replica_id}"
     for username in usernames:

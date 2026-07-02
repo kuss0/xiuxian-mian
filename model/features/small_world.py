@@ -40,6 +40,7 @@ SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 7
 SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC = 5 * 60
 SMALL_WORLD_CYCLE_CD_SEC = 8 * 3600
 SMALL_WORLD_MANIFEST_CD_SEC = 6 * 3600
+SMALL_WORLD_MANIFEST_RESOURCE_PAUSE_SEC = 6 * 3600
 SMALL_WORLD_LONG_PAUSE_SEC = 8 * 3600
 SMALL_WORLD_JITTER_MIN_SEC = 60
 SMALL_WORLD_JITTER_MAX_SEC = 20 * 60
@@ -516,8 +517,8 @@ async def _try_send_pending_god_action(now):
     return sent
 
 
-def _schedule_resource_pause(now, label, raw_text):
-    due_at = float(now + SMALL_WORLD_LONG_PAUSE_SEC + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC))
+def _schedule_resource_pause(now, label, raw_text, *, pause_sec=SMALL_WORLD_LONG_PAUSE_SEC):
+    due_at = float(now + float(pause_sec) + random.uniform(SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC))
     _clear_chain_pending()
     state["next_small_world_time"] = due_at
     state["small_world_last_error"] = f"{label}资源不足: {_truncate(raw_text)}"
@@ -918,6 +919,8 @@ def _resource_label_from_text(text):
     matched = RE_RESOURCE_NAME.search(raw_text)
     if matched:
         return matched.group(1).strip()
+    if "香火" in raw_text and "不足" in raw_text:
+        return "香火"
     if "修为不足" in raw_text:
         return "修为"
     if "灵石不足" in raw_text:
@@ -1771,10 +1774,16 @@ async def handle_small_world_manifest_reply(text, now, reply_to, matched_family=
 
     if _is_resource_shortage_text(raw_text):
         label = _resource_label_from_text(raw_text)
-        due_at = _schedule_resource_pause(now, f"显灵/{label}", raw_text)
+        due_at = _schedule_resource_pause(
+            now,
+            f"显灵/{label}",
+            raw_text,
+            pause_sec=SMALL_WORLD_MANIFEST_RESOURCE_PAUSE_SEC,
+        )
+        _clear_manifest_snapshot_prayer(now)
         save_state()
         await send_audit_log(
-            f"⚠️ 小世界显灵资源不足（{label}），本轮停止，{fmt_time_after(max(0, due_at - now))} 后再查；请手动补资源。",
+            f"⚠️ 小世界显灵资源不足（{label}），本轮停止并退避 6 小时，{fmt_time_after(max(0, due_at - now))} 后再查；请手动处理。",
             scope="identity",
             limit=260,
         )
