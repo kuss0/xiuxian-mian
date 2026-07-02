@@ -1264,6 +1264,82 @@ class TianxingManualPlanTests(unittest.TestCase):
         )
         self.assertTrue(plan["steps"][0].get("probe_existing_prediction"))
 
+    def test_timeline_plan_reuses_same_route_prediction_with_missing_until(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "last_action": "命盘偏转",
+                "last_result": "prediction_hit",
+                "last_route": "探索",
+                "fixed_star": "太阴",
+                "current_prediction": "探索",
+                "current_prediction_until": 0,
+                "current_prediction_set_at": now - 120,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[{
+                    "route": "探索",
+                    "kind": "consume",
+                    "start_at": now,
+                    "end_at": now + 60,
+                    "weight": 10,
+                    "reason": "野外历练",
+                    "require_change_fate": True,
+                }],
+                config={
+                    "auto_predict_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+        self.assertEqual("ready_prediction", plan["stage"])
+        self.assertEqual("探索", plan["release_route"])
+        self.assertEqual(
+            [("change_fate", "探索"), ("release_downstream", "探索")],
+            [(step["action"], step["arg"]) for step in plan["steps"]],
+        )
+
+    def test_timeline_plan_blocks_other_route_prediction_with_missing_until(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "fixed_star": "太阴",
+                "current_prediction": "闭关",
+                "current_prediction_until": 0,
+                "current_prediction_set_at": now - 120,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 12,
+            }
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[{
+                    "route": "探索",
+                    "kind": "farm",
+                    "start_at": now + 60,
+                    "end_at": now + 1800,
+                    "weight": 8,
+                    "reason": "探索主窗口",
+                }],
+                config={
+                    "auto_predict_enabled": True,
+                    "auto_change_fate_enabled": True,
+                    "min_tianji_for_change": 6,
+                },
+            )
+
+        self.assertEqual("prediction_conflict", plan["stage"])
+        self.assertTrue(plan["blocked_by_conflict"])
+        self.assertEqual(now - 120 + tianxing.TIANXING_PREDICTION_SEC, plan["blocked_until"])
+        self.assertEqual([], plan["steps"])
+
     def test_timeline_plan_never_auto_changes_fate_for_retreat(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):

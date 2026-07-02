@@ -34,6 +34,9 @@ WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
+WILD_TRAINING_DEEP_RETREAT_GUARD_SEC = 5 * 60
+WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC = 90
+WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC = 180
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
 WILD_TRAINING_RECENT_RESULT_GUARD_GRACE_SEC = 60
@@ -228,6 +231,34 @@ async def _defer_wild_training_for_dungeon_quiet(now, *, action):
     state["wild_training_last_error"] = f"野外历练{action}撞到{reason}，延后至 {fmt_abs_ts(next_time)}"
     save_state()
     await send_audit_log(f"🤫 {state['wild_training_last_error']}。", scope="identity")
+    return True
+
+
+async def _defer_wild_training_for_deep_retreat_summary_window(now):
+    if not state.get("deep_retreat_enabled"):
+        return False
+    phase = str(state.get("deep_retreat_phase") or "idle").strip()
+    try:
+        next_deep_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_deep_time = 0.0
+    blocking_phases = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait", "queued_launch", "launching"}
+    should_defer = phase in blocking_phases
+    if not should_defer and phase == "running" and 0 < next_deep_time <= float(now or 0) + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
+        should_defer = True
+    if not should_defer:
+        return False
+
+    anchor = max(float(now or 0), next_deep_time if next_deep_time > 0 else 0.0)
+    next_time = anchor + random.uniform(WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC, WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC)
+    state["next_wild_training_time"] = float(next_time)
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_last_result"] = "深闭结算窗口避让，未发送"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = f"野外历练避让深度闭关结算窗口：phase={phase or 'idle'}，延后至 {fmt_abs_ts(next_time)}"
+    save_state()
+    console_log(f"🏞️ {state['wild_training_last_error']}", scope="identity")
     return True
 
 
@@ -738,6 +769,8 @@ async def _run_wild_training_scheduler_unlocked(now):
         now,
         action="补发" if retry_count > 0 else "发送",
     ):
+        return
+    if await _defer_wild_training_for_deep_retreat_summary_window(now):
         return
 
     if not await _prepare_wild_training_tianxing_route(now, due_at=now):

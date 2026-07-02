@@ -1866,7 +1866,8 @@ def build_tianxing_manual_plan(action="panel", arg="", now=None, allow_predictio
                 return _manual_block(action, f"已有推命 {current} 尚未应验，{fmt_remaining(prediction_until)} 后再试。")
         if str(observed.get("current_prediction") or "").strip() and prediction_until <= 0:
             current = observed.get("current_prediction") or "未记录"
-            return _manual_block(action, f"已有推命 {current} 尚未应验，但时间不可解析，不发送推命。")
+            if not (current == route and allow_same_route_probe):
+                return _manual_block(action, f"已有推命 {current} 尚未应验，但时间不可解析，不发送推命。")
         plan = _manual_allow(action, f"{CMD_TIANXING_PREDICT} {route}", "tianxing_predict", now)
         plan["arg"] = route
         return plan
@@ -2484,7 +2485,7 @@ def _has_fresh_prediction_evidence(route, observed, timeline, now):
     observed = normalize_tianxing_observation(observed)
     if str(observed.get("current_prediction") or "").strip() != route:
         return False
-    if float(observed.get("current_prediction_until", 0) or 0) <= float(now):
+    if _prediction_effective_until(route, observed, now) <= float(now):
         return False
     observed_at = float(observed.get("last_observed_at", 0) or 0)
     if observed_at <= _last_craft_farm_result_at(timeline) + 0.001:
@@ -2495,7 +2496,26 @@ def _has_fresh_prediction_evidence(route, observed, timeline, now):
         return last_result in {"success", "cooldown"} and _normalize_route_choice(observed.get("last_route"), "") == route
     if last_action == "天机盘":
         return last_result in {"panel", ""}
+    if last_result in {"prediction_hit", "change_triggered"}:
+        return _normalize_route_choice(observed.get("last_route"), "") == route
     return False
+
+
+def _prediction_effective_until(route, observed, now=None):
+    now = float(now if now is not None else time.time())
+    route = _normalize_route_choice(route, "")
+    if route not in TIANXING_ROUTES:
+        return 0.0
+    observed = normalize_tianxing_observation(observed)
+    if str(observed.get("current_prediction") or "").strip() != route:
+        return 0.0
+    prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+    if prediction_until > now:
+        return prediction_until
+    set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+    if set_at > 0 and set_at <= now and now - set_at < TIANXING_PREDICTION_SEC:
+        return set_at + TIANXING_PREDICTION_SEC
+    return 0.0
 
 
 def _is_prediction_consumed(route, observed, now=None):
@@ -2520,7 +2540,7 @@ def _has_active_unconsumed_prediction(route, observed, now=None):
     return bool(
         route
         and str(observed.get("current_prediction") or "").strip() == route
-        and float(observed.get("current_prediction_until", 0) or 0) > now
+        and _prediction_effective_until(route, observed, now) > now
         and not _is_prediction_consumed(route, observed, now)
     )
 
@@ -2950,6 +2970,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
 
     current_prediction = str(observed.get("current_prediction") or "").strip()
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
+    prediction_effective_until = _prediction_effective_until(current_prediction, observed, now) if current_prediction else 0.0
     prediction_unconsumed = _has_active_unconsumed_prediction(current_prediction, observed, now) if current_prediction else False
     raw_current_change = str(observed.get("current_change") or "").strip()
     change_until = float(observed.get("current_change_until", 0) or 0)
@@ -3035,9 +3056,9 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         stage = "need_tianji_for_change"
         change_reason = f"天机值 {tianji_value} 低于改命阈值 {min_tianji}。"
         predict_reason = f"{next_consume_route} 需要先确认改命；天机值不足，等待攒点。"
-    elif dominant_route and current_prediction and current_prediction != dominant_route and prediction_until > now and prediction_unconsumed:
+    elif dominant_route and current_prediction and current_prediction != dominant_route and prediction_unconsumed:
         blocked_by_conflict = True
-        blocked_until = prediction_until
+        blocked_until = prediction_effective_until
         stage = "prediction_conflict"
         predict_reason = f"已有 {current_prediction} 推命仍在生效，当前时间线不应切到 {dominant_route}。"
     elif dominant_route and star_action_needed:
@@ -3058,7 +3079,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             )
             if not fixed_star:
                 star_gate_blocks_plan = True
-    elif dominant_route and current_prediction == dominant_route and prediction_until > now and prediction_unconsumed:
+    elif dominant_route and current_prediction == dominant_route and prediction_unconsumed:
         prediction_is_fresh = _has_fresh_prediction_evidence(dominant_route, observed, timeline, now)
         consume_needs_fresh_prediction = bool(
             next_consume_requires_change
@@ -3155,7 +3176,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             for step in steps
         )
         release_prediction_unconsumed = _has_active_unconsumed_prediction(release_route, observed, now)
-        if current_prediction and current_prediction != release_route and prediction_until > now and prediction_unconsumed and not has_predict_step:
+        if current_prediction and current_prediction != release_route and prediction_unconsumed and not has_predict_step:
             release_reason = f"已有 {current_prediction} 推命未应验，暂不放行 {release_route}。"
         else:
             has_change_step = any(
@@ -3362,7 +3383,7 @@ def _timeline_step_is_confirmed(step, observed, now):
         return (
             bool(arg)
             and str((observed or {}).get("current_prediction") or "").strip() == arg
-            and float((observed or {}).get("current_prediction_until", 0) or 0) > float(now)
+            and _prediction_effective_until(arg, observed, now) > float(now)
         )
     if action == "change_fate":
         return (
