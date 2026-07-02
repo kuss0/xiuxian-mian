@@ -104,7 +104,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
-    def test_marked_small_world_refresh_chain_still_caps_attempts(self):
+    def test_marked_small_world_refresh_chain_does_not_cap_refresh_attempts(self):
         now = time.time()
         sender_id = 8659059191
         events = [
@@ -116,6 +116,16 @@ class SafetyWatchdogTests(unittest.TestCase):
                 source_module="小世界",
                 priority="chain",
             )
+            for index in range(11)
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
+    def test_unmarked_small_world_refresh_chain_still_caps_attempts(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - index * 5 * 60, sender_id, ".小世界")
             for index in range(11)
         ]
 

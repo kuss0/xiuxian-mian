@@ -907,11 +907,18 @@ def _is_active_small_world_query_panel(reply_context):
     if str(state.get("small_world_phase") or "") != "query_pending":
         return False
     query_msg_id = int(state.get("small_world_query_msg_id", 0) or 0)
-    if query_msg_id <= 0:
-        return False
     reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
     root_msg_id = _context_msg_id(reply_context, "root_msg_id")
-    return query_msg_id in {reply_to_msg_id, root_msg_id}
+    if query_msg_id > 0:
+        return query_msg_id in {reply_to_msg_id, root_msg_id}
+
+    # send_game_command can race with the bot reply: the command is visible in
+    # the message log, but the runtime has not stored small_world_query_msg_id
+    # yet. If the panel has already been routed to this identity, use it to close
+    # the active query instead of leaving query_pending until timeout.
+    if reply_to_msg_id > 0 or root_msg_id > 0:
+        return True
+    return "等待小世界面板" in str(state.get("small_world_last_error") or "")
 
 
 def _has_active_small_world_phase():

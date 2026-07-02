@@ -1386,7 +1386,7 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             span = float(items[3]["_epoch"]) - float(items[0]["_epoch"])
             if span < cfg.guarded_fourth_min_span_sec:
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"
-        if refresh and len(items) > cfg.refresh_max_attempts_90m:
+        if refresh and not marked_small_world_refresh_chain and len(items) > cfg.refresh_max_attempts_90m:
             return f"refresh command over attempts: {sender_id}:{text} {len(items)}/90m"
         if sect_teach:
             recent_sect_items = [
