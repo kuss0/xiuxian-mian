@@ -953,14 +953,24 @@ async def handle_quiz_result_broadcast(text, now=None):
                 **_get_quiz_log_kwargs(identity_id, limit=520),
             )
         elif result_type == "timeout":
-            await send_audit_log(
-                _format_quiz_brief_log(
-                    f"题库内超时未作答｜题库匹配 {bank_answer_detail}｜题目：{question}",
-                    identity_id=identity_id,
-                    target_tag=target_tag,
-                ),
-                **_get_quiz_log_kwargs(identity_id, limit=520),
-            )
+            if identity_id is None:
+                await send_audit_log(
+                    _format_quiz_brief_log(
+                        f"外部题库题目超时｜未托管，仅学习观察｜题库匹配 {bank_answer_detail}｜题目：{question}",
+                        identity_id=identity_id,
+                        target_tag=target_tag,
+                    ),
+                    **_get_quiz_log_kwargs(identity_id, limit=520),
+                )
+            else:
+                await send_audit_log(
+                    _format_quiz_brief_log(
+                        f"题库内超时未作答｜题库匹配 {bank_answer_detail}｜题目：{question}",
+                        identity_id=identity_id,
+                        target_tag=target_tag,
+                    ),
+                    **_get_quiz_log_kwargs(identity_id, limit=520),
+                )
     else:
         # ---- 题目不在题库 ----
         if result_type == "correct":
@@ -1050,8 +1060,13 @@ async def handle_quiz_result_broadcast(text, now=None):
                     **log_kwargs,
                 )
         elif result_type == "timeout":
+            timeout_header = (
+                "🦴 玄骨考校外部题目超时（未托管，仅学习观察）"
+                if identity_id is None
+                else "🦴 玄骨考校题库未收录，超时未作答"
+            )
             await send_audit_log(
-                "🦴 玄骨考校题库未收录，超时未作答\n"
+                f"{timeout_header}\n"
                 f"- 目标: {mono(target_tag)}\n"
                 f"- 题目: {question}\n"
                 f"- 选项: {_format_quiz_options(options)}",

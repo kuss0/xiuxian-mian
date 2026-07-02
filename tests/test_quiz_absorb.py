@@ -255,6 +255,39 @@ class QuizButtonAnswerTests(unittest.IsolatedAsyncioTestCase):
         send_answer_mock.assert_not_awaited()
         self.assertIn("题库内超时未作答", audit_mock.await_args.args[0])
 
+    async def test_external_bank_timeout_logs_learning_only(self):
+        question = "韩立能把虚天鼎从乾蓝冰焰池中拉出的关键倚仗是什么？"
+        options = {"A": "血玉蜘蛛", "B": "啼魂兽", "C": "风雷翅", "D": "玄骨魔幡"}
+        state_module.set_quiz_learning_watchers({
+            "outerdao": {
+                "target_tag": "@outerdao",
+                "identity_id": None,
+                "question": question,
+                "options": options,
+                "expire_at": 1_700_000_420.0,
+                "matched_answer": "A",
+            }
+        })
+
+        audit_mock = AsyncMock()
+        with (
+            patch.object(quiz, "send_audit_log", new=audit_mock),
+            patch.object(quiz, "save_quiz_learning_watchers_state"),
+            patch.object(quiz, "_match_quiz_answer", return_value=("A", "exact_question")),
+        ):
+            handled = await quiz.handle_quiz_result_broadcast(
+                "【玄骨考校·超时】\n"
+                "@outerdao 面对玄骨上人的提问，竟迟迟无法作答，被视为不堪造就。",
+                now=1_700_000_050.0,
+            )
+
+        self.assertTrue(handled)
+        self.assertEqual({}, state_module.get_quiz_learning_watchers())
+        audit_text = audit_mock.await_args.args[0]
+        self.assertIn("外部题库题目超时", audit_text)
+        self.assertIn("未托管，仅学习观察", audit_text)
+        self.assertNotIn("题库内超时未作答", audit_text)
+
 
 class QuizAiAssistTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
