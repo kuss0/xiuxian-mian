@@ -357,6 +357,7 @@ RECOVERY_READY_MAX_SEC = 90
 RECOVERY_PHASEFUL_IDLE_MIN_SEC = 10 * 60
 RECOVERY_PHASEFUL_IDLE_MAX_SEC = 30 * 60
 RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC = 120
+RECOVERY_PHASEFUL_POST_SUMMARY_MAX_FUTURE_SEC = 6 * 60
 TIANTI_RECOVERY_STATUS_FRESH_SEC = 30 * 60
 TAIYI_PRESEND_RECOVERY_MAX_SEC = 300
 RECOVERY_SPREAD_TIMER_KEYS = (
@@ -660,6 +661,19 @@ def _recover_phaseful_queued_launch_deadline(timer_key, now):
     return float(now or time.time()) + RECOVERY_PHASEFUL_QUEUED_LAUNCH_TIMEOUT_SEC
 
 
+def _recover_phaseful_post_summary_deadline(timer_key, now):
+    try:
+        deadline = float(state.get(timer_key, 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        deadline = 0.0
+    now = float(now or time.time())
+    if deadline <= now:
+        return now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+    if deadline > now + RECOVERY_PHASEFUL_POST_SUMMARY_MAX_FUTURE_SEC:
+        return now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+    return deadline
+
+
 def _spread_recovery_timer_value(timer_key, now, due_cutoff):
     if timer_key == "next_wild_training_time":
         if _has_released_tianxing_explore_downstream(now):
@@ -697,7 +711,9 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
         phase = str(state.get(phase_key) or "idle")
         if phase == "queued_launch":
             return _recover_phaseful_queued_launch_deadline(timer_key, now)
-        if phase in {"launching", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}:
+        if phase == "post_summary_wait":
+            return _recover_phaseful_post_summary_deadline(timer_key, now)
+        if phase in {"launching", "summary_due", "observing_summary", "waiting_summary"}:
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         if phase == "idle":
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
@@ -3806,7 +3822,10 @@ def _restore_phaseful_runtime(module_name, now):
         deadline = _recover_phaseful_queued_launch_deadline(next_time_key, now)
         state[next_time_key] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC if deadline <= now else deadline
         return
-    if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary", "post_summary_wait"} and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
+    if phase == "post_summary_wait":
+        state[next_time_key] = _recover_phaseful_post_summary_deadline(next_time_key, now)
+        return
+    if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary"} and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
         state[next_time_key] = now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         return
     if phase == "idle" and next_time <= now + RECOVERY_SPREAD_MAX_SEC:

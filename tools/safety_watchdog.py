@@ -1332,6 +1332,8 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             gap = float(cur["_epoch"]) - float(prev["_epoch"])
             if refresh and has_intervening_small_world_tool(sent, sender_id, prev, cur):
                 continue
+            if refresh and is_marked_small_world_refresh_event(cur):
+                continue
             if text == CONCUBINE_STATUS_COMMAND and has_intervening_concubine_recovery_tool(sent, sender_id, prev, cur):
                 continue
             if is_safe_phaseful_replay_repeat(prev, cur, text):
@@ -1386,8 +1388,16 @@ def find_send_breach(events: list[dict], now: float, cfg: WatchdogConfig) -> str
             span = float(items[3]["_epoch"]) - float(items[0]["_epoch"])
             if span < cfg.guarded_fourth_min_span_sec:
                 return f"guarded retry too dense: {sender_id}:{text} fourth span {span:.1f}s"
-        if refresh and not marked_small_world_refresh_chain and len(items) > cfg.refresh_max_attempts_90m:
-            return f"refresh command over attempts: {sender_id}:{text} {len(items)}/90m"
+        if refresh:
+            unmarked_refresh_items = [
+                item for item in items
+                if not is_marked_small_world_refresh_event(item)
+            ]
+            if len(unmarked_refresh_items) > cfg.refresh_max_attempts_90m:
+                return (
+                    f"refresh command over attempts: {sender_id}:{text} "
+                    f"{len(unmarked_refresh_items)}/90m"
+                )
         if sect_teach:
             recent_sect_items = [
                 item for item in items

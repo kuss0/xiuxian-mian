@@ -73,6 +73,16 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             state_module.state["deep_retreat_phase"] = "waiting_summary"
             state_module.state["deep_retreat_summary_sent_at"] = now - 10
             state_module.state["last_deep_retreat_summary_msg_id"] = 123
+        action_guard.note_sent(deep_retreat.CMD_DEEP_RETREAT, send_as_id, 456, sent_at=now - 300)
+        self.assertTrue(action_guard.note_remote_block(
+            "deep_retreat",
+            send_as_id=send_as_id,
+            block_until=now + 7200,
+            reason="游戏提示深度闭关执行中",
+            kind="running",
+            now=now - 299,
+            command=deep_retreat.CMD_DEEP_RETREAT,
+        ))
 
         text = (
             "📜 修士 @Shadow_Plus 深度闭关总结\n"
@@ -92,6 +102,9 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
         with state_module.use_identity(send_as_id):
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertNotIn("deep_retreat", state_module.state["action_guard_sessions"])
+        allowed, reason = action_guard.before_send(deep_retreat.CMD_DEEP_RETREAT, send_as_id=send_as_id, now=now + 31)
+        self.assertTrue(allowed, reason)
 
     async def test_deep_retreat_broadcast_ignores_non_summary_text(self):
         send_as_id = 8659059211
@@ -1702,6 +1715,47 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("launching", state_module.state["deep_retreat_phase"])
             self.assertEqual(now, state_module.state["last_deep_retreat_command_time"])
 
+    async def test_deep_retreat_post_summary_wait_clears_stale_remote_block_before_relaunch(self):
+        send_as_id = 8659059218
+        now = 1_700_000_486.0
+        self._prepare_identity(send_as_id, "StaleRemoteBlockRetreat")
+
+        async def guarded_send(command, **kwargs):
+            allowed, _reason = action_guard.before_send(command, send_as_id=send_as_id, now=now)
+            if not allowed:
+                return None
+            return SimpleNamespace(id=908, sent_at=now)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["deep_retreat_probe_pending"] = True
+            state_module.state["next_deep_retreat_time"] = now - 1
+        action_guard.note_sent(deep_retreat.CMD_DEEP_RETREAT, send_as_id, 456, sent_at=now - 300)
+        action_guard.note_remote_block(
+            "deep_retreat",
+            send_as_id=send_as_id,
+            block_until=now + 7200,
+            reason="游戏提示深度闭关执行中",
+            kind="running",
+            now=now - 299,
+            command=deep_retreat.CMD_DEEP_RETREAT,
+        )
+
+        with state_module.use_identity(send_as_id):
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(side_effect=guarded_send)) as send_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+            session = state_module.state["action_guard_sessions"].get("deep_retreat") or {}
+            self.assertEqual(0, float(session.get("remote_block_until", 0) or 0))
+            self.assertEqual("", session.get("remote_block_reason", ""))
+
     async def test_deep_retreat_already_running_reply_keeps_estimate_without_status_probe(self):
         send_as_id = 8659059214
         now = 1_700_000_490.0
@@ -1875,7 +1929,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("summary_due", state_module.state["yuanying_phase"])
             self.assertEqual(next_time, state_module.state["next_yuanying_time"])
 
-    def test_yuanying_post_summary_startup_recovery_is_staggered_like_deep_retreat(self):
+    def test_yuanying_post_summary_startup_recovery_stays_immediate(self):
         send_as_id = 8659059197
         now = 1_700_000_500.0
         self._prepare_identity(send_as_id, "RecoverSoul")
@@ -1889,7 +1943,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 control.initialize_identity_runtime(send_as_id, now)
 
             self.assertEqual("post_summary_wait", state_module.state["yuanying_phase"])
-            self.assertEqual(now + 45, state_module.state["next_yuanying_time"])
+            self.assertEqual(now + 1, state_module.state["next_yuanying_time"])
 
     def test_yuanying_idle_startup_recovery_uses_short_phaseful_spread(self):
         send_as_id = 8659059198

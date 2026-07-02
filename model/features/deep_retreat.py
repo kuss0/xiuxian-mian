@@ -12,7 +12,11 @@ from ..config import (
     RE_WHITESPACE,
     SUMMARY_TIMEOUT_SEC,
 )
-from ..action_guard import note_remote_block as note_action_guard_remote_block
+from ..action_guard import (
+    clear_remote_block as clear_action_guard_remote_block,
+    close_action as close_action_guard,
+    note_remote_block as note_action_guard_remote_block,
+)
 from ..persistence import mark_dirty, save_state
 from ..runtime import _fire_and_forget, console_log, mono, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_display_name, get_identity_ids, get_send_as_tags, has_identity, state, use_identity
@@ -230,8 +234,29 @@ def _note_deep_retreat_remote_block(now, block_until, reason, kind):
     )
 
 
+def _clear_deep_retreat_remote_block_after_summary(now):
+    send_as_id = get_current_identity_id()
+    changed = clear_action_guard_remote_block(
+        "deep_retreat",
+        send_as_id=send_as_id,
+        reason="deep_retreat_summary_finalized",
+        now=now,
+    )
+    changed = close_action_guard(
+        "deep_retreat",
+        send_as_id=send_as_id,
+        reason="deep_retreat_summary_finalized",
+        now=now,
+    ) or changed
+    if changed:
+        save_state()
+    return changed
+
+
 def begin_deep_retreat_post_summary_wait(now, delay=POST_SUMMARY_WAIT_SEC, *, confirmed=False):
     begin_post_summary_wait(DEEP_RETREAT_SPEC, now, delay=delay, confirmed=confirmed)
+    if confirmed:
+        _clear_deep_retreat_remote_block_after_summary(now)
 
 
 def begin_deep_retreat_summary_wait(now):
@@ -552,6 +577,7 @@ async def handle_deep_retreat_summary_broadcast(text, now, event=None, reply_to=
             decision="summary_finalized",
         )
         await finalize_summary_broadcast(DEEP_RETREAT_SPEC, now)
+        _clear_deep_retreat_remote_block_after_summary(now)
         if note_tianxing_retreat_force_exit_summary(text, now=now):
             save_state()
 
@@ -714,6 +740,8 @@ async def _run_deep_retreat_tianxing_gate(now):
 
 
 async def run_deep_retreat_scheduler(now):
+    if state.get("deep_retreat_phase") == "post_summary_wait":
+        _clear_deep_retreat_remote_block_after_summary(now)
     if not await _run_deep_retreat_tianxing_gate(now):
         return
     await run_phaseful_scheduler(

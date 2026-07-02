@@ -1021,6 +1021,34 @@ def note_remote_block(action_key_or_command, send_as_id=None, *, block_until=0, 
     return True
 
 
+def clear_remote_block(action_key_or_command, send_as_id=None, *, reason="", now=None):
+    action_key = resolve_action_key(action_key_or_command)
+    if not action_key and str(action_key_or_command or "").strip() in ACTION_SPECS:
+        action_key = str(action_key_or_command or "").strip()
+    if not action_key or not has_identity(send_as_id):
+        return False
+    now = float(now if now is not None else time.time())
+    with use_identity(send_as_id) as identity_state:
+        sessions = _get_sessions(identity_state)
+        session = sessions.get(action_key)
+        if not isinstance(session, dict):
+            return False
+        had_block = any(
+            session.get(key) not in (None, "", 0, 0.0)
+            for key in ("remote_block_until", "remote_block_reason", "remote_block_kind", "remote_observed_at")
+        )
+        if not had_block:
+            return False
+        session["remote_block_until"] = 0
+        session["remote_block_reason"] = ""
+        session["remote_block_kind"] = ""
+        session["remote_observed_at"] = 0
+        session["remote_clear_reason"] = str(reason or "")
+        session["remote_cleared_at"] = now
+        mark_dirty()
+    return True
+
+
 def get_next_allowed_at(command, send_as_id=None):
     action_key = resolve_action_key(command)
     if not action_key or not has_identity(send_as_id):

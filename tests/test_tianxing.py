@@ -315,6 +315,19 @@ class TianxingParserTests(unittest.TestCase):
         self.assertEqual("", observed["auto_last_error"])
         self.assertEqual("", changed["last_error"])
 
+    def test_normalize_clears_prediction_already_consumed_by_route_result(self):
+        observed = tianxing.normalize_tianxing_observation({
+            "current_prediction": "炼制",
+            "current_prediction_until": 1_780_040_000.0,
+            "current_prediction_set_at": 1_780_000_000.0,
+            "prediction_consumed_route": "炼制",
+            "prediction_consumed_at": 1_780_001_000.0,
+        })
+
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("炼制", observed["prediction_consumed_route"])
+
     def test_clear_calamity_noop_real_text_calibrates_zero(self):
         parsed = tianxing.parse_tianxing_text(
             "你当前并无逆命劫缠身，无需消劫。",
@@ -961,9 +974,10 @@ class TianxingManualPlanTests(unittest.TestCase):
             observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertEqual("", observed["prediction_consumed_route"])
-        self.assertEqual(0, observed["prediction_consumed_at"])
-        self.assertEqual("探索", observed["current_prediction"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("探索", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
         self.assertNotIn("探索", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
 
@@ -2567,7 +2581,7 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("探索", timeline["route"])
         self.assertEqual("predict", timeline["active_step"]["action"])
 
-    async def test_timeline_releases_fresh_panel_prediction_without_probe(self):
+    async def test_timeline_probes_panel_prediction_without_recent_predict(self):
         now = 1_780_000_000.0
         windows = [{"route": "炼制", "kind": "farm", "start_at": now, "end_at": now + 3600, "weight": 8}]
         with state_module.use_identity(self.identity_id):
@@ -2591,10 +2605,11 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
                 result = await tianxing.run_tianxing_timeline_scheduler(now, windows=windows)
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
-        self.assertEqual("downstream_released", result["phase"])
-        self.assertEqual("release_downstream", timeline["active_step"]["action"])
-        self.assertTrue(tianxing.is_tianxing_route_released("炼制", now=now + 1))
-        send_mock.assert_not_called()
+        self.assertEqual("sent_waiting_ack", result["phase"])
+        self.assertEqual("predict", timeline["active_step"]["action"])
+        self.assertFalse(tianxing.is_tianxing_route_released("炼制", now=now + 1))
+        send_mock.assert_called_once()
+        self.assertEqual(".推命 炼制", send_mock.call_args.args[0])
 
     def test_passive_panel_closes_matching_predict_and_panel_guards(self):
         now = 1_780_000_000.0
@@ -5059,7 +5074,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(changed)
         self.assertEqual(4, observed["tianji_value"])
-        self.assertEqual("炼制", observed["current_prediction"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual("炼制", observed["prediction_consumed_route"])
         self.assertEqual(1, craft["daily_count"])
         self.assertEqual(1, craft["hit_count"])
         self.assertEqual(4, craft["estimated_tianji"])
@@ -6358,10 +6374,10 @@ class TianxingPassiveInboxTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertEqual("change_triggered", observed["last_result"])
-        self.assertEqual("探索", observed["current_prediction"])
-        self.assertGreater(observed["current_prediction_until"], now)
-        self.assertEqual("", observed["prediction_consumed_route"])
-        self.assertEqual(0, observed["prediction_consumed_at"])
+        self.assertEqual("", observed["current_prediction"])
+        self.assertEqual(0, observed["current_prediction_until"])
+        self.assertEqual("探索", observed["prediction_consumed_route"])
+        self.assertEqual(now, observed["prediction_consumed_at"])
         self.assertEqual("", observed["current_change"])
         self.assertEqual(0, observed["current_change_until"])
 

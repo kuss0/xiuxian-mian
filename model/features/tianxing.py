@@ -794,6 +794,14 @@ def normalize_tianxing_observation(value=None):
             observed[key] = int(observed.get(key, 0) or 0)
         except (TypeError, ValueError, OverflowError):
             observed[key] = 0
+    current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
+    consumed_route = _normalize_route_choice(observed.get("prediction_consumed_route"), "")
+    if current_prediction and consumed_route == current_prediction:
+        consumed_at = float(observed.get("prediction_consumed_at", 0) or 0)
+        set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+        if consumed_at > 0 and (set_at <= 0 or consumed_at + 0.001 >= set_at):
+            observed["current_prediction"] = ""
+            observed["current_prediction_until"] = 0
     last_action = str(observed.get("last_action") or "").strip()
     last_result = str(observed.get("last_result") or "").strip()
     last_error = str(observed.get("last_error") or "").strip()
@@ -1692,13 +1700,11 @@ def apply_tianxing_passive(text, now=None, family=""):
                 observed["prediction_consumed_route"] = consumed_route
                 observed["prediction_consumed_at"] = now
             elif prediction_hit_text:
-                observed["prediction_consumed_route"] = ""
-                observed["prediction_consumed_at"] = 0
-        if prediction_miss_text:
+                observed["prediction_consumed_route"] = consumed_route
+                observed["prediction_consumed_at"] = now
+        if prediction_miss_text or prediction_hit_text:
             observed["current_prediction"] = ""
             observed["current_prediction_until"] = 0
-        elif prediction_hit_text and consumed_route and not _normalize_route_choice(observed.get("current_prediction"), ""):
-            observed["current_prediction"] = consumed_route
     elif parsed.get("result") in {"success", "failure"}:
         observed_route = _normalize_route_choice(parsed.get("last_route"), "")
         if observed_route and previous_prediction == observed_route and _has_active_unconsumed_prediction(observed_route, observed, now):
@@ -2493,18 +2499,29 @@ def _has_fresh_prediction_evidence(route, observed, timeline, now):
         return False
     if _prediction_effective_until(route, observed, now) <= float(now):
         return False
+    if _is_prediction_consumed(route, observed, now):
+        return False
     observed_at = float(observed.get("last_observed_at", 0) or 0)
     if observed_at <= _last_craft_farm_result_at(timeline) + 0.001:
         return False
-    last_action = str(observed.get("last_action") or "").strip()
-    last_result = str(observed.get("last_result") or "").strip()
-    if last_action == "推命":
-        return last_result in {"success", "cooldown"} and _normalize_route_choice(observed.get("last_route"), "") == route
-    if last_action == "天机盘":
-        return last_result in {"panel", ""}
-    if last_result in {"prediction_hit", "change_triggered"}:
-        return _normalize_route_choice(observed.get("last_route"), "") == route
-    return False
+    set_at = float(observed.get("current_prediction_set_at", 0) or 0)
+    if set_at <= 0:
+        last_action = str(observed.get("last_action") or "").strip()
+        last_result = str(observed.get("last_result") or "").strip()
+        if last_action == "推命" and last_result in {"success", "cooldown"} and _normalize_route_choice(observed.get("last_route"), "") == route:
+            set_at = observed_at
+    if set_at <= 0:
+        released = (timeline or {}).get("released_routes") or {}
+        release_item = released.get(route) if isinstance(released, dict) else {}
+        try:
+            released_at = float((release_item or {}).get("released_at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            released_at = 0.0
+        if released_at > 0:
+            set_at = released_at
+    if set_at <= 0 or float(now) - set_at > TIANXING_ROUTE_LEASE_GUARD_MAX_AGE_SEC:
+        return False
+    return True
 
 
 def _prediction_effective_until(route, observed, now=None):
@@ -2581,6 +2598,7 @@ def _close_tianxing_guards_from_observation(observed, now):
         return 0
 
     now = float(now if now is not None else time.time())
+    original_observed = observed if isinstance(observed, dict) else None
     observed = normalize_tianxing_observation(observed)
     observed_at = float(observed.get("last_observed_at", 0) or 0)
     last_action = str(observed.get("last_action") or "").strip()
@@ -2593,8 +2611,15 @@ def _close_tianxing_guards_from_observation(observed, now):
             sent_at = 0.0
         return observed_at <= 0 or sent_at <= 0 or observed_at + 0.001 >= sent_at
 
+    def _session_sent_at(session):
+        try:
+            return float((session or {}).get("last_sent_at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+
     predict = sessions.get("tianxing_predict") or {}
     predicted_route = _route_arg_from_command(predict.get("last_command"), CMD_TIANXING_PREDICT)
+    predict_sent_at = _session_sent_at(predict)
     if (
         predicted_route
         and _session_sent_before_observation(predict)
@@ -2602,6 +2627,8 @@ def _close_tianxing_guards_from_observation(observed, now):
         and float(observed.get("current_prediction_until", 0) or 0) > now
         and action_guard.close_action("tianxing_predict", send_as_id=send_as_id, reason="tianxing_observed_prediction", now=now)
     ):
+        if predict_sent_at > 0:
+            observed["current_prediction_set_at"] = max(float(observed.get("current_prediction_set_at", 0) or 0), predict_sent_at)
         closed += 1
 
     change = sessions.get("tianxing_change_fate") or {}
@@ -2643,6 +2670,9 @@ def _close_tianxing_guards_from_observation(observed, now):
     ):
         closed += 1
 
+    if closed and original_observed is not None and original_observed is not observed:
+        original_observed.clear()
+        original_observed.update(observed)
     return closed
 
 
@@ -2709,12 +2739,13 @@ def _prune_tianxing_released_routes(observed, now):
     change_until = float(observed.get("current_change_until", 0) or 0)
     def _release_basis_valid(route, basis):
         route = _normalize_route_choice(route, "")
+        prediction_ready = _has_active_unconsumed_prediction(route, observed, now) and _has_fresh_prediction_evidence(route, observed, timeline, now)
         if basis == "prediction":
-            return _has_active_unconsumed_prediction(route, observed, now)
+            return prediction_ready
         if basis == "change_fate":
-            return current_change == route and change_until > now
+            return current_change == route and change_until > now and prediction_ready
         return (
-                _has_active_unconsumed_prediction(route, observed, now)
+                prediction_ready
                 or (current_change == route and change_until > now)
             )
 
@@ -3779,6 +3810,7 @@ def is_tianxing_route_released(route, *, now=None, max_age_sec=3600, require_cha
         return False
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     prediction_active = _has_active_unconsumed_prediction(route, observed, now)
+    prediction_fresh = prediction_active and _has_fresh_prediction_evidence(route, observed, timeline, now)
     change_active = (
         str(observed.get("current_change") or "").strip() == route
         and float(observed.get("current_change_until", 0) or 0) > now
@@ -3787,12 +3819,12 @@ def is_tianxing_route_released(route, *, now=None, max_age_sec=3600, require_cha
     if require_change_fate and basis != "change_fate":
         return False
     if basis == "prediction":
-        return prediction_active
+        return prediction_fresh
     if basis == "change_fate":
-        return change_active and (prediction_active or not require_change_fate)
+        return change_active and (prediction_fresh or not require_change_fate)
     if require_change_fate:
         return False
-    return prediction_active or change_active
+    return prediction_fresh or change_active
 
 
 def _command_has_prefix(command, prefix):
@@ -3918,6 +3950,7 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     if _close_tianxing_guards_from_observation(observed, now):
+        state["tianxing_observation"] = observed
         save_state()
     if _prune_tianxing_released_routes(observed, now):
         save_state()
@@ -4142,6 +4175,7 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
 
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     effective_config = normalize_tianxing_auto_config(config if config is not None else state.get("tianxing_auto_config"))
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     route_reason = str(reason or route).strip() or route
     if is_tianxing_automation_paused(now=now, observed=observed):
         return _route_preflight_result(
@@ -4184,6 +4218,16 @@ def build_tianxing_route_preflight_plan(route, *, reason="", deadline_at=0, now=
         return _route_preflight_result(route, "timeline_disabled", True, "天星时间线未开启，路线动作不等待天星预检。", deadline_at=deadline_at, now=now)
 
     if require_change_fate and current_change == route and change_until > now and prediction_unconsumed:
+        if not _has_fresh_prediction_evidence(route, observed, timeline, now):
+            return _route_preflight_result(
+                route,
+                "timeline_waiting_fresh_prediction",
+                False,
+                f"{route_reason} 已有 {route} 改命待发，但推命确认已过短租约，需重新推命后再放行。",
+                deadline_at=deadline_at,
+                now=now,
+                timeline_required=True,
+            )
         return _route_preflight_result(
             route,
             "change_fate_active",

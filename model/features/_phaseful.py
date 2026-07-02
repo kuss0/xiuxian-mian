@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass
 
 from ..config import CD_BUFFER_SEC, CMD_CONCUBINE_DREAM, CMD_CONCUBINE_VOYAGE_RETURN, CMD_TOWER, CMD_TREE_GUARD, CMD_TREE_WATER, CONCUBINE_VOYAGE_REPLY_TIMEOUT_SEC
-from ..runtime import _fire_and_forget, console_log, register_game_command_sent_observer, send_audit_log, send_game_command
+from ..runtime import _fire_and_forget, console_log, get_last_game_send_block, register_game_command_sent_observer, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_game_group_id, get_pending_command, has_identity, is_auto_delete_sent_messages_enabled, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key
 
@@ -720,6 +720,13 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
         )
         sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
         if not msg:
+            send_block = get_last_game_send_block(get_current_identity_id(), launch_command)
+            block_detail = ""
+            if send_block:
+                code = str(send_block.get("code") or "").strip()
+                reason = str(send_block.get("reason") or "").strip()
+                if code or reason:
+                    block_detail = f"（{code or 'blocked'}: {reason or '无原因'}）"
             if previous_phase == "post_summary_wait":
                 delay = random.uniform(spec.timeout_relaunch_min_sec, spec.timeout_relaunch_max_sec)
                 begin_post_summary_wait(spec, sent_at, delay=delay, confirmed=True)
@@ -727,7 +734,7 @@ async def _send_summary_launch(spec, launch_command, console_message, now=None):
                 if previous_summary_started_at > 0:
                     state[spec.summary_sent_at_key] = previous_summary_started_at
                 _schedule_summary_trigger_retry(spec, sent_at, preserve_started_at=True)
-            await send_audit_log(f"{spec.title} 续轮指令未发出，已延后重试。")
+            await send_audit_log(f"{spec.title} 续轮指令未发出{block_detail}，已延后重试。")
             return False
 
         if previous_phase == "post_summary_wait":

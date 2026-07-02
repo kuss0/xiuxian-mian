@@ -121,6 +121,26 @@ class SafetyWatchdogTests(unittest.TestCase):
 
         self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
 
+    def test_marked_small_world_refresh_chain_ignores_legacy_unmarked_query(self):
+        now = time.time()
+        sender_id = 8659059191
+        events = [
+            _event(now - 11 * 60, sender_id, ".小世界"),
+            *[
+                _event(
+                    now - index * 60,
+                    sender_id,
+                    ".小世界",
+                    family="small_world_query",
+                    source_module="小世界",
+                    priority="chain",
+                )
+                for index in range(11)
+            ],
+        ]
+
+        self.assertEqual("", safety_watchdog.find_send_breach(events, now, self._config()))
+
     def test_unmarked_small_world_refresh_chain_still_caps_attempts(self):
         now = time.time()
         sender_id = 8659059191
