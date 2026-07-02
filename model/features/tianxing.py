@@ -1524,11 +1524,35 @@ def _should_wake_tianxing_timeline(observed, config, now):
     return any(str(step.get("action") or "").strip() for step in plan.get("steps") or [])
 
 
-def _timeline_has_existing_work():
+def _timeline_has_existing_work(now=None):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     active_step = timeline.get("active_step") or {}
     active_status = str(active_step.get("status") or "").strip()
     phase = str(timeline.get("phase") or "").strip()
+    if active_status in {"sending", "sent_waiting_ack", "ack_timeout"}:
+        if now is None:
+            return True
+        try:
+            now_value = float(now)
+        except (TypeError, ValueError, OverflowError):
+            now_value = time.time()
+        due_candidates = []
+        for key in ("calibration_due_at", "ack_due_at"):
+            try:
+                value = float(active_step.get(key, 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                value = 0.0
+            if value > 0:
+                due_candidates.append(value)
+        try:
+            blocked_until = float(timeline.get("blocked_until", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            blocked_until = 0.0
+        if blocked_until > 0:
+            due_candidates.append(blocked_until)
+        if active_status == "sending" and not due_candidates:
+            return True
+        return bool(due_candidates and min(due_candidates) <= now_value)
     return bool(
         phase in {"state_confirmed", "waiting_send"}
         or active_status in {"confirmed", "pending"}
@@ -1556,12 +1580,12 @@ def _timeline_followup_time(timeline, now, config):
 
 async def _drain_existing_tianxing_timeline(now, config):
     """Advance an already-created timeline even when the farm window is closed."""
-    if not _timeline_has_existing_work():
+    if not _timeline_has_existing_work(now):
         return {}
     last_result = {}
     mutated = False
     for _ in range(3):
-        if not _timeline_has_existing_work():
+        if not _timeline_has_existing_work(now):
             break
         before = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
         before_key = (
@@ -5600,7 +5624,7 @@ async def _run_tianxing_scheduler_unlocked(now):
             observed["auto_next_time"] = float(timeline_result.get("next_time", 0) or now + min(60, _craft_farm_interval_sec(config)))
             state["tianxing_observation"] = observed
             save_state()
-            if _timeline_has_existing_work():
+            if _timeline_has_existing_work(now):
                 return
 
         craft_result = await run_tianxing_craft_farm_scheduler(now, config=config)

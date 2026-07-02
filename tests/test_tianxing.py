@@ -5653,6 +5653,75 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("timeline_required", observed["auto_last_plan"])
         self.assertEqual(now + tianxing.TIANXING_CRAFT_FARM_RETRY_SEC, observed["auto_next_time"])
 
+    async def test_scheduler_drains_due_ack_timeout_even_when_auto_time_is_future(self):
+        now = 1_780_000_000.0
+        panel_msg = SimpleNamespace(id=9301, sent_at=now + 1)
+        config = {
+            "timeline_enabled": True,
+            "timeline_dry_run_enabled": False,
+            "auto_predict_enabled": True,
+            "auto_change_fate_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "craft_farm_enabled": True,
+            "craft_farm_dry_run_enabled": False,
+            "craft_farm_daily_limit": 42,
+            "craft_farm_item": "玄铁剑",
+            "farm_route": "炼制",
+            "farm_window_enabled": True,
+            "farm_window_start": time.strftime("%H:%M", time.localtime(now)),
+            "farm_window_duration_min": 60,
+            "calibration_backoff_sec": 60,
+        }
+        active_step = {
+            "action": "change_fate",
+            "arg": "探索",
+            "route": "探索",
+            "command": ".改命 探索",
+            "status": "ack_timeout",
+            "send_msg_id": 0,
+            "calibration_due_at": now - 1,
+            "last_error": "天星时间线发送被外层调度取消，等待查盘校准；不重复发送。",
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "available_stars": ["太阴", "贪狼", "天府"],
+                "available_stars_day": tianxing.get_day_key(now),
+                "available_stars_source": "panel",
+                "fixed_star": "太阴",
+                "fixed_star_day": tianxing.get_day_key(now),
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 600,
+                "current_change": "",
+                "current_change_until": 0,
+                "calamity_count": 0,
+                "tianji_value": 33,
+                "auto_next_time": now + 6 * 3600,
+            }
+            state_module.state["tianxing_auto_config"] = config
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "ack_timeout",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": dict(active_step),
+                "steps": [dict(active_step)],
+                "blocked_until": now - 1,
+                "last_error": active_step["last_error"],
+            }
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", return_value=panel_msg) as send_mock:
+                await tianxing.run_tianxing_scheduler(now)
+            observed = state_module.state["tianxing_observation"]
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".天机盘", send_mock.await_args.args[0])
+        self.assertEqual("timeline", observed["auto_last_action"])
+        self.assertEqual("sent_waiting_ack", timeline["phase"])
+        self.assertEqual("panel", timeline["active_step"]["action"])
+        self.assertEqual(9301, timeline["active_step"]["send_msg_id"])
+
     async def test_scheduler_respects_future_auto_time(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
