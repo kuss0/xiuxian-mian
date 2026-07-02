@@ -96,6 +96,7 @@ _REPLICA_KIND_KUNWU = "kunwu"
 _REPLICA_KIND_LUOYUN = "luoyun"
 _REPLICA_KINDS = (_REPLICA_KIND_VIRTUAL_HALL, _REPLICA_KIND_ZHUIMO, _REPLICA_KIND_HUANGLONG, _REPLICA_KIND_CANGKUN, _REPLICA_KIND_KUNWU, _REPLICA_KIND_LUOYUN)
 _REPLICA_TEAM_NOTICE_TTL_SEC = 6 * 3600
+_REPLICA_ENTER_ACK_DELAY_SEC = 2.0
 _LUOYUN_CD_REMINDER_INTERVAL_SEC = 3600
 _HUANGLONG_CONSCRIPTION_QUERY_HOUR = 12
 _HUANGLONG_CONSCRIPTION_QUERY_MINUTE = 5
@@ -255,9 +256,14 @@ _REPLICA_LIGHTWEIGHT_FAST_RETRY_ACTION_DELAYS_SEC = {
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_ENABLED_ACTIONS = frozenset({"dissolve"})
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_TTL_SEC = 5 * 60
 _REPLICA_LIGHTWEIGHT_FAST_RETRY_MAX = 300
+_REPLICA_LIGHTWEIGHT_ROOM_HISTORY_TTL_SEC = REPLICA_ACTIVE_TTL_SEC
+_REPLICA_LIGHTWEIGHT_ROOM_HISTORY_MAX = 120
 _ZHUIMO_PROGRESS_ACK_DELAY_SEC = 35.0
 _ZHUIMO_PROGRESS_ACK_TTL_SEC = 10 * 60
 _ZHUIMO_PROGRESS_ACK_MAX = 100
+_ZHUIMO_PROGRESS_ORDER_DELAY_SEC = 1.2
+_ZHUIMO_PROGRESS_ORDER_TTL_SEC = 10 * 60
+_ZHUIMO_PROGRESS_ORDER_MAX = 80
 _KUNWU_AUTO_CHOICE_RETRY_DELAY_SEC = 3.0
 _KUNWU_AUTO_CHOICE_TTL_SEC = 30 * 60
 _KUNWU_AUTO_CHOICE_MAX = 200
@@ -1004,6 +1010,207 @@ def _is_zhuimo_progress_text(text):
     if "【第一幕结果】" in raw_text and "【第二幕" in raw_text and ".坠魔抉择" in raw_text:
         return True
     return False
+
+
+def _parse_zhuimo_progress_round_no(text):
+    match = re.search(r"【第\s*(\d+)\s*回合】", str(text or ""))
+    if not match:
+        return 0
+    try:
+        return max(0, int(match.group(1) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _cleanup_zhuimo_progress_order_records(now=None):
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = run_state.get("zhuimo_progress_order")
+    if not isinstance(records, dict):
+        records = {}
+    changed = False
+    for scope, item in list(records.items()):
+        if not isinstance(item, dict):
+            records.pop(scope, None)
+            changed = True
+            continue
+        items = item.get("items")
+        if not isinstance(items, dict):
+            items = {}
+        for round_key, payload in list(items.items()):
+            if not isinstance(payload, dict):
+                items.pop(round_key, None)
+                changed = True
+                continue
+            expires_at = float(payload.get("expires_at") or 0)
+            if expires_at > 0 and now >= expires_at:
+                items.pop(round_key, None)
+                changed = True
+        if not items:
+            records.pop(scope, None)
+            changed = True
+            continue
+        item["items"] = items
+        item["updated_at"] = max(float(item.get("updated_at") or 0), max(float((payload or {}).get("created_at") or 0) for payload in items.values()))
+        records[scope] = item
+    if len(records) > _ZHUIMO_PROGRESS_ORDER_MAX:
+        keep = {
+            key
+            for key, _item in sorted(
+                records.items(),
+                key=lambda entry: float((entry[1] or {}).get("updated_at") or 0),
+                reverse=True,
+            )[:_ZHUIMO_PROGRESS_ORDER_MAX]
+        }
+        for key in list(records):
+            if key not in keep:
+                records.pop(key, None)
+                changed = True
+    run_state["zhuimo_progress_order"] = records
+    if changed:
+        _save_replica_run_state_dict(run_state)
+    return records
+
+
+def _make_zhuimo_progress_order_scope(event, now=None):
+    try:
+        chat_id = int(getattr(event, "chat_id", 0) or 0)
+    except (TypeError, ValueError):
+        chat_id = 0
+    room = _get_latest_lightweight_room_for_kind(_REPLICA_KIND_ZHUIMO, now=now) or {}
+    room_id = str(room.get("room_id") or "").strip()
+    leader_username = _normalize_replica_username(room.get("leader_username") or "") or _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
+    scope_key = room_id or leader_username or "active"
+    return f"{chat_id}:{scope_key}"
+
+
+async def _dispatch_zhuimo_progress_notice_payload(payload, now=None):
+    payload = payload if isinstance(payload, dict) else {}
+    notice_text = str(payload.get("notice_text") or "").strip()
+    if not notice_text:
+        return False
+    now = float(now or time.time())
+    if await _send_replica_kind_notice(_REPLICA_KIND_ZHUIMO, notice_text, now, html=True):
+        return True
+    leader_identity_id = int(payload.get("leader_identity_id") or 0)
+    if leader_identity_id <= 0:
+        leader_username = _normalize_replica_username(payload.get("leader_username") or "") or _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
+        leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
+    if leader_identity_id <= 0:
+        return False
+    return await send_audit_log(
+        notice_text,
+        scope="identity",
+        send_as_id=leader_identity_id,
+        priority="medium",
+        limit=700,
+    )
+
+
+async def _flush_zhuimo_progress_order_scope(scope, now=None):
+    scope = str(scope or "").strip()
+    if not scope:
+        return False
+    now = float(now or time.time())
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_zhuimo_progress_order_records(now)
+    item = records.get(scope)
+    if not isinstance(item, dict):
+        return False
+    items = item.get("items")
+    if not isinstance(items, dict) or not items:
+        records.pop(scope, None)
+        run_state["zhuimo_progress_order"] = records
+        _save_replica_run_state_dict(run_state)
+        return False
+    ordered = []
+    for round_key, payload in items.items():
+        if not isinstance(payload, dict):
+            continue
+        try:
+            round_no = int(payload.get("round_no") or round_key or 0)
+        except (TypeError, ValueError):
+            round_no = 0
+        if round_no <= 0:
+            continue
+        ordered.append((round_no, payload))
+    if not ordered:
+        records.pop(scope, None)
+        run_state["zhuimo_progress_order"] = records
+        _save_replica_run_state_dict(run_state)
+        return False
+    ordered.sort(key=lambda row: row[0])
+    sent_any = False
+    last_round = int(item.get("last_flushed_round") or 0)
+    for round_no, payload in ordered:
+        if round_no <= last_round:
+            items.pop(str(round_no), None)
+            continue
+        if await _dispatch_zhuimo_progress_notice_payload(payload, now=now):
+            sent_any = True
+        last_round = max(last_round, round_no)
+        items.pop(str(round_no), None)
+    if items:
+        item["items"] = items
+        item["last_flushed_round"] = last_round
+        item["updated_at"] = now
+        records[scope] = item
+    else:
+        records.pop(scope, None)
+    run_state["zhuimo_progress_order"] = records
+    _save_replica_run_state_dict(run_state)
+    return sent_any
+
+
+async def _run_zhuimo_progress_order_flush(scope, delay_sec=None):
+    delay_sec = _ZHUIMO_PROGRESS_ORDER_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    return await _flush_zhuimo_progress_order_scope(scope, now=time.time())
+
+
+def _schedule_zhuimo_progress_order_flush(scope):
+    scope = str(scope or "").strip()
+    if not scope:
+        return False
+    _fire_and_forget(_run_zhuimo_progress_order_flush(scope))
+    return True
+
+
+def _enqueue_zhuimo_progress_order_notice(event, round_no, payload, now=None):
+    try:
+        round_no = int(round_no or 0)
+    except (TypeError, ValueError):
+        round_no = 0
+    if round_no <= 0 or not isinstance(payload, dict):
+        return False
+    now = float(now or time.time())
+    scope = _make_zhuimo_progress_order_scope(event, now=now)
+    if not scope:
+        return False
+    run_state = _get_replica_run_state_dict()
+    records = _cleanup_zhuimo_progress_order_records(now)
+    item = records.get(scope)
+    if not isinstance(item, dict):
+        item = {"items": {}, "last_flushed_round": 0}
+    items = item.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    round_key = str(round_no)
+    if round_key in items:
+        return True
+    payload = dict(payload)
+    payload["round_no"] = round_no
+    payload["scope"] = scope
+    payload["created_at"] = now
+    payload["expires_at"] = now + _ZHUIMO_PROGRESS_ORDER_TTL_SEC
+    items[round_key] = payload
+    item["items"] = items
+    item["updated_at"] = now
+    records[scope] = item
+    run_state["zhuimo_progress_order"] = records
+    _save_replica_run_state_dict(run_state)
+    _schedule_zhuimo_progress_order_flush(scope)
+    return True
 
 
 async def _send_zhuimo_progress_ack_timeout_notice(key, now=None):
@@ -2052,19 +2259,16 @@ async def _send_zhuimo_progress_notice(event, text, now):
         f"坠魔谷进度：{escape(title)}"
         + (f"\n\n{excerpt}" if excerpt else "")
     )
-    if await _send_replica_kind_notice(_REPLICA_KIND_ZHUIMO, notice_text, now, html=True):
-        return True
     leader_username = _get_latest_replica_leader_username(_REPLICA_KIND_ZHUIMO, now=now)
-    leader_identity_id = _get_identity_id_by_replica_username(leader_username, include_disabled=False)
-    if leader_identity_id <= 0:
-        return False
-    return await send_audit_log(
-        notice_text,
-        scope="identity",
-        send_as_id=leader_identity_id,
-        priority="medium",
-        limit=700,
-    )
+    payload = {
+        "notice_text": notice_text,
+        "leader_username": leader_username,
+        "leader_identity_id": _get_identity_id_by_replica_username(leader_username, include_disabled=False),
+    }
+    round_no = _parse_zhuimo_progress_round_no(raw_text)
+    if round_no > 0:
+        return _enqueue_zhuimo_progress_order_notice(event, round_no, payload, now=now)
+    return await _dispatch_zhuimo_progress_notice_payload(payload, now=now)
 
 
 def _make_replica_settlement_notice_key(event, text, replica_kind, room_id=""):
@@ -3031,8 +3235,12 @@ def _get_lightweight_dungeon_state():
     rooms = state_item.get("last_room_by_chat")
     if not isinstance(rooms, dict):
         rooms = {}
+    history = state_item.get("room_history")
+    if not isinstance(history, dict):
+        history = {}
     state_item["pending_open"] = pending
     state_item["last_room_by_chat"] = rooms
+    state_item["room_history"] = history
     return state_item
 
 
@@ -3040,6 +3248,90 @@ def _save_lightweight_dungeon_state(state_item):
     run_state = _get_replica_run_state_dict()
     run_state["lightweight_dungeon"] = state_item if isinstance(state_item, dict) else {}
     _save_replica_run_state_dict(run_state)
+
+
+def _make_lightweight_room_history_key(room):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    room_id = str(room.get("room_id") or "").strip()
+    chat_id = int(room.get("replica_chat_id") or 0)
+    if replica_kind not in _REPLICA_KINDS or not room_id:
+        return ""
+    return f"{replica_kind}:{room_id}:{chat_id}"
+
+
+def _upsert_lightweight_room_history(state_item, room, now=None):
+    if not isinstance(state_item, dict) or not isinstance(room, dict):
+        return False
+    key = _make_lightweight_room_history_key(room)
+    if not key:
+        return False
+    now = float(now or time.time())
+    history = state_item.get("room_history")
+    if not isinstance(history, dict):
+        history = {}
+    item = dict(room)
+    item["history_updated_at"] = now
+    history[key] = item
+    if len(history) > _REPLICA_LIGHTWEIGHT_ROOM_HISTORY_MAX:
+        keep = {
+            keep_key
+            for keep_key, _item in sorted(
+                history.items(),
+                key=lambda item: float((item[1] or {}).get("history_updated_at") or (item[1] or {}).get("updated_at") or 0),
+                reverse=True,
+            )[:_REPLICA_LIGHTWEIGHT_ROOM_HISTORY_MAX]
+        }
+        for old_key in list(history):
+            if old_key not in keep:
+                history.pop(old_key, None)
+    state_item["room_history"] = history
+    return True
+
+
+def _merge_lightweight_room_update(existing, incoming):
+    existing = existing if isinstance(existing, dict) else {}
+    incoming = incoming if isinstance(incoming, dict) else {}
+    if not existing:
+        return dict(incoming)
+    merged = dict(existing)
+    merged.update(incoming)
+    existing_phase = str(existing.get("phase") or "")
+    incoming_phase = str(incoming.get("phase") or "")
+    if existing_phase in {"entered", "dissolve_requested", "dissolved"} and incoming_phase in {"", "opened"}:
+        for key in (
+            "phase",
+            "entered_at",
+            "entered_source_msg_id",
+            "enter_confirmed_at",
+            "dissolve_requested_at",
+            "dissolve_msg_id",
+            "dissolve_first_msg_id",
+            "dissolve_source",
+            "dissolve_source_msg_id",
+            "dissolve_actor_id",
+            "dissolve_source_detail",
+        ):
+            if key in existing:
+                merged[key] = existing.get(key)
+    for key in ("recommendation_sent_opened_msg_id", "recommendation_sent_at", "entered_source_msg_id", "enter_confirmed_at"):
+        if existing.get(key) and not incoming.get(key):
+            merged[key] = existing.get(key)
+    for key in ("join_requested_usernames", "join_unknown_usernames"):
+        merged[key] = _normalize_replica_username_list(list(existing.get(key) or []) + list(incoming.get(key) or []))
+    existing_team = _normalize_replica_username_list(existing.get("team_usernames") or [])
+    incoming_team = _normalize_replica_username_list(incoming.get("team_usernames") or [])
+    if existing_team and len(existing_team) > len(incoming_team):
+        merged["team_usernames"] = existing_team
+        if existing.get("team_identity_ids"):
+            merged["team_identity_ids"] = existing.get("team_identity_ids")
+        if existing.get("team_professions_by_username") and not incoming.get("team_professions_by_username"):
+            merged["team_professions_by_username"] = existing.get("team_professions_by_username")
+    try:
+        merged["updated_at"] = max(float(existing.get("updated_at") or 0), float(incoming.get("updated_at") or incoming.get("opened_at") or 0))
+    except (TypeError, ValueError):
+        pass
+    return merged
 
 
 def _cleanup_lightweight_notice_dedupe(now=None):
@@ -3135,6 +3427,7 @@ def _cleanup_lightweight_dungeon_state(now=None):
     state_item = _get_lightweight_dungeon_state()
     pending = state_item.get("pending_open") if isinstance(state_item.get("pending_open"), dict) else {}
     rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    history = state_item.get("room_history") if isinstance(state_item.get("room_history"), dict) else {}
     changed = False
     for flow_id, flow in list(pending.items()):
         normalized_flow = _normalize_lightweight_open_flow(flow_id, flow)
@@ -3162,8 +3455,36 @@ def _cleanup_lightweight_dungeon_state(now=None):
         if expires_at > 0 and now >= expires_at:
             rooms.pop(chat_id, None)
             changed = True
+    for key, room in list(history.items()):
+        normalized_room = _normalize_lightweight_room(str(room.get("replica_chat_id") or 0) if isinstance(room, dict) else 0, room)
+        if normalized_room is None:
+            history.pop(key, None)
+            changed = True
+            continue
+        if normalized_room != room:
+            history[key] = normalized_room
+            changed = True
+        expires_at = float(normalized_room.get("expires_at") or 0)
+        updated_at = float(normalized_room.get("history_updated_at") or normalized_room.get("updated_at") or normalized_room.get("opened_at") or 0)
+        if (expires_at > 0 and now >= expires_at) or (updated_at > 0 and now >= updated_at + _REPLICA_LIGHTWEIGHT_ROOM_HISTORY_TTL_SEC):
+            history.pop(key, None)
+            changed = True
+    if len(history) > _REPLICA_LIGHTWEIGHT_ROOM_HISTORY_MAX:
+        keep = {
+            key
+            for key, _room in sorted(
+                history.items(),
+                key=lambda item: float((item[1] or {}).get("history_updated_at") or (item[1] or {}).get("updated_at") or 0),
+                reverse=True,
+            )[:_REPLICA_LIGHTWEIGHT_ROOM_HISTORY_MAX]
+        }
+        for key in list(history):
+            if key not in keep:
+                history.pop(key, None)
+                changed = True
     state_item["pending_open"] = pending
     state_item["last_room_by_chat"] = rooms
+    state_item["room_history"] = history
     if changed:
         _save_lightweight_dungeon_state(state_item)
     return state_item
@@ -3276,7 +3597,8 @@ def _set_lightweight_last_room(room):
     replica_kind = room.get("replica_kind")
     if chat_id == 0 or not room_id or replica_kind not in _REPLICA_KINDS:
         return False
-    state_item = _cleanup_lightweight_dungeon_state()
+    now = float(room.get("updated_at") or room.get("opened_at") or time.time())
+    state_item = _cleanup_lightweight_dungeon_state(now)
     rooms = state_item.get("last_room_by_chat")
     existing = rooms.get(str(chat_id)) if isinstance(rooms, dict) else None
     if (
@@ -3284,11 +3606,10 @@ def _set_lightweight_last_room(room):
         and str(existing.get("room_id") or "").strip() == room_id
         and existing.get("replica_kind") == replica_kind
     ):
-        for key in ("recommendation_sent_opened_msg_id", "recommendation_sent_at"):
-            if key in existing and key not in room:
-                room[key] = existing.get(key)
+        room = _merge_lightweight_room_update(existing, room)
     rooms[str(chat_id)] = room
     state_item["last_room_by_chat"] = rooms
+    _upsert_lightweight_room_history(state_item, room, now=now)
     _save_lightweight_dungeon_state(state_item)
     return True
 
@@ -3330,6 +3651,23 @@ def _get_lightweight_last_room(replica_chat_id=0, now=None):
         return None
     candidates.sort(key=lambda item: float(item.get("updated_at") or item.get("opened_at") or 0), reverse=True)
     return candidates[0]
+
+
+def _iter_lightweight_known_rooms(state_item):
+    state_item = state_item if isinstance(state_item, dict) else {}
+    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    history = state_item.get("room_history") if isinstance(state_item.get("room_history"), dict) else {}
+    seen = set()
+    for chat_id, room in rooms.items():
+        if not isinstance(room, dict):
+            continue
+        key = _make_lightweight_room_history_key(room) or f"current:{chat_id}"
+        seen.add(key)
+        yield "current", str(chat_id), room
+    for key, room in history.items():
+        if not isinstance(room, dict) or key in seen:
+            continue
+        yield "history", str(key), room
 
 
 def _get_latest_lightweight_room(replica_kind="", now=None):
@@ -3396,9 +3734,8 @@ def _get_latest_lightweight_room_leader_username(replica_kind="", now=None):
     if not replica_kind:
         return ""
     state_item = _cleanup_lightweight_dungeon_state(now)
-    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
     candidates = []
-    for room in rooms.values():
+    for _source, _key, room in _iter_lightweight_known_rooms(state_item):
         if not isinstance(room, dict):
             continue
         if room.get("replica_kind") != replica_kind:
@@ -3420,9 +3757,8 @@ def _get_latest_lightweight_room_for_kind(replica_kind="", now=None):
     if not replica_kind:
         return {}
     state_item = _cleanup_lightweight_dungeon_state(now)
-    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
     candidates = []
-    for room in rooms.values():
+    for _source, _key, room in _iter_lightweight_known_rooms(state_item):
         if not isinstance(room, dict):
             continue
         if room.get("replica_kind") != replica_kind:
@@ -3442,9 +3778,8 @@ def _find_lightweight_room_for_kind_by_usernames(replica_kind="", usernames=None
     if not replica_kind or not evidence_usernames:
         return {}
     state_item = _cleanup_lightweight_dungeon_state(now)
-    rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
     candidates = []
-    for room in rooms.values():
+    for _source, _key, room in _iter_lightweight_known_rooms(state_item):
         if not isinstance(room, dict):
             continue
         if room.get("replica_kind") != replica_kind:
@@ -3470,6 +3805,7 @@ def _update_lightweight_room_team_snapshot(replica_kind, room_id, team_usernames
     now = float(now or time.time())
     state_item = _cleanup_lightweight_dungeon_state(now)
     rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    history = state_item.get("room_history") if isinstance(state_item.get("room_history"), dict) else {}
     candidates = []
     evidence = set(normalized_usernames)
     for chat_id, room in rooms.items():
@@ -3484,16 +3820,31 @@ def _update_lightweight_room_team_snapshot(replica_kind, room_id, team_usernames
         else:
             matched = bool(room_usernames and evidence.intersection(room_usernames))
         if matched:
-            candidates.append((float(room.get("updated_at") or room.get("opened_at") or 0), str(chat_id), room))
+            candidates.append((float(room.get("updated_at") or room.get("opened_at") or 0), "current", str(chat_id), room))
+    for history_key, room in history.items():
+        if not isinstance(room, dict) or room.get("replica_kind") != replica_kind:
+            continue
+        current_room_id = str(room.get("room_id") or "").strip()
+        if room_id and current_room_id and current_room_id != room_id:
+            continue
+        room_usernames = set(_get_lightweight_room_usernames(room))
+        if room_id and current_room_id == room_id:
+            matched = True
+        else:
+            matched = bool(room_usernames and evidence.intersection(room_usernames))
+        if matched:
+            candidates.append((float(room.get("updated_at") or room.get("opened_at") or 0), "history", str(history_key), room))
     if not candidates:
         return False
     candidates.sort(key=lambda item: item[0], reverse=True)
-    _updated_at, chat_id, room = candidates[0]
+    _updated_at, source, key, room = candidates[0]
     room["team_usernames"] = normalized_usernames
     room["team_identity_ids"] = _map_replica_usernames_to_identity_ids(normalized_usernames)
     room["team_professions_by_username"] = normalized_professions
     room["updated_at"] = now
-    rooms[chat_id] = room
+    if source == "current":
+        rooms[key] = room
+    _upsert_lightweight_room_history(state_item, room, now=now)
     state_item["last_room_by_chat"] = rooms
     _save_lightweight_dungeon_state(state_item)
     return True
@@ -3774,6 +4125,7 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None, *, require_
     evidence_usernames = set(_normalize_replica_username_list(usernames or []))
     state_item = _cleanup_lightweight_dungeon_state(now)
     rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    history = state_item.get("room_history") if isinstance(state_item.get("room_history"), dict) else {}
     candidates = []
     for chat_id, room in rooms.items():
         if not isinstance(room, dict):
@@ -3798,13 +4150,38 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None, *, require_
             if evidence_usernames and (
                 not room_usernames
                 or not evidence_usernames.intersection(room_usernames)
-            ):
+                ):
+                    continue
+        candidates.append(("current", str(chat_id), room))
+    for history_key, room in history.items():
+        if not isinstance(room, dict):
+            continue
+        if room.get("replica_kind") != replica_kind:
+            continue
+        if room.get("phase") not in {"opened", "entered", "dissolve_requested"}:
+            continue
+        enter_requested_at = float(room.get("enter_requested_at") or 0)
+        enter_msg_id = int(room.get("enter_msg_id") or 0)
+        if require_recent_enter_request:
+            if enter_msg_id <= 0 or enter_requested_at <= 0:
                 continue
-        candidates.append((str(chat_id), room))
+            if now > enter_requested_at + _REPLICA_LIGHTWEIGHT_ENTER_PENDING_SEC:
+                continue
+        room_usernames = set(_normalize_replica_username_list(
+            [room.get("leader_username") or ""]
+            + list(room.get("join_requested_usernames") or [])
+            + list(room.get("team_usernames") or [])
+        ))
+        if evidence_usernames and (
+            not room_usernames
+            or not evidence_usernames.intersection(room_usernames)
+        ):
+            continue
+        candidates.append(("history", str(history_key), room))
     if not candidates:
         return {}
-    candidates.sort(key=lambda item: float(item[1].get("updated_at") or item[1].get("opened_at") or 0), reverse=True)
-    chat_id, room = candidates[0]
+    candidates.sort(key=lambda item: float(item[2].get("updated_at") or item[2].get("opened_at") or 0), reverse=True)
+    source, key, room = candidates[0]
     room.update({
         "phase": "entered",
         "entered_at": now,
@@ -3812,7 +4189,9 @@ def _mark_latest_lightweight_room_entered(replica_kind="", now=None, *, require_
         "updated_at": now,
         "expires_at": now + _get_lightweight_entered_ttl_sec(replica_kind),
     })
-    rooms[chat_id] = room
+    if source == "current":
+        rooms[key] = room
+    _upsert_lightweight_room_history(state_item, room, now=now)
     state_item["last_room_by_chat"] = rooms
     _save_lightweight_dungeon_state(state_item)
     return dict(room)
@@ -3826,6 +4205,7 @@ def _clear_latest_lightweight_room_for_kind(replica_kind="", now=None, *, userna
     evidence_usernames = set(_normalize_replica_username_list(usernames or []))
     state_item = _cleanup_lightweight_dungeon_state(now)
     rooms = state_item.get("last_room_by_chat") if isinstance(state_item.get("last_room_by_chat"), dict) else {}
+    history = state_item.get("room_history") if isinstance(state_item.get("room_history"), dict) else {}
     candidates = []
     for chat_id, room in rooms.items():
         if not isinstance(room, dict):
@@ -3838,17 +4218,38 @@ def _clear_latest_lightweight_room_for_kind(replica_kind="", now=None, *, userna
         ))
         if evidence_usernames and room_usernames and not evidence_usernames.intersection(room_usernames):
             continue
-        candidates.append((str(chat_id), room))
+        candidates.append(("current", str(chat_id), room))
+    for history_key, room in history.items():
+        if not isinstance(room, dict):
+            continue
+        if room.get("replica_kind") != replica_kind:
+            continue
+        room_usernames = set(_normalize_replica_username_list(
+            [room.get("leader_username") or ""]
+            + list(room.get("join_requested_usernames") or [])
+            + list(room.get("team_usernames") or [])
+        ))
+        if evidence_usernames and room_usernames and not evidence_usernames.intersection(room_usernames):
+            continue
+        candidates.append(("history", str(history_key), room))
     if not candidates and evidence_usernames and not strict_usernames:
         for chat_id, room in rooms.items():
             if isinstance(room, dict) and room.get("replica_kind") == replica_kind:
-                candidates.append((str(chat_id), room))
+                candidates.append(("current", str(chat_id), room))
+        for history_key, room in history.items():
+            if isinstance(room, dict) and room.get("replica_kind") == replica_kind:
+                candidates.append(("history", str(history_key), room))
     if not candidates:
         return False
-    candidates.sort(key=lambda item: float(item[1].get("updated_at") or item[1].get("entered_at") or item[1].get("opened_at") or 0), reverse=True)
-    chat_id, _room = candidates[0]
-    rooms.pop(chat_id, None)
+    candidates.sort(key=lambda item: float(item[2].get("updated_at") or item[2].get("entered_at") or item[2].get("opened_at") or 0), reverse=True)
+    source, key, _room = candidates[0]
+    if source == "current":
+        rooms.pop(key, None)
+        history.pop(_make_lightweight_room_history_key(_room), None)
+    else:
+        history.pop(key, None)
     state_item["last_room_by_chat"] = rooms
+    state_item["room_history"] = history
     _save_lightweight_dungeon_state(state_item)
     return True
 
@@ -7630,6 +8031,9 @@ def _cleanup_replica_team_notice_records(now=None):
     records = run_state.get("team_notices")
     if not isinstance(records, dict):
         records = {}
+    status_records = run_state.get("team_notice_status")
+    if not isinstance(status_records, dict):
+        status_records = {}
     changed = False
     for key, created_at in list(records.items()):
         try:
@@ -7638,6 +8042,15 @@ def _cleanup_replica_team_notice_records(now=None):
             created_at = 0.0
         if created_at <= 0 or now >= created_at + _REPLICA_TEAM_NOTICE_TTL_SEC:
             records.pop(key, None)
+            changed = True
+    for key, item in list(status_records.items()):
+        if not isinstance(item, dict):
+            status_records.pop(key, None)
+            changed = True
+            continue
+        updated_at = float(item.get("updated_at") or 0)
+        if updated_at <= 0 or now >= updated_at + _REPLICA_TEAM_NOTICE_TTL_SEC:
+            status_records.pop(key, None)
             changed = True
     if len(records) > 600:
         keep = {
@@ -7652,10 +8065,32 @@ def _cleanup_replica_team_notice_records(now=None):
             if key not in keep:
                 records.pop(key, None)
                 changed = True
+    if len(status_records) > 300:
+        keep = {
+            key
+            for key, _item in sorted(
+                status_records.items(),
+                key=lambda item: float((item[1] or {}).get("updated_at") or 0),
+                reverse=True,
+            )[:300]
+        }
+        for key in list(status_records):
+            if key not in keep:
+                status_records.pop(key, None)
+                changed = True
     run_state["team_notices"] = records
+    run_state["team_notice_status"] = status_records
     if changed:
         _save_replica_run_state_dict(run_state)
     return records
+
+
+def _make_replica_team_notice_status_key(replica_kind, room_id):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    room_id = str(room_id or "").strip() or "-"
+    if not replica_kind:
+        return ""
+    return f"team-status:{replica_kind}:{room_id}"
 
 
 def _mark_replica_team_notice_once(replica_kind, room_id, team_usernames, capacity, is_full, now=None, team_professions_by_username=None):
@@ -7677,14 +8112,34 @@ def _mark_replica_team_notice_once(replica_kind, room_id, team_usernames, capaci
     professions_hash = hashlib.sha1(profession_key.encode("utf-8", errors="ignore")).hexdigest()[:12] if profession_key else "none"
     key = f"team:{replica_kind}:{room_id}:{status_key}:{usernames_hash}:{professions_hash}"
     records = _cleanup_replica_team_notice_records(now)
+    run_state = _get_replica_run_state_dict()
+    status_records = run_state.get("team_notice_status")
+    if not isinstance(status_records, dict):
+        status_records = {}
+    progress_key = _make_replica_team_notice_status_key(replica_kind, room_id)
+    progress_item = status_records.get(progress_key)
+    if isinstance(progress_item, dict):
+        previous_count = int(progress_item.get("count") or 0)
+        previous_full = bool(progress_item.get("full"))
+        current_count = len(normalized_usernames)
+        if previous_full and not is_full:
+            return False
+        if current_count < previous_count:
+            return False
     if key in records:
         return False
-    run_state = _get_replica_run_state_dict()
     records = run_state.get("team_notices")
     if not isinstance(records, dict):
         records = {}
     records[key] = now
+    status_records[progress_key] = {
+        "count": max(int((status_records.get(progress_key) or {}).get("count") or 0), len(normalized_usernames)),
+        "capacity": capacity,
+        "full": bool(is_full or (isinstance(status_records.get(progress_key), dict) and (status_records.get(progress_key) or {}).get("full"))),
+        "updated_at": now,
+    }
     run_state["team_notices"] = records
+    run_state["team_notice_status"] = status_records
     _save_replica_run_state_dict(run_state)
     return True
 
@@ -7705,6 +8160,44 @@ def _resolve_replica_team_notice_room_id(replica_kind, room_id, team_usernames, 
     leader_username = normalized_usernames[0] if normalized_usernames else ""
     candidate = _get_latest_replica_room_id(replica_kind, now=now, leader_username=leader_username)
     return str(candidate or room_id or "").strip()
+
+
+def _is_replica_team_snapshot_obsolete(replica_kind, room_id, team_usernames, capacity, now=None):
+    replica_kind = replica_kind if replica_kind in _REPLICA_KINDS else ""
+    normalized_usernames = _normalize_replica_username_list(team_usernames or [])
+    if not replica_kind or not normalized_usernames:
+        return False
+    now = float(now or time.time())
+    room_id = str(room_id or "").strip()
+    current_count = len(normalized_usernames)
+    capacity = max(1, int(capacity or 5))
+    status_key = _make_replica_team_notice_status_key(replica_kind, room_id)
+    status_records = (_get_replica_run_state_dict().get("team_notice_status") or {})
+    status_item = status_records.get(status_key) if status_key else None
+    if isinstance(status_item, dict):
+        previous_count = int(status_item.get("count") or 0)
+        if bool(status_item.get("full")) and current_count < capacity:
+            return True
+        if previous_count > current_count:
+            return True
+    state_item = _cleanup_lightweight_dungeon_state(now)
+    evidence = set(normalized_usernames)
+    for _source, _key, room in _iter_lightweight_known_rooms(state_item):
+        if not isinstance(room, dict) or room.get("replica_kind") != replica_kind:
+            continue
+        current_room_id = str(room.get("room_id") or "").strip()
+        if room_id and current_room_id and current_room_id != room_id:
+            continue
+        existing_usernames = _normalize_replica_username_list(room.get("team_usernames") or [])
+        if not existing_usernames:
+            continue
+        if not room_id and not evidence.intersection(existing_usernames):
+            continue
+        if len(existing_usernames) >= capacity and current_count < capacity:
+            return True
+        if len(existing_usernames) > current_count:
+            return True
+    return False
 
 
 def _format_replica_team_notice_member(replica_kind, username, identity_id=0, observed_professions=None):
@@ -9549,6 +10042,10 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
         return False
     if not team_usernames or replica_kind not in _REPLICA_KINDS:
         return False
+    capacity = _parse_replica_team_capacity(raw_text, default=5)
+    room_id = _resolve_replica_team_notice_room_id(replica_kind, room_id, team_usernames, now=now)
+    if _is_replica_team_snapshot_obsolete(replica_kind, room_id, team_usernames, capacity, now=now):
+        return False
     identity_ids = _map_replica_usernames_to_identity_ids(team_usernames)
     if not identity_ids:
         return False
@@ -9577,7 +10074,6 @@ def _mark_replica_team_joined_from_text(text, now, msg_id=0):
             team_professions_by_username=team_professions_by_username,
             now=now,
         )
-        capacity = _parse_replica_team_capacity(raw_text, default=5)
         _schedule_replica_team_notice(
             replica_kind,
             room_id,
@@ -11265,6 +11761,65 @@ async def _send_lightweight_replica_notice(flow_or_room, text, *, html=False, bu
     )
 
 
+def _lightweight_enter_progress_observed(room, *, requested_at=0, msg_id=0):
+    room = room if isinstance(room, dict) else {}
+    if not room:
+        return True
+    phase = str(room.get("phase") or "")
+    if phase in {"dissolved", "dissolve_requested"}:
+        return True
+    requested_at = float(requested_at or 0)
+    entered_source_msg_id = int(room.get("entered_source_msg_id") or 0)
+    if entered_source_msg_id > 0:
+        updated_at = float(room.get("updated_at") or room.get("entered_at") or 0)
+        if requested_at <= 0 or updated_at >= requested_at - 0.01:
+            return True
+    enter_confirmed_at = float(room.get("enter_confirmed_at") or 0)
+    if enter_confirmed_at > 0 and (requested_at <= 0 or enter_confirmed_at >= requested_at - 0.01):
+        return True
+    msg_id = int(msg_id or 0)
+    if phase == "entered" and msg_id > 0 and int(room.get("enter_msg_id") or 0) not in {0, msg_id}:
+        return True
+    return False
+
+
+async def _send_lightweight_enter_ack_notice(payload, now=None):
+    payload = payload if isinstance(payload, dict) else {}
+    replica_kind = payload.get("replica_kind")
+    room_id = str(payload.get("room_id") or "").strip()
+    chat_id = int(payload.get("replica_chat_id") or 0)
+    msg_id = int(payload.get("enter_msg_id") or 0)
+    requested_at = float(payload.get("enter_requested_at") or 0)
+    if replica_kind not in _REPLICA_KINDS or not room_id or chat_id == 0 or msg_id <= 0:
+        return False
+    room = _get_current_lightweight_retry_room(replica_kind, room_id, chat_id=chat_id, now=now)
+    if _lightweight_enter_progress_observed(room, requested_at=requested_at, msg_id=msg_id):
+        return False
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        return False
+    return await _send_lightweight_replica_notice(
+        room,
+        text,
+        html=True,
+        buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+    )
+
+
+async def _run_lightweight_enter_ack_notice(payload, delay_sec=None):
+    delay_sec = _REPLICA_ENTER_ACK_DELAY_SEC if delay_sec is None else max(0, float(delay_sec or 0))
+    await asyncio.sleep(delay_sec)
+    return await _send_lightweight_enter_ack_notice(payload, now=time.time())
+
+
+def _schedule_lightweight_enter_ack_notice(payload):
+    payload = payload if isinstance(payload, dict) else {}
+    if not payload:
+        return False
+    _fire_and_forget(_run_lightweight_enter_ack_notice(dict(payload)))
+    return True
+
+
 def _make_lightweight_fast_retry_key(action, identity_id, replica_kind, room_id, first_msg_id):
     return f"{str(action or '').strip()}:{replica_kind}:{str(room_id or '').strip()}:{int(identity_id or 0)}:{int(first_msg_id or 0)}"
 
@@ -12549,15 +13104,14 @@ async def _handle_lightweight_enter_command(event):
         int(getattr(event, "id", 0) or 0),
         msg_id,
     )
-    await _send_replica_group_message(
-        event.client,
-        event.chat_id,
-        text,
-        parse_mode="html",
-        listener_account_id=listener_account_id,
-        log_text=_strip_html_code_tags(text),
-        buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
-    )
+    _schedule_lightweight_enter_ack_notice({
+        "replica_kind": replica_kind,
+        "replica_chat_id": chat_id,
+        "room_id": room_id,
+        "enter_msg_id": msg_id,
+        "enter_requested_at": now,
+        "text": text,
+    })
     return True
 
 
