@@ -61,6 +61,24 @@ LATEST_SMALL_WORLD_PANEL = (
 )
 
 
+PRAYER_DATA_ERROR_PANEL = (
+    "【获赦之人_xi的小世界】\n\n"
+    "⛩️ 神庙: Lv.4【千户灵祠】\n"
+    "👥 人口: 100000 人\n"
+    "🏙️ 承载上限: 100000 人\n"
+    "🙏 信仰: 99 / 100\n"
+    "⚖️ 稳定: 100 / 100\n"
+    "☁️ 待收香火: 14.03\n"
+    "🏺 香火库存: 4\n"
+    "🔥 预计产出: 116.40 香火/小时\n"
+    "🛡️ 护界禁制: 未开启\n"
+    "🧠 神识强度: 17878\n\n"
+    "祈愿数据异常。\n\n"
+    "下一阶【诸城香殿】消耗：香火x45000、灵石x80000、空间之核x1\n\n"
+    "指令: .收割香火 | .神识淬炼 <数量> | .神迹 赈灾/布道 | .升级神庙 | .护界禁制 | .神庙"
+)
+
+
 class _StateIsolationMixin:
     def setUp(self):
         super().setUp()
@@ -103,6 +121,16 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(8 * 60 + 59, panel["wait_sec"])
         self.assertEqual("乡土神庙", panel["next_temple_name"])
         self.assertEqual("香火x3000、灵石x10000", panel["next_temple_cost"])
+
+    async def test_parse_prayer_data_error_panel_marks_cd_only(self):
+        panel = small_world._parse_small_world_panel(PRAYER_DATA_ERROR_PANEL)
+
+        self.assertIsNotNone(panel)
+        self.assertEqual("获赦之人_xi", panel["owner"])
+        self.assertFalse(panel["has_prayer"])
+        self.assertFalse(panel["has_wait"])
+        self.assertTrue(panel["prayer_data_error"])
+        self.assertEqual("诸城香殿", panel["next_temple_name"])
 
     async def test_latest_temple_panel_updates_snapshot_and_wait(self):
         send_as_id = 8659059188
@@ -585,6 +613,46 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_query_msg_id"])
             self.assertEqual("灵石x200", state_module.state["small_world_manifest_cost_text"])
+
+    async def test_prayer_data_error_panel_waits_cd_without_refresh_or_tools(self):
+        send_as_id = 8659059206
+        now = 22200.0
+        state_module.ensure_identity_registered(send_as_id)
+        panel = small_world._parse_small_world_panel(PRAYER_DATA_ERROR_PANEL)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = False
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = 9904
+            state_module.state["small_world_refresh_count"] = 4
+            with (
+                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world, "_send_query", new=AsyncMock()) as query_mock,
+                patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+                patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+                patch.object(small_world, "_send_manifest", new=AsyncMock()) as manifest_mock,
+                patch.object(small_world, "save_state"),
+            ):
+                handled = await small_world._handle_panel_decision(now, panel)
+
+            self.assertTrue(handled)
+            query_mock.assert_not_awaited()
+            harvest_mock.assert_not_awaited()
+            refine_mock.assert_not_awaited()
+            manifest_mock.assert_not_awaited()
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(0, state_module.state["small_world_refresh_count"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_MANIFEST_CD_SEC + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            self.assertTrue(state_module.state["small_world_panel_snapshot"]["prayer_data_error"])
 
     async def test_no_prayer_small_incense_does_not_harvest_again(self):
         send_as_id = 8659059191
@@ -2012,6 +2080,50 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["modules"]["small_world"])
+
+    async def test_passive_small_world_prayer_data_error_waits_cd(self):
+        send_as_id = 8659059401
+        now = 7075.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.update_send_as_profile(send_as_id, username="walterwa2000", label="wa2000", daohao="清源子")
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955053)
+        text = PRAYER_DATA_ERROR_PANEL.replace("获赦之人_xi", "清源子")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_harvest_enabled"] = True
+            state_module.state["small_world_refine_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_refresh_count"] = 3
+            state_module.state["next_small_world_time"] = now - 1
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", return_value=60),
+            patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+            patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context=None,
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        harvest_mock.assert_not_awaited()
+        refine_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_refresh_count"])
+            self.assertEqual(
+                now + small_world.SMALL_WORLD_MANIFEST_CD_SEC + small_world.CD_BUFFER_SEC + 60,
+                state_module.state["next_small_world_time"],
+            )
+            self.assertTrue(state_module.state["small_world_panel_snapshot"]["prayer_data_error"])
 
     async def test_passive_small_world_panel_does_not_start_tool_chain(self):
         send_as_id = 8659059400

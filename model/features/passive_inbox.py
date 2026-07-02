@@ -946,7 +946,13 @@ async def _apply_small_world_passive(text, now, family="", reply_context=None):
         state["small_world_last_error"] = ""
         return True
 
-    if panel.get("has_wait"):
+    if panel.get("prayer_data_error"):
+        small_world_mod._schedule_panel_wait(
+            now,
+            small_world_mod.SMALL_WORLD_MANIFEST_CD_SEC + small_world_mod.CD_BUFFER_SEC,
+        )
+        state["small_world_phase"] = "idle"
+    elif panel.get("has_wait"):
         small_world_mod._schedule_panel_wait(now, int(panel.get("wait_sec", 0) or 0) + small_world_mod.CD_BUFFER_SEC)
         state["small_world_phase"] = "idle"
     elif panel.get("has_prayer"):

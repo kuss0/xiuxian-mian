@@ -97,6 +97,7 @@ RE_BARRIER_STATUS = re.compile(r"护界禁制\s*[:：]\s*([^\n]+)")
 RE_SPIRITUAL_STRENGTH = re.compile(r"神识强度\s*[:：]\s*(\d+)")
 RE_PRAYER = re.compile(r"凡人祈愿\s*[：:]\s*([^\n]+)")
 RE_PRAYER_WAIT = re.compile(r"下一次(?:凡人)?祈愿感应需等待\s*[：:]?\s*([^\n。)）]+)")
+RE_PRAYER_DATA_ERROR = re.compile(r"祈愿数据异常")
 RE_NEXT_TEMPLE_COST = re.compile(r"下一阶【([^】]+)】消耗\s*[:：]\s*([^\n]+)")
 RE_MANIFEST_COST = re.compile(r"显灵消耗\s*[:：]\s*([^\n]+)")
 RE_MANIFEST_DELTA = re.compile(r"信仰\s*([+-]\d+).*?稳定\s*([+-]\d+).*?人口\s*([+-]\d+)", re.S)
@@ -789,6 +790,7 @@ def _parse_small_world_panel(text):
     wait_sec, wait_text = _parse_wait_from_text(raw_text)
 
     prayer_matched = RE_PRAYER.search(raw_text)
+    prayer_data_error = bool(RE_PRAYER_DATA_ERROR.search(raw_text))
     cost_matched = RE_MANIFEST_COST.search(raw_text)
     next_temple_matched = RE_NEXT_TEMPLE_COST.search(raw_text)
     barrier_matched = RE_BARRIER_STATUS.search(raw_text)
@@ -809,6 +811,7 @@ def _parse_small_world_panel(text):
         "barrier_status": barrier_matched.group(1).strip() if barrier_matched else "",
         "spiritual_strength": _int_match(RE_SPIRITUAL_STRENGTH, raw_text),
         "has_prayer": bool(prayer_matched),
+        "prayer_data_error": prayer_data_error,
         "prayer_name": prayer_matched.group(1).strip() if prayer_matched else "",
         "manifest_cost": cost_matched.group(1).strip() if cost_matched else "",
         "wait_sec": wait_sec,
@@ -1275,6 +1278,13 @@ def _schedule_refresh(now):
 
 async def _finish_no_prayer_panel(now, panel, *, allow_refresh=True):
     _clear_chain_pending()
+    if panel.get("prayer_data_error"):
+        _schedule_panel_wait(now, SMALL_WORLD_MANIFEST_CD_SEC + CD_BUFFER_SEC)
+        _set_phase("idle")
+        state["small_world_last_error"] = ""
+        save_state()
+        return True
+
     if panel.get("has_wait"):
         _schedule_panel_wait(now, int(panel.get("wait_sec", 0) or 0) + CD_BUFFER_SEC)
         state["small_world_last_error"] = ""
