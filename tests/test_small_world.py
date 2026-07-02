@@ -2028,6 +2028,67 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         snapshot = passive_inbox.get_passive_inbox_snapshot()
         self.assertEqual(1, snapshot["skip_reasons"]["no_change"])
 
+    async def test_passive_small_world_active_query_panel_clears_pending_without_family(self):
+        send_as_id = 8659059408
+        now = 7065.0
+        query_msg_id = 8809
+        state_module.ensure_identity_registered(send_as_id)
+        event = SimpleNamespace(chat_id=-1001680975844, id=8955058)
+        text = (
+            "【清源子的小世界】\n\n"
+            "⛩️ 神庙: Lv.2【乡土神庙】\n"
+            "👥 人口: 120696 人\n"
+            "🏙️ 承载上限: 140000 人\n"
+            "🙏 信仰: 89 / 100\n"
+            "⚖️ 稳定: 100 / 100\n"
+            "☁️ 待收香火: 1204.65\n"
+            "🏺 香火库存: 2193\n"
+            "🔥 预计产出: 185.30 香火/小时\n"
+            "🛡️ 护界禁制: 未开启\n"
+            "🧠 神识强度: 0\n\n"
+            "暂无祈愿，凡间风调雨顺。"
+        )
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_barrier_enabled"] = False
+            state_module.state["small_world_phase"] = "query_pending"
+            state_module.state["small_world_query_msg_id"] = query_msg_id
+            state_module.state["small_world_refresh_count"] = 1
+            state_module.state["next_small_world_time"] = now + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC
+
+        with (
+            patch.object(passive_inbox, "_save_passive_stats"),
+            patch.object(passive_inbox, "save_state"),
+            patch.object(small_world, "save_state"),
+            patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
+            patch.object(small_world, "_send_harvest", new=AsyncMock()) as harvest_mock,
+            patch.object(small_world, "_send_refine", new=AsyncMock()) as refine_mock,
+        ):
+            handled = await passive_inbox.handle_passive_module_card(
+                text,
+                now=now,
+                reply_context={
+                    "send_as_id": send_as_id,
+                    "reply_to_msg_id": query_msg_id,
+                    "root_msg_id": query_msg_id,
+                },
+                event=event,
+                event_type="message",
+            )
+
+        self.assertTrue(handled)
+        harvest_mock.assert_not_awaited()
+        refine_mock.assert_not_awaited()
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(2, state_module.state["small_world_refresh_count"])
+            self.assertEqual(now + small_world.SMALL_WORLD_REFRESH_MIN_SEC, state_module.state["next_small_world_time"])
+            self.assertEqual(2193, state_module.state["small_world_incense_stock"])
+
     async def test_passive_small_world_low_stability_updates_wait_without_relief(self):
         send_as_id = 8659059399
         now = 7070.0

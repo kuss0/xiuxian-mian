@@ -903,6 +903,17 @@ def _is_script_small_world_query_reply(family, reply_context):
     return reply_to_msg_id in (state.get("my_msg_ids") or {})
 
 
+def _is_active_small_world_query_panel(reply_context):
+    if str(state.get("small_world_phase") or "") != "query_pending":
+        return False
+    query_msg_id = int(state.get("small_world_query_msg_id", 0) or 0)
+    if query_msg_id <= 0:
+        return False
+    reply_to_msg_id = _context_msg_id(reply_context, "reply_to_msg_id")
+    root_msg_id = _context_msg_id(reply_context, "root_msg_id")
+    return query_msg_id in {reply_to_msg_id, root_msg_id}
+
+
 def _has_active_small_world_phase():
     phase = str(state.get("small_world_phase") or "idle")
     return phase.endswith("_pending") or phase in {"harvest_sent", "refine_sent"}
@@ -939,6 +950,9 @@ async def _apply_small_world_passive(text, now, family="", reply_context=None):
         return False
 
     active_phase = _has_active_small_world_phase()
+    if _is_active_small_world_query_panel(reply_context):
+        return await small_world_mod._handle_panel_decision(now, panel)
+
     small_world_mod._apply_small_world_panel_snapshot(now, panel)
     if state.get("small_world_phase") == "calibration_wait":
         state["small_world_phase"] = "idle"
