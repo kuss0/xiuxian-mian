@@ -3997,6 +3997,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(config["craft_farm_off_window_enabled"])
         self.assertEqual(1800, config["craft_farm_off_window_interval_min_sec"])
         self.assertEqual(3600, config["craft_farm_off_window_interval_max_sec"])
+        self.assertFalse(config["craft_farm_allow_unpredicted_override_enabled"])
         self.assertFalse(config["duel_route_enabled"])
         self.assertFalse(config["consume_conflicting_prediction_enabled"])
         self.assertFalse(config["route_special_star_enabled"])
@@ -4344,7 +4345,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".天机盘", plan["command"])
         self.assertIn("不重复炼制", plan["reason"])
 
-    def test_craft_farm_does_not_yield_to_distant_wild_training_inside_prediction_lock(self):
+    def test_craft_farm_waits_on_active_explore_prediction_lock(self):
         now = 1_780_000_000.0
         due_at = now + 2 * 3600
         with state_module.use_identity(self.identity_id):
@@ -4368,11 +4369,11 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        self.assertEqual("send_craft_unpredicted", plan["stage"])
-        self.assertEqual(".炼制 玄铁剑", plan["command"])
-        self.assertIn("直接裸炼制", plan["reason"])
+        self.assertEqual("waiting_prediction_conflict", plan["stage"])
+        self.assertEqual("", plan["command"])
+        self.assertIn("探索", plan["reason"])
 
-    def test_craft_farm_does_not_yield_to_distant_wild_training_with_explore_change_ready(self):
+    def test_craft_farm_waits_on_active_explore_prediction_even_with_change_ready(self):
         now = 1_780_000_000.0
         due_at = now + 2 * 3600
         with state_module.use_identity(self.identity_id):
@@ -4398,9 +4399,9 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        self.assertEqual("send_craft_unpredicted", plan["stage"])
-        self.assertEqual(".炼制 玄铁剑", plan["command"])
-        self.assertIn("直接裸炼制", plan["reason"])
+        self.assertEqual("waiting_prediction_conflict", plan["stage"])
+        self.assertEqual("", plan["command"])
+        self.assertIn("探索", plan["reason"])
 
     def test_craft_farm_does_not_yield_to_consumed_explore_prediction_lock(self):
         now = 1_780_000_000.0
@@ -4482,7 +4483,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("timeline_required", plan["stage"])
         self.assertTrue(plan["timeline_required"])
 
-    def test_craft_farm_risks_unpredicted_craft_when_tianji_short(self):
+    def test_craft_farm_waits_on_conflicting_prediction_when_tianji_short_by_default(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             self._prepare_identity(now, tianji_value=2)
@@ -4513,12 +4514,12 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
 
-        self.assertEqual("send_craft_unpredicted", plan["stage"])
-        self.assertEqual(".炼制 玄铁剑", plan["command"])
-        self.assertTrue(plan["allow_prediction_conflict"])
-        self.assertIn("低于改命阈值", plan["reason"])
+        self.assertEqual("waiting_prediction_conflict", plan["stage"])
+        self.assertEqual("", plan["command"])
+        self.assertNotIn("allow_prediction_conflict", plan)
+        self.assertIn("探索", plan["reason"])
 
-    def test_craft_farm_risks_unpredicted_craft_when_conflicting_prediction_even_tianji_enough(self):
+    def test_craft_farm_risks_unpredicted_craft_only_when_explicitly_enabled(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             self._prepare_identity(now, tianji_value=12)
@@ -4541,6 +4542,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                     craft_farm_item="玄铁剑",
                     craft_farm_daily_limit=42,
                     min_tianji_for_change=3,
+                    craft_farm_allow_unpredicted_override_enabled=True,
                 ),
             )
 
@@ -5234,9 +5236,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + 80, craft["next_time"])
         self.assertIn("深度闭关临近归位结算", craft["last_error"])
 
-    async def test_craft_farm_sends_unpredicted_craft_when_tianji_short(self):
+    async def test_craft_farm_does_not_send_unpredicted_craft_when_tianji_short_by_default(self):
         now = 1_780_000_000.0
-        sent_msg = SimpleNamespace(id=9402, sent_at=now)
         with state_module.use_identity(self.identity_id):
             self._prepare_identity(now, tianji_value=2)
             state_module.state["tianxing_observation"]["current_prediction"] = "探索"
@@ -5248,7 +5249,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 "last_error": "已有探索推命尚未应验，炼制攒点等待。",
             }
             with (
-                patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(tianxing, "save_state"),
             ):
                 result = await tianxing.run_tianxing_craft_farm_scheduler(
@@ -5266,11 +5267,10 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 )
             craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
 
-        self.assertEqual("sent_waiting_reply", result["stage"])
-        send_mock.assert_awaited_once()
-        self.assertEqual(".炼制 玄铁剑", send_mock.await_args.args[0])
-        self.assertEqual("sent_waiting_reply", craft["phase"])
-        self.assertEqual("玄铁剑", craft["last_item"])
+        self.assertEqual("waiting_prediction_conflict", result["stage"])
+        send_mock.assert_not_awaited()
+        self.assertEqual("prediction_conflict", craft["phase"])
+        self.assertEqual(now + 3600, craft["next_time"])
 
     async def test_craft_farm_consumes_released_route_even_when_old_timeline_wait_is_future(self):
         now = 1_780_000_000.0
@@ -5411,10 +5411,10 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 )
             craft = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
 
-        self.assertEqual("route_lease_waiting", result["stage"])
+        self.assertEqual("waiting_prediction_conflict", result["stage"])
         send_mock.assert_not_awaited()
-        self.assertEqual("waiting_consume_window", craft["phase"])
-        self.assertIn("天星已放行 探索", craft["last_error"])
+        self.assertEqual("prediction_conflict", craft["phase"])
+        self.assertIn("探索", craft["last_error"])
 
     async def test_craft_farm_does_not_reuse_release_after_prediction_is_consumed(self):
         now = 1_780_000_000.0
@@ -5700,9 +5700,8 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("prediction_conflict", craft["phase"])
         self.assertEqual(now + 3600, craft["next_time"])
 
-    async def test_craft_farm_short_retries_then_bare_crafts_after_explore_prediction_conflict(self):
+    async def test_craft_farm_preserves_explore_prediction_conflict_without_bare_retry(self):
         now = 1_780_000_000.0
-        sent_msg = SimpleNamespace(id=9500, sent_at=now + 61)
 
         async def mark_explore_conflict(*_args, **_kwargs):
             state_module.state["tianxing_observation"]["current_prediction"] = "探索"
@@ -5746,13 +5745,14 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
 
             timeline_mock.assert_awaited_once()
             send_mock.assert_not_awaited()
-            self.assertEqual("prediction_conflict_override_retry", result["stage"])
-            self.assertEqual("ready", craft["phase"])
-            self.assertEqual(now + 60, craft["next_time"])
+            self.assertEqual("timeline_required", result["stage"])
+            self.assertEqual("prediction_conflict", result["timeline_phase"])
+            self.assertEqual("prediction_conflict", craft["phase"])
+            self.assertEqual(now + 3600, craft["next_time"])
 
             with (
                 patch.object(tianxing, "run_tianxing_timeline_scheduler", new=AsyncMock()) as timeline_mock_2,
-                patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock_2,
+                patch.object(tianxing, "send_game_command", new=AsyncMock()) as send_mock_2,
                 patch.object(tianxing, "save_state"),
             ):
                 result_2 = await tianxing.run_tianxing_craft_farm_scheduler(
@@ -5770,9 +5770,9 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
             craft_2 = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])["craft_farm"]
 
         timeline_mock_2.assert_not_awaited()
-        self.assertEqual("sent_waiting_reply", result_2["stage"])
-        self.assertEqual(".炼制 玄铁剑", send_mock_2.await_args.args[0])
-        self.assertEqual("sent_waiting_reply", craft_2["phase"])
+        send_mock_2.assert_not_awaited()
+        self.assertEqual("waiting_prediction_conflict", result_2["stage"])
+        self.assertEqual("prediction_conflict", craft_2["phase"])
 
     def test_craft_farm_override_conflict_wakes_fast_scan(self):
         now = local_ts(3, 30, year=2026, month=7, day=3)
@@ -5786,6 +5786,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
                 craft_farm_dry_run_enabled=False,
                 craft_farm_item="玄铁剑",
                 craft_farm_daily_limit=42,
+                craft_farm_allow_unpredicted_override_enabled=True,
             )
             state_module.state["tianxing_observation"]["current_prediction"] = "探索"
             state_module.state["tianxing_observation"]["current_prediction_until"] = now + 3600
@@ -6826,6 +6827,7 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
             "craft_farm_dry_run_enabled": False,
             "craft_farm_daily_limit": 42,
             "craft_farm_item": "玄铁剑",
+            "craft_farm_allow_unpredicted_override_enabled": True,
             "farm_route": "炼制",
             "farm_window_enabled": True,
             "farm_window_start": time.strftime("%H:%M", time.localtime(now)),

@@ -467,7 +467,7 @@
         var txMinTianjiForChange = txConfig.min_tianji_for_change;
         if(txMinTianjiForChange === undefined || txMinTianjiForChange === null || txMinTianjiForChange === ''){ txMinTianjiForChange = 3; }
         var txEstimatedTianji = txCraftFarm.estimated_tianji || tianxing.tianji_value || 0;
-        var txShortagePolicy = Number(txEstimatedTianji || 0) < Number(txMinTianjiForChange || 0) ? '缺点允许裸炼制' : '天机够用先等改命';
+        var txShortagePolicy = Number(txEstimatedTianji || 0) < Number(txMinTianjiForChange || 0) ? '缺点先等路线' : '天机够用先等改命';
         moduleNote = '<div class="module-note">命星：'+esc(tianxing.fixed_star || '未定')+
           '｜天机 '+esc(tianxing.tianji_value || 0)+
           '｜改命阈值 '+esc(txMinTianjiForChange)+
@@ -519,11 +519,12 @@
           )+
           settingSection(
             '炼制攒天机',
-            '默认等炼制路线确认；天机低于改命阈值时可裸炼制补点。',
+            '默认等炼制路线确认；已有异路推命时不裸炼，避免逆命劫。',
             settingCheckbox('craft_farm_enabled', '启用炼制', txConfig.craft_farm_enabled)+
             settingCheckbox('craft_farm_dry_run_enabled', '炼制试运行', txConfig.craft_farm_dry_run_enabled)+
             settingCheckbox('craft_farm_off_window_enabled', '窗口外少练', txConfig.craft_farm_off_window_enabled)+
             settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费', txConfig.consume_conflicting_prediction_enabled)+
+            settingCheckbox('craft_farm_allow_unpredicted_override_enabled', '允许裸炼制', txConfig.craft_farm_allow_unpredicted_override_enabled)+
             '<label class="module-setting-field"><span>炼制物品</span><input class="text-input module-name-input" value="'+esc(txConfig.craft_farm_item || '玄铁剑')+'" data-tianxing-config="craft_farm_item"></label>'+
             '<label class="module-setting-field"><span>每日上限</span><input class="text-input module-hour-input" type="number" min="0" max="999" step="1" value="'+esc(txCraftLimit)+'" data-tianxing-config="craft_farm_daily_limit"></label>'+
             '<label class="module-setting-field"><span>间隔最小秒</span><input class="text-input module-hour-input" type="number" min="5" max="3600" step="5" value="'+esc(txCraftIntervalMin)+'" data-tianxing-config="craft_farm_interval_min_sec"></label>'+

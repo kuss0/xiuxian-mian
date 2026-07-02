@@ -150,6 +150,7 @@ def test_module_card_override_groups_settings_and_moves_dense_toggles_into_modal
     assert "settingCheckbox('timeline_enabled', '启用时间线'" in script
     assert "settingCheckbox('timeline_dry_run_enabled', '时间线试运行'" in script
     assert "settingCheckbox('consume_conflicting_prediction_enabled', '冲突先消费'" in script
+    assert "settingCheckbox('craft_farm_allow_unpredicted_override_enabled', '允许裸炼制'" in script
     assert "settingCheckbox('retreat_farm_auto_exchange_heqi_dan', '缺丹自动兑换'" in script
     assert "data-tianxing-config=\"retreat_farm_heqi_exchange_count\"" in script
     assert "settingCheckbox('retreat_farm_auto_donate_lingshi', '贡献不足捐灵石'" in script

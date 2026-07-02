@@ -263,6 +263,7 @@ def _default_tianxing_auto_config():
         "craft_farm_off_window_interval_min_sec": TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MIN_SEC,
         "craft_farm_off_window_interval_max_sec": TIANXING_CRAFT_FARM_OFF_WINDOW_INTERVAL_MAX_SEC,
         "craft_farm_reply_timeout_sec": TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC,
+        "craft_farm_allow_unpredicted_override_enabled": False,
         "duel_route_enabled": False,
         "allow_prediction_override_enabled": False,
         "consume_conflicting_prediction_enabled": False,
@@ -502,6 +503,7 @@ def normalize_tianxing_auto_config(value=None):
         "craft_farm_enabled",
         "craft_farm_dry_run_enabled",
         "craft_farm_off_window_enabled",
+        "craft_farm_allow_unpredicted_override_enabled",
         "duel_route_enabled",
         "allow_prediction_override_enabled",
         "consume_conflicting_prediction_enabled",
@@ -5724,6 +5726,8 @@ def _craft_farm_explore_consume_block(now, config):
 def _craft_farm_unpredicted_override_reason(now, config, observed, estimated_tianji):
     observed = normalize_tianxing_observation(observed)
     config = normalize_tianxing_auto_config(config)
+    if not config.get("craft_farm_allow_unpredicted_override_enabled"):
+        return ""
     min_tianji = int(config.get("min_tianji_for_change", 3) or 3)
     current_prediction = _normalize_route_choice(observed.get("current_prediction"), "")
     prediction_until = float(observed.get("current_prediction_until", 0) or 0)
@@ -5955,6 +5959,16 @@ def build_tianxing_craft_farm_plan(*, now=None, config=None):
                 dry_run=dry_run,
                 allow_prediction_conflict=True,
                 item=item,
+            )
+        if preflight.get("stage") in {"prediction_conflict", "prediction_conflict_unknown"}:
+            return _craft_farm_result(
+                "waiting_prediction_conflict",
+                active=True,
+                takeover=False,
+                handoff=True,
+                reason=preflight.get("reason") or "已有异路推命尚未应验，炼制攒点等待。",
+                next_time=preflight.get("blocked_until") or now + interval_sec(),
+                dry_run=dry_run,
             )
         if preflight.get("timeline_required"):
             return _craft_farm_result(
