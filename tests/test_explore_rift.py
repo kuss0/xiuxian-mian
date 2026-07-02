@@ -1084,6 +1084,41 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("auto模式", state_module.state["explore_rift_last_error"])
             self.assertGreater(state_module.state["next_explore_rift_time"], now)
 
+    async def test_scheduler_prepares_tianxing_for_high_xiuwei_before_blocking(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+            state_module.state["explore_rift_enabled"] = True
+            state_module.state["next_explore_rift_time"] = now - 1
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "fixed_star": "太阴",
+                "current_prediction": "",
+                "current_prediction_until": 0,
+                "current_change": "",
+                "current_change_until": 0,
+                "tianji_value": 9,
+            }
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "auto_predict_enabled": True,
+                "auto_change_fate_enabled": True,
+                "min_tianji_for_change": 3,
+            }
+            with (
+                patch.object(explore_rift, "run_tianxing_timeline_scheduler", new=AsyncMock(return_value={"phase": "sent_waiting_ack", "changed": True})) as timeline_mock,
+                patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(explore_rift, "save_state"),
+            ):
+                await explore_rift.run_explore_rift_scheduler(now)
+
+            timeline_mock.assert_awaited_once()
+            send_mock.assert_not_awaited()
+            self.assertNotIn("auto模式", state_module.state["explore_rift_last_error"])
+            self.assertGreater(state_module.state["next_explore_rift_time"], now)
+
     async def test_scheduler_allows_high_xiuwei_when_tianxing_explore_change_ready(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)
         now = 1_700_000_000.0

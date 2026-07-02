@@ -1055,11 +1055,6 @@ async def run_explore_rift_scheduler(now):
             _set_explore_rift_error("修为未知，等待身份资料确认后再探寻", next_delay=RETRY_MAX_SEC, now=now)
         return
 
-    if xiuwei_current >= EXPLORE_RIFT_XIUWEI_LIMIT and not _tianxing_explore_change_ready(now):
-        if not _explore_rift_next_time_blocks(now):
-            _set_explore_rift_error("auto模式修为>=500000，暂不探寻", next_delay=RETRY_MAX_SEC, now=now)
-        return
-
     next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
     if next_explore_rift_time > now:
         windows = build_tianxing_consume_window(
@@ -1078,6 +1073,16 @@ async def run_explore_rift_scheduler(now):
 
     if _explore_rift_next_time_blocks(now):
         return
+
+    if xiuwei_current >= EXPLORE_RIFT_XIUWEI_LIMIT and not _tianxing_explore_change_ready(now):
+        if state.get("tianxing_enabled"):
+            if not await _prepare_explore_rift_tianxing_route(now, due_at=now):
+                return
+            if not _tianxing_explore_change_ready(now):
+                return
+        else:
+            _set_explore_rift_error("auto模式修为>=500000，暂不探寻", next_delay=RETRY_MAX_SEC, now=now)
+            return
 
     if not await _prepare_explore_rift_tianxing_route(now, due_at=now):
         return
