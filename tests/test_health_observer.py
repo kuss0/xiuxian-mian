@@ -118,6 +118,15 @@ class HealthObserverTests(unittest.TestCase):
         self.assertTrue(health_observer._is_benign_disconnected_traceback_block(lines, 0))
         self.assertTrue(health_observer._is_benign_disconnected_traceback_block(lines, 2))
 
+    def test_wrong_session_security_line_is_warn_not_hard(self):
+        line = (
+            "Jul 02 09:26:44 pve python[385979]: Security error while unpacking a received message: "
+            "Server replied with a wrong session ID (see FAQ for details)"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+        self.assertTrue(health_observer.is_warn_journal_line(line))
+
     def test_hard_line_ignores_explore_rift_storm_result(self):
         self.assertFalse(
             health_observer.is_hard_journal_line(

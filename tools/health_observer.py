@@ -34,6 +34,10 @@ BENIGN_HARD_CONTEXT_PATTERN = re.compile(
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
     r"无补发|不补发|无需补发|题库内超时未作答|题库匹配|自动副本：收到 @，但未找到|worker 优雅退出超时，强制结束|归位结算吃掉原指令，已补发一次|launching 超时，已回退|共历心劫抉择无回合推进，已停止旧 prompt|续轮指令超时无确认，改用状态查询校准|准备补发一次|结果编辑未留存，已按正常周期恢复|交由模块状态机继续"
 )
+TELETHON_WRONG_SESSION_PATTERN = re.compile(
+    r"Security error while unpacking a received message: Server replied with a wrong session ID",
+    re.I,
+)
 COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
 )
@@ -457,6 +461,8 @@ def is_hard_journal_line(line: str) -> bool:
     text = str(line or "")
     if BENIGN_HARD_CONTEXT_PATTERN.search(text):
         return False
+    if TELETHON_WRONG_SESSION_PATTERN.search(text):
+        return False
     return bool(HARD_PATTERN.search(text))
 
 
@@ -466,6 +472,8 @@ def is_warn_journal_line(line: str) -> bool:
         return False
     if BENIGN_WARN_CONTEXT_PATTERN.search(text):
         return False
+    if TELETHON_WRONG_SESSION_PATTERN.search(text):
+        return True
     if "主线拉人未发送" in text and "send_failed" not in text:
         return False
     return bool(WARN_PATTERN.search(text))

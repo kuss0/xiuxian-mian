@@ -43,7 +43,8 @@ TIANXING_DAILY_BOOTSTRAP_RETRY_SEC = 2 * 60
 TIANXING_DAILY_STAR_CORRECTION_WINDOW_SEC = 6 * 3600
 TIANXING_TIMELINE_ACK_TIMEOUT_SEC = 90
 TIANXING_TIMELINE_CALIBRATION_BACKOFF_SEC = 5 * 60
-TIANXING_TIMELINE_SEND_TIMEOUT_SEC = 35
+TIANXING_TIMELINE_LEGACY_SEND_TIMEOUT_SEC = 35
+TIANXING_TIMELINE_SEND_TIMEOUT_SEC = 120
 TIANXING_RETREAT_FARM_REPLY_TIMEOUT_SEC = 90
 TIANXING_RETREAT_FARM_RETRY_SEC = 5 * 60
 TIANXING_RETREAT_FARM_CALIBRATION_DELAY_SEC = 60
@@ -591,6 +592,16 @@ def normalize_tianxing_auto_config(value=None):
     config["send_timeout_sec"] = _coerce_int_range(config.get("send_timeout_sec"), default["send_timeout_sec"], 1, 5 * 60)
     config["max_replans_per_day"] = _coerce_int_range(config.get("max_replans_per_day"), default["max_replans_per_day"], 0, 99)
     return config
+
+
+def _effective_tianxing_timeline_send_timeout(config):
+    try:
+        value = int((config or {}).get("send_timeout_sec", TIANXING_TIMELINE_SEND_TIMEOUT_SEC) or TIANXING_TIMELINE_SEND_TIMEOUT_SEC)
+    except (TypeError, ValueError, OverflowError):
+        value = TIANXING_TIMELINE_SEND_TIMEOUT_SEC
+    if value == TIANXING_TIMELINE_LEGACY_SEND_TIMEOUT_SEC:
+        return TIANXING_TIMELINE_SEND_TIMEOUT_SEC
+    return max(1, value)
 
 
 def set_tianxing_auto_config(config):
@@ -3627,7 +3638,7 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
     state["tianxing_timeline_state"] = timeline
     save_state()
 
-    send_timeout = int(config.get("send_timeout_sec", TIANXING_TIMELINE_SEND_TIMEOUT_SEC) or TIANXING_TIMELINE_SEND_TIMEOUT_SEC)
+    send_timeout = _effective_tianxing_timeline_send_timeout(config)
     try:
         msg = await asyncio.wait_for(
             send_game_command(
