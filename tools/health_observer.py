@@ -1204,6 +1204,31 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
     return summary[:limit]
 
 
+def summarize_module_pending(module_summary: list[dict[str, object]], *, limit: int = 12) -> tuple[int, list[dict[str, object]]]:
+    total = 0
+    samples: list[dict[str, object]] = []
+    for item in module_summary:
+        if not isinstance(item, dict):
+            continue
+        pending = item.get("pending")
+        if not isinstance(pending, list) or not pending:
+            continue
+        total += len(pending)
+        if len(samples) >= int(limit or 0):
+            continue
+        samples.append({
+            "identity_id": item.get("identity_id"),
+            "username": item.get("username"),
+            "label": item.get("label"),
+            "module": item.get("module"),
+            "module_label": item.get("module_label"),
+            "status": item.get("status"),
+            "pending": pending[:4],
+            "details": (item.get("details") or [])[:4],
+        })
+    return total, samples
+
+
 def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     if not db_path.exists():
         return {
@@ -1216,6 +1241,8 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
     overdue_pending: list[dict[str, object]] = []
     stuck_phases: list[dict[str, object]] = []
     module_summary: list[dict[str, object]] = []
+    module_pending_total = 0
+    module_pending_samples: list[dict[str, object]] = []
     uri = f"file:{db_path}?mode=ro"
     try:
         with sqlite3.connect(uri, uri=True, timeout=5) as conn:
@@ -1301,6 +1328,7 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
                         "overdue_sec": int(now - tower_due),
                     })
             module_summary = build_module_summary(conn, now)
+            module_pending_total, module_pending_samples = summarize_module_pending(module_summary)
     except sqlite3.Error as exc:
         return {
             "db_path": str(db_path),
@@ -1364,6 +1392,8 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
         "db_path": str(db_path),
         "available": True,
         "pending_total": pending_total,
+        "module_pending_total": module_pending_total,
+        "module_pending_samples": module_pending_samples,
         "overdue_pending": overdue_pending[:20],
         "stuck_phases": stuck_phases[:20],
         "module_summary": module_summary,
@@ -1579,6 +1609,8 @@ def build_evidence_refs(snapshot: dict[str, object]) -> list[dict[str, object]]:
             "kind": "state_db",
             "path": db_state.get("db_path"),
             "pending_total": db_state.get("pending_total"),
+            "module_pending_total": db_state.get("module_pending_total"),
+            "module_pending_samples": (db_state.get("module_pending_samples") or [])[:5],
             "overdue_pending": (db_state.get("overdue_pending") or [])[:5],
             "stuck_phases": (db_state.get("stuck_phases") or [])[:5],
         })
@@ -1637,7 +1669,7 @@ def format_audit_pack_markdown(snapshot: dict[str, object]) -> str:
         f"- services: {len(snapshot.get('services') or {})}",
         f"- journal hard/warn: {sum(int(item.get('hard_count') or 0) for item in snapshot.get('journals') or [])}/{sum(int(item.get('warn_count') or 0) for item in snapshot.get('journals') or [])}",
         f"- sent: {message_state.get('sent_count', 0)} in {int((message_state.get('window_sec') or 0) / 60)}m",
-        f"- pending: {db_state.get('pending_total', 0)}",
+        f"- pending: tasks={db_state.get('pending_total', 0)} module={db_state.get('module_pending_total', 0)}",
         "",
         "## Risk Reasons",
     ]
@@ -1661,6 +1693,17 @@ def format_audit_pack_markdown(snapshot: dict[str, object]) -> str:
             lines.append(f"- {who} {item.get('module_label') or item.get('module')}: {item.get('status')}｜{details or '-'}")
     else:
         lines.append("- no abnormal modules")
+    pending_modules = db_state.get("module_pending_samples") if isinstance(db_state.get("module_pending_samples"), list) else []
+    for item in pending_modules[:8]:
+        if not isinstance(item, dict):
+            continue
+        who = item.get("username") or item.get("label") or item.get("identity_id")
+        pending_text = "、".join(
+            f"{entry.get('label') or entry.get('field')} msg={entry.get('msg_id')}"
+            for entry in (item.get("pending") or [])[:3]
+            if isinstance(entry, dict)
+        )
+        lines.append(f"- pending {who} {item.get('module_label') or item.get('module')}: {pending_text or '-'}")
 
     lines.extend(["", "## Evidence Refs"])
     if evidence_refs:
@@ -1671,7 +1714,10 @@ def format_audit_pack_markdown(snapshot: dict[str, object]) -> str:
             if kind == "message_log":
                 lines.append(f"- message_log: {item.get('path')} sent={item.get('sent_count')} last={item.get('last_sent_ts')}")
             elif kind == "state_db":
-                lines.append(f"- state_db: {item.get('path')} pending={item.get('pending_total')}")
+                lines.append(
+                    f"- state_db: {item.get('path')} pending={item.get('pending_total')} "
+                    f"module_pending={item.get('module_pending_total')}"
+                )
             elif kind == "repeat_sample":
                 lines.append(f"- repeat: {item.get('identity_id')} {item.get('command')} x{item.get('count')}")
             elif kind == "journal":

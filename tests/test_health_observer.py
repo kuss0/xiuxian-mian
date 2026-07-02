@@ -497,6 +497,78 @@ class HealthObserverTests(unittest.TestCase):
         self.assertTrue(any("overdue pending" in item["message"] for item in result["alerts"]))
         self.assertTrue(any("stuck runtime phases" in item["message"] for item in result["alerts"]))
 
+    def test_business_db_state_counts_module_pending_without_task_queue(self):
+        now = 1_780_500_000.0
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "state.db"
+            with sqlite3.connect(db_path) as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE pending_tasks(
+                        msg_id INTEGER PRIMARY KEY,
+                        send_as_id INTEGER NOT NULL,
+                        cmd TEXT NOT NULL,
+                        sent_at REAL NOT NULL,
+                        timeout REAL NOT NULL,
+                        retry INTEGER NOT NULL DEFAULT 0,
+                        max_retry INTEGER NOT NULL DEFAULT 3,
+                        source_module TEXT NOT NULL DEFAULT ''
+                    );
+                    CREATE TABLE identities(
+                        send_as_id INTEGER PRIMARY KEY,
+                        username TEXT NOT NULL DEFAULT '',
+                        label TEXT NOT NULL DEFAULT ''
+                    );
+                    CREATE TABLE identity_module_state(
+                        send_as_id INTEGER PRIMARY KEY,
+                        wild_training_enabled INTEGER NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE identity_timers(
+                        send_as_id INTEGER PRIMARY KEY,
+                        next_wild_training_time REAL NOT NULL DEFAULT 0,
+                        next_concubine_time REAL NOT NULL DEFAULT 0,
+                        next_deep_retreat_time REAL NOT NULL DEFAULT 0,
+                        next_yuanying_time REAL NOT NULL DEFAULT 0
+                    );
+                    CREATE TABLE identity_runtime_state(
+                        send_as_id INTEGER PRIMARY KEY,
+                        wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                        wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+                        wild_training_last_result TEXT NOT NULL DEFAULT '',
+                        wild_training_last_error TEXT NOT NULL DEFAULT '',
+                        concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                        deep_retreat_phase TEXT NOT NULL DEFAULT 'idle',
+                        deep_retreat_summary_sent_at REAL NOT NULL DEFAULT 0,
+                        yuanying_phase TEXT NOT NULL DEFAULT 'idle',
+                        yuanying_summary_sent_at REAL NOT NULL DEFAULT 0,
+                        tower_reply_due_at REAL NOT NULL DEFAULT 0,
+                        last_tower_msg_id INTEGER NOT NULL DEFAULT 0
+                    );
+                    """
+                )
+                conn.execute("INSERT INTO identities(send_as_id, username, label) VALUES(42, 'tester', '测试号')")
+                conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
+                conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now - 60,))
+                conn.execute(
+                    """
+                    INSERT INTO identity_runtime_state(
+                        send_as_id,
+                        wild_training_reply_to_msg_id,
+                        wild_training_reply_due_at,
+                        wild_training_last_result
+                    ) VALUES(42, 99, ?, '已出发：深入')
+                    """,
+                    (now + 300,),
+                )
+                conn.commit()
+
+            result = health_observer.read_db_business_state(db_path, now)
+
+        self.assertEqual(0, result["pending_total"])
+        self.assertEqual(1, result["module_pending_total"])
+        self.assertEqual("wild_training", result["module_pending_samples"][0]["module"])
+        self.assertEqual(99, result["module_pending_samples"][0]["pending"][0]["msg_id"])
+
     def test_module_summary_ignores_stale_due_without_pending_anchor(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
@@ -1066,7 +1138,22 @@ class HealthObserverTests(unittest.TestCase):
                 "business": {
                     "message_log": "/tmp/messages.log",
                     "message_state": {"window_sec": 900, "sent_count": 3, "last_sent_ts": "2026-06-29 11:59:59"},
-                    "db_state": {"available": True, "db_path": "/tmp/state.db", "pending_total": 0, "module_summary": []},
+                    "db_state": {
+                        "available": True,
+                        "db_path": "/tmp/state.db",
+                        "pending_total": 0,
+                        "module_pending_total": 1,
+                        "module_pending_samples": [
+                            {
+                                "identity_id": 42,
+                                "username": "tester",
+                                "module": "wild_training",
+                                "module_label": "野外历练",
+                                "pending": [{"label": "回复", "msg_id": 99}],
+                            }
+                        ],
+                        "module_summary": [],
+                    },
                     "alerts": [],
                 },
             }
@@ -1080,6 +1167,8 @@ class HealthObserverTests(unittest.TestCase):
         self.assertTrue(any(item["kind"] == "safety_watchdog_fused" for item in snapshot["evidence_refs"]))
         self.assertIn("Xiuxian Health Audit Pack", markdown)
         self.assertIn("score:", markdown)
+        self.assertIn("pending: tasks=0 module=1", markdown)
+        self.assertIn("pending tester 野外历练: 回复 msg=99", markdown)
 
     def test_merge_status_promotes_business_warnings_from_ok_only(self):
         status, reasons = health_observer.merge_status(
