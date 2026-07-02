@@ -28,6 +28,7 @@ WILD_TRAINING_CYCLE_MAX_SEC = 2 * 3600
 WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC = 2 * 60
 WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC = 10 * 60
 WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
+WILD_TRAINING_SEND_TIMEOUT_SEC = 35
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
@@ -69,6 +70,17 @@ def normalize_wild_training_strategy(strategy):
 def get_wild_training_command(strategy=None):
     strategy = normalize_wild_training_strategy(strategy or get_wild_training_strategy())
     return f"{CMD_WILD_TRAINING} {strategy}"
+
+
+def _close_wild_training_guard(reason, now):
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return False
+    try:
+        from .. import action_guard
+    except Exception:
+        return False
+    return bool(action_guard.close_by_family("wild_training", send_as_id=send_as_id, reason=reason, now=now))
 
 
 def _has_active_tianxing_explore_change(now):
@@ -679,7 +691,18 @@ async def _run_wild_training_scheduler_unlocked(now):
 
     strategy = _effective_wild_training_strategy(now)
     command = get_wild_training_command(strategy)
-    msg = await send_game_command(command, track=False)
+    try:
+        msg = await asyncio.wait_for(
+            send_game_command(command, track=False),
+            timeout=max(0.1, float(WILD_TRAINING_SEND_TIMEOUT_SEC or 0)),
+        )
+    except asyncio.TimeoutError:
+        _close_wild_training_guard("wild_training_send_timeout", now)
+        msg = None
+        state["wild_training_last_error"] = "野外历练发送等待超时，准备补发一次"
+    except asyncio.CancelledError:
+        _close_wild_training_guard("wild_training_send_cancelled", now)
+        raise
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
         if was_last_game_send_blocked_by_global(get_current_identity_id(), command):
@@ -700,7 +723,7 @@ async def _run_wild_training_scheduler_unlocked(now):
         if int(state.get("wild_training_retry_count", 0) or 0) < 1:
             state["wild_training_retry_count"] = int(state.get("wild_training_retry_count", 0) or 0) + 1
             _schedule_retry(sent_at)
-            state["wild_training_last_error"] = "野外历练发送失败，准备补发一次"
+            state["wild_training_last_error"] = state.get("wild_training_last_error") or "野外历练发送失败，准备补发一次"
         else:
             _schedule_next(sent_at)
             state["wild_training_last_error"] = "野外历练补发发送失败，进入下一轮"

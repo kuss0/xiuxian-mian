@@ -1,4 +1,5 @@
 import atexit
+import asyncio
 import copy
 import json
 import sys
@@ -726,6 +727,47 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         save_mock.assert_called_once()
         self.assertEqual(202, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(now + wild_training.WILD_TRAINING_REPLY_TIMEOUT_SEC, state_module.state["wild_training_reply_due_at"])
+
+    async def test_scheduler_send_wait_timeout_closes_guard_placeholder(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+
+        async def slow_send(*_args, **_kwargs):
+            await asyncio.sleep(10)
+
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["action_guard_sessions"] = {
+                "wild_training": {
+                    "action_key": "wild_training",
+                    "kind": "high_risk",
+                    "label": "野外历练",
+                    "attempt": 0,
+                    "first_sent_at": 0,
+                    "last_sent_at": 0,
+                    "next_allowed_at": 0,
+                    "last_msg_id": 0,
+                    "last_command": ".野外历练 谨慎",
+                }
+            }
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "WILD_TRAINING_SEND_TIMEOUT_SEC", 0.1), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
+             patch.object(wild_training, "send_game_command", new=slow_send), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(1, state_module.state["wild_training_retry_count"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("发送等待超时", state_module.state["wild_training_last_error"])
+        self.assertNotIn("wild_training", state_module.state["action_guard_sessions"])
+        audit_mock.assert_awaited_once()
 
     async def test_scheduler_does_not_directly_insert_tianxing_set_star_without_timeline(self):
         send_as_id = self._prepare_identity()
