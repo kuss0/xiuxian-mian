@@ -161,6 +161,21 @@ def _recent_craft_prediction_consume_attempt_for_due(due_at, now):
     return updated_at >= due_at - WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC
 
 
+def _tianxing_timeline_prepare_failed(timeline_result, followup):
+    phase = str((timeline_result or {}).get("phase") or "").strip()
+    followup_stage = str((followup or {}).get("stage") or "").strip()
+    if followup_stage not in {"timeline_waiting", "timeline_waiting_change_fate"}:
+        return False
+    return phase in {
+        "ack_timeout",
+        "calibrating",
+        "blocked_replan",
+        "panel_calibration_timeout_replan",
+        "need_tianji_for_change",
+        "observe_only",
+    }
+
+
 def _schedule_after_dungeon_quiet(now):
     if not is_dungeon_quiet_active(now):
         return 0.0
@@ -592,6 +607,17 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
             and phase in {"idle", "completed", "dry_run", "blocked_replan", "observe_only", "need_tianji_for_change", "change_fate_conflict"}
         ):
             state["wild_training_last_result"] = "天星已有探索推命但无探索改命，野外降级谨慎"
+            state["wild_training_last_result_at"] = 0
+            state["wild_training_last_error"] = ""
+            save_state()
+            return True
+        if due_at <= now and _tianxing_timeline_prepare_failed(timeline_result, followup):
+            _clear_tianxing_prepare_retry()
+            state["wild_training_last_result"] = (
+                "天星探索前置确认超时，野外按当前改命状态放行"
+                if _has_active_tianxing_explore_change(now)
+                else "天星探索前置确认超时，野外降级谨慎"
+            )
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = ""
             save_state()
