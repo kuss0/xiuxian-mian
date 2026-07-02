@@ -5066,6 +5066,12 @@ def _craft_farm_explore_consume_block(now, config):
     now = float(now or 0)
     lead_sec = int((config or {}).get("route_prepare_lead_sec", 5 * 60) or 5 * 60)
     interval_sec = _craft_interval_bounds(config)[0]
+    reply_timeout_sec = int((config or {}).get("craft_farm_reply_timeout_sec", TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC) or TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC)
+    lead_sec = max(
+        lead_sec,
+        10 * 60,
+        interval_sec + reply_timeout_sec + TIANXING_CRAFT_FARM_CALIBRATION_DELAY_SEC + 2 * TIANXING_TIME_BUFFER_SEC,
+    )
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     current_change = _normalize_route_choice(observed.get("current_change"), "")
     change_until = float(observed.get("current_change_until", 0) or 0)
