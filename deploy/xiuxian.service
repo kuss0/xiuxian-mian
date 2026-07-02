@@ -1,0 +1,18 @@
+[Unit]
+Description=Xiuxian Telegram Automation Console
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/xiuxian-main
+ExecStart=/opt/xiuxian-main/.venv/bin/python /opt/xiuxian-main/xiuxian.py
+Restart=always
+RestartSec=5
+User=root
+Environment=PYTHONUNBUFFERED=1
+# Let the supervisor drain in-flight reply windows before it stops the worker.
+KillMode=process
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

@@ -731,6 +731,68 @@ class HealthObserverTests(unittest.TestCase):
         wild = next(item for item in summary if item["module"] == "wild_training")
         self.assertEqual("warn", wild["status"])
 
+    def test_module_summary_flags_overdue_next_time_without_pending_anchor(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, wild_training_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_wild_training_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+                    wild_training_last_result TEXT NOT NULL DEFAULT '',
+                    wild_training_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now - 700,))
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id) VALUES(42)")
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        wild = next(item for item in summary if item["module"] == "wild_training")
+        self.assertEqual("error", wild["status"])
+        self.assertTrue(wild["next"][0]["lag_without_anchor"])
+        self.assertTrue(any("调度滞后" in detail for detail in wild["details"]))
+
+    def test_module_summary_does_not_flag_overdue_next_time_with_pending_anchor(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, wild_training_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_wild_training_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+                    wild_training_last_result TEXT NOT NULL DEFAULT '',
+                    wild_training_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now - 700,))
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, wild_training_reply_to_msg_id, wild_training_reply_due_at) VALUES(42, 99, ?)",
+                (now + 60,),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        wild = next(item for item in summary if item["module"] == "wild_training")
+        self.assertEqual("active", wild["status"])
+        self.assertFalse(wild["next"][0]["lag_without_anchor"])
+
     def test_module_summary_ignores_legacy_hehuan_auto_error_after_success(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:

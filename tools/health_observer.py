@@ -79,6 +79,8 @@ PHASEFUL_ATTENTION_PHASES = {
     "launching",
 }
 IDLE_PHASE_VALUES = {"", "idle", "normal", "none", "{}", "[]"}
+NEXT_LAG_WARN_SEC = 180
+NEXT_LAG_ERROR_SEC = 600
 MODULE_HEALTH_SPECS = [
     {
         "key": "tianxing",
@@ -847,6 +849,11 @@ def positive_epoch(value: object) -> float:
     return epoch
 
 
+def monitors_next_lag(field: object) -> bool:
+    text = str(field or "").strip()
+    return text.startswith("next_") and text.endswith("_time")
+
+
 def module_error_needs_attention(text: object) -> bool:
     raw = str(text or "").strip()
     if not raw:
@@ -1088,18 +1095,40 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                     elif overdue_sec > 0 and not stale_without_pending:
                         active = True
 
-            for field, label_text in spec.get("next_fields", ()):
-                epoch = positive_epoch(value_for(str(field)))
-                if epoch > 0:
-                    next_items.append({"field": str(field), "label": str(label_text), "at": local_ts(epoch)})
-                    if enabled:
-                        add_module_detail(details, str(label_text), local_ts(epoch))
-
             for field, label_text in spec.get("flag_fields", ()):
                 if boolish(value_for(str(field))):
                     flags.append(str(label_text))
                     add_module_detail(details, str(label_text), "是")
                     warn = True
+
+            for field, label_text in spec.get("next_fields", ()):
+                field_name = str(field)
+                epoch = positive_epoch(value_for(field_name))
+                if epoch > 0:
+                    overdue_sec = int(now - epoch) if now > epoch else 0
+                    lag_without_anchor = (
+                        enabled
+                        and monitors_next_lag(field_name)
+                        and overdue_sec > NEXT_LAG_WARN_SEC
+                        and not pending
+                        and not active
+                        and not flags
+                    )
+                    next_items.append({
+                        "field": field_name,
+                        "label": str(label_text),
+                        "at": local_ts(epoch),
+                        "overdue_sec": overdue_sec,
+                        "lag_without_anchor": lag_without_anchor,
+                    })
+                    if enabled:
+                        add_module_detail(details, str(label_text), local_ts(epoch))
+                    if lag_without_anchor:
+                        add_module_detail(details, "调度滞后", f"{label_text}+{overdue_sec}s")
+                        if overdue_sec > NEXT_LAG_ERROR_SEC:
+                            error = True
+                        else:
+                            warn = True
 
             for field, label_text in spec.get("last_result_fields", ()):
                 text = str(value_for(str(field)) or "").strip()
