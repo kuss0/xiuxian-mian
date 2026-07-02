@@ -4871,6 +4871,7 @@ async def ui_delete_identity(send_as_id, actor_id=None):
 _pending_login = {}  # {session_key: {mode, status, client, flow_id, ...}}
 _pending_login_locks = {}
 ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC = 10
+ACCOUNT_LOGIN_QR_CONNECT_TIMEOUT_SEC = 45
 ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC = 12
 ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC = 5
 ACCOUNT_LOGIN_QR_REUSE_MIN_REMAINING_SEC = 10
@@ -4901,6 +4902,7 @@ def _build_pending_qr_payload(pending):
     status = str(pending.get("status") or "waiting_scan")
     payload = {
         "status": status,
+        "message": pending.get("message") or "",
         "qr_expires_at": fmt_abs_ts(qr_expires_at),
         "qr_expires_at_ts": qr_expires_at,
         "remaining_sec": max(0, int(qr_expires_at - time.time())),
@@ -5097,10 +5099,11 @@ async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_file
             _cleanup_pending_temp_session_files(session_key)
         return
 
-    wait_task = pending.get("wait_task")
     current_task = asyncio.current_task()
-    if wait_task and wait_task is not current_task and not wait_task.done():
-        wait_task.cancel()
+    for task_key in ("wait_task", "prepare_task"):
+        pending_task = pending.get(task_key)
+        if pending_task and pending_task is not current_task and not pending_task.done():
+            pending_task.cancel()
 
     tc = pending.get("client")
     if disconnect and tc:
@@ -5292,6 +5295,66 @@ async def _wait_pending_qr_login(session_key, flow_id, tc, qr_login):
         _cleanup_pending_temp_session_files(session_key)
 
 
+async def _prepare_pending_qr_login(session_key, flow_id, tc):
+    try:
+        await asyncio.wait_for(tc.connect(), timeout=ACCOUNT_LOGIN_QR_CONNECT_TIMEOUT_SEC)
+        ignored_ids = []
+        for raw_account_id in get_accounts().keys():
+            try:
+                ignored_ids.append(int(raw_account_id))
+            except (TypeError, ValueError):
+                continue
+        qr_login = await asyncio.wait_for(
+            tc.qr_login(ignored_ids=ignored_ids or None),
+            timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC,
+        )
+        expires_at = float(qr_login.expires.timestamp()) if getattr(qr_login, "expires", None) else 0
+    except asyncio.CancelledError:
+        try:
+            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        try:
+            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
+        except Exception:
+            pass
+        _cleanup_pending_temp_session_files(session_key)
+        _set_pending_login_state(
+            session_key,
+            flow_id,
+            status="error",
+            message=_format_account_login_error("生成二维码失败", e),
+            client=None,
+            prepare_task=None,
+            wait_task=None,
+            qr_url="",
+            qr_expires_at=0,
+        )
+        return
+
+    pending = _pending_login.get(session_key)
+    if not pending or str(pending.get("flow_id") or "") != str(flow_id):
+        try:
+            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
+        except Exception:
+            pass
+        return
+
+    _set_pending_login_state(
+        session_key,
+        flow_id,
+        status="waiting_scan",
+        message="请使用已登录 Telegram 的手机扫码确认",
+        qr_url=qr_login.url,
+        qr_expires_at=expires_at,
+        prepare_task=None,
+    )
+    wait_task = asyncio.create_task(_wait_pending_qr_login(session_key, flow_id, tc, qr_login))
+    _set_pending_login_state(session_key, flow_id, wait_task=wait_task)
+
+
 def _parse_account_login_api(api_id=None, api_hash=None):
     api_id_text = str(api_id or "").strip()
     api_hash_text = str(api_hash or "").strip()
@@ -5374,6 +5437,8 @@ async def ui_account_login_qr_start(session_key, api_id=None, api_hash=None):
         if pending and pending.get("mode") == "qr" and _pending_login_api_matches(pending, parsed_api_id, parsed_api_hash):
             status = str(pending.get("status") or "")
             expires_at = float(pending.get("qr_expires_at", 0) or 0)
+            if status == "connecting":
+                return True, "二维码生成中，请稍后", _build_pending_qr_payload(pending)
             if (
                 status == "waiting_scan"
                 and pending.get("qr_url")
@@ -5395,38 +5460,15 @@ async def ui_account_login_qr_start(session_key, api_id=None, api_hash=None):
             "qr_url": "",
             "qr_expires_at": 0,
             "wait_task": None,
+            "prepare_task": None,
             "flow_id": flow_id,
             "account_id": 0,
             "api_id": parsed_api_id,
             "api_hash": parsed_api_hash,
         }
-        try:
-            await asyncio.wait_for(tc.connect(), timeout=ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC)
-            ignored_ids = []
-            for raw_account_id in get_accounts().keys():
-                try:
-                    ignored_ids.append(int(raw_account_id))
-                except (TypeError, ValueError):
-                    continue
-            qr_login = await asyncio.wait_for(
-                tc.qr_login(ignored_ids=ignored_ids or None),
-                timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC,
-            )
-            expires_at = float(qr_login.expires.timestamp()) if getattr(qr_login, "expires", None) else 0
-            _set_pending_login_state(
-                session_key,
-                flow_id,
-                status="waiting_scan",
-                message="请使用已登录 Telegram 的手机扫码确认",
-                qr_url=qr_login.url,
-                qr_expires_at=expires_at,
-            )
-            wait_task = asyncio.create_task(_wait_pending_qr_login(session_key, flow_id, tc, qr_login))
-            _set_pending_login_state(session_key, flow_id, wait_task=wait_task)
-            return True, "二维码已生成，请使用 Telegram 扫码确认", _build_pending_qr_payload(_pending_login.get(session_key))
-        except Exception as e:
-            await _clear_pending_login(session_key, remove_temp_files=True)
-            return False, _format_account_login_error("生成二维码失败", e), None
+        prepare_task = asyncio.create_task(_prepare_pending_qr_login(session_key, flow_id, tc))
+        _set_pending_login_state(session_key, flow_id, prepare_task=prepare_task)
+        return True, "二维码生成中，请稍后", _build_pending_qr_payload(_pending_login.get(session_key))
 
 
 def ui_account_login_qr_status(session_key):

@@ -107,37 +107,49 @@ class _FakeLoginClient:
 class AccountLoginConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         ui._pending_login.clear()
+        ui._pending_login_locks.clear()
 
     async def asyncTearDown(self):
         for session_key in list(ui._pending_login.keys()):
             await ui._clear_pending_login(session_key, remove_temp_files=False)
         ui._pending_login.clear()
+        ui._pending_login_locks.clear()
 
     async def test_qr_start_reuses_existing_pending_login(self):
         client = _FakeLoginClient()
         with patch.object(ui, "create_account_client", return_value=client) as create_mock, \
                 patch.object(ui, "get_accounts", return_value={}):
             ok, _message, first_info = await ui.ui_account_login_qr_start("session-a")
+            self.assertTrue(ok)
+            self.assertEqual("connecting", first_info["status"])
+
+            prepare_task = ui._pending_login["session-a"]["prepare_task"]
+            await asyncio.wait_for(prepare_task, timeout=1)
+
             second_ok, _second_message, second_info = await ui.ui_account_login_qr_start("session-a")
 
-        self.assertTrue(ok)
         self.assertTrue(second_ok)
         self.assertEqual(1, create_mock.call_count)
         self.assertEqual(1, client.connect_count)
         self.assertEqual(1, client.qr_login_count)
-        self.assertEqual(first_info["qr_url"], second_info["qr_url"])
+        self.assertEqual("tg://login?token=test", second_info["qr_url"])
         self.assertEqual("waiting_scan", second_info["status"])
 
-    async def test_qr_start_connect_timeout_clears_pending_login(self):
+    async def test_qr_start_connect_timeout_marks_pending_error(self):
         client = _FakeLoginClient(connect_delay=0.05)
         with patch.object(ui, "create_account_client", return_value=client), \
-                patch.object(ui, "ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC", 0.01):
+                patch.object(ui, "ACCOUNT_LOGIN_QR_CONNECT_TIMEOUT_SEC", 0.01):
             ok, message, qr_info = await ui.ui_account_login_qr_start("session-timeout")
+            prepare_task = ui._pending_login["session-timeout"]["prepare_task"]
+            await asyncio.wait_for(prepare_task, timeout=1)
 
-        self.assertFalse(ok)
-        self.assertIn("Telegram 连接超时", message)
-        self.assertIsNone(qr_info)
-        self.assertNotIn("session-timeout", ui._pending_login)
+        self.assertTrue(ok)
+        self.assertEqual("二维码生成中，请稍后", message)
+        self.assertEqual("connecting", qr_info["status"])
+
+        status = ui.ui_account_login_qr_status("session-timeout")
+        self.assertEqual("error", status["status"])
+        self.assertIn("Telegram 连接超时", status["message"])
         self.assertGreaterEqual(client.disconnect_count, 1)
 
 
