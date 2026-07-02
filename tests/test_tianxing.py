@@ -969,6 +969,55 @@ class TianxingManualPlanTests(unittest.TestCase):
         self.assertNotIn("探索", timeline["released_routes"])
         self.assertEqual("blocked_replan", timeline["phase"])
 
+    def test_route_result_clears_unconfirmed_same_route_timeline_step(self):
+        now = 1_780_000_000.0
+        text = (
+            "【野外历练 · 改命脱险】\n"
+            "命盘【太阴】照命，主趋吉避凶。\n"
+            "【改命待发】此道改命尚可维持 23小时55分钟\n"
+            "【天星偏转】 趋吉偏转，材料显化上扬\n"
+            "@WalterWA2000 遭遇 噬灵魔猿，本已要负伤折返，司命盘却替你撬开了一线退路。\n"
+            "【改命回天】你强行拨正命轨，硬从凶数中抢回一线生机。\n"
+            "你虽未能尽取机缘，却仍带回了 【四级妖丹】x1，且 本次未损修为。"
+        )
+        active_step = {
+            "action": "change_fate",
+            "arg": "探索",
+            "route": "探索",
+            "command": ".改命 探索",
+            "status": "ack_timeout",
+            "send_msg_id": 0,
+            "calibration_due_at": now + 300,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {
+                "last_observed_at": now - 60,
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 600,
+                "current_change": "探索",
+                "current_change_until": now + 12 * 3600,
+                "tianji_value": 42,
+            }
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "ack_timeout",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": dict(active_step),
+                "steps": [dict(active_step)],
+                "released_routes": {},
+                "blocked_until": now + 300,
+            }
+
+            self.assertTrue(tianxing.apply_tianxing_passive(text, now=now))
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertEqual("consumed_by_route_result", timeline["steps"][0]["status"])
+        self.assertEqual("unconfirmed_step_consumed_by_route_result", timeline["audit"][-1]["event"])
+
     def test_route_preflight_does_not_block_non_tianxing_identity(self):
         now = 1_780_000_000.0
         state_module.update_send_as_profile(self.identity_id, sect_name="散修")
@@ -1905,6 +1954,47 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("ack_timeout", timeline["active_step"]["status"])
         self.assertEqual("ack_timeout", waiting["phase"])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 1))
+
+    async def test_timeline_clears_stale_ack_timeout_after_route_result_observed(self):
+        now = 1_780_000_000.0
+        active_step = {
+            "action": "change_fate",
+            "arg": "探索",
+            "route": "探索",
+            "command": ".改命 探索",
+            "status": "ack_timeout",
+            "send_msg_id": 0,
+            "send_started_at": now - 120,
+            "calibration_due_at": now - 1,
+        }
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_observed_at": now - 10,
+                "last_route": "探索",
+                "last_result": "change_triggered",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_change": "",
+                "current_change_until": 0,
+            })
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "ack_timeout",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": dict(active_step),
+                "steps": [dict(active_step)],
+                "blocked_until": now - 1,
+            }
+            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command") as send_mock:
+                result = await tianxing.run_tianxing_timeline_scheduler(now)
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        send_mock.assert_not_called()
+        self.assertEqual("blocked_replan", result["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertEqual("consumed_by_observed_route_result", timeline["steps"][0]["status"])
+        self.assertEqual("unconfirmed_step_consumed_by_observed_route_result", timeline["audit"][-1]["event"])
 
     async def test_stale_unsent_ack_timeout_replans_when_consume_route_changes(self):
         now = 1_780_000_000.0

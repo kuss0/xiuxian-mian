@@ -2712,10 +2712,13 @@ def _consume_tianxing_released_route(route, now, reason="route_result_consumed")
         _timeline_audit(timeline, now, "released_route_consumed", route=route, reason=reason)
         changed = True
     active_step = dict(timeline.get("active_step") or {})
+    active_action = str(active_step.get("action") or "").strip()
+    active_status = str(active_step.get("status") or "").strip()
+    active_route = _normalize_route_choice(active_step.get("route") or active_step.get("arg"), "")
     if (
-        str(active_step.get("status") or "").strip() == "released"
-        and str(active_step.get("action") or "").strip() == "release_downstream"
-        and _normalize_route_choice(active_step.get("route") or active_step.get("arg"), "") == route
+        active_status == "released"
+        and active_action == "release_downstream"
+        and active_route == route
     ):
         timeline["phase"] = "blocked_replan"
         timeline["active_step_index"] = -1
@@ -2725,9 +2728,80 @@ def _consume_tianxing_released_route(route, now, reason="route_result_consumed")
         timeline["updated_at"] = float(now or time.time())
         _timeline_audit(timeline, now, "released_step_consumed", route=route)
         changed = True
+    elif (
+        active_action in {"predict", "change_fate"}
+        and active_status in {"sending", "sent_waiting_ack", "ack_timeout", "send_blocked"}
+        and active_route == route
+    ):
+        active_step["status"] = "consumed_by_route_result"
+        active_step["consumed_at"] = float(now or time.time())
+        active_step["last_error"] = f"{route} 路线结果已出现，未确认前置步骤停止校准。"
+        _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
+        _close_tianxing_guard_for_timeline_step(active_step, now, reason="route_result_consumed")
+        timeline["phase"] = "blocked_replan"
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["blocked_until"] = float(now or time.time())
+        timeline["last_error"] = f"{route} 路线结果已出现，需重算时间线。"
+        timeline["updated_at"] = float(now or time.time())
+        _timeline_audit(timeline, now, "unconfirmed_step_consumed_by_route_result", route=route, action=active_action, status=active_status)
+        changed = True
     if changed:
         state["tianxing_timeline_state"] = timeline
     return changed
+
+
+def _clear_unconfirmed_timeline_step_for_observed_route_result(observed, now):
+    observed = normalize_tianxing_observation(observed)
+    observed_route = _normalize_route_choice(observed.get("last_route"), "")
+    if observed_route not in TIANXING_ROUTES:
+        return False
+    if str(observed.get("last_result") or "").strip() not in {"prediction_hit", "prediction_miss", "change_triggered", "modifier"}:
+        return False
+
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    active_step = dict(timeline.get("active_step") or {})
+    active_action = str(active_step.get("action") or "").strip()
+    active_status = str(active_step.get("status") or "").strip()
+    active_route = _normalize_route_choice(active_step.get("route") or active_step.get("arg"), "")
+    if active_action not in {"predict", "change_fate"}:
+        return False
+    if active_status not in {"sending", "sent_waiting_ack", "ack_timeout", "send_blocked"}:
+        return False
+    if active_route != observed_route:
+        return False
+
+    observed_at = float(observed.get("last_observed_at", 0) or 0)
+    step_at = 0.0
+    for key in ("send_started_at", "sent_at", "timeout_at", "blocked_at"):
+        try:
+            step_at = max(step_at, float(active_step.get(key, 0) or 0))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    if step_at > 0 and observed_at > 0 and observed_at + 0.001 < step_at:
+        return False
+
+    active_step["status"] = "consumed_by_observed_route_result"
+    active_step["consumed_at"] = float(now or time.time())
+    active_step["last_error"] = f"{observed_route} 路线结果已观察到，未确认前置步骤停止校准。"
+    _set_timeline_step(timeline, _timeline_active_index(timeline), active_step)
+    _close_tianxing_guard_for_timeline_step(active_step, now, reason="observed_route_result_consumed")
+    timeline["phase"] = "blocked_replan"
+    timeline["active_step_index"] = -1
+    timeline["active_step"] = {}
+    timeline["blocked_until"] = float(now or time.time())
+    timeline["last_error"] = f"{observed_route} 路线结果已观察到，需重算时间线。"
+    timeline["updated_at"] = float(now or time.time())
+    _timeline_audit(
+        timeline,
+        now,
+        "unconfirmed_step_consumed_by_observed_route_result",
+        route=observed_route,
+        action=active_action,
+        status=active_status,
+    )
+    state["tianxing_timeline_state"] = timeline
+    return True
 
 
 def mark_tianxing_route_result_unknown(route, *, now=None, reason=""):
@@ -3731,6 +3805,10 @@ async def _run_tianxing_timeline_scheduler_unlocked(now, *, windows=None, config
         save_state()
     if _prune_tianxing_released_routes(observed, now):
         save_state()
+    if _clear_unconfirmed_timeline_step_for_observed_route_result(observed, now):
+        timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+        save_state()
+        return {"phase": timeline.get("phase") or "blocked_replan", "changed": True, "reason": timeline.get("last_error") or "路线结果已观察到，清理未确认前置步骤。"}
 
     confirmed, timeline = _confirm_tianxing_timeline_from_observation(now)
     if confirmed:
