@@ -783,6 +783,37 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("深度闭关结算窗口", state_module.state["wild_training_last_error"])
         console_mock.assert_called_once()
 
+    async def test_scheduler_deep_retreat_launching_uses_short_resume_not_next_retreat_end(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["deep_retreat_enabled"] = True
+            identity_state["deep_retreat_phase"] = "launching"
+            identity_state["next_deep_retreat_time"] = now + 8 * 3600
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock, \
+             patch.object(wild_training, "console_log") as console_mock, \
+             patch.object(wild_training, "save_state"):
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertEqual(
+            now + wild_training.WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC,
+            state_module.state["next_wild_training_time"],
+        )
+        self.assertLess(
+            state_module.state["next_wild_training_time"],
+            now + wild_training.WILD_TRAINING_DEEP_RETREAT_GUARD_SEC,
+        )
+        self.assertIn("phase=launching", state_module.state["wild_training_last_error"])
+        console_mock.assert_called_once()
+
     async def test_scheduler_does_not_directly_insert_tianxing_set_star_without_timeline(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

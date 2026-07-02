@@ -249,7 +249,9 @@ async def _defer_wild_training_for_deep_retreat_summary_window(now):
     if not should_defer:
         return False
 
-    anchor = max(float(now or 0), next_deep_time if next_deep_time > 0 else 0.0)
+    anchor = float(now or 0)
+    if 0 < next_deep_time <= anchor + WILD_TRAINING_DEEP_RETREAT_GUARD_SEC:
+        anchor = max(anchor, next_deep_time)
     next_time = anchor + random.uniform(WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC, WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC)
     state["next_wild_training_time"] = float(next_time)
     state["wild_training_reply_to_msg_id"] = 0
