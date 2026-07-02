@@ -18,6 +18,7 @@ from .tianxing import (
     looks_like_tianxing_route_result,
     mark_tianxing_route_result_unknown,
     normalize_tianxing_observation,
+    normalize_tianxing_timeline_state,
     run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
 )
@@ -36,6 +37,7 @@ WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
 WILD_TRAINING_RECENT_RESULT_GUARD_GRACE_SEC = 60
+WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC = 10 * 60
 WILD_TRAINING_TITLE = "【野外历练"
 WILD_TRAINING_RESULT_TITLES = (
     "【野外历练 · 妖兽遭遇】",
@@ -138,6 +140,25 @@ def _tianxing_prepare_retry_blocks(now):
     except (TypeError, ValueError, OverflowError):
         retry_at = 0.0
     return retry_at > float(now or 0)
+
+
+def _recent_craft_prediction_consume_attempt_for_due(due_at, now):
+    timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
+    last_action = str(craft_farm.get("last_action") or "").strip()
+    if last_action not in {"consume_craft_prediction", "consume_craft_prediction_calibration"}:
+        return False
+    try:
+        updated_at = float(craft_farm.get("updated_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        updated_at = 0.0
+    if updated_at <= 0:
+        return False
+    due_at = float(due_at or now or 0)
+    now = float(now or 0)
+    if updated_at > now + 1:
+        return False
+    return updated_at >= due_at - WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC
 
 
 def _schedule_after_dungeon_quiet(now):
@@ -520,6 +541,13 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         _clear_tianxing_prepare_retry()
         return True
     if str(preflight.get("stage") or "") == "prediction_conflict":
+        if due_at <= now and _recent_craft_prediction_consume_attempt_for_due(due_at, now):
+            _clear_tianxing_prepare_retry()
+            state["wild_training_last_result"] = "天星炼制推命已尝试消费，野外按当前改命状态放行"
+            state["wild_training_last_result_at"] = 0
+            state["wild_training_last_error"] = ""
+            save_state()
+            return True
         consume_result = await run_tianxing_consume_craft_prediction(now, reason="野外历练前消费炼制推命")
         if consume_result.get("active"):
             if due_at <= now:
