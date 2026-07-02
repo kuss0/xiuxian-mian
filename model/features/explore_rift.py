@@ -58,6 +58,7 @@ EXPLORE_RIFT_RECOVERY_MAX_SEC = 180
 EXPLORE_RIFT_FALLBACK_CD_SEC = EXPLORE_RIFT_CD
 EXPLORE_RIFT_FAST_CD_SEC = 9 * 3600
 EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC = 60
+EXPLORE_RIFT_TIANXING_TIMEOUT_RETRY_SEC = 100
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
 RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下)")
@@ -1066,7 +1067,12 @@ async def run_explore_rift_scheduler(now):
         if reply_due_at > now:
             return
         _clear_explore_rift_pending()
-        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+        retry_delay = RETRY_MAX_SEC
+        if _tianxing_explore_change_ready(now):
+            retry_delay = EXPLORE_RIFT_TIANXING_TIMEOUT_RETRY_SEC
+            state["explore_rift_tianxing_prepare_retry_at"] = 0
+            state["explore_rift_last_result"] = "天星探索已放行，探寻裂缝吞回复短重试"
+        state["next_explore_rift_time"] = float(now + retry_delay)
         state["explore_rift_last_error"] = "探寻裂缝回复超时"
         save_state()
         await send_audit_log(f"⚠️ 探寻裂缝回复超时，消息ID={reply_to_msg_id}，稍后重试。", scope="identity", limit=220)
