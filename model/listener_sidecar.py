@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import signal
+import sqlite3
 import time
 import traceback
 from pathlib import Path
@@ -14,11 +15,11 @@ from .app_message_log import (
     _append_replica_group_message_log,
 )
 from .config import (
+    SESSION_DIR,
     STATE_DIR,
+    _create_telegram_client,
     client,
-    create_account_client,
     get_registered_client,
-    is_account_offline,
     mark_account_offline,
     register_client,
     unregister_client,
@@ -34,6 +35,7 @@ from .state import (
 
 LISTENER_HEARTBEAT_FILE = os.path.join(STATE_DIR, "listener_heartbeat.json")
 LISTENER_HEARTBEAT_INTERVAL_SEC = 15
+LISTENER_ACCOUNT_RETRY_INTERVAL_SEC = 60
 
 _listener_stats = {
     "started_at": time.time(),
@@ -45,6 +47,7 @@ _listener_stats = {
     "edit_count": 0,
     "registered_accounts": [],
     "failed_accounts": [],
+    "target_accounts": [],
 }
 
 
@@ -86,6 +89,108 @@ def _listener_account_ids(accounts):
     if selected:
         return selected
     return sorted(account_ids)
+
+
+def _session_file(session_base):
+    return Path(f"{session_base}.session")
+
+
+def _listener_session_base(account_id):
+    return os.path.join(SESSION_DIR, f"listener_account_{int(account_id)}")
+
+
+def _source_session_base(account_id):
+    return os.path.join(SESSION_DIR, f"account_{int(account_id)}")
+
+
+def _backup_sqlite_session(src_file, dst_file):
+    tmp_file = Path(f"{dst_file}.tmp.{os.getpid()}.{time.time_ns()}")
+    try:
+        with sqlite3.connect(f"file:{Path(src_file).as_posix()}?mode=ro", uri=True, timeout=5.0) as src_conn:
+            with sqlite3.connect(str(tmp_file), timeout=5.0) as dst_conn:
+                src_conn.backup(dst_conn)
+        os.chmod(tmp_file, 0o600)
+        os.replace(tmp_file, dst_file)
+    finally:
+        try:
+            if tmp_file.exists():
+                tmp_file.unlink()
+        except OSError:
+            pass
+
+
+def _ensure_listener_session_copy(account_id):
+    source_base = _source_session_base(account_id)
+    listener_base = _listener_session_base(account_id)
+    source_file = _session_file(source_base)
+    listener_file = _session_file(listener_base)
+    if listener_file.exists():
+        return listener_base
+    if not source_file.exists():
+        raise RuntimeError(f"源 session 不存在: {source_file}")
+    listener_file.parent.mkdir(parents=True, exist_ok=True)
+    _backup_sqlite_session(source_file, listener_file)
+    return listener_base
+
+
+def _create_listener_account_client(account_id, *, api_id=None, api_hash=None):
+    session_base = _ensure_listener_session_copy(account_id)
+    return _create_telegram_client(session_base, api_id=api_id, api_hash=api_hash)
+
+
+def _remove_failed_account(account_id):
+    account_id = int(account_id)
+    _listener_stats["failed_accounts"] = [
+        item
+        for item in (_listener_stats.get("failed_accounts") or [])
+        if int((item or {}).get("account_id") or 0) != account_id
+    ]
+
+
+def _record_failed_account(account_id, error):
+    account_id = int(account_id)
+    _remove_failed_account(account_id)
+    _listener_stats.setdefault("failed_accounts", []).append({
+        "account_id": account_id,
+        "error": str(error or "启动失败")[:300],
+        "last_failed_at": time.time(),
+        "last_failed_at_text": _local_ts(),
+    })
+
+
+async def _connect_listener_account(account_id, acct_info):
+    account_id = int(account_id)
+    tc = None
+    try:
+        tc = _create_listener_account_client(
+            account_id,
+            api_id=(acct_info or {}).get("api_id"),
+            api_hash=(acct_info or {}).get("api_hash"),
+        )
+        await tc.connect()
+        if not await tc.is_user_authorized():
+            listener_file = _session_file(_listener_session_base(account_id))
+            if listener_file.exists():
+                listener_file.unlink()
+            raise RuntimeError("listener session 未授权，已删除副本，等待下轮从源 session 重建")
+        register_client(account_id, tc)
+        _register_listener_handlers(tc)
+        registered = set(int(item) for item in (_listener_stats.get("registered_accounts") or []))
+        registered.add(account_id)
+        _listener_stats["registered_accounts"] = sorted(registered)
+        _remove_failed_account(account_id)
+        print(f"listener account connected: {account_id}", flush=True)
+        return True
+    except Exception as exc:
+        reason = str(exc) or "启动失败"
+        mark_account_offline(account_id, reason)
+        _record_failed_account(account_id, reason)
+        if tc is not None:
+            try:
+                await tc.disconnect()
+            except Exception:
+                pass
+        return False
 
 
 async def _handle_listener_event(event, event_type):
@@ -130,7 +235,6 @@ async def _connect_saved_accounts():
 
     accounts = get_accounts()
     account_ids = _listener_account_ids(accounts)
-    failed_accounts = []
     connected = []
     if not accounts:
         await client.connect()
@@ -145,38 +249,32 @@ async def _connect_saved_accounts():
     else:
         for account_id in account_ids:
             acct_info = accounts.get(str(account_id)) or {}
-            tc = None
-            try:
-                if is_account_offline(account_id):
-                    continue
-                tc = create_account_client(
-                    account_id,
-                    api_id=acct_info.get("api_id"),
-                    api_hash=acct_info.get("api_hash"),
-                )
-                await tc.connect()
-                if not await tc.is_user_authorized():
-                    raise RuntimeError("session 未授权")
-                register_client(account_id, tc)
-                _register_listener_handlers(tc)
+            if await _connect_listener_account(account_id, acct_info):
                 connected.append(int(account_id))
-            except Exception as exc:
-                reason = str(exc) or "启动失败"
-                mark_account_offline(account_id, reason)
-                failed_accounts.append({"account_id": int(account_id), "error": reason[:300]})
-                if tc is not None:
-                    try:
-                        await tc.disconnect()
-                    except Exception:
-                        pass
 
+    _listener_stats["target_accounts"] = account_ids
     _listener_stats["registered_accounts"] = connected
-    _listener_stats["failed_accounts"] = failed_accounts
     _write_listener_heartbeat({"status": "running"})
     if not connected:
         raise RuntimeError("没有可用监听账号。")
-    print(f"listener sidecar started: accounts={connected} failed={failed_accounts}", flush=True)
+    print(f"listener sidecar started: accounts={connected} failed={_listener_stats.get('failed_accounts')}", flush=True)
     return connected
+
+
+async def _retry_failed_accounts_loop(stop_event, accounts):
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=LISTENER_ACCOUNT_RETRY_INTERVAL_SEC)
+            break
+        except asyncio.TimeoutError:
+            pass
+        registered = set(int(item) for item in (_listener_stats.get("registered_accounts") or []))
+        for account_id in list(_listener_stats.get("target_accounts") or []):
+            account_id = int(account_id)
+            if account_id in registered:
+                continue
+            await _connect_listener_account(account_id, accounts.get(str(account_id)) or {})
+        _write_listener_heartbeat({"status": "running"})
 
 
 async def _heartbeat_loop(stop_event):
@@ -219,11 +317,19 @@ async def main():
             signal.signal(sig, lambda _signum, _frame: request_stop())
 
     heartbeat_task = None
+    retry_task = None
     try:
         await _connect_saved_accounts()
         heartbeat_task = asyncio.create_task(_heartbeat_loop(stop_event))
+        retry_task = asyncio.create_task(_retry_failed_accounts_loop(stop_event, get_accounts()))
         await stop_event.wait()
     finally:
+        if retry_task and not retry_task.done():
+            retry_task.cancel()
+            try:
+                await retry_task
+            except asyncio.CancelledError:
+                pass
         if heartbeat_task and not heartbeat_task.done():
             heartbeat_task.cancel()
             try:
