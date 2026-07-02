@@ -754,6 +754,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("探索", timeline_mock.await_args.kwargs["windows"][0]["route"])
             self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
             send_mock.assert_not_awaited()
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
+                state_module.state["next_explore_rift_time"],
+            )
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
     async def test_scheduler_waits_when_tianxing_release_lacks_unconsumed_prediction(self):
@@ -849,7 +853,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(timeline_mock.await_args.kwargs["windows"][0]["end_at"], due_at)
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
-            self.assertGreater(state_module.state["explore_rift_tianxing_prepare_retry_at"], now)
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
+                state_module.state["explore_rift_tianxing_prepare_retry_at"],
+            )
             self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["explore_rift_last_result"])
 
     async def test_scheduler_does_not_insert_tianxing_predict_before_explore_rift_without_timeline(self):
@@ -986,7 +993,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             consume_mock.assert_awaited_once()
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
-            self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
+                state_module.state["next_explore_rift_time"],
+            )
             self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
 
@@ -1028,7 +1038,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             timeline_mock.assert_not_awaited()
             send_mock.assert_not_awaited()
             self.assertEqual(due_at, state_module.state["next_explore_rift_time"])
-            self.assertGreater(state_module.state["explore_rift_tianxing_prepare_retry_at"], now)
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
+                state_module.state["explore_rift_tianxing_prepare_retry_at"],
+            )
             self.assertIn("天星先炼制消费推命", state_module.state["explore_rift_last_result"])
             self.assertEqual("", state_module.state["explore_rift_last_error"])
 
@@ -1117,7 +1130,10 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             timeline_mock.assert_awaited_once()
             send_mock.assert_not_awaited()
             self.assertNotIn("auto模式", state_module.state["explore_rift_last_error"])
-            self.assertGreater(state_module.state["next_explore_rift_time"], now)
+            self.assertEqual(
+                now + explore_rift.EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC,
+                state_module.state["next_explore_rift_time"],
+            )
 
     async def test_scheduler_allows_high_xiuwei_when_tianxing_explore_change_ready(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)

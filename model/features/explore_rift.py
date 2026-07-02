@@ -57,6 +57,7 @@ EXPLORE_RIFT_RECOVERY_MIN_SEC = 90
 EXPLORE_RIFT_RECOVERY_MAX_SEC = 180
 EXPLORE_RIFT_FALLBACK_CD_SEC = EXPLORE_RIFT_CD
 EXPLORE_RIFT_FAST_CD_SEC = 9 * 3600
+EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC = 60
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
 RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下)")
@@ -248,6 +249,16 @@ def _set_explore_rift_error(message, *, next_delay=None, now=None, persist=True)
         save_state()
     else:
         mark_dirty()
+
+
+def _schedule_explore_rift_tianxing_prepare_retry(now, due_at, delay_sec=None):
+    delay_sec = float(delay_sec or EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC)
+    retry_at = float(now or 0) + max(1.0, delay_sec)
+    due_at = float(due_at or now or 0)
+    if due_at <= float(now or 0):
+        state["next_explore_rift_time"] = retry_at
+    else:
+        state["explore_rift_tianxing_prepare_retry_at"] = min(due_at, retry_at)
 
 
 def _explore_rift_next_time_blocks(now):
@@ -967,9 +978,9 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         consume_result = await run_tianxing_consume_craft_prediction(now, reason="探寻裂缝前消费炼制推命")
         if consume_result.get("active"):
             if due_at <= now:
-                state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+                _schedule_explore_rift_tianxing_prepare_retry(now, due_at)
             else:
-                state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
+                _schedule_explore_rift_tianxing_prepare_retry(now, due_at)
             state["explore_rift_last_result"] = f"天星先炼制消费推命：{consume_result.get('stage') or 'waiting'}"
             state["explore_rift_last_error"] = "" if consume_result.get("takeover") or consume_result.get("stage") == "waiting_reply" else str(consume_result.get("reason") or "")
             save_state()
@@ -998,10 +1009,10 @@ async def _prepare_explore_rift_tianxing_route(now, *, due_at=0):
         if followup.get("route_allowed"):
             state["explore_rift_tianxing_prepare_retry_at"] = 0
             return True
-        if due_at <= now:
-            state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
-        else:
-            state["explore_rift_tianxing_prepare_retry_at"] = float(now + RETRY_MAX_SEC)
+        phase = str(timeline_result.get("phase") or "").strip()
+        short_retry_phases = {"sending", "sent_waiting_ack", "state_confirmed", "downstream_released", "calibrating"}
+        retry_delay = EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC if phase in short_retry_phases or timeline_result.get("changed") else RETRY_MAX_SEC
+        _schedule_explore_rift_tianxing_prepare_retry(now, due_at, retry_delay)
         state["explore_rift_last_result"] = f"天星时间线：{timeline_result.get('phase') or 'waiting'}"
         state["explore_rift_last_error"] = "" if timeline_result.get("changed") else str(followup.get("reason") or preflight.get("reason") or "")
         save_state()
