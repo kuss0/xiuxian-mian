@@ -44,6 +44,7 @@ NANLONG_CHOICE_COMMANDS = {
 NANLONG_TARGET_TAG_PATTERN = r"[^\s@，。！？、；：:,.!?\]）】()（）【\[\]<>《》“”\"'`]+"
 RE_NANLONG_TARGET_TAG = re.compile(rf"@({NANLONG_TARGET_TAG_PATTERN})")
 RE_NANLONG_MINUTES = re.compile(r"你有\s*(\d+)\s*分钟")
+RE_NANLONG_REWARD = re.compile(r"南陇侯[^\n。！？]*?赐[^\n。！？]*?【([^】]+)】")
 NANLONG_SUCCESS_KEYWORDS = ("【天机异闻·魔君之怒】", "【天机异闻·南陇侯的交易】")
 NANLONG_CONFIRM_RETRY_DELAY_SEC = 60
 NANLONG_CONFIRM_RETRY_LIMIT = 1
@@ -196,6 +197,30 @@ def _is_nanlong_success_reply(text):
 
 def _is_nanlong_trade_success_reply(text):
     return "【天机异闻·南陇侯的交易】" in str(text or "")
+
+
+def _extract_nanlong_reward_names(text):
+    rewards = []
+    seen = set()
+    for matched in RE_NANLONG_REWARD.findall(str(text or "")):
+        reward = str(matched or "").strip()
+        if not reward or reward in seen:
+            continue
+        seen.add(reward)
+        rewards.append(reward)
+    return rewards
+
+
+async def _send_nanlong_reward_audit(text):
+    rewards = _extract_nanlong_reward_names(text)
+    if not rewards:
+        return
+    await send_audit_log(
+        f"🎁 南陇侯赏赐：{'、'.join(rewards)}",
+        scope="identity",
+        priority="high",
+        limit=260,
+    )
 
 
 def _is_concubine_place_success(text):
@@ -447,6 +472,7 @@ async def _send_nanlong_recall_after_trade(now, *, retry_count=0):
 
 
 async def _handle_nanlong_trade_confirmed(text, now, audit_text):
+    await _send_nanlong_reward_audit(text)
     if _get_nanlong_protect_phase() == NANLONG_PROTECT_EXCHANGE_PENDING and _is_nanlong_trade_success_reply(text):
         return await _send_nanlong_recall_after_trade(now)
     await _finalize_nanlong_success(audit_text)

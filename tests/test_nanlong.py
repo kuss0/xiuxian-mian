@@ -50,6 +50,12 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             }
         })
 
+    def test_extracts_nanlong_reward_from_real_trade_text(self):
+        self.assertEqual(
+            ["九曲灵参丹丹方"],
+            nanlong._extract_nanlong_reward_names(real_text("nanlong.result.trade")),
+        )
+
     async def test_scheduler_blocks_dirty_pending_fields_without_sending_or_saving(self):
         now = 1_700_000_000.0
         dirty_cases = (
@@ -458,7 +464,14 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            audit_mock.assert_awaited_once_with("🤝 南陇侯交易结果已确认")
+            self.assertEqual(2, audit_mock.await_count)
+            reward_args, reward_kwargs = audit_mock.await_args_list[0]
+            self.assertEqual("🎁 南陇侯赏赐：九曲灵参丹丹方", reward_args[0])
+            self.assertEqual("identity", reward_kwargs["scope"])
+            self.assertEqual("high", reward_kwargs["priority"])
+            confirm_args, confirm_kwargs = audit_mock.await_args_list[1]
+            self.assertEqual("🤝 南陇侯交易结果已确认", confirm_args[0])
+            self.assertEqual({}, confirm_kwargs)
             save_mock.assert_called_once()
             self.assertEqual(0, state_module.state["nanlong_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["next_nanlong_time"])

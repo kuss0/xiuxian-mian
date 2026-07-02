@@ -1259,6 +1259,31 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(state_module.state["wild_training_tianxing_prepare_retry_at"], now)
         self.assertEqual("天星时间线：sent_waiting_ack", state_module.state["wild_training_last_result"])
 
+    async def test_scheduler_does_not_send_future_wild_training_when_tianxing_prepare_releases(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        due_at = now + 120
+        with state_module.use_identity(send_as_id) as identity_state:
+            state_module.update_send_as_profile(send_as_id, sect_name="天星宗")
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["next_wild_training_time"] = due_at
+            identity_state["tianxing_enabled"] = True
+
+        async def fake_prepare(*_args, **_kwargs):
+            state_module.state["next_wild_training_time"] = now - 1
+            return True
+
+        prepare_mock = AsyncMock(side_effect=fake_prepare)
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "_prepare_wild_training_tianxing_route", new=prepare_mock), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+            await wild_training.run_wild_training_scheduler(now)
+
+        prepare_mock.assert_awaited_once()
+        send_mock.assert_not_awaited()
+
     async def test_scheduler_does_not_insert_tianxing_predict_before_wild_training_without_timeline(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0

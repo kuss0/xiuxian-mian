@@ -785,6 +785,7 @@ async def _run_wild_training_scheduler_unlocked(now):
         )
         if windows and not _tianxing_prepare_retry_blocks(now) and not await _prepare_wild_training_tianxing_route(now, due_at=next_wild_training_time):
             return
+        return
     if cd_blocks(state.get("next_wild_training_time", 0), now, 0):
         return
     if _guard_recent_completed_result(now):
