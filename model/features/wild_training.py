@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..config import CD_BUFFER_SEC, CMD_WILD_TRAINING, MESSAGES_DIR, TZ_LOCAL, WILD_TRAINING_STRATEGIES
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
 from ..timing import cd_blocks, fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from .dungeon_quiet import get_dungeon_quiet_reason, get_dungeon_quiet_until, is_dungeon_quiet_active
@@ -746,19 +746,13 @@ async def _run_wild_training_scheduler_unlocked(now):
     strategy = _effective_wild_training_strategy(now)
     command = get_wild_training_command(strategy)
     try:
-        msg = await asyncio.wait_for(
-            send_game_command(command, track=False),
-            timeout=max(0.1, float(WILD_TRAINING_SEND_TIMEOUT_SEC or 0)),
-        )
-    except asyncio.TimeoutError:
-        _close_wild_training_guard("wild_training_send_timeout", now)
-        msg = None
-        state["wild_training_last_error"] = "野外历练发送等待超时，准备补发一次"
+        msg = await send_game_command(command, track=False, queue_timeout=WILD_TRAINING_SEND_TIMEOUT_SEC)
     except asyncio.CancelledError:
         _close_wild_training_guard("wild_training_send_cancelled", now)
         raise
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
+        send_block = get_last_game_send_block(get_current_identity_id(), command)
         if was_last_game_send_blocked_by_global(get_current_identity_id(), command):
             state["wild_training_retry_count"] = 0
             state["wild_training_reply_to_msg_id"] = 0
@@ -767,6 +761,16 @@ async def _run_wild_training_scheduler_unlocked(now):
             state["wild_training_last_error"] = ""
             state["next_wild_training_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
             save_state()
+            return
+        if str(send_block.get("code") or "") == "send_queue_timeout":
+            state["wild_training_reply_to_msg_id"] = 0
+            state["wild_training_reply_due_at"] = 0
+            state["wild_training_last_result"] = "发送队列拥堵，未发出，延后重试"
+            state["wild_training_last_result_at"] = 0
+            state["wild_training_last_error"] = "野外历练排队超时未发送，延后重试"
+            _schedule_retry(sent_at)
+            save_state()
+            await send_audit_log(f"⏳ {state['wild_training_last_error']}。", scope="identity")
             return
         retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         if await _defer_wild_training_for_dungeon_quiet(

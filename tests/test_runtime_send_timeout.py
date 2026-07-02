@@ -153,6 +153,58 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(runtime._GAME_SEND_LOCK.locked())
         self.assertEqual(2, len(client.sent_requests))
 
+    async def test_send_queue_timeout_releases_action_guard_placeholder(self):
+        send_as_id = 301299112
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["action_guard_sessions"] = {
+                "wild_training": {
+                    "action_key": "wild_training",
+                    "kind": "high_risk",
+                    "label": "野外历练",
+                    "attempt": 0,
+                    "first_sent_at": 0,
+                    "last_sent_at": 0,
+                    "next_allowed_at": 0,
+                    "last_msg_id": 0,
+                    "last_command": ".野外历练 谨慎",
+                }
+            }
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=0),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(10.0, 10.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+            ):
+                stack.enter_context(patcher)
+
+            result = await asyncio.wait_for(
+                runtime.send_game_command(
+                    ".野外历练 谨慎",
+                    send_as_id=send_as_id,
+                    priority="normal",
+                    track=False,
+                    queue_timeout=0.01,
+                ),
+                timeout=1,
+            )
+
+        self.assertIsNone(result)
+        self.assertFalse(runtime._GAME_SEND_LOCK.locked())
+        self.assertNotIn("wild_training", state_module.get_identity_state(send_as_id)["action_guard_sessions"])
+        self.assertEqual(
+            "send_queue_timeout",
+            runtime.get_last_game_send_block(send_as_id, ".野外历练 谨慎")["code"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

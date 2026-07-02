@@ -2179,11 +2179,8 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("sending", result["phase"])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 1))
 
-    async def test_timeline_send_wait_timeout_closes_guard_placeholder(self):
+    async def test_timeline_send_queue_timeout_waits_for_calibration(self):
         now = 1_780_000_000.0
-
-        async def slow_send(*_args, **_kwargs):
-            await asyncio.sleep(10)
 
         with state_module.use_identity(self.identity_id):
             self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
@@ -2202,15 +2199,18 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             }
             config = dict(state_module.state["tianxing_auto_config"])
             config["send_timeout_sec"] = 1
-            with patch.object(tianxing, "save_state"), patch.object(tianxing, "send_game_command", new=slow_send):
+            with patch.object(tianxing, "save_state"), \
+                 patch.object(tianxing, "send_game_command", new=AsyncMock(return_value=None)) as send_mock, \
+                 patch.object(tianxing, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}):
                 result = await tianxing.run_tianxing_timeline_scheduler(now, windows=self._farm_windows(now), config=config)
             timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
 
+        send_mock.assert_awaited_once()
+        self.assertEqual(1, send_mock.await_args.kwargs["queue_timeout"])
         self.assertEqual("ack_timeout", result["phase"])
         self.assertEqual("ack_timeout", timeline["active_step"]["status"])
-        self.assertEqual("send_wait_timeout", timeline["audit"][-1]["event"])
-        self.assertNotIn("tianxing_predict", state_module.state["action_guard_sessions"])
-        self.assertIn("超过 1s", timeline["last_error"])
+        self.assertEqual("send_queue_timeout", timeline["audit"][-1]["event"])
+        self.assertIn("未发送", timeline["last_error"])
 
     def test_timeline_send_timeout_upgrades_legacy_default(self):
         self.assertEqual(

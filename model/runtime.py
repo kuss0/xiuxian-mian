@@ -347,6 +347,10 @@ DUNGEON_QUIET_ALLOWED_PREFIXES = (
 )
 
 
+class GameSendQueueTimeout(TimeoutError):
+    """Raised when a command waits in the local send queue too long before RPC send."""
+
+
 def register_game_command_sent_observer(observer):
     if callable(observer) and observer not in _GAME_COMMAND_SENT_OBSERVERS:
         _GAME_COMMAND_SENT_OBSERVERS.append(observer)
@@ -423,6 +427,17 @@ def get_last_game_send_block(send_as_id=None, command=None, *, max_age_sec=300):
         if age <= max(1, float(max_age_sec or 0)):
             return dict(payload)
     return {}
+
+
+def _close_guard_for_unsent_command(command, send_as_id, reason, now=None):
+    family = resolve_reply_family(command)
+    if not family:
+        return False
+    try:
+        return bool(action_guard_close_by_family(family, send_as_id=send_as_id, reason=reason, now=now or time.time()))
+    except Exception:
+        traceback.print_exc()
+        return False
 
 
 def was_last_game_send_blocked_by_global(send_as_id=None, command=None, *, max_age_sec=300):
@@ -746,7 +761,7 @@ def get_game_send_queue_snapshot():
 
 
 @asynccontextmanager
-async def _send_slot(priority, command=None, send_as_id=None, intent=None):
+async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue_timeout=None):
     global _GAME_LAST_SEND_AT, _GAME_SEND_QUEUE_SEQ
     bypass_gap = _send_gap_whitelist_allows(priority, command, intent=intent)
     min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
@@ -758,6 +773,14 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
     module_anchor = None
     identity_anchor = None
     not_before = 0.0
+    queue_deadline = 0.0
+    if queue_timeout is not None:
+        try:
+            timeout_value = float(queue_timeout or 0)
+        except (TypeError, ValueError, OverflowError):
+            timeout_value = 0.0
+        if timeout_value > 0:
+            queue_deadline = time.monotonic() + timeout_value
     _GAME_SEND_QUEUE_SEQ += 1
     queue_token = _GAME_SEND_QUEUE_SEQ
     _GAME_SEND_QUEUE_ITEMS[queue_token] = {
@@ -770,7 +793,18 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
     }
     try:
         while True:
-            await _GAME_SEND_LOCK.acquire()
+            if queue_deadline > 0:
+                remaining = queue_deadline - time.monotonic()
+                if remaining <= 0:
+                    _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "queue_timeout"
+                    raise GameSendQueueTimeout("local send queue wait timeout")
+                try:
+                    await asyncio.wait_for(_GAME_SEND_LOCK.acquire(), timeout=remaining)
+                except asyncio.TimeoutError as exc:
+                    _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "queue_timeout"
+                    raise GameSendQueueTimeout("local send queue wait timeout") from exc
+            else:
+                await _GAME_SEND_LOCK.acquire()
             now_mono = time.monotonic()
             current_module_last = float(_MODULE_LAST_SEND_AT.get(module_name, 0.0) or 0.0) if module_name else 0.0
             current_identity_last = float(_IDENTITY_LAST_SEND_AT.get(identity_id, 0.0) or 0.0) if identity_id > 0 else 0.0
@@ -806,7 +840,14 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None):
                     _GAME_SEND_LOCK.release()
                 return
             _GAME_SEND_LOCK.release()
-            await asyncio.sleep(min(wait, 5.0))
+            if queue_deadline > 0:
+                remaining = queue_deadline - time.monotonic()
+                if remaining <= 0:
+                    _GAME_SEND_QUEUE_ITEMS.get(queue_token, {})["status"] = "queue_timeout"
+                    raise GameSendQueueTimeout("local send queue wait timeout")
+                await asyncio.sleep(min(wait, 5.0, remaining))
+            else:
+                await asyncio.sleep(min(wait, 5.0))
     finally:
         _GAME_SEND_QUEUE_ITEMS.pop(queue_token, None)
 _ui_login_tokens = {}
@@ -2765,6 +2806,7 @@ async def send_game_command(
     op_id=None,
     chain_id=None,
     delete_policy=None,
+    queue_timeout=None,
 ):
     if send_as_id is None:
         send_as_id = get_current_identity_id()
@@ -2843,7 +2885,7 @@ async def send_game_command(
             _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
             return None
 
-        async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent):
+        async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=queue_timeout):
             if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
                 _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
                 return None
@@ -3054,6 +3096,20 @@ async def send_game_command(
             )
             _clear_game_send_block(send_as_id, command)
             return msg
+    except GameSendQueueTimeout:
+        _close_guard_for_unsent_command(command, send_as_id, "send_queue_timeout")
+        await send_audit_log(
+            (
+                f"⏳ 指令排队超时未发送：{_truncate_log_text(command, limit=48)} | "
+                f">{int(float(queue_timeout or 0))}s | "
+                f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+            ),
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=240,
+        )
+        _record_game_send_block(send_as_id, command, "send_queue_timeout", f">{int(float(queue_timeout or 0))}s")
+        return None
     except asyncio.TimeoutError:
         await send_audit_log(
             (

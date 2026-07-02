@@ -26,7 +26,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..persistence import save_state
-from ..runtime import console_log, register_game_command_pre_send_guard, send_game_command
+from ..runtime import console_log, get_last_game_send_block, register_game_command_pre_send_guard, send_game_command
 from ..state import get_current_identity_id, is_module_available, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, get_day_key, has_wait_time, parse_wait_time
 from ._phaseful import get_phaseful_summary_risk_reason
@@ -3643,25 +3643,14 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
 
     send_timeout = _effective_tianxing_timeline_send_timeout(config)
     try:
-        msg = await asyncio.wait_for(
-            send_game_command(
-                plan["command"],
-                track=True,
-                max_retry=0,
-                priority="normal",
-                source_module="天星宗",
-                op_id=f"tianxing-timeline-{action}-{int(now)}",
-            ),
-            timeout=max(1, send_timeout),
-        )
-    except asyncio.TimeoutError:
-        return _mark_tianxing_timeline_send_unknown(
-            timeline,
-            step,
-            now,
-            config,
-            reason=f"天星时间线发送等待超过 {send_timeout}s，等待查盘校准；不重复发送。",
-            event="send_wait_timeout",
+        msg = await send_game_command(
+            plan["command"],
+            track=True,
+            max_retry=0,
+            priority="normal",
+            source_module="天星宗",
+            op_id=f"tianxing-timeline-{action}-{int(now)}",
+            queue_timeout=max(1, send_timeout),
         )
     except asyncio.CancelledError:
         _mark_tianxing_timeline_send_unknown(
@@ -3682,6 +3671,16 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         if not sent_at_dirty and parsed_sent_at > 0:
             sent_at = parsed_sent_at
     if not msg:
+        send_block = get_last_game_send_block(get_current_identity_id(), plan["command"])
+        if str(send_block.get("code") or "") == "send_queue_timeout":
+            return _mark_tianxing_timeline_send_unknown(
+                timeline,
+                step,
+                now,
+                config,
+                reason=f"天星时间线排队超过 {send_timeout}s 未发送，等待查盘校准；不重复发送。",
+                event="send_queue_timeout",
+            )
         return _mark_tianxing_timeline_send_unknown(
             timeline,
             step,
