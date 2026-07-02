@@ -38,7 +38,9 @@ COOLDOWN_REPLY_PATTERN = re.compile(
     r"请在\s*\S+\s*后再试|无法立即|尚在\S*冷却中|尚未重启|灵气尚未平复|梦图感应尚未重启|天机链路尚未重铸"
 )
 MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
-BENIGN_MODULE_ERROR_PATTERN = re.compile(r"今日.*已达上限|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次")
+BENIGN_MODULE_ERROR_PATTERN = re.compile(
+    r"今日.*已达上限|今日.*已达\s*\d+\s*轮|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次|回到时间线重算|需重算时间线|不连续查盘"
+)
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
 GUARDED_COMMAND_REPEAT_ALERT_MIN = 4
 GUARDED_COMMAND_REPEAT_ALERT_MIN_BY_COMMAND = {
@@ -1101,7 +1103,17 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                 if text:
                     add_module_detail(details, str(label_text), text)
                     if enabled and module_error_needs_attention(text):
-                        error = True
+                        scheduled_retry = (
+                            "发送失败或被安全策略拦截" in text
+                            and any(
+                                positive_epoch(value_for(str(next_field))) > now
+                                for next_field, _next_label in spec.get("next_fields", ())
+                            )
+                        )
+                        if scheduled_retry:
+                            warn = True
+                        else:
+                            error = True
 
             if not enabled and not pending and not flags and not error and not warn:
                 continue

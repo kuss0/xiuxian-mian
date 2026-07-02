@@ -691,6 +691,37 @@ class HealthObserverTests(unittest.TestCase):
         hehuan = next(item for item in summary if item["module"] == "hehuan")
         self.assertEqual("warn", hehuan["status"])
 
+    def test_module_summary_treats_scheduled_last_error_send_failure_as_warn(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, wild_training_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_wild_training_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+                    wild_training_last_result TEXT NOT NULL DEFAULT '',
+                    wild_training_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now + 300,))
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, wild_training_last_result, wild_training_last_error) VALUES(42, ?, ?)",
+                ("天星先炼制消费推命：send_blocked_waiting", ".炼制 玄铁剑 发送失败或被安全策略拦截。"),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        wild = next(item for item in summary if item["module"] == "wild_training")
+        self.assertEqual("warn", wild["status"])
+
     def test_module_summary_ignores_legacy_hehuan_auto_error_after_success(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
@@ -770,6 +801,55 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("ok", tianxing["status"])
         self.assertTrue(any("推命:探索" in item for item in tianxing["details"]))
         self.assertFalse(any(item.startswith("错误:") or item.startswith("自动错误:") for item in tianxing["details"]))
+
+    def test_module_summary_treats_tianxing_daily_limit_and_replan_as_state(self):
+        now = 1_780_500_000.0
+        observation = json.dumps({
+            "last_observed_at": now - 30,
+            "last_action": "天机盘",
+            "last_result": "panel",
+            "fixed_star": "太阴",
+            "current_prediction": "探索",
+            "current_prediction_until": now + 3600,
+            "tianji_value": 30,
+            "auto_last_action": "craft_farm",
+            "auto_last_error": "炼制攒点今日已达 42 轮。",
+            "auto_next_time": now + 6 * 3600,
+        }, ensure_ascii=False)
+        timeline = json.dumps({
+            "phase": "blocked_replan",
+            "route": "探索",
+            "last_error": "天机盘校准回复超时，回到时间线重算；不连续查盘。",
+            "blocked_until": now - 60,
+            "active_step": {},
+        }, ensure_ascii=False)
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, tianxing_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    tianxing_observation TEXT NOT NULL DEFAULT '{}',
+                    tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
+                    tianxing_auto_config TEXT NOT NULL DEFAULT '{}'
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tutuerduoxiao')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, tianxing_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id) VALUES(42)")
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, tianxing_observation, tianxing_timeline_state) VALUES(42, ?, ?)",
+                (observation, timeline),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        tianxing = next(item for item in summary if item["module"] == "tianxing")
+        self.assertEqual("ok", tianxing["status"])
 
     def test_module_summary_ignores_tianxing_send_failure_when_prediction_is_stable(self):
         now = 1_780_500_000.0
