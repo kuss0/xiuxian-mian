@@ -275,6 +275,31 @@ def _tianxing_explore_change_ready(now):
     )
 
 
+def _pull_ready_tianxing_explore_retry(now, next_explore_rift_time):
+    if float(next_explore_rift_time or 0) <= float(now or 0):
+        return False
+    if int(state.get("explore_rift_reply_to_msg_id", 0) or 0) > 0:
+        return False
+    if int(state.get("explore_rift_pending_result_msg_id", 0) or 0) > 0:
+        return False
+    if not _tianxing_explore_change_ready(now):
+        return False
+    last_result = str(state.get("explore_rift_last_result") or "").strip()
+    if not (
+        last_result.startswith("天星时间线：")
+        or last_result.startswith("天星先炼制消费推命：")
+    ):
+        return False
+    if float(next_explore_rift_time or 0) - float(now or 0) > RETRY_MAX_SEC + 60:
+        return False
+    state["next_explore_rift_time"] = float(now)
+    state["explore_rift_tianxing_prepare_retry_at"] = 0
+    state["explore_rift_last_error"] = ""
+    save_state()
+    console_log("🕳 探寻裂缝天星前置已就绪，拉回到期时间立即消费。", scope="identity")
+    return True
+
+
 def _is_explore_rift_reply(reply_to=None, matched_family=None):
     if matched_family == "explore_rift":
         return True
@@ -1067,6 +1092,8 @@ async def run_explore_rift_scheduler(now):
         return
 
     next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
+    if _pull_ready_tianxing_explore_retry(now, next_explore_rift_time):
+        next_explore_rift_time = float(state.get("next_explore_rift_time", 0) or 0)
     if next_explore_rift_time > now:
         windows = build_tianxing_consume_window(
             "探索",
