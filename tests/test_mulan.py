@@ -41,8 +41,36 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
 
     def test_judgement_classifier_is_conservative(self):
         self.assertEqual("reliable", mulan.classify_mulan_judgement("研判较高，情报可靠，可公开。"))
+        self.assertEqual("reliable", mulan.classify_mulan_judgement("稳定 较高：前线线索可信。"))
         self.assertEqual("suspicious", mulan.classify_mulan_judgement("研判可疑，不可靠。"))
+        self.assertEqual("suspicious", mulan.classify_mulan_judgement("稳定 可疑：疑点较多。"))
         self.assertEqual("unknown", mulan.classify_mulan_judgement("长老沉吟不语。"))
+
+    def test_fixed_report_examples_have_direct_verdicts_and_routes(self):
+        now = 1_700_000_000.0
+        reliable_examples = {
+            "今夜圣灯换焰，主灯会短暂离开护灯法士三十息": "破灯",
+            "边境粮道将过西岭，阵师缺人护送一批阵旗": "护阵",
+            "法士营北帐换防，附灵蛇胆与妖丹暂存在同一灵袋": "奇袭",
+            "有小股法士借草沟绕行，似在寻找黄龙山外阵缺口": "斥候",
+        }
+        for report_text, action in reliable_examples.items():
+            with self.subTest(report_text=report_text):
+                intel = mulan._known_mulan_intel(report_text, now)
+                self.assertEqual("reliable", intel.get("verdict"))
+                self.assertEqual(action, intel.get("support_action"))
+
+        suspicious_examples = (
+            "黄龙阵旗已全部撤回，护阵路线今日无事",
+            "圣灯已熄，只需正面冲阵便可夺灯",
+            "慕兰主力已退三百里，草原前线今日几乎无兵",
+            "南营无人防守，所有法士都在主帐议事",
+        )
+        for report_text in suspicious_examples:
+            with self.subTest(report_text=report_text):
+                intel = mulan._known_mulan_intel(report_text, now)
+                self.assertEqual("suspicious", intel.get("verdict"))
+                self.assertEqual("", intel.get("support_action"))
 
     def test_action_guard_resolves_mulan_commands(self):
         self.assertEqual("mulan_collect", action_guard.resolve_action_key(".搜集军报"))
@@ -174,6 +202,37 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([".公开军报 1"], sent_commands)
             self.assertEqual("publish_pending", state_module.state["mulan_phase"])
 
+    async def test_fixed_reliable_report_publishes_without_judging(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        sent_commands = []
+
+        async def fake_send(command, **kwargs):
+            sent_commands.append(command)
+            return SimpleNamespace(id=3000 + len(sent_commands), sent_at=now + len(sent_commands))
+
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "ready_to_judge"
+            state_module.state["mulan_pending_ids"] = "1,2"
+            state_module.state["mulan_report_texts"] = {
+                "1": "圣灯已熄，只需正面冲阵便可夺灯。",
+                "2": "法士营北帐换防，附灵蛇胆与妖丹暂存在同一灵袋。",
+            }
+            with (
+                patch.object(mulan, "send_game_command", new=fake_send),
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()),
+            ):
+                await mulan.run_mulan_scheduler(now + 1)
+                self.assertEqual("ready_to_publish", state_module.state["mulan_phase"])
+                self.assertEqual(2, state_module.state["mulan_public_id"])
+                self.assertEqual([], sent_commands)
+                await mulan.run_mulan_scheduler(now + 2)
+
+            self.assertEqual([".公开军报 2"], sent_commands)
+            self.assertEqual("publish_pending", state_module.state["mulan_phase"])
+
     async def test_shared_suspicious_reports_skip_to_text_support_without_judging(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -199,6 +258,35 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual("ready_to_support", state_module.state["mulan_phase"])
                 self.assertEqual("护阵", state_module.state["mulan_support_action"])
                 self.assertEqual([], sent_commands)
+                await mulan.run_mulan_scheduler(now + 2)
+
+            self.assertEqual([".支援慕兰 护阵"], sent_commands)
+
+    async def test_fixed_suspicious_reports_do_not_drive_risky_fallback(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        sent_commands = []
+
+        async def fake_send(command, **kwargs):
+            sent_commands.append(command)
+            return SimpleNamespace(id=3000 + len(sent_commands), sent_at=now + len(sent_commands))
+
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = "ready_to_judge"
+            state_module.state["mulan_pending_ids"] = "1,2"
+            state_module.state["mulan_report_texts"] = {
+                "1": "圣灯已熄，只需正面冲阵便可夺灯。",
+                "2": "南营无人防守，所有法士都在主帐议事。",
+            }
+            with (
+                patch.object(mulan, "send_game_command", new=fake_send),
+                patch.object(mulan, "save_state"),
+                patch.object(mulan, "send_audit_log", new=AsyncMock()),
+            ):
+                await mulan.run_mulan_scheduler(now + 1)
+                self.assertEqual("ready_to_support", state_module.state["mulan_phase"])
+                self.assertEqual("护阵", state_module.state["mulan_support_action"])
                 await mulan.run_mulan_scheduler(now + 2)
 
             self.assertEqual([".支援慕兰 护阵"], sent_commands)
@@ -432,7 +520,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 3723 + mulan.CD_BUFFER_SEC, state_module.state["next_mulan_time"])
             self.assertEqual("冷却中", state_module.state["mulan_last_result"])
 
-    async def test_daily_done_reply_moves_to_support_panel_without_judging(self):
+    async def test_daily_done_reply_moves_to_support_without_judging(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
         with state_module.use_identity(identity_id):
@@ -457,8 +545,9 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 )
 
             self.assertTrue(handled)
-            self.assertEqual("ready_to_panel", state_module.state["mulan_phase"])
+            self.assertEqual("ready_to_support", state_module.state["mulan_phase"])
             self.assertIn("军报已处理", state_module.state["mulan_last_result"])
+            self.assertEqual("护阵", state_module.state["mulan_support_action"])
             self.assertEqual(0, state_module.state["mulan_current_id"])
             self.assertNotIn("mulan_collect", state_module.state["action_guard_sessions"])
 
@@ -469,7 +558,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 await mulan.run_mulan_scheduler(now + 1)
 
             send_mock.assert_awaited_once()
-            self.assertEqual(".边境军功", send_mock.await_args.args[0])
+            self.assertEqual(".支援慕兰 护阵", send_mock.await_args.args[0])
 
 
 if __name__ == "__main__":

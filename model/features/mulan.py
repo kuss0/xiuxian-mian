@@ -64,6 +64,19 @@ MULAN_SUPPORT_ROUTE_TO_ACTION = {
     "夜袭法士营": "奇袭",
 }
 MULAN_SUPPORT_ACTIONS = ("斥候", "破灯", "护阵", "奇袭")
+MULAN_FIXED_REPORTS = {
+    report_text: (verdict, action)
+    for report_text, verdict, action in (
+        ("今夜圣灯换焰，主灯会短暂离开护灯法士三十息", "reliable", "破灯"),
+        ("边境粮道将过西岭，阵师缺人护送一批阵旗", "reliable", "护阵"),
+        ("法士营北帐换防，附灵蛇胆与妖丹暂存在同一灵袋", "reliable", "奇袭"),
+        ("有小股法士借草沟绕行，似在寻找黄龙山外阵缺口", "reliable", "斥候"),
+        ("黄龙阵旗已全部撤回，护阵路线今日无事", "suspicious", ""),
+        ("圣灯已熄，只需正面冲阵便可夺灯", "suspicious", ""),
+        ("慕兰主力已退三百里，草原前线今日几乎无兵", "suspicious", ""),
+        ("南营无人防守，所有法士都在主帐议事", "suspicious", ""),
+    )
+}
 
 RELIABLE_KEYWORDS = (
     "可靠性较高",
@@ -194,6 +207,23 @@ def _report_key(text):
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
 
 
+def _fixed_mulan_intel(report_text):
+    normalized = _normalize_report_text(report_text)
+    verdict, action = MULAN_FIXED_REPORTS.get(normalized, ("", ""))
+    if not verdict:
+        return {}
+    return {
+        "verdict": verdict,
+        "text": str(report_text or "").strip(),
+        "report_id": 0,
+        "support_action": action,
+        "support_route": "",
+        "source_identity_id": 0,
+        "updated_at": 0,
+        "fixed": True,
+    }
+
+
 def parse_mulan_report_texts(text):
     report_texts = {}
     for raw_line in str(text or "").splitlines():
@@ -313,6 +343,9 @@ def _record_mulan_intel(report_text, verdict, now, *, report_id=0, support_actio
 
 
 def _known_mulan_intel(report_text, now):
+    fixed = _fixed_mulan_intel(report_text)
+    if fixed:
+        return fixed
     key = _report_key(report_text)
     if not key:
         return {}
@@ -344,9 +377,11 @@ def _support_action_from_panel(text):
     return _heuristic_support_action_from_text(match.group(1))
 
 
-def _fallback_support_action(report_texts):
+def _fallback_support_action(report_texts, now=None):
     scored = []
     for report_id, text in (report_texts or {}).items():
+        if now is not None and _known_mulan_intel(text, now).get("verdict") == "suspicious":
+            continue
         action = _heuristic_support_action_from_text(text)
         if action == "护阵":
             score = 0
@@ -395,7 +430,7 @@ def _prepare_mulan_support(now, action, *, result="准备支援"):
 def _prepare_conservative_support_or_panel(now, result="按文本保守支援", *, pending_ids=None):
     report_texts = _report_texts_for_pending_ids(pending_ids)
     if report_texts:
-        _prepare_mulan_support(now, _fallback_support_action(report_texts), result=result)
+        _prepare_mulan_support(now, _fallback_support_action(report_texts, now), result=result)
         return True
     state["mulan_phase"] = MULAN_PHASE_READY_TO_PANEL
     state["mulan_last_result"] = f"{result}，缺文本需校准"
@@ -696,7 +731,7 @@ def _prepare_conservative_support(now, result="无可靠军报，保守支援"):
     report_texts = state.get("mulan_report_texts")
     if not isinstance(report_texts, dict):
         report_texts = {}
-    action = _fallback_support_action(report_texts)
+    action = _fallback_support_action(report_texts, now)
     _prepare_mulan_support(now, action, result=result)
 
 
@@ -736,7 +771,7 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
                 action = _support_action_from_known_reliable(now, pending_ids)
             if not action:
                 report_texts = state.get("mulan_report_texts") if isinstance(state.get("mulan_report_texts"), dict) else {}
-                action = _fallback_support_action(report_texts)
+                action = _fallback_support_action(report_texts, now)
             _prepare_mulan_support(now, action, result="军功面板校准后支援")
             save_state()
             return True
@@ -747,7 +782,9 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
             if action:
                 _prepare_mulan_support(now, action, result="军报已处理，接支援")
             else:
-                _prepare_conservative_support_or_panel(now, "军报已处理，按文本支援", pending_ids=pending_ids)
+                report_texts = _report_texts_for_pending_ids(pending_ids)
+                action = _fallback_support_action(report_texts, now) if report_texts else "护阵"
+                _prepare_mulan_support(now, action, result="军报已处理，保守支援")
             _clear_mulan_pending()
             save_state()
             return True
@@ -963,7 +1000,7 @@ async def run_mulan_scheduler(now):
         action = str(state.get("mulan_support_action") or "").strip()
         if action not in MULAN_SUPPORT_ACTIONS:
             report_texts = state.get("mulan_report_texts") if isinstance(state.get("mulan_report_texts"), dict) else {}
-            action = _fallback_support_action(report_texts)
+            action = _fallback_support_action(report_texts, now)
             state["mulan_support_action"] = action
         await _send_mulan_command(f"{CMD_MULAN_SUPPORT} {action}", now, MULAN_PHASE_SUPPORT_PENDING)
         return
