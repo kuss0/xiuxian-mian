@@ -6,7 +6,8 @@ import sys
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -104,6 +105,36 @@ class _FakeLoginClient:
         return _FakeQrLogin()
 
 
+class _FakePhoneLoginClient:
+    def __init__(self, *, code_delay=0):
+        self.code_delay = code_delay
+        self.connect_count = 0
+        self.disconnect_count = 0
+        self.send_code_count = 0
+        self.sign_in_calls = []
+
+    async def connect(self):
+        self.connect_count += 1
+
+    async def disconnect(self):
+        self.disconnect_count += 1
+
+    async def send_code_request(self, phone):
+        self.send_code_count += 1
+        if self.code_delay:
+            await asyncio.sleep(self.code_delay)
+        return SimpleNamespace(phone_code_hash="hash-123")
+
+    async def sign_in(self, phone=None, code=None, *, phone_code_hash=None, password=None):
+        self.sign_in_calls.append({
+            "phone": phone,
+            "code": code,
+            "phone_code_hash": phone_code_hash,
+            "password": password,
+        })
+        return SimpleNamespace(id=111)
+
+
 class AccountLoginConcurrencyTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         ui._pending_login.clear()
@@ -151,6 +182,47 @@ class AccountLoginConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("error", status["status"])
         self.assertIn("Telegram 连接超时", status["message"])
         self.assertGreaterEqual(client.disconnect_count, 1)
+
+    async def test_phone_code_send_timeout_keeps_pending_login_for_manual_code(self):
+        client = _FakePhoneLoginClient(code_delay=0.05)
+        with patch.object(ui, "create_account_client", return_value=client), \
+                patch.object(ui, "ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC", 0.01):
+            ok, message, _extra = await ui.ui_account_login_start("+8613800138000", "phone-timeout")
+
+        self.assertTrue(ok)
+        self.assertIn("直接输入", message)
+        pending = ui._pending_login["phone-timeout"]
+        self.assertEqual("waiting_code", pending["status"])
+        self.assertIsNotNone(pending["phone_code_task"])
+
+        await asyncio.wait_for(pending["phone_code_task"], timeout=1)
+        pending_after = ui._pending_login["phone-timeout"]
+        self.assertEqual("waiting_code", pending_after["status"])
+        self.assertEqual("hash-123", pending_after["phone_code_hash"])
+        self.assertIsNone(pending_after["phone_code_task"])
+
+    async def test_phone_verify_waits_for_delayed_code_hash(self):
+        client = _FakePhoneLoginClient(code_delay=0.03)
+        with patch.object(ui, "create_account_client", return_value=client), \
+                patch.object(ui, "ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC", 0.01):
+            ok, _message, _extra = await ui.ui_account_login_start("+8613800138000", "phone-verify")
+
+        self.assertTrue(ok)
+        with patch.object(ui, "_finalize_account_login", new=AsyncMock(return_value=(True, "登录成功", 111))):
+            ok, message, account_id = await ui.ui_account_login_verify("12345", "phone-verify")
+
+        self.assertTrue(ok)
+        self.assertEqual("登录成功", message)
+        self.assertEqual(111, account_id)
+        self.assertEqual(
+            {
+                "phone": "+8613800138000",
+                "code": "12345",
+                "phone_code_hash": "hash-123",
+                "password": None,
+            },
+            client.sign_in_calls[-1],
+        )
 
 
 if __name__ == "__main__":

@@ -4873,8 +4873,9 @@ _pending_login_locks = {}
 ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC = 10
 ACCOUNT_LOGIN_QR_CONNECT_TIMEOUT_SEC = 45
 ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC = 12
-ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC = 5
+ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC = 15
 ACCOUNT_LOGIN_QR_REUSE_MIN_REMAINING_SEC = 10
+ACCOUNT_LOGIN_PHONE_CODE_CONFIRM_WAIT_SEC = 8
 
 
 def _get_pending_login_lock(session_key):
@@ -5100,19 +5101,17 @@ async def _clear_pending_login(session_key, *, disconnect=True, remove_temp_file
         return
 
     current_task = asyncio.current_task()
-    for task_key in ("wait_task", "prepare_task"):
+    for task_key in ("wait_task", "prepare_task", "phone_code_task"):
         pending_task = pending.get(task_key)
         if pending_task and pending_task is not current_task and not pending_task.done():
             pending_task.cancel()
 
     tc = pending.get("client")
+    disconnected = True
     if disconnect and tc:
-        try:
-            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
-        except Exception:
-            pass
+        disconnected = await _disconnect_pending_login_client(tc)
 
-    if remove_temp_files:
+    if remove_temp_files and (disconnected or not tc):
         _cleanup_pending_temp_session_files(session_key)
 
 
@@ -5140,6 +5139,16 @@ def _build_qr_svg_markup(qr_url):
         return ""
 
 
+async def _disconnect_pending_login_client(tc):
+    if tc is None:
+        return True
+    try:
+        await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
+        return True
+    except Exception:
+        return False
+
+
 async def _finalize_account_login(session_key, tc, *, flow_id=None):
     me = await tc.get_me()
     account_id = int(getattr(me, "id", 0) or 0)
@@ -5160,7 +5169,7 @@ async def _finalize_account_login(session_key, tc, *, flow_id=None):
     api_id = pending.get("api_id") if isinstance(pending, dict) else None
     api_hash = pending.get("api_hash") if isinstance(pending, dict) else None
 
-    await tc.disconnect()
+    await _disconnect_pending_login_client(tc)
 
     from .config import SESSION_DIR
 
@@ -5217,11 +5226,9 @@ async def _wait_pending_qr_login(session_key, flow_id, tc, qr_login):
     try:
         await qr_login.wait()
     except asyncio.TimeoutError:
-        try:
-            await tc.disconnect()
-        except Exception:
-            pass
-        _cleanup_pending_temp_session_files(session_key)
+        disconnected = await _disconnect_pending_login_client(tc)
+        if disconnected:
+            _cleanup_pending_temp_session_files(session_key)
         _set_pending_login_state(
             session_key,
             flow_id,
@@ -5246,11 +5253,9 @@ async def _wait_pending_qr_login(session_key, flow_id, tc, qr_login):
                 qr_expires_at=0,
             )
             return
-        try:
-            await tc.disconnect()
-        except Exception:
-            pass
-        _cleanup_pending_temp_session_files(session_key)
+        disconnected = await _disconnect_pending_login_client(tc)
+        if disconnected:
+            _cleanup_pending_temp_session_files(session_key)
         _set_pending_login_state(
             session_key,
             flow_id,
@@ -5310,17 +5315,12 @@ async def _prepare_pending_qr_login(session_key, flow_id, tc):
         )
         expires_at = float(qr_login.expires.timestamp()) if getattr(qr_login, "expires", None) else 0
     except asyncio.CancelledError:
-        try:
-            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
-        except Exception:
-            pass
+        await _disconnect_pending_login_client(tc)
         raise
     except Exception as e:
-        try:
-            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
-        except Exception:
-            pass
-        _cleanup_pending_temp_session_files(session_key)
+        disconnected = await _disconnect_pending_login_client(tc)
+        if disconnected:
+            _cleanup_pending_temp_session_files(session_key)
         _set_pending_login_state(
             session_key,
             flow_id,
@@ -5336,10 +5336,7 @@ async def _prepare_pending_qr_login(session_key, flow_id, tc):
 
     pending = _pending_login.get(session_key)
     if not pending or str(pending.get("flow_id") or "") != str(flow_id):
-        try:
-            await asyncio.wait_for(tc.disconnect(), timeout=ACCOUNT_LOGIN_DISCONNECT_TIMEOUT_SEC)
-        except Exception:
-            pass
+        await _disconnect_pending_login_client(tc)
         return
 
     _set_pending_login_state(
@@ -5369,6 +5366,37 @@ def _parse_account_login_api(api_id=None, api_hash=None):
     if parsed_api_id <= 0:
         raise ValueError("API_ID 必须大于 0")
     return parsed_api_id, api_hash_text
+
+
+async def _send_pending_phone_code(session_key, flow_id, tc, phone):
+    try:
+        sent = await tc.send_code_request(phone)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        disconnected = await _disconnect_pending_login_client(tc)
+        if disconnected:
+            _cleanup_pending_temp_session_files(session_key)
+        _set_pending_login_state(
+            session_key,
+            flow_id,
+            status="error",
+            message=_format_account_login_error("发送验证码失败", e),
+            client=None,
+            phone_code_task=None,
+            phone_code_hash="",
+        )
+        return False
+
+    _set_pending_login_state(
+        session_key,
+        flow_id,
+        status="waiting_code",
+        message="验证码已发送，请查收",
+        phone_code_hash=getattr(sent, "phone_code_hash", "") or "",
+        phone_code_task=None,
+    )
+    return True
 
 
 async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None):
@@ -5405,6 +5433,7 @@ async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None)
             "qr_url": "",
             "qr_expires_at": 0,
             "wait_task": None,
+            "phone_code_task": None,
             "flow_id": flow_id,
             "account_id": 0,
             "api_id": parsed_api_id,
@@ -5412,15 +5441,26 @@ async def ui_account_login_start(phone, session_key, api_id=None, api_hash=None)
         }
         try:
             await asyncio.wait_for(tc.connect(), timeout=ACCOUNT_LOGIN_CONNECT_TIMEOUT_SEC)
-            sent = await asyncio.wait_for(tc.send_code_request(phone), timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC)
+        except Exception as e:
+            await _clear_pending_login(session_key, remove_temp_files=True)
+            return False, _format_account_login_error("发送验证码失败", e), None
+
+        phone_code_task = asyncio.create_task(_send_pending_phone_code(session_key, flow_id, tc, phone))
+        _set_pending_login_state(session_key, flow_id, phone_code_task=phone_code_task)
+        try:
+            sent_ok = await asyncio.wait_for(asyncio.shield(phone_code_task), timeout=ACCOUNT_LOGIN_ACTION_TIMEOUT_SEC)
+            if not sent_ok:
+                pending_after_error = _pending_login.get(session_key) or {}
+                return False, pending_after_error.get("message") or "发送验证码失败", None
+            return True, "验证码已发送", None
+        except asyncio.TimeoutError:
             _set_pending_login_state(
                 session_key,
                 flow_id,
                 status="waiting_code",
-                message="验证码已发送，请查收",
-                phone_code_hash=sent.phone_code_hash,
+                message="验证码请求仍在确认；如果 Telegram 已收到验证码，可直接输入",
             )
-            return True, "验证码已发送", None
+            return True, "验证码请求仍在确认；如果已收到验证码，请直接输入", None
         except Exception as e:
             await _clear_pending_login(session_key, remove_temp_files=True)
             return False, _format_account_login_error("发送验证码失败", e), None
@@ -5519,6 +5559,27 @@ async def ui_account_login_verify(code, session_key, password=None):
         flow_id = pending.get("flow_id")
         status = str(pending.get("status") or "")
         code = (code or "").strip()
+
+        if mode == "phone":
+            phone_code_task = pending.get("phone_code_task")
+            if phone_code_task and not phone_code_task.done():
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(phone_code_task),
+                        timeout=ACCOUNT_LOGIN_PHONE_CODE_CONFIRM_WAIT_SEC,
+                    )
+                except asyncio.TimeoutError:
+                    return False, "验证码请求仍在确认，请稍后再验证", None
+                pending = _pending_login.get(session_key)
+                if not pending:
+                    return False, "登录会话已过期，请重新开始", None
+                tc = pending.get("client")
+                phone = pending.get("phone") or phone
+                phone_code_hash = pending.get("phone_code_hash") or ""
+                flow_id = pending.get("flow_id")
+                status = str(pending.get("status") or "")
+            if status == "error":
+                return False, pending.get("message") or "发送验证码失败，请重新开始", None
 
         if mode == "qr" and password and status != "need_2fa":
             return False, "当前二维码登录尚未进入两步验证", None
