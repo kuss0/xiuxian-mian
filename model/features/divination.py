@@ -38,7 +38,7 @@ from .storage_bag import (
 
 DIVINATION_EXCHANGE_WINDOW_SEC = 5 * 60
 DIVINATION_TRANSFER_MIN_REMAINING_SEC = 45
-DIVINATION_QUERY_GAP_SEC = 60
+DIVINATION_QUERY_GAP_SEC = 2 * 60
 DIVINATION_QUERY_REPLY_TIMEOUT_SEC = 3 * 60
 DIVINATION_SEND_FAILURE_BACKOFF_SEC = 5 * 60
 DIVINATION_MESSAGE_LOG_PREREAD_INTERVAL_SEC = 5 * 60
@@ -498,7 +498,7 @@ def _recover_identity_daily_count_from_message_log(identity_id, now):
             except (TypeError, ValueError):
                 continue
             text = payload.get("text") or ""
-            if msg_id > 0 and sender_id == identity_id and _is_divination_command_text(text):
+            if msg_id > 0 and sender_id in {identity_id, -100 * identity_id} and _is_divination_command_text(text):
                 command_msg_ids.add(msg_id)
                 continue
             daily_count = _extract_daily_count(text)

@@ -342,6 +342,20 @@ class DivinationTests(unittest.TestCase):
 
         self.assertEqual(5, observed_count)
 
+    def test_message_log_recovery_accepts_anonymous_identity_sender_id(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1_800_000_000.0
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_divination_message_log(tmpdir, now, [
+                {"event_type": "message", "message_id": 7501, "sender_id": -100 * identity_id, "text": ".卜筮问天"},
+                {"event_type": "message", "message_id": 7502, "sender_id": 8888, "reply_to_msg_id": 7501, "text": "你消耗了 20 点修为，开始转动天机罗盘... (今日第 2 次)"},
+            ])
+            with patch("model.features.divination.MESSAGES_DIR", tmpdir):
+                observed_count = divination._recover_identity_daily_count_from_message_log(identity_id, now)
+
+        self.assertEqual(2, observed_count)
+
     def test_scheduler_forces_preread_again_when_initial_start_becomes_due(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         now = 1_800_000_000.0
@@ -608,14 +622,14 @@ class DivinationTests(unittest.TestCase):
             after_timeout = state_module.get_divination_run_state()[str(identity_id)]
             self.assertEqual(5, after_timeout["count"])
             self.assertEqual("idle", after_timeout["phase"])
-            self.assertEqual(now + 60, after_timeout["next_query_at"])
+            self.assertEqual(now + divination.DIVINATION_QUERY_GAP_SEC, after_timeout["next_query_at"])
             self.assertIn("中间态超时", after_timeout["last_error"])
             self.assertEqual({}, state_module.get_identity_state(identity_id)["pending_tasks"])
 
             with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
                     patch("model.features.divination.send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=9002))) as retry_send, \
                     patch("model.features.divination.send_audit_log", new=AsyncMock()):
-                await divination.run_divination_scheduler(now + 61)
+                await divination.run_divination_scheduler(now + divination.DIVINATION_QUERY_GAP_SEC + 1)
                 return retry_send.await_args
 
         retry_args = asyncio.run(run_test())
@@ -873,7 +887,7 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(1, record["count"])
         self.assertEqual(0, record["pending_query_msg_id"])
         self.assertEqual("idle", record["phase"])
-        self.assertEqual(now + 3 + 60, record["next_query_at"])
+        self.assertEqual(now + 3 + divination.DIVINATION_QUERY_GAP_SEC, record["next_query_at"])
         self.assertIn("未计入今日次数", record["last_error"])
 
     def test_plain_final_recovers_observed_count_from_message_log_cache(self):
@@ -946,7 +960,7 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(1, record["count"])
         self.assertEqual(0, record["pending_query_msg_id"])
         self.assertEqual(0, record["pending_reply_msg_id"])
-        self.assertEqual(now + 3 + 60, record["next_query_at"])
+        self.assertEqual(now + 3 + divination.DIVINATION_QUERY_GAP_SEC, record["next_query_at"])
         self.assertEqual("", record["last_error"])
 
     def test_plain_final_edit_resolves_identity_from_pending_reply_msg_id(self):
@@ -978,7 +992,7 @@ class DivinationTests(unittest.TestCase):
         self.assertTrue(asyncio.run(run_test()))
         record = state_module.get_divination_run_state()[str(identity_id)]
         self.assertEqual(0, record["pending_query_msg_id"])
-        self.assertEqual(now + 3 + 60, record["next_query_at"])
+        self.assertEqual(now + 3 + divination.DIVINATION_QUERY_GAP_SEC, record["next_query_at"])
 
     def test_xiuwei_shortage_stops_remaining_queries_today(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
