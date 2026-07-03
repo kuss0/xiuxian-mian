@@ -93,6 +93,13 @@ class HealthObserverTests(unittest.TestCase):
             )
         )
 
+    def test_warn_line_ignores_managed_queue_timeout(self):
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
+                "[WalterWA2000] ⏳ 指令排队超时未发送：.炼制 玄铁剑 | >45s | acc=8659059191 group=-1001680975844 topic=7310786"
+            )
+        )
+
     def test_warn_line_ignores_expected_dungeon_join_miss(self):
         self.assertFalse(
             health_observer.is_warn_journal_line(
