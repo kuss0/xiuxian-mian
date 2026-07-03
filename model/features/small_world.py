@@ -34,6 +34,7 @@ SMALL_WORLD_GOD_COMMANDS = {CMD_SMALL_WORLD_PREACH, CMD_SMALL_WORLD_RELIEF}
 SMALL_WORLD_BARRIER_COMMANDS = {CMD_SMALL_WORLD_BARRIER}
 SMALL_WORLD_CHAIN_PENDING = {"query_pending", "manifest_pending", "harvest_pending", "refine_pending"}
 SMALL_WORLD_PENDING_TIMEOUT_SEC = 20 * 60
+SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC = 3 * 60
 SMALL_WORLD_REFRESH_MIN_SEC = 60
 SMALL_WORLD_REFRESH_MAX_SEC = 60
 SMALL_WORLD_MAX_REFRESH_ATTEMPTS = 7
@@ -1114,7 +1115,7 @@ async def _send_manifest(now):
     started_at = float(now or time.time())
     _set_phase("manifest_pending")
     state["small_world_manifest_msg_id"] = 0
-    state["next_small_world_time"] = started_at + SMALL_WORLD_PENDING_TIMEOUT_SEC
+    state["next_small_world_time"] = started_at + SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC
     state["small_world_last_error"] = "显灵已发起，等待回执"
     save_state()
 
@@ -1137,7 +1138,7 @@ async def _send_manifest(now):
 
     if _phase() == "manifest_pending" and int(state.get("small_world_manifest_msg_id", 0) or 0) <= 0:
         state["small_world_manifest_msg_id"] = int(getattr(msg, "id", 0) or 0)
-        state["next_small_world_time"] = sent_at + SMALL_WORLD_PENDING_TIMEOUT_SEC
+        state["next_small_world_time"] = sent_at + SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC
         state["small_world_last_error"] = ""
         save_state()
     return True
@@ -1994,6 +1995,16 @@ async def _run_small_world_scheduler(now):
         state["small_world_last_error"] = f"{phase} 等待回复超时，停止本轮"
         _clear_chain_pending()
         if phase == "manifest_pending":
+            if _has_ready_manifest_snapshot(now):
+                state["small_world_last_error"] = "显灵回执超时，复查小世界面板后再决定是否补显灵"
+                save_state()
+                await send_audit_log(
+                    "⚠️ 小世界显灵回执超时，先复查面板，避免盲目重复显灵。",
+                    scope="identity",
+                    limit=220,
+                )
+                await _send_query(now, "显灵回执超时复查")
+                return
             _schedule_next_cycle(now)
         else:
             _schedule_short_retry(now)

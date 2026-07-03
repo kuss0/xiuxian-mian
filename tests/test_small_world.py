@@ -940,7 +940,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual("manifest_pending", state_module.state["small_world_phase"])
             self.assertEqual(7605, state_module.state["small_world_manifest_msg_id"])
-            self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
+            self.assertEqual(now + 1 + small_world.SMALL_WORLD_MANIFEST_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
 
     async def test_send_query_does_not_enter_generic_retry_resend(self):
         send_as_id = 8659059299
@@ -1027,6 +1027,48 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 state_module.state["next_small_world_time"],
             )
             self.assertIn("manifest_pending 等待回复超时", state_module.state["small_world_last_error"])
+
+    async def test_manifest_timeout_rechecks_panel_when_cached_prayer_is_fresh(self):
+        send_as_id = 8659059302
+        now = 3380.0
+        state_module.ensure_identity_registered(send_as_id)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["small_world_enabled"] = True
+            state_module.state["small_world_manifest_enabled"] = True
+            state_module.state["small_world_refresh_enabled"] = True
+            state_module.state["small_world_phase"] = "manifest_pending"
+            state_module.state["small_world_manifest_msg_id"] = 7608
+            state_module.state["small_world_manifest_cost_text"] = "修为x800"
+            state_module.state["next_small_world_time"] = now - 1
+            state_module.state["small_world_panel_snapshot"] = {
+                "has_prayer": True,
+                "prayer_name": "江河决堤",
+                "manifest_cost": "修为x800",
+                "has_wait": False,
+                "updated_at": now - 120,
+            }
+
+            with (
+                patch.object(small_world, "send_game_command", new=AsyncMock(return_value=SimpleNamespace(id=7609, sent_at=now + 1))) as send_mock,
+                patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(small_world, "save_state"),
+                patch.object(small_world, "console_log"),
+            ):
+                await small_world.run_small_world_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                small_world.CMD_SMALL_WORLD_QUERY,
+                track=True,
+                max_retry=0,
+                priority="chain",
+                source_module="小世界",
+            )
+            audit_mock.assert_awaited_once()
+            self.assertEqual("query_pending", state_module.state["small_world_phase"])
+            self.assertEqual(0, state_module.state["small_world_manifest_msg_id"])
+            self.assertEqual(7609, state_module.state["small_world_query_msg_id"])
+            self.assertEqual(now + 1 + small_world.SMALL_WORLD_PENDING_TIMEOUT_SEC, state_module.state["next_small_world_time"])
 
     async def test_manifest_resource_shortage_clears_ready_snapshot_without_resend(self):
         send_as_id = 8659059301
