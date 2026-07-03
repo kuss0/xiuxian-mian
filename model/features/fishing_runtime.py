@@ -3,6 +3,7 @@ import json
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import (
     CMD_FISHING,
@@ -16,6 +17,7 @@ from ..config import (
     CMD_FISHING_STATUS,
     TZ_LOCAL,
 )
+from ..message_log_recovery import find_message_log_message, find_message_log_replies, find_recent_message_log_command
 from ..persistence import mark_dirty, save_state
 from ..runtime import (
     SEND_PRIORITY_EVENT_BURST,
@@ -83,6 +85,9 @@ _FOLLOWUP_TASKS = {}
 _RECOVERY_TASKS = {}
 _SEND_LOCKS = {}
 _RECENT_COMMANDS = {}
+FISHING_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+FISHING_LOG_REPLAY_LOOKAHEAD_SEC = 30
+FISHING_SEND_UNKNOWN_WAIT_SEC = 90
 
 
 def _parse_int(value, default=0):
@@ -464,6 +469,71 @@ def _remember_fishing_command(command, sent_at, msg_id):
         "sent_at": float(sent_at or time.time()),
         "msg_id": int(msg_id or 0),
     }
+
+
+def _is_fishing_reply_log_entry(entry):
+    raw_text = str((entry or {}).get("text") or "").strip()
+    if not raw_text:
+        return False
+    return fishing_behavior.is_fishing_reply_text(raw_text) or bool(parse_open_fish_result(raw_text))
+
+
+def _fishing_command_for_msg(command_msg_id, now):
+    recent = _RECENT_COMMANDS.get(_fishing_followup_key(get_current_identity_id())) or {}
+    if int(recent.get("msg_id") or 0) == int(command_msg_id or 0):
+        command = str(recent.get("command") or "").strip()
+        if command:
+            return command
+    entry = find_message_log_message(
+        command_msg_id,
+        now,
+        lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
+    )
+    return str((entry or {}).get("text") or "").strip()
+
+
+async def _recover_fishing_pending_from_message_log(now):
+    command_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
+    if command_msg_id <= 0:
+        return ""
+    replies = find_message_log_replies(
+        command_msg_id,
+        now,
+        lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_fishing_reply_log_entry,
+    )
+    if not replies:
+        return ""
+    command_text = _fishing_command_for_msg(command_msg_id, now)
+    reply_to = SimpleNamespace(id=command_msg_id, raw_text=command_text)
+    for entry in replies:
+        handled = await handle_fishing_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family="fishing",
+            result_msg_id=int(entry.get("message_id") or 0),
+        )
+        if handled:
+            state["fishing_last_error"] = ""
+            return "reply"
+    return ""
+
+
+def _recent_logged_fishing_command(now):
+    send_as_id = int(get_current_identity_id() or 0)
+    wait_until = float(state.get("fishing_reply_due_at", 0) or 0)
+    start_ts = wait_until - FISHING_SEND_UNKNOWN_WAIT_SEC - 30 if wait_until > 0 else 0
+    return find_recent_message_log_command(
+        now,
+        sender_id=send_as_id,
+        start_ts=max(0.0, start_ts),
+        lookback_sec=FISHING_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=FISHING_LOG_REPLAY_LOOKAHEAD_SEC,
+        command_predicate=lambda entry: fishing_behavior.command_phase(str((entry or {}).get("text") or "").strip()) != "idle",
+    )
 
 
 def _schedule_fishing_followup(send_as_id, command, due_at):
@@ -931,6 +1001,15 @@ async def run_fishing_scheduler(now):
 
     if await _run_pending_fishing_transfer(now):
         return
+
+    reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
+    reply_due_at = float(state.get("fishing_reply_due_at", 0) or 0)
+    if reply_to_msg_id > 0 and reply_due_at > 0 and reply_due_at <= float(now):
+        recovered = await _recover_fishing_pending_from_message_log(now)
+        if recovered:
+            console_log(f"🎣 灵溪垂钓日志补偿：{recovered}，原消息ID={reply_to_msg_id}", scope="identity", limit=180)
+            save_state()
+            return
 
     effect = fishing_behavior.decide_scheduler(
         _state_snapshot(),

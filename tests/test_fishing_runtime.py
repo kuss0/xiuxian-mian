@@ -1,5 +1,7 @@
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -133,6 +135,51 @@ class FishingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_awaited_once_with(".钓鱼状态", track=False, priority="urgent_reactive", max_retry=0, source_module="灵溪垂钓")
             self.assertEqual(now + fishing_runtime.FISHING_STATUS_REPLY_TIMEOUT_SEC, state_module.state["fishing_reply_due_at"])
             self.assertEqual("checking", state_module.state["fishing_phase"])
+
+    async def test_timeout_recovers_logged_reply_before_status_fallback(self):
+        identity_id = self._prepare_identity()
+        now = self._local_ts(2026, 7, 4, 6, 40, 0)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-04.log"
+            entries = [
+                {
+                    "ts": "2026-07-04 06:39:40 UTC+8",
+                    "event_type": "message",
+                    "message_id": 22027,
+                    "sender_id": identity_id,
+                    "reply_to_msg_id": 0,
+                    "text": ".提竿",
+                },
+                {
+                    "ts": "2026-07-04 06:39:42 UTC+8",
+                    "event_type": "message",
+                    "message_id": 22028,
+                    "sender_id": 8609885831,
+                    "reply_to_msg_id": 22027,
+                    "text": FISHING_CATCH_TEXT,
+                },
+            ]
+            log_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in entries) + "\n", encoding="utf-8")
+
+            with state_module.use_identity(identity_id):
+                state_module.state["fishing_enabled"] = True
+                state_module.state["fishing_phase"] = "lifting"
+                state_module.state["fishing_pending_action"] = ".提竿"
+                state_module.state["fishing_reply_to_msg_id"] = 22027
+                state_module.state["fishing_reply_due_at"] = now - 1
+                state_module.state["fishing_daily_day"] = fishing_runtime.get_day_key(now)
+                with (
+                    patch("model.message_log_recovery.MESSAGES_DIR", tmpdir),
+                    patch.object(fishing_runtime, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(fishing_runtime, "send_audit_log", new=AsyncMock()),
+                    patch.object(fishing_runtime, "save_state"),
+                ):
+                    await fishing_runtime.run_fishing_scheduler(now)
+
+                send_mock.assert_not_awaited()
+                self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+                self.assertEqual(22028, state_module.state["fishing_last_msg_id"])
+                self.assertEqual("", state_module.state["fishing_last_error"])
 
     async def test_initial_check_uses_short_human_delay(self):
         identity_id = self._prepare_identity()

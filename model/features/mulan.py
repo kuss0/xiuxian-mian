@@ -3,6 +3,7 @@ import random
 import re
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -20,6 +21,7 @@ from ..config import (
     TZ_LOCAL,
 )
 from ..action_guard import close_action as close_action_guard_action
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import _meta_state, get_current_identity_id, get_identity_account, has_identity, state
@@ -770,6 +772,69 @@ def _prepare_conservative_support(now, result="无可靠军报，保守支援"):
     _prepare_mulan_support(now, action, result=result)
 
 
+def _mulan_pending_family_for_phase(phase):
+    phase = str(phase or "").strip()
+    if phase == MULAN_PHASE_COLLECT_PENDING:
+        return "mulan_collect"
+    if phase == MULAN_PHASE_JUDGE_PENDING:
+        return "mulan_judge"
+    if phase == MULAN_PHASE_PUBLISH_PENDING:
+        return "mulan_publish"
+    if phase == MULAN_PHASE_PANEL_PENDING:
+        return "mulan_panel"
+    if phase == MULAN_PHASE_SUPPORT_PENDING:
+        return "mulan_support"
+    return ""
+
+
+def _is_mulan_reply_log_entry(entry):
+    raw_text = str((entry or {}).get("text") or "").strip()
+    if not raw_text:
+        return False
+    return (
+        "慕兰" in raw_text
+        or "军报" in raw_text
+        or "辨报" in raw_text
+        or "前线采信" in raw_text
+        or "今日支援" in raw_text
+        or "边境军功" in raw_text
+        or has_wait_time(raw_text)
+    )
+
+
+async def _recover_mulan_pending_from_message_log(now, phase, reply_to_msg_id):
+    reply_to_msg_id = int(reply_to_msg_id or 0)
+    if reply_to_msg_id <= 0:
+        return False
+    family = _mulan_pending_family_for_phase(phase)
+    if not family:
+        return False
+    replies = find_message_log_replies(
+        reply_to_msg_id,
+        now,
+        lookback_sec=max(15 * 60, MULAN_REPLY_TIMEOUT_SEC * 5),
+        lookahead_sec=30,
+        predicate=_is_mulan_reply_log_entry,
+    )
+    if not replies:
+        return False
+    command = str(state.get("mulan_last_command") or "").strip()
+    reply_to = SimpleNamespace(id=reply_to_msg_id, raw_text=command)
+    for entry in replies:
+        handled = await handle_mulan_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family=family,
+            result_msg_id=int(entry.get("message_id") or 0),
+        )
+        if handled:
+            state["mulan_last_error"] = ""
+            state["mulan_last_result"] = state.get("mulan_last_result") or "日志补偿"
+            return True
+    return False
+
+
 async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, result_msg_id=0):
     if not state.get("mulan_enabled"):
         return False
@@ -971,6 +1036,10 @@ async def run_mulan_scheduler(now):
         if reply_due_at > now:
             return
         phase = state.get("mulan_phase") or MULAN_PHASE_IDLE
+        if await _recover_mulan_pending_from_message_log(now, phase, reply_to_msg_id):
+            save_state()
+            await send_audit_log(f"🕵️ 慕兰日志补偿：已采纳超时回包，消息ID={reply_to_msg_id}", scope="identity", limit=220)
+            return
         audit_text = _recover_mulan_unanswered_pending(now, phase, reply_to_msg_id=reply_to_msg_id)
         save_state()
         await send_audit_log(audit_text, scope="identity", limit=220)

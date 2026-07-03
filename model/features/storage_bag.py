@@ -5,8 +5,10 @@ import re
 import time
 import uuid
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from ..config import MESSAGES_DIR, TZ_LOCAL
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import _get_identity_client, send_audit_log, send_game_command
 from ..state import get_game_group_id, get_game_topic_id, get_identity_ids, get_send_as_profile, get_storage_bag_item_rules, get_storage_bag_records, is_auto_delete_sent_messages_enabled, set_storage_bag_item_rules, set_storage_bag_records
@@ -2356,6 +2358,60 @@ def _storage_transfer_retry_config_for_step(step):
     return {}
 
 
+def _is_storage_transfer_reply_log_entry(entry):
+    raw_text = str((entry or {}).get("text") or "").strip()
+    if not raw_text:
+        return False
+    return (
+        bool(_parse_listing_success(raw_text))
+        or raw_text.startswith("交易成功！")
+        or "你成功购得" in raw_text
+        or raw_text.startswith(STORAGE_TRANSFER_GIFT_SUCCESS_PREFIX)
+        or is_storage_transfer_waiting_reply(raw_text)
+        or any(keyword in raw_text for keyword in STORAGE_TRANSFER_BLOCKED_KEYWORDS)
+        or any(keyword in raw_text for keyword in STORAGE_TRANSFER_GIFT_FALLBACK_KEYWORDS)
+        or any(keyword in raw_text for keyword in STORAGE_TRANSFER_NON_RULE_FAILURE_KEYWORDS)
+    )
+
+
+async def _recover_storage_bag_transfer_waiting_step(step, now):
+    config = _storage_transfer_retry_config_for_step(step)
+    if not config:
+        return False
+    msg_id_key = str(config.get("msg_id_key") or "")
+    command_msg_id = int(_storage_bag_transfer_state.get(msg_id_key) or 0)
+    if command_msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        command_msg_id,
+        now,
+        lookback_sec=max(15 * 60, STORAGE_TRANSFER_REPLY_TIMEOUT_SEC * 10),
+        lookahead_sec=30,
+        predicate=_is_storage_transfer_reply_log_entry,
+    )
+    if not replies:
+        return False
+    command = str(config.get("command") or "").strip()
+    reply_to = SimpleNamespace(id=command_msg_id, raw_text=command)
+    family = str(config.get("family") or "storage_bag_transfer")
+    for entry in replies:
+        handled = await handle_storage_bag_transfer_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family=family,
+            reply_context={
+                "family": family,
+                "reply_to_msg_id": command_msg_id,
+                "matched_via": "message_log_recovery",
+            },
+        )
+        if handled:
+            _storage_transfer_log(f"{config.get('label') or '命令'}日志补偿：已采纳消息ID={entry.get('message_id') or '无'}")
+            return True
+    return False
+
+
 async def _retry_storage_bag_transfer_waiting_step(step):
     config = _storage_transfer_retry_config_for_step(step)
     if not config:
@@ -2409,6 +2465,9 @@ async def run_storage_bag_transfer_scheduler(now):
     elif reply_due_at <= 0 or now < reply_due_at:
         return
     if step in {"waiting_listing_reply", "waiting_buy_reply", "waiting_gift_reply"}:
+        if await _recover_storage_bag_transfer_waiting_step(step, now):
+            save_state()
+            return
         if await _retry_storage_bag_transfer_waiting_step(step):
             return
     if step in {"gift_marker", "gift_sending", "gift_waiting_interval", "waiting_gift_reply"}:

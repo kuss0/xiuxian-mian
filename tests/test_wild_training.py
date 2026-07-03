@@ -82,6 +82,18 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         return log_path
 
+    def _assert_panel_calibration_send(self, send_mock):
+        send_mock.assert_awaited_once()
+        self.assertEqual(config.CMD_TIANXING_PANEL, send_mock.await_args.args[0])
+        self.assertTrue(send_mock.await_args.kwargs["track"])
+        self.assertEqual("reactive", send_mock.await_args.kwargs["priority"])
+        self.assertEqual("天星宗", send_mock.await_args.kwargs["source_module"])
+        self.assertEqual(
+            wild_training.WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC,
+            send_mock.await_args.kwargs["queue_timeout"],
+        )
+        self.assertTrue(send_mock.await_args.kwargs["op_id"].startswith("wild-training-panel-calibration-"))
+
     async def test_start_notice_keeps_pending_for_final_edit(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -140,6 +152,31 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_not_awaited()
         self.assertEqual(201, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual("已出发：谨慎", state_module.state["wild_training_last_result"])
+
+    async def test_send_timeout_enters_unknown_window_without_fast_retry(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_last_result"] = ""
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "send_game_command", new=AsyncMock(return_value=None)) as send_mock, \
+             patch.object(wild_training, "get_last_game_send_block", return_value={"code": "send_timeout"}), \
+             patch.object(wild_training, "was_last_game_send_blocked_by_global", return_value=False), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()):
+            await wild_training.run_wild_training_scheduler(now)
+            await wild_training.run_wild_training_scheduler(now + 60)
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["wild_training_retry_count"])
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC, state_module.state["next_wild_training_time"])
+        self.assertIn("发送状态未知", state_module.state["wild_training_last_result"])
 
     async def test_final_edit_clears_pending_and_records_rewards(self):
         send_as_id = self._prepare_identity()
@@ -1079,13 +1116,9 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         timeline_mock.assert_awaited_once()
         self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
-        send_mock.assert_awaited_once_with(
-            f"{config.CMD_WILD_TRAINING} 谨慎",
-            track=False,
-            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
-        )
-        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
-        self.assertEqual(202, state_module.state["wild_training_reply_to_msg_id"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual("天星已有探索推命但无探索改命，等待查盘校准", state_module.state["wild_training_last_result"])
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_releases_overdue_wild_training_as_cautious_after_tianxing_ack_timeout(self):
         send_as_id = self._prepare_identity()
@@ -1126,14 +1159,10 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             await wild_training.run_wild_training_scheduler(now)
 
         timeline_mock.assert_awaited_once()
-        send_mock.assert_awaited_once_with(
-            f"{config.CMD_WILD_TRAINING} 谨慎",
-            track=False,
-            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
-        )
-        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual("天星探索前置确认超时，等待查盘校准", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
-        self.assertEqual(204, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_releases_overdue_wild_training_as_cautious_after_tianxing_send_blocked(self):
         send_as_id = self._prepare_identity()
@@ -1177,14 +1206,10 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             await wild_training.run_wild_training_scheduler(now)
 
         timeline_mock.assert_awaited_once()
-        send_mock.assert_awaited_once_with(
-            f"{config.CMD_WILD_TRAINING} 谨慎",
-            track=False,
-            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
-        )
-        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual("天星探索前置确认超时，等待查盘校准", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
-        self.assertEqual(206, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_releases_overdue_wild_training_as_deep_after_tianxing_ack_timeout_with_change_fate(self):
         send_as_id = self._prepare_identity()
@@ -1225,14 +1250,10 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             await wild_training.run_wild_training_scheduler(now)
 
         timeline_mock.assert_awaited_once()
-        send_mock.assert_awaited_once_with(
-            f"{config.CMD_WILD_TRAINING} 深入",
-            track=False,
-            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
-        )
-        self.assertEqual("已发送：深入", state_module.state["wild_training_last_result"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual("天星探索前置确认超时，等待查盘校准", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
-        self.assertEqual(205, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_falls_back_to_cautious_when_change_fate_conflicts_after_explore_prediction(self):
         send_as_id = self._prepare_identity()
@@ -1277,13 +1298,9 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         timeline_mock.assert_awaited_once()
         self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
-        send_mock.assert_awaited_once_with(
-            f"{config.CMD_WILD_TRAINING} 谨慎",
-            track=False,
-            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
-        )
-        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
-        self.assertEqual(203, state_module.state["wild_training_reply_to_msg_id"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual("天星已有探索推命但无探索改命，等待查盘校准", state_module.state["wild_training_last_result"])
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
 
     async def test_scheduler_prepares_tianxing_timeline_inside_future_wild_training_lead_window(self):
         send_as_id = self._prepare_identity()
@@ -1491,12 +1508,8 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         timeline_mock.assert_awaited_once()
         self.assertTrue(timeline_mock.await_args.kwargs["windows"][0]["require_change_fate"])
-        send_mock.assert_awaited_once_with(
-            f"{config.CMD_WILD_TRAINING} 谨慎",
-            track=False,
-            queue_timeout=wild_training.WILD_TRAINING_SEND_TIMEOUT_SEC,
-        )
-        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual("天星已有探索推命但无探索改命，等待查盘校准", state_module.state["wild_training_last_result"])
 
     async def test_scheduler_waits_for_tianxing_prediction_when_change_fate_conflicts_without_explore_prediction(self):
         send_as_id = self._prepare_identity()
@@ -1654,10 +1667,9 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         consume_mock.assert_not_awaited()
         timeline_mock.assert_not_awaited()
-        send_mock.assert_awaited_once()
-        self.assertEqual(".野外历练 深入", send_mock.await_args.args[0])
-        self.assertEqual(301, state_module.state["wild_training_reply_to_msg_id"])
-        self.assertEqual("已发送：深入", state_module.state["wild_training_last_result"])
+        self._assert_panel_calibration_send(send_mock)
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual("天星炼制推命已尝试消费，等待查盘确认探索推/改状态", state_module.state["wild_training_last_result"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
     async def test_scheduler_keeps_future_wild_training_due_when_other_prediction_active(self):
@@ -1865,6 +1877,109 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("修为+392", state_module.state["wild_training_last_result"])
         self.assertIn("清灵草x1", state_module.state["wild_training_last_result"])
         self.assertEqual(result_ts + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
+
+    async def test_unknown_send_recovers_direct_result_from_message_log(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        command_ts = now - 120
+        result_ts = command_ts + 12
+        entries = [
+            {
+                "ts": self._log_ts(command_ts),
+                "event_type": "message",
+                "message_id": 301,
+                "sender_id": send_as_id,
+                "reply_to_msg_id": 7310786,
+                "text": ".野外历练 深入",
+            },
+            {
+                "ts": self._log_ts(result_ts),
+                "event_type": "message",
+                "message_id": 302,
+                "reply_to_msg_id": 301,
+                "text": (
+                    "【野外历练 · 改命脱险】\n"
+                    "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
+                    "【改命回天】你强行拨正命轨。\n"
+                    "@wild 带回了 【养魂木】x1，且 本次未损修为。"
+                ),
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(send_as_id) as identity_state:
+                identity_state["wild_training_reply_to_msg_id"] = 0
+                identity_state["wild_training_reply_due_at"] = now - 1
+                identity_state["wild_training_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+                identity_state["wild_training_last_error"] = "野外历练发送状态未知"
+                identity_state["tianxing_enabled"] = True
+
+            with state_module.use_identity(send_as_id), \
+                 patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
+                 patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                 patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+                await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertIn("天机+1", state_module.state["wild_training_last_result"])
+        self.assertIn("养魂木x1", state_module.state["wild_training_last_result"])
+        self.assertEqual(result_ts + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual("", state_module.state["wild_training_last_error"])
+
+    async def test_unknown_send_recovers_cooldown_probe_from_message_log(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        command_ts = now - 120
+        cooldown_ts = command_ts + 2
+        entries = [
+            {
+                "ts": self._log_ts(command_ts),
+                "event_type": "message",
+                "message_id": 401,
+                "sender_id": send_as_id,
+                "reply_to_msg_id": 7310786,
+                "text": ".野外历练 深入",
+            },
+            {
+                "ts": self._log_ts(cooldown_ts),
+                "event_type": "message",
+                "message_id": 402,
+                "reply_to_msg_id": 401,
+                "text": "【野外历练】\n山中灵机未复，请在 1小时55分钟38秒 后再来。",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(send_as_id) as identity_state:
+                identity_state["wild_training_reply_to_msg_id"] = 0
+                identity_state["wild_training_reply_due_at"] = now - 1
+                identity_state["wild_training_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+                identity_state["wild_training_last_error"] = "野外历练发送状态未知"
+                identity_state["tianxing_enabled"] = True
+
+            with state_module.use_identity(send_as_id), \
+                 patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
+                 patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training.random, "uniform", return_value=10), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                 patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+                await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual("冷却中", state_module.state["wild_training_last_result"])
+        self.assertEqual(402, state_module.state["wild_training_last_msg_id"])
+        self.assertEqual(cooldown_ts + 6938 + config.CD_BUFFER_SEC + 10, state_module.state["next_wild_training_time"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
     async def test_passive_start_notice_does_not_clear_pending(self):

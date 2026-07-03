@@ -2,10 +2,11 @@ import asyncio
 import json
 import random
 import re
+import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ..config import CD_BUFFER_SEC, CMD_WILD_TRAINING, MESSAGES_DIR, TZ_LOCAL, WILD_TRAINING_STRATEGIES
+from ..config import CD_BUFFER_SEC, CMD_TIANXING_PANEL, CMD_WILD_TRAINING, DB_FILE, MESSAGES_DIR, TZ_LOCAL, WILD_TRAINING_STRATEGIES
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_wild_training_strategy, set_wild_training_strategy, state
@@ -32,6 +33,8 @@ WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
 WILD_TRAINING_SEND_TIMEOUT_SEC = 75
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
+WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC = 10 * 60
+WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC = 45
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
 WILD_TRAINING_DEEP_RETREAT_GUARD_SEC = 5 * 60
@@ -169,6 +172,24 @@ def _tianxing_prepare_retry_blocks(now):
     return retry_at > float(now or 0)
 
 
+def _identity_sender_matches(sender_id, send_as_id):
+    try:
+        sender_id = int(sender_id or 0)
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if sender_id == send_as_id:
+        return True
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            try:
+                return int(sender_abs[3:] or 0) == send_as_id
+            except ValueError:
+                return False
+    return False
+
+
 def _recent_craft_prediction_consume_attempt_for_due(due_at, now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     craft_farm = timeline.get("craft_farm") if isinstance(timeline.get("craft_farm"), dict) else {}
@@ -219,11 +240,36 @@ def _is_completed_wild_training_summary(summary):
         return False
     if text.startswith(("已发送", "已出发")):
         return False
+    if _is_unknown_send_summary(text):
+        return False
     if text in {"冷却中"}:
         return False
     if any(marker in text for marker in ("发送失败", "回复超时", "补发", "冷却")):
         return False
     return True
+
+
+def _is_unknown_send_summary(summary):
+    return str(summary or "").strip().startswith("发送状态未知")
+
+
+def _mark_send_unknown(now):
+    wait_until = float(now or 0) + WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = wait_until
+    state["wild_training_retry_count"] = 0
+    state["wild_training_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = "野外历练发送状态未知，先等待被动结果，避免重复消耗"
+    state["next_wild_training_time"] = wait_until
+    return wait_until
+
+
+def _has_unknown_send_wait(now):
+    if not _is_unknown_send_summary(state.get("wild_training_last_result")):
+        return False
+    due_at = float(state.get("wild_training_reply_due_at", 0) or 0)
+    return due_at > float(now or 0)
 
 
 def _last_completed_wild_training_at():
@@ -460,6 +506,18 @@ def _result_summary(text):
     return _extract_result_title(raw_text) or "未知结果"
 
 
+def _apply_wild_training_cooldown(raw_text, now, msg_id=0):
+    wait_sec = parse_wait_time(raw_text)
+    state["next_wild_training_time"] = float(now + wait_sec + CD_BUFFER_SEC + random.uniform(10, 60))
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_retry_count"] = 0
+    state["wild_training_last_msg_id"] = int(msg_id or 0)
+    state["wild_training_last_result"] = "冷却中"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = ""
+
+
 def _apply_wild_training_result(raw_text, now, msg_id):
     if looks_like_tianxing_route_result(raw_text):
         apply_tianxing_passive(raw_text, now=now)
@@ -478,11 +536,33 @@ def _is_duplicate_wild_training_result(raw_text, msg_id):
     msg_id = int(msg_id or 0)
     if msg_id <= 0:
         return False
-    if int(state.get("wild_training_last_msg_id", 0) or 0) != msg_id:
+    summary = _result_summary(raw_text)
+    if (
+        int(state.get("wild_training_last_msg_id", 0) or 0) == msg_id
+        and float(state.get("wild_training_last_result_at", 0) or 0) > 0
+        and str(state.get("wild_training_last_result") or "") == summary
+    ):
+        return True
+    try:
+        with sqlite3.connect(DB_FILE, timeout=2) as conn:
+            row = conn.execute(
+                """
+                SELECT wild_training_last_msg_id, wild_training_last_result, wild_training_last_result_at
+                FROM identity_runtime_state
+                WHERE send_as_id = ?
+                """,
+                (int(get_current_identity_id() or 0),),
+            ).fetchone()
+    except sqlite3.Error:
         return False
-    if float(state.get("wild_training_last_result_at", 0) or 0) <= 0:
+    if not row:
         return False
-    return str(state.get("wild_training_last_result") or "") == _result_summary(raw_text)
+    try:
+        persisted_msg_id = int(row[0] or 0)
+        persisted_result_at = float(row[2] or 0)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return persisted_msg_id == msg_id and persisted_result_at > 0 and str(row[1] or "") == summary
 
 
 async def _send_tianxing_wild_training_result_audit(raw_text):
@@ -495,6 +575,37 @@ async def _send_tianxing_wild_training_result_audit(raw_text):
         limit=260,
     )
     return True
+
+
+async def _send_tianxing_panel_calibration(now, reason):
+    if not state.get("tianxing_enabled"):
+        _schedule_retry(now)
+        state["wild_training_last_error"] = str(reason or "野外历练状态不明，短退避后重试")
+        return False
+    try:
+        msg = await send_game_command(
+            CMD_TIANXING_PANEL,
+            track=True,
+            priority="reactive",
+            source_module="天星宗",
+            op_id=f"wild-training-panel-calibration-{int(now)}",
+            queue_timeout=WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC,
+        )
+    except asyncio.CancelledError:
+        raise
+    _schedule_tianxing_prepare_retry(now)
+    _schedule_retry(now)
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_retry_count"] = 0
+    state["wild_training_last_result"] = "野外历练状态不明，等待天机盘校准"
+    state["wild_training_last_result_at"] = 0
+    if msg:
+        state["wild_training_last_msg_id"] = int(getattr(msg, "id", 0) or 0)
+        state["wild_training_last_error"] = str(reason or "已发送天机盘校准，暂不发送野外历练")
+        return True
+    state["wild_training_last_error"] = str(reason or "天机盘校准未发出，短退避后重试")
+    return False
 
 
 def _find_logged_entry_by_msg_id(msg_id, now, *, result=False):
@@ -519,6 +630,34 @@ def _find_logged_entry_by_msg_id(msg_id, now, *, result=False):
     return found
 
 
+def _find_logged_reply_for_command(command_msg_id, now):
+    command_msg_id = int(command_msg_id or 0)
+    if command_msg_id <= 0:
+        return None
+    end_ts = float(now or 0) + WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC)
+    found = None
+    for entry in _iter_message_log_entries_between(start_ts, end_ts):
+        if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
+            continue
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
+            continue
+        raw_text = str((entry or {}).get("text") or "").strip()
+        if not raw_text.startswith(WILD_TRAINING_TITLE):
+            continue
+        msg_id = int((entry or {}).get("message_id") or 0)
+        kind = "other"
+        if has_wait_time(raw_text) and any(keyword in raw_text for keyword in WILD_TRAINING_CD_KEYWORDS):
+            kind = "cooldown"
+        elif _is_result_notice(raw_text):
+            kind = "result"
+        elif _is_start_notice(raw_text):
+            kind = "start"
+        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text, "kind": kind}
+    return found
+
+
 def _find_logged_start_for_command(command_msg_id, now):
     command_msg_id = int(command_msg_id or 0)
     if command_msg_id <= 0:
@@ -539,6 +678,32 @@ def _find_logged_start_for_command(command_msg_id, now):
     return found
 
 
+def _find_recent_logged_command_for_identity(now):
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return None
+    wait_until = float(state.get("wild_training_reply_due_at", 0) or 0)
+    sent_after = wait_until - WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC - 60 if wait_until > 0 else float(now or 0) - WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC
+    end_ts = float(now or 0) + WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC
+    found = None
+    seen = set()
+    for entry in _iter_message_log_entries_between(max(0.0, sent_after), end_ts):
+        msg_id = int((entry or {}).get("message_id") or 0)
+        if msg_id in seen:
+            continue
+        seen.add(msg_id)
+        if not _identity_sender_matches((entry or {}).get("sender_id"), send_as_id):
+            continue
+        raw_text = str((entry or {}).get("text") or "").strip()
+        if not (raw_text == CMD_WILD_TRAINING or raw_text.startswith(f"{CMD_WILD_TRAINING} ")):
+            continue
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < sent_after or entry_ts > end_ts:
+            continue
+        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text}
+    return found
+
+
 def _recover_wild_training_from_message_log(now):
     reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
     if reply_to_msg_id <= 0:
@@ -554,12 +719,45 @@ def _recover_wild_training_from_message_log(now):
 
     start_entry = _find_logged_start_for_command(reply_to_msg_id, now)
     if not start_entry:
+        direct_reply = _find_logged_reply_for_command(reply_to_msg_id, now)
+        if direct_reply and direct_reply.get("kind") == "cooldown":
+            _apply_wild_training_cooldown(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
+            return "cooldown"
         return ""
     result_entry = _find_logged_entry_by_msg_id(start_entry["msg_id"], now, result=True)
     if result_entry:
         _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
         return "result"
 
+    state["wild_training_reply_to_msg_id"] = int(start_entry["msg_id"] or 0)
+    state["wild_training_last_msg_id"] = int(start_entry["msg_id"] or 0)
+    state["wild_training_last_result"] = _start_summary(start_entry["text"])
+    state["wild_training_last_error"] = ""
+    state["wild_training_reply_due_at"] = max(
+        float(state.get("wild_training_reply_due_at", 0) or 0),
+        float(start_entry["ts"] or now) + WILD_TRAINING_REPLY_TIMEOUT_SEC,
+    )
+    return "start"
+
+
+def _recover_unknown_wild_training_from_message_log(now):
+    command_entry = _find_recent_logged_command_for_identity(now)
+    if not command_entry:
+        return ""
+    direct_reply = _find_logged_reply_for_command(command_entry["msg_id"], now)
+    if direct_reply and direct_reply.get("kind") == "cooldown":
+        _apply_wild_training_cooldown(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
+        return "cooldown"
+    if direct_reply and direct_reply.get("kind") == "result":
+        _apply_wild_training_result(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
+        return "result"
+    start_entry = _find_logged_start_for_command(command_entry["msg_id"], now)
+    if not start_entry:
+        return ""
+    result_entry = _find_logged_entry_by_msg_id(start_entry["msg_id"], now, result=True)
+    if result_entry:
+        _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
+        return "result"
     state["wild_training_reply_to_msg_id"] = int(start_entry["msg_id"] or 0)
     state["wild_training_last_msg_id"] = int(start_entry["msg_id"] or 0)
     state["wild_training_last_result"] = _start_summary(start_entry["text"])
@@ -583,21 +781,14 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
         previous_result = str(state.get("wild_training_last_result") or "").strip()
         previous_retry_count = int(state.get("wild_training_retry_count", 0) or 0)
         tianxing_unknown = False
-        if previous_retry_count > 0 or previous_result.startswith("已出发"):
+        if previous_retry_count > 0 or previous_result.startswith("已出发") or _is_unknown_send_summary(previous_result):
             tianxing_unknown = mark_tianxing_route_result_unknown(
                 "探索",
                 now=now,
                 reason="野外历练补发撞冷却，上一轮结果可能已被服端结算",
             )
         wait_sec = parse_wait_time(raw_text)
-        state["next_wild_training_time"] = float(now + wait_sec + CD_BUFFER_SEC + random.uniform(10, 60))
-        state["wild_training_reply_to_msg_id"] = 0
-        state["wild_training_reply_due_at"] = 0
-        state["wild_training_retry_count"] = 0
-        state["wild_training_last_msg_id"] = msg_id
-        state["wild_training_last_result"] = "冷却中"
-        state["wild_training_last_result_at"] = 0
-        state["wild_training_last_error"] = ""
+        _apply_wild_training_cooldown(raw_text, now, msg_id)
         save_state()
         await send_audit_log(f"🏞️ 野外历练 CD→{fmt_time_after(wait_sec + CD_BUFFER_SEC)}", scope="identity")
         if tianxing_unknown:
@@ -643,12 +834,12 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
         return True
     if str(preflight.get("stage") or "") == "prediction_conflict":
         if due_at <= now and _recent_craft_prediction_consume_attempt_for_due(due_at, now):
-            _clear_tianxing_prepare_retry()
-            state["wild_training_last_result"] = "天星炼制推命已尝试消费，野外按当前改命状态放行"
+            await _send_tianxing_panel_calibration(now, "天星炼制推命消费后需查盘确认探索推/改状态")
+            state["wild_training_last_result"] = "天星炼制推命已尝试消费，等待查盘确认探索推/改状态"
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = ""
             save_state()
-            return True
+            return False
         consume_result = await run_tianxing_consume_craft_prediction(now, reason="野外历练前消费炼制推命")
         if consume_result.get("active"):
             if due_at <= now:
@@ -678,7 +869,9 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
             require_change_fate=True,
         )
         if not windows:
-            return True
+            await _send_tianxing_panel_calibration(now, "野外历练缺少天星消费窗口，先查盘校准")
+            save_state()
+            return False
         timeline_result = await run_tianxing_timeline_scheduler(now, windows=windows)
         followup = build_tianxing_route_preflight_plan("探索", reason="野外历练", now=now, require_change_fate=True)
         if followup.get("route_allowed"):
@@ -692,22 +885,19 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
             and str(followup.get("stage") or "") in {"timeline_waiting", "timeline_waiting_change_fate"}
             and phase in {"idle", "completed", "dry_run", "blocked_replan", "observe_only", "need_tianji_for_change", "change_fate_conflict"}
         ):
-            state["wild_training_last_result"] = "天星已有探索推命但无探索改命，野外降级谨慎"
+            await _send_tianxing_panel_calibration(now, "天星已有探索推命但无探索改命，先查盘校准")
+            state["wild_training_last_result"] = "天星已有探索推命但无探索改命，等待查盘校准"
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = ""
             save_state()
-            return True
+            return False
         if due_at <= now and _tianxing_timeline_prepare_failed(timeline_result, followup):
-            _clear_tianxing_prepare_retry()
-            state["wild_training_last_result"] = (
-                "天星探索前置确认超时，野外按当前改命状态放行"
-                if _has_active_tianxing_explore_change(now)
-                else "天星探索前置确认超时，野外降级谨慎"
-            )
+            await _send_tianxing_panel_calibration(now, "天星探索前置确认超时，先查盘校准")
+            state["wild_training_last_result"] = "天星探索前置确认超时，等待查盘校准"
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = ""
             save_state()
-            return True
+            return False
         if due_at <= now:
             _schedule_retry(now)
         else:
@@ -726,12 +916,49 @@ async def _prepare_wild_training_tianxing_route(now, *, due_at=0):
     return False
 
 
+async def _guard_deep_wild_training_send(now):
+    if not state.get("tianxing_enabled"):
+        return True
+    preflight = build_tianxing_route_preflight_plan("探索", reason="野外历练发送前复核", now=now, require_change_fate=True)
+    if preflight.get("route_allowed"):
+        return True
+    await _send_tianxing_panel_calibration(now, preflight.get("reason") or "深入发送前复核未通过，先查盘校准")
+    save_state()
+    await send_audit_log("🌌 野外深入发送前复核未通过：已查天机盘校准，本轮不发送深入。", scope="identity", priority="high")
+    return False
+
+
 async def _cleanup_wild_training_pending_timeout(now):
+    if _is_unknown_send_summary(state.get("wild_training_last_result")):
+        recovered = _recover_unknown_wild_training_from_message_log(now)
+        if recovered in {"result", "cooldown"}:
+            save_state()
+            await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
+            return True
+        if recovered == "start" and now < float(state.get("wild_training_reply_due_at", 0) or 0):
+            save_state()
+            console_log(
+                f"🏞️ 野外历练日志补偿：已出发，继续等待结果编辑（msg_id={state['wild_training_reply_to_msg_id']}）",
+                scope="identity",
+            )
+            return True
+        if now < float(state.get("wild_training_reply_due_at", 0) or 0):
+            return False
+        mark_tianxing_route_result_unknown(
+            "探索",
+            now=now,
+            reason="野外历练发送状态未知且消息日志未捞到反馈，先查盘校准",
+        )
+        await _send_tianxing_panel_calibration(now, "野外历练发送状态未知且消息日志未捞到反馈，已转天机盘校准")
+        save_state()
+        await send_audit_log("🌌 野外历练发送状态未知：日志未捞到反馈，已查天机盘校准；本轮不发送野外历练。", scope="identity", priority="high")
+        return True
+
     reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
     if reply_to_msg_id <= 0:
         return False
     recovered = _recover_wild_training_from_message_log(now)
-    if recovered == "result":
+    if recovered in {"result", "cooldown"}:
         save_state()
         await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
         return True
@@ -797,6 +1024,8 @@ async def _run_wild_training_scheduler_unlocked(now):
 
     if await _cleanup_wild_training_pending_timeout(now):
         return
+    if _has_unknown_send_wait(now):
+        return
     if _has_active_wild_training_pending(now):
         return
 
@@ -834,6 +1063,8 @@ async def _run_wild_training_scheduler_unlocked(now):
         return
 
     strategy = _effective_wild_training_strategy(now)
+    if strategy == "深入" and not await _guard_deep_wild_training_send(now):
+        return
     command = get_wild_training_command(strategy)
     try:
         msg = await send_game_command(command, track=False, queue_timeout=WILD_TRAINING_SEND_TIMEOUT_SEC)
@@ -861,6 +1092,15 @@ async def _run_wild_training_scheduler_unlocked(now):
             _schedule_retry(sent_at)
             save_state()
             await send_audit_log(f"⏳ {state['wild_training_last_error']}。", scope="identity")
+            return
+        if str(send_block.get("code") or "") == "send_timeout":
+            wait_until = _mark_send_unknown(sent_at)
+            save_state()
+            await send_audit_log(
+                f"⚠️ 野外历练发送状态未知，等待被动回复或冷却校准至 {fmt_abs_ts(wait_until)}。",
+                scope="identity",
+                priority="high",
+            )
             return
         guard_next_time, guard_reason = _wild_training_action_guard_wait(command, sent_at)
         if guard_next_time > sent_at:

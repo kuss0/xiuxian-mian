@@ -1,8 +1,10 @@
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import CD_BUFFER_SEC, CMD_DUEL
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_send_as_profile, state
@@ -30,6 +32,8 @@ DUEL_FINAL_PREFIX = "【斗法终局】"
 DUEL_SETTLING_TEXT = "战斗结束，正在整理天道战报"
 RE_DUEL_WINNER = re.compile(r"(?:胜者[:：]\s*|胜者：)(@[^\s|]+)")
 RE_DUEL_LOSER = re.compile(r"(?:败者[:：]\s*|败者：)(@[^\s|]+)")
+DUEL_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+DUEL_LOG_REPLAY_LOOKAHEAD_SEC = 30
 
 
 def _parse_int(value):
@@ -380,6 +384,36 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
     return True
 
 
+def _is_duel_reply_log_entry(entry):
+    return is_duel_reply_text(str((entry or {}).get("text") or "").strip())
+
+
+async def _recover_duel_pending_from_message_log(now, reply_to_msg_id):
+    reply_to_msg_id = int(reply_to_msg_id or 0)
+    if reply_to_msg_id <= 0:
+        return False
+    command = build_duel_command()
+    reply_to = SimpleNamespace(id=reply_to_msg_id, raw_text=command)
+    replies = find_message_log_replies(
+        reply_to_msg_id,
+        now,
+        lookback_sec=DUEL_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=DUEL_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_duel_reply_log_entry,
+    )
+    handled_any = False
+    for entry in replies:
+        handled = await handle_duel_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family="duel",
+            result_msg_id=int(entry.get("message_id") or 0),
+        )
+        handled_any = handled_any or handled
+    return handled_any
+
+
 async def run_duel_scheduler(now):
     if not state.get("duel_enabled"):
         return
@@ -413,6 +447,10 @@ async def run_duel_scheduler(now):
     reply_due_at = float(state.get("duel_reply_due_at", 0) or 0)
     if reply_to_msg_id > 0:
         if reply_due_at > now:
+            return
+        if await _recover_duel_pending_from_message_log(now, reply_to_msg_id):
+            save_state()
+            await send_audit_log(f"🗡️ 斗法日志补偿：已采纳超时回包，消息ID={reply_to_msg_id}", scope="identity", limit=220)
             return
         _clear_duel_pending()
         state["duel_last_error"] = "斗法回复超时"

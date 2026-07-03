@@ -1,7 +1,11 @@
+import json
 import hashlib
 import random
 import re
 import time
+from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -14,10 +18,12 @@ from ..config import (
     EXPLORE_RIFT_JITTER_MIN_SEC,
     EXPLORE_RIFT_REBIRTH_REPLY_TIMEOUT_SEC,
     EXPLORE_RIFT_REPLY_TIMEOUT_SEC,
+    MESSAGES_DIR,
     RETRY_MAX_SEC,
+    TZ_LOCAL,
 )
 from ..persistence import mark_dirty, save_state
-from ..runtime import console_log, send_audit_log, send_game_command
+from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command
 from ..state import (
     REALM_SORT_INDEX,
     get_current_identity_id,
@@ -32,6 +38,7 @@ from .tianxing import (
     build_tianxing_consume_window,
     build_tianxing_route_preflight_plan,
     looks_like_tianxing_route_result,
+    mark_tianxing_route_result_unknown,
     run_tianxing_consume_craft_prediction,
     run_tianxing_timeline_scheduler,
 )
@@ -59,6 +66,9 @@ EXPLORE_RIFT_FALLBACK_CD_SEC = EXPLORE_RIFT_CD
 EXPLORE_RIFT_FAST_CD_SEC = 9 * 3600
 EXPLORE_RIFT_TIANXING_PREPARE_RETRY_SEC = 60
 EXPLORE_RIFT_TIANXING_TIMEOUT_RETRY_SEC = 100
+EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC = 10 * 60
+EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC = 10
 RE_EXPLORER_REWARD_LINE = re.compile(r"【([^】]+)】\s*[x×*＊]\s*([\d,]+)")
 RE_EXPLORER_REWARD_TOKEN = re.compile(r"【([^】]+)】")
 RE_EXPLORER_REWARD_CONTEXT = re.compile(r"(带来了|获得|获得了|奖励|馈赠|收获|寻得|掉落|获取|平安带回|带回了|截下)")
@@ -104,6 +114,57 @@ def _parse_int(value, default=0):
         return int(str(value or "0").replace(",", ""))
     except (TypeError, ValueError):
         return default
+
+
+def _parse_message_log_ts(raw_ts):
+    raw = str(raw_ts or "").strip()
+    for suffix in (" UTC+8", "+08:00"):
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)].strip()
+            break
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(raw[:19], fmt).replace(tzinfo=TZ_LOCAL).timestamp()
+        except ValueError:
+            continue
+    return 0.0
+
+
+def _iter_message_log_entries_between(start_ts, end_ts):
+    start_dt = datetime.fromtimestamp(max(0.0, float(start_ts or 0)), TZ_LOCAL).date()
+    end_dt = datetime.fromtimestamp(max(float(start_ts or 0), float(end_ts or 0)), TZ_LOCAL).date()
+    day = start_dt
+    while day <= end_dt:
+        log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
+        if log_path.exists():
+            with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except (TypeError, ValueError):
+                        continue
+                    yield payload
+        day += timedelta(days=1)
+
+
+def _identity_sender_matches(sender_id, send_as_id):
+    try:
+        sender_id = int(sender_id or 0)
+        send_as_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        return False
+    if sender_id == send_as_id:
+        return True
+    if sender_id < 0:
+        sender_abs = str(abs(sender_id))
+        if sender_abs.startswith("100") and len(sender_abs) > 3:
+            try:
+                return int(sender_abs[3:] or 0) == send_as_id
+            except ValueError:
+                return False
+    return False
 
 
 def _make_result_key(result_msg_id, title, text):
@@ -596,6 +657,94 @@ def is_explore_rift_reply_text(text):
     )
 
 
+def _is_unknown_send_summary(value):
+    return str(value or "").strip().startswith("发送状态未知")
+
+
+def _mark_explore_rift_send_unknown(now):
+    wait_until = float(now or 0) + EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC
+    _clear_explore_rift_pending()
+    state["explore_rift_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+    state["explore_rift_last_error"] = "探寻裂缝发送状态未知，先等待被动结果，避免重复消耗"
+    state["next_explore_rift_time"] = wait_until
+    state["explore_rift_reply_due_at"] = wait_until
+    return wait_until
+
+
+def _find_recent_logged_explore_rift_command(now):
+    send_as_id = int(get_current_identity_id() or 0)
+    if send_as_id <= 0:
+        return None
+    wait_until = float(state.get("explore_rift_reply_due_at", 0) or 0)
+    start_ts = wait_until - EXPLORE_RIFT_SEND_UNKNOWN_WAIT_SEC - 60 if wait_until > 0 else float(now or 0) - EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC
+    end_ts = float(now or 0) + EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC
+    found = None
+    seen = set()
+    for entry in _iter_message_log_entries_between(max(0.0, start_ts), end_ts):
+        msg_id = int((entry or {}).get("message_id") or 0)
+        if msg_id in seen:
+            continue
+        seen.add(msg_id)
+        if not _identity_sender_matches((entry or {}).get("sender_id"), send_as_id):
+            continue
+        raw_text = str((entry or {}).get("text") or "").strip()
+        if raw_text != CMD_EXPLORE_RIFT:
+            continue
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
+            continue
+        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text}
+    return found
+
+
+def _find_logged_explore_rift_reply(command_msg_id, now):
+    command_msg_id = int(command_msg_id or 0)
+    if command_msg_id <= 0:
+        return None
+    end_ts = float(now or 0) + EXPLORE_RIFT_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, end_ts - EXPLORE_RIFT_LOG_REPLAY_LOOKBACK_SEC)
+    found = None
+    for entry in _iter_message_log_entries_between(start_ts, end_ts):
+        if int((entry or {}).get("reply_to_msg_id") or 0) != command_msg_id:
+            continue
+        entry_ts = _parse_message_log_ts((entry or {}).get("ts"))
+        if entry_ts <= 0 or entry_ts < start_ts or entry_ts > end_ts:
+            continue
+        raw_text = str((entry or {}).get("text") or "").strip()
+        if not is_explore_rift_reply_text(raw_text):
+            continue
+        msg_id = int((entry or {}).get("message_id") or 0)
+        found = {"ts": entry_ts, "msg_id": msg_id, "text": raw_text}
+    return found
+
+
+async def _recover_explore_rift_from_message_log(now, *, command_msg_id=0):
+    command_msg_id = int(command_msg_id or 0)
+    if command_msg_id <= 0:
+        command_entry = _find_recent_logged_explore_rift_command(now)
+        if not command_entry:
+            return ""
+        command_msg_id = int(command_entry.get("msg_id") or 0)
+    reply_entry = _find_logged_explore_rift_reply(command_msg_id, now)
+    if not reply_entry:
+        return ""
+    reply_to = SimpleNamespace(id=command_msg_id, raw_text=CMD_EXPLORE_RIFT)
+    handled = await handle_explore_rift_reply(
+        reply_entry["text"],
+        reply_entry["ts"] or now,
+        reply_to=reply_to,
+        matched_family="explore_rift",
+        result_msg_id=reply_entry["msg_id"],
+    )
+    if not handled:
+        return ""
+    if int(state.get("explore_rift_pending_result_msg_id", 0) or 0) > 0 and not _explore_rift_final_title(reply_entry["text"]):
+        return "pending"
+    if str(state.get("explore_rift_last_result") or "") == "冷却中":
+        return "cooldown"
+    return "result"
+
+
 def get_explore_rift_status_text():
     last_result = str(state.get("explore_rift_last_result") or "").strip() or "无"
     last_error = str(state.get("explore_rift_last_error") or "").strip() or "无"
@@ -1063,8 +1212,40 @@ async def run_explore_rift_scheduler(now):
 
     reply_to_msg_id = int(state.get("explore_rift_reply_to_msg_id", 0) or 0)
     reply_due_at = float(state.get("explore_rift_reply_due_at", 0) or 0)
+    if reply_to_msg_id <= 0 and _is_unknown_send_summary(state.get("explore_rift_last_result")):
+        recovered = await _recover_explore_rift_from_message_log(now)
+        if recovered:
+            save_state()
+            await send_audit_log(f"🕳 探寻裂缝日志补偿：{state.get('explore_rift_last_result') or recovered}", scope="identity", limit=240)
+            return
+        if reply_due_at > now:
+            return
+        if state.get("tianxing_enabled"):
+            mark_tianxing_route_result_unknown(
+                "探索",
+                now=now,
+                reason="探寻裂缝发送状态未知且消息日志未捞到反馈，暂停高风险动作等待下轮预检",
+            )
+        _clear_explore_rift_pending()
+        state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
+        state["explore_rift_tianxing_prepare_retry_at"] = 0
+        state["explore_rift_last_result"] = "发送状态未知且未捞到反馈，已暂停本轮"
+        state["explore_rift_last_error"] = "探寻裂缝发送状态未知，消息日志未捞到反馈"
+        save_state()
+        await send_audit_log(
+            "🌌 探寻裂缝发送状态未知：日志未捞到反馈，已暂停本轮高风险动作并等待下轮天星预检。",
+            scope="identity",
+            priority="high",
+            limit=260,
+        )
+        return
     if reply_to_msg_id > 0:
         if reply_due_at > now:
+            return
+        recovered = await _recover_explore_rift_from_message_log(now, command_msg_id=reply_to_msg_id)
+        if recovered:
+            save_state()
+            await send_audit_log(f"🕳 探寻裂缝日志补偿：{state.get('explore_rift_last_result') or recovered}", scope="identity", limit=240)
             return
         _clear_explore_rift_pending()
         retry_delay = RETRY_MAX_SEC
@@ -1133,6 +1314,17 @@ async def run_explore_rift_scheduler(now):
 
     msg = await send_game_command(CMD_EXPLORE_RIFT, track=False, max_retry=0, source_module="探寻裂缝")
     if not msg:
+        send_block = get_last_game_send_block(get_current_identity_id(), CMD_EXPLORE_RIFT)
+        if str(send_block.get("code") or "") == "send_timeout":
+            wait_until = _mark_explore_rift_send_unknown(now)
+            save_state()
+            await send_audit_log(
+                f"⚠️ 探寻裂缝发送状态未知，等待被动回复或冷却校准至 {fmt_abs_ts(wait_until)}。",
+                scope="identity",
+                priority="high",
+                limit=240,
+            )
+            return
         state["next_explore_rift_time"] = float(now + RETRY_MAX_SEC)
         state["explore_rift_last_error"] = "探寻裂缝发送失败"
         save_state()

@@ -1,7 +1,10 @@
 import copy
+import json
 import re
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -15,10 +18,12 @@ from ..config import (
     CMD_WANXIN_PUBLISH_COMMISSION,
     CMD_WANXIN_STATUS,
     CMD_WANXIN_VISIT,
+    MESSAGES_DIR,
     RETRY_MAX_SEC,
     TZ_LOCAL,
 )
 from ..action_guard import close_by_family as close_action_guard_by_family
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import console_log, get_last_game_send_block, send_audit_log, send_game_command
 from ..state import (
@@ -100,6 +105,15 @@ WANXIN_ACTION_FAMILIES = {
     WANXIN_ACTION_STRIP: "wanxin_assist_strip",
 }
 
+WANXIN_ACTION_COOLDOWN_SEC = {
+    WANXIN_ACTION_VISIT: WANXIN_VISIT_CD_SEC,
+    WANXIN_ACTION_PROTECT: WANXIN_PROTECT_CD_SEC,
+    WANXIN_ACTION_DEDUCE: WANXIN_DEDUCE_CD_SEC,
+    WANXIN_ACTION_IDENTIFY: WANXIN_IDENTIFY_CD_SEC,
+    WANXIN_ACTION_BANNER: WANXIN_BANNER_CD_SEC,
+    WANXIN_ACTION_STRIP: WANXIN_STRIP_CD_SEC,
+}
+
 RE_WANXIN_STAGE = re.compile(r"阶段[:：]\s*(?P<stage>[^\n]+)")
 RE_WANXIN_VALUE = re.compile(r"(?P<name>婉心|魂封|月魄|咒源)[:：]\s*(?P<value>\d+)")
 RE_COMMISSION_ID = re.compile(r"委托\s*ID[:：]\s*(?P<id>\d+)")
@@ -110,6 +124,40 @@ RE_SOURCE_GAIN = re.compile(r"咒源\s*\+(?P<gain>\d+)")
 RE_SEAL_DOWN = re.compile(r"魂封\s*-(?P<down>\d+)")
 RE_MOON_GAIN = re.compile(r"月魄\s*\+(?P<gain>\d+)")
 RE_CONTRIB_GAIN = re.compile(r"咒师贡献\s*\+(?P<gain>\d+)")
+
+
+def _entry_ts(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return 0.0
+    if raw.endswith(" UTC+8"):
+        raw = raw[:-6]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=TZ_LOCAL).timestamp()
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+
+
+def _iter_message_log_entries_between(start_ts, end_ts):
+    start = datetime.fromtimestamp(float(start_ts or 0), TZ_LOCAL).date()
+    end = datetime.fromtimestamp(float(end_ts or start_ts or 0), TZ_LOCAL).date()
+    day = start
+    while day <= end:
+        log_path = Path(MESSAGES_DIR) / f"{day.isoformat()}.log"
+        if log_path.exists():
+            try:
+                with log_path.open("r", encoding="utf-8") as handle:
+                    for line in handle:
+                        try:
+                            entry = json.loads(line)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            continue
+                        ts = _entry_ts(entry.get("ts"))
+                        if start_ts <= ts <= end_ts:
+                            yield entry, ts
+            except OSError:
+                pass
+        day += timedelta(days=1)
 
 
 def _safe_int(value, default=0):
@@ -572,11 +620,16 @@ def _pending_blocks(observed, now):
     if family:
         close_action_guard_by_family(family, send_as_id=pending_send_as_id, reason="wanxin_timeout", now=now)
     observed["pending"] = {}
-    observed["auto_last_action"] = action
-    observed["auto_last_error"] = f"{WANXIN_ACTION_LABELS.get(action, action)} 回复超时"
-    observed["auto_next_time"] = float(now + WANXIN_RECOVERY_RETRY_SEC)
-    _push_recent(observed, now, action, "timeout", observed["auto_last_error"])
-    return False
+    msg_id = _safe_int(pending.get("msg_id"), 0)
+    label = WANXIN_ACTION_LABELS.get(action, action)
+    if msg_id > 0:
+        _apply_uncertain_action_backoff(observed, action, now, f"{label} 回复超时，按冷却保守退避", result="回复超时，按冷却保守退避")
+    else:
+        observed["auto_last_action"] = action
+        observed["auto_last_error"] = f"{label} 回复超时"
+        observed["auto_next_time"] = float(now + WANXIN_RECOVERY_RETRY_SEC)
+        _push_recent(observed, now, action, "timeout", observed["auto_last_error"])
+    return True
 
 
 def _mark_pending(observed, action, msg, now, *, send_as_id, reply_to_msg_id=0):
@@ -606,6 +659,141 @@ def _schedule_next(observed, now, delay_sec=WANXIN_CHAIN_STEP_SEC, *, result="",
         observed["auto_last_result"] = result
     if error:
         observed["auto_last_error"] = error
+
+
+def _send_block_code(send_as_id, command):
+    block = get_last_game_send_block(send_as_id, command)
+    return str((block or {}).get("code") or "").strip(), str((block or {}).get("reason") or "").strip()
+
+
+def _apply_uncertain_action_backoff(observed, action, now, reason="", *, result=""):
+    action = str(action or "").strip()
+    label = WANXIN_ACTION_LABELS.get(action, action or "婉心动作")
+    if action == WANXIN_ACTION_VISIT:
+        next_time = _next_daily_after(now)
+        _set_next_time_for_action(observed, action, next_time)
+        observed["auto_next_time"] = next_time
+    elif action in WANXIN_ACTION_COOLDOWN_SEC:
+        next_time = float(now + WANXIN_ACTION_COOLDOWN_SEC[action] + CD_BUFFER_SEC)
+        _set_next_time_for_action(observed, action, next_time)
+        observed["auto_next_time"] = next_time
+    else:
+        observed["auto_next_time"] = float(now + 30 * 60)
+    observed["auto_last_action"] = action
+    observed["auto_last_result"] = result or f"{label} 状态未知，按冷却退避"
+    observed["auto_last_error"] = reason or f"{label} 状态未知"
+    _push_recent(observed, now, action, "uncertain_backoff", observed["auto_last_error"])
+    return observed["auto_next_time"]
+
+
+def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_id):
+    code, reason = _send_block_code(send_as_id, command)
+    if code == "send_timeout":
+        detail = reason or f"{command} 发送状态未知"
+        _apply_uncertain_action_backoff(observed, action, now, detail)
+        return False
+    if code == "send_queue_timeout":
+        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or f"{command} 排队超时未发送")
+        return False
+    if code == "global_disabled":
+        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or "全局暂停，婉心延后")
+        return False
+    if code in {"action_guard", "pre_send_guard", "bot_health", "account_offline", "identity_weak"}:
+        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or f"{command} 未发送，延后重试")
+        return False
+    detail = reason or f"{command} 发送未确认，延后重试"
+    _schedule_next(observed, now, RETRY_MAX_SEC, error=detail)
+    return False
+
+
+def _apply_assist_success_to_observed(observed, action, parsed, now):
+    _apply_success_cooldown(observed, action, now, parsed)
+    observed["assist"]["last_action"] = action
+    observed["assist"]["last_result"] = parsed.get("summary") or "协助成功"
+    observed["assist"]["last_error"] = ""
+    observed["assist"]["last_contrib_gain"] = int(parsed.get("contrib_gain", 0) or 0)
+    _apply_panel_values(observed, parsed.get("values") or {}, now)
+    observed["auto_last_action"] = action
+    observed["auto_last_result"] = parsed.get("summary") or "协助成功"
+    observed["auto_last_error"] = ""
+    _clear_pending(observed)
+    _schedule_next(observed, now)
+    _push_recent(observed, now, action, parsed.get("summary") or "协助成功")
+
+
+def _recover_recent_assist_success_from_log(observed, action, send_started_at):
+    expected_types = {
+        WANXIN_ACTION_IDENTIFY: "assist_identify_success",
+        WANXIN_ACTION_BANNER: "assist_banner_success",
+        WANXIN_ACTION_STRIP: "assist_strip_success",
+    }
+    expected_type = expected_types.get(action)
+    if not expected_type:
+        return False
+    owner_username = str((observed.get("commission") or {}).get("owner_username") or _owner_username() or "").strip().lstrip("@").casefold()
+    if not owner_username:
+        return False
+    end_ts = max(float(time.time()), float(send_started_at or 0)) + 5
+    start_ts = max(0.0, float(send_started_at or 0) - 30)
+    latest = None
+    for entry, entry_ts in _iter_message_log_entries_between(start_ts, end_ts):
+        if str(entry.get("event_type") or "") not in {"message", "edit"}:
+            continue
+        parsed = parse_wanxin_text(entry.get("text") or "", now=entry_ts, family=WANXIN_ACTION_FAMILIES.get(action, ""))
+        if not parsed or parsed.get("type") != expected_type:
+            continue
+        target = str(parsed.get("target_username") or "").strip().lstrip("@").casefold()
+        if target != owner_username:
+            continue
+        latest = (parsed, entry_ts)
+    if not latest:
+        return False
+    parsed, entry_ts = latest
+    _apply_assist_success_to_observed(observed, action, parsed, entry_ts)
+    return True
+
+
+def _is_wanxin_reply_log_entry(entry):
+    return looks_like_wanxin_text(str((entry or {}).get("text") or "").strip())
+
+
+async def _recover_wanxin_pending_from_message_log(observed, now):
+    pending = observed.get("pending") if isinstance(observed.get("pending"), dict) else {}
+    if not pending:
+        return False
+    msg_id = _safe_int(pending.get("msg_id"), 0)
+    if msg_id <= 0:
+        return False
+    action = str(pending.get("action") or "")
+    family = str(pending.get("family") or WANXIN_ACTION_FAMILIES.get(action, "") or "")
+    if not family:
+        return False
+    replies = find_message_log_replies(
+        msg_id,
+        now,
+        lookback_sec=max(15 * 60, WANXIN_REPLY_TIMEOUT_SEC * 5),
+        lookahead_sec=30,
+        predicate=_is_wanxin_reply_log_entry,
+    )
+    if not replies:
+        return False
+    command = WANXIN_ACTION_COMMANDS.get(action, "")
+    reply_to = SimpleNamespace(id=msg_id, raw_text=command)
+    for entry in replies:
+        handled = await handle_wanxin_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family=family,
+            result_msg_id=int(entry.get("message_id") or 0),
+        )
+        if handled:
+            refreshed = normalize_wanxin_observation(state.get("wanxin_observation"))
+            observed.clear()
+            observed.update(refreshed)
+            observed["auto_last_error"] = ""
+            return True
+    return False
 
 
 def _next_daily_after(now):
@@ -697,9 +885,7 @@ async def _send_owner_action(observed, action, now, *, command_override=""):
         queue_timeout=60,
     )
     if not msg:
-        block = get_last_game_send_block(get_current_identity_id(), command)
-        reason = (block or {}).get("reason") or f"{command} 发送失败"
-        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason)
+        _handle_unsent_or_uncertain_send(observed, action, command, now, send_as_id=get_current_identity_id())
         return False
     sent_at = float(getattr(msg, "sent_at", 0) or now)
     msg_id = int(getattr(msg, "id", 0) or 0)
@@ -738,9 +924,7 @@ async def _send_accept_action(observed, now):
         queue_timeout=60,
     )
     if not msg:
-        block = get_last_game_send_block(assist_send_as_id, command)
-        reason = (block or {}).get("reason") or "接取委托发送失败"
-        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason)
+        _handle_unsent_or_uncertain_send(observed, WANXIN_ACTION_ACCEPT, command, now, send_as_id=assist_send_as_id)
         return False
     sent_at = float(getattr(msg, "sent_at", 0) or now)
     _mark_pending(observed, WANXIN_ACTION_ACCEPT, msg, sent_at, send_as_id=assist_send_as_id)
@@ -775,9 +959,9 @@ async def _send_assist_action(observed, action, now):
         queue_timeout=60,
     )
     if not msg:
-        block = get_last_game_send_block(assist_send_as_id, command)
-        reason = (block or {}).get("reason") or f"{command} 发送失败"
-        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason)
+        if str(_send_block_code(assist_send_as_id, command)[0]) == "send_timeout" and _recover_recent_assist_success_from_log(observed, action, now):
+            return True
+        _handle_unsent_or_uncertain_send(observed, action, command, now, send_as_id=assist_send_as_id)
         return False
     sent_at = float(getattr(msg, "sent_at", 0) or now)
     _mark_pending(observed, action, msg, sent_at, send_as_id=assist_send_as_id, reply_to_msg_id=reply_to_msg_id)
@@ -809,12 +993,19 @@ async def run_wanxin_scheduler(now):
     try:
         current_identity_id = get_current_identity_id()
         assist_send_as_id = int((observed.get("assist") or {}).get("send_as_id", 0) or 0)
-        if current_identity_id == assist_send_as_id and _is_yinluo_identity(current_identity_id):
+        if _is_yinluo_identity(current_identity_id):
             observed["auto_last_result"] = "阴罗协助身份：等待委托方锚点，不主动跑婉心主线"
             observed["auto_next_time"] = now + 30 * 60
             _set_observed(observed)
             save_state()
             return
+        pending = observed.get("pending") if isinstance(observed.get("pending"), dict) else {}
+        if pending and float(pending.get("reply_due_at", 0) or 0) <= now:
+            if await _recover_wanxin_pending_from_message_log(observed, now):
+                _set_observed(observed)
+                save_state()
+                await send_audit_log("🧊 婉心日志补偿：已采纳超时回包。", scope="identity", limit=180)
+                return
         if _pending_blocks(observed, now):
             _set_observed(observed)
             save_state()
@@ -887,14 +1078,15 @@ def _cleanup_wanxin_pending_only(now):
     pending_before = dict(observed.get("pending") or {})
     if not pending_before:
         return False
-    if _pending_blocks(observed, now):
-        _set_observed(observed)
-        save_state()
-        return False
+    _pending_blocks(observed, now)
     if pending_before and not observed.get("pending"):
         _set_observed(observed)
         save_state()
         return True
+    if observed.get("pending"):
+        _set_observed(observed)
+        save_state()
+        return False
     return False
 
 
@@ -987,9 +1179,9 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         next_time = float(parsed.get("next_time", 0) or now + WANXIN_RECOVERY_RETRY_SEC)
         _set_cooldown_from_reply(observed, action, next_time)
         observed["auto_last_result"] = f"{WANXIN_ACTION_LABELS.get(action, '婉心动作')}冷却中"
-        observed["auto_next_time"] = next_time
         observed["auto_last_error"] = ""
         _clear_pending(observed)
+        _schedule_next(observed, now)
     elif ptype in {"visit_success", "visit_already", "protect_success", "deduce_success"}:
         if ptype in {"visit_success", "visit_already"}:
             action = WANXIN_ACTION_VISIT
@@ -1078,8 +1270,8 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             _set_cooldown_from_reply(observed, action, next_time)
             observed["auto_last_result"] = f"{WANXIN_ACTION_LABELS.get(action, '协助动作')}冷却中"
             observed["auto_last_error"] = ""
-            observed["auto_next_time"] = next_time
             _clear_pending(observed)
+            _schedule_next(observed, now)
         else:
             return False
         _push_recent(observed, now, action or ptype, parsed.get("summary") or ptype)

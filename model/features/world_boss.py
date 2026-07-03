@@ -5,6 +5,7 @@ import re
 import time
 from collections import deque
 from datetime import datetime
+from types import SimpleNamespace
 
 from ..config import (
     CMD_QINGYUANZI_ATTACK,
@@ -15,6 +16,7 @@ from ..config import (
     MESSAGES_DIR,
     TZ_LOCAL,
 )
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import (
@@ -1074,6 +1076,47 @@ def _clear_expired_pending(identity_id, identity_state, now):
     return False
 
 
+def _is_world_boss_reply_log_entry(entry):
+    return looks_like_world_boss_text(str((entry or {}).get("text") or "").strip())
+
+
+async def _recover_world_boss_pending_from_message_log(identity_id, identity_state, now):
+    pending_msg_id = _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0)
+    if pending_msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        pending_msg_id,
+        now,
+        lookback_sec=max(15 * 60, WORLD_BOSS_REPLY_TIMEOUT_SEC * 5),
+        lookahead_sec=30,
+        predicate=_is_world_boss_reply_log_entry,
+    )
+    if not replies:
+        return False
+    pending_action = str(identity_state.get("world_boss_pending_action") or "").strip()
+    command = WORLD_BOSS_STATUS_QUERY_COMMAND if pending_action == "status" else WORLD_BOSS_ACTION_COMMANDS.get(pending_action, "")
+    reply_to = SimpleNamespace(id=pending_msg_id, raw_text=command)
+    handled_any = False
+    for entry in replies:
+        handled = await handle_world_boss_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family="world_boss",
+            reply_context={"send_as_id": int(identity_id or 0), "reply_to_msg_id": pending_msg_id},
+            current_msg_id=int(entry.get("message_id") or 0),
+        )
+        handled_any = handled_any or handled
+    if handled_any:
+        console_log(
+            f"🗡 真仙试锋[{_identity_label(identity_id)}] 日志补偿：已采纳超时回包，消息ID={pending_msg_id}",
+            scope="identity",
+            send_as_id=identity_id,
+            limit=220,
+        )
+    return handled_any
+
+
 def _eligible_identity_action(identity_id, run_state, now):
     try:
         identity_state = get_identity_state(identity_id)
@@ -1675,6 +1718,9 @@ async def _run_world_boss_action_round(now):
                     _schedule_next_world_boss_action(run_state, current_now)
                 return
             is_pending_retry = _coerce_int(identity_state.get("world_boss_pending_msg_id"), 0) > 0
+            if is_pending_retry and await _recover_world_boss_pending_from_message_log(identity_id, identity_state, current_now):
+                _schedule_next_world_boss_action(_get_run_state(current_now), current_now)
+                return
             if is_pending_retry and sent_count > 0 and allow_new_actions:
                 _complete_world_boss_round(run_state, current_now)
                 return
@@ -1722,6 +1768,9 @@ async def run_world_boss_scheduler(now):
                         return
                     status_identity_id, _identity_state = _pending_status_identity(now)
                     if status_identity_id:
+                        if _identity_state is not None and await _recover_world_boss_pending_from_message_log(status_identity_id, _identity_state, now):
+                            _set_run_state(_get_run_state(now), persist=False)
+                            return
                         await _send_status_query(
                             status_identity_id,
                             now,
@@ -1770,6 +1819,9 @@ async def run_world_boss_scheduler(now):
                     return
                 status_identity_id, _identity_state = _pending_status_identity(now)
                 if status_identity_id:
+                    if _identity_state is not None and await _recover_world_boss_pending_from_message_log(status_identity_id, _identity_state, now):
+                        _schedule_next_world_boss_action(_get_run_state(now), now)
+                        return
                     await _send_status_query(status_identity_id, now, run_state, "战况查询无回复")
                 else:
                     _set_run_state(run_state, persist=False)

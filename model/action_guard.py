@@ -807,6 +807,12 @@ def _has_remote_block(session, now):
     return block_until > float(now or 0)
 
 
+def _is_closed_session(session):
+    if not isinstance(session, dict):
+        return False
+    return float(session.get("closed_at", 0) or 0) > 0
+
+
 def _remote_block_reason(session, action_key, now):
     spec = _spec(action_key)
     label = str(session.get("label") or spec.get("label") or action_key)
@@ -931,6 +937,8 @@ def _session_should_close(action_key, session, identity_state, now):
         return True
     if _has_remote_block(session, now):
         return False
+    if _is_closed_session(session):
+        return True
     if not _session_has_send_evidence(session):
         return True
     if _is_expired(session, now, spec):

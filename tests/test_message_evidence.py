@@ -826,6 +826,82 @@ class SentMessageEvidenceTests(unittest.TestCase):
             state_module._meta_state.clear()
             state_module._meta_state.update(meta_snapshot)
 
+    def test_action_guard_reopens_stale_closed_session_after_timeout_cleanup(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990307
+        now = 1_780_000_200.0
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["wanxin_observation"] = {"pending": {}}
+                state_module.state["action_guard_sessions"] = {
+                    "wanxin_protect": {
+                        "action_key": "wanxin_protect",
+                        "label": "护持神魂",
+                        "attempt": 1,
+                        "first_sent_at": now - 180,
+                        "last_sent_at": now - 180,
+                        "next_allowed_at": 0,
+                        "last_msg_id": 7201,
+                        "last_command": ".护持神魂",
+                        "closed_at": now - 60,
+                        "close_reason": "wanxin_timeout",
+                    }
+                }
+
+            allowed, reason = action_guard.before_send(".护持神魂", send_as_id=identity_id, now=now)
+
+            self.assertTrue(allowed, reason)
+            with state_module.use_identity(identity_id):
+                session = state_module.state["action_guard_sessions"].get("wanxin_protect") or {}
+                self.assertEqual(0, int(session.get("attempt", 0) or 0))
+                self.assertEqual(0, float(session.get("closed_at", 0) or 0))
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
+    def test_action_guard_keeps_closed_remote_block_until_remote_expiry(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 990308
+        now = 1_780_000_300.0
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            with state_module.use_identity(identity_id):
+                state_module.state["wanxin_observation"] = {"pending": {}}
+                state_module.state["action_guard_sessions"] = {
+                    "wanxin_protect": {
+                        "action_key": "wanxin_protect",
+                        "label": "护持神魂",
+                        "attempt": 0,
+                        "first_sent_at": now - 180,
+                        "last_sent_at": now - 180,
+                        "next_allowed_at": 0,
+                        "last_msg_id": 0,
+                        "last_command": ".护持神魂",
+                        "closed_at": now - 60,
+                        "close_reason": "cooldown",
+                        "remote_block_until": now + 600,
+                        "remote_block_reason": "游戏提示冷却中",
+                        "remote_block_kind": "cooldown",
+                    }
+                }
+
+            allowed, reason = action_guard.before_send(".护持神魂", send_as_id=identity_id, now=now)
+
+            self.assertFalse(allowed)
+            self.assertIn("冷却", reason)
+            with state_module.use_identity(identity_id):
+                self.assertIn("wanxin_protect", state_module.state["action_guard_sessions"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
     def test_unhandled_routed_reply_keeps_action_guard_session(self):
         meta_snapshot = copy.deepcopy(state_module._meta_state)
         identity_id = 990302

@@ -1186,7 +1186,7 @@ def _apply_storage_bag_passive(text, now):
     return True, identity_id
 
 
-def _apply_wild_training_passive(text, now, family, *, reply_context=None):
+def _apply_wild_training_passive(text, now, family, *, reply_context=None, current_msg_id=0):
     raw_text = str(text or "").strip()
     if family != "wild_training" and not raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE):
         return False
@@ -1209,12 +1209,10 @@ def _apply_wild_training_passive(text, now, family, *, reply_context=None):
         return True
     if not any(marker in raw_text for marker in wild_training_mod.WILD_TRAINING_RESULT_MARKERS):
         return False
-    state["wild_training_reply_to_msg_id"] = 0
-    state["wild_training_reply_due_at"] = 0
-    state["wild_training_retry_count"] = 0
-    state["wild_training_last_result"] = wild_training_mod._result_summary(raw_text)
-    state["wild_training_last_error"] = ""
-    wild_training_mod._schedule_next(now)
+    msg_id = int(current_msg_id or 0) or _context_msg_id(reply_context, "reply_to_msg_id")
+    if wild_training_mod._is_duplicate_wild_training_result(raw_text, msg_id):
+        return True
+    wild_training_mod._apply_wild_training_result(raw_text, now, msg_id)
     return True
 
 
@@ -1665,7 +1663,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tree")
             changed = module_changed or changed
         if family == "wild_training" or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE):
-            module_changed = _apply_wild_training_passive(raw_text, now, family, reply_context=reply_context)
+            module_changed = _apply_wild_training_passive(raw_text, now, family, reply_context=reply_context, current_msg_id=observed_msg_id)
             if module_changed:
                 changed_modules.append("wild_training")
             changed = module_changed or changed

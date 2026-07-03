@@ -1,6 +1,7 @@
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -11,6 +12,7 @@ from ..config import (
     WENDAO_JITTER_MIN_SEC,
     WENDAO_REPLY_TIMEOUT_SEC,
 )
+from ..message_log_recovery import find_message_log_message, find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_send_as_profile, state
@@ -29,6 +31,8 @@ RE_WENDAO_XIUWEI = re.compile(r"修为增加了\s*([\d,]+)\s*点")
 RE_WENDAO_REWARD_BRACKET = re.compile(r"^【([^】]+)】\s*[xX*＊]\s*([\d,]+)$")
 RE_WENDAO_REWARD_PLAIN = re.compile(r"^(.+?)\s*[xX*＊]\s*([\d,]+)$")
 RE_WENDAO_NOISE_PREFIX = re.compile(r"^[\-•·\s]+")
+WENDAO_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+WENDAO_LOG_REPLAY_LOOKAHEAD_SEC = 30
 
 
 def _parse_int(value):
@@ -248,6 +252,54 @@ async def handle_wendao_reply(text, now, reply_to=None, matched_family=None, res
     return False
 
 
+def _is_wendao_reply_log_entry(entry):
+    return is_wendao_reply_text(str((entry or {}).get("text") or "").strip())
+
+
+async def _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
+    reply_to_msg_id = int(reply_to_msg_id or 0)
+    if reply_to_msg_id <= 0:
+        return False
+    reply_to = SimpleNamespace(id=reply_to_msg_id, raw_text=CMD_WENDAO)
+    pending_result_msg_id = int(state.get("wendao_pending_result_msg_id", 0) or 0)
+    if pending_result_msg_id > 0:
+        entry = find_message_log_message(
+            pending_result_msg_id,
+            now,
+            lookback_sec=WENDAO_LOG_REPLAY_LOOKBACK_SEC,
+            lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
+            predicate=_is_wendao_reply_log_entry,
+        )
+        if entry:
+            handled = await handle_wendao_reply(
+                entry.get("text") or "",
+                float(entry.get("ts_epoch") or now),
+                reply_to=reply_to,
+                matched_family="wendao",
+                result_msg_id=int(entry.get("message_id") or 0),
+            )
+            if handled:
+                return True
+    replies = find_message_log_replies(
+        reply_to_msg_id,
+        now,
+        lookback_sec=WENDAO_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=WENDAO_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_wendao_reply_log_entry,
+    )
+    handled_any = False
+    for entry in replies:
+        handled = await handle_wendao_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to=reply_to,
+            matched_family="wendao",
+            result_msg_id=int(entry.get("message_id") or 0),
+        )
+        handled_any = handled_any or handled
+    return handled_any
+
+
 async def run_wendao_scheduler(now):
     if not state.get("wendao_enabled"):
         return
@@ -273,6 +325,10 @@ async def run_wendao_scheduler(now):
     reply_due_at = float(state.get("wendao_reply_due_at", 0) or 0)
     if reply_to_msg_id > 0:
         if reply_due_at > now:
+            return
+        if await _recover_wendao_pending_from_message_log(now, reply_to_msg_id):
+            save_state()
+            await send_audit_log(f"🧭 问道日志补偿：已采纳超时回包，消息ID={reply_to_msg_id}", scope="identity", limit=220)
             return
         _clear_wendao_pending()
         state["next_wendao_time"] = float(now + RETRY_MAX_SEC)

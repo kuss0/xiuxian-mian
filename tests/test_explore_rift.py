@@ -1,6 +1,9 @@
 import copy
+import json
 import sys
+import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -9,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from model import config
 from model import state as state_module
 from model import ui
 from model.features import explore_rift, storage_bag, tianxing
@@ -42,6 +46,17 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             xiuwei_max=500000,
         )
         return identity_id
+
+    def _log_ts(self, ts):
+        return datetime.fromtimestamp(float(ts), config.TZ_LOCAL).strftime("%Y-%m-%d %H:%M:%S UTC+8")
+
+    def _write_message_log(self, log_dir, entries, now):
+        day = datetime.fromtimestamp(float(now), config.TZ_LOCAL).date().isoformat()
+        log_path = Path(log_dir) / f"{day}.log"
+        with log_path.open("w", encoding="utf-8") as f:
+            for entry in entries:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return log_path
 
     def test_status_text_shows_quiet_lock_during_rebirth_recovery(self):
         identity_id = self._prepare_identity()
@@ -1208,6 +1223,124 @@ class ExploreRiftTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(0, state_module.state["explore_rift_tianxing_prepare_retry_at"])
             self.assertIn("短重试", state_module.state["explore_rift_last_result"])
             self.assertEqual("探寻裂缝回复超时", state_module.state["explore_rift_last_error"])
+
+    async def test_scheduler_recovers_timed_out_reply_from_message_log(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        result_ts = now - 5
+        entries = [
+            {
+                "ts": self._log_ts(result_ts),
+                "event_type": "edit",
+                "message_id": 22028,
+                "reply_to_msg_id": 22027,
+                "text": (
+                    "【探寻成功】\n"
+                    "【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n"
+                    "【改命待发】此道改命尚可维持 23小时\n"
+                    "你的元婴满载而归，为你带来了：【法则碎片·金】, 【九天神雷木】！"
+                ),
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(identity_id):
+                state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["explore_rift_reply_to_msg_id"] = 22027
+                state_module.state["explore_rift_reply_due_at"] = now - 1
+                state_module.state["next_explore_rift_time"] = now - 1
+                state_module.state["tianxing_enabled"] = True
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
+                    patch.object(explore_rift.random, "uniform", return_value=0),
+                    patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
+                    patch.object(explore_rift, "save_state"),
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertGreaterEqual(audit_mock.await_count, 1)
+        self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+        self.assertEqual(0, state_module.state["explore_rift_reply_due_at"])
+        self.assertIn("法则碎片·金x1", state_module.state["explore_rift_last_result"])
+        self.assertIn("九天神雷木x1", state_module.state["explore_rift_last_result"])
+        self.assertEqual(result_ts + explore_rift.EXPLORE_RIFT_CD, state_module.state["next_explore_rift_time"])
+        self.assertEqual("", state_module.state["explore_rift_last_error"])
+
+    async def test_scheduler_recovers_unknown_send_result_from_message_log(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        command_ts = now - 120
+        result_ts = command_ts + 6
+        entries = [
+            {
+                "ts": self._log_ts(command_ts),
+                "event_type": "message",
+                "message_id": 33001,
+                "sender_id": identity_id,
+                "reply_to_msg_id": 7310786,
+                "text": ".探寻裂缝",
+            },
+            {
+                "ts": self._log_ts(result_ts),
+                "event_type": "message",
+                "message_id": 33002,
+                "reply_to_msg_id": 33001,
+                "text": "空间裂缝尚未稳定，其中的空间风暴仍在肆虐。请在 1小时20分钟31秒 后再行探寻。",
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(identity_id):
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["explore_rift_reply_to_msg_id"] = 0
+                state_module.state["explore_rift_reply_due_at"] = now - 1
+                state_module.state["explore_rift_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+                state_module.state["explore_rift_last_error"] = "探寻裂缝发送状态未知"
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
+                    patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
+                    patch.object(explore_rift, "save_state"),
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        self.assertGreaterEqual(audit_mock.await_count, 1)
+        self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+        self.assertEqual("冷却中", state_module.state["explore_rift_last_result"])
+        self.assertEqual(result_ts + 4831 + explore_rift.CD_BUFFER_SEC, state_module.state["next_explore_rift_time"])
+        self.assertEqual("", state_module.state["explore_rift_last_error"])
+
+    async def test_scheduler_unknown_send_without_log_does_not_resend_high_risk_command(self):
+        identity_id = self._prepare_identity(xiuwei_current=500000)
+        now = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, [], now)
+            with state_module.use_identity(identity_id):
+                state_module.update_send_as_profile(identity_id, sect_name="天星宗")
+                state_module.state["explore_rift_enabled"] = True
+                state_module.state["explore_rift_reply_to_msg_id"] = 0
+                state_module.state["explore_rift_reply_due_at"] = now - 1
+                state_module.state["next_explore_rift_time"] = now - 1
+                state_module.state["explore_rift_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+                state_module.state["tianxing_enabled"] = True
+                with (
+                    patch.object(explore_rift, "MESSAGES_DIR", tmpdir),
+                    patch.object(explore_rift, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(explore_rift, "send_audit_log", new=AsyncMock()) as audit_mock,
+                    patch.object(explore_rift, "save_state"),
+                ):
+                    await explore_rift.run_explore_rift_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertEqual(0, state_module.state["explore_rift_reply_to_msg_id"])
+        self.assertEqual(now + explore_rift.RETRY_MAX_SEC, state_module.state["next_explore_rift_time"])
+        self.assertIn("未捞到反馈", state_module.state["explore_rift_last_error"])
+        self.assertIn("暂停本轮", state_module.state["explore_rift_last_result"])
 
     async def test_scheduler_pulls_ready_tianxing_retry_forward_and_sends(self):
         identity_id = self._prepare_identity(xiuwei_current=500000)

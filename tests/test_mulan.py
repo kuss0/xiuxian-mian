@@ -1,6 +1,9 @@
 import copy
+import json
 import sys
+import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -467,6 +470,61 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("idle", state_module.state["mulan_phase"])
             self.assertIn("搜集无回复", state_module.state["mulan_last_result"])
             self.assertGreater(state_module.state["next_mulan_time"], now)
+
+    async def test_timeout_recovers_collect_reply_from_message_log(self):
+        identity_id = self._prepare_identity()
+        now = datetime(2026, 7, 4, 6, 45, tzinfo=mulan.TZ_LOCAL).timestamp()
+        report_text = "\n".join([
+            "【慕兰谍影】",
+            "今日军报匣：",
+            "1. 今夜圣灯换焰，主灯会短暂离开护灯法士三十息",
+            "2. 黄龙阵旗已全部撤回，护阵路线今日无事",
+        ])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-04.log"
+            log_path.write_text(
+                "\n".join(
+                    json.dumps(item, ensure_ascii=False)
+                    for item in (
+                        {
+                            "ts": "2026-07-04 06:44:40 UTC+8",
+                            "event_type": "message",
+                            "message_id": 1001,
+                            "sender_id": identity_id,
+                            "reply_to_msg_id": 0,
+                            "text": ".搜集军报",
+                        },
+                        {
+                            "ts": "2026-07-04 06:44:42 UTC+8",
+                            "event_type": "message",
+                            "message_id": 1002,
+                            "sender_id": 8609885831,
+                            "reply_to_msg_id": 1001,
+                            "text": report_text,
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with state_module.use_identity(identity_id):
+                state_module.state["mulan_enabled"] = True
+                state_module.state["mulan_phase"] = "collect_pending"
+                state_module.state["mulan_reply_to_msg_id"] = 1001
+                state_module.state["mulan_reply_due_at"] = now - 1
+                state_module.state["mulan_last_command"] = ".搜集军报"
+                with (
+                    patch("model.message_log_recovery.MESSAGES_DIR", tmpdir),
+                    patch.object(mulan, "send_game_command", new=AsyncMock()) as send_mock,
+                    patch.object(mulan, "save_state"),
+                    patch.object(mulan, "send_audit_log", new=AsyncMock()),
+                ):
+                    await mulan.run_mulan_scheduler(now)
+
+                send_mock.assert_not_awaited()
+                self.assertEqual("ready_to_judge", state_module.state["mulan_phase"])
+                self.assertEqual(0, state_module.state["mulan_reply_to_msg_id"])
+                self.assertEqual("1,2", state_module.state["mulan_pending_ids"])
 
     async def test_stale_collect_pending_without_anchor_recovers_without_send(self):
         identity_id = self._prepare_identity()
