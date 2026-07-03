@@ -2,6 +2,7 @@ import math
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import (
     CMD_CONCUBINE_PLACE,
@@ -14,6 +15,7 @@ from ..config import (
     NANLONG_REPLY_TIMEOUT_SEC,
     RE_WHITESPACE,
 )
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import (
@@ -62,6 +64,8 @@ NANLONG_RECALL_FAILURE_KEYWORDS = ("无法召回", "无需召回", "藏娇阁中
 NANLONG_CAVE_STATUS_AVAILABLE = "available"
 NANLONG_CAVE_STATUS_EMPTY = "empty"
 NANLONG_CAVE_STATUS_UNKNOWN = "unknown"
+NANLONG_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+NANLONG_LOG_REPLAY_LOOKAHEAD_SEC = 30
 
 
 def _normalize_text(text):
@@ -241,6 +245,19 @@ def _is_concubine_recall_success(text):
 def _is_concubine_recall_failure(text):
     raw_text = str(text or "")
     return any(keyword in raw_text for keyword in NANLONG_RECALL_FAILURE_KEYWORDS)
+
+
+def _is_nanlong_recovery_log_entry(entry):
+    raw_text = str((entry or {}).get("text") or "").strip()
+    if not raw_text:
+        return False
+    return (
+        _is_nanlong_success_reply(raw_text)
+        or _is_concubine_place_success(raw_text)
+        or _is_concubine_place_failure(raw_text)
+        or _is_concubine_recall_success(raw_text)
+        or _is_concubine_recall_failure(raw_text)
+    )
 
 
 def _get_nanlong_protect_phase():
@@ -479,6 +496,32 @@ async def _handle_nanlong_trade_confirmed(text, now, audit_text):
     return True
 
 
+async def _recover_nanlong_pending_reply_from_log(now):
+    msg_id, valid = _parse_nanlong_pending_int(state.get("nanlong_last_msg_id", 0))
+    if not valid or msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        msg_id,
+        now,
+        lookback_sec=NANLONG_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=NANLONG_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_nanlong_recovery_log_entry,
+    )
+    if not replies:
+        return False
+    reply_to = SimpleNamespace(id=msg_id, raw_text=str(state.get("nanlong_last_command") or ""))
+    handled_any = False
+    for entry in replies:
+        handled = await handle_nanlong_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to,
+            matched_family="nanlong",
+        )
+        handled_any = handled_any or handled
+    return handled_any
+
+
 def get_nanlong_status_text():
     choice = normalize_nanlong_choice(get_nanlong_choice())
     reply_to_msg_id, deadline, reply_due_at, _pending_valid = _get_nanlong_pending_state()
@@ -563,6 +606,8 @@ async def run_nanlong_scheduler(now):
     if not pending_valid:
         return
     phase = _get_nanlong_protect_phase()
+    if reply_due_at > 0 and now >= reply_due_at and await _recover_nanlong_pending_reply_from_log(now):
+        return
     if phase == NANLONG_PROTECT_RECALL_PENDING:
         if reply_due_at <= 0 or now < reply_due_at:
             return

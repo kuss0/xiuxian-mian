@@ -314,6 +314,50 @@ class NanlongTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["nanlong_protect_phase"])
             self.assertEqual("", state_module.state["nanlong_last_error"])
 
+    async def test_scheduler_recovers_place_confirmation_from_message_log(self):
+        now = 1_700_000_000.0
+        identity_id = self._prepare_pending(991306, now=now)
+        state_module.update_send_as_profile(
+            identity_id,
+            username="nanlongrecover",
+            enabled=True,
+            nanlong_choice=nanlong.NANLONG_CHOICE_EXCHANGE_FABAO,
+        )
+        self._set_local_cave_record(identity_id, {"jingshi_level": 1})
+
+        with state_module.use_identity(identity_id):
+            state_module.state["nanlong_protect_phase"] = "place_pending"
+            state_module.state["nanlong_place_msg_id"] = 9901
+            state_module.state["nanlong_last_msg_id"] = 9901
+            state_module.state["nanlong_last_command"] = ".安置侍妾"
+            state_module.state["nanlong_reply_due_at"] = now - 1
+            replies = [{
+                "text": "你已将道侣【墨彩环】安置在洞府的藏娇阁中。",
+                "ts_epoch": now - 10,
+                "message_id": 9904,
+                "reply_to_msg_id": 9901,
+            }]
+
+            async def fake_send_exchange(command, **kwargs):
+                return SimpleNamespace(id=9902, sent_at=now)
+
+            with (
+                patch.object(nanlong, "find_message_log_replies", return_value=replies) as recovery_mock,
+                patch.object(nanlong, "send_game_command", new=AsyncMock(side_effect=fake_send_exchange)) as send_mock,
+                patch.object(nanlong, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(nanlong, "save_state") as save_mock,
+            ):
+                await nanlong.run_nanlong_scheduler(now)
+
+            recovery_mock.assert_called_once()
+            send_mock.assert_awaited_once_with(".交换 法宝", track=False, reply_to=22027)
+            audit_mock.assert_not_awaited()
+            save_mock.assert_called_once()
+            self.assertEqual(9902, state_module.state["nanlong_last_msg_id"])
+            self.assertEqual(".交换 法宝", state_module.state["nanlong_last_command"])
+            self.assertEqual("exchange_pending", state_module.state["nanlong_protect_phase"])
+            self.assertEqual("等待南陇侯交易结果", state_module.state["nanlong_last_error"])
+
     async def test_scheduler_direct_exchange_when_local_cave_is_empty(self):
         now = 1_700_000_000.0
         identity_id = self._prepare_pending(991303, now=now)
