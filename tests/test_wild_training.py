@@ -434,6 +434,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(now + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("结果编辑未留存", state_module.state["wild_training_last_result"])
         self.assertIn("已按正常周期恢复", state_module.state["wild_training_last_result"])
+        self.assertEqual(now, state_module.state["wild_training_last_completed_at"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
     async def test_sent_timeout_clears_stale_pending_before_retry(self):

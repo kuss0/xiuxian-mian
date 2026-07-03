@@ -675,6 +675,39 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 ).fetchone()
                 self.assertEqual(result_at, row["wild_training_last_completed_at"])
 
+    def test_runtime_migration_refreshes_missing_wild_training_result_anchor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990353
+                result_at = 1_700_000_456.0
+                old_completed_at = 1_700_000_123.0
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="wildmissing")
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                conn.execute(
+                    """
+                    UPDATE identity_runtime_state
+                    SET wild_training_last_result = '结果编辑未留存，已按正常周期恢复，原消息ID=42',
+                        wild_training_last_result_at = ?,
+                        wild_training_last_completed_at = ?
+                    WHERE send_as_id = ?
+                    """,
+                    (result_at, old_completed_at, identity_id),
+                )
+                conn.commit()
+
+                persistence._schema_columns_ensured_key = None
+                persistence._ensure_schema_columns(conn)
+
+                row = conn.execute(
+                    "SELECT wild_training_last_completed_at FROM identity_runtime_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual(result_at, row["wild_training_last_completed_at"])
+
     def test_save_state_blocks_demo_identity_collapse_over_live_roster(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

@@ -693,6 +693,14 @@ def _ensure_schema_columns(conn):
               AND COALESCE(wild_training_last_completed_at, 0) <= 0
             """
         )
+    conn.execute(
+        """
+        UPDATE identity_runtime_state
+        SET wild_training_last_completed_at = wild_training_last_result_at
+        WHERE wild_training_last_result_at > COALESCE(wild_training_last_completed_at, 0)
+          AND wild_training_last_result LIKE '结果编辑未留存%'
+        """
+    )
     if "wild_training_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_last_panel_msg_id" not in runtime_columns:

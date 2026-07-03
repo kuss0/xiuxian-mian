@@ -746,6 +746,7 @@ async def _cleanup_wild_training_pending_timeout(now):
         _schedule_next(now)
         state["wild_training_last_result"] = f"结果编辑未留存，已按正常周期恢复，原消息ID={reply_to_msg_id}"
         state["wild_training_last_result_at"] = float(now or 0)
+        state["wild_training_last_completed_at"] = float(now or 0)
         state["wild_training_last_error"] = ""
         state["wild_training_retry_count"] = 0
         save_state()
