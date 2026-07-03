@@ -640,6 +640,45 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(2, record["sent_attempts"])
         self.assertEqual("waiting_intermediate", record["phase"])
 
+    def test_startup_recovery_closes_expired_query_without_sending(self):
+        identity_id = self._register_identity(991201, "target", divination_enabled=True)
+        now = 1000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {
+                "day_key": get_day_key(now),
+                "phase": "waiting_intermediate",
+                "count": 2,
+                "sent_attempts": 3,
+                "next_query_at": 0,
+                "pending_query_msg_id": 9001,
+                "pending_until": now - 1,
+                "pending_count_recorded": False,
+            }
+        })
+        state_module.get_identity_state(identity_id)["pending_tasks"] = {
+            9001: {
+                "cmd": ".卜筮问天",
+                "sent_at": now - 181,
+                "retry": 0,
+                "timeout": 180,
+                "max_retry": 0,
+                "source_module": "卜筮问天",
+            }
+        }
+
+        with patch("model.features.divination.get_identity_ids", return_value=[identity_id]), \
+                patch("model.features.divination.send_game_command", new=AsyncMock()) as send_mock:
+            recovered = divination.recover_divination_startup_timeouts(now)
+
+        self.assertEqual(1, recovered)
+        send_mock.assert_not_awaited()
+        record = state_module.get_divination_run_state()[str(identity_id)]
+        self.assertEqual(2, record["count"])
+        self.assertEqual("idle", record["phase"])
+        self.assertEqual(now + divination.DIVINATION_QUERY_GAP_SEC, record["next_query_at"])
+        self.assertIn("启动恢复", record["last_error"])
+        self.assertEqual({}, state_module.get_identity_state(identity_id)["pending_tasks"])
+
     def test_pending_health_marks_orphan_divination_pending(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         now = 2000.0

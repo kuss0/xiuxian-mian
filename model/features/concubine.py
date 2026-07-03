@@ -5,6 +5,8 @@ import os
 import random
 import re
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -162,6 +164,7 @@ CONCUBINE_GREET_DEFER_MIN_SEC = 60
 CONCUBINE_GREET_DEFER_MAX_SEC = 180
 CONCUBINE_ACTIVE_DEFER_MIN_SEC = 60
 CONCUBINE_ACTIVE_DEFER_MAX_SEC = 180
+CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC = 45
 PHASEFUL_SUMMARY_GUARD_PHASES = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}
 CONCUBINE_PARTNER_SNAPSHOT_KEYS = (
     "concubine_availability",
@@ -191,6 +194,29 @@ CONCUBINE_VOYAGE_RUNTIME_KEYS = (
     "concubine_voyage_last_error",
     "concubine_voyage_retry_count",
 )
+_SEND_QUEUE_TIMEOUT_OVERRIDE = ContextVar("concubine_send_queue_timeout_override", default=None)
+
+
+@contextmanager
+def concubine_send_queue_timeout(timeout_sec):
+    try:
+        timeout_value = float(timeout_sec or 0)
+    except (TypeError, ValueError, OverflowError):
+        timeout_value = 0.0
+    token = _SEND_QUEUE_TIMEOUT_OVERRIDE.set(timeout_value if timeout_value > 0 else None)
+    try:
+        yield
+    finally:
+        _SEND_QUEUE_TIMEOUT_OVERRIDE.reset(token)
+
+
+async def _send_concubine_game_command(command, **kwargs):
+    timeout_value = _SEND_QUEUE_TIMEOUT_OVERRIDE.get()
+    if timeout_value is not None and "queue_timeout" not in kwargs:
+        kwargs["queue_timeout"] = max(1, float(timeout_value))
+    return await send_game_command(command, **kwargs)
+
+
 DREAM_KIND_XUTIAN = "xutian"
 DREAM_KIND_CANGKUN = "cangkun"
 FRAGMENT_KIND_ORDER = (DREAM_KIND_XUTIAN, DREAM_KIND_CANGKUN)
@@ -3191,7 +3217,7 @@ async def _send_status_command(now):
         _reuse_recent_status_panel(now, "10分钟内已有侍妾面板，跳过重复 .我的侍妾")
         save_state()
         return False
-    msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_STATUS, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
         state["concubine_last_error"] = "发送 .我的侍妾 失败"
@@ -3210,7 +3236,7 @@ async def _send_greet_command(now):
     if _defer_active_for_phaseful_summary(now, "每日问安", error_key="concubine_greet_last_error"):
         save_state()
         return False
-    msg = await send_game_command(CMD_CONCUBINE_DAILY_GREET, track=False)
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_DAILY_GREET, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_greet_last_error"] = "发送 .每日问安 失败"
@@ -3235,7 +3261,7 @@ async def _send_gift_status_command(now):
         state["concubine_gift_status_msg_id"] = 0
         state["concubine_gift_last_error"] = ""
         return await _send_gift_bag_command(now)
-    msg = await send_game_command(CMD_CONCUBINE_STATUS, track=False)
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_STATUS, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
         _defer_gift_recovery_after_send_failure(sent_at, "发送 .我的侍妾 失败")
@@ -3254,7 +3280,7 @@ async def _send_gift_bag_command(now):
     if _defer_active_for_phaseful_summary(now, "赠予侍妾", error_key="concubine_gift_last_error"):
         save_state()
         return False
-    msg = await send_game_command(CMD_STORAGE_BAG, track=False)
+    msg = await _send_concubine_game_command(CMD_STORAGE_BAG, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
         _defer_gift_recovery_after_send_failure(sent_at, "发送 .储物袋 失败")
@@ -3281,7 +3307,7 @@ async def _send_gift_command(now, amount):
         save_state()
         return False
     command = f"{CMD_CONCUBINE_GIFT_STONE} 灵石*{gift_amount}"
-    msg = await send_game_command(command, track=False)
+    msg = await _send_concubine_game_command(command, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
         _defer_gift_recovery_after_send_failure(sent_at, f"发送 {command} 失败")
@@ -3300,7 +3326,7 @@ async def _send_dream_command(now):
     if _defer_active_for_phaseful_summary(now, "入梦寻图", allow_replayable_trigger=True):
         save_state()
         return False
-    msg = await send_game_command(CMD_CONCUBINE_DREAM, track=False)
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_DREAM, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         if was_last_game_send_blocked_by_global(get_current_identity_id(), CMD_CONCUBINE_DREAM):
@@ -3363,7 +3389,7 @@ async def _send_fragment_command(now):
         save_state()
         return False
 
-    msg = await send_game_command(CMD_CONCUBINE_FRAGMENT, track=False, priority="chain")
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_FRAGMENT, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_last_error"] = "发送 .残图 失败"
@@ -3382,7 +3408,7 @@ async def _send_puzzle_command(now):
     if _defer_active_for_phaseful_summary(now, "残图拼合"):
         save_state()
         return False
-    msg = await send_game_command(CMD_CONCUBINE_PUZZLE, track=False, priority="chain")
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_PUZZLE, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_last_error"] = "发送 .拼图 失败"
@@ -3402,7 +3428,7 @@ async def _send_reacquire_command(now):
         save_state()
         return False
     command = _get_reacquire_command()
-    msg = await send_game_command(command, track=False)
+    msg = await _send_concubine_game_command(command, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_last_error"] = f"发送 {command} 失败"
@@ -3425,7 +3451,7 @@ async def _send_tianji_command(now):
     if _defer_active_for_phaseful_summary(now, "天机代卜", error_key="concubine_tianji_last_error"):
         save_state()
         return False
-    msg = await send_game_command(CMD_CONCUBINE_TIANJI, track=False)
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_TIANJI, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         if was_last_game_send_blocked_by_global(get_current_identity_id(), CMD_CONCUBINE_TIANJI):
@@ -3506,7 +3532,7 @@ async def _send_heart_command(now):
         state["concubine_heart_last_error"] = "共历心劫需先刷新侍妾面板"
         await _send_status_command(now)
         return False
-    msg = await send_game_command(CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_HEART, track=False, reply_to=panel_msg_id, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else float(now)
     if not msg:
         guard_blocks_until = _heart_action_guard_blocks_until(sent_at)
@@ -3561,7 +3587,7 @@ async def _send_voyage_return_command(now, *, is_retry=False):
     if not is_retry:
         state["concubine_voyage_retry_count"] = 0
     send_kwargs = _voyage_retry_send_kwargs(CMD_CONCUBINE_VOYAGE_RETURN) if is_retry else {"priority": "chain"}
-    msg = await send_game_command(CMD_CONCUBINE_VOYAGE_RETURN, track=False, **send_kwargs)
+    msg = await _send_concubine_game_command(CMD_CONCUBINE_VOYAGE_RETURN, track=False, **send_kwargs)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_voyage_last_error"] = "发送 .远航归来 失败"
@@ -3583,7 +3609,7 @@ async def _send_voyage_status_command(now):
     if _defer_active_for_phaseful_summary(now, "远航状态校准", error_key="concubine_voyage_last_error"):
         save_state()
         return False
-    msg = await send_game_command(
+    msg = await _send_concubine_game_command(
         CMD_CONCUBINE_VOYAGE_STATUS,
         track=False,
         priority="chain",
@@ -3613,7 +3639,7 @@ async def _send_voyage_command(now, *, is_retry=False):
         state["concubine_voyage_retry_count"] = 0
     command = _voyage_command()
     send_kwargs = _voyage_retry_send_kwargs(command) if is_retry else {"priority": "chain"}
-    msg = await send_game_command(command, track=False, **send_kwargs)
+    msg = await _send_concubine_game_command(command, track=False, **send_kwargs)
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
         state["concubine_voyage_last_error"] = f"发送 {command} 失败"
@@ -3738,7 +3764,7 @@ async def _send_heart_choice(now):
         )
         save_state()
         return False
-    msg = await send_game_command(
+    msg = await _send_concubine_game_command(
         CMD_CONCUBINE_HEART_STEADY,
         track=False,
         reply_to=prompt_msg_id,
@@ -3791,7 +3817,7 @@ async def _retry_heart_choice_once(now):
     if retry_count >= CONCUBINE_HEART_CHOICE_MAX_RETRY_COUNT:
         return False
 
-    msg = await send_game_command(
+    msg = await _send_concubine_game_command(
         CMD_CONCUBINE_HEART_STEADY,
         track=False,
         reply_to=prompt_msg_id,

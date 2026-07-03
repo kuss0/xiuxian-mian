@@ -962,6 +962,17 @@ def schedule_fishing_initial_check(now, *, persist=False, keep_last_error=True):
     reply_to_msg_id = _parse_int(state.get("fishing_reply_to_msg_id", 0))
     if reply_to_msg_id > 0:
         reply_due_at = float(state.get("fishing_reply_due_at", 0) or 0)
+        if reply_due_at <= float(now or 0):
+            updates = fishing_behavior.clear_pending_updates()
+            updates["fishing_last_error"] = last_error or ""
+            updates["fishing_last_result"] = "启动恢复清理过期钓鱼等待"
+            updates["next_fishing_time"] = float(now + random.uniform(FISHING_RECOVERY_MIN_SEC, FISHING_RECOVERY_MAX_SEC))
+            _apply_updates(updates)
+            if persist:
+                save_state()
+            else:
+                mark_dirty()
+            return state["next_fishing_time"]
         state["fishing_last_error"] = last_error or ""
         state["next_fishing_time"] = float(reply_due_at if reply_due_at > now else now)
         if persist:

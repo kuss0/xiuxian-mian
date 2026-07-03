@@ -43,7 +43,7 @@ from .features.deep_retreat import (
     handle_deep_retreat_summary_broadcast,
     run_deep_retreat_scheduler,
 )
-from .features.divination import handle_divination_exchange_reply, handle_divination_reply, run_divination_scheduler
+from .features.divination import handle_divination_exchange_reply, handle_divination_reply, recover_divination_startup_timeouts, run_divination_scheduler
 from .features.dungeon_quiet import clear_expired_dungeon_quiet, observe_dungeon_quiet_text
 from .features.guanxing import (
     handle_guanxing_external_shift_command,
@@ -69,6 +69,8 @@ from .features.concubine import (
     handle_concubine_heart_reply,
     handle_concubine_tianji_reply,
     is_concubine_affinity_event_candidate,
+    concubine_send_queue_timeout,
+    CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC,
     restore_concubine_runtime,
     run_concubine_phaseful_cleanup_scheduler,
     run_concubine_scheduler,
@@ -1354,7 +1356,8 @@ async def _run_due_concubine_schedulers(now, *, limit=DUE_CONCUBINE_MAX_PER_TICK
 async def _run_due_concubine_candidate(identity_id, scheduler_now):
     with use_identity(identity_id):
         candidate_now = max(float(scheduler_now or 0), time.time())
-        await run_concubine_scheduler(candidate_now)
+        with concubine_send_queue_timeout(CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC):
+            await run_concubine_scheduler(candidate_now)
 
 
 def _record_due_concubine_candidate_failure(*, now, reason, transient=False):
@@ -2302,6 +2305,7 @@ async def bootstrap():
             initialize_identity_runtime(identity_id, now)
         clear_transient_send_failures_for_global_recovery(now)
         spread_overdue_runtime_timers(now, reason="启动初始化")
+        recover_divination_startup_timeouts(now)
         save_state()
     else:
         for identity_id in identity_ids:
@@ -2309,6 +2313,7 @@ async def bootstrap():
             mark_dirty()
         clear_transient_send_failures_for_global_recovery(now)
         spread_overdue_runtime_timers(now, reason="启动恢复")
+        recover_divination_startup_timeouts(now)
         save_state()
 
     identity_lines = [

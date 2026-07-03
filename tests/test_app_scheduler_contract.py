@@ -790,8 +790,35 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("执行超时", state_module.state["concubine_last_result"])
             self.assertEqual("", state_module.state["concubine_last_error"])
 
-    async def test_due_concubine_fast_scan_clears_legacy_timeout_error(self):
+    async def test_due_concubine_fast_scan_applies_send_queue_timeout(self):
         identity_id = 991834
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["concubine_tianji_enabled"] = True
+            state_module.state["next_concubine_time"] = now - 1
+            state_module.state["concubine_availability"] = "unknown"
+
+        sent_msg = type("SentMsg", (), {"id": 902, "sent_at": now})()
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app.time, "time", return_value=now),
+            patch("model.features.concubine.send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+        ):
+            await app._run_due_concubine_schedulers(now, limit=1)
+
+        send_mock.assert_awaited_once_with(
+            ".我的侍妾",
+            track=False,
+            queue_timeout=app.CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC,
+        )
+
+    async def test_due_concubine_fast_scan_clears_legacy_timeout_error(self):
+        identity_id = 991835
         now = 1_700_000_000.0
         state_module.ensure_identity_registered(identity_id)
         with state_module.use_identity(identity_id):

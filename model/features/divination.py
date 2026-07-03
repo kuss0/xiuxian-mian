@@ -1692,6 +1692,45 @@ def _cleanup_stale_divination_pending_tasks(now=None):
     return removed
 
 
+def recover_divination_startup_timeouts(now=None):
+    """Close expired divination waits after restart without sending new commands."""
+    now = float(now or time.time())
+    records = _run_records()
+    changed = False
+    recovered = 0
+    for identity_id in get_identity_ids():
+        try:
+            identity_id = int(identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id <= 0 or not _is_divination_enabled(identity_id):
+            continue
+        key = _run_key(identity_id)
+        record = records.get(key)
+        record = record if isinstance(record, dict) else {}
+        pending_query_msg_id = int(record.get("pending_query_msg_id") or 0)
+        pending_until = float(record.get("pending_until") or 0)
+        if pending_query_msg_id <= 0 or pending_until <= 0 or now < pending_until:
+            continue
+
+        limit = get_divination_daily_limit(identity_id)
+        close_action_guard_by_family("divination", send_as_id=identity_id, reason="startup_timeout", now=now)
+        phase = _coerce_phase(record.get("phase"), record)
+        if phase == DIVINATION_PHASE_WAITING_INTERMEDIATE or not record.get("pending_count_recorded"):
+            timeout_error = "启动恢复：等待问天中间态超时，未计入今日次数"
+        else:
+            timeout_error = "启动恢复：等待问天最终结果超时"
+        _schedule_after_round(record, now, limit)
+        record["last_error"] = timeout_error
+        _clear_query_pending_task(identity_id, pending_query_msg_id)
+        records[key] = record
+        changed = True
+        recovered += 1
+    if changed:
+        _set_run_records(records)
+    return recovered
+
+
 def get_divination_status_text(send_as_id=None):
     identity_id = int(send_as_id or get_current_identity_id() or 0)
     if identity_id <= 0:
@@ -1762,5 +1801,6 @@ __all__ = [
     "handle_divination_exchange_reply",
     "handle_divination_reply",
     "parse_divination_treasure_text",
+    "recover_divination_startup_timeouts",
     "run_divination_scheduler",
 ]

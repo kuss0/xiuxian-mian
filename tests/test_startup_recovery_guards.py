@@ -39,7 +39,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from model import action_guard, config, control
 from model import state as state_module
-from model.features import concubine, explore_rift, small_world, wild_training
+from model.features import concubine, explore_rift, fishing_runtime, small_world, wild_training
 
 
 class StartupRecoveryGuardTests(unittest.TestCase):
@@ -280,6 +280,29 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         self.assertEqual(0, changed)
         with state_module.use_identity(send_as_id):
             self.assertEqual(now - 1, state_module.state["next_fishing_time"])
+
+    def test_initialize_fishing_clears_expired_reply_anchor_after_restart(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["fishing_enabled"] = True
+            state_module.state["fishing_phase"] = "checking"
+            state_module.state["fishing_reply_to_msg_id"] = 11414152
+            state_module.state["fishing_status_msg_id"] = 11414122
+            state_module.state["fishing_reply_due_at"] = now - 10
+            state_module.state["next_fishing_time"] = now - 3600
+
+        with patch.object(fishing_runtime.random, "uniform", return_value=fishing_runtime.FISHING_RECOVERY_MIN_SEC):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("idle", state_module.state["fishing_phase"])
+            self.assertEqual(0, state_module.state["fishing_reply_to_msg_id"])
+            self.assertEqual(0, state_module.state["fishing_status_msg_id"])
+            self.assertEqual(0, state_module.state["fishing_reply_due_at"])
+            self.assertEqual(now + fishing_runtime.FISHING_RECOVERY_MIN_SEC, state_module.state["next_fishing_time"])
+            self.assertIn("启动恢复清理过期钓鱼等待", state_module.state["fishing_last_result"])
 
     def test_startup_spread_covers_near_future_recovery_timers(self):
         now = 1_700_000_000.0

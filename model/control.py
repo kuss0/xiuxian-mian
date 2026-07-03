@@ -4164,8 +4164,12 @@ def initialize_identity_runtime(send_as_id, now=None):
             schedule_mulan_initial_check(now, persist=False, keep_last_error=True)
         if state.get("duel_enabled") and float(state.get("next_duel_time", 0) or 0) <= 0:
             schedule_duel_initial_check(now, persist=False, keep_last_error=True)
-        if state.get("fishing_enabled") and float(state.get("next_fishing_time", 0) or 0) <= 0:
-            schedule_fishing_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("fishing_enabled"):
+            fishing_next_time = float(state.get("next_fishing_time", 0) or 0)
+            fishing_reply_to = int(state.get("fishing_reply_to_msg_id", 0) or 0)
+            fishing_reply_due = float(state.get("fishing_reply_due_at", 0) or 0)
+            if fishing_next_time <= 0 or fishing_next_time <= now or (fishing_reply_to > 0 and fishing_reply_due <= now):
+                schedule_fishing_initial_check(now, persist=False, keep_last_error=True)
         if state["second_soul_enabled"]:
             _restore_second_soul_runtime(now)
         if state["taiyi_enabled"]:
