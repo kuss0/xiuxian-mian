@@ -37,6 +37,7 @@ WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
 WILD_TRAINING_DEEP_RETREAT_GUARD_SEC = 5 * 60
 WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC = 90
 WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC = 180
+WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC = 30
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
 WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC = 10 * 60
@@ -249,12 +250,20 @@ def _guard_recent_completed_result(now):
     due_at = completed_at + WILD_TRAINING_CYCLE_MIN_SEC
     if float(now or 0) >= due_at:
         return False
-    _schedule_next(completed_at)
-    if float(state.get("next_wild_training_time", 0) or 0) < due_at:
-        state["next_wild_training_time"] = float(due_at)
+    already_logged = str(state.get("wild_training_last_error") or "").startswith("野外历练结果后计时器异常")
+    state["next_wild_training_time"] = float(
+        max(
+            due_at + WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC,
+            float(now or 0) + WILD_TRAINING_RETRY_MIN_SEC,
+        )
+    )
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_retry_count"] = 0
     state["wild_training_last_error"] = "野外历练结果后计时器异常，已按正常周期顺延"
     save_state()
-    console_log(f"🏞️ {state['wild_training_last_error']}→{fmt_abs_ts(state['next_wild_training_time'])}", scope="identity")
+    if not already_logged:
+        console_log(f"🏞️ {state['wild_training_last_error']}→{fmt_abs_ts(state['next_wild_training_time'])}", scope="identity")
     return True
 
 

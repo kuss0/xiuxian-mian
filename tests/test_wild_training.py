@@ -381,7 +381,12 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         console_mock.assert_called_once()
         self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(0, state_module.state["wild_training_retry_count"])
-        self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual(
+            result_at
+            + wild_training.WILD_TRAINING_CYCLE_MIN_SEC
+            + wild_training.WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC,
+            state_module.state["next_wild_training_time"],
+        )
         self.assertIn("计时器异常", state_module.state["wild_training_last_error"])
 
     async def test_completed_anchor_blocks_stale_due_after_tianxing_status_overwrites_result(self):
@@ -409,9 +414,43 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         console_mock.assert_called_once()
         self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(0, state_module.state["wild_training_retry_count"])
-        self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual(
+            result_at
+            + wild_training.WILD_TRAINING_CYCLE_MIN_SEC
+            + wild_training.WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC,
+            state_module.state["next_wild_training_time"],
+        )
         self.assertEqual(result_at, state_module.state["wild_training_last_completed_at"])
         self.assertIn("计时器异常", state_module.state["wild_training_last_error"])
+
+    async def test_stale_completed_result_guard_does_not_log_same_error_repeatedly(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_100.0
+        result_at = now - 30
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["wild_training_reply_to_msg_id"] = 0
+            identity_state["wild_training_reply_due_at"] = 0
+            identity_state["wild_training_retry_count"] = 0
+            identity_state["wild_training_last_msg_id"] = 201
+            identity_state["wild_training_last_result"] = "修为-1264"
+            identity_state["wild_training_last_result_at"] = result_at
+            identity_state["next_wild_training_time"] = now - 1
+            identity_state["wild_training_last_error"] = "野外历练结果后计时器异常，已按正常周期顺延"
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training, "console_log") as console_mock, \
+             patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+            await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        console_mock.assert_not_called()
+        self.assertEqual(
+            result_at
+            + wild_training.WILD_TRAINING_CYCLE_MIN_SEC
+            + wild_training.WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC,
+            state_module.state["next_wild_training_time"],
+        )
 
     async def test_started_timeout_schedules_next_without_retry(self):
         send_as_id = self._prepare_identity()
