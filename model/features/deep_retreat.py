@@ -105,7 +105,8 @@ DEEP_RETREAT_SPEC = PhasefulSpec(
     summary_passive_timeout_sec=120,
     summary_due_delay_min_sec=5 * 60,
     summary_due_delay_max_sec=15 * 60,
-    summary_active_query_grace_sec=30 * 60,
+    # 深闭总结依赖普通命令顺带触发，但不能长期挡住天星/野外时间线。
+    summary_active_query_grace_sec=5 * 60,
     summary_due_timeout_action="wait_passive",
     queued_launch_timeout_action="relaunch",
     summary_retry_min_sec=5 * 60,
@@ -689,10 +690,12 @@ def _deep_retreat_tianxing_timeline_block_until(now):
 
 async def _run_deep_retreat_tianxing_gate(now):
     config = normalize_tianxing_auto_config(state.get("tianxing_auto_config"))
+    phase = str(state.get("deep_retreat_phase") or "idle")
+    if phase in {"summary_due", "observing_summary", "waiting_summary", "queued_launch", "launching"}:
+        return True
     if not _deep_retreat_launch_due_for_tianxing(now, config=config):
         return True
     due_at = _deep_retreat_tianxing_consume_due_at(now, config) or float(state.get("next_deep_retreat_time", 0) or now)
-    phase = str(state.get("deep_retreat_phase") or "idle")
     timeline_block_until = _deep_retreat_tianxing_timeline_block_until(now)
     if timeline_block_until > now:
         if phase == "running" and due_at > now and timeline_block_until <= due_at:

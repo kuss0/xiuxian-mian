@@ -718,7 +718,9 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
             return _recover_phaseful_queued_launch_deadline(timer_key, now)
         if phase == "post_summary_wait":
             return _recover_phaseful_post_summary_deadline(timer_key, now)
-        if phase in {"launching", "summary_due", "observing_summary", "waiting_summary"}:
+        if phase == "summary_due":
+            return now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
+        if phase in {"launching", "observing_summary", "waiting_summary"}:
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
         if phase == "idle":
             return now + random.uniform(RECOVERY_PHASEFUL_IDLE_MIN_SEC, RECOVERY_PHASEFUL_IDLE_MAX_SEC)
@@ -3830,12 +3832,7 @@ def _restore_phaseful_runtime(module_name, now):
     if phase == "post_summary_wait":
         state[next_time_key] = _recover_phaseful_post_summary_deadline(next_time_key, now)
         return
-    if (
-        module_name == "深度闭关"
-        and phase == "summary_due"
-        and float(state.get(last_command_time_key, 0) or 0) <= 0
-        and int(state.get(last_summary_msg_id_key, 0) or 0) == 0
-    ):
+    if phase == "summary_due":
         state[next_time_key] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
         return
     if phase in {"launching", "queued_launch", "summary_due", "observing_summary", "waiting_summary"} and next_time <= now + RECOVERY_SPREAD_MAX_SEC:
