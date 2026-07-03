@@ -506,6 +506,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual("post_summary_wait", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 12, state_module.state["next_deep_retreat_time"])
             self.assertTrue(state_module.state["deep_retreat_probe_pending"])
+            self.assertEqual(now, state_module.state["last_deep_retreat_command_time"])
             audit_mock.assert_awaited_once()
             self.assertTrue(any(
                 call.kwargs.get("family") == "deep_retreat"
@@ -985,6 +986,64 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
                 patch.object(_phaseful.random, "uniform", return_value=300),
                 patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
+
+    async def test_deep_retreat_orphan_summary_due_queries_status_immediately(self):
+        send_as_id = 8659059240
+        now = 1_700_000_451.0
+        self._prepare_identity(send_as_id, "NewRetreatIdentity")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["last_deep_retreat_command_time"] = 0
+            state_module.state["last_deep_retreat_summary_msg_id"] = 0
+            state_module.state["next_deep_retreat_time"] = now + 1200
+
+            sent_msg = SimpleNamespace(id=903, sent_at=now)
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(deep_retreat, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+                patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock()),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(903, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertTrue(any("无发起记录" in str(call.args[0]) for call in audit_mock.await_args_list))
+
+    async def test_deep_retreat_idle_due_does_not_orphan_query_status(self):
+        send_as_id = 8659059242
+        now = 1_700_000_451.0
+        self._prepare_identity(send_as_id, "IdleDueRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "idle"
+            state_module.state["deep_retreat_summary_sent_at"] = 0
+            state_module.state["last_deep_retreat_command_time"] = 0
+            state_module.state["last_deep_retreat_summary_msg_id"] = 0
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.random, "uniform", return_value=300),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
                 patch.object(_phaseful, "save_state"),
             ):
                 await deep_retreat.run_deep_retreat_scheduler(now)

@@ -35,6 +35,7 @@ from ._phaseful import (
     register_phaseful_spec,
     run_phaseful_scheduler,
     set_phase,
+    _send_active_summary_query,
     update_block_log_state,
 )
 from . import workflow_log
@@ -419,6 +420,7 @@ async def handle_deep_retreat_status_reply(text, now, reply_to, matched_family=N
             await delete_deep_retreat_summary_trigger_msg()
             delay = random.uniform(DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MIN_SEC, DEEP_RETREAT_EMPTY_STATUS_RELAUNCH_MAX_SEC)
             begin_deep_retreat_post_summary_wait(now, delay=delay, confirmed=True)
+            state["last_deep_retreat_command_time"] = now
             _record_deep_retreat_event(
                 "确认未处于深闭",
                 reply_to=reply_to,
@@ -739,9 +741,27 @@ async def _run_deep_retreat_tianxing_gate(now):
     return False
 
 
+async def _calibrate_orphan_deep_retreat_summary_due(now):
+    phase = str(state.get("deep_retreat_phase") or "").strip()
+    next_time = float(state.get("next_deep_retreat_time", 0) or 0)
+    if phase != "summary_due":
+        return False
+    if next_time <= float(now):
+        return False
+    if float(state.get("last_deep_retreat_command_time", 0) or 0) > 0:
+        return False
+    if int(state.get("last_deep_retreat_summary_msg_id", 0) or 0) != 0:
+        return False
+    await _send_active_summary_query(DEEP_RETREAT_SPEC, now)
+    await send_audit_log("🧘 深闭无发起记录，已先查询状态校准，避免新身份长期等待结算。", scope="identity", limit=180)
+    return True
+
+
 async def run_deep_retreat_scheduler(now):
     if state.get("deep_retreat_phase") == "post_summary_wait":
         _clear_deep_retreat_remote_block_after_summary(now)
+    if await _calibrate_orphan_deep_retreat_summary_due(now):
+        return
     if not await _run_deep_retreat_tianxing_gate(now):
         return
     await run_phaseful_scheduler(

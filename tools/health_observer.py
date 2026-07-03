@@ -688,8 +688,8 @@ def event_ref(item: dict[str, object]) -> dict[str, object]:
     }
 
 
-def analyze_message_events(events: list[dict[str, object]], now: float, window_sec: int) -> dict[str, object]:
-    window_start = float(now) - float(window_sec)
+def analyze_message_events(events: list[dict[str, object]], now: float, window_sec: int, *, reset_after_epoch: float = 0.0) -> dict[str, object]:
+    window_start = max(float(now) - float(window_sec), float(reset_after_epoch or 0))
     recent = [
         item for item in events
         if float(item.get("_epoch", 0) or 0) >= window_start
@@ -785,6 +785,7 @@ def analyze_message_events(events: list[dict[str, object]], now: float, window_s
     module_counts = Counter({key: value for key, value in module_counts.items() if key})
     return {
         "window_sec": int(window_sec),
+        "window_start": window_start,
         "sent_count": len(sent),
         "last_sent_at": last_sent_at,
         "last_sent_ts": local_ts(last_sent_at) if last_sent_at > 0 else "",
@@ -1411,11 +1412,14 @@ def read_db_business_state(db_path: Path, now: float) -> dict[str, object]:
 
 def collect_business_snapshot(cfg: ObserverConfig, now: float) -> dict[str, object]:
     events = read_recent_message_events(current_message_log(cfg.project_root, now=now))
-    message_state = analyze_message_events(events, now, cfg.business_window_sec)
+    reset_after_epoch = read_safety_reset_epoch(cfg.project_root)
+    message_state = analyze_message_events(events, now, cfg.business_window_sec, reset_after_epoch=reset_after_epoch)
     db_state = read_db_business_state(state_db_path(cfg.project_root), now)
     alerts = list(message_state.get("alerts") or []) + list(db_state.get("alerts") or [])
     return {
         "message_log": str(current_message_log(cfg.project_root, now=now)),
+        "reset_after_epoch": reset_after_epoch,
+        "reset_after_ts": local_ts(reset_after_epoch) if reset_after_epoch > 0 else "",
         "message_state": message_state,
         "db_state": db_state,
         "alerts": alerts,

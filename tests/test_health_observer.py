@@ -321,6 +321,18 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual(".查看闭关", result["repeated_command_samples"][0]["command"])
         self.assertTrue(any("active status query repeated" in item["message"] for item in result["alerts"]))
 
+    def test_business_message_analysis_ignores_repeated_active_status_before_safety_reset(self):
+        now = 1_780_500_000.0
+        events = [
+            {"event_type": "sent", "_epoch": now - 500, "message_id": 101, "sender_id": 1, "text": ".查看闭关"},
+            {"event_type": "sent", "_epoch": now - 300, "message_id": 102, "sender_id": 1, "text": ".查看闭关"},
+        ]
+
+        result = health_observer.analyze_message_events(events, now, 1800, reset_after_epoch=now - 100)
+
+        self.assertEqual({}, result["active_status_counts"])
+        self.assertFalse(any("active status query repeated" in item["message"] for item in result["alerts"]))
+
     def test_business_message_analysis_allows_active_status_queries_from_different_identities(self):
         now = 1_780_500_000.0
         events = [

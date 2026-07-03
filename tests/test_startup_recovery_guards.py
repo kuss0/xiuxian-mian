@@ -834,6 +834,25 @@ class StartupRecoveryGuardTests(unittest.TestCase):
             self.assertEqual("queued_launch", state_module.state["deep_retreat_phase"])
             self.assertEqual(now + 1, state_module.state["next_deep_retreat_time"])
 
+    def test_deep_retreat_orphan_summary_due_recovery_wakes_immediately(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = now - 60
+            state_module.state["last_deep_retreat_command_time"] = 0
+            state_module.state["last_deep_retreat_summary_msg_id"] = 0
+            state_module.state["next_deep_retreat_time"] = now + 120
+
+        with patch.object(control.random, "uniform", return_value=900):
+            control.initialize_identity_runtime(send_as_id, now)
+
+        with state_module.use_identity(send_as_id):
+            self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 1, state_module.state["next_deep_retreat_time"])
+
     def test_phaseful_invalid_recovery_resets_to_short_idle_spread(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
