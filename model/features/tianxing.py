@@ -4690,6 +4690,23 @@ def _craft_farm_audit(farm, now, event, **extra):
     farm["audit"] = audit[-20:]
 
 
+def _craft_farm_terminal_state_matches(farm, *, stage, reason, now):
+    farm = normalize_tianxing_craft_farm_state(farm)
+    stage = str(stage or "").strip()
+    expected_phase = "complete" if stage == "target_reached" else stage
+    if str(farm.get("phase") or "").strip() != expected_phase:
+        return False
+    if str(farm.get("last_action") or "").strip() != stage:
+        return False
+    if str(farm.get("last_result") or "").strip() != str(reason or "").strip():
+        return False
+    try:
+        next_time = float(farm.get("next_time", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        next_time = 0.0
+    return next_time > float(now or 0)
+
+
 def _set_tianxing_retreat_farm_state(farm, now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     farm = normalize_tianxing_retreat_farm_state(farm)
@@ -6036,6 +6053,13 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
     farm["handoff_ready"] = bool(plan.get("handoff"))
 
     if plan.get("stage") in {"target_reached", "daily_limit_reached"}:
+        if _craft_farm_terminal_state_matches(
+            farm,
+            stage=plan.get("stage"),
+            reason=plan.get("reason"),
+            now=now,
+        ):
+            return dict(plan, unchanged=True)
         farm["phase"] = "complete" if plan.get("stage") == "target_reached" else "daily_limit_reached"
         farm["last_result"] = plan.get("reason") or ""
         _craft_farm_audit(farm, now, plan.get("stage"), reason=plan.get("reason"))
@@ -6455,6 +6479,8 @@ async def _run_tianxing_scheduler_unlocked(now):
 
         craft_result = await run_tianxing_craft_farm_scheduler(now, config=config)
         if craft_result.get("active"):
+            if craft_result.get("unchanged"):
+                return
             observed = normalize_tianxing_observation(state.get("tianxing_observation"))
             observed["auto_last_action"] = "craft_farm"
             observed["auto_last_error"] = craft_result.get("reason") or ""

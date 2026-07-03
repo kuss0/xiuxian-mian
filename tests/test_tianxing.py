@@ -3913,6 +3913,25 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("闭关", timeline["released_routes"][0]["route"])
         self.assertEqual("sent_waiting_ack", timeline["audit"][0]["event"])
 
+    def test_ui_snapshot_labels_consumed_replan_as_waiting(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=False, dry_run=False)
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-consumed",
+                "phase": "blocked_replan",
+                "route": "探索",
+                "blocked_until": now - 1,
+                "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+            }
+
+        snapshot = ui.get_identity_ui_snapshot(self.identity_id)
+        timeline = snapshot["tianxing"]["timeline"]
+
+        self.assertEqual("blocked_replan", timeline["phase"])
+        self.assertEqual("下游已消费，待重算", timeline["phase_label"])
+        self.assertEqual("下游已消费，等待下次时间线重算", timeline["last_error_label"])
+
 
 class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -6998,6 +7017,81 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("craft_farm", observed["auto_last_action"])
         self.assertEqual("timeline_required", observed["auto_last_plan"])
         self.assertEqual(now + tianxing.TIANXING_CRAFT_FARM_RETRY_SEC, observed["auto_next_time"])
+
+    async def test_scheduler_does_not_churn_completed_craft_target(self):
+        now = 1_780_000_000.0
+        reason = "天机值 46 已达到目标 42。"
+        observation = {
+            "last_observed_at": now - 60,
+            "available_stars": ["太阴", "贪狼", "天府"],
+            "available_stars_source": "panel",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "太阴",
+            "fixed_star_day": tianxing.get_day_key(now),
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "current_change": "探索",
+            "current_change_until": now + 3600,
+            "calamity_count": 0,
+            "tianji_value": 46,
+            "auto_last_action": "craft_farm",
+            "auto_last_error": reason,
+            "auto_last_plan": "target_reached",
+            "auto_last_plan_at": now - 300,
+            "auto_next_time": now - 1,
+        }
+        config = {
+            "timeline_enabled": True,
+            "timeline_dry_run_enabled": False,
+            "auto_predict_enabled": True,
+            "strategy_dry_run_enabled": False,
+            "craft_farm_enabled": True,
+            "craft_farm_dry_run_enabled": False,
+            "craft_farm_daily_limit": 42,
+            "craft_farm_item": "玄铁剑",
+            "farm_route": "炼制",
+            "farm_window_enabled": True,
+            "farm_window_start": time.strftime("%H:%M", time.localtime(now)),
+            "farm_window_duration_min": 60,
+            "target_tianji_daily": 42,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = observation
+            state_module.state["tianxing_auto_config"] = config
+            state_module.state["tianxing_timeline_state"] = {
+                "phase": "blocked_replan",
+                "route": "探索",
+                "blocked_until": now - 60,
+                "last_error": "探索 放行已被下游动作消费，需重算时间线。",
+                "craft_farm": {
+                    "phase": "complete",
+                    "started_at": now - 3600,
+                    "updated_at": now - 300,
+                    "next_time": now + 3600,
+                    "target_tianji": 42,
+                    "estimated_tianji": 46,
+                    "daily_limit": 42,
+                    "daily_day": tianxing.get_day_key(now),
+                    "daily_count": 10,
+                    "last_action": "target_reached",
+                    "last_result": reason,
+                    "last_error": reason,
+                    "audit": [{"ts": now - 300, "event": "target_reached", "reason": reason}],
+                },
+            }
+            before_timeline = copy.deepcopy(state_module.state["tianxing_timeline_state"])
+            before_observed = copy.deepcopy(state_module.state["tianxing_observation"])
+            with patch.object(tianxing, "save_state") as save_mock, \
+                 patch.object(tianxing, "send_game_command") as send_mock:
+                await tianxing.run_tianxing_scheduler(now)
+            after_timeline = state_module.state["tianxing_timeline_state"]
+            after_observed = state_module.state["tianxing_observation"]
+
+        self.assertEqual(before_timeline, after_timeline)
+        self.assertEqual(before_observed, after_observed)
+        save_mock.assert_not_called()
+        send_mock.assert_not_called()
 
     async def test_scheduler_drains_due_ack_timeout_even_when_auto_time_is_future(self):
         now = 1_780_000_000.0

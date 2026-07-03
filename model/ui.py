@@ -3620,6 +3620,38 @@ def _format_tianxing_timeline_step(step):
     }
 
 
+def _format_tianxing_timeline_phase_text(timeline):
+    timeline = normalize_tianxing_timeline_state(timeline)
+    phase = str(timeline.get("phase") or "idle").strip() or "idle"
+    if phase == "blocked_replan":
+        blocked_until = float(timeline.get("blocked_until", 0) or 0)
+        if blocked_until > time.time():
+            return "下游已消费，等待下次重算"
+        return "下游已消费，待重算"
+    labels = {
+        "idle": "空闲",
+        "waiting_send": "等待发送",
+        "sending": "发送中",
+        "sent_waiting_ack": "等待确认",
+        "state_confirmed": "前置已确认",
+        "downstream_released": "已放行下游",
+        "prediction_conflict": "推命冲突等待",
+        "ack_timeout": "确认超时校准",
+        "calibrating": "校准中",
+        "completed": "已完成",
+    }
+    return labels.get(phase, phase)
+
+
+def _format_tianxing_timeline_error_text(timeline):
+    timeline = normalize_tianxing_timeline_state(timeline)
+    phase = str(timeline.get("phase") or "").strip()
+    last_error = str(timeline.get("last_error") or "").strip()
+    if phase == "blocked_replan" and "放行已被下游动作消费" in last_error:
+        return "下游已消费，等待下次时间线重算"
+    return last_error
+
+
 def _format_tianxing_timeline_ui(raw_timeline):
     timeline = normalize_tianxing_timeline_state(raw_timeline)
     retreat_farm = timeline.get("retreat_farm") or {}
@@ -3648,6 +3680,7 @@ def _format_tianxing_timeline_ui(raw_timeline):
     return {
         "plan_id": timeline.get("plan_id") or "",
         "phase": timeline.get("phase") or "idle",
+        "phase_label": _format_tianxing_timeline_phase_text(timeline),
         "route": timeline.get("route") or "",
         "reason": timeline.get("reason") or "",
         "created_at": fmt_abs_ts(timeline.get("created_at", 0) or 0),
@@ -3655,6 +3688,7 @@ def _format_tianxing_timeline_ui(raw_timeline):
         "deadline_at": fmt_abs_ts(timeline.get("deadline_at", 0) or 0),
         "blocked_until": fmt_abs_ts(timeline.get("blocked_until", 0) or 0),
         "last_error": timeline.get("last_error") or "",
+        "last_error_label": _format_tianxing_timeline_error_text(timeline),
         "active_step_index": int(timeline.get("active_step_index", -1) or -1),
         "active_step": _format_tianxing_timeline_step(timeline.get("active_step") or {}),
         "steps": [_format_tianxing_timeline_step(step) for step in (timeline.get("steps") or [])],

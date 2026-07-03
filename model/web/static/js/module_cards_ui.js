@@ -427,6 +427,8 @@
         var txRetreatFarm = txTimeline.retreat_farm || {};
         var txCraftFarm = txTimeline.craft_farm || {};
         var txActiveStep = txTimeline.active_step || {};
+        var txPhaseText = txTimeline.phase_label || txTimeline.phase || 'idle';
+        var txLastErrorText = txTimeline.last_error_label || txTimeline.last_error || '';
         var availableStars = (tianxing.available_stars || []).join('、') || '未记录';
         var txReleasedRoutes = (txTimeline.released_routes || []).map(function(item){
           return String(item.route || '') + (item.released_at ? ' @ '+String(item.released_at || '') : '');
@@ -473,7 +475,7 @@
           '｜改命阈值 '+esc(txMinTianjiForChange)+
           '｜逆命劫 '+esc(tianxing.calamity_count || 0)+
           '｜接管 '+esc(tianxing.automation_paused ? '暂停' : '运行')+
-          '｜前置 '+esc(txTimeline.phase || 'idle')+
+          '｜前置 '+esc(txPhaseText)+
           '｜炼制 '+esc(txCraftFarm.phase || 'idle')+
           '｜试运行 '+(txConfig.strategy_dry_run_enabled ? '开' : '关')+'</div>';
         settingsTools =
@@ -574,7 +576,7 @@
           settingSection(
             '执行状态',
             '只读，用来判断卡在发送、确认、校准还是放行。',
-            currentChoiceText('阶段', txTimeline.phase || 'idle')+
+            currentChoiceText('阶段', txPhaseText)+
             currentChoiceText('路线', txTimeline.route || '无')+
             currentChoiceText('原因', txTimeline.reason || '无')+
             currentChoiceText('当前步骤', txActiveStepText)+
@@ -582,7 +584,7 @@
             currentChoiceText('阻断至', txTimeline.blocked_until || '未设置')+
             currentChoiceText('已放行', txReleasedRoutes)+
             currentChoiceText('最近审计', txAuditText)+
-            currentChoiceText('最近错误', txTimeline.last_error || '无')
+            currentChoiceText('最近提示', txLastErrorText || '无')
           );
       }else if(module.name === '慕兰烽烟' || module.name === '慕兰'){
         var mulan = identity.mulan || {};
