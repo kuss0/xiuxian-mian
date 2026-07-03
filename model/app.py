@@ -160,6 +160,7 @@ from .features.wendao import handle_wendao_reply, run_wendao_scheduler
 from .features.duel import handle_duel_broadcast, handle_duel_reply, run_duel_scheduler
 from .features.fishing_runtime import handle_fishing_reply, is_fishing_reply_text, run_fishing_scheduler
 from .features.wild_training import (
+    WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RETRY_MAX_SEC,
     WILD_TRAINING_RETRY_MIN_SEC,
     handle_wild_training_reply,
@@ -1174,12 +1175,19 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             if explore_released and next_time > scheduler_now:
                 last_result = str(state.get("wild_training_last_result") or "")
                 last_error = str(state.get("wild_training_last_error") or "")
-                release_retry_until = scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5
-                if next_time <= release_retry_until and ("天星时间线" in last_result or "天星时间线" in last_error):
-                    state["next_wild_training_time"] = scheduler_now
-                    state["wild_training_last_error"] = "天星探索已放行，恢复错峰计时已压回立即消费窗口"
-                    next_time = scheduler_now
-                    mark_dirty()
+                cooldown_due_at = _wild_training_completed_cooldown_due_at()
+                if cooldown_due_at > scheduler_now:
+                    if next_time < cooldown_due_at:
+                        state["next_wild_training_time"] = cooldown_due_at
+                        next_time = cooldown_due_at
+                        mark_dirty()
+                else:
+                    release_retry_until = scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5
+                    if next_time <= release_retry_until and ("天星时间线" in last_result or "天星时间线" in last_error):
+                        state["next_wild_training_time"] = scheduler_now
+                        state["wild_training_last_error"] = "天星探索已放行，恢复错峰计时已压回立即消费窗口"
+                        next_time = scheduler_now
+                        mark_dirty()
             if next_time <= 0 or next_time > scheduler_now:
                 if retry_count > 0 and next_time > scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5:
                     state["next_wild_training_time"] = scheduler_now + WILD_TRAINING_RETRY_MIN_SEC
@@ -1231,6 +1239,20 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
             print("due wild training scheduler failed:")
             print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
         processed += 1
+
+
+def _wild_training_completed_cooldown_due_at():
+    anchors = []
+    for key in ("wild_training_last_completed_at", "wild_training_last_result_at"):
+        try:
+            value = float(state.get(key, 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            value = 0.0
+        if value > 0:
+            anchors.append(value)
+    if not anchors:
+        return 0.0
+    return max(anchors) + WILD_TRAINING_CYCLE_MIN_SEC
 
 
 async def _run_due_wild_training_candidate(identity_id, scheduler_now, action):

@@ -566,6 +566,40 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now, state_module.state["next_wild_training_time"])
             self.assertIn("立即消费窗口", state_module.state["wild_training_last_error"])
 
+    async def test_due_wild_training_fast_scan_does_not_clamp_released_tianxing_before_true_cd(self):
+        identity_id = 991781
+        now = 1_700_000_000.0
+        completed_at = now - app.WILD_TRAINING_CYCLE_MIN_SEC + 180
+        true_due_at = completed_at + app.WILD_TRAINING_CYCLE_MIN_SEC
+        state_module.ensure_identity_registered(identity_id)
+        with state_module.use_identity(identity_id):
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_retry_count"] = 0
+            state_module.state["wild_training_reply_to_msg_id"] = 0
+            state_module.state["wild_training_last_completed_at"] = completed_at
+            state_module.state["next_wild_training_time"] = true_due_at
+            state_module.state["wild_training_last_result"] = "天星时间线：sent_waiting_ack"
+            state_module.state["wild_training_last_error"] = ""
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "is_tianxing_route_released", return_value=True),
+            patch.object(app, "run_wild_training_scheduler", new=AsyncMock()) as scheduler_mock,
+            patch.object(app, "mark_dirty") as mark_dirty_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_wild_training_retry_schedulers(now, limit=1)
+
+        scheduler_mock.assert_not_awaited()
+        mark_dirty_mock.assert_not_called()
+        with state_module.use_identity(identity_id):
+            self.assertEqual(true_due_at, state_module.state["next_wild_training_time"])
+            self.assertEqual("", state_module.state["wild_training_last_error"])
+
     async def test_due_wild_training_fast_scan_does_not_clamp_future_cd_for_released_tianxing_route(self):
         identity_id = 991789
         now = 1_700_000_000.0
