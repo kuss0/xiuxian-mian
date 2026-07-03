@@ -1271,6 +1271,15 @@ def parse_tianxing_text(text, now=None, family=""):
         )
         return parsed
 
+    if "改命" in raw_text and ("天机值不足" in raw_text or "天机不足" in raw_text or "天机值不够" in raw_text):
+        parsed.update(
+            action="改命",
+            result="blocked",
+            summary="改命天机值不足",
+            last_error=_short_summary(raw_text),
+        )
+        return parsed
+
     if "成功化去 1 层逆命劫" in raw_text:
         parsed.update(action="消劫", result="success", summary="成功化去 1 层逆命劫")
         return parsed
@@ -3360,11 +3369,13 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
 
     next_consume_route, next_consume = _next_consume_route(normalized_windows)
     next_consume_requires_change = bool((next_consume or {}).get("require_change_fate"))
+    next_consume_is_explore_change = bool(next_consume_requires_change and next_consume_route == "探索")
+    change_tianji_required = 3 if next_consume_is_explore_change else min_tianji
     critical_change_lacks_tianji = bool(
         next_consume_requires_change
         and next_consume_route
         and next_consume_route == dominant_route
-        and tianji_value < min_tianji
+        and tianji_value < change_tianji_required
     )
     preferred_star_route = _preferred_star_route(normalized_windows, dominant_route, now)
     available_stars = [str(item).strip() for item in observed.get("available_stars") or [] if str(item or "").strip()]
@@ -3406,7 +3417,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
         and not active_change_route
         and config.get("auto_change_fate_enabled")
         and next_consume_route in TIANXING_AUTO_CHANGE_FATE_ROUTES
-        and tianji_value >= min_tianji
+        and tianji_value >= change_tianji_required
     )
     consume_predict_allowed = bool(
         dominant_route
@@ -3422,7 +3433,7 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
 
     if critical_change_lacks_tianji:
         stage = "need_tianji_for_change"
-        change_reason = f"天机值 {tianji_value} 低于改命阈值 {min_tianji}。"
+        change_reason = f"天机值 {tianji_value} 低于改命阈值 {change_tianji_required}。"
         predict_reason = f"{next_consume_route} 需要先确认改命；天机值不足，等待攒点。"
     elif dominant_route and current_prediction and current_prediction != dominant_route and prediction_unconsumed:
         blocked_by_conflict = True
@@ -3506,10 +3517,16 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
             if next_consume_requires_change:
                 stage = "auto_change_fate_route_forbidden"
                 predict_reason = change_reason
-        elif not current_change and config.get("auto_change_fate_enabled") and tianji_value >= min_tianji:
+        elif not current_change and config.get("auto_change_fate_enabled") and tianji_value >= change_tianji_required:
             recommended_change_route = next_consume_route
             if not change_reason:
-                change_reason = f"最近消费窗口是 {recommended_change_route}，若要兜底可预留改命。"
+                if next_consume_is_explore_change and tianji_value < min_tianji:
+                    change_reason = (
+                        f"最近消费窗口是 {recommended_change_route}，天机值 {tianji_value} 已满足游戏改命成本 3；"
+                        "先保守发送改命探索确认，不确认不放行下游。"
+                    )
+                else:
+                    change_reason = f"最近消费窗口是 {recommended_change_route}，若要兜底可预留改命。"
             _append_tianxing_step(steps, "change_fate", recommended_change_route, route=recommended_change_route, reason=change_reason, now=now)
             release_route = recommended_change_route
             release_reason = f"{recommended_change_route} 改命确认后放行下游。"
@@ -3528,8 +3545,8 @@ def build_tianxing_timeline_plan(*, now=None, horizon_hours=8, windows=None, obs
                     f"{next_consume_route} 需要探索改命，但当前已有 {active_change_route} 改命待发；"
                     "本轮不放行需要改命兜底的探索动作。"
                 )
-        elif tianji_value < min_tianji:
-            change_reason = f"天机值 {tianji_value} 低于改命阈值 {min_tianji}。"
+        elif tianji_value < change_tianji_required:
+            change_reason = f"天机值 {tianji_value} 低于改命阈值 {change_tianji_required}。"
             if next_consume_requires_change:
                 stage = "need_tianji_for_change"
                 predict_reason = f"{next_consume_route} 需要先确认改命；天机值不足，等待攒点。"
@@ -3884,6 +3901,75 @@ def _update_tianxing_timeline_from_negative_observation(parsed, now):
         timeline["last_error"] = step["last_error"]
         timeline["updated_at"] = float(now)
         _timeline_audit(timeline, now, "set_star_need_observe", arg=step.get("arg"), reason=timeline["last_error"])
+        state["tianxing_timeline_state"] = timeline
+        return True
+
+    if action == "改命" and result == "cooldown":
+        if str(step.get("action") or "") != "change_fate":
+            return False
+        if str(step.get("status") or "") not in {"sending", "sent_waiting_ack", "ack_timeout"}:
+            return False
+
+        desired_route = _normalize_route_choice(step.get("route") or step.get("arg"), "")
+        existing_route = _normalize_route_choice(parsed.get("current_change") or parsed.get("last_route"), "")
+        change_until = float(parsed.get("current_change_until", 0) or 0)
+        if change_until <= now:
+            change_until = float(now + _status_backoff_sec(normalize_tianxing_auto_config(state.get("tianxing_auto_config"))))
+
+        if desired_route and existing_route == desired_route:
+            step["status"] = "confirmed_existing_change_fate"
+            step["confirmed_at"] = float(now)
+            step["last_error"] = ""
+            _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+            timeline["phase"] = "state_confirmed"
+            timeline["blocked_until"] = 0
+            timeline["last_error"] = ""
+            timeline["updated_at"] = float(now)
+            _timeline_audit(timeline, now, "change_fate_existing_confirmed", route=desired_route)
+            state["tianxing_timeline_state"] = timeline
+            return True
+
+        step["status"] = "rejected_change_fate_conflict"
+        step["rejected_at"] = float(now)
+        step["last_error"] = (
+            f"已有 {existing_route or '其他'} 改命尚未耗尽，不能切到 {desired_route or '目标路线'}；"
+            "本轮不放行需要改命兜底的探索动作。"
+        )
+        _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+        timeline["phase"] = "change_fate_conflict"
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["blocked_until"] = change_until
+        timeline["last_error"] = step["last_error"]
+        timeline["updated_at"] = float(now)
+        _timeline_audit(
+            timeline,
+            now,
+            "change_fate_conflict_cooldown",
+            desired=desired_route,
+            existing=existing_route,
+            blocked_until=change_until,
+        )
+        state["tianxing_timeline_state"] = timeline
+        return True
+
+    if action == "改命" and result in {"blocked", "failure"}:
+        if str(step.get("action") or "") != "change_fate":
+            return False
+        if str(step.get("status") or "") not in {"sending", "sent_waiting_ack", "ack_timeout"}:
+            return False
+        desired_route = _normalize_route_choice(step.get("route") or step.get("arg"), "")
+        step["status"] = "rejected_change_fate_blocked"
+        step["rejected_at"] = float(now)
+        step["last_error"] = parsed.get("last_error") or "改命被游戏拒绝。"
+        _set_timeline_step(timeline, _timeline_active_index(timeline), step)
+        timeline["phase"] = "need_tianji_for_change" if "天机" in step["last_error"] else "blocked_replan"
+        timeline["active_step_index"] = -1
+        timeline["active_step"] = {}
+        timeline["blocked_until"] = float(now)
+        timeline["last_error"] = step["last_error"]
+        timeline["updated_at"] = float(now)
+        _timeline_audit(timeline, now, "change_fate_blocked", route=desired_route, reason=step["last_error"])
         state["tianxing_timeline_state"] = timeline
         return True
 

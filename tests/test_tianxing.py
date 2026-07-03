@@ -296,6 +296,15 @@ class TianxingParserTests(unittest.TestCase):
         self.assertGreater(change["current_change_until"], now + 21 * 3600)
         self.assertEqual("", change.get("last_error", ""))
 
+        shortage = tianxing.parse_tianxing_text(
+            "天机值不足，无法为【探索】改命。",
+            now=now,
+            family="tianxing_change_fate",
+        )
+        self.assertEqual("改命", shortage["action"])
+        self.assertEqual("blocked", shortage["result"])
+        self.assertIn("天机", shortage["last_error"])
+
     def test_normalize_clears_stale_cooldown_errors(self):
         observed = tianxing.normalize_tianxing_observation({
             "last_action": "推命",
@@ -2795,6 +2804,93 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("confirmed_existing_prediction", timeline["active_step"]["status"])
         self.assertFalse(tianxing.is_tianxing_route_released("闭关", now=now + 1))
 
+    def test_timeline_change_fate_cooldown_same_route_confirms_existing_change(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-test",
+                "phase": "sent_waiting_ack",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "change_fate",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".改命 探索",
+                    "status": "sent_waiting_ack",
+                    "send_msg_id": 9103,
+                    "sent_at": now,
+                    "ack_due_at": now + 90,
+                },
+                "steps": [{
+                    "action": "change_fate",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".改命 探索",
+                    "status": "sent_waiting_ack",
+                    "send_msg_id": 9103,
+                    "sent_at": now,
+                    "ack_due_at": now + 90,
+                }],
+            }
+
+            changed = tianxing.apply_tianxing_passive(
+                "你已有一道关于 【探索】 的改命尚未耗尽，还可维持 21小时57分钟。",
+                now=now + 1,
+                family="tianxing_change_fate",
+            )
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(changed)
+        self.assertEqual("state_confirmed", timeline["phase"])
+        self.assertEqual("confirmed_existing_change_fate", timeline["active_step"]["status"])
+        self.assertFalse(tianxing.is_tianxing_route_released("探索", now=now + 1, require_change_fate=True))
+
+    def test_timeline_change_fate_cooldown_other_route_blocks_release(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, auto_change=True, dry_run=False)
+            state_module.state["tianxing_timeline_state"] = {
+                "plan_id": "tianxing-timeline-test",
+                "phase": "sent_waiting_ack",
+                "route": "探索",
+                "active_step_index": 0,
+                "active_step": {
+                    "action": "change_fate",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".改命 探索",
+                    "status": "sent_waiting_ack",
+                    "send_msg_id": 9104,
+                    "sent_at": now,
+                    "ack_due_at": now + 90,
+                },
+                "steps": [{
+                    "action": "change_fate",
+                    "arg": "探索",
+                    "route": "探索",
+                    "command": ".改命 探索",
+                    "status": "sent_waiting_ack",
+                    "send_msg_id": 9104,
+                    "sent_at": now,
+                    "ack_due_at": now + 90,
+                }],
+            }
+
+            changed = tianxing.apply_tianxing_passive(
+                "你已有一道关于 【闭关】 的改命尚未耗尽，还可维持 21小时57分钟。",
+                now=now + 1,
+                family="tianxing_change_fate",
+            )
+            timeline = tianxing.normalize_tianxing_timeline_state(state_module.state["tianxing_timeline_state"])
+
+        self.assertTrue(changed)
+        self.assertEqual("change_fate_conflict", timeline["phase"])
+        self.assertEqual({}, timeline["active_step"])
+        self.assertFalse(tianxing.is_tianxing_route_released("探索", now=now + 1, require_change_fate=True))
+        self.assertIn("已有 闭关 改命", timeline["last_error"])
+
     def test_timeline_predict_cooldown_conflict_blocks_craft_without_downstream_release(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
@@ -3035,6 +3131,41 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("", plan["release_route"])
         self.assertEqual([], [step["action"] for step in plan["steps"]])
         self.assertIn("天机值不足", plan["predict_reason"])
+
+    def test_consume_window_allows_explore_change_fate_at_game_cost_floor(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            self._prepare_timeline_identity(now, tianji_value=3, auto_change=True, dry_run=False)
+            state_module.state["tianxing_observation"].update({
+                "last_action": "推命",
+                "last_result": "success",
+                "last_route": "探索",
+                "current_prediction": "探索",
+                "current_prediction_until": now + 3600,
+                "current_prediction_set_at": now - 60,
+            })
+            plan = tianxing.build_tianxing_timeline_plan(
+                now=now,
+                windows=[{
+                    "route": "探索",
+                    "kind": "consume",
+                    "start_at": now,
+                    "end_at": now + 60,
+                    "weight": 10,
+                    "reason": "探寻裂缝",
+                    "require_change_fate": True,
+                }],
+                config=state_module.state["tianxing_auto_config"],
+            )
+
+        self.assertEqual("ready_prediction", plan["stage"])
+        self.assertEqual("探索", plan["recommended_change_route"])
+        self.assertEqual("探索", plan["release_route"])
+        self.assertEqual(
+            [("change_fate", "探索"), ("release_downstream", "探索")],
+            [(step["action"], step["arg"]) for step in plan["steps"]],
+        )
+        self.assertIn("改命成本 3", plan["change_reason"])
 
     def test_change_fate_consume_window_uses_reliable_minimum_lead(self):
         now = 1_780_000_000.0
