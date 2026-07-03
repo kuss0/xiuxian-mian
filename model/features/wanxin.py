@@ -567,6 +567,10 @@ def _pending_blocks(observed, now):
         observed["auto_next_time"] = due
         return True
     action = str(pending.get("action") or "")
+    family = str(pending.get("family") or WANXIN_ACTION_FAMILIES.get(action, "") or "")
+    pending_send_as_id = _safe_int(pending.get("send_as_id"), get_current_identity_id())
+    if family:
+        close_action_guard_by_family(family, send_as_id=pending_send_as_id, reason="wanxin_timeout", now=now)
     observed["pending"] = {}
     observed["auto_last_action"] = action
     observed["auto_last_error"] = f"{WANXIN_ACTION_LABELS.get(action, action)} 回复超时"

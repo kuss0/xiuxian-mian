@@ -135,17 +135,20 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "action": "protect",
                     "family": "wanxin_protect",
                     "msg_id": 7201,
+                    "send_as_id": identity_id,
                     "reply_due_at": now - 1,
                 },
                 "auto_next_time": now - 1,
             }
             with (
                 patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "close_action_guard_by_family") as close_guard_mock,
                 patch.object(wanxin, "save_state"),
             ):
                 await wanxin.run_wanxin_phaseful_cleanup_scheduler(now)
 
             send_mock.assert_not_awaited()
+            close_guard_mock.assert_called_once_with("wanxin_protect", send_as_id=identity_id, reason="wanxin_timeout", now=now)
             observed = state_module.state["wanxin_observation"]
             self.assertEqual({}, observed["pending"])
             self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
