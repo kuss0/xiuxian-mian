@@ -317,6 +317,78 @@ class PassiveInboxEvidenceTests(unittest.TestCase):
         self.assertEqual(1, snapshot["total"])
         self.assertEqual(1, snapshot["skip_reasons"]["reply_context_no_identity"])
 
+    def test_routed_wild_training_reply_is_not_applied_again_by_passive_inbox(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        identity_id = 3907536807
+        text = "\n".join([
+            "【野外历练 · 妖兽遭遇】",
+            "@sanshaoyedejian1 遭遇 赤焰妖虎。",
+            "战力对比: 你 418738 / 妖兽 341879，胜算 70%。",
+            "一番斗法后，妖兽伏诛。",
+            "获得修为 +4486，获得 【二级妖丹】x1。",
+            "此战只结算 NPC 历练收益，不触发玩家仇怨。",
+        ])
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="sanshaoyedejian1", label="三少爷的剑")
+            with state_module.use_identity(identity_id) as identity_state:
+                identity_state["wild_training_last_result"] = "旧结果"
+                identity_state["next_wild_training_time"] = 0
+
+            routed_event = SimpleNamespace(chat_id=-1001680975844, id=11387898, sender_id=8547797815)
+            routed_context = {
+                "send_as_id": identity_id,
+                "family": "wild_training",
+                "reply_to_msg_id": 11387896,
+                "root_msg_id": 11387896,
+                "routed_reply_handled": True,
+            }
+            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    text,
+                    now=1_783_060_378.0,
+                    reply_context=routed_context,
+                    event=routed_event,
+                    event_type="edit",
+                ))
+
+            self.assertFalse(handled)
+            with state_module.use_identity(identity_id):
+                self.assertEqual("旧结果", state_module.state["wild_training_last_result"])
+                self.assertEqual(0, state_module.state["next_wild_training_time"])
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(0, snapshot["changed"])
+
+            passive_event = SimpleNamespace(chat_id=-1001680975844, id=11387999, sender_id=8547797815)
+            passive_context = {
+                "send_as_id": identity_id,
+                "family": "wild_training",
+                "reply_to_msg_id": 11387997,
+                "root_msg_id": 11387997,
+            }
+            with patch.object(passive_inbox, "_save_passive_stats"), patch.object(passive_inbox, "save_state"):
+                handled = asyncio.run(passive_inbox.handle_passive_module_card(
+                    text,
+                    now=1_783_060_400.0,
+                    reply_context=passive_context,
+                    event=passive_event,
+                    event_type="edit",
+                ))
+
+            self.assertTrue(handled)
+            with state_module.use_identity(identity_id):
+                self.assertEqual("修为+4486 ｜ 奖励:二级妖丹x1", state_module.state["wild_training_last_result"])
+                self.assertGreater(state_module.state["next_wild_training_time"], 1_783_060_400.0)
+            snapshot = passive_inbox.get_passive_inbox_snapshot()
+            self.assertEqual(1, snapshot["changed"])
+            self.assertEqual(1, snapshot["modules"]["wild_training"])
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(meta_snapshot)
+
     def test_same_message_with_edited_text_is_not_deduped(self):
         event = SimpleNamespace(chat_id=-1001680975844, id=9512505)
         reply_context = {"family": "tower", "reply_to_msg_id": 9512504, "root_msg_id": 9512504}

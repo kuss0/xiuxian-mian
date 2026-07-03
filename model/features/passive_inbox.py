@@ -1186,9 +1186,11 @@ def _apply_storage_bag_passive(text, now):
     return True, identity_id
 
 
-def _apply_wild_training_passive(text, now, family):
+def _apply_wild_training_passive(text, now, family, *, reply_context=None):
     raw_text = str(text or "").strip()
     if family != "wild_training" and not raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE):
+        return False
+    if _routed_reply_already_handled(reply_context):
         return False
     if has_wait_time(raw_text) and any(keyword in raw_text for keyword in wild_training_mod.WILD_TRAINING_CD_KEYWORDS):
         wait_sec = parse_wait_time(raw_text)
@@ -1663,7 +1665,7 @@ async def handle_passive_module_card(text, now=None, reply_context=None, event=N
                 changed_modules.append("tree")
             changed = module_changed or changed
         if family == "wild_training" or raw_text.startswith(wild_training_mod.WILD_TRAINING_TITLE):
-            module_changed = _apply_wild_training_passive(raw_text, now, family)
+            module_changed = _apply_wild_training_passive(raw_text, now, family, reply_context=reply_context)
             if module_changed:
                 changed_modules.append("wild_training")
             changed = module_changed or changed
