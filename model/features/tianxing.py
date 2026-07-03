@@ -2252,6 +2252,8 @@ def _clear_tianxing_auto_pending(observed):
 def _defer_tianxing_auto_plan_for_phaseful_summary(observed, now, plan):
     action = str((plan or {}).get("action") or "auto").strip()
     command = str((plan or {}).get("command") or "").strip()
+    if action in {"observe", "set_star"}:
+        return False
     payload = _tianxing_phaseful_defer_payload(now, "自动命令")
     if not payload:
         return False

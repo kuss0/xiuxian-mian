@@ -1003,6 +1003,43 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
             self.assertTrue(any("launching 超时" in str(call.args[0]) for call in audit_mock.await_args_list))
 
+    async def test_yuanying_launching_timeout_calibration_is_single_flight(self):
+        send_as_id = 8659059239
+        now = 1_700_000_413.0
+        self._prepare_identity(send_as_id, "YuanyingLaunchTimeoutSingleFlight")
+
+        async def slow_query(*_args, **_kwargs):
+            await asyncio.sleep(0.01)
+            return SimpleNamespace(id=912, sent_at=now)
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["yuanying_enabled"] = True
+            state_module.state["yuanying_phase"] = "launching"
+            state_module.state["last_yuanying_command_time"] = now - yuanying.LAUNCHING_TIMEOUT_SEC - 1
+            state_module.state["next_yuanying_time"] = now + yuanying.YUANYING_CD
+
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(side_effect=slow_query)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+                patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock()),
+            ):
+                await asyncio.gather(
+                    yuanying.run_yuanying_scheduler(now),
+                    yuanying.run_yuanying_scheduler(now),
+                )
+
+            send_mock.assert_awaited_once_with(
+                yuanying.CMD_YUANYING_STATUS,
+                track=False,
+                priority="chain",
+                source_module="元婴",
+            )
+            self.assertEqual("waiting_summary", state_module.state["yuanying_phase"])
+            self.assertEqual(now, state_module.state["yuanying_summary_sent_at"])
+            self.assertEqual(912, state_module.state["last_yuanying_summary_msg_id"])
+            self.assertEqual(1, sum("launching 超时" in str(call.args[0]) for call in audit_mock.await_args_list))
+
     async def test_deep_retreat_summary_due_waits_for_passive_trigger_before_grace_expires(self):
         send_as_id = 8659059202
         now = 1_700_000_450.0

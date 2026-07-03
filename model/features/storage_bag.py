@@ -33,6 +33,8 @@ RE_STORAGE_TRANSFER_GIFT_TAX = re.compile(r"额外支付了\s*(?P<tax>[\d,]+)\s*
 STORAGE_BAG_SECTION_NAMES = ("法宝/丹药/杂物", "材料")
 STORAGE_TRANSFER_REPLY_TIMEOUT_SEC = 20
 STORAGE_TRANSFER_RETRY_INTERVAL_SEC = 5
+STORAGE_TRANSFER_LISTING_REPLY_TIMEOUT_SEC = 60
+STORAGE_TRANSFER_LISTING_RETRY_INTERVAL_SEC = 20
 STORAGE_TRANSFER_MAX_RETRY = 3
 STORAGE_TRANSFER_LISTING_REPEAT_GAP_SEC = 62
 STORAGE_TRANSFER_MODULE_NAME = "储物袋"
@@ -74,6 +76,7 @@ _storage_bag_transfer_state = {
     "listing_syntax": STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
     "listing_command": "",
     "listing_msg_id": 0,
+    "listing_msg_ids": [],
     "listing_id": "",
     "buy_command": "",
     "buy_msg_id": 0,
@@ -560,6 +563,7 @@ def _clear_storage_bag_transfer_state():
         "listing_syntax": STORAGE_TRANSFER_DEFAULT_LISTING_SYNTAX,
         "listing_command": "",
         "listing_msg_id": 0,
+        "listing_msg_ids": [],
         "listing_id": "",
         "buy_command": "",
         "buy_msg_id": 0,
@@ -717,8 +721,39 @@ def _storage_transfer_chain_id():
 
 
 def _storage_transfer_note_waiting_reply(label):
-    _storage_bag_transfer_state["reply_due_at"] = time.time() + STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
+    step = str(_storage_bag_transfer_state.get("step") or "")
+    _storage_bag_transfer_state["reply_due_at"] = time.time() + _storage_transfer_reply_timeout_sec(step, retry=False)
     _storage_transfer_log(f"{label}命令正在处理，等待最终回复")
+
+
+def _storage_transfer_reply_timeout_sec(wait_step, *, retry=False):
+    step = str(wait_step or "")
+    if step == "waiting_listing_reply":
+        return STORAGE_TRANSFER_LISTING_RETRY_INTERVAL_SEC if retry else STORAGE_TRANSFER_LISTING_REPLY_TIMEOUT_SEC
+    return STORAGE_TRANSFER_RETRY_INTERVAL_SEC if retry else STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
+
+
+def _remember_storage_transfer_msg_id(msg_id_key, msg_id):
+    msg_id = int(msg_id or 0)
+    if msg_id <= 0:
+        return
+    if msg_id_key == "listing_msg_id":
+        msg_ids = list(_storage_bag_transfer_state.get("listing_msg_ids") or [])
+        if msg_id not in msg_ids:
+            msg_ids.append(msg_id)
+        _storage_bag_transfer_state["listing_msg_ids"] = msg_ids
+
+
+def _storage_transfer_listing_msg_ids():
+    msg_ids = set()
+    for raw_msg_id in (_storage_bag_transfer_state.get("listing_msg_ids") or []):
+        try:
+            msg_id = int(raw_msg_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if msg_id > 0:
+            msg_ids.add(msg_id)
+    return msg_ids
 
 
 async def _send_storage_bag_transfer_command(
@@ -757,17 +792,16 @@ async def _send_storage_bag_transfer_command(
     now = time.time()
     if not msg:
         if retry:
-            _storage_bag_transfer_state["reply_due_at"] = now + STORAGE_TRANSFER_RETRY_INTERVAL_SEC
+            _storage_bag_transfer_state["reply_due_at"] = now + _storage_transfer_reply_timeout_sec(wait_step, retry=True)
             _storage_bag_transfer_state["retry_last_at"] = now
         return None
     if family == "storage_bag_listing" and not retry:
         _mark_storage_listing_initial_sent(identity_id, command, now=now)
     msg_id = int(getattr(msg, "id", 0) or 0)
     _storage_bag_transfer_state[msg_id_key] = msg_id
+    _remember_storage_transfer_msg_id(msg_id_key, msg_id)
     _storage_bag_transfer_state["step"] = str(wait_step or "")
-    _storage_bag_transfer_state["reply_due_at"] = now + (
-        STORAGE_TRANSFER_RETRY_INTERVAL_SEC if retry else STORAGE_TRANSFER_REPLY_TIMEOUT_SEC
-    )
+    _storage_bag_transfer_state["reply_due_at"] = now + _storage_transfer_reply_timeout_sec(wait_step, retry=retry)
     _storage_bag_transfer_state["retry_command"] = command
     _storage_bag_transfer_state["retry_identity_id"] = identity_id
     _storage_bag_transfer_state["retry_reply_to"] = reply_to
@@ -1067,6 +1101,9 @@ def _is_manual_storage_transfer_listing_reply(success, reply_to, reply_context):
 def _is_storage_bag_reply_to_transfer(reply_to, *, msg_id_key, command_prefix, reply_to_msg_id=0):
     expected_msg_id = int(_storage_bag_transfer_state.get(msg_id_key, 0) or 0)
     reply_msg_id = int(reply_to_msg_id or getattr(reply_to, "id", 0) or 0)
+    if msg_id_key == "listing_msg_id" and reply_msg_id > 0:
+        if reply_msg_id in _storage_transfer_listing_msg_ids():
+            return True
     if expected_msg_id > 0:
         return reply_msg_id == expected_msg_id
     raw_cmd = str(getattr(reply_to, "raw_text", "") or "").strip()

@@ -6013,6 +6013,28 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".观命", send_mock.await_args.args[0])
         self.assertEqual("observe", observed["auto_last_action"])
 
+    async def test_daily_observe_ignores_phaseful_summary_risk(self):
+        now = local_ts(0, 1, year=2026, month=6, day=30)
+        msg = SimpleNamespace(id=9101, sent_at=now)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = {}
+            state_module.state["tianxing_auto_config"] = {
+                "auto_observe_enabled": True,
+                "daily_observe_enabled": True,
+            }
+            with (
+                patch.object(tianxing, "save_state"),
+                patch.object(tianxing, "send_game_command", return_value=msg) as send_mock,
+                patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="元婴待结算/观察中"),
+            ):
+                await tianxing.run_tianxing_scheduler(now)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".观命", send_mock.await_args.args[0])
+        self.assertEqual("observe", observed["auto_last_action"])
+
     async def test_scheduler_bypasses_future_auto_time_for_daily_set_star(self):
         now = local_ts(0, 2, year=2026, month=6, day=30)
         observation = {
@@ -6040,6 +6062,44 @@ class TianxingSchedulerTests(unittest.IsolatedAsyncioTestCase):
         send_mock.assert_awaited_once()
         self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
         self.assertEqual("reactive", send_mock.await_args.kwargs["priority"])
+        self.assertEqual("set_star", observed["auto_last_action"])
+
+    async def test_daily_set_star_ignores_phaseful_summary_risk(self):
+        now = local_ts(0, 2, year=2026, month=6, day=30)
+        msg = SimpleNamespace(id=9102, sent_at=now)
+        observation = {
+            "last_observed_at": now - 90,
+            "available_stars": ["紫微", "贪狼", "天府"],
+            "available_stars_source": "observe",
+            "available_stars_day": tianxing.get_day_key(now),
+            "fixed_star": "",
+            "fixed_star_day": "",
+            "current_prediction": "",
+            "current_prediction_until": 0,
+            "calamity_count": 0,
+            "tianji_value": 36,
+            "auto_next_time": now + 6 * 3600,
+        }
+        with state_module.use_identity(self.identity_id):
+            state_module.state["tianxing_enabled"] = True
+            state_module.state["tianxing_observation"] = observation
+            state_module.state["tianxing_auto_config"] = {
+                "timeline_enabled": True,
+                "auto_set_star_enabled": True,
+                "daily_set_star_enabled": True,
+                "strategy_dry_run_enabled": False,
+                "star_priority": ["太阴", "贪狼", "天府", "紫微"],
+            }
+            with (
+                patch.object(tianxing, "save_state"),
+                patch.object(tianxing, "send_game_command", return_value=msg) as send_mock,
+                patch.object(tianxing, "get_phaseful_summary_risk_reason", return_value="元婴待结算/观察中"),
+            ):
+                await tianxing.run_tianxing_scheduler(now)
+            observed = tianxing.normalize_tianxing_observation(state_module.state["tianxing_observation"])
+
+        send_mock.assert_awaited_once()
+        self.assertEqual(".定命 贪狼", send_mock.await_args.args[0])
         self.assertEqual("set_star", observed["auto_last_action"])
 
     async def test_scheduler_treats_yesterday_fixed_star_as_unset_for_daily_set_star(self):

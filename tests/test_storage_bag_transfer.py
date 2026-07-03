@@ -875,7 +875,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, records[str(self.target_id)]["items"]["妖丹"])
         self.assertEqual(99, records[str(self.target_id)]["items"]["灵石"])
 
-    async def test_transfer_retry_resends_listing_after_20_then_5_seconds(self):
+    async def test_transfer_retry_resends_listing_after_60_then_20_seconds(self):
         sent = []
 
         async def fake_send(command, **kwargs):
@@ -894,43 +894,92 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(ok, message)
         self.assertEqual([".上架 灵石*1 换 妖丹*3"], [item[0] for item in sent])
-        self.assertEqual(1020.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+        self.assertEqual(1060.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
         self.assertEqual("chain", sent[0][1]["priority"])
         self.assertEqual("储物袋", sent[0][1]["source_module"])
         self.assertEqual(0, sent[0][1]["max_retry"])
 
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log"), \
-                patch("model.features.storage_bag.time.time", return_value=1019.0):
-            await run_storage_bag_transfer_scheduler(1019.0)
+                patch("model.features.storage_bag.time.time", return_value=1059.0):
+            await run_storage_bag_transfer_scheduler(1059.0)
 
         self.assertEqual(1, len(sent))
 
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log"), \
-                patch("model.features.storage_bag.time.time", return_value=1020.0):
-            await run_storage_bag_transfer_scheduler(1020.0)
+                patch("model.features.storage_bag.time.time", return_value=1060.0):
+            await run_storage_bag_transfer_scheduler(1060.0)
 
         self.assertEqual([".上架 灵石*1 换 妖丹*3", ".上架 灵石*1 换 妖丹*3"], [item[0] for item in sent])
         self.assertEqual("retry", sent[1][1]["priority"])
         self.assertEqual(1, storage_bag._storage_bag_transfer_state["retry_count"])
-        self.assertEqual(1025.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+        self.assertEqual(1080.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
 
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log"), \
-                patch("model.features.storage_bag.time.time", return_value=1024.0):
-            await run_storage_bag_transfer_scheduler(1024.0)
+                patch("model.features.storage_bag.time.time", return_value=1079.0):
+            await run_storage_bag_transfer_scheduler(1079.0)
 
         self.assertEqual(2, len(sent))
 
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log"), \
-                patch("model.features.storage_bag.time.time", return_value=1025.0):
-            await run_storage_bag_transfer_scheduler(1025.0)
+                patch("model.features.storage_bag.time.time", return_value=1080.0):
+            await run_storage_bag_transfer_scheduler(1080.0)
 
         self.assertEqual(3, len(sent))
         self.assertEqual(2, storage_bag._storage_bag_transfer_state["retry_count"])
-        self.assertEqual(1030.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+        self.assertEqual(1100.0, storage_bag._storage_bag_transfer_state["reply_due_at"])
+
+    async def test_delayed_original_listing_reply_after_retry_is_accepted(self):
+        sent = []
+
+        async def fake_send(command, **kwargs):
+            sent.append((command, kwargs))
+            return SimpleNamespace(id=11408245 if len(sent) == 1 else 11408259)
+
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.storage_bag.time.time", return_value=1000.0):
+            ok, message, transfer = await start_storage_bag_transfer_task(
+                self.source_id,
+                self.target_id,
+                [{"item_name": "灵石", "quantity": 150000, "method": "basic"}],
+                "黄芽丹",
+                listing_count=30,
+            )
+
+        self.assertTrue(ok, message)
+        self.assertEqual([11408245], storage_bag._storage_bag_transfer_state["listing_msg_ids"])
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"), \
+                patch("model.features.storage_bag.time.time", return_value=1060.0):
+            await run_storage_bag_transfer_scheduler(1060.0)
+
+        self.assertEqual(2, len(sent))
+        self.assertEqual([11408245, 11408259], storage_bag._storage_bag_transfer_state["listing_msg_ids"])
+        with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
+                patch("model.features.storage_bag.send_audit_log"):
+            handled_listing = await handle_storage_bag_transfer_reply(
+                "上架成功！\n"
+                "你已将 【黄芽丹】x30 上架至万宝楼。\n"
+                "每件售价: 【灵石】x5000\n"
+                "挂单ID: 23974",
+                1061.0,
+                SimpleNamespace(id=11408245, raw_text=sent[0][0]),
+                matched_family="storage_bag_listing",
+                reply_context={
+                    "send_as_id": self.target_id,
+                    "family": "storage_bag_listing",
+                    "reply_to_msg_id": 11408245,
+                    "root_msg_id": 11408245,
+                },
+            )
+
+        self.assertTrue(handled_listing)
+        self.assertEqual("waiting_buy_reply", storage_bag._storage_bag_transfer_state["step"])
+        self.assertEqual(".购买 23974", sent[-1][0])
 
     async def test_transfer_retry_stops_after_three_resends(self):
         sent = []
@@ -950,7 +999,7 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertTrue(ok, message)
-        for tick in (1020.0, 1025.0, 1030.0):
+        for tick in (1060.0, 1080.0, 1100.0):
             with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                     patch("model.features.storage_bag.send_audit_log"), \
                     patch("model.features.storage_bag.time.time", return_value=tick):
@@ -960,8 +1009,8 @@ class StorageBagTransferExecutionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(3, storage_bag._storage_bag_transfer_state["retry_count"])
         with patch("model.features.storage_bag.send_game_command", side_effect=fake_send), \
                 patch("model.features.storage_bag.send_audit_log") as audit_mock, \
-                patch("model.features.storage_bag.time.time", return_value=1035.0):
-            await run_storage_bag_transfer_scheduler(1035.0)
+                patch("model.features.storage_bag.time.time", return_value=1120.0):
+            await run_storage_bag_transfer_scheduler(1120.0)
 
         self.assertEqual(4, len(sent))
         self.assertFalse(storage_bag._storage_bag_transfer_state["running"])

@@ -793,6 +793,24 @@ async def _calibrate_probe_timeout_once(spec, now):
         return True
 
 
+async def _calibrate_launching_timeout_once(spec, now, launch_command):
+    async with _get_phaseful_launch_lock(spec):
+        if _phase(spec) != "launching":
+            return False
+        last_command_at = float(state.get(spec.last_command_key, 0) or 0)
+        if last_command_at <= 0:
+            return False
+        if float(now or 0) - last_command_at < spec.launching_timeout_sec:
+            return False
+
+        from ..runtime import clear_pending_tasks_by_commands
+
+        clear_pending_tasks_by_commands({launch_command})
+        await send_audit_log(f"{spec.title} launching 超时，改用状态查询校准。")
+        await _send_active_summary_query(spec, now)
+        return True
+
+
 async def _delay_relaunch_without_status_query(spec, now, audit_text):
     await delete_summary_trigger_msg(spec)
     state[spec.probe_pending_key] = False
@@ -877,11 +895,7 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         return
 
     if _phase(spec) == "launching":
-        if state[spec.last_command_key] > 0 and now - state[spec.last_command_key] >= spec.launching_timeout_sec:
-            from ..runtime import clear_pending_tasks_by_commands
-            clear_pending_tasks_by_commands({launch_command})
-            await send_audit_log(f"{spec.title} launching 超时，改用状态查询校准。")
-            await _send_active_summary_query(spec, now)
+        await _calibrate_launching_timeout_once(spec, now, launch_command)
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] <= 0:
