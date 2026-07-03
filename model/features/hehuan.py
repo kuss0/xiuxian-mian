@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta
 
 from ..config import CMD_HEHUAN_DUAL, MESSAGES_DIR, TZ_LOCAL
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import send_audit_log, send_game_command
 from ..state import (
@@ -41,6 +42,8 @@ HEHUAN_BAIJI_SEND_AS_ID = 301299112
 HEHUAN_BAIJI_USERNAME = "jfdffdddd"
 HEHUAN_BAIJI_NAME = "吧唧"
 HEHUAN_ANCHOR_TEXT = "。"
+HEHUAN_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC = 30
 
 PATH_FANCHEN = "凡尘缘"
 PATH_TONGCAN = "同参道"
@@ -862,6 +865,34 @@ def _has_unresolved_hehuan_pending(observed, now):
     return now >= pending_deadline_at
 
 
+def _is_hehuan_reply_log_entry(entry):
+    return looks_like_hehuan_text((entry or {}).get("text") or "")
+
+
+def _recover_hehuan_pending_from_message_log(observed, now):
+    pending_msg_id = int((observed or {}).get("auto_pending_msg_id", 0) or 0)
+    if pending_msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        pending_msg_id,
+        now,
+        lookback_sec=HEHUAN_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_hehuan_reply_log_entry,
+    )
+    if not replies:
+        return False
+    handled_any = False
+    for entry in replies:
+        handled = apply_hehuan_passive(
+            entry.get("text") or "",
+            now=float(entry.get("ts_epoch") or now),
+            family="hehuan_dual",
+        )
+        handled_any = handled_any or handled
+    return handled_any
+
+
 async def run_hehuan_scheduler(now):
     now = float(now if now is not None else time.time())
     dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
@@ -889,6 +920,9 @@ async def run_hehuan_scheduler(now):
         return
 
     if _has_unresolved_hehuan_pending(observed, now):
+        if _recover_hehuan_pending_from_message_log(observed, now):
+            save_state()
+            return
         observed = _schedule_hehuan_retry(observed, now, "温养回复超时或被吞")
         state["hehuan_observation"] = observed
         save_state()

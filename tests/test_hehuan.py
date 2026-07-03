@@ -588,6 +588,44 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("补发已达", observed["auto_last_error"])
             self.assertEqual(0, observed["auto_pending_msg_id"])
 
+    async def test_scheduler_recovers_pending_warm_reply_from_message_log(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 600,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+                "auto_retry_count": 1,
+                "auto_pending_msg_id": 9901,
+                "auto_pending_sent_at": now - 300,
+                "auto_pending_deadline_at": now - 1,
+            }
+            replies = [{
+                "text": real_text("hehuan.warm_success.basic"),
+                "ts_epoch": now - 10,
+                "message_id": 9902,
+                "reply_to_msg_id": 9901,
+            }]
+            with (
+                patch.object(hehuan, "find_message_log_replies", return_value=replies) as recovery_mock,
+                patch.object(hehuan, "save_state") as save_mock,
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            recovery_mock.assert_called_once()
+            send_mock.assert_not_called()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertEqual("success", observed["last_result"])
+        self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertEqual(now - 10 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+
     async def test_scheduler_sends_bare_warm_when_recent_anchor_missing(self):
         now = 1_780_000_000.0
         warm_msg = SimpleNamespace(id=9002, sent_at=now + 1)
