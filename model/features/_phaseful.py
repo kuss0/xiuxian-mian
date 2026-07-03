@@ -651,6 +651,13 @@ def _summary_due_elapsed(spec, now):
 
 async def _extend_summary_due_wait(spec, now):
     _schedule_summary_trigger_retry(spec, now, preserve_started_at=True)
+    grace_sec = float(spec.summary_active_query_grace_sec or 0)
+    started_at = float(state.get(spec.summary_sent_at_key, 0) or 0)
+    if grace_sec > 0 and started_at > 0:
+        grace_until = started_at + grace_sec
+        if float(now or 0) < grace_until < float(state.get(spec.next_time_key, 0) or 0):
+            state[spec.next_time_key] = grace_until
+            save_state()
     if not state.get(spec.waiting_logged_key, False):
         state[spec.waiting_logged_key] = True
         save_state()
@@ -873,9 +880,8 @@ async def run_phaseful_scheduler(spec, now, *, launch_command, schedule_probe):
         if state[spec.last_command_key] > 0 and now - state[spec.last_command_key] >= spec.launching_timeout_sec:
             from ..runtime import clear_pending_tasks_by_commands
             clear_pending_tasks_by_commands({launch_command})
-            set_phase(spec, "idle")
-            save_state()
-            await send_audit_log(spec.launching_timeout_audit)
+            await send_audit_log(f"{spec.title} launching 超时，改用状态查询校准。")
+            await _send_active_summary_query(spec, now)
         return
 
     if _phase(spec) == "waiting_summary" and state[spec.summary_sent_at_key] <= 0:

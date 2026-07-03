@@ -971,6 +971,38 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(1, sum("续轮指令超时无确认" in str(call.args[0]) for call in audit_mock.await_args_list))
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
 
+    async def test_deep_retreat_launching_timeout_queries_status(self):
+        send_as_id = 8659059235
+        now = 1_700_000_412.0
+        self._prepare_identity(send_as_id, "LaunchTimeoutStatus")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "launching"
+            state_module.state["last_deep_retreat_command_time"] = now - deep_retreat.LAUNCHING_TIMEOUT_SEC - 1
+            state_module.state["next_deep_retreat_time"] = now + deep_retreat.DEEP_RETREAT_CD
+
+            sent_msg = SimpleNamespace(id=911, sent_at=now)
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=sent_msg)) as send_mock,
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "save_state"),
+                patch.object(_phaseful, "delete_summary_trigger_msg", new=AsyncMock()),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT_QUERY,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(911, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertFalse(state_module.state["deep_retreat_probe_pending"])
+            self.assertTrue(any("launching 超时" in str(call.args[0]) for call in audit_mock.await_args_list))
+
     async def test_deep_retreat_summary_due_waits_for_passive_trigger_before_grace_expires(self):
         send_as_id = 8659059202
         now = 1_700_000_450.0
@@ -992,7 +1024,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
             send_mock.assert_not_awaited()
             self.assertEqual("summary_due", state_module.state["deep_retreat_phase"])
-            self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
+            self.assertEqual(now + 60, state_module.state["next_deep_retreat_time"])
             self.assertEqual(0, state_module.state["last_deep_retreat_summary_msg_id"])
 
     async def test_deep_retreat_orphan_summary_due_queries_status_immediately(self):
@@ -1909,7 +1941,7 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
 
             send_mock.assert_not_awaited()
             self.assertEqual("summary_due", state_module.state["yuanying_phase"])
-            self.assertEqual(now + 45, state_module.state["next_yuanying_time"])
+            self.assertEqual(now + 30, state_module.state["next_yuanying_time"])
             self.assertEqual(0, state_module.state["last_yuanying_summary_msg_id"])
 
     async def test_yuanying_summary_due_launches_business_command_after_grace(self):

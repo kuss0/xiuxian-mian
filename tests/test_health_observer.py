@@ -154,6 +154,11 @@ class HealthObserverTests(unittest.TestCase):
         )
         self.assertFalse(
             health_observer.is_warn_journal_line(
+                "Jun 17 00:02:45 pve python[44241]: [xuruode3] 🧘 launching 超时，改用状态查询校准。"
+            )
+        )
+        self.assertFalse(
+            health_observer.is_warn_journal_line(
                 "Jun 17 00:16:54 pve python[44241]: [xueuode5] ⚠️ 共历心劫抉择无回合推进，已停止旧 prompt；按长冷却等待 12:09:31。"
             )
         )
