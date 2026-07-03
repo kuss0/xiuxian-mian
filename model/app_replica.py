@@ -6105,18 +6105,16 @@ def _get_cangkun_room_readiness_snapshot(room, now=None):
     )
     observed_professions = _normalize_replica_team_professions_by_username(room.get("team_professions_by_username"))
     if observed_professions:
-        observed_covered = {
-            role
-            for professions in observed_professions.values()
-            for role in _normalize_replica_profession_list(professions)
-            if role in _CANGKUN_REQUIRED_PROFESSIONS
-        }
-        observed_missing = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in observed_covered]
-        snapshot["missing"] = observed_missing
-        snapshot["profession_ok"] = not observed_missing
-        snapshot["observed_profession_covered"] = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in observed_covered]
-        snapshot["observed_profession_source"] = "team_snapshot"
-        snapshot["actionable"] = not observed_missing and bool(snapshot.get("sense_ok"))
+        projected_covered = _get_cangkun_projected_profession_coverage(
+            team_ids,
+            professions_by_username=observed_professions,
+        )
+        projected_missing = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role not in projected_covered]
+        snapshot["missing"] = projected_missing
+        snapshot["profession_ok"] = not projected_missing
+        snapshot["observed_profession_covered"] = [role for role in _CANGKUN_REQUIRED_PROFESSIONS if role in projected_covered]
+        snapshot["observed_profession_source"] = "team_snapshot+local_projection"
+        snapshot["actionable"] = not projected_missing and bool(snapshot.get("sense_ok"))
     return snapshot
 
 

@@ -3185,6 +3185,22 @@ def _identity_name_for_summary(identity_id):
     return f"身份{identity_id}"
 
 
+def _display_name_from_log_payload(payload):
+    payload = payload or {}
+    for key in ("sender_title", "sender_username", "sender_name"):
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value if key != "sender_username" else f"@{value}"
+    return ""
+
+
+def _wild_deep_display_identity_name(identity_id, fallback_name=""):
+    fallback_name = str(fallback_name or "").strip()
+    if fallback_name:
+        return fallback_name
+    return _identity_name_for_summary(identity_id)
+
+
 def _format_reward_counter(rewards, limit=6):
     items = sorted((str(name), int(count or 0)) for name, count in (rewards or {}).items() if int(count or 0) > 0)
     if not items:
@@ -3193,6 +3209,148 @@ def _format_reward_counter(rewards, limit=6):
     if len(items) > limit:
         head.append(f"等{len(items)}种")
     return "、".join(head)
+
+
+def _wild_deep_result_status(parsed):
+    parsed = parsed or {}
+    outcome = str(parsed.get("outcome") or "未知")
+    try:
+        xiuwei = int(parsed.get("xiuwei", 0) or 0)
+    except (TypeError, ValueError):
+        xiuwei = 0
+    if outcome == "改命脱险":
+        return "escape"
+    if outcome == "负伤" or xiuwei < 0:
+        return "failure"
+    if outcome in {"胜", "灵机"} or xiuwei > 0 or parsed.get("rewards"):
+        return "success"
+    return "unknown"
+
+
+def _format_wild_deep_status_counts(stats):
+    stats = stats or {}
+    parts = [
+        f"成功: {int(stats.get('success', 0) or 0)}",
+        f"脱险: {int(stats.get('escape', 0) or 0)}",
+        f"失败: {int(stats.get('failure', 0) or 0)}",
+    ]
+    missing = int(stats.get("missing", 0) or 0)
+    unknown = int(stats.get("unknown", 0) or 0)
+    if missing:
+        parts.append(f"未捕获: {missing}")
+    if unknown:
+        parts.append(f"未知: {unknown}")
+    return "｜".join(parts)
+
+
+def _wild_deep_timeline_mark(status):
+    return {
+        "success": "✓",
+        "escape": "~",
+        "failure": "×",
+        "missing": "?",
+        "unknown": "!",
+    }.get(str(status or ""), "!")
+
+
+def _format_wild_deep_timeline(timeline, max_entries=72):
+    entries = sorted(
+        ((item or {}) for item in (timeline or []) if float((item or {}).get("at", 0) or 0) > 0),
+        key=lambda item: float(item.get("at", 0) or 0),
+    )
+    if not entries:
+        return []
+    lines = ["", "时间图: ✓成功 ~脱险 ×失败 ?未捕获；补N=吞回复后补发合并"]
+    grouped = {}
+    for item in entries:
+        identity_id = int(item.get("identity_id") or 0)
+        grouped.setdefault(identity_id, []).append(item)
+    for identity_id, identity_entries in sorted(
+        grouped.items(),
+        key=lambda pair: (
+            float((pair[1][0] or {}).get("at", 0) or 0),
+            _wild_deep_display_identity_name(pair[0], (pair[1][0] or {}).get("display_name")),
+        ),
+    ):
+        tokens = []
+        for item in identity_entries[:max_entries]:
+            at = float(item.get("display_at") or item.get("result_at") or item.get("at") or 0)
+            dt = datetime.fromtimestamp(at, TZ_LOCAL)
+            retry_count = int(item.get("retry_count", 0) or 0)
+            retry_text = f"补{retry_count}" if retry_count > 0 else ""
+            tokens.append(f"{dt.strftime('%H:%M')}{_wild_deep_timeline_mark(item.get('status'))}{retry_text}")
+        suffix = ""
+        if len(identity_entries) > max_entries:
+            suffix = f" ... 其余 {len(identity_entries) - max_entries} 条"
+        lines.append(
+            f"- {_wild_deep_display_identity_name(identity_id, (identity_entries[0] or {}).get('display_name'))}: "
+            f"{' '.join(tokens)}{suffix}"
+        )
+    return lines
+
+
+def _format_wild_deep_round_detail(item):
+    item = item or {}
+    at = float(item.get("at", 0) or 0)
+    result_at = float(item.get("result_at", 0) or 0)
+    start_dt = datetime.fromtimestamp(at, TZ_LOCAL)
+    if result_at and result_at - at > 60:
+        time_text = f"{start_dt.strftime('%H:%M')}->{datetime.fromtimestamp(result_at, TZ_LOCAL).strftime('%H:%M')}"
+    else:
+        time_text = start_dt.strftime("%H:%M")
+    mark = _wild_deep_timeline_mark(item.get("status"))
+    retry_count = int(item.get("retry_count", 0) or 0)
+    parsed = item.get("parsed") or {}
+    outcome = str(parsed.get("outcome") or "").strip()
+    if not outcome:
+        outcome = "未捕获" if item.get("status") == "missing" else "未知"
+    parts = [f"{time_text} {mark}{outcome}"]
+    if retry_count > 0:
+        parts.append(f"补发{retry_count}")
+    if parsed:
+        xiuwei = int(parsed.get("xiuwei", 0) or 0)
+        tianji = int(parsed.get("tianji", 0) or 0)
+        contrib = int(parsed.get("contrib", 0) or 0)
+        if xiuwei:
+            parts.append(f"修为{_fmt_signed_number(xiuwei)}")
+        if tianji:
+            parts.append(f"天机{_fmt_signed_number(tianji)}")
+        if contrib:
+            parts.append(f"贡献{_fmt_signed_number(contrib)}")
+        reward_text = _format_reward_counter(parsed.get("rewards"), limit=3)
+        if reward_text != "无":
+            parts.append(reward_text)
+    elif item.get("msg_id"):
+        parts.append(f"msg={int(item.get('msg_id') or 0)}")
+    return "｜".join(parts)
+
+
+def _merge_wild_deep_attempts(attempts, retry_window_sec=15 * 60):
+    rounds = []
+    for attempt in sorted(attempts or [], key=lambda row: float(row.get("sent_at", 0) or 0)):
+        if (
+            rounds
+            and not rounds[-1].get("result")
+            and float(attempt.get("sent_at", 0) or 0) - float(rounds[-1].get("last_sent_at", 0) or 0) <= retry_window_sec
+        ):
+            rounds[-1]["attempts"].append(attempt)
+            rounds[-1]["last_sent_at"] = float(attempt.get("sent_at", 0) or 0)
+            if attempt.get("result"):
+                rounds[-1]["result"] = attempt.get("result")
+            if attempt.get("display_name") and not rounds[-1].get("display_name"):
+                rounds[-1]["display_name"] = attempt.get("display_name")
+            continue
+        rounds.append({
+            "identity_id": int(attempt.get("identity_id") or 0),
+            "display_name": str(attempt.get("display_name") or "").strip(),
+            "sent_at": float(attempt.get("sent_at", 0) or 0),
+            "last_sent_at": float(attempt.get("sent_at", 0) or 0),
+            "sent_ts": str(attempt.get("sent_ts") or ""),
+            "msg_id": int(attempt.get("msg_id") or 0),
+            "attempts": [attempt],
+            "result": attempt.get("result"),
+        })
+    return rounds
 
 
 def _format_wild_deep_summary_text(raw_args="", explicit_identity_id=None, now=None):
@@ -3210,6 +3368,8 @@ def _format_wild_deep_summary_text(raw_args="", explicit_identity_id=None, now=N
 
     payloads = []
     sent_records = {}
+    command_names_by_msg = {}
+    identity_names = {}
     start_by_sent = {}
     final_by_start = {}
     final_by_sent = {}
@@ -3223,15 +3383,26 @@ def _format_wild_deep_summary_text(raw_args="", explicit_identity_id=None, now=N
         msg_id = int(payload.get("message_id") or 0)
         reply_to = int(payload.get("reply_to_msg_id") or 0)
         sender_id = int(payload.get("sender_id") or 0)
+        if event_type == "message" and text == f"{CMD_WILD_TRAINING} 深入" and msg_id > 0:
+            display_name = _display_name_from_log_payload(payload)
+            if display_name:
+                command_names_by_msg[msg_id] = display_name
+                if msg_id in sent_records:
+                    sent_records[msg_id]["display_name"] = display_name
+                    identity_names[int(sent_records[msg_id]["identity_id"])] = display_name
         if event_type == "sent" and text == f"{CMD_WILD_TRAINING} 深入":
             if identity_filter and sender_id != int(identity_filter):
                 continue
+            display_name = command_names_by_msg.get(msg_id, "")
             sent_records[msg_id] = {
                 "msg_id": msg_id,
                 "identity_id": sender_id,
                 "sent_at": epoch,
                 "sent_ts": str(payload.get("ts") or "")[:19],
+                "display_name": display_name,
             }
+            if display_name:
+                identity_names[sender_id] = display_name
         if "【野外历练" not in text:
             continue
         is_final = "【野外历练 ·" in text
@@ -3243,93 +3414,144 @@ def _format_wild_deep_summary_text(raw_args="", explicit_identity_id=None, now=N
         elif event_type == "edit" and is_final and msg_id > 0:
             final_by_start[msg_id] = {"msg_id": msg_id, "text": text, "at": epoch}
 
+    attempts_by_identity = {}
+    for sent_id, sent in sorted(sent_records.items(), key=lambda item: item[1]["sent_at"]):
+        identity_id = int(sent["identity_id"])
+        display_name = str(sent.get("display_name") or identity_names.get(identity_id) or "").strip()
+        start = start_by_sent.get(sent_id) or {}
+        result = final_by_start.get(int(start.get("msg_id") or 0)) or final_by_sent.get(sent_id)
+        attempts_by_identity.setdefault(identity_id, []).append({
+            "msg_id": sent_id,
+            "identity_id": identity_id,
+            "sent_at": sent["sent_at"],
+            "sent_ts": sent["sent_ts"],
+            "display_name": display_name,
+            "result": result,
+        })
+
     total = {
-        "sent": len(sent_records),
+        "rounds": 0,
+        "raw_sent": 0,
+        "retries": 0,
         "done": 0,
         "missing": 0,
         "xiuwei": 0,
         "tianji": 0,
         "contrib": 0,
         "tianxing": 0,
+        "success": 0,
+        "escape": 0,
+        "failure": 0,
+        "unknown": 0,
         "rewards": {},
         "outcomes": {},
     }
     per_identity = {}
-    missing_samples = []
-    recent_records = []
+    timeline = []
 
-    for sent_id, sent in sorted(sent_records.items(), key=lambda item: item[1]["sent_at"]):
-        identity_id = int(sent["identity_id"])
+    for identity_id, attempts in sorted(attempts_by_identity.items(), key=lambda item: item[1][0]["sent_at"] if item[1] else 0):
+        display_name = str(identity_names.get(identity_id) or (attempts[0].get("display_name") if attempts else "") or "").strip()
         bucket = per_identity.setdefault(identity_id, {
-            "sent": 0,
+            "rounds": 0,
+            "raw_sent": 0,
+            "retries": 0,
             "done": 0,
             "missing": 0,
             "xiuwei": 0,
             "tianji": 0,
             "contrib": 0,
             "tianxing": 0,
+            "success": 0,
+            "escape": 0,
+            "failure": 0,
+            "unknown": 0,
             "rewards": {},
             "outcomes": {},
-            "last": "",
+            "display_name": display_name,
+            "details": [],
         })
-        bucket["sent"] += 1
-        start = start_by_sent.get(sent_id) or {}
-        result = final_by_start.get(int(start.get("msg_id") or 0)) or final_by_sent.get(sent_id)
-        if not result:
-            bucket["missing"] += 1
-            total["missing"] += 1
-            if len(missing_samples) < 5:
-                missing_samples.append(f"{sent['sent_ts']} {_identity_name_for_summary(identity_id)} msg={sent_id}")
-            continue
+        rounds = _merge_wild_deep_attempts(attempts)
+        for round_row in rounds:
+            round_display_name = str(round_row.get("display_name") or display_name or "").strip()
+            if round_display_name and not bucket.get("display_name"):
+                bucket["display_name"] = round_display_name
+            round_attempts = round_row.get("attempts") or []
+            retry_count = max(0, len(round_attempts) - 1)
+            result = round_row.get("result")
+            detail = {
+                "at": float(round_row.get("sent_at", 0) or 0),
+                "identity_id": identity_id,
+                "display_name": round_display_name,
+                "retry_count": retry_count,
+                "msg_id": int(round_row.get("msg_id") or 0),
+            }
+            for target in (bucket, total):
+                target["rounds"] += 1
+                target["raw_sent"] += len(round_attempts)
+                target["retries"] += retry_count
+            if not result:
+                detail["status"] = "missing"
+                bucket["missing"] += 1
+                total["missing"] += 1
+                bucket["details"].append(detail)
+                timeline.append(detail)
+                continue
 
-        parsed = _parse_wild_deep_result_text(result.get("text") or "")
-        bucket["done"] += 1
-        total["done"] += 1
-        for target in (bucket, total):
-            target["xiuwei"] += int(parsed["xiuwei"])
-            target["tianji"] += int(parsed["tianji"])
-            target["contrib"] += int(parsed["contrib"])
-            if parsed["tianxing"]:
-                target["tianxing"] += 1
-            outcome = parsed["outcome"]
-            target["outcomes"][outcome] = target["outcomes"].get(outcome, 0) + 1
-            for item, count in parsed["rewards"].items():
-                target["rewards"][item] = target["rewards"].get(item, 0) + int(count)
-        bucket["last"] = f"{sent['sent_ts']} {parsed['outcome']} 修为{_fmt_signed_number(parsed['xiuwei'])}"
-        recent_records.append((sent["sent_at"], _identity_name_for_summary(identity_id), parsed))
+            parsed = _parse_wild_deep_result_text(result.get("text") or "")
+            status = _wild_deep_result_status(parsed)
+            detail.update({
+                "status": status,
+                "parsed": parsed,
+                "result_at": float(result.get("at", 0) or 0),
+            })
+            bucket["done"] += 1
+            total["done"] += 1
+            for target in (bucket, total):
+                target["xiuwei"] += int(parsed["xiuwei"])
+                target["tianji"] += int(parsed["tianji"])
+                target["contrib"] += int(parsed["contrib"])
+                target[status] = int(target.get(status, 0) or 0) + 1
+                if parsed["tianxing"]:
+                    target["tianxing"] += 1
+                outcome = parsed["outcome"]
+                target["outcomes"][outcome] = target["outcomes"].get(outcome, 0) + 1
+                for item, count in parsed["rewards"].items():
+                    target["rewards"][item] = target["rewards"].get(item, 0) + int(count)
+            bucket["details"].append(detail)
+            timeline.append(detail)
 
     range_text = since_day.isoformat() if since_day == until_day else f"{since_day.isoformat()}~{until_day.isoformat()}"
     title_identity = f"｜{_identity_name_for_summary(identity_filter)}" if identity_filter else ""
     lines = [
         f"范围: {range_text}{title_identity}",
-        f"深入次数: {total['sent']}｜已结算: {total['done']}｜结果缺失: {total['missing']}",
+        f"总览: 有效轮次 {total['rounds']}｜已结算 {total['done']}｜{_format_wild_deep_status_counts(total)}｜补发合并 {total['retries']}｜原始发送 {total['raw_sent']}",
+        "口径: 同账号15分钟内无结算补发合并为一轮；未捕获=已开场但日志未抓到最终结算。",
         f"收益: 修为{_fmt_signed_number(total['xiuwei'])}｜天机{_fmt_signed_number(total['tianji'])}｜贡献{_fmt_signed_number(total['contrib'])}｜天星命中 {total['tianxing']}",
         f"奖励: {_format_reward_counter(total['rewards'], limit=10)}",
     ]
     if total["outcomes"]:
         outcome_text = "、".join(f"{name}{count}" for name, count in sorted(total["outcomes"].items()))
-        lines.append(f"结果: {outcome_text}")
+        lines.append(f"结果类型: {outcome_text}")
+    lines.extend(_format_wild_deep_timeline(timeline))
 
     if per_identity:
         lines.extend(["", "账号明细:"])
-        sorted_rows = sorted(per_identity.items(), key=lambda item: (-item[1]["done"], -item[1]["xiuwei"], _identity_name_for_summary(item[0])))
+        sorted_rows = sorted(per_identity.items(), key=lambda item: (min((detail.get("at", 0) for detail in item[1].get("details", [])), default=0), _wild_deep_display_identity_name(item[0], item[1].get("display_name"))))
         for identity_id, row in sorted_rows[:18]:
-            missing_text = f" 缺{row['missing']}" if row["missing"] else ""
             lines.append(
-                f"- {_identity_name_for_summary(identity_id)}: {row['done']}/{row['sent']}{missing_text}｜"
+                f"- {_wild_deep_display_identity_name(identity_id, row.get('display_name'))}: 有效{row['rounds']}｜结算{row['done']}｜{_format_wild_deep_status_counts(row)}｜"
+                f"补发{row['retries']}｜原始发送{row['raw_sent']}｜"
                 f"修为{_fmt_signed_number(row['xiuwei'])}｜天机{_fmt_signed_number(row['tianji'])}｜"
                 f"{_format_reward_counter(row['rewards'], limit=4)}"
             )
-            if row.get("last"):
-                lines.append(f"  最近: {row['last']}")
+            for detail in sorted(row.get("details", []), key=lambda detail: float(detail.get("at", 0) or 0))[:24]:
+                lines.append(f"  - {_format_wild_deep_round_detail(detail)}")
+            if len(row.get("details", [])) > 24:
+                lines.append(f"  - 其余 {len(row.get('details', [])) - 24} 轮已省略")
         if len(sorted_rows) > 18:
             lines.append(f"- 其余 {len(sorted_rows) - 18} 个账号已省略")
     else:
         lines.extend(["", "账号明细: 无"])
-
-    if missing_samples:
-        lines.extend(["", "缺失样本:"])
-        lines.extend(f"- {sample}" for sample in missing_samples)
 
     return "\n".join(lines)
 

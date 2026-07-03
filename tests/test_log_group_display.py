@@ -315,14 +315,115 @@ class LogGroupDisplayTests(unittest.TestCase):
                         now=datetime(2026, 7, 1, 12, 0, tzinfo=control.TZ_LOCAL).timestamp(),
                     )
 
-            self.assertIn("深入次数: 2", text)
-            self.assertIn("已结算: 1", text)
-            self.assertIn("结果缺失: 1", text)
+            self.assertIn("总览: 有效轮次 2", text)
+            self.assertIn("已结算 1", text)
+            self.assertIn("成功: 1", text)
+            self.assertIn("失败: 0", text)
+            self.assertIn("未捕获: 1", text)
+            self.assertIn("原始发送 2", text)
             self.assertIn("修为+45,000", text)
             self.assertIn("天机+1", text)
             self.assertIn("贡献+30", text)
             self.assertIn("养魂木x2", text)
+            self.assertIn("时间图", text)
+            self.assertIn("08:00✓", text)
+            self.assertIn("10:00?", text)
+            self.assertNotIn("最近:", text)
             self.assertIn("msg=200", text)
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(meta_snapshot))
+
+    def test_wild_deep_summary_merges_retry_anchor(self):
+        meta_snapshot = copy.deepcopy(state_module._meta_state)
+        try:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(copy.deepcopy(state_module.GLOBAL_STATE_DEFAULTS))
+            state_module.ensure_identity_registered(8659059191)
+            state_module.update_send_as_profile(8659059191, username="WalterWA2000", label="wa2000")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                log_path = Path(tmpdir) / "2026-07-01.log"
+                rows = [
+                    {
+                        "ts": "2026-07-01 08:00:00 UTC+8",
+                        "event_type": "sent",
+                        "message_id": 100,
+                        "sender_id": 8659059191,
+                        "reply_to_msg_id": 0,
+                        "text": ".野外历练 深入",
+                    },
+                    {
+                        "ts": "2026-07-01 08:00:02 UTC+8",
+                        "event_type": "message",
+                        "message_id": 101,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 100,
+                        "text": "【野外历练】\n@WalterWA2000 选择【深入】策略，正向荒野深处行去...",
+                    },
+                    {
+                        "ts": "2026-07-01 08:00:06 UTC+8",
+                        "event_type": "edit",
+                        "message_id": 101,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 100,
+                        "text": "【野外历练 · 妖兽遭遇】\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n获得修为 +45000。",
+                    },
+                    {
+                        "ts": "2026-07-01 10:00:00 UTC+8",
+                        "event_type": "sent",
+                        "message_id": 200,
+                        "sender_id": 8659059191,
+                        "reply_to_msg_id": 0,
+                        "text": ".野外历练 深入",
+                    },
+                    {
+                        "ts": "2026-07-01 10:00:02 UTC+8",
+                        "event_type": "message",
+                        "message_id": 201,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 200,
+                        "text": "【野外历练】\n@WalterWA2000 选择【深入】策略，正向荒野深处行去...",
+                    },
+                    {
+                        "ts": "2026-07-01 10:08:00 UTC+8",
+                        "event_type": "sent",
+                        "message_id": 210,
+                        "sender_id": 8659059191,
+                        "reply_to_msg_id": 0,
+                        "text": ".野外历练 深入",
+                    },
+                    {
+                        "ts": "2026-07-01 10:08:02 UTC+8",
+                        "event_type": "message",
+                        "message_id": 211,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 210,
+                        "text": "【野外历练】\n@WalterWA2000 选择【深入】策略，正向荒野深处行去...",
+                    },
+                    {
+                        "ts": "2026-07-01 10:08:05 UTC+8",
+                        "event_type": "edit",
+                        "message_id": 211,
+                        "sender_id": 8609885831,
+                        "reply_to_msg_id": 210,
+                        "text": "【野外历练 · 妖兽遭遇】\n【推命命中】司命演算吻合，天机值 +1，宗门贡献 +30\n【改命回天】劫线被改命截断。\n获得修为 +0。",
+                    },
+                ]
+                log_path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+                with patch.object(control, "MESSAGES_DIR", tmpdir):
+                    text = control._format_wild_deep_summary_text(
+                        explicit_identity_id=8659059191,
+                        now=datetime(2026, 7, 1, 12, 0, tzinfo=control.TZ_LOCAL).timestamp(),
+                    )
+
+            self.assertIn("总览: 有效轮次 2", text)
+            self.assertIn("已结算 2", text)
+            self.assertIn("脱险: 1", text)
+            self.assertIn("补发合并 1", text)
+            self.assertIn("原始发送 3", text)
+            self.assertNotIn("未捕获:", text)
+            self.assertIn("10:08~补1", text)
+            self.assertIn("10:00->10:08 ~改命脱险｜补发1", text)
         finally:
             state_module._meta_state.clear()
             state_module._meta_state.update(copy.deepcopy(meta_snapshot))

@@ -2364,7 +2364,7 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("已发送加入苍坤洞府 325：@xuruode4 @myios17 @xueuode5", reply_text)
         self.assertIn("覆盖职业：破军、御山、灵医、影刃、咒师", reply_text)
         self.assertNotIn("无法凑齐五职业", reply_text)
-        self.assertNotIn("进入苍坤洞府", button_texts)
+        self.assertIn("进入苍坤洞府", button_texts)
 
     def test_lightweight_join_blocks_full_observed_cangkun_team(self):
         leader_id = self._register_replica_identity(991201, "jfdffdddd", professions="咒师", realm="元婴后期")
@@ -8350,6 +8350,48 @@ class ReplicaAbsorbTests(unittest.TestCase):
         self.assertIn("已用 @leader 发送 .解散苍坤洞府", dissolve_reply)
         self.assertIn("<code>.查询副本</code>", dissolve_reply)
         self.assertIn(".查询副本", dissolve_reply)
+
+    def test_cangkun_readiness_uses_requested_local_profession_when_observed_team_is_missing_role(self):
+        leader_id = self._register_replica_identity(991301, "jfdffdddd", professions="咒师")
+        attacker_id = self._register_replica_identity(991302, "myios17", professions="破军")
+        shield_id = self._register_replica_identity(991303, "boxboxji", professions="御山")
+        healer_id = self._register_replica_identity(991304, "gyurihero", professions="灵医", sect_name="太一门")
+        blade_id = self._register_replica_identity(991305, "xueuode5", professions="影刃")
+        state_module.set_replica_participant_identity_ids([leader_id, attacker_id, shield_id, healer_id, blade_id])
+        state_module.set_tianjige_dao_path_records({
+            str(healer_id): {"spiritual_sense": 2104},
+        })
+        room = {
+            "phase": "opened",
+            "room_id": "340",
+            "replica_kind": app_replica._REPLICA_KIND_CANGKUN,
+            "replica_chat_id": -100777,
+            "listener_account_id": 9001,
+            "leader_identity_id": leader_id,
+            "leader_username": "@jfdffdddd",
+            "team_usernames": ["@jfdffdddd", "@boxboxji", "@gyurihero", "@xueuode5"],
+            "join_requested_usernames": ["@myios17"],
+            "team_professions_by_username": {
+                "@jfdffdddd": ["咒师"],
+                "@boxboxji": ["御山"],
+                "@gyurihero": ["灵医"],
+                "@xueuode5": ["影刃"],
+            },
+            "expires_at": 9999999999,
+            "updated_at": 1000,
+        }
+
+        readiness = app_replica._get_cangkun_room_readiness_snapshot(room)
+        self.assertTrue(readiness["actionable"])
+        self.assertEqual([], readiness["missing"])
+        covered_text, missing_text = app_replica._format_cangkun_raw_profession_coverage(
+            app_replica._get_lightweight_room_team_identity_ids(room),
+            professions_by_username=room["team_professions_by_username"],
+        )
+        self.assertEqual("破军、御山、灵医、影刃、咒师", covered_text)
+        self.assertEqual("无", missing_text)
+        buttons = app_replica._build_lightweight_room_action_buttons(room, include_enter=True, include_dissolve=True, include_query=True)
+        self.assertIn("进入苍坤洞府", self._button_texts(buttons))
 
 
 if __name__ == "__main__":
