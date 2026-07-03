@@ -683,6 +683,16 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result TEXT NOT NULL DEFAULT ''")
     if "wild_training_last_result_at" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_result_at REAL NOT NULL DEFAULT 0")
+    if "wild_training_last_completed_at" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_completed_at REAL NOT NULL DEFAULT 0")
+        conn.execute(
+            """
+            UPDATE identity_runtime_state
+            SET wild_training_last_completed_at = wild_training_last_result_at
+            WHERE wild_training_last_result_at > 0
+              AND COALESCE(wild_training_last_completed_at, 0) <= 0
+            """
+        )
     if "wild_training_last_error" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wild_training_last_error TEXT NOT NULL DEFAULT ''")
     if "stargazer_last_panel_msg_id" not in runtime_columns:
@@ -1444,6 +1454,7 @@ def init_db():
             wild_training_last_msg_id INTEGER NOT NULL DEFAULT 0,
             wild_training_last_result TEXT NOT NULL DEFAULT '',
             wild_training_last_result_at REAL NOT NULL DEFAULT 0,
+            wild_training_last_completed_at REAL NOT NULL DEFAULT 0,
             wild_training_last_error TEXT NOT NULL DEFAULT '',
             wild_training_tianxing_prepare_retry_at REAL NOT NULL DEFAULT 0,
             stargazer_last_panel_msg_id INTEGER NOT NULL DEFAULT 0,

@@ -689,11 +689,16 @@ def _spread_recovery_timer_value(timer_key, now, due_cutoff):
         if retry_count > 0 and not _state_positive_int("wild_training_reply_to_msg_id"):
             return now + random.uniform(WILD_TRAINING_RETRY_MIN_SEC, WILD_TRAINING_RETRY_MAX_SEC)
         try:
+            last_completed_at = float(state.get("wild_training_last_completed_at", 0) or 0)
+        except (TypeError, ValueError, OverflowError):
+            last_completed_at = 0
+        try:
             last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
         except (TypeError, ValueError, OverflowError):
             last_result_at = 0
-        if last_result_at > 0:
-            true_due = last_result_at + WILD_TRAINING_CYCLE_MIN_SEC
+        cooldown_anchor_at = max(last_completed_at, last_result_at)
+        if cooldown_anchor_at > 0:
+            true_due = cooldown_anchor_at + WILD_TRAINING_CYCLE_MIN_SEC
             if true_due > now:
                 return true_due
         return now + random.uniform(WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC, WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC)
@@ -3871,10 +3876,22 @@ def initialize_identity_runtime(send_as_id, now=None):
             state["wild_training_reply_to_msg_id"] = 0
             state["wild_training_reply_due_at"] = 0
             state["wild_training_retry_count"] = 0
-            state["next_wild_training_time"] = now + random.uniform(
-                WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
-                WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
-            )
+            try:
+                last_completed_at = float(state.get("wild_training_last_completed_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                last_completed_at = 0
+            try:
+                last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                last_result_at = 0
+            cooldown_anchor_at = max(last_completed_at, last_result_at)
+            if cooldown_anchor_at > 0 and cooldown_anchor_at + WILD_TRAINING_CYCLE_MIN_SEC > now:
+                state["next_wild_training_time"] = cooldown_anchor_at + WILD_TRAINING_CYCLE_MIN_SEC
+            else:
+                state["next_wild_training_time"] = now + random.uniform(
+                    WILD_TRAINING_RECOVERY_SPREAD_MIN_SEC,
+                    WILD_TRAINING_RECOVERY_SPREAD_MAX_SEC,
+                )
         if state["stargazer_enabled"]:
             _restore_stargazer_runtime(now)
         if state["tianti_enabled"]:

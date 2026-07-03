@@ -641,6 +641,40 @@ class RuntimeLogFlagPersistenceTests(unittest.TestCase):
                 self.assertEqual(1_700_000_321.0, row["tower_reply_due_at"])
                 self.assertEqual(1, row["tower_retry_count"])
 
+    def test_runtime_migration_backfills_wild_training_completed_anchor(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "state.db")
+            with patch.object(persistence, "DB_FILE", db_path):
+                identity_id = 990352
+                result_at = 1_700_000_123.0
+                state_module.ensure_identity_registered(identity_id)
+                state_module.update_send_as_profile(identity_id, username="wildold")
+
+                self.assertTrue(persistence.save_state())
+                conn = persistence.get_db_conn()
+                conn.execute(
+                    """
+                    UPDATE identity_runtime_state
+                    SET wild_training_last_result = '修为+12000',
+                        wild_training_last_result_at = ?
+                    WHERE send_as_id = ?
+                    """,
+                    (result_at, identity_id),
+                )
+                conn.execute("ALTER TABLE identity_runtime_state DROP COLUMN wild_training_last_completed_at")
+                conn.commit()
+
+                persistence._schema_columns_ensured_key = None
+                persistence._ensure_schema_columns(conn)
+
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(identity_runtime_state)").fetchall()}
+                self.assertIn("wild_training_last_completed_at", columns)
+                row = conn.execute(
+                    "SELECT wild_training_last_completed_at FROM identity_runtime_state WHERE send_as_id = ?",
+                    (identity_id,),
+                ).fetchone()
+                self.assertEqual(result_at, row["wild_training_last_completed_at"])
+
     def test_save_state_blocks_demo_identity_collapse_over_live_roster(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "state.db")

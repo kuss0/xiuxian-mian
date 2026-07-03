@@ -39,7 +39,6 @@ WILD_TRAINING_DEEP_RETREAT_RESUME_MIN_SEC = 90
 WILD_TRAINING_DEEP_RETREAT_RESUME_MAX_SEC = 180
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
-WILD_TRAINING_RECENT_RESULT_GUARD_GRACE_SEC = 60
 WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC = 10 * 60
 WILD_TRAINING_TITLE = "【野外历练"
 WILD_TRAINING_RESULT_TITLES = (
@@ -226,15 +225,33 @@ def _is_completed_wild_training_summary(summary):
     return True
 
 
+def _last_completed_wild_training_at():
+    anchors = []
+    try:
+        completed_at = float(state.get("wild_training_last_completed_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        completed_at = 0.0
+    if completed_at > 0:
+        anchors.append(completed_at)
+    try:
+        last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        last_result_at = 0.0
+    if last_result_at > 0 and _is_completed_wild_training_summary(state.get("wild_training_last_result")):
+        anchors.append(last_result_at)
+    return max(anchors) if anchors else 0.0
+
+
 def _guard_recent_completed_result(now):
-    last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
-    if last_result_at <= 0:
+    completed_at = _last_completed_wild_training_at()
+    if completed_at <= 0:
         return False
-    if not _is_completed_wild_training_summary(state.get("wild_training_last_result")):
+    due_at = completed_at + WILD_TRAINING_CYCLE_MIN_SEC
+    if float(now or 0) >= due_at:
         return False
-    if float(now or 0) - last_result_at >= WILD_TRAINING_CYCLE_MIN_SEC - WILD_TRAINING_RECENT_RESULT_GUARD_GRACE_SEC:
-        return False
-    _schedule_next(last_result_at)
+    _schedule_next(completed_at)
+    if float(state.get("next_wild_training_time", 0) or 0) < due_at:
+        state["next_wild_training_time"] = float(due_at)
     state["wild_training_last_error"] = "野外历练结果后计时器异常，已按正常周期顺延"
     save_state()
     console_log(f"🏞️ {state['wild_training_last_error']}→{fmt_abs_ts(state['next_wild_training_time'])}", scope="identity")
@@ -334,6 +351,7 @@ def clear_wild_training_state(*, persist=False, keep_last_error=False):
     state["wild_training_last_msg_id"] = 0
     state["wild_training_last_result"] = ""
     state["wild_training_last_result_at"] = 0
+    state["wild_training_last_completed_at"] = 0
     state["wild_training_last_error"] = last_error or ""
     if persist:
         save_state()
@@ -441,6 +459,7 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     state["wild_training_last_msg_id"] = int(msg_id or 0)
     state["wild_training_last_result"] = _result_summary(raw_text)
     state["wild_training_last_result_at"] = float(now or 0)
+    state["wild_training_last_completed_at"] = float(now or 0)
     state["wild_training_last_error"] = ""
     state["wild_training_retry_count"] = 0
     _schedule_next(now)

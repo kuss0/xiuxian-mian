@@ -162,6 +162,25 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
 
+    def test_startup_spread_recovers_wild_training_from_completed_anchor_after_status_overwrite(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        result_at = now - 30 * 60
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["wild_training_enabled"] = True
+            state_module.state["wild_training_last_result"] = "天星时间线：sent_waiting_ack"
+            state_module.state["wild_training_last_result_at"] = 0
+            state_module.state["wild_training_last_completed_at"] = result_at
+            state_module.state["next_wild_training_time"] = now - 1
+
+        with patch.object(control.random, "uniform", return_value=300):
+            changed = control.spread_overdue_runtime_timers(now, reason="test")
+
+        self.assertEqual(1, changed)
+        with state_module.use_identity(send_as_id):
+            self.assertEqual(result_at + wild_training.WILD_TRAINING_CYCLE_MIN_SEC, state_module.state["next_wild_training_time"])
+
     def test_startup_spread_keeps_due_wild_training_retry_short(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
