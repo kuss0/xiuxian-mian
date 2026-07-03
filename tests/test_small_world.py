@@ -1179,7 +1179,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertFalse(allowed)
             self.assertIn("短窗", reason)
 
-    async def test_god_action_send_timeout_keeps_unknown_pending_and_guarded(self):
+    async def test_god_action_send_timeout_keeps_todo_without_reply_pending(self):
         send_as_id = 8659059314
         now = 3650.0
         state_module.ensure_identity_registered(send_as_id)
@@ -1187,7 +1187,13 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(send_as_id):
             state_module.state["small_world_enabled"] = True
             state_module.state["small_world_preach_enabled"] = True
+            state_module.state["small_world_pending_god_action"] = "preach"
+            state_module.state["small_world_pending_god_reason"] = "信仰维护"
+            state_module.state["small_world_pending_god_priority"] = small_world.SMALL_WORLD_GOD_PRIORITY_MAINTENANCE
+            state_module.state["small_world_last_god_action"] = "preach"
+            state_module.state["small_world_last_god_sent_at"] = now - 3600
             with (
+                patch.object(small_world.random, "uniform", return_value=600),
                 patch.object(small_world, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
                 patch.object(small_world, "send_audit_log", new=AsyncMock()) as audit_mock,
                 patch.object(small_world, "save_state"),
@@ -1202,18 +1208,20 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 source_module="小世界",
             )
             audit_mock.assert_not_awaited()
-            self.assertEqual("preach_pending", state_module.state["small_world_phase"])
+            self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
-            self.assertEqual(now + small_world.SMALL_WORLD_PREACH_REPLY_TIMEOUT_SEC, state_module.state["small_world_preach_due_at"])
+            self.assertEqual(0, state_module.state["small_world_preach_due_at"])
+            self.assertEqual("preach", state_module.state["small_world_pending_god_action"])
             self.assertEqual("preach", state_module.state["small_world_last_god_action"])
-            self.assertEqual(now, state_module.state["small_world_last_god_sent_at"])
+            self.assertEqual(now - 3600, state_module.state["small_world_last_god_sent_at"])
+            self.assertEqual(now + 600, state_module.state["next_small_world_time"])
             self.assertIn("结果未知", state_module.state["small_world_last_error"])
 
             allowed, reason = action_guard.before_send(small_world.CMD_SMALL_WORLD_PREACH, send_as_id=send_as_id, now=now + 1)
             self.assertFalse(allowed)
-            self.assertIn("发送结果未知", reason)
+            self.assertIn("短退避重试", reason)
 
-    async def test_god_action_unknown_pending_times_out_without_message_id(self):
+    async def test_god_action_unknown_pending_is_cleared_without_unknown_message_audit(self):
         send_as_id = 8659059315
         now = 3660.0
         state_module.ensure_identity_registered(send_as_id)
@@ -1234,8 +1242,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             ):
                 await small_world.run_small_world_scheduler(now)
 
-            audit_mock.assert_awaited_once()
-            self.assertIn("消息ID=未知", audit_mock.await_args.args[0])
+            audit_mock.assert_not_awaited()
             self.assertEqual("idle", state_module.state["small_world_phase"])
             self.assertEqual(0, state_module.state["small_world_preach_reply_to_msg_id"])
             self.assertEqual(0, state_module.state["small_world_preach_due_at"])

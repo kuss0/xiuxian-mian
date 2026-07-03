@@ -1099,6 +1099,8 @@ async def _send_small_world_god_action(now, command, reason):
         command = CMD_SMALL_WORLD_RELIEF if command == CMD_SMALL_WORLD_RELIEF else CMD_SMALL_WORLD_PREACH
         action = _command_god_action(command)
         action_name = _god_action_name(action)
+        prev_last_god_action = str(state.get("small_world_last_god_action") or "")
+        prev_last_god_sent_at = float(state.get("small_world_last_god_sent_at", 0) or 0)
 
         preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
         preach_deadline = _get_preach_deadline()
@@ -1131,12 +1133,20 @@ async def _send_small_world_god_action(now, command, reason):
         if not sent_msg:
             if _phase() != "preach_pending" or int(state.get("small_world_preach_reply_to_msg_id", 0) or 0) > 0:
                 return True
-            state["small_world_last_error"] = f"神迹{action_name}发送结果未知，等待回执确认"
+            _clear_preach_pending()
+            state["small_world_last_god_action"] = prev_last_god_action
+            state["small_world_last_god_sent_at"] = prev_last_god_sent_at
+            state["small_world_last_error"] = f"神迹{action_name}发送结果未知，保留待办并短退避重试"
+            if state.get("small_world_pending_god_action"):
+                if _pending_god_priority() >= SMALL_WORLD_GOD_PRIORITY_DISASTER:
+                    _schedule_after(optimistic_sent_at, SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+                else:
+                    _schedule_short_retry(optimistic_sent_at)
             _note_small_world_god_remote_block(
                 command,
                 optimistic_sent_at,
-                state["small_world_preach_due_at"],
-                f"神迹{action_name}发送结果未知，等待回执",
+                state.get("next_small_world_time", 0),
+                f"神迹{action_name}发送结果未知，短退避重试",
                 "send_unknown",
             )
             save_state()
@@ -2073,6 +2083,17 @@ async def _run_small_world_scheduler(now):
     preach_deadline = _get_preach_deadline()
     if _phase() == "preach_pending" and preach_deadline > 0:
         if now >= preach_deadline:
+            if preach_msg_id <= 0:
+                state["small_world_last_error"] = "小世界神迹发送结果未知，已保留待办并短退避重试"
+                _clear_preach_pending()
+                _clear_god_pending_tasks()
+                if state.get("small_world_pending_god_action"):
+                    if _pending_god_priority() >= SMALL_WORLD_GOD_PRIORITY_DISASTER:
+                        _schedule_after(now, SMALL_WORLD_JITTER_MIN_SEC, SMALL_WORLD_JITTER_MAX_SEC)
+                    else:
+                        _schedule_short_retry(now)
+                save_state()
+                return
             if await _recover_current_small_world_pending_from_log(now, "preach_pending"):
                 save_state()
                 return
