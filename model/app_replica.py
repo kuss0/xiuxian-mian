@@ -13254,13 +13254,15 @@ async def _handle_lightweight_join_command(event):
     enter_actionable = _is_lightweight_room_enter_actionable(room)
     if replica_kind == _REPLICA_KIND_CANGKUN:
         cangkun_team_ids = _get_lightweight_room_team_identity_ids(room, now=time.time())
-        covered_text, missing_text = _format_cangkun_raw_profession_coverage(
-            cangkun_team_ids,
-            professions_by_username=room.get("team_professions_by_username"),
+        projected_usernames = _get_lightweight_room_usernames(room)
+        detail_lines = _format_replica_team_notice_details(
+            replica_kind,
+            projected_usernames,
+            now=time.time(),
+            team_professions_by_username=room.get("team_professions_by_username"),
         )
-        summary += f"\n覆盖职业：{covered_text}"
-        if missing_text != "无":
-            summary += f"\n缺职业：{missing_text}"
+        if detail_lines:
+            summary += "\n预计队伍明细：\n" + "\n".join(detail_lines)
         summary += "\n" + _format_cangkun_spiritual_sense_status(cangkun_team_ids)
     summary = escape(summary)
     next_commands = [_REPLICA_KIND_META[replica_kind]["enter_command"]] if enter_actionable else []
