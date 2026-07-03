@@ -33,6 +33,7 @@ MULAN_RECOVERY_MAX_SEC = 180
 MULAN_PHASEFUL_DEFER_MIN_SEC = 5 * 60
 MULAN_PHASEFUL_DEFER_MAX_SEC = 10 * 60
 MULAN_SEND_QUEUE_TIMEOUT_SEC = 60
+MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC = 150
 MULAN_SEND_QUEUE_RETRY_MIN_SEC = 2 * 60
 MULAN_SEND_QUEUE_RETRY_MAX_SEC = 5 * 60
 MULAN_PHASE_IDLE = "idle"
@@ -685,12 +686,16 @@ async def _send_mulan_command(command, now, phase):
     if _defer_mulan_for_phaseful_summary(now, command):
         return False
 
+    queue_timeout = MULAN_SEND_QUEUE_TIMEOUT_SEC
+    if command.startswith(CMD_MULAN_PUBLISH) or command.startswith(CMD_MULAN_SUPPORT):
+        queue_timeout = MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC
+
     msg = await send_game_command(
         command,
         track=False,
         max_retry=0,
         source_module="慕兰烽烟",
-        queue_timeout=MULAN_SEND_QUEUE_TIMEOUT_SEC,
+        queue_timeout=queue_timeout,
     )
     if not msg:
         if was_last_game_send_blocked_by_global(identity_id, command):

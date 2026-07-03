@@ -245,6 +245,38 @@ class DivinationTests(unittest.TestCase):
         self.assertEqual(1, record["sent_attempts"])
         self.assertIn(":1:try1", send_args.kwargs["op_id"])
 
+    def test_scheduler_limits_due_query_sends_per_tick(self):
+        identity_ids = [
+            self._register_identity(991201, "target1", divination_enabled=True),
+            self._register_identity(991202, "target2", divination_enabled=True),
+            self._register_identity(991203, "target3", divination_enabled=True),
+        ]
+        now = 1000.0
+        state_module.set_divination_run_state({
+            str(identity_id): {"day_key": get_day_key(now), "count": 0, "next_query_at": now - 1}
+            for identity_id in identity_ids
+        })
+
+        async def run_test():
+            send_mock = AsyncMock(side_effect=[
+                SimpleNamespace(id=9101),
+                SimpleNamespace(id=9102),
+                SimpleNamespace(id=9103),
+            ])
+            with patch("model.features.divination.get_identity_ids", return_value=identity_ids), \
+                    patch("model.features.divination.send_game_command", new=send_mock), \
+                    patch("model.features.divination.send_audit_log", new=AsyncMock()):
+                await divination.run_divination_scheduler(now)
+                return send_mock
+
+        send_mock = asyncio.run(run_test())
+        self.assertEqual(divination.DIVINATION_QUERY_MAX_SENDS_PER_TICK, send_mock.await_count)
+        records = state_module.get_divination_run_state()
+        self.assertEqual(9101, records[str(identity_ids[0])]["pending_query_msg_id"])
+        self.assertEqual(9102, records[str(identity_ids[1])]["pending_query_msg_id"])
+        self.assertEqual(now - 1, records[str(identity_ids[2])]["next_query_at"])
+        self.assertEqual("idle", records[str(identity_ids[2])]["phase"])
+
     def test_scheduler_persists_initial_start_record_before_first_query(self):
         identity_id = self._register_identity(991201, "target", divination_enabled=True)
         now = 36_000.0

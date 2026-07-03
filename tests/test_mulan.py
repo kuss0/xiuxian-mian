@@ -570,6 +570,25 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["mulan_last_error"])
             self.assertEqual(now + 180, state_module.state["next_mulan_time"])
 
+    async def test_publish_uses_critical_send_queue_timeout(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        fake_msg = SimpleNamespace(id=1101, sent_at=now)
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = mulan.MULAN_PHASE_READY_TO_PUBLISH
+            state_module.state["mulan_public_id"] = 2
+            state_module.state["next_mulan_time"] = now - 1
+            with (
+                patch.object(mulan, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(mulan, "save_state"),
+            ):
+                await mulan.run_mulan_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(".公开军报 2", send_mock.await_args.args[0])
+            self.assertEqual(mulan.MULAN_CRITICAL_SEND_QUEUE_TIMEOUT_SEC, send_mock.await_args.kwargs["queue_timeout"])
+
     async def test_cd_reply_uses_real_wait_text(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0

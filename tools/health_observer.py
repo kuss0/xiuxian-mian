@@ -1073,6 +1073,15 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                 return modules.get(key)
             return identity.get(key)
 
+        def phaseful_runtime_blocks_ordinary(module_key: str) -> bool:
+            if module_key in {"deep_retreat", "yuanying"}:
+                return False
+            for phase_field in ("deep_retreat_phase", "yuanying_phase"):
+                phase_text = str(value_for(phase_field) or "").strip()
+                if phase_text.lower() not in IDLE_PHASE_VALUES:
+                    return True
+            return False
+
         for spec in MODULE_HEALTH_SPECS:
             module_key = str(spec["key"])
             enabled_key = str(spec.get("enabled") or "")
@@ -1156,6 +1165,7 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                         and not pending
                         and not active
                         and not flags
+                        and not phaseful_runtime_blocks_ordinary(module_key)
                     )
                     next_items.append({
                         "field": field_name,

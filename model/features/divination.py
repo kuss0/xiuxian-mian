@@ -46,6 +46,7 @@ DIVINATION_DAILY_START_MIN_SEC = 5 * 60
 DIVINATION_DAILY_START_MAX_SEC = 75 * 60
 DIVINATION_FIRST_START_MIN_SEC = 5
 DIVINATION_FIRST_START_MAX_SEC = 30
+DIVINATION_QUERY_MAX_SENDS_PER_TICK = 2
 DIVINATION_PHASE_IDLE = "idle"
 DIVINATION_PHASE_WAITING_INTERMEDIATE = "waiting_intermediate"
 DIVINATION_PHASE_WAITING_FINAL = "waiting_final"
@@ -1469,6 +1470,7 @@ async def _run_divination_query_scheduler(now):
     now = float(now or time.time())
     records = _run_records()
     changed = False
+    send_attempts_this_tick = 0
     for identity_id in get_identity_ids():
         try:
             identity_id = int(identity_id or 0)
@@ -1551,6 +1553,8 @@ async def _run_divination_query_scheduler(now):
             continue
         if now < next_query_at:
             continue
+        if send_attempts_this_tick >= DIVINATION_QUERY_MAX_SENDS_PER_TICK:
+            continue
 
         if changed:
             _set_run_records(records)
@@ -1558,6 +1562,7 @@ async def _run_divination_query_scheduler(now):
             records = _run_records()
             key, record, _record_changed = _get_run_record(identity_id, now, records=records)
         await _send_divination_query(identity_id, record, now, limit)
+        send_attempts_this_tick += 1
         records = _run_records()
 
     if changed:

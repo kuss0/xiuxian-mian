@@ -114,6 +114,7 @@ class AppSchedulerContractTests(unittest.TestCase):
                 "tianji_quiz",
                 "huanglong_conscription",
                 "luoyun_cd_reminder",
+                "wanxin_cleanup",
             ),
             app.get_global_scheduler_order_contract(),
         )

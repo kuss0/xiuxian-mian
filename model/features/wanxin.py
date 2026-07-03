@@ -156,7 +156,7 @@ def _default_wanxin_auto_config():
         "visit_enabled": True,
         "protect_enabled": True,
         "deduce_enabled": True,
-        "publish_enabled": True,
+        "publish_enabled": False,
         "assist_enabled": True,
         "reward_lingshi": 1,
     }
@@ -803,6 +803,14 @@ async def run_wanxin_scheduler(now):
     now = float(now or time.time())
     observed = normalize_wanxin_observation(state.get("wanxin_observation"))
     try:
+        current_identity_id = get_current_identity_id()
+        assist_send_as_id = int((observed.get("assist") or {}).get("send_as_id", 0) or 0)
+        if current_identity_id == assist_send_as_id and _is_yinluo_identity(current_identity_id):
+            observed["auto_last_result"] = "阴罗协助身份：等待委托方锚点，不主动跑婉心主线"
+            observed["auto_next_time"] = now + 30 * 60
+            _set_observed(observed)
+            save_state()
+            return
         if _pending_blocks(observed, now):
             _set_observed(observed)
             save_state()
@@ -861,6 +869,44 @@ async def run_wanxin_scheduler(now):
         _set_observed(observed)
         save_state()
         await send_audit_log(f"⚠️ 婉心调度异常：{exc}", scope="identity", limit=220)
+
+
+async def run_wanxin_phaseful_cleanup_scheduler(now):
+    if not state.get("wanxin_enabled"):
+        return
+    now = float(now or time.time())
+    _cleanup_wanxin_pending_only(now)
+
+
+def _cleanup_wanxin_pending_only(now):
+    observed = normalize_wanxin_observation(state.get("wanxin_observation"))
+    pending_before = dict(observed.get("pending") or {})
+    if not pending_before:
+        return False
+    if _pending_blocks(observed, now):
+        _set_observed(observed)
+        save_state()
+        return False
+    if pending_before and not observed.get("pending"):
+        _set_observed(observed)
+        save_state()
+        return True
+    return False
+
+
+async def run_wanxin_global_cleanup_scheduler(now):
+    now = float(now or time.time())
+    for identity_id in get_identity_ids():
+        try:
+            identity_id = int(identity_id or 0)
+        except (TypeError, ValueError):
+            continue
+        if identity_id <= 0 or not has_identity(identity_id):
+            continue
+        with use_identity(identity_id):
+            if not state.get("wanxin_enabled"):
+                continue
+            _cleanup_wanxin_pending_only(now)
 
 
 def _apply_success_cooldown(observed, action, now, parsed=None):
@@ -1194,6 +1240,8 @@ __all__ = [
     "normalize_wanxin_auto_config",
     "normalize_wanxin_observation",
     "parse_wanxin_text",
+    "run_wanxin_phaseful_cleanup_scheduler",
+    "run_wanxin_global_cleanup_scheduler",
     "run_wanxin_scheduler",
     "schedule_wanxin_initial_check",
     "set_wanxin_config",

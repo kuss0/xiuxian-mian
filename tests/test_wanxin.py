@@ -93,6 +93,93 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".发布解咒委托 66", send_mock.await_args.args[0])
             self.assertEqual("publish", state_module.state["wanxin_observation"]["pending"]["action"])
 
+    async def test_scheduler_default_starts_owner_action_without_publishing(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_050.0
+        fake_msg = SimpleNamespace(id=7101, sent_at=now)
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {"auto_next_time": now - 1}
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(".探望南宫婉", send_mock.await_args.args[0])
+            self.assertEqual("visit", state_module.state["wanxin_observation"]["pending"]["action"])
+
+    async def test_scheduler_yinluo_assist_identity_waits_without_owner_action(self):
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_060.0
+        with state_module.use_identity(helper_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {"auto_next_time": now - 1}
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertIn("阴罗协助身份", state_module.state["wanxin_observation"]["auto_last_result"])
+
+    async def test_phaseful_cleanup_only_clears_expired_pending(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_070.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "pending": {
+                    "action": "protect",
+                    "family": "wanxin_protect",
+                    "msg_id": 7201,
+                    "reply_due_at": now - 1,
+                },
+                "auto_next_time": now - 1,
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_phaseful_cleanup_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual({}, observed["pending"])
+            self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
+
+    async def test_global_cleanup_clears_expired_pending_across_identities(self):
+        first_id = self._prepare_identity(301299112, username="jfdffdddd")
+        second_id = self._prepare_identity(8659059191, username="WalterWA2000")
+        now = 1_800_000_080.0
+        for identity_id, msg_id in ((first_id, 7301), (second_id, 7302)):
+            with state_module.use_identity(identity_id):
+                state_module.state["wanxin_enabled"] = True
+                state_module.state["wanxin_observation"] = {
+                    "pending": {
+                        "action": "protect",
+                        "family": "wanxin_protect",
+                        "msg_id": msg_id,
+                        "reply_due_at": now - 1,
+                    },
+                    "auto_next_time": now - 1,
+                }
+
+        with (
+            patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+            patch.object(wanxin, "save_state"),
+        ):
+            await wanxin.run_wanxin_global_cleanup_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        for identity_id in (first_id, second_id):
+            with state_module.use_identity(identity_id):
+                observed = state_module.state["wanxin_observation"]
+                self.assertEqual({}, observed["pending"])
+                self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
+
     async def test_scheduler_accepts_commission_as_yinluo_helper(self):
         owner_id = self._prepare_identity()
         helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")

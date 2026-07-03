@@ -99,7 +99,7 @@ from .features.tianxing import (
 )
 from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
-from .features.wanxin import handle_wanxin_reply, run_wanxin_scheduler
+from .features.wanxin import handle_wanxin_reply, run_wanxin_global_cleanup_scheduler, run_wanxin_phaseful_cleanup_scheduler, run_wanxin_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
 from .features.small_world import (
     handle_small_world_barrier_reply,
@@ -303,6 +303,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
 _PHASEFUL_BLOCK_CLEANUP_SCHEDULERS = (
     run_concubine_phaseful_cleanup_scheduler,
     run_wild_training_phaseful_cleanup_scheduler,
+    run_wanxin_phaseful_cleanup_scheduler,
 )
 _GLOBAL_SCHEDULERS = (
     ("delayed_actions", drain_due_actions),
@@ -316,6 +317,7 @@ _GLOBAL_SCHEDULERS = (
     ("tianji_quiz", run_tianji_quiz_scheduler),
     ("huanglong_conscription", run_huanglong_conscription_scheduler),
     ("luoyun_cd_reminder", run_luoyun_cd_reminder_scheduler),
+    ("wanxin_cleanup", run_wanxin_global_cleanup_scheduler),
 )
 
 _SCHEDULER_MANIFEST_BRIDGE = {
@@ -330,6 +332,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "tianji_quiz": {"manifest_names": (), "helper": True},
     "huanglong_conscription": {"manifest_names": ("自动副本",), "helper": True},
     "luoyun_cd_reminder": {"manifest_names": ("自动副本",), "helper": True},
+    "wanxin_cleanup": {"manifest_names": ("婉心封魂",), "helper": True},
     "run_checkin_scheduler": {"manifest_names": ("点卯", "宗门传功"), "helper": False},
     "run_concubine_scheduler": {"manifest_names": ("侍妾", "天机代卜", "共历心劫", "侍妾远航"), "helper": False},
     "run_deep_retreat_scheduler": {"manifest_names": ("深度闭关",), "helper": False},
