@@ -3436,7 +3436,7 @@ async def _send_tianji_command(now):
             state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
             save_state()
             return False
-        state["concubine_tianji_last_error"] = "发送 .天机代卜 失败"
+        state["concubine_tianji_last_error"] = "发送 .天机代卜 失败，稍后重试"
         _set_phase("idle")
         retry_at = _schedule_status_recheck(sent_at)
         if float(state.get("concubine_tianji_due_at", 0) or 0) <= sent_at:

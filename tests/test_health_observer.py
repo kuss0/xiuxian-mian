@@ -854,6 +854,35 @@ class HealthObserverTests(unittest.TestCase):
         wild = next(item for item in summary if item["module"] == "wild_training")
         self.assertEqual("warn", wild["status"])
 
+    def test_module_summary_treats_scheduled_concubine_tianji_send_failure_as_warn(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, concubine_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                    concubine_tianji_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'tester')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(42, ?)", (now + 300,))
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, concubine_tianji_last_error) VALUES(42, ?)",
+                ("发送 .天机代卜 失败",),
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        concubine = next(item for item in summary if item["module"] == "concubine")
+        self.assertEqual("warn", concubine["status"])
+
     def test_module_summary_flags_overdue_next_time_without_pending_anchor(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:

@@ -905,6 +905,19 @@ def module_error_is_retryable_warning(field: str, text: object, payload: dict[st
     return retry_count > 0 or pending_msg_id > 0
 
 
+def module_error_has_scheduled_retry(text: object, spec: dict[str, object], value_for, now: float) -> bool:
+    raw = str(text or "").strip()
+    if not raw or "失败" not in raw:
+        return False
+    has_future_next = any(
+        positive_epoch(value_for(str(next_field))) > now
+        for next_field, _next_label in spec.get("next_fields", ())
+    )
+    if not has_future_next:
+        return False
+    return "发送失败或被安全策略拦截" in raw or "发送" in raw
+
+
 def normalize_json_state_for_health(field: str, payload: dict[str, object], now: float | None = None) -> dict[str, object]:
     if not payload:
         return {}
@@ -1169,13 +1182,7 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
                 if text:
                     add_module_detail(details, str(label_text), text)
                     if enabled and module_error_needs_attention(text):
-                        scheduled_retry = (
-                            "发送失败或被安全策略拦截" in text
-                            and any(
-                                positive_epoch(value_for(str(next_field))) > now
-                                for next_field, _next_label in spec.get("next_fields", ())
-                            )
-                        )
+                        scheduled_retry = module_error_has_scheduled_retry(text, spec, value_for, now)
                         if scheduled_retry:
                             warn = True
                         else:
