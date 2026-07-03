@@ -4060,6 +4060,12 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(75, config["craft_farm_reply_timeout_sec"])
 
+    def test_craft_farm_send_queue_timeout_covers_busy_normal_gap(self):
+        self.assertGreaterEqual(
+            tianxing.TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC,
+            runtime.NORMAL_SEND_GAP_MAX_SEC * 2,
+        )
+
     def test_craft_farm_outside_window_schedules_next_preferred_window(self):
         now = local_ts(12)
         with state_module.use_identity(self.identity_id):
