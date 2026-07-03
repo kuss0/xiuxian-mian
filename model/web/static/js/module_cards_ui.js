@@ -151,6 +151,12 @@
     '</label>';
   }
 
+  function wanxinCheckbox(key, label, checked){
+    return '<label class="checkbox-inline checkbox-inline-small module-setting-checkbox">'+
+      '<input type="checkbox" data-wanxin-config="'+esc(key)+'"'+checkedAttr(checked)+' /> '+esc(label)+
+    '</label>';
+  }
+
   function renderExploreRiftRebirthConfig(config){
     config = config || {};
     var modeChoices = config.choice_mode_choices || [
@@ -177,7 +183,7 @@
     if(normalized === '日常'){
       return 0;
     }
-    if(['合欢宗','天星宗','阴罗宗','慕兰','慕兰烽烟'].indexOf(normalized) >= 0){
+    if(['合欢宗','天星宗','阴罗宗','慕兰','慕兰烽烟','婉心封魂'].indexOf(normalized) >= 0){
       return 1;
     }
     if(normalized === '灵溪垂钓'){
@@ -607,6 +613,60 @@
             currentChoiceText('最近异常', mulan.last_error || '无')+
             currentChoiceText('完成轮次', String(mulan.cycle_count || 0))
           );
+      }else if(module.name === '婉心封魂'){
+        var wanxin = identity.wanxin || {};
+        var wxConfig = wanxin.auto_config || {};
+        var wxAssist = wanxin.assist || {};
+        var wxCommission = wanxin.commission || {};
+        var wxCommissionText = wxCommission.id ? ('#'+String(wxCommission.id)+(wxCommission.accepted ? ' 已接取' : ' 待接取')) : '无委托';
+        moduleNote = '<div class="module-note">阶段：'+esc(wanxin.stage || '未记录')+
+          '｜婉心 '+esc(wanxin.wanxin || 0)+
+          '｜魂封 '+esc(wanxin.soul_seal || 0)+
+          '｜咒源 '+esc(wanxin.curse_source || 0)+
+          '｜委托 '+esc(wxCommissionText)+'</div>';
+        settingsTools =
+          settingSection(
+            '自身推进',
+            '探望每日一次；护持与推演按冷却推进。关闭单项后只停对应动作，不影响状态解析。',
+            renderModuleToggle('婉心封魂','开关')+
+            wanxinCheckbox('visit_enabled', '探望南宫婉', wxConfig.visit_enabled)+
+            wanxinCheckbox('protect_enabled', '护持神魂', wxConfig.protect_enabled)+
+            wanxinCheckbox('deduce_enabled', '推演封魂咒', wxConfig.deduce_enabled)+
+            currentChoiceText('下次探望', wanxin.next_visit_time || '未设置')+
+            currentChoiceText('下次护持', wanxin.next_protect_time || '未设置')+
+            currentChoiceText('下次推演', wanxin.next_deduce_time || '未设置')
+          )+
+          settingSection(
+            '解咒委托',
+            '委托方只发布一次；协助方必须是阴罗宗身份，按委托方锚点回复辨咒或借幡。',
+            wanxinCheckbox('publish_enabled', '自动发布委托', wxConfig.publish_enabled)+
+            wanxinCheckbox('assist_enabled', '启用阴罗协助', wxConfig.assist_enabled)+
+            '<label class="module-setting-field"><span>灵石</span><input class="text-input module-hour-input" type="number" min="1" max="1000000" step="1" value="'+esc(wxConfig.reward_lingshi || 1)+'" data-wanxin-config="reward_lingshi"></label>'+
+            '<label class="module-setting-field"><span>协助ID</span><input class="text-input module-name-input" type="number" min="1" step="1" value="'+esc(wxAssist.send_as_id || '')+'" data-wanxin-config="assist_send_as_id"></label>'+
+            currentChoiceText('委托', wxCommissionText)+
+            currentChoiceText('委托方', wxCommission.owner_username ? '@'+wxCommission.owner_username : '未记录')+
+            currentChoiceText('协助方', wxCommission.helper_username ? '@'+wxCommission.helper_username : (wxAssist.send_as_label || '未记录'))
+          )+
+          settingSection(
+            '阴罗协助动作',
+            '剥离咒源真实成功文案尚未稳定，默认关闭；打开后仍按冷却、锚点和安全锁执行。',
+            wanxinCheckbox('identify_enabled', '辨认咒纹', wxAssist.identify_enabled)+
+            wanxinCheckbox('banner_enabled', '借幡镇魂', wxAssist.banner_enabled)+
+            wanxinCheckbox('strip_enabled', '剥离咒源', wxAssist.strip_enabled)+
+            currentChoiceText('下次辨咒', wxAssist.next_identify_time || '未设置')+
+            currentChoiceText('下次借幡', wxAssist.next_banner_time || '未设置')+
+            currentChoiceText('下次剥离', wxAssist.next_strip_time || '未设置')+
+            currentChoiceText('回复锚点', wxAssist.last_anchor_msg_id || '无')
+          )+
+          settingSection(
+            '调度状态',
+            '保存只更新策略，不会立即强制发送；下一轮由模块冷却和安全锁决定。',
+            currentChoiceText('下次自动', wanxin.auto_next_time || '未设置')+
+            currentChoiceText('最近动作', wanxin.auto_last_action || '无')+
+            currentChoiceText('最近结果', wanxin.auto_last_result || '无')+
+            currentChoiceText('最近异常', wanxin.auto_last_error || wxAssist.last_error || '无')+
+            '<button type="button" class="btn btn-secondary" data-save-wanxin-config="1">保存设置</button>'
+          );
       }else if(module.name === '玄骨考校'){
         moduleNote = '<div class="module-note">极阴：'+esc(identity.jiyin_effective_choice_label || identity.jiyin_choice_label || '未设置')+
           '｜南陇：'+esc(identity.nanlong_effective_choice_label || identity.nanlong_choice_label || '未设置')+'</div>';
@@ -851,6 +911,48 @@
     }
   }
 
+  function collectWanxinConfig(){
+    var config = {};
+    var controls = document.querySelectorAll('[data-wanxin-config]');
+    controls.forEach(function(control){
+      var key = control.getAttribute('data-wanxin-config') || '';
+      if(!key){
+        return;
+      }
+      if(control.type === 'checkbox'){
+        config[key] = !!control.checked;
+      }else{
+        config[key] = control.value || '';
+      }
+    });
+    return config;
+  }
+
+  async function submitWanxinConfig(){
+    if(typeof postJson !== 'function' || typeof appState === 'undefined'){
+      return;
+    }
+    try{
+      var data = await postJson('/api/wanxin-config', {
+        send_as_id: appState.selectedId,
+        config: collectWanxinConfig()
+      });
+      if(typeof updateFlash === 'function'){
+        updateFlash(data.message || '已更新婉心封魂策略', false);
+      }
+      if(typeof applySnapshot === 'function'){
+        applySnapshot(data.snapshot || appState.snapshot, {keepFlash: true});
+      }
+    }catch(error){
+      if(typeof updateFlash === 'function'){
+        updateFlash((error && error.message) || '婉心封魂策略更新失败', true);
+      }
+      if(typeof renderAll === 'function'){
+        renderAll();
+      }
+    }
+  }
+
   async function submitExploreRiftRebirthConfig(){
     if(typeof postJson !== 'function' || typeof appState === 'undefined'){
       return;
@@ -900,6 +1002,10 @@
     }
     if(event.target.closest('[data-save-tianxing-config]')){
       submitTianxingConfig();
+      return;
+    }
+    if(event.target.closest('[data-save-wanxin-config]')){
+      submitWanxinConfig();
       return;
     }
     var openBtn = event.target.closest('[data-open-module-settings]');

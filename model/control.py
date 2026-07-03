@@ -105,6 +105,16 @@ from .config import (
     CMD_MULAN_SHADOW,
     CMD_MULAN_SUPPORT,
     CMD_MULAN_WAR_PANEL,
+    CMD_WANXIN_ACCEPT_COMMISSION,
+    CMD_WANXIN_ASSIST_BANNER,
+    CMD_WANXIN_ASSIST_IDENTIFY,
+    CMD_WANXIN_ASSIST_STRIP,
+    CMD_WANXIN_DEDUCE,
+    CMD_WANXIN_HELP,
+    CMD_WANXIN_PROTECT,
+    CMD_WANXIN_PUBLISH_COMMISSION,
+    CMD_WANXIN_STATUS,
+    CMD_WANXIN_VISIT,
     CMD_FISHING,
     CMD_FISHING_BUY_BAIT,
     CMD_FISHING_CANCEL,
@@ -212,6 +222,7 @@ from .features.explore_rift import (
 )
 from .features.wendao import clear_wendao_state, get_wendao_status_text, schedule_wendao_initial_check
 from .features.mulan import clear_mulan_state, get_mulan_status_text, schedule_mulan_initial_check
+from .features.wanxin import clear_wanxin_state, get_wanxin_status_text, schedule_wanxin_initial_check
 from .features.duel import apply_duel_config, clear_duel_state, get_duel_status_text, schedule_duel_initial_check
 from .features.fishing_runtime import clear_fishing_state, get_fishing_status_text, schedule_fishing_initial_check
 from .features.yuanying import get_yuanying_status_detail_text
@@ -1395,6 +1406,24 @@ def _disable_mulan_module_state():
     _clear_pending_tasks_by_commands({CMD_MULAN_SHADOW, CMD_MULAN_WAR_PANEL, CMD_MULAN_COLLECT, CMD_MULAN_JUDGE, CMD_MULAN_PUBLISH, CMD_MULAN_SUPPORT})
 
 
+def _disable_wanxin_module_state():
+    state["wanxin_enabled"] = False
+    clear_wanxin_state(persist=False)
+    _clear_pending_tasks_by_commands({
+        CMD_WANXIN_STATUS,
+        CMD_WANXIN_HELP,
+        CMD_WANXIN_VISIT,
+        CMD_WANXIN_PROTECT,
+        CMD_WANXIN_DEDUCE,
+        CMD_WANXIN_PUBLISH_COMMISSION,
+        CMD_WANXIN_ACCEPT_COMMISSION,
+        CMD_WANXIN_ASSIST_IDENTIFY,
+        CMD_WANXIN_ASSIST_BANNER,
+        CMD_WANXIN_ASSIST_STRIP,
+    })
+    _close_module_action_guard_sessions("婉心封魂")
+
+
 def _disable_duel_module_state():
     state["duel_enabled"] = False
     clear_duel_state(persist=False, keep_last_error=True, keep_config=True)
@@ -1714,6 +1743,16 @@ def _manual_enable_mulan_module_state(now):
     state["next_mulan_time"] = now + _IMMEDIATE_ENABLE_RETRY_DELAY_SEC
 
 
+def _manual_disable_wanxin_module_state():
+    _disable_wanxin_module_state()
+
+
+def _manual_enable_wanxin_module_state(now):
+    _close_module_action_guard_sessions("婉心封魂", reason="module_enabled_reset")
+    state["wanxin_enabled"] = True
+    schedule_wanxin_initial_check(now, persist=False)
+
+
 def _manual_disable_duel_module_state():
     _disable_duel_module_state()
 
@@ -1963,6 +2002,16 @@ PENDING_TASK_COMMAND_TO_MODULE = {
     CMD_MULAN_JUDGE: "慕兰烽烟",
     CMD_MULAN_PUBLISH: "慕兰烽烟",
     CMD_MULAN_SUPPORT: "慕兰烽烟",
+    CMD_WANXIN_STATUS: "婉心封魂",
+    CMD_WANXIN_HELP: "婉心封魂",
+    CMD_WANXIN_VISIT: "婉心封魂",
+    CMD_WANXIN_PROTECT: "婉心封魂",
+    CMD_WANXIN_DEDUCE: "婉心封魂",
+    CMD_WANXIN_PUBLISH_COMMISSION: "婉心封魂",
+    CMD_WANXIN_ACCEPT_COMMISSION: "婉心封魂",
+    CMD_WANXIN_ASSIST_IDENTIFY: "婉心封魂",
+    CMD_WANXIN_ASSIST_BANNER: "婉心封魂",
+    CMD_WANXIN_ASSIST_STRIP: "婉心封魂",
     CMD_NORMAL_RETREAT: "天星宗",
     CMD_DEEP_RETREAT_FORCE_EXIT: "深度闭关",
     CMD_USE_HEQI_DAN: "天星宗",
@@ -2003,6 +2052,7 @@ MANUAL_MODULE_TOGGLE_HANDLERS = {
     "阴罗宗": (_manual_enable_yinluo_module_state, _manual_disable_yinluo_module_state),
     "慕兰烽烟": (_manual_enable_mulan_module_state, _manual_disable_mulan_module_state),
     "慕兰": (_manual_enable_mulan_module_state, _manual_disable_mulan_module_state),
+    "婉心封魂": (_manual_enable_wanxin_module_state, _manual_disable_wanxin_module_state),
     "真仙试锋": (_manual_enable_world_boss_module_state, _manual_disable_world_boss_module_state),
     "南陇侯": (_manual_enable_nanlong_module_state, _manual_disable_nanlong_module_state),
     "小世界": (_manual_enable_small_world_module_state, _manual_disable_small_world_module_state),
@@ -2042,6 +2092,7 @@ MODULE_DISABLE_HANDLERS = {
     "阴罗宗": _disable_yinluo_module_state,
     "慕兰烽烟": _disable_mulan_module_state,
     "慕兰": _disable_mulan_module_state,
+    "婉心封魂": _disable_wanxin_module_state,
     "真仙试锋": _manual_disable_world_boss_module_state,
     "南陇侯": _disable_nanlong_module_state,
     "小世界": _disable_small_world_module_state,
@@ -2305,6 +2356,7 @@ def get_single_module_status_text(module_name, send_as_id=None):
         "阴罗宗": get_yinluo_status_text,
         "慕兰烽烟": get_mulan_status_text,
         "慕兰": get_mulan_status_text,
+        "婉心封魂": get_wanxin_status_text,
         "真仙试锋": get_world_boss_status_text,
         "南陇侯": get_nanlong_status_text,
         "小世界": get_small_world_status_text,
@@ -4162,6 +4214,10 @@ def initialize_identity_runtime(send_as_id, now=None):
             schedule_wendao_initial_check(now, persist=False, keep_last_error=True)
         if state.get("mulan_enabled") and float(state.get("next_mulan_time", 0) or 0) <= 0:
             schedule_mulan_initial_check(now, persist=False, keep_last_error=True)
+        if state.get("wanxin_enabled"):
+            wanxin_observation = state.get("wanxin_observation") if isinstance(state.get("wanxin_observation"), dict) else {}
+            if float(wanxin_observation.get("auto_next_time", 0) or 0) <= 0:
+                schedule_wanxin_initial_check(now, persist=False)
         if state.get("duel_enabled") and float(state.get("next_duel_time", 0) or 0) <= 0:
             schedule_duel_initial_check(now, persist=False, keep_last_error=True)
         if state.get("fishing_enabled"):

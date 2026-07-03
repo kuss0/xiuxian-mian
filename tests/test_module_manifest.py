@@ -55,6 +55,7 @@ class ModuleManifestTests(unittest.TestCase):
                 "合欢宗",
                 "天星宗",
                 "阴罗宗",
+                "婉心封魂",
                 "真仙试锋",
                 "灵溪垂钓",
                 "探寻裂缝",
@@ -386,15 +387,15 @@ class ModuleManifestTests(unittest.TestCase):
         rows = {row["module"]: row for row in summary["modules"]}
 
         self.assertEqual(len(tuple(module_manifest.iter_module_manifests())), summary["totals"]["modules"])
-        self.assertEqual(39, summary["totals"]["active_modules"])
+        self.assertEqual(40, summary["totals"]["active_modules"])
         self.assertEqual(0, summary["totals"]["archived_modules"])
-        self.assertEqual(99, summary["totals"]["reply_families"])
+        self.assertEqual(108, summary["totals"]["reply_families"])
         self.assertEqual(0, summary["totals"]["archived_reply_families"])
         self.assertEqual(92, summary["totals"]["covered_sample_families"])
-        self.assertEqual(7, summary["totals"]["missing_sample_families"])
+        self.assertEqual(16, summary["totals"]["missing_sample_families"])
         self.assertEqual(33, summary["totals"]["sample_complete_modules"])
         self.assertEqual(2, summary["totals"]["sample_partial_modules"])
-        self.assertEqual(1, summary["totals"]["sample_missing_modules"])
+        self.assertEqual(2, summary["totals"]["sample_missing_modules"])
         self.assertEqual(3, summary["totals"]["contract_only_modules"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["灵树"]["readiness"])
         self.assertEqual(module_manifest.READINESS_SAMPLE_COMPLETE, rows["天星宗"]["readiness"])

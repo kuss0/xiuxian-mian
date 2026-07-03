@@ -99,6 +99,7 @@ from .features.tianxing import (
 )
 from .features.yinluo import run_yinluo_scheduler
 from .features.mulan import handle_mulan_reply, run_mulan_scheduler
+from .features.wanxin import handle_wanxin_reply, run_wanxin_scheduler
 from .features.world_boss import handle_world_boss_broadcast, handle_world_boss_reply, run_world_boss_scheduler
 from .features.small_world import (
     handle_small_world_barrier_reply,
@@ -284,6 +285,7 @@ _ORDINARY_IDENTITY_SCHEDULERS = (
     run_nanlong_scheduler,
     run_yinluo_scheduler,
     run_mulan_scheduler,
+    run_wanxin_scheduler,
     run_small_world_scheduler,
     run_explore_rift_scheduler,
     run_wendao_scheduler,
@@ -352,6 +354,7 @@ _SCHEDULER_MANIFEST_BRIDGE = {
     "run_tree_scheduler": {"manifest_names": ("灵树",), "helper": False},
     "run_wendao_scheduler": {"manifest_names": ("问道",), "helper": False},
     "run_mulan_scheduler": {"manifest_names": ("慕兰烽烟",), "helper": False},
+    "run_wanxin_scheduler": {"manifest_names": ("婉心封魂",), "helper": False},
     "run_duel_scheduler": {"manifest_names": ("斗法",), "helper": False},
     "run_fishing_scheduler": {"manifest_names": ("灵溪垂钓",), "helper": False},
     "run_wild_training_scheduler": {"manifest_names": ("野外历练",), "helper": False},
@@ -505,6 +508,15 @@ BOT_REPLY_FAMILY_HINTS = {
     "taiyi_yindao": ("引道", "太一", "五行", "神识"),
     "taiyi_node_search": ("搜寻节点", "空间节点", "虚空", "神识"),
     "taiyi_node_define": ("定星", "空间节点", "稳固", "材料"),
+    "wanxin_panel": ("婉心封魂", "南宫婉封魂", "月殿余咒", "魂封", "咒源"),
+    "wanxin_visit": ("探望南宫婉", "南宫婉", "婉心", "魂封"),
+    "wanxin_protect": ("护持神魂", "神魂护持", "魂封", "月魄"),
+    "wanxin_deduce": ("推演封魂咒", "封魂咒纹", "咒源", "玄冰丹方"),
+    "wanxin_commission": ("解咒委托", "委托 ID", "已有进行中的解咒委托"),
+    "wanxin_accept": ("咒契协定", "已接取", "解咒委托"),
+    "wanxin_assist_identify": ("阴罗辨咒", "辨认咒纹", "咒源", "咒师贡献"),
+    "wanxin_assist_banner": ("借幡镇魂", "魂封", "月魄", "咒师贡献"),
+    "wanxin_assist_strip": ("剥离咒源", "阴罗残咒", "咒源尚未辨明", "咒师贡献"),
     "world_boss": ("真仙试锋", "讨伐青元子", "青元子", "魔压", "阵势", "世界Boss"),
 }
 
@@ -1808,6 +1820,13 @@ async def _handle_routed_reply_event(event, text, now, reply_to, reply_context, 
                 result_msg_id=event.id,
             ) or handled_any
             handled_any = await handle_mulan_reply(
+                text,
+                now,
+                reply_to,
+                matched_family=matched_family,
+                result_msg_id=event.id,
+            ) or handled_any
+            handled_any = await handle_wanxin_reply(
                 text,
                 now,
                 reply_to,

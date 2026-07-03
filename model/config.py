@@ -274,6 +274,16 @@ CMD_MULAN_COLLECT = ".搜集军报"
 CMD_MULAN_JUDGE = ".辨报"
 CMD_MULAN_PUBLISH = ".公开军报"
 CMD_MULAN_SUPPORT = ".支援慕兰"
+CMD_WANXIN_STATUS = ".婉心"
+CMD_WANXIN_HELP = ".婉心帮助"
+CMD_WANXIN_VISIT = ".探望南宫婉"
+CMD_WANXIN_PROTECT = ".护持神魂"
+CMD_WANXIN_DEDUCE = ".推演封魂咒"
+CMD_WANXIN_PUBLISH_COMMISSION = ".发布解咒委托"
+CMD_WANXIN_ACCEPT_COMMISSION = ".接取解咒委托"
+CMD_WANXIN_ASSIST_IDENTIFY = ".辨认咒纹"
+CMD_WANXIN_ASSIST_BANNER = ".借幡镇魂"
+CMD_WANXIN_ASSIST_STRIP = ".剥离咒源"
 CMD_FISHING = ".钓鱼"
 CMD_FISHING_STATUS = ".钓鱼状态"
 CMD_FISHING_BUY_BAIT = ".买鱼饵"
@@ -490,6 +500,16 @@ SCRIPT_COMMANDS = [
     CMD_MULAN_JUDGE,
     CMD_MULAN_PUBLISH,
     CMD_MULAN_SUPPORT,
+    CMD_WANXIN_STATUS,
+    CMD_WANXIN_HELP,
+    CMD_WANXIN_VISIT,
+    CMD_WANXIN_PROTECT,
+    CMD_WANXIN_DEDUCE,
+    CMD_WANXIN_PUBLISH_COMMISSION,
+    CMD_WANXIN_ACCEPT_COMMISSION,
+    CMD_WANXIN_ASSIST_IDENTIFY,
+    CMD_WANXIN_ASSIST_BANNER,
+    CMD_WANXIN_ASSIST_STRIP,
     CMD_FISHING,
     CMD_FISHING_STATUS,
     CMD_FISHING_BUY_BAIT,
@@ -586,7 +606,7 @@ SCRIPT_COMMANDS = [
     "1",
 ]
 DIVINATION_DEFAULT_DAILY_LIMIT = 6
-MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "布下剑阵", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "慕兰烽烟", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "灵溪垂钓", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
+MODULE_NAMES = ["灵树", "法宝", "温养器灵", "器灵试炼", "布下剑阵", "放养", "野外历练", "观星台", "观星监控", "观星", "周天星斗", "登天阶", "玄骨考校", "极阴祖师", "侍妾", "天机代卜", "共历心劫", "侍妾远航", "合欢宗", "天星宗", "阴罗宗", "慕兰烽烟", "婉心封魂", "真仙试锋", "南陇侯", "元婴", "探寻裂缝", "问道", "斗法", "灵溪垂钓", "深度闭关", "小世界", "卜筮问天", "点卯", "宗门传功", "闯塔", "第二元神", "太一", "自动副本"]
 MODULE_KEY_MAP = {
     "灵树": "tree_enabled",
     "法宝": "pet_enabled",
@@ -611,6 +631,7 @@ MODULE_KEY_MAP = {
     "阴罗宗": "yinluo_enabled",
     "慕兰烽烟": "mulan_enabled",
     "慕兰": "mulan_enabled",
+    "婉心封魂": "wanxin_enabled",
     "真仙试锋": "world_boss_enabled",
     "南陇侯": "nanlong_enabled",
     "元婴": "yuanying_enabled",

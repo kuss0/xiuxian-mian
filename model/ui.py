@@ -108,6 +108,7 @@ from .features.fishing import (
 )
 from .features.fishing_behavior import parse_chum_usage_counts, parse_pending_open_fish
 from .features.yuanying import get_yuanying_phase_text
+from .features.wanxin import get_wanxin_ui_state, set_wanxin_config
 from .official_schedule import (
     build_preset_plan as build_official_schedule_preset_plan,
     create_official_messages_for_batch,
@@ -3965,6 +3966,7 @@ def get_identity_ui_snapshot(send_as_id):
             "small_world_barrier_min_interval_hours": float(identity_state.get("small_world_barrier_min_interval_hours", 18) or 18),
             "small_world_incense_stock": int(identity_state.get("small_world_incense_stock", 0) or 0),
             "small_world_faith_value": int(identity_state.get("small_world_faith_value", 0) or 0),
+            "wanxin": get_wanxin_ui_state() if "婉心封魂" in available_module_names else {},
             "yinluo": get_yinluo_ui_state() if "阴罗宗" in available_module_names else {},
             "jiyin_effective_choice": effective_jiyin_choice,
             "jiyin_effective_choice_label": get_jiyin_choice_label(effective_jiyin_choice),
@@ -4537,6 +4539,32 @@ async def ui_set_tianxing_config(send_as_id, config=None):
         limit=260,
     )
     return True, f"已更新天星宗策略[{get_identity_display_name(send_as_id)}]"
+
+
+async def ui_set_wanxin_config(send_as_id, config=None):
+    send_as_id = int(send_as_id)
+    if send_as_id not in get_identity_ids():
+        return False, f"未知身份: {send_as_id}"
+    config = config if isinstance(config, dict) else {}
+    with use_identity(send_as_id):
+        ok, message, snapshot = set_wanxin_config(config)
+        save_state()
+    if ok:
+        auto_config = (snapshot or {}).get("auto_config") or {}
+        assist = (snapshot or {}).get("assist") or {}
+        await send_audit_log(
+            "🌙 已更新婉心封魂策略："
+            f"探望={'开' if auto_config.get('visit_enabled') else '关'}，"
+            f"护持={'开' if auto_config.get('protect_enabled') else '关'}，"
+            f"推演={'开' if auto_config.get('deduce_enabled') else '关'}，"
+            f"委托={'开' if auto_config.get('publish_enabled') else '关'}，"
+            f"协助={'开' if auto_config.get('assist_enabled') else '关'}，"
+            f"阴罗={assist.get('send_as_id') or '未配置'}",
+            scope="identity",
+            send_as_id=send_as_id,
+            limit=260,
+        )
+    return ok, f"{message}[{get_identity_display_name(send_as_id)}]" if ok else message
 
 
 async def ui_set_explore_rift_rebirth_config(send_as_id, payload=None):
@@ -6676,6 +6704,18 @@ async def handle_ui_http(reader, writer):
                     else:
                         ok, message = await ui_set_tianxing_config(send_as_id, payload.get("config") or {})
                         _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
+            elif path == "/api/wanxin-config":
+                if session is None:
+                    _write_json_unauthorized(writer, auth_headers)
+                elif method != "POST":
+                    _write_method_not_allowed(writer)
+                else:
+                    send_as_id = payload.get("send_as_id")
+                    if send_as_id in {None, ""}:
+                        _write_json_bad_request(writer, "缺少 send_as_id 参数", auth_headers)
+                    else:
+                        ok, message = await ui_set_wanxin_config(send_as_id, payload.get("config") or {})
+                        _write_json_result(writer, ok, message, session_token=(session or {}).get("session_token"), extra_headers=auth_headers)
             elif path == "/api/explore-rift-rebirth-config":
                 if session is None:
                     _write_json_unauthorized(writer, auth_headers)
@@ -7027,6 +7067,7 @@ __all__ = [
     "ui_set_small_world_barrier_config",
     "ui_set_hehuan_config",
     "ui_set_tianxing_config",
+    "ui_set_wanxin_config",
     "ui_set_explore_rift_rebirth_config",
     "ui_set_divination_config",
     "ui_set_stargazer_star_choice",

@@ -238,6 +238,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN yinluo_enabled INTEGER NOT NULL DEFAULT 0")
     if "mulan_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN mulan_enabled INTEGER NOT NULL DEFAULT 0")
+    if "wanxin_enabled" not in module_columns:
+        conn.execute("ALTER TABLE identity_module_state ADD COLUMN wanxin_enabled INTEGER NOT NULL DEFAULT 0")
     if "world_boss_enabled" not in module_columns:
         conn.execute("ALTER TABLE identity_module_state ADD COLUMN world_boss_enabled INTEGER NOT NULL DEFAULT 0")
     if "nanlong_enabled" not in module_columns:
@@ -613,6 +615,8 @@ def _ensure_schema_columns(conn):
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN tianxing_timeline_state TEXT NOT NULL DEFAULT '{}' ")
     if "yinluo_observation" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN yinluo_observation TEXT NOT NULL DEFAULT '{}' ")
+    if "wanxin_observation" not in runtime_columns:
+        conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN wanxin_observation TEXT NOT NULL DEFAULT '{}' ")
     if "world_boss_action_count" not in runtime_columns:
         conn.execute("ALTER TABLE identity_runtime_state ADD COLUMN world_boss_action_count INTEGER NOT NULL DEFAULT 0")
     if "world_boss_action_limit" not in runtime_columns:
@@ -1327,6 +1331,7 @@ def init_db():
             tianxing_enabled INTEGER NOT NULL DEFAULT 0,
             yinluo_enabled INTEGER NOT NULL DEFAULT 0,
             mulan_enabled INTEGER NOT NULL DEFAULT 0,
+            wanxin_enabled INTEGER NOT NULL DEFAULT 0,
             world_boss_enabled INTEGER NOT NULL DEFAULT 0,
             nanlong_enabled INTEGER NOT NULL DEFAULT 0,
             explore_rift_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1606,6 +1611,7 @@ def init_db():
             tianxing_auto_config TEXT NOT NULL DEFAULT '{}',
             tianxing_timeline_state TEXT NOT NULL DEFAULT '{}',
             yinluo_observation TEXT NOT NULL DEFAULT '{}',
+            wanxin_observation TEXT NOT NULL DEFAULT '{}',
             world_boss_action_count INTEGER NOT NULL DEFAULT 0,
             world_boss_action_limit INTEGER NOT NULL DEFAULT 5,
             world_boss_attack_count INTEGER NOT NULL DEFAULT 0,
