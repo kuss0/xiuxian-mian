@@ -2,8 +2,10 @@ import math
 import random
 import time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from ..config import CMD_TOWER, RETRY_MAX_SEC
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import format_window_text, get_module_window_hours, get_pending_command, state
@@ -16,6 +18,8 @@ TOWER_REPLAY_DELAY_MIN_SEC = 2
 TOWER_REPLAY_DELAY_MAX_SEC = 5
 TOWER_RETRY_LIMIT = 1
 TOWER_DUPLICATE_SEND_GUARD_SEC = TOWER_REPLY_TIMEOUT_SEC
+TOWER_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
+TOWER_LOG_REPLAY_LOOKAHEAD_SEC = 30
 
 
 def _read_tower_timestamp(field_name):
@@ -48,6 +52,41 @@ def _is_tower_reply(reply_to, matched_family=None):
         return True
     orig_cmd = (reply_to.raw_text or "") if reply_to else ""
     return CMD_TOWER in orig_cmd
+
+
+def _is_tower_reply_log_entry(entry):
+    raw_text = str((entry or {}).get("text") or "").strip()
+    if not raw_text:
+        return False
+    return "琉璃问心塔" in raw_text or "试炼古塔" in raw_text or any(keyword in raw_text for keyword in TOWER_DONE_HINTS)
+
+
+async def _recover_tower_pending_from_message_log(now):
+    msg_id = int(state.get("last_tower_msg_id", 0) or 0)
+    if msg_id <= 0:
+        return False
+    replies = find_message_log_replies(
+        msg_id,
+        now,
+        lookback_sec=TOWER_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=TOWER_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_tower_reply_log_entry,
+    )
+    if not replies:
+        return False
+    reply_to = SimpleNamespace(id=msg_id, raw_text=CMD_TOWER)
+    handled_any = False
+    for entry in replies:
+        handled = await handle_tower_reply(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to,
+            matched_family="tower",
+        )
+        handled_any = handled_any or handled
+    if handled_any:
+        console_log(f"🗼 闯塔日志补偿：已采纳超时回包，消息ID={msg_id}", scope="identity", limit=180)
+    return handled_any
 
 
 def _has_tower_pending():
@@ -235,6 +274,13 @@ async def handle_tower_reply(text, now, reply_to, matched_family=None):
 async def run_tower_scheduler(now):
     if not state["tower_enabled"]:
         return
+
+    last_msg_id = int(state.get("last_tower_msg_id", 0) or 0)
+    reply_due_at = float(state.get("tower_reply_due_at", 0) or 0)
+    if last_msg_id > 0 and reply_due_at > 0 and now >= reply_due_at:
+        if await _recover_tower_pending_from_message_log(now):
+            save_state()
+            return
 
     next_tower_time, should_return = _normalize_tower_schedule(now)
     if should_return:

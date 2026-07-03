@@ -2,6 +2,7 @@ import asyncio
 import random
 import re
 import time
+from types import SimpleNamespace
 
 from ..config import (
     CD_BUFFER_SEC,
@@ -17,6 +18,7 @@ from ..config import (
 from ..action_guard import close_action as close_action_guard_action
 from ..action_guard import get_blocked_until as get_action_guard_blocked_until
 from ..action_guard import note_remote_block as note_action_guard_remote_block
+from ..message_log_recovery import find_message_log_replies
 from ..persistence import mark_dirty, save_state
 from ..runtime import clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command
 from ..state import get_current_identity_id, get_identity_enabled, get_identity_ids, get_send_as_tags, state
@@ -65,6 +67,8 @@ SMALL_WORLD_RELIEF_STABILITY_RATIO_TRIGGER = 0.80
 SMALL_WORLD_BARRIER_REPLY_TIMEOUT_SEC = 10 * 60
 SMALL_WORLD_BARRIER_PANEL_MAX_AGE_SEC = 6 * 3600
 SMALL_WORLD_SAME_COMMAND_GUARD_SEC = 95
+SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
+SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC = 30
 SMALL_WORLD_BARRIER_COST_BY_LEVEL = {
     1: 600,
     3: 5400,
@@ -978,6 +982,102 @@ def _is_current_barrier_reply(reply_to, matched_family):
         return True
     orig_cmd = str(getattr(reply_to, "raw_text", "") or "")
     return CMD_SMALL_WORLD_BARRIER in orig_cmd
+
+
+def _is_small_world_reply_log_entry(entry):
+    raw_text = str((entry or {}).get("text") or "").strip()
+    if not raw_text:
+        return False
+    if _parse_small_world_panel(raw_text):
+        return True
+    return any(
+        marker in raw_text
+        for marker in (
+            "小世界",
+            "凡人祈愿",
+            "显灵",
+            "香火",
+            "神识淬炼",
+            "护界禁制",
+            "愿力金幕",
+            "神音浩荡",
+            "天降甘霖",
+            "祈愿数据异常",
+            "天机已散",
+            "境界不足",
+            "库存不足",
+            "资源不足",
+        )
+    )
+
+
+async def _recover_small_world_reply_from_log(now, *, msg_id=0, family="", command="", handler=None):
+    msg_id = int(msg_id or 0)
+    if msg_id <= 0 or handler is None:
+        return False
+    replies = find_message_log_replies(
+        msg_id,
+        now,
+        lookback_sec=SMALL_WORLD_LOG_REPLAY_LOOKBACK_SEC,
+        lookahead_sec=SMALL_WORLD_LOG_REPLAY_LOOKAHEAD_SEC,
+        predicate=_is_small_world_reply_log_entry,
+    )
+    if not replies:
+        return False
+    reply_to = SimpleNamespace(id=msg_id, raw_text=str(command or ""))
+    handled_any = False
+    for entry in replies:
+        handled = await handler(
+            entry.get("text") or "",
+            float(entry.get("ts_epoch") or now),
+            reply_to,
+            matched_family=family,
+        )
+        handled_any = handled_any or handled
+    if handled_any:
+        console_log(f"🌏 小世界日志补偿：已采纳超时回包，消息ID={msg_id}", scope="identity", limit=200)
+    return handled_any
+
+
+async def _recover_current_small_world_pending_from_log(now, phase=None):
+    phase = str(phase or _phase() or "")
+    barrier_msg_id = int(state.get("small_world_barrier_msg_id", 0) or 0)
+    if barrier_msg_id > 0:
+        if await _recover_small_world_reply_from_log(
+            now,
+            msg_id=barrier_msg_id,
+            family="small_world_barrier",
+            command=CMD_SMALL_WORLD_BARRIER,
+            handler=handle_small_world_barrier_reply,
+        ):
+            return True
+    preach_msg_id = int(state.get("small_world_preach_reply_to_msg_id", 0) or 0)
+    if preach_msg_id > 0:
+        pending_action = str(state.get("small_world_pending_god_action") or "")
+        is_relief = pending_action == "relief"
+        if await _recover_small_world_reply_from_log(
+            now,
+            msg_id=preach_msg_id,
+            family="small_world_relief" if is_relief else "small_world_preach",
+            command=CMD_SMALL_WORLD_RELIEF if is_relief else CMD_SMALL_WORLD_PREACH,
+            handler=handle_small_world_preach_reply,
+        ):
+            return True
+    chain_specs = {
+        "query_pending": ("small_world_query_msg_id", "small_world_query", CMD_SMALL_WORLD_QUERY, handle_small_world_query_reply),
+        "manifest_pending": ("small_world_manifest_msg_id", "small_world_manifest", CMD_SMALL_WORLD_MANIFEST, handle_small_world_manifest_reply),
+        "harvest_pending": ("small_world_harvest_msg_id", "small_world_harvest", CMD_SMALL_WORLD_HARVEST, handle_small_world_harvest_reply),
+        "harvest_sent": ("small_world_harvest_msg_id", "small_world_harvest", CMD_SMALL_WORLD_HARVEST, handle_small_world_harvest_reply),
+        "harvest_before_manifest_sent": ("small_world_harvest_msg_id", "small_world_harvest", CMD_SMALL_WORLD_HARVEST, handle_small_world_harvest_reply),
+        "refine_pending": ("small_world_refine_msg_id", "small_world_refine", CMD_SMALL_WORLD_REFINE, handle_small_world_refine_reply),
+        "refine_sent": ("small_world_refine_msg_id", "small_world_refine", CMD_SMALL_WORLD_REFINE, handle_small_world_refine_reply),
+    }
+    spec = chain_specs.get(phase)
+    if not spec:
+        return False
+    state_key, family, command, handler = spec
+    msg_id = int(state.get(state_key, 0) or 0)
+    return await _recover_small_world_reply_from_log(now, msg_id=msg_id, family=family, command=command, handler=handler)
 
 
 async def _disable_for_realm(raw_text):
@@ -1958,6 +2058,9 @@ async def _run_small_world_scheduler(now):
     barrier_deadline = float(state.get("small_world_barrier_due_at", 0) or 0)
     if barrier_deadline > 0:
         if now >= barrier_deadline:
+            if await _recover_current_small_world_pending_from_log(now, "barrier_pending"):
+                save_state()
+                return
             state["small_world_last_error"] = "小世界护界禁制回复超时"
             _clear_barrier_pending()
             clear_pending_tasks_by_commands(SMALL_WORLD_BARRIER_COMMANDS, send_as_id=get_current_identity_id())
@@ -1970,6 +2073,9 @@ async def _run_small_world_scheduler(now):
     preach_deadline = _get_preach_deadline()
     if _phase() == "preach_pending" and preach_deadline > 0:
         if now >= preach_deadline:
+            if await _recover_current_small_world_pending_from_log(now, "preach_pending"):
+                save_state()
+                return
             state["small_world_last_error"] = "小世界神迹回复超时"
             _clear_preach_pending()
             _clear_god_pending_tasks()
@@ -1991,6 +2097,9 @@ async def _run_small_world_scheduler(now):
     if phase in SMALL_WORLD_CHAIN_PENDING:
         deadline = float(state.get("next_small_world_time", 0) or 0)
         if deadline <= 0 or now < deadline:
+            return
+        if await _recover_current_small_world_pending_from_log(now, phase):
+            save_state()
             return
         state["small_world_last_error"] = f"{phase} 等待回复超时，停止本轮"
         _clear_chain_pending()
@@ -2020,6 +2129,9 @@ async def _run_small_world_scheduler(now):
         next_time = float(state.get("next_small_world_time", 0) or 0)
         if next_time > 0 and now < next_time:
             return
+        if await _recover_current_small_world_pending_from_log(now, phase):
+            save_state()
+            return
         _clear_chain_pending()
         if phase == "harvest_before_manifest_sent":
             state["small_world_last_error"] = "显灵前收割香火未收到可解析回执，复查面板校准"
@@ -2032,6 +2144,9 @@ async def _run_small_world_scheduler(now):
     if phase == "refine_sent":
         next_time = float(state.get("next_small_world_time", 0) or 0)
         if next_time > 0 and now < next_time:
+            return
+        if await _recover_current_small_world_pending_from_log(now, phase):
+            save_state()
             return
         _clear_chain_pending()
         state["small_world_last_error"] = "神识淬炼未收到可解析回执，复查面板校准"
