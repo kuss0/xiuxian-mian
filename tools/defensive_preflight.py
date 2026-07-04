@@ -110,6 +110,7 @@ def _tianxing_action_status(
     timeline: dict[str, Any],
     config: dict[str, Any],
     now: float,
+    prior_consume_at: float = 0,
 ) -> dict[str, Any] | None:
     if due_at <= 0:
         return None
@@ -128,9 +129,13 @@ def _tianxing_action_status(
         "waiting_send",
     } or bool(active_step)
     retry_live = retry_at > now
-    if pred_ok and change_ok:
+    prior_will_consume = bool(prior_consume_at > now and prior_consume_at < due_at)
+    if pred_ok and change_ok and not prior_will_consume:
         level = "healthy"
         reason = "推命/改命探索均有效。"
+    elif pred_ok and change_ok and prior_will_consume:
+        level = "watch"
+        reason = f"当前推命/改命探索预计会先被 {_fmt(prior_consume_at)} 的探索动作消费，后续需重算。"
     elif due_in > lead:
         level = "watch"
         reason = f"尚未进入天星准备窗口，提前 {due_in - lead}s 后复查。"
@@ -290,6 +295,13 @@ def snapshot(*, horizon_sec: int) -> dict[str, Any]:
                     timeline=timeline,
                     config=config,
                     now=now,
+                    prior_consume_at=(
+                        _epoch(row.get("next_wild_training_time"))
+                        if int(row.get("wild_training_enabled") or 0)
+                        and _epoch(row.get("next_wild_training_time")) > now
+                        and _epoch(row.get("next_wild_training_time")) < due_at
+                        else 0
+                    ),
                 )
                 if item:
                     checks.append(item)

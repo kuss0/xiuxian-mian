@@ -60,3 +60,29 @@ def test_tianxing_valid_prediction_and_change_is_healthy():
 
     assert item["level"] == "healthy"
     assert "均有效" in item["reason"]
+
+
+def test_tianxing_later_action_with_prior_consume_is_watch():
+    now = 1_700_000_000.0
+    item = preflight._tianxing_action_status(
+        label="wa2000",
+        username="WalterWA2000",
+        action="探寻裂缝",
+        due_at=now + 4 * 3600,
+        retry_at=0,
+        obs={
+            "current_prediction": "探索",
+            "current_prediction_until": now + 20 * 3600,
+            "current_change": "探索",
+            "current_change_until": now + 20 * 3600,
+            "tianji_value": 40,
+        },
+        timeline={"phase": "downstream_released"},
+        config={"route_prepare_lead_sec": 300},
+        now=now,
+        prior_consume_at=now + 300,
+    )
+
+    assert item["level"] == "watch"
+    assert "先被" in item["reason"]
+    assert "消费" in item["reason"]
