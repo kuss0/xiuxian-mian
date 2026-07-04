@@ -47,7 +47,7 @@ from ..config import (
 )
 from ..persisted_state import PersistedState
 from ..persistence import mark_dirty, save_state
-from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
+from ..runtime import _fire_and_forget, clear_pending_tasks_by_commands, console_log, get_last_game_send_block, send_audit_log, send_game_command, was_last_game_send_blocked_by_global
 from ..state import get_current_identity_id, get_game_topic_id, get_send_as_profile, get_send_as_tags, has_identity, state, use_identity
 from ..timing import fmt_abs_ts, fmt_remaining, fmt_time_after, has_wait_time, parse_wait_time
 from . import workflow_log
@@ -506,6 +506,23 @@ def _schedule_status_recheck(now):
 
 def _schedule_chain_action(now):
     return _schedule_after(now, CONCUBINE_CHAIN_DELAY_MIN_SEC, CONCUBINE_CHAIN_DELAY_MAX_SEC)
+
+
+def _handle_send_queue_timeout(command, now, *, due_key=None, error_key="concubine_last_error", label="侍妾指令"):
+    send_block = get_last_game_send_block(get_current_identity_id(), command)
+    if str((send_block or {}).get("code") or "") != "send_queue_timeout":
+        return False
+    retry_at = _schedule_after(
+        float(now or time.time()),
+        CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC,
+        CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC,
+    )
+    if due_key and float(state.get(due_key, 0) or 0) <= float(now or time.time()):
+        state[due_key] = retry_at
+    state[error_key] = ""
+    state["concubine_last_result"] = f"{label}发送队列拥堵，已错峰重试"
+    _set_phase("idle")
+    return True
 
 
 def _schedule_at_due_or_chain(now, due_at):
@@ -3291,6 +3308,9 @@ async def _send_status_command(now):
     msg = await _send_concubine_game_command(CMD_CONCUBINE_STATUS, track=False)
     sent_at = float(getattr(msg, "sent_at", 0) or now) if msg else float(now)
     if not msg:
+        if _handle_send_queue_timeout(CMD_CONCUBINE_STATUS, sent_at, label="侍妾状态校准"):
+            save_state()
+            return False
         state["concubine_last_error"] = "发送 .我的侍妾 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "status_pending")
@@ -3427,6 +3447,14 @@ async def _send_dream_command(now):
             decision="dream_sent_recovered_after_empty_send",
         ):
             return True
+        if _handle_send_queue_timeout(
+            CMD_CONCUBINE_DREAM,
+            sent_at,
+            due_key="concubine_dream_due_at",
+            label="入梦寻图",
+        ):
+            save_state()
+            return False
         state["concubine_last_error"] = "发送 .入梦寻图 失败"
         _set_phase("idle")
         retry_at = _schedule_after(
@@ -3547,6 +3575,15 @@ async def _send_tianji_command(now):
             if float(state.get("concubine_tianji_due_at", 0) or 0) <= sent_at:
                 state["concubine_tianji_due_at"] = sent_at + random.uniform(10 * 60, 30 * 60)
             state["next_concubine_time"] = sent_at + random.uniform(10 * 60, 30 * 60)
+            save_state()
+            return False
+        if _handle_send_queue_timeout(
+            CMD_CONCUBINE_TIANJI,
+            sent_at,
+            due_key="concubine_tianji_due_at",
+            error_key="concubine_tianji_last_error",
+            label="天机代卜",
+        ):
             save_state()
             return False
         state["concubine_tianji_last_error"] = "发送 .天机代卜 失败，稍后重试"

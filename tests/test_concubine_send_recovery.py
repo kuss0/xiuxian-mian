@@ -88,6 +88,30 @@ class ConcubineSendRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 90, state_module.state["next_concubine_time"])
             self.assertEqual("发送 .入梦寻图 失败", state_module.state["concubine_last_error"])
 
+    async def test_dream_send_queue_timeout_is_deferred_not_failed(self):
+        now = 1_783_122_700.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_phase"] = "idle"
+            state_module.state["concubine_dream_due_at"] = now - 1
+            with (
+                patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(concubine, "was_last_game_send_blocked_by_global", return_value=False),
+                patch.object(concubine, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}),
+                patch.object(concubine.time, "time", return_value=now),
+                patch.object(concubine.random, "uniform", return_value=120),
+            ):
+                sent = await concubine._send_dream_command(now)
+
+            self.assertFalse(sent)
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+            self.assertEqual(now + 120, state_module.state["concubine_dream_due_at"])
+            self.assertEqual(now + 120, state_module.state["next_concubine_time"])
+            self.assertEqual("", state_module.state["concubine_last_error"])
+            self.assertIn("发送队列拥堵", state_module.state["concubine_last_result"])
+
 
 if __name__ == "__main__":
     unittest.main()
