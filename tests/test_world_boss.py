@@ -1231,20 +1231,24 @@ class WorldBossTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, audit_mock.await_count)
         self.assertFalse(state_module.get_world_boss_run_state()["active"])
 
-    async def test_broadcast_is_quiet_when_no_identity_enabled(self):
+    async def test_open_broadcast_notifies_when_no_identity_enabled(self):
         now = 1_781_319_100.0
         self._register(8659059191, label="WalterWA2000", world_boss_enabled=False)
 
         with (
             patch.object(world_boss, "save_state", return_value=True),
             patch.object(world_boss, "send_audit_log", new=AsyncMock()) as audit_mock,
+            patch.object(world_boss, "send_game_command", new=AsyncMock()) as send_mock,
         ):
             opened = await world_boss.handle_world_boss_broadcast(OPEN_TEXT, now, event=SimpleNamespace(id=11001))
             status = await world_boss.handle_world_boss_broadcast(STATUS_TEXT, now + 1, event=SimpleNamespace(id=11002))
 
-        self.assertFalse(opened)
+        self.assertTrue(opened)
         self.assertFalse(status)
-        audit_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertIn("小程序", audit_mock.await_args.args[0])
+        self.assertEqual("high", audit_mock.await_args.kwargs["priority"])
+        send_mock.assert_not_awaited()
         self.assertFalse(state_module.get_world_boss_run_state().get("active"))
 
     async def test_inactive_broadcast_closes_stale_event_and_clears_pending_without_enabled_identities(self):

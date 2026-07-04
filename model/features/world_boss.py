@@ -1273,6 +1273,31 @@ async def _open_event(parsed, now, current_msg_id=0):
     return True
 
 
+async def _notify_world_boss_open_only(parsed, now, current_msg_id=0):
+    run_state = _get_run_state(now)
+    event_key = _open_event_key(parsed, now, current_msg_id=current_msg_id)
+    if run_state.get("last_open_log_key") == event_key:
+        return True
+    _clear_world_boss_pending_tasks()
+    _reset_all_identity_event_state(persist=False)
+    run_state["active"] = False
+    run_state["event_key"] = event_key
+    run_state["opened_at"] = float(now)
+    run_state["closed_at"] = 0
+    run_state["last_open_log_key"] = event_key
+    run_state["last_result"] = "小程序开打提醒"
+    run_state["next_status_query_at"] = 0
+    run_state["next_action_at"] = 0
+    await send_audit_log(
+        "🗡 真仙试锋已开打：世界 boss 已迁移到小程序，脚本默认不出手，请手动处理。",
+        scope="global",
+        priority="high",
+        limit=260,
+    )
+    _set_run_state(run_state)
+    return True
+
+
 def _start_world_boss_round_if_ready(now):
     run_state = _get_run_state(now)
     if (
@@ -1463,6 +1488,8 @@ async def handle_world_boss_broadcast(text, now, event=None):
     enabled = bool(_enabled_identity_ids())
     if not enabled:
         run_state = _get_run_state(now)
+        if parsed_type == "open":
+            return await _notify_world_boss_open_only(parsed, now, current_msg_id=event_id)
         if parsed_type == "conclusion" and run_state.get("active"):
             return await _close_event(parsed, now, log=False)
         if parsed_type == "inactive" and run_state.get("active"):
