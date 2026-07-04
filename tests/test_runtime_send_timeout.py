@@ -179,6 +179,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "_get_send_gap_range", return_value=(10.0, 10.0)),
                 patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
                 patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_effective_send_queue_timeout", return_value=0.01),
                 patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
                 patch.object(runtime, "is_identity_weak", return_value=False),
                 patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
@@ -203,6 +204,22 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             "send_queue_timeout",
             runtime.get_last_game_send_block(send_as_id, ".野外历练 谨慎")["code"],
+        )
+
+    async def test_effective_queue_timeout_covers_rpc_and_identity_gap(self):
+        timeout = runtime._effective_send_queue_timeout(
+            runtime.SEND_PRIORITY_REACTIVE,
+            command=".天机代卜",
+            send_as_id=301299112,
+            intent={"source_module": "侍妾"},
+            queue_timeout=45,
+        )
+
+        self.assertGreaterEqual(
+            timeout,
+            runtime.GAME_SEND_RPC_TIMEOUT_SEC
+            + max(runtime.REACTIVE_SEND_GAP_MAX_SEC, runtime.IDENTITY_SEND_GAP_MIN_SEC)
+            + runtime.SEND_QUEUE_TIMEOUT_MARGIN_SEC,
         )
 
 

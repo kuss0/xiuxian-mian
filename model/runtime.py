@@ -276,6 +276,7 @@ MODULE_SEND_GAP_MIN_SEC = {
     "储物袋": 5.0,
 }
 IDENTITY_SEND_GAP_MIN_SEC = 10.0
+SEND_QUEUE_TIMEOUT_MARGIN_SEC = 5.0
 
 P0_SEND_GAP_MIN_SEC = 20.0
 P0_SEND_GAP_MAX_SEC = 30.0
@@ -746,6 +747,32 @@ def _build_send_not_before(priority):
     return not_before
 
 
+def _minimum_send_queue_timeout_sec(priority, command=None, send_as_id=None, intent=None):
+    priority = _normalize_send_priority(command, priority=priority)
+    bypass_gap = _send_gap_whitelist_allows(priority, command, intent=intent)
+    _min_gap, max_gap = (0.0, 0.0) if bypass_gap else _get_send_gap_range(priority)
+    module_gap = _module_send_gap_min_sec(intent)
+    try:
+        identity_id = int(send_as_id or 0)
+    except (TypeError, ValueError):
+        identity_id = 0
+    identity_gap = float(IDENTITY_SEND_GAP_MIN_SEC or 0.0) if identity_id > 0 else 0.0
+    local_wait_budget = max(float(max_gap or 0.0), float(module_gap or 0.0), float(identity_gap or 0.0))
+    return max(1.0, float(GAME_SEND_RPC_TIMEOUT_SEC or 0.0) + local_wait_budget + SEND_QUEUE_TIMEOUT_MARGIN_SEC)
+
+
+def _effective_send_queue_timeout(priority, command=None, send_as_id=None, intent=None, queue_timeout=None):
+    if queue_timeout is None:
+        return None
+    try:
+        timeout_value = float(queue_timeout or 0)
+    except (TypeError, ValueError, OverflowError):
+        timeout_value = 0.0
+    if timeout_value <= 0:
+        return None
+    return max(timeout_value, _minimum_send_queue_timeout_sec(priority, command=command, send_as_id=send_as_id, intent=intent))
+
+
 def get_game_send_queue_snapshot():
     now_wall = time.time()
     now_mono = time.monotonic()
@@ -784,13 +811,9 @@ async def _send_slot(priority, command=None, send_as_id=None, intent=None, queue
     identity_anchor = None
     not_before = 0.0
     queue_deadline = 0.0
-    if queue_timeout is not None:
-        try:
-            timeout_value = float(queue_timeout or 0)
-        except (TypeError, ValueError, OverflowError):
-            timeout_value = 0.0
-        if timeout_value > 0:
-            queue_deadline = time.monotonic() + timeout_value
+    timeout_value = _effective_send_queue_timeout(priority, command=command, send_as_id=send_as_id, intent=intent, queue_timeout=queue_timeout)
+    if timeout_value is not None and timeout_value > 0:
+        queue_deadline = time.monotonic() + timeout_value
     _GAME_SEND_QUEUE_SEQ += 1
     queue_token = _GAME_SEND_QUEUE_SEQ
     _GAME_SEND_QUEUE_ITEMS[queue_token] = {
@@ -2905,7 +2928,14 @@ async def send_game_command(
             _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
             return None
 
-        async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=queue_timeout):
+        effective_queue_timeout = _effective_send_queue_timeout(
+            send_priority,
+            command=command,
+            send_as_id=send_as_id,
+            intent=send_intent,
+            queue_timeout=queue_timeout,
+        )
+        async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=effective_queue_timeout):
             if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
                 _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
                 return None
@@ -3118,10 +3148,17 @@ async def send_game_command(
             return msg
     except GameSendQueueTimeout:
         _close_guard_for_unsent_command(command, send_as_id, "send_queue_timeout")
+        effective_queue_timeout = _effective_send_queue_timeout(
+            send_priority,
+            command=command,
+            send_as_id=send_as_id,
+            intent=send_intent,
+            queue_timeout=queue_timeout,
+        )
         await send_audit_log(
             (
                 f"⏳ 指令排队超时未发送：{_truncate_log_text(command, limit=48)} | "
-                f">{int(float(queue_timeout or 0))}s | "
+                f">{int(float(effective_queue_timeout or queue_timeout or 0))}s | "
                 f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
             ),
             scope="identity",
