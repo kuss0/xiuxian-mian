@@ -134,6 +134,32 @@ class HehuanParserTests(unittest.TestCase):
         self.assertEqual(-1, parsed["contract_until"])
         self.assertGreater(parsed["next_hehuan_time"], now)
 
+    def test_contract_success_parses_partner_and_contract_window(self):
+        snapshot = copy.deepcopy(state_module._meta_state)
+        now = 1_783_141_679.0
+        try:
+            state_module._meta_state["identity_ids"] = []
+            state_module._meta_state["identity_states"] = {}
+            state_module._meta_state["send_as_profiles"] = {}
+            identity_id = 8574677796
+            state_module.ensure_identity_registered(identity_id)
+            state_module.update_send_as_profile(identity_id, username="wisemole", label="Wise Mole", sect_name="合欢宗")
+            with state_module.use_identity(identity_id):
+                parsed = hehuan.parse_hehuan_text(
+                    "【契印已成】\n@wisemole 与 @WalterWA2000 已成功缔结同参契印！\n在接下来的7天内，双方将同心同德，共享双修之利！",
+                    now=now,
+                    family="hehuan_contract",
+                )
+        finally:
+            state_module._meta_state.clear()
+            state_module._meta_state.update(snapshot)
+
+        self.assertEqual("同参道", parsed["path"])
+        self.assertEqual("缔结同参", parsed["action"])
+        self.assertEqual("contract_success", parsed["result"])
+        self.assertEqual("@WalterWA2000", parsed["partner"])
+        self.assertEqual(now + hehuan.HEHUAN_CONTRACT_SEC, parsed["contract_until"])
+
     def test_contract_not_member_is_observed_without_new_runtime_branch(self):
         parsed = hehuan.parse_hehuan_text(
             real_text("hehuan.contract.not_member"),
@@ -308,6 +334,54 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertEqual(0, reminder["next_index"])
         self.assertEqual(now, reminder["next_reminder_at"])
 
+    def test_contract_success_allows_next_warm_immediately(self):
+        now = 1_783_141_679.0
+        state_module.update_send_as_profile(self.identity_id, username="wisemole", label="Wise Mole", sect_name="合欢宗")
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            changed = hehuan.apply_hehuan_passive(
+                "【契印已成】\n@wisemole 与 @WalterWA2000 已成功缔结同参契印！",
+                now=now,
+                family="hehuan_contract",
+            )
+            observed = state_module.state["hehuan_observation"]
+            plan = hehuan.build_hehuan_manual_plan("warm", now=now)
+
+        self.assertTrue(changed)
+        self.assertEqual("contract_success", observed["last_result"])
+        self.assertEqual("@WalterWA2000", observed["last_partner"])
+        self.assertEqual(now + hehuan.HEHUAN_CONTRACT_SEC, observed["contract_until"])
+        self.assertEqual(0, observed["next_hehuan_time"])
+        self.assertEqual(now, observed["auto_next_time"])
+        self.assertTrue(plan["allowed"])
+
+    def test_contract_invalid_preserves_known_partner_contract_window(self):
+        now = 1_780_391_144.0
+        previous_success_at = now - 2 * 3600
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": previous_success_at,
+                "last_result": "success",
+                "last_partner": "@jfdffdddd",
+                "last_warm_success_at": previous_success_at,
+                "contract_until": previous_success_at + hehuan.HEHUAN_CONTRACT_SEC,
+                "next_hehuan_time": now - 60,
+                "auto_next_time": now - 60,
+            }
+            changed = hehuan.apply_hehuan_passive(
+                real_text("hehuan.dual.contract_invalid"),
+                now=now,
+                family="hehuan_dual",
+            )
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual("contract_invalid", observed["last_result"])
+        self.assertEqual("@jfdffdddd", observed["last_partner"])
+        self.assertEqual(previous_success_at + hehuan.HEHUAN_CONTRACT_SEC, observed["contract_until"])
+        self.assertIn("错误锚点", observed["auto_last_error"])
+        self.assertGreater(observed["auto_next_time"], now)
+
     def test_cooldown_without_success_time_blocks_for_one_hour(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
@@ -476,6 +550,133 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(8801, msg_id)
 
+    async def test_scheduler_replies_to_current_partner_anchor(self):
+        base_dt = datetime(2026, 7, 4, 13, 10, tzinfo=hehuan.TZ_LOCAL)
+        now = base_dt.timestamp()
+        msg = SimpleNamespace(id=9003, sent_at=now)
+        partner_id = 8659059191
+        state_module.ensure_identity_registered(partner_id)
+        state_module.update_send_as_profile(partner_id, username="WalterWA2000", label="wa2000", sect_name="天星宗")
+        entries = [
+            {
+                "ts": "2026-07-04 13:09:53 UTC+8",
+                "event_type": "message",
+                "message_id": 8899,
+                "chat_id": -1001680975844,
+                "sender_id": partner_id,
+                "sender_username": "WalterWA2000",
+                "sender_name": "wa2000",
+                "topic_id": 7310786,
+                "reply_to_msg_id": 0,
+                "text": "建议去种养殖",
+            },
+            {
+                "ts": "2026-07-04 13:09:30 UTC+8",
+                "event_type": "message",
+                "message_id": 8898,
+                "chat_id": -1001680975844,
+                "sender_id": hehuan.HEHUAN_BAIJI_SEND_AS_ID,
+                "sender_username": "jfdffdddd",
+                "sender_name": "吧唧",
+                "topic_id": 7310786,
+                "reply_to_msg_id": 0,
+                "text": hehuan.HEHUAN_ANCHOR_TEXT,
+            },
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-04.log"
+            log_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in entries), encoding="utf-8")
+            with state_module.use_identity(self.identity_id):
+                state_module.state["hehuan_enabled"] = True
+                state_module.state["hehuan_observation"] = {
+                    "last_observed_at": now - 60,
+                    "contract_until": now + 3600,
+                    "next_hehuan_time": 0,
+                    "last_partner": "@WalterWA2000",
+                    "auto_next_time": now - 1,
+                }
+                with (
+                    patch.object(hehuan, "MESSAGES_DIR", tmpdir),
+                    patch.object(hehuan, "get_game_group_id", return_value=-1001680975844),
+                    patch.object(hehuan, "get_game_topic_id", return_value=7310786),
+                    patch.object(hehuan, "save_state"),
+                    patch.object(hehuan, "send_game_command", new=AsyncMock(return_value=msg)) as send_mock,
+                ):
+                    await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            self.assertEqual(".双修 温养", send_mock.await_args.args[0])
+            self.assertEqual(8899, send_mock.await_args.kwargs["reply_to"])
+            self.assertEqual(8899, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
+
+    async def test_scheduler_requests_local_partner_anchor_before_warm(self):
+        now = 1_780_000_000.0
+        partner_id = 8659059191
+        state_module.ensure_identity_registered(partner_id)
+        state_module.update_send_as_profile(partner_id, username="WalterWA2000", label="wa2000", sect_name="天星宗")
+        anchor_msg = SimpleNamespace(id=8899, sent_at=now)
+        warm_msg = SimpleNamespace(id=9003, sent_at=now + 12)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@WalterWA2000",
+                "auto_next_time": now - 1,
+            }
+            with (
+                patch.object(hehuan, "find_recent_hehuan_partner_anchor_msg_id", return_value=0),
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=[anchor_msg, warm_msg])) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            self.assertEqual(2, send_mock.await_count)
+            anchor_call = send_mock.await_args_list[0]
+            warm_call = send_mock.await_args_list[1]
+            self.assertEqual(hehuan.HEHUAN_ANCHOR_TEXT, anchor_call.args[0])
+            self.assertEqual(partner_id, anchor_call.kwargs["send_as_id"])
+            self.assertFalse(anchor_call.kwargs["track"])
+            self.assertEqual(".双修 温养", warm_call.args[0])
+            self.assertEqual(8899, warm_call.kwargs["reply_to"])
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual(8899, observed["auto_reply_anchor_msg_id"])
+            self.assertEqual(9003, observed["auto_pending_msg_id"])
+
+    async def test_scheduler_requests_baiji_anchor_when_baiji_is_known_partner(self):
+        now = 1_780_000_000.0
+        state_module.ensure_identity_registered(hehuan.HEHUAN_BAIJI_SEND_AS_ID)
+        state_module.update_send_as_profile(
+            hehuan.HEHUAN_BAIJI_SEND_AS_ID,
+            username=hehuan.HEHUAN_BAIJI_USERNAME,
+            label=hehuan.HEHUAN_BAIJI_NAME,
+            sect_name="落云宗",
+        )
+        anchor_msg = SimpleNamespace(id=8898, sent_at=now)
+        warm_msg = SimpleNamespace(id=9003, sent_at=now + 12)
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 60,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@jfdffdddd",
+                "auto_next_time": now - 1,
+            }
+            with (
+                patch.object(hehuan, "find_recent_hehuan_partner_anchor_msg_id", return_value=0),
+                patch.object(hehuan, "save_state"),
+                patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=[anchor_msg, warm_msg])) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            self.assertEqual(2, send_mock.await_count)
+            self.assertEqual(hehuan.HEHUAN_ANCHOR_TEXT, send_mock.await_args_list[0].args[0])
+            self.assertEqual(hehuan.HEHUAN_BAIJI_SEND_AS_ID, send_mock.await_args_list[0].kwargs["send_as_id"])
+            self.assertEqual(".双修 温养", send_mock.await_args_list[1].args[0])
+            self.assertEqual(8898, send_mock.await_args_list[1].kwargs["reply_to"])
+
     async def test_scheduler_respects_future_auto_time(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
@@ -626,9 +827,8 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["auto_retry_count"])
         self.assertEqual(now - 10 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
 
-    async def test_scheduler_sends_bare_warm_when_recent_anchor_missing(self):
+    async def test_scheduler_blocks_warm_when_recent_partner_anchor_missing(self):
         now = 1_780_000_000.0
-        warm_msg = SimpleNamespace(id=9002, sent_at=now + 1)
         with state_module.use_identity(self.identity_id):
             state_module.state["hehuan_enabled"] = True
             state_module.state["hehuan_observation"] = {
@@ -640,16 +840,16 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             }
             with (
                 patch.object(hehuan, "save_state"),
-                patch.object(hehuan, "find_recent_baiji_anchor_msg_id", return_value=0),
-                patch.object(hehuan, "send_game_command", new=AsyncMock(return_value=warm_msg)) as send_mock,
+                patch.object(hehuan, "find_recent_hehuan_partner_anchor_msg_id", return_value=0),
+                patch.object(hehuan, "find_recent_baiji_anchor_msg_id", return_value=8801),
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
             ):
                 await hehuan.run_hehuan_scheduler(now)
 
-            self.assertEqual(1, send_mock.await_count)
-            warm_call = send_mock.await_args_list[0]
-            self.assertEqual(".双修 温养", warm_call.args[0])
-            self.assertNotIn("reply_to", warm_call.kwargs)
+            send_mock.assert_not_awaited()
             self.assertEqual(0, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
+            self.assertIn("缺少同参对象 @dao_partner", state_module.state["hehuan_observation"]["auto_last_error"])
+            self.assertGreaterEqual(state_module.state["hehuan_observation"]["auto_next_time"], now + 5 * 60)
 
     async def test_scheduler_sends_valuable_drop_reminders_three_times(self):
         now = 1_780_000_000.0

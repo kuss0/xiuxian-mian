@@ -51,6 +51,7 @@ PATH_MORAN = "魔染道"
 
 RE_AT_NAME = re.compile(r"@[\w\d_]+")
 RE_PARTNER = re.compile(r"你与\s*(?P<partner>@[\w\d_]+)")
+RE_CONTRACT_DONE = re.compile(r"(?P<first>@[\w\d_]+)\s*与\s*(?P<second>@[\w\d_]+)\s*已成功缔结同参契印")
 RE_GAIN_LINE = re.compile(
     r"(?P<name>@[\w\d_]+)\s*修为增加了\s*(?P<gain>\d+)\s*点(?:，并获得\s*(?P<contrib>\d+)\s*点宗门贡献)?"
 )
@@ -399,16 +400,57 @@ def _read_message_log_tail(path, *, max_lines=5000, max_bytes=512 * 1024):
     return data.splitlines()[-max(1, int(max_lines or 1)):]
 
 
-def _is_baiji_log_entry(payload):
+def _normalize_at_name(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text.startswith("@") else f"@{text}"
+
+
+def _identity_matches_name(identity_id, name):
+    target = str(name or "").strip().lstrip("@").lower()
+    if not target:
+        return False
+    profile = get_send_as_profile(identity_id) or {}
+    values = {
+        str(profile.get("username") or "").strip().lstrip("@").lower(),
+        str(profile.get("label") or "").strip().lstrip("@").lower(),
+        str(profile.get("daohao") or "").strip().lstrip("@").lower(),
+    }
+    return target in values
+
+
+def _current_hehuan_partner_from_names(first, second):
+    first = _normalize_at_name(first)
+    second = _normalize_at_name(second)
+    current_id = get_current_identity_id()
+    if _identity_matches_name(current_id, first):
+        return second
+    if _identity_matches_name(current_id, second):
+        return first
+    return second or first
+
+
+def _is_named_log_entry(payload, target_name="", target_id=0):
     try:
         sender_id = int(payload.get("sender_id", 0) or 0)
     except (TypeError, ValueError, OverflowError):
         sender_id = 0
     username = str(payload.get("sender_username") or "").strip().lstrip("@").lower()
     sender_name = str(payload.get("sender_name") or "").strip()
+    if int(target_id or 0) > 0 and sender_id == int(target_id or 0):
+        return True
+    target = str(target_name or "").strip().lstrip("@").lower()
+    if target and username == target:
+        return True
+    if target and sender_name.strip().lstrip("@").lower() == target:
+        return True
+    return False
+
+
+def _is_baiji_log_entry(payload):
     return (
-        sender_id == HEHUAN_BAIJI_SEND_AS_ID
-        or username == HEHUAN_BAIJI_USERNAME.lower()
+        _is_named_log_entry(payload, HEHUAN_BAIJI_USERNAME, HEHUAN_BAIJI_SEND_AS_ID)
         or sender_name == HEHUAN_BAIJI_NAME
     )
 
@@ -435,10 +477,40 @@ def _is_baiji_anchor_candidate(payload):
     return not text.startswith(".")
 
 
-def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC):
+def _resolve_identity_id_by_at_name(name):
+    target = str(name or "").strip().lstrip("@").lower()
+    if not target:
+        return 0
+    fallback = 0
+    for identity_id in get_identity_ids():
+        if not get_identity_enabled(identity_id):
+            continue
+        profile = get_send_as_profile(identity_id) or {}
+        username = str(profile.get("username") or "").strip().lstrip("@").lower()
+        label = str(profile.get("label") or "").strip().lstrip("@").lower()
+        daohao = str(profile.get("daohao") or "").strip().lstrip("@").lower()
+        if username == target:
+            return int(identity_id or 0)
+        if label == target or daohao == target:
+            fallback = int(identity_id or 0) or fallback
+    return fallback
+
+
+def find_recent_hehuan_partner_anchor_msg_id(
+    partner="",
+    now=None,
+    *,
+    max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC,
+    target_id=0,
+    require_game_topic=True,
+):
+    partner = _normalize_at_name(partner)
+    if not partner:
+        return 0
     now = float(now if now is not None else time.time())
     min_ts = now - max(1, int(max_age_sec or HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC))
     game_group_id = int(get_game_group_id() or 0)
+    partner_id = int(target_id or 0) or _resolve_identity_id_by_at_name(partner)
     for path in _recent_message_log_paths(now):
         if not os.path.exists(path):
             continue
@@ -453,9 +525,9 @@ def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR
                 continue
             if game_group_id and int(payload.get("chat_id", 0) or 0) != game_group_id:
                 continue
-            if not _is_game_topic_entry(payload):
+            if require_game_topic and not _is_game_topic_entry(payload):
                 continue
-            if not _is_baiji_log_entry(payload):
+            if not _is_named_log_entry(payload, partner, partner_id):
                 continue
             if not _is_baiji_anchor_candidate(payload):
                 continue
@@ -469,6 +541,26 @@ def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR
             if msg_id > 0:
                 return msg_id
     return 0
+
+
+def find_recent_baiji_anchor_msg_id(now=None, *, max_age_sec=HEHUAN_REPLY_ANCHOR_MAX_AGE_SEC):
+    return find_recent_hehuan_partner_anchor_msg_id(
+        HEHUAN_BAIJI_USERNAME,
+        now=now,
+        max_age_sec=max_age_sec,
+        target_id=HEHUAN_BAIJI_SEND_AS_ID,
+        require_game_topic=True,
+    )
+
+
+def _is_baiji_partner_name(name):
+    target = str(name or "").strip().lstrip("@").lower()
+    if not target:
+        return False
+    return target in {
+        str(HEHUAN_BAIJI_USERNAME or "").strip().lstrip("@").lower(),
+        str(HEHUAN_BAIJI_NAME or "").strip().lstrip("@").lower(),
+    }
 
 
 def find_baiji_identity_id():
@@ -578,6 +670,24 @@ def parse_hehuan_text(text, now=None, family=""):
     if not raw_text:
         return None
 
+    contract_match = RE_CONTRACT_DONE.search(raw_text)
+    if contract_match:
+        partner = _current_hehuan_partner_from_names(contract_match.group("first"), contract_match.group("second"))
+        return {
+            "path": PATH_TONGCAN,
+            "action": "缔结同参",
+            "result": "contract_success",
+            "summary": "同参契印已成",
+            "partner": partner,
+            "target": "",
+            "next_hehuan_time": 0,
+            "contract_until": float(now + HEHUAN_CONTRACT_SEC),
+            "heart_seal_until": 0,
+            "last_gains": {},
+            "last_contrib_gain": 0,
+            "last_insight": "",
+            "error": "",
+        }
     if "【温养双修" in raw_text:
         return _extract_warm_success(raw_text, now)
     if "契印感应" in raw_text and "温养双修" in raw_text:
@@ -750,20 +860,36 @@ def apply_hehuan_passive(text, now=None, family=""):
         return False
 
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
+    previous_partner = str(observed.get("last_partner") or "").strip()
+    previous_contract_until = float(observed.get("contract_until", 0) or 0)
+    previous_success_at = float(observed.get("last_warm_success_at", 0) or 0)
+    result = str(parsed.get("result") or "").strip().lower()
+    parsed_partner = str(parsed.get("partner") or "").strip()
     observed["last_observed_at"] = now
     observed["last_path"] = parsed.get("path") or observed.get("last_path", "")
     observed["last_action"] = parsed.get("action") or ""
     observed["last_result"] = parsed.get("result") or ""
     observed["last_summary"] = parsed.get("summary") or _short_summary(text)
-    observed["last_partner"] = parsed.get("partner") or ""
+    if parsed_partner:
+        observed["last_partner"] = parsed_partner
+    elif result in {"contract_invalid", "cooldown", "pending"} and previous_partner:
+        observed["last_partner"] = previous_partner
+    else:
+        observed["last_partner"] = ""
     observed["last_target"] = parsed.get("target") or ""
     observed["last_error"] = parsed.get("error") or ""
-    result = str(parsed.get("result") or "").strip().lower()
     action = str(parsed.get("action") or "").strip()
     if parsed.get("next_hehuan_time"):
         observed["next_hehuan_time"] = float(parsed.get("next_hehuan_time") or 0)
     if parsed.get("contract_until"):
-        observed["contract_until"] = max(0.0, float(parsed.get("contract_until") or 0))
+        parsed_contract_until = float(parsed.get("contract_until") or 0)
+        if result == "contract_invalid" and previous_partner:
+            fallback_until = previous_contract_until
+            if fallback_until <= now and previous_success_at > 0:
+                fallback_until = previous_success_at + HEHUAN_CONTRACT_SEC
+            observed["contract_until"] = max(0.0, fallback_until)
+        else:
+            observed["contract_until"] = max(0.0, parsed_contract_until)
     if parsed.get("heart_seal_until"):
         observed["heart_seal_until"] = float(parsed.get("heart_seal_until") or 0)
     observed["last_gains"] = parsed.get("last_gains") if isinstance(parsed.get("last_gains"), dict) else {}
@@ -778,6 +904,13 @@ def apply_hehuan_passive(text, now=None, family=""):
         observed["auto_last_error_at"] = 0
         _reset_hehuan_retry(observed)
         observed = _queue_hehuan_valuable_drop_reminders(observed, parsed, now)
+        auto_next_handled = True
+    elif result == "contract_success":
+        observed["next_hehuan_time"] = 0
+        observed["auto_next_time"] = float(now)
+        observed["auto_last_error"] = ""
+        observed["auto_last_error_at"] = 0
+        _reset_hehuan_retry(observed)
         auto_next_handled = True
     elif result == "cooldown":
         parsed_next_time = float(parsed.get("next_hehuan_time") or 0)
@@ -813,6 +946,12 @@ def apply_hehuan_passive(text, now=None, family=""):
                 now=now,
             )
         auto_next_handled = True
+    elif result == "contract_invalid" and observed.get("last_partner") and float(observed.get("contract_until", 0) or 0) > now:
+        observed["auto_next_time"] = float(now + 5 * 60)
+        observed["auto_last_error"] = "温养失败疑似错误锚点，已保留既有同参关系并等待新锚点"
+        observed["auto_last_error_at"] = float(now)
+        _reset_hehuan_auto_pending(observed)
+        auto_next_handled = True
     elif result == "pending":
         observed = _schedule_hehuan_retry(observed, now, "温养结算无最终推进")
         auto_next_handled = True
@@ -846,11 +985,40 @@ def _set_hehuan_auto_block(observed, now, reason, next_time=None):
 
 
 async def _ensure_hehuan_reply_anchor(observed, now):
+    partner = str((observed or {}).get("last_partner") or "").strip()
+    if partner:
+        anchor_msg_id = find_recent_hehuan_partner_anchor_msg_id(partner, now=now)
+        if anchor_msg_id > 0:
+            return anchor_msg_id, ""
+        partner_id = _resolve_identity_id_by_at_name(partner)
+        if partner_id <= 0:
+            return 0, f"缺少同参对象 {partner} 近10分钟游戏话题锚点，且无法定位本地身份，暂不裸发温养双修。"
+        anchor_requested_at = float((observed or {}).get("auto_anchor_requested_at", 0) or 0)
+        if now - anchor_requested_at < 60:
+            return 0, f"已请求同参对象 {partner} 发言锚点，等待监听入库。"
+        anchor_msg = await send_game_command(
+            HEHUAN_ANCHOR_TEXT,
+            track=False,
+            max_retry=0,
+            send_as_id=partner_id,
+            priority="normal",
+            source_module="合欢宗",
+            op_id=f"hehuan-anchor-{int(now)}",
+            delete_policy="manual_keep",
+        )
+        observed["auto_anchor_requested_at"] = float(now)
+        state["hehuan_observation"] = observed
+        save_state()
+        anchor_msg_id = int(getattr(anchor_msg, "id", 0) or 0) if anchor_msg else 0
+        if anchor_msg_id > 0:
+            return anchor_msg_id, ""
+        return 0, f"同参对象 {partner} 发言锚点发送失败，暂不裸发温养双修。"
+
     anchor_msg_id = find_recent_baiji_anchor_msg_id(now)
     if anchor_msg_id > 0:
         return anchor_msg_id, ""
 
-    return 0, ""
+    return 0, "缺少同参对象近10分钟游戏话题锚点，暂不裸发温养双修。"
 
 
 def _has_unresolved_hehuan_pending(observed, now):
@@ -1160,6 +1328,7 @@ __all__ = [
     "execute_hehuan_manual_action",
     "find_baiji_identity_id",
     "find_recent_baiji_anchor_msg_id",
+    "find_recent_hehuan_partner_anchor_msg_id",
     "get_hehuan_status_text",
     "looks_like_hehuan_text",
     "normalize_hehuan_observation",
