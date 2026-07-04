@@ -149,6 +149,44 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             self.assertEqual(1, identity_state["pending_tasks"][202]["retry"])
             self.assertEqual(1, identity_state["pending_tasks"][202]["max_retry"])
 
+    def test_pending_retry_keeps_original_pending_when_resend_not_sent(self):
+        send_as_id = 971012
+        now = 6100.0
+        state_module.ensure_identity_registered(send_as_id)
+        with state_module.use_identity(send_as_id) as identity_state:
+            identity_state["pending_tasks"] = {
+                211: {
+                    "cmd": ".测试指令",
+                    "sent_at": now - 20,
+                    "retry": 0,
+                    "timeout": 10,
+                    "reply_to_msg_id": 0,
+                    "priority": "normal",
+                }
+            }
+
+        with patch.object(runtime, "should_pause_for_bot_health", return_value=False), \
+             patch.object(runtime, "get_bot_last_seen_at", return_value=now), \
+             patch.object(runtime, "send_game_command", new=AsyncMock(return_value=None)) as send_mock, \
+             patch.object(runtime, "get_last_game_send_block", return_value={"code": "send_queue_timeout", "reason": ">60s"}), \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()):
+            asyncio.run(runtime.run_retry_scheduler(now, send_as_id=send_as_id))
+
+        send_mock.assert_awaited_once_with(
+            ".测试指令",
+            send_as_id=send_as_id,
+            priority=runtime.SEND_PRIORITY_RETRY,
+            max_retry=1,
+            reply_timeout=10,
+        )
+        with state_module.use_identity(send_as_id) as identity_state:
+            pending = identity_state["pending_tasks"]
+            self.assertIn(211, pending)
+            self.assertEqual(0, pending[211]["retry"])
+            self.assertEqual(now, pending[211]["sent_at"])
+            self.assertEqual(1, pending[211]["retry_send_blocked_count"])
+            self.assertEqual("send_queue_timeout", pending[211]["retry_send_blocked_code"])
+
     def test_pending_retry_preserves_send_intent_metadata(self):
         send_as_id = 971005
         now = 6500.0

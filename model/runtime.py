@@ -3488,6 +3488,17 @@ async def run_retry_scheduler(now, send_as_id=None):
                 continue
             with use_identity(identity_id) as identity_state:
                 current_item = identity_state["pending_tasks"].get(msg_id)
+                if current_item and not new_msg:
+                    current_item["sent_at"] = now
+                    current_item["timeout"] = threshold
+                    current_item["retry_send_blocked_at"] = now
+                    current_item["retry_send_blocked_count"] = int(current_item.get("retry_send_blocked_count", 0) or 0) + 1
+                    block = get_last_game_send_block(identity_id, cmd, max_age_sec=60)
+                    if block:
+                        current_item["retry_send_blocked_code"] = str(block.get("code") or "")
+                        current_item["retry_send_blocked_reason"] = str(block.get("reason") or "")[:160]
+                    mark_dirty()
+                    continue
                 if current_item:
                     identity_state["pending_tasks"].pop(msg_id, None)
                 if new_msg and new_msg.id in identity_state["pending_tasks"]:
