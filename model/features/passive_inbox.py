@@ -83,7 +83,7 @@ def _save_passive_stats():
     fd, tmp_path = tempfile.mkstemp(prefix=".passive_inbox_stats.", suffix=".tmp", dir=STATE_DIR)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fp:
-            json.dump(get_passive_inbox_snapshot(), fp, ensure_ascii=False, separators=(",", ":"))
+            json.dump(_get_passive_stats_payload(), fp, ensure_ascii=False, separators=(",", ":"))
         os.replace(tmp_path, PASSIVE_INBOX_STATS_FILE)
     finally:
         try:
@@ -328,8 +328,7 @@ def record_passive_inbox_event(
     return True
 
 
-def get_passive_inbox_snapshot():
-    contract_gap_summary = _build_contract_gap_summary()
+def _get_passive_stats_payload():
     return {
         "total": int(_passive_stats.get("total", 0) or 0),
         "changed": int(_passive_stats.get("changed", 0) or 0),
@@ -337,6 +336,13 @@ def get_passive_inbox_snapshot():
         "modules": dict(_passive_stats.get("modules") or {}),
         "skip_reasons": dict(_passive_stats.get("skip_reasons") or {}),
         "recent": list(_passive_stats.get("recent") or []),
+    }
+
+
+def get_passive_inbox_snapshot():
+    contract_gap_summary = _build_contract_gap_summary()
+    snapshot = {
+        **_get_passive_stats_payload(),
         "attention_total": int(contract_gap_summary.get("needs_attention_total", 0) or 0),
         "attention_external_observation_total": int(contract_gap_summary.get("external_observation_total", 0) or 0),
         "attention_weak_owner_hint_total": int(contract_gap_summary.get("weak_owner_hint_total", 0) or 0),
@@ -347,6 +353,7 @@ def get_passive_inbox_snapshot():
         "attention_recent": list(contract_gap_summary.get("latest") or []),
         "contract_gap_summary": contract_gap_summary,
     }
+    return snapshot
 
 
 def get_passive_inbox_status_text():

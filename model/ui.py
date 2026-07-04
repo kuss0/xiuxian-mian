@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import html
+import ipaddress
 import importlib.util
 import json
 import os
@@ -5926,6 +5927,16 @@ def _write_json_result(writer, ok, message, *, session_token=None, extra_headers
     _write_response(writer, status_line, body, content_type="application/json; charset=utf-8", extra_headers=extra_headers)
 
 
+def _is_loopback_peer(peer):
+    if not peer:
+        return False
+    host = peer[0] if isinstance(peer, (tuple, list)) and peer else peer
+    try:
+        return ipaddress.ip_address(str(host)).is_loopback
+    except ValueError:
+        return str(host).lower() == "localhost"
+
+
 async def handle_ui_http(reader, writer):
     peer = writer.get_extra_info("peername")
     method = ""
@@ -6010,9 +6021,9 @@ async def handle_ui_http(reader, writer):
             session, session_cookie_header = _get_authenticated_session(headers, now)
             auth_headers = [f"Set-Cookie: {session_cookie_header}"] if session_cookie_header else []
 
-            # 初始化模式：无账号且无身份时跳过认证，允许直接使用 UI
+            # 初始化模式只信任本机访问，避免公网首装窗口被抢绑账号。
             _setup_mode = not get_accounts() and not get_identity_ids()
-            if _setup_mode and session is None:
+            if _setup_mode and session is None and _is_loopback_peer(peer):
                 session = {"session_token": "__setup__", "sender_id": 0, "created_at": now, "last_active_at": now}
 
             if path == "/favicon.png":
