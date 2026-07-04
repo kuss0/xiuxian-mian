@@ -454,6 +454,44 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertEqual(observed["next_hehuan_time"], observed["auto_next_time"])
         self.assertEqual(0, observed["auto_retry_count"])
 
+    def test_cooldown_after_missing_final_edit_uses_latest_pending_start(self):
+        now = 1_780_000_000.0
+        last_success = now - 5400
+        pending_start = now - 1800
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_warm_success_at": last_success,
+                "contract_until": now + 3600,
+                "auto_retry_count": 1,
+                "recent": [
+                    {
+                        "ts": last_success,
+                        "path": "同参道",
+                        "action": "双修 温养",
+                        "result": "success",
+                    },
+                    {
+                        "ts": pending_start,
+                        "path": "同参道",
+                        "action": "双修 温养",
+                        "result": "pending",
+                    },
+                ],
+            }
+            changed = hehuan.apply_hehuan_passive(
+                real_text("hehuan.dual.cooldown"),
+                now=now,
+                family="hehuan_dual",
+            )
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual(pending_start + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+        self.assertEqual(observed["next_hehuan_time"], observed["auto_next_time"])
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertIn("上次起手+1小时", observed["auto_last_error"])
+
     def test_cooldown_with_stale_success_time_blocks_for_one_hour(self):
         now = 1_780_000_000.0
         last_success = now - hehuan.HEHUAN_WARM_OBSERVED_CD_SEC - 300

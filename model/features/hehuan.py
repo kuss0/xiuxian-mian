@@ -268,6 +268,23 @@ def _mark_hehuan_pending_ack(observed, now):
     return observed
 
 
+def _latest_hehuan_pending_warm_at(observed):
+    latest = 0.0
+    for item in (observed or {}).get("recent") or []:
+        if not isinstance(item, dict):
+            continue
+        action = str(item.get("action") or "").strip()
+        result = str(item.get("result") or "").strip().lower()
+        if action != "双修 温养" or result != "pending":
+            continue
+        try:
+            ts_value = float(item.get("ts") or 0)
+        except (TypeError, ValueError, OverflowError):
+            ts_value = 0.0
+        latest = max(latest, ts_value)
+    return latest
+
+
 def _block_hehuan_until(observed, until_ts, reason, now=None):
     now = float(now if now is not None else time.time())
     observed = normalize_hehuan_observation(observed)
@@ -936,20 +953,25 @@ def apply_hehuan_passive(text, now=None, family=""):
     elif result == "cooldown":
         parsed_next_time = float(parsed.get("next_hehuan_time") or 0)
         last_success_at = float(observed.get("last_warm_success_at", 0) or 0)
+        latest_pending_at = _latest_hehuan_pending_warm_at(observed)
+        latest_consumed_at = max(last_success_at, latest_pending_at)
         if parsed_next_time > 0:
             observed["next_hehuan_time"] = parsed_next_time
             observed["auto_next_time"] = max(parsed_next_time, now + 60)
             observed["auto_last_error"] = "心神尚未恢复，已按真实等待时间校准"
             observed["auto_last_error_at"] = float(now)
-            _reset_hehuan_auto_pending(observed)
-        elif last_success_at > 0:
-            corrected_next_time = float(last_success_at + HEHUAN_WARM_OBSERVED_CD_SEC)
+            _reset_hehuan_retry(observed)
+        elif latest_consumed_at > 0:
+            corrected_next_time = float(latest_consumed_at + HEHUAN_WARM_OBSERVED_CD_SEC)
             if corrected_next_time > now:
                 observed["next_hehuan_time"] = corrected_next_time
                 observed["auto_next_time"] = corrected_next_time
-                observed["auto_last_error"] = "心神尚未恢复，已按上次成功+1小时校准"
+                if latest_pending_at > last_success_at:
+                    observed["auto_last_error"] = "心神尚未恢复，已按上次起手+1小时校准"
+                else:
+                    observed["auto_last_error"] = "心神尚未恢复，已按上次成功+1小时校准"
                 observed["auto_last_error_at"] = float(now)
-                _reset_hehuan_auto_pending(observed)
+                _reset_hehuan_retry(observed)
             else:
                 corrected_next_time = float(now + HEHUAN_WARM_OBSERVED_CD_SEC)
                 observed = _block_hehuan_until(
