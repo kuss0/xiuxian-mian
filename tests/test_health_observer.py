@@ -134,6 +134,23 @@ class HealthObserverTests(unittest.TestCase):
         self.assertFalse(health_observer.is_hard_journal_line(line))
         self.assertTrue(health_observer.is_warn_journal_line(line))
 
+    def test_persistent_timestamp_outdated_is_not_hard(self):
+        line = (
+            "Jul 04 23:21:43 pve python[1721578]: Telegram is having internal issues "
+            "PersistentTimestampOutdatedError: Persistent timestamp outdated "
+            "(caused by GetChannelDifferenceRequest)"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+
+    def test_getting_difference_value_error_is_not_hard(self):
+        line = (
+            "Jul 04 23:21:56 pve python[1721578]: Getting difference for channel updates 1828482465 "
+            "caused ValueError; ending getting difference prematurely until server issues are resolved"
+        )
+
+        self.assertFalse(health_observer.is_hard_journal_line(line))
+
     def test_hard_line_ignores_explore_rift_storm_result(self):
         self.assertFalse(
             health_observer.is_hard_journal_line(
@@ -936,6 +953,33 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("error", wild["status"])
         self.assertTrue(wild["next"][0]["lag_without_anchor"])
         self.assertTrue(any("调度滞后" in detail for detail in wild["details"]))
+
+    def test_module_summary_ignores_disabled_identity(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, wild_training_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_wild_training_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    wild_training_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    wild_training_reply_due_at REAL NOT NULL DEFAULT 0,
+                    wild_training_last_result TEXT NOT NULL DEFAULT '',
+                    wild_training_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username, enabled) VALUES(42, 'paused', 0)")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, wild_training_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_wild_training_time) VALUES(42, ?)", (now - 700,))
+            conn.execute("INSERT INTO identity_runtime_state(send_as_id, wild_training_last_result) VALUES(42, '修为+2544')")
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        self.assertFalse(any(item["identity_id"] == 42 for item in summary))
 
     def test_module_summary_does_not_flag_overdue_next_time_with_pending_anchor(self):
         now = 1_780_500_000.0

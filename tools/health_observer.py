@@ -28,7 +28,7 @@ LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
 BENIGN_HARD_CONTEXT_PATTERN = re.compile(
-    r"already fused:|探寻裂缝结果：遭遇风暴|answerCallbackQuery failed:.*query is too old and response timeout expired",
+    r"already fused:|探寻裂缝结果：遭遇风暴|answerCallbackQuery failed:.*query is too old and response timeout expired|Telegram is having internal issues PersistentTimestampOutdatedError|Getting difference for channel updates .* caused ValueError; ending getting difference prematurely until server issues are resolved",
     re.I,
 )
 BENIGN_WARN_CONTEXT_PATTERN = re.compile(
@@ -1063,6 +1063,8 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
         modules = module_rows.get(identity_id, {})
         username = str(identity.get("username") or "").strip()
         label = str(identity.get("label") or "").strip()
+        if "enabled" in identity and not boolish(identity.get("enabled")):
+            continue
 
         def value_for(key: str) -> object:
             if key in runtime:
