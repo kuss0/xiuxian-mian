@@ -164,6 +164,8 @@ CONCUBINE_GREET_DEFER_MIN_SEC = 60
 CONCUBINE_GREET_DEFER_MAX_SEC = 180
 CONCUBINE_ACTIVE_DEFER_MIN_SEC = 60
 CONCUBINE_ACTIVE_DEFER_MAX_SEC = 180
+CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC = 60
+CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC = 180
 CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC = 45
 PHASEFUL_SUMMARY_GUARD_PHASES = {"summary_due", "observing_summary", "waiting_summary", "post_summary_wait"}
 CONCUBINE_PARTNER_SNAPSHOT_KEYS = (
@@ -2075,6 +2077,75 @@ def _find_logged_pending_reply(now, phase):
     return found
 
 
+def _find_recent_logged_sent_command(now, command, *, lookback_sec=None):
+    command_text = str(command or "").strip()
+    if not command_text:
+        return None
+    try:
+        lookback = float(lookback_sec or (CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC + 30))
+    except (TypeError, ValueError):
+        lookback = CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC + 30
+    end_ts = float(now or 0) + CONCUBINE_LOG_REPLAY_LOOKAHEAD_SEC
+    start_ts = max(0.0, float(now or 0) - max(5.0, lookback))
+    expected_family = _concubine_family_for_command(command_text)
+    found = None
+    for payload in _iter_message_log_entries_between(start_ts, end_ts):
+        if not _payload_matches_game_topic(payload):
+            continue
+        event_ts = _parse_message_log_ts(payload.get("ts"))
+        if event_ts <= 0 or event_ts < start_ts or event_ts > end_ts:
+            continue
+        event_type = str(payload.get("event_type") or "").strip()
+        if event_type not in {"sent", "message"}:
+            continue
+        if str(payload.get("text") or "").strip() != command_text:
+            continue
+        if not _sender_matches_current_identity(payload.get("sender_id")):
+            continue
+        payload_family = str(payload.get("family") or "").strip()
+        if payload_family and expected_family and payload_family != expected_family:
+            continue
+        msg_id = _msg_id_int(payload.get("message_id"))
+        if msg_id <= 0:
+            continue
+        if found is None or event_ts > float(found.get("ts", 0) or 0):
+            found = {
+                "ts": event_ts,
+                "message_id": msg_id,
+                "event_type": event_type,
+                "family": payload_family or expected_family,
+            }
+    return found
+
+
+async def _recover_sent_command_after_empty_send(now, phase, command, state_key, *, label, decision):
+    logged = _find_recent_logged_sent_command(now, command)
+    if not logged:
+        return False
+    event_ts = float(logged.get("ts") or now)
+    msg_id = _msg_id_int(logged.get("message_id"))
+    if msg_id <= 0:
+        return False
+    _set_phase(phase)
+    state[state_key] = msg_id
+    state["next_concubine_time"] = max(event_ts + CONCUBINE_PHASE_TIMEOUT_SEC, float(now or 0) + 10)
+    _record_concubine_event(
+        f"{label}发送回捞",
+        kind="changed",
+        reason="logged_sent_after_empty_send",
+        phase=phase,
+        command=command,
+        msg_id=msg_id,
+        detail=f"event_type={logged.get('event_type')}｜sent_at={fmt_abs_ts(event_ts)}",
+        decision=decision,
+        workflow_status="pending",
+    )
+    if await _recover_concubine_pending_from_message_log(now, phase):
+        return True
+    save_state()
+    return True
+
+
 def _find_logged_heart_anchor_lost(now):
     if _phase() not in CONCUBINE_HEART_ACTIVE_PHASES:
         return None
@@ -3347,15 +3418,31 @@ async def _send_dream_command(now):
             )
             save_state()
             return False
+        if await _recover_sent_command_after_empty_send(
+            sent_at,
+            "dream_pending",
+            CMD_CONCUBINE_DREAM,
+            "concubine_dream_msg_id",
+            label="入梦寻图",
+            decision="dream_sent_recovered_after_empty_send",
+        ):
+            return True
         state["concubine_last_error"] = "发送 .入梦寻图 失败"
         _set_phase("idle")
-        _backoff_after_pending_timeout(sent_at, "dream_pending")
+        retry_at = _schedule_after(
+            sent_at,
+            CONCUBINE_SEND_FAILURE_RETRY_MIN_SEC,
+            CONCUBINE_SEND_FAILURE_RETRY_MAX_SEC,
+        )
+        if float(state.get("concubine_dream_due_at", 0) or 0) <= sent_at:
+            state["concubine_dream_due_at"] = retry_at
         _record_concubine_event(
             "入梦寻图发送失败",
             kind="skipped",
             reason="concubine_send_failed",
             phase="idle",
             command=CMD_CONCUBINE_DREAM,
+            detail=f"retry_at={fmt_abs_ts(retry_at)}",
             decision="dream_send_failed",
             workflow_status="failed",
         )
