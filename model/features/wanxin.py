@@ -115,7 +115,8 @@ WANXIN_ACTION_COOLDOWN_SEC = {
 }
 
 RE_WANXIN_STAGE = re.compile(r"阶段[:：]\s*(?P<stage>[^\n]+)")
-RE_WANXIN_VALUE = re.compile(r"(?P<name>婉心|魂封|月魄|咒源)[:：]\s*(?P<value>\d+)")
+RE_WANXIN_STAGE_INLINE = re.compile(r"婉心封魂[:：]\s*(?P<stage>[^\n|]+)")
+RE_WANXIN_VALUE = re.compile(r"(?P<name>婉心|魂封|月魄|咒源)\s*(?:[:：]\s*)?(?P<value>\d+)")
 RE_COMMISSION_ID = re.compile(r"委托\s*ID[:：]\s*(?P<id>\d+)")
 RE_EXISTING_COMMISSION_ID = re.compile(r"解咒委托[（(]\s*ID[:：]?\s*(?P<id>\d+)")
 RE_ACCEPT_CONTRACT = re.compile(r"阴罗宗弟子\s*@(?P<helper>[\w\d_]+)\s*已接取\s*@(?P<owner>[\w\d_]+)\s*的解咒委托")
@@ -413,10 +414,18 @@ def looks_like_wanxin_text(text):
         "阴罗辨咒",
         "借幡镇魂",
         "剥离咒源",
+        "剥离咒源失败",
         "咒源尚未辨明",
         "探望南宫婉",
         "护持神魂",
         "月殿余咒",
+        "阴罗咒源",
+        "玄冰丹方",
+        "婉影觉醒",
+        "北冥小极宫",
+        "北冥寒令",
+        "封魂咒纹变化极慢",
+        "咒源剥离牵涉神魂反噬",
     ))
 
 
@@ -424,6 +433,8 @@ def _parse_panel_values(text):
     raw = str(text or "")
     values = {}
     stage_match = RE_WANXIN_STAGE.search(raw)
+    if not stage_match:
+        stage_match = RE_WANXIN_STAGE_INLINE.search(raw)
     if stage_match:
         values["stage"] = stage_match.group("stage").strip()
     for match in RE_WANXIN_VALUE.finditer(raw):
@@ -461,6 +472,23 @@ def _wait_until_from_text(text, now, fallback_sec):
     return float(now + fallback_sec)
 
 
+def _cooldown_action_from_text(text):
+    raw = str(text or "")
+    if "借幡镇魂" in raw:
+        return WANXIN_ACTION_BANNER
+    if "剥离咒源" in raw or "咒源剥离" in raw:
+        return WANXIN_ACTION_STRIP
+    if "辨认咒纹" in raw or "阴罗辨咒" in raw or "辨咒" in raw:
+        return WANXIN_ACTION_IDENTIFY
+    if "推演封魂咒" in raw or "封魂咒纹变化极慢" in raw or ("咒纹" in raw and "推演" in raw):
+        return WANXIN_ACTION_DEDUCE
+    if "护持神魂" in raw or ("神魂" in raw and "冷却" in raw):
+        return WANXIN_ACTION_PROTECT
+    if "探望南宫婉" in raw:
+        return WANXIN_ACTION_VISIT
+    return ""
+
+
 def parse_wanxin_text(text, now=None, family=""):
     now = float(now if now is not None else time.time())
     raw = str(text or "").strip()
@@ -480,6 +508,7 @@ def parse_wanxin_text(text, now=None, family=""):
         "source_gain": 0,
         "seal_down": 0,
         "moon_gain": 0,
+        "cooldown_action": "",
         "summary": "",
     }
 
@@ -491,6 +520,12 @@ def parse_wanxin_text(text, now=None, family=""):
         return parsed
     if "【婉心封魂】" in raw:
         parsed.update({"type": "panel", "available": "yes", "summary": "婉心状态"})
+        return parsed
+    if "【婉影觉醒】" in raw:
+        parsed.update({"type": "awakened", "available": "yes", "summary": "婉影觉醒"})
+        return parsed
+    if "你没有【北冥寒令】" in raw or "无法开启北冥小极宫" in raw:
+        parsed.update({"type": "beiming_blocked", "available": "yes", "summary": "缺少北冥寒令"})
         return parsed
     if "【解咒委托已发布】" in raw:
         match = RE_COMMISSION_ID.search(raw)
@@ -546,6 +581,16 @@ def parse_wanxin_text(text, now=None, family=""):
             "summary": "借幡镇魂成功",
         })
         return parsed
+    if "【剥离咒源失败】" in raw:
+        contrib_match = RE_CONTRIB_GAIN.search(raw)
+        parsed.update({
+            "type": "assist_strip_failed",
+            "available": "yes",
+            "target_username": _parse_target_username(raw),
+            "contrib_gain": _safe_int(contrib_match.group("gain"), 0) if contrib_match else 0,
+            "summary": "剥离咒源失败",
+        })
+        return parsed
     if "【剥离咒源】" in raw or "剥离阴罗残咒" in raw:
         contrib_match = RE_CONTRIB_GAIN.search(raw)
         parsed.update({
@@ -577,11 +622,22 @@ def parse_wanxin_text(text, now=None, family=""):
             "summary": "协助身份不是阴罗宗",
         })
         return parsed
-    if has_wait_time(raw) and ("封魂" in raw or "咒纹" in raw or "神魂" in raw or "南宫婉" in raw or "咒师" in raw):
+    if has_wait_time(raw) and (
+        "封魂" in raw
+        or "咒纹" in raw
+        or "神魂" in raw
+        or "南宫婉" in raw
+        or "咒师" in raw
+        or "辨认咒纹" in raw
+        or "借幡镇魂" in raw
+        or "剥离咒源" in raw
+        or "咒源剥离" in raw
+    ):
         parsed.update({
             "type": "cooldown",
             "available": "yes",
             "next_time": _wait_until_from_text(raw, now, WANXIN_RECOVERY_RETRY_SEC),
+            "cooldown_action": _cooldown_action_from_text(raw),
             "summary": "冷却中",
         })
         return parsed
@@ -1177,6 +1233,7 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         _clear_pending(observed)
     elif ptype == "cooldown":
         next_time = float(parsed.get("next_time", 0) or now + WANXIN_RECOVERY_RETRY_SEC)
+        action = parsed.get("cooldown_action") or action
         _set_cooldown_from_reply(observed, action, next_time)
         observed["auto_last_result"] = f"{WANXIN_ACTION_LABELS.get(action, '婉心动作')}冷却中"
         observed["auto_last_error"] = ""
@@ -1225,7 +1282,7 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["auto_last_error"] = ""
             _clear_pending(observed)
             _schedule_next(observed, now)
-        elif ptype in {"assist_identify_success", "assist_banner_success", "assist_strip_success"}:
+        elif ptype in {"assist_identify_success", "assist_banner_success", "assist_strip_success", "assist_strip_failed"}:
             if ptype == "assist_identify_success":
                 action = WANXIN_ACTION_IDENTIFY
             elif ptype == "assist_banner_success":
@@ -1235,10 +1292,10 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             _apply_success_cooldown(observed, action, now, parsed)
             observed["assist"]["last_action"] = action
             observed["assist"]["last_result"] = parsed.get("summary") or "协助成功"
-            observed["assist"]["last_error"] = ""
+            observed["assist"]["last_error"] = "" if ptype != "assist_strip_failed" else parsed.get("summary") or "剥离咒源失败"
             observed["assist"]["last_contrib_gain"] = int(parsed.get("contrib_gain", 0) or 0)
             observed["auto_last_result"] = parsed.get("summary") or "协助成功"
-            observed["auto_last_error"] = ""
+            observed["auto_last_error"] = "" if ptype != "assist_strip_failed" else parsed.get("summary") or "剥离咒源失败"
             _clear_pending(observed)
             _schedule_next(observed, now)
         elif ptype == "assist_strip_blocked":
@@ -1267,6 +1324,7 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             _clear_pending(observed)
         elif ptype == "cooldown":
             next_time = float(parsed.get("next_time", 0) or now + WANXIN_RECOVERY_RETRY_SEC)
+            action = parsed.get("cooldown_action") or action
             _set_cooldown_from_reply(observed, action, next_time)
             observed["auto_last_result"] = f"{WANXIN_ACTION_LABELS.get(action, '协助动作')}冷却中"
             observed["auto_last_error"] = ""

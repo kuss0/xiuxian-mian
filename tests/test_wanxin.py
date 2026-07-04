@@ -48,6 +48,52 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(2, parsed["values"]["moon_soul"])
         self.assertEqual(31, parsed["values"]["curse_source"])
 
+    def test_parse_awakened_pipe_values(self):
+        parsed = wanxin.parse_wanxin_text(
+            "【婉影觉醒】\n【南宫婉】已觉醒为 【南宫婉·月影】。\n"
+            "婉心封魂：月殿余咒（封魂未解）\n婉心 82 | 魂封 25 | 月魄 1 | 咒源 11",
+            now=1_800_000_000.0,
+        )
+
+        self.assertEqual("awakened", parsed["type"])
+        self.assertEqual("月殿余咒（封魂未解）", parsed["values"]["stage"])
+        self.assertEqual(82, parsed["values"]["wanxin"])
+        self.assertEqual(25, parsed["values"]["soul_seal"])
+        self.assertEqual(1, parsed["values"]["moon_soul"])
+        self.assertEqual(11, parsed["values"]["curse_source"])
+
+    def test_parse_real_wanxin_cooldown_actions(self):
+        now = 1_800_000_000.0
+        strip = wanxin.parse_wanxin_text(
+            "咒源剥离牵涉神魂反噬，不可连续施展。剥离咒源 冷却 8 小时，请在 7小时57分钟16秒 后再试。",
+            now=now,
+        )
+        banner = wanxin.parse_wanxin_text(
+            "此咒契刚借幡镇魂过，阴煞尚未归位。借幡镇魂 冷却 6 小时，请在 5小时59分钟10秒 后再试。",
+            now=now,
+        )
+        deduce = wanxin.parse_wanxin_text(
+            "封魂咒纹变化极慢，请在 7小时2分钟37秒 后再推演。",
+            now=now,
+        )
+
+        self.assertEqual(("cooldown", "strip"), (strip["type"], strip["cooldown_action"]))
+        self.assertEqual(("cooldown", "banner"), (banner["type"], banner["cooldown_action"]))
+        self.assertEqual(("cooldown", "deduce"), (deduce["type"], deduce["cooldown_action"]))
+        self.assertGreater(strip["next_time"], now + 7 * 3600)
+
+    def test_parse_strip_failed_real_reply(self):
+        parsed = wanxin.parse_wanxin_text(
+            "【剥离咒源失败】\n阴罗残咒反噬，@Weeguu 魂封 +4。\n\n"
+            "阶段：阴罗咒源（封魂未解）\n婉心：83\n魂封：4\n月魄：11\n咒源：60",
+            now=1_800_000_000.0,
+        )
+
+        self.assertEqual("assist_strip_failed", parsed["type"])
+        self.assertEqual("Weeguu", parsed["target_username"])
+        self.assertEqual(4, parsed["values"]["soul_seal"])
+        self.assertEqual(60, parsed["values"]["curse_source"])
+
     def test_parse_commission_existing_and_assist_success(self):
         existing = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 5），不可重复发布。")
         identify = wanxin.parse_wanxin_text("【阴罗辨咒】\n@sanshaoyedejian1 替 @jfdffdddd 锁定咒源。咒源 +20，咒师贡献 +120。")
@@ -546,6 +592,42 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["wanxin_observation"]
             self.assertGreater(observed["next_deduce_time"], now + 7 * 3600)
             self.assertLessEqual(observed["auto_next_time"], now + wanxin.WANXIN_CHAIN_STEP_SEC)
+
+    async def test_assist_cooldown_reply_sets_specific_action(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_500.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "pending": {
+                    "action": "banner",
+                    "family": "wanxin_assist_banner",
+                    "msg_id": 8005,
+                    "send_as_id": helper_id,
+                    "reply_due_at": now + 60,
+                },
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "assist": {
+                    "send_as_id": helper_id,
+                    "last_anchor_msg_id": 8001,
+                    "last_anchor_at": now,
+                    "next_banner_time": now - 1,
+                },
+            }
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "此咒契刚借幡镇魂过，阴煞尚未归位。借幡镇魂 冷却 6 小时，请在 5小时59分钟10秒 后再试。",
+                    now,
+                    reply_to=SimpleNamespace(id=8005, raw_text=".借幡镇魂"),
+                    matched_family="wanxin_assist_banner",
+                    result_msg_id=8006,
+                )
+
+            self.assertTrue(handled)
+            observed = state_module.state["wanxin_observation"]
+            self.assertGreater(observed["assist"]["next_banner_time"], now + 5 * 3600)
+            self.assertEqual({}, observed["pending"])
 
 if __name__ == "__main__":
     unittest.main()
