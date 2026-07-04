@@ -681,7 +681,14 @@ def _pending_blocks(observed, now):
     msg_id = _safe_int(pending.get("msg_id"), 0)
     label = WANXIN_ACTION_LABELS.get(action, action)
     if msg_id > 0:
-        _apply_uncertain_action_backoff(observed, action, now, f"{label} 回复超时，按冷却保守退避", result="回复超时，按冷却保守退避")
+        retry_at = float(now + WANXIN_RECOVERY_RETRY_SEC)
+        if action:
+            _set_next_time_for_action(observed, action, retry_at)
+        observed["auto_next_time"] = retry_at
+        observed["auto_last_action"] = action
+        observed["auto_last_result"] = "回复超时，短退避后校准"
+        observed["auto_last_error"] = f"{label} 回复超时，未按技能冷却锁定"
+        _push_recent(observed, now, action, "timeout_short_backoff", observed["auto_last_error"])
     else:
         observed["auto_last_action"] = action
         observed["auto_last_error"] = f"{label} 回复超时"

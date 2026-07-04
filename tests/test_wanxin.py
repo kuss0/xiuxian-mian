@@ -346,7 +346,8 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["wanxin_observation"]
             self.assertEqual({}, observed["pending"])
             self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
-            self.assertGreaterEqual(observed["next_protect_time"], now + wanxin.WANXIN_PROTECT_CD_SEC)
+            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
+            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
 
     async def test_global_cleanup_clears_expired_pending_across_identities(self):
         first_id = self._prepare_identity(301299112, username="jfdffdddd")
@@ -377,7 +378,8 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 observed = state_module.state["wanxin_observation"]
                 self.assertEqual({}, observed["pending"])
                 self.assertIn("护持神魂 回复超时", observed["auto_last_error"])
-                self.assertGreaterEqual(observed["next_protect_time"], now + wanxin.WANXIN_PROTECT_CD_SEC)
+                self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
+                self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
 
     async def test_scheduler_stops_after_pending_timeout_without_next_send(self):
         identity_id = self._prepare_identity()
@@ -407,7 +409,40 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             send_mock.assert_not_awaited()
             observed = state_module.state["wanxin_observation"]
             self.assertEqual({}, observed["pending"])
-            self.assertGreaterEqual(observed["next_protect_time"], now + wanxin.WANXIN_PROTECT_CD_SEC)
+            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_protect_time"])
+            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
+
+    async def test_deduce_pending_timeout_uses_short_backoff_not_full_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_800_000_091.0
+        with state_module.use_identity(identity_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "pending": {
+                    "action": "deduce",
+                    "family": "wanxin_deduce",
+                    "msg_id": 7402,
+                    "send_as_id": identity_id,
+                    "reply_due_at": now - 1,
+                },
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now - 1,
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "close_action_guard_by_family"),
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual({}, observed["pending"])
+            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["next_deduce_time"])
+            self.assertEqual(now + wanxin.WANXIN_RECOVERY_RETRY_SEC, observed["auto_next_time"])
+            self.assertIn("未按技能冷却锁定", observed["auto_last_error"])
 
     async def test_scheduler_recovers_owner_pending_reply_from_message_log(self):
         identity_id = self._prepare_identity()
