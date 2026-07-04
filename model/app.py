@@ -1435,7 +1435,12 @@ async def _run_due_stargazer_followup_schedulers(now, *, limit=DUE_STARGAZER_FOL
             )
         except asyncio.TimeoutError:
             with use_identity(identity_id):
-                state["stargazer_last_action"] = f"due_followup_timeout_{action}"
+                # wait_for cancels the inner scheduler.  The stargazer scheduler may
+                # already have cleared the queued action before entering the send
+                # queue, so restore it here; otherwise the next due scan sees a
+                # deadline with no action and drops the chain for an hour.
+                state["stargazer_last_action"] = f"queue_{action}"
+                state["stargazer_queued_action"] = str(action or "").strip()
                 state["stargazer_followup_due_at"] = float(time.time()) + 30
                 mark_dirty()
             profile = get_send_as_profile(identity_id)

@@ -363,6 +363,41 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         scheduler_mock.assert_awaited_once()
         self.assertEqual([(due_identity_id, now)], seen)
 
+    async def test_due_stargazer_followup_timeout_preserves_queued_action(self):
+        identity_id = 991784
+        now = 1_700_000_000.0
+        state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_followup_due_at"] = now - 3
+            state_module.state["stargazer_queued_action"] = "panel"
+            state_module.state["stargazer_last_action"] = "queue_panel"
+
+        async def slow_stargazer_scheduler(_scheduler_now):
+            with state_module.use_identity(identity_id):
+                state_module.state["stargazer_followup_due_at"] = 0
+                state_module.state["stargazer_queued_action"] = ""
+                state_module.state["stargazer_last_action"] = "panel"
+            await asyncio.sleep(10)
+
+        with (
+            patch.object(app, "DUE_STARGAZER_FOLLOWUP_SCHEDULER_TIMEOUT_SEC", 0.01),
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_stargazer_scheduler", new=AsyncMock(side_effect=slow_stargazer_scheduler)),
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_stargazer_followup_schedulers(now, limit=1)
+
+        with state_module.use_identity(identity_id):
+            self.assertEqual("panel", state_module.state["stargazer_queued_action"])
+            self.assertEqual("queue_panel", state_module.state["stargazer_last_action"])
+            self.assertEqual(now + 30, state_module.state["stargazer_followup_due_at"])
+
     async def test_phaseful_catchup_runs_before_ordinary_when_due_during_long_cycle(self):
         identity_id = 991779
         state_module.ensure_identity_registered(identity_id)
