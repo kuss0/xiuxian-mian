@@ -771,7 +771,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             harvest_mock.assert_awaited_once_with(now)
 
-    async def test_manifest_refresh_rechecks_every_minute_until_prayer(self):
+    async def test_manifest_refresh_rechecks_every_ten_minutes_until_prayer(self):
         send_as_id = 8659059195
         now = 3050.0
         state_module.ensure_identity_registered(send_as_id)
@@ -788,7 +788,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_manifest_enabled"] = True
             state_module.state["small_world_refresh_enabled"] = True
             with (
-                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
                 patch.object(small_world, "save_state"),
             ):
                 handled = await small_world._handle_panel_decision(now, panel)
@@ -796,9 +796,9 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
             self.assertEqual(1, state_module.state["small_world_refresh_count"])
-            self.assertEqual(now + 60, state_module.state["next_small_world_time"])
+            self.assertEqual(now + small_world.SMALL_WORLD_REFRESH_MIN_SEC, state_module.state["next_small_world_time"])
 
-    async def test_manifest_refresh_round_pauses_five_minutes_then_continues(self):
+    async def test_manifest_refresh_round_pauses_ten_minutes_then_continues(self):
         send_as_id = 8659059195
         now = 3055.0
         state_module.ensure_identity_registered(send_as_id)
@@ -830,7 +830,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
                 now + small_world.SMALL_WORLD_REFRESH_ROUND_PAUSE_SEC,
                 state_module.state["next_small_world_time"],
             )
-            self.assertIn("5 分钟后继续刷新", state_module.state["small_world_last_error"])
+            self.assertIn("10 分钟后继续刷新", state_module.state["small_world_last_error"])
 
     async def test_manifest_refresh_preempts_daily_preach_maintenance(self):
         send_as_id = 8659059196
@@ -852,7 +852,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             state_module.state["small_world_preach_enabled"] = True
             with (
                 patch.object(small_world, "_send_small_world_preach", new=AsyncMock()) as preach_mock,
-                patch.object(small_world.random, "uniform", return_value=60),
+                patch.object(small_world.random, "uniform", side_effect=lambda min_sec, max_sec: min_sec),
                 patch.object(small_world, "save_state"),
             ):
                 handled = await small_world._handle_panel_decision(now, panel)
@@ -861,7 +861,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             preach_mock.assert_not_awaited()
             self.assertEqual("refresh_wait", state_module.state["small_world_phase"])
             self.assertEqual("", state_module.state["small_world_pending_god_action"])
-            self.assertEqual(now + 60, state_module.state["next_small_world_time"])
+            self.assertEqual(now + small_world.SMALL_WORLD_REFRESH_MIN_SEC, state_module.state["next_small_world_time"])
 
     async def test_send_harvest_waits_for_reply_before_changing_inventory(self):
         send_as_id = 8659059293
@@ -1758,7 +1758,7 @@ class SmallWorldTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCase):
             relief_mock.assert_awaited_once_with(now, "灾害: 地脉翻身，赈灾安抚")
             query_mock.assert_not_awaited()
 
-    async def test_scheduler_sends_next_refresh_round_after_five_minute_pause(self):
+    async def test_scheduler_sends_next_refresh_round_after_ten_minute_pause(self):
         send_as_id = 8659059316
         now = 4275.0
         state_module.ensure_identity_registered(send_as_id)
