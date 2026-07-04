@@ -744,6 +744,9 @@ def _recover_wild_training_from_message_log(now):
         if direct_reply and direct_reply.get("kind") == "cooldown":
             _apply_wild_training_cooldown(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
             return "cooldown"
+        if direct_reply and direct_reply.get("kind") == "result":
+            _apply_wild_training_result(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
+            return "result"
         return ""
     result_entry = _find_logged_entry_by_msg_id(start_entry["msg_id"], now, result=True)
     if result_entry:
@@ -788,6 +791,33 @@ def _recover_unknown_wild_training_from_message_log(now):
         float(start_entry["ts"] or now) + WILD_TRAINING_REPLY_TIMEOUT_SEC,
     )
     return "start"
+
+
+def _recover_cleared_wild_training_retry_from_message_log(now):
+    if int(state.get("wild_training_retry_count", 0) or 0) <= 0:
+        return ""
+    last_error = str(state.get("wild_training_last_error") or "")
+    match = re.search(r"原消息ID=(\d+)", last_error)
+    if not match:
+        return ""
+    command_msg_id = int(match.group(1) or 0)
+    if command_msg_id <= 0:
+        return ""
+    direct_reply = _find_logged_reply_for_command(command_msg_id, now)
+    if direct_reply and direct_reply.get("kind") == "cooldown":
+        _apply_wild_training_cooldown(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
+        return "cooldown"
+    if direct_reply and direct_reply.get("kind") == "result":
+        _apply_wild_training_result(direct_reply["text"], direct_reply["ts"] or now, direct_reply["msg_id"])
+        return "result"
+    start_entry = _find_logged_start_for_command(command_msg_id, now)
+    if not start_entry:
+        return ""
+    result_entry = _find_logged_entry_by_msg_id(start_entry["msg_id"], now, result=True)
+    if result_entry:
+        _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
+        return "result"
+    return ""
 
 
 async def handle_wild_training_reply(text, now, reply_to, matched_family=None, current_msg_id=None):
@@ -989,6 +1019,11 @@ async def _cleanup_wild_training_pending_timeout(now):
 
     reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
     if reply_to_msg_id <= 0:
+        recovered = _recover_cleared_wild_training_retry_from_message_log(now)
+        if recovered in {"result", "cooldown"}:
+            save_state()
+            await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
+            return True
         return False
     recovered = _recover_wild_training_from_message_log(now)
     if recovered in {"result", "cooldown"}:
