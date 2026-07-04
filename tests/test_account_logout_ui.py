@@ -25,7 +25,7 @@ def test_sidebar_logout_entry_has_modal_and_handler():
 def test_account_logout_script_loads_after_main_app_script():
     html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
 
-    app_index = html.index("<script src='/static/js/app.js'></script>")
-    logout_index = html.index("<script src='/static/js/account_logout.js'></script>")
+    app_index = html.index("/static/js/app.js")
+    logout_index = html.index("/static/js/account_logout.js")
 
     assert app_index < logout_index

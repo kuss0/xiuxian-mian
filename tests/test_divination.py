@@ -1906,8 +1906,8 @@ class DivinationTests(unittest.TestCase):
         html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
         script = (PROJECT_ROOT / "model/web/static/js/divination_ui.js").read_text(encoding="utf-8")
 
-        app_index = html.index("<script src='/static/js/app.js'></script>")
-        divination_index = html.index("<script src='/static/js/divination_ui.js'></script>")
+        app_index = html.index("/static/js/app.js")
+        divination_index = html.index("/static/js/divination_ui.js")
 
         self.assertLess(app_index, divination_index)
         self.assertIn("renderModules", script)

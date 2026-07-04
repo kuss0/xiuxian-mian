@@ -4243,6 +4243,23 @@ def _load_new_static_asset(asset_path):
     return _load_static_asset_from(UI_NEW_STATIC_DIR, asset_path)
 
 
+def _ui_static_asset_version():
+    latest = 0
+    for static_dir in (UI_STATIC_DIR, UI_NEW_STATIC_DIR):
+        try:
+            for root, _dirs, files in os.walk(static_dir):
+                for file_name in files:
+                    if not file_name.endswith((".js", ".css")):
+                        continue
+                    try:
+                        latest = max(latest, int(os.path.getmtime(os.path.join(root, file_name))))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return str(latest or int(time.time()))
+
+
 def _build_session_cookie_header(session_token, *, clear=False):
     cookie = SimpleCookie()
     cookie[UI_AUTH_COOKIE_NAME] = "" if clear else (session_token or "")
@@ -4347,6 +4364,7 @@ def render_ui_page(message="", selected_send_as_id=None, session_token=None, var
             "boot_data": boot_data,
             "ui_auto_refresh_sec": html_escape(str(UI_AUTO_REFRESH_SEC)),
             "poll_interval_ms": int(UI_AUTO_REFRESH_SEC) * 1000,
+            "asset_version": html_escape(_ui_static_asset_version()),
             "new_ui_css_link": "<link rel='stylesheet' href='/static-new/css/app.css' />" if is_new_variant else "",
             "ui_body_class": "ui-new" if is_new_variant else "ui-legacy",
             "ui_mode_link": ui_mode_link,

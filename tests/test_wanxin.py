@@ -222,7 +222,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "next_visit_time": now + 3600,
                 "next_protect_time": now + 3600,
                 "next_deduce_time": now + 3600,
-                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd", "helper_username": "sanshaoyedejian1"},
                 "assist": {
                     "send_as_id": helper_id,
                     "last_anchor_msg_id": 8101,
@@ -276,7 +276,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "next_visit_time": now + 3600,
                     "next_protect_time": now + 3600,
                     "next_deduce_time": now + 3600,
-                    "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                    "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd", "helper_username": "sanshaoyedejian1"},
                     "assist": {
                         "send_as_id": helper_id,
                         "last_anchor_msg_id": 8201,
@@ -539,7 +539,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                 "next_visit_time": now + 3600,
                 "next_protect_time": now + 3600,
                 "next_deduce_time": now + 3600,
-                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd", "helper_username": "sanshaoyedejian1"},
                 "assist": {
                     "send_as_id": helper_id,
                     "last_anchor_msg_id": 11405889,
@@ -562,6 +562,39 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(".辨认咒纹", send_mock.await_args.args[0])
             self.assertEqual(helper_id, send_mock.await_args.kwargs["send_as_id"])
             self.assertEqual(11405889, send_mock.await_args.kwargs["reply_to"])
+
+    async def test_scheduler_refuses_assist_without_real_accept_evidence(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_250.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_next_time": now - 1,
+                "next_visit_time": now + 3600,
+                "next_protect_time": now + 3600,
+                "next_deduce_time": now + 3600,
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "assist": {
+                    "send_as_id": helper_id,
+                    "last_anchor_msg_id": 11405889,
+                    "last_anchor_at": now,
+                    "identify_enabled": True,
+                    "banner_enabled": True,
+                    "next_identify_time": now - 1,
+                },
+            }
+            with (
+                patch.object(wanxin, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(wanxin, "save_state"),
+            ):
+                await wanxin.run_wanxin_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            observed = state_module.state["wanxin_observation"]
+            self.assertFalse(observed["commission"]["accepted"])
+            self.assertIn("真实接取证据", observed["auto_last_error"])
+            self.assertEqual(now, observed["auto_next_time"])
 
     async def test_owner_reply_records_assist_anchor(self):
         owner_id = self._prepare_identity()
@@ -604,7 +637,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "send_as_id": owner_id,
                     "reply_due_at": now + 60,
                 },
-                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd", "helper_username": "sanshaoyedejian1"},
                 "assist": {
                     "send_as_id": helper_id,
                     "last_anchor_msg_id": 8001,
@@ -644,7 +677,7 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
                     "send_as_id": helper_id,
                     "reply_due_at": now + 60,
                 },
-                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd"},
+                "commission": {"id": 5, "accepted": True, "owner_username": "jfdffdddd", "helper_username": "sanshaoyedejian1"},
                 "assist": {
                     "send_as_id": helper_id,
                     "last_anchor_msg_id": 8001,

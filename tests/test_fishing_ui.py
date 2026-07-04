@@ -210,8 +210,8 @@ class FishingUiTests(unittest.IsolatedAsyncioTestCase):
     def test_index_loads_fishing_ui_after_app(self):
         html_text = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
 
-        app_index = html_text.index("<script src='/static/js/app.js'></script>")
-        fishing_index = html_text.index("<script src='/static/js/fishing_ui.js'></script>")
+        app_index = html_text.index("/static/js/app.js")
+        fishing_index = html_text.index("/static/js/fishing_ui.js")
         self.assertLess(app_index, fishing_index)
 
     def test_fishing_ui_script_uses_fishing_config_endpoint(self):

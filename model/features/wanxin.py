@@ -1084,6 +1084,23 @@ def _owner_needs_accept(observed):
     return bool(config.get("assist_enabled") and int(commission.get("id", 0) or 0) > 0 and not commission.get("accepted"))
 
 
+def _commission_accept_evidence_valid(observed):
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+    if not commission.get("accepted"):
+        return False
+    helper_username = str(commission.get("helper_username") or "").strip().lstrip("@").casefold()
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else {}
+    assist_send_as_id = int(assist.get("send_as_id", 0) or 0)
+    assist_username = str(get_send_as_profile(assist_send_as_id).get("username") or "").strip().lstrip("@").casefold()
+    if helper_username and assist_username and helper_username != assist_username:
+        return False
+    return bool(
+        helper_username
+        or int(commission.get("accept_msg_id", 0) or 0) > 0
+        or float(commission.get("accepted_at", 0) or 0) > 0
+    )
+
+
 async def run_wanxin_scheduler(now):
     if not state.get("wanxin_enabled"):
         return
@@ -1141,7 +1158,19 @@ async def run_wanxin_scheduler(now):
             _set_observed(observed)
             save_state()
             return
-        if bool((observed.get("commission") or {}).get("accepted")):
+        commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else {}
+        if bool(commission.get("accepted")) and not _commission_accept_evidence_valid(observed):
+            commission["accepted"] = False
+            observed["commission"] = commission
+            if int(commission.get("id", 0) or 0) > 0:
+                observed["auto_next_time"] = now
+                observed["auto_last_error"] = "咒契缺少真实接取证据，先重新接取"
+            else:
+                _schedule_next(observed, now, 30 * 60, error="咒契缺少真实接取证据，需重新发布并接取")
+            _set_observed(observed)
+            save_state()
+            return
+        if bool(commission.get("accepted")):
             assist_action = _next_due_action(observed, now, WANXIN_ASSIST_ACTIONS)
             if assist_action:
                 await _send_assist_action(observed, assist_action, now)

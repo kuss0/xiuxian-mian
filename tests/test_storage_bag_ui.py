@@ -71,6 +71,21 @@ def test_storage_bag_transfer_runtime_allows_queueing_next_plan():
     assert "当前已有储物袋转移任务执行中" not in start_transfer
 
 
+def test_storage_bag_transfer_keeps_user_selected_target_even_when_it_was_source():
+    script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
+    normalize_defaults = script.split("function normalizeTransferDefaults", 1)[1].split(
+        "function resetTransferDraftToDefaults", 1
+    )[0]
+    change_handler = script.split("const field = event.target.closest('[data-storage-transfer-field]');", 1)[1].split(
+        "const flag = event.target.closest('[data-storage-transfer-flag]');", 1
+    )[0]
+
+    assert "state.lastChangedField = key" in change_handler
+    assert "String(state.lastChangedField || '') === 'targetId'" in normalize_defaults
+    assert "state.sourceId = ids.find" in normalize_defaults
+    assert "state.targetId = ids.find" in normalize_defaults
+
+
 def test_storage_bag_batch_runtime_expands_pending_queue_details():
     script = (PROJECT_ROOT / "model/web/static/js/storage_bag_ui.js").read_text(encoding="utf-8")
 
@@ -94,6 +109,14 @@ def test_storage_bag_frontend_has_peer_gift_entry_and_endpoints():
     assert "/api/storage-bag-gift-preview" in script
     assert "/api/storage-bag-gift-start" in script
     assert "giftMode ? '' : `<label class=\"field-label\">集中号上架物" in script
+
+
+def test_storage_bag_ui_scripts_are_cache_busted_after_deploy():
+    html = (PROJECT_ROOT / "model/web/pages/index.html").read_text(encoding="utf-8")
+
+    assert "/static/js/app.js?v={{asset_version}}" in html
+    assert "/static/js/storage_bag_ui.js?v={{asset_version}}" in html
+    assert "{{asset_version}}" in html
 
 
 def test_quiz_ai_frontend_config_is_loaded_outside_minified_app():
