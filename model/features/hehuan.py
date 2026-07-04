@@ -7,7 +7,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
-from ..config import CMD_HEHUAN_DUAL, MESSAGES_DIR, TZ_LOCAL
+from ..config import CMD_HEHUAN_DUAL, GAME_TOPIC_ID, MESSAGES_DIR, TZ_LOCAL
 from ..message_log_recovery import find_message_log_replies
 from ..persistence import save_state
 from ..runtime import send_audit_log, send_game_command
@@ -456,9 +456,9 @@ def _is_baiji_log_entry(payload):
 
 
 def _is_game_topic_entry(payload):
-    topic_id = int(get_game_topic_id() or 0)
+    topic_id = int(get_game_topic_id() or GAME_TOPIC_ID or 0)
     if topic_id <= 0:
-        return True
+        return False
     try:
         payload_topic_id = int(payload.get("topic_id", 0) or 0)
     except (TypeError, ValueError, OverflowError):

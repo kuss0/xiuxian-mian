@@ -609,6 +609,56 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(8899, send_mock.await_args.kwargs["reply_to"])
             self.assertEqual(8899, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
 
+    async def test_scheduler_ignores_partner_anchor_outside_game_topic(self):
+        base_dt = datetime(2026, 7, 4, 13, 20, tzinfo=hehuan.TZ_LOCAL)
+        now = base_dt.timestamp()
+        partner_id = 8659059191
+        state_module.ensure_identity_registered(partner_id)
+        state_module.update_send_as_profile(partner_id, username="WalterWA2000", label="wa2000", sect_name="天星宗")
+        anchor_msg = SimpleNamespace(id=8901, sent_at=now)
+        warm_msg = SimpleNamespace(id=9003, sent_at=now + 12)
+        entries = [
+            {
+                "ts": "2026-07-04 13:19:00 UTC+8",
+                "event_type": "message",
+                "message_id": 8899,
+                "chat_id": -1001680975844,
+                "sender_id": partner_id,
+                "sender_username": "WalterWA2000",
+                "sender_name": "wa2000",
+                "topic_id": 0,
+                "reply_to_msg_id": 458347,
+                "text": "建议去种养殖",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-04.log"
+            log_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in entries), encoding="utf-8")
+            with state_module.use_identity(self.identity_id):
+                state_module.state["hehuan_enabled"] = True
+                state_module.state["hehuan_observation"] = {
+                    "last_observed_at": now - 60,
+                    "contract_until": now + 3600,
+                    "next_hehuan_time": 0,
+                    "last_partner": "@WalterWA2000",
+                    "auto_next_time": now - 1,
+                }
+                with (
+                    patch.object(hehuan, "MESSAGES_DIR", tmpdir),
+                    patch.object(hehuan, "get_game_group_id", return_value=-1001680975844),
+                    patch.object(hehuan, "get_game_topic_id", return_value=7310786),
+                    patch.object(hehuan, "save_state"),
+                    patch.object(hehuan, "send_game_command", new=AsyncMock(side_effect=[anchor_msg, warm_msg])) as send_mock,
+                ):
+                    await hehuan.run_hehuan_scheduler(now)
+
+            self.assertEqual(2, send_mock.await_count)
+            self.assertEqual(hehuan.HEHUAN_ANCHOR_TEXT, send_mock.await_args_list[0].args[0])
+            self.assertEqual(partner_id, send_mock.await_args_list[0].kwargs["send_as_id"])
+            self.assertEqual(".双修 温养", send_mock.await_args_list[1].args[0])
+            self.assertEqual(8901, send_mock.await_args_list[1].kwargs["reply_to"])
+            self.assertEqual(8901, state_module.state["hehuan_observation"]["auto_reply_anchor_msg_id"])
+
     async def test_scheduler_requests_local_partner_anchor_before_warm(self):
         now = 1_780_000_000.0
         partner_id = 8659059191
