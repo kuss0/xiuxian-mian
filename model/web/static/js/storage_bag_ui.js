@@ -56,6 +56,7 @@
         batchMinTransferCount: 1,
         includeProtected: false,
         continueOnError: false,
+        lastChangedField: '',
       };
     }
     if (!appState.storageBagTransfer.selectedItems) appState.storageBagTransfer.selectedItems = {};
@@ -271,7 +272,11 @@
     if (!ids.length) return;
     if (!ids.includes(Number(state.sourceId) || 0)) state.sourceId = ids[0];
     if (!ids.includes(Number(state.targetId) || 0) || Number(state.targetId) === Number(state.sourceId)) {
-      state.targetId = ids.find(function (id) { return id !== Number(state.sourceId); }) || '';
+      if (String(state.lastChangedField || '') === 'targetId' && Number(state.targetId) === Number(state.sourceId)) {
+        state.sourceId = ids.find(function (id) { return id !== Number(state.targetId); }) || '';
+      } else {
+        state.targetId = ids.find(function (id) { return id !== Number(state.sourceId); }) || '';
+      }
     }
     if (!state.listingItem) state.listingItem = preferredListingItem(state.targetId);
     if (!Number(state.listingCount || 0)) state.listingCount = 1;
@@ -304,6 +309,7 @@
     state.manualText = '';
     state.preview = null;
     state.busy = false;
+    state.lastChangedField = '';
     if (!state.batchAllSources) {
       state.batchSourceIds = availableBatchSourceRows().map(function (row) {
         return Number(row.identity_id) || 0;
@@ -1215,6 +1221,7 @@
     if (field) {
       const state = transferState();
       const key = field.getAttribute('data-storage-transfer-field');
+      state.lastChangedField = key;
       state[key] = field.value;
       state.preview = null;
       if (key === 'sourceId') state.selectedItems = {};
