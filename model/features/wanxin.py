@@ -557,6 +557,13 @@ def parse_wanxin_text(text, now=None, family=""):
             "summary": "咒契已成",
         })
         return parsed
+    if "没有有效的咒契协定" in raw and "发布委托" in raw and "接取" in raw:
+        parsed.update({
+            "type": "commission_invalid",
+            "available": "yes",
+            "summary": "咒契失效，需重新发布并接取",
+        })
+        return parsed
     if "【阴罗辨咒】" in raw:
         source_match = RE_SOURCE_GAIN.search(raw)
         contrib_match = RE_CONTRIB_GAIN.search(raw)
@@ -716,6 +723,33 @@ def _mark_pending(observed, action, msg, now, *, send_as_id, reply_to_msg_id=0):
 
 def _clear_pending(observed):
     observed["pending"] = {}
+
+
+def _mark_commission_invalid(observed, now, reason=""):
+    reason = reason or "咒契失效，需重新发布并接取"
+    commission = observed.get("commission") if isinstance(observed.get("commission"), dict) else _default_wanxin_commission()
+    commission["id"] = 0
+    commission["accepted"] = False
+    commission["accepted_at"] = 0
+    commission["accept_msg_id"] = 0
+    commission["publish_msg_id"] = 0
+    commission["published_at"] = 0
+    commission["helper_username"] = ""
+    if not commission.get("owner_username"):
+        commission["owner_username"] = _owner_username()
+    observed["commission"] = commission
+
+    assist = observed.get("assist") if isinstance(observed.get("assist"), dict) else _default_wanxin_assist()
+    assist["last_anchor_msg_id"] = 0
+    assist["last_anchor_at"] = 0
+    assist["last_result"] = ""
+    assist["last_error"] = reason
+    observed["assist"] = assist
+
+    observed["auto_last_result"] = ""
+    observed["auto_last_error"] = reason
+    _clear_pending(observed)
+    _schedule_next(observed, now)
 
 
 def _schedule_next(observed, now, delay_sec=WANXIN_CHAIN_STEP_SEC, *, result="", error=""):
@@ -1240,6 +1274,8 @@ def _apply_owner_reply_to_current_identity(text, now, matched_family="", result_
         observed["auto_last_result"] = parsed.get("summary") or "已校准"
         observed["auto_last_error"] = ""
         _clear_pending(observed)
+    elif ptype == "commission_invalid":
+        _mark_commission_invalid(observed, now, parsed.get("summary") or "咒契失效")
     elif ptype == "cooldown":
         next_time = float(parsed.get("next_time", 0) or now + WANXIN_RECOVERY_RETRY_SEC)
         action = parsed.get("cooldown_action") or action
@@ -1331,6 +1367,9 @@ def _apply_to_owner_identity(owner_id, parsed, now, matched_family="", result_ms
             observed["auto_last_error"] = parsed.get("summary") or ptype
             observed["auto_next_time"] = now + delay
             _clear_pending(observed)
+        elif ptype == "commission_invalid":
+            action = _matching_pending_action(observed, matched_family)
+            _mark_commission_invalid(observed, now, parsed.get("summary") or "咒契失效")
         elif ptype == "cooldown":
             next_time = float(parsed.get("next_time", 0) or now + WANXIN_RECOVERY_RETRY_SEC)
             action = parsed.get("cooldown_action") or action

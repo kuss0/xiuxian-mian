@@ -96,10 +96,12 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
 
     def test_parse_commission_existing_and_assist_success(self):
         existing = wanxin.parse_wanxin_text("你已有进行中的解咒委托（ID: 5），不可重复发布。")
+        invalid = wanxin.parse_wanxin_text("你与对方没有有效的咒契协定。需先由对方发布委托，再由你接取。")
         identify = wanxin.parse_wanxin_text("【阴罗辨咒】\n@sanshaoyedejian1 替 @jfdffdddd 锁定咒源。咒源 +20，咒师贡献 +120。")
         banner = wanxin.parse_wanxin_text("【借幡镇魂】\n@jfdffdddd 魂封 -13，月魄 +1；咒师贡献 +100。")
 
         self.assertEqual(("commission_existing", 5), (existing["type"], existing["commission_id"]))
+        self.assertEqual("commission_invalid", invalid["type"])
         self.assertEqual(("assist_identify_success", "jfdffdddd", 20, 120), (identify["type"], identify["target_username"], identify["source_gain"], identify["contrib_gain"]))
         self.assertEqual(("assist_banner_success", "jfdffdddd", 13, 1), (banner["type"], banner["target_username"], banner["seal_down"], banner["moon_gain"]))
 
@@ -663,6 +665,55 @@ class WanxinTests(unittest.IsolatedAsyncioTestCase):
             observed = state_module.state["wanxin_observation"]
             self.assertGreater(observed["assist"]["next_banner_time"], now + 5 * 3600)
             self.assertEqual({}, observed["pending"])
+
+    async def test_invalid_commission_reply_clears_stale_contract(self):
+        owner_id = self._prepare_identity()
+        helper_id = self._prepare_identity(3907536807, username="sanshaoyedejian1", sect_name="阴罗宗")
+        now = 1_800_000_600.0
+        with state_module.use_identity(owner_id):
+            state_module.state["wanxin_enabled"] = True
+            state_module.state["wanxin_observation"] = {
+                "auto_config": {"publish_enabled": True, "assist_enabled": True},
+                "pending": {
+                    "action": "banner",
+                    "family": "wanxin_assist_banner",
+                    "msg_id": 8005,
+                    "send_as_id": helper_id,
+                    "reply_due_at": now + 60,
+                },
+                "commission": {
+                    "id": 5,
+                    "accepted": True,
+                    "owner_username": "jfdffdddd",
+                    "helper_username": "sanshaoyedejian1",
+                    "publish_msg_id": 7001,
+                    "accepted_at": now - 3600,
+                },
+                "assist": {
+                    "send_as_id": helper_id,
+                    "last_anchor_msg_id": 8001,
+                    "last_anchor_at": now,
+                },
+            }
+        with state_module.use_identity(helper_id):
+            with patch.object(wanxin, "save_state"):
+                handled = await wanxin.handle_wanxin_reply(
+                    "你与对方没有有效的咒契协定。需先由对方发布委托，再由你接取。",
+                    now,
+                    reply_to=SimpleNamespace(id=8005, raw_text=".借幡镇魂"),
+                    matched_family="wanxin_assist_banner",
+                    result_msg_id=8006,
+                )
+
+        self.assertTrue(handled)
+        with state_module.use_identity(owner_id):
+            observed = state_module.state["wanxin_observation"]
+            self.assertEqual(0, observed["commission"]["id"])
+            self.assertFalse(observed["commission"]["accepted"])
+            self.assertEqual("", observed["commission"]["helper_username"])
+            self.assertEqual(0, observed["assist"]["last_anchor_msg_id"])
+            self.assertEqual({}, observed["pending"])
+            self.assertLessEqual(observed["auto_next_time"], now + wanxin.WANXIN_CHAIN_STEP_SEC)
 
 if __name__ == "__main__":
     unittest.main()
