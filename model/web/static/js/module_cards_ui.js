@@ -379,9 +379,9 @@
           )+
           settingSection(
             '斗法',
-            '目标和次数按斗法模块配置执行。',
+            '目标池可填单个或多个目标，多个目标用空格或逗号分隔；批量执行会轮转目标并追加随机错峰。',
             renderModuleToggle('斗法','开关')+
-            currentChoiceText('目标', identity.duel_target || '未配置')+
+            currentChoiceText('目标池', identity.duel_target || '未配置')+
             currentChoiceText('进度', String(identity.duel_completed_count || 0)+'/'+String(identity.duel_total_count || 0))
           );
         return renderModuleCard('日常', moduleNote, primaryTools, settingsTools, compactDetails(dailyNames), null);

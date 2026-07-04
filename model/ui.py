@@ -92,7 +92,7 @@ from .features.tianxing import get_tianxing_automation_pause_state, get_tianxing
 from .features.tianti import sync_tianti_status
 from .features.wild_training import apply_wild_training_strategy, normalize_wild_training_strategy
 from .features.yinluo import execute_yinluo_manual_action, get_yinluo_ui_state, set_yinluo_auto_config
-from .features.duel import apply_duel_config, normalize_duel_target
+from .features.duel import apply_duel_config, normalize_duel_target, normalize_duel_targets
 from .features.fishing import (
     FISHING_BAITS,
     FISHING_CHUMS,
@@ -4401,7 +4401,7 @@ async def ui_set_duel_config(send_as_id, *, target=None, total_count=None, reset
     send_as_id = int(send_as_id)
     if send_as_id not in get_identity_ids():
         return False, f"未知身份: {send_as_id}"
-    if target is not None and not normalize_duel_target(target):
+    if target is not None and not normalize_duel_targets(target):
         return False, "斗法目标不能为空"
     with use_identity(send_as_id):
         config = apply_duel_config(

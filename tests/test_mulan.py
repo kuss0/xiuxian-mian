@@ -107,6 +107,20 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(1001, state_module.state["mulan_reply_to_msg_id"])
             self.assertEqual(now + mulan.MULAN_REPLY_TIMEOUT_SEC, state_module.state["mulan_reply_due_at"])
 
+    def test_initial_recovery_uses_wide_stagger_to_avoid_midnight_queue_burst(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            with (
+                patch.object(mulan.random, "uniform", return_value=mulan.MULAN_RECOVERY_MAX_SEC) as uniform_mock,
+                patch.object(mulan, "mark_dirty"),
+            ):
+                due_at = mulan.schedule_mulan_initial_check(now, persist=False)
+
+            uniform_mock.assert_called_once_with(mulan.MULAN_RECOVERY_MIN_SEC, mulan.MULAN_RECOVERY_MAX_SEC)
+            self.assertEqual(now + mulan.MULAN_RECOVERY_MAX_SEC, due_at)
+            self.assertEqual(now + mulan.MULAN_RECOVERY_MAX_SEC, state_module.state["next_mulan_time"])
+
     async def test_scheduler_disables_when_identity_has_no_account_mapping(self):
         identity_id = 3711993781
         state_module.ensure_identity_registered(identity_id)

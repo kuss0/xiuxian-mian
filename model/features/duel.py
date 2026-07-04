@@ -25,6 +25,8 @@ DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC = 610
 DUEL_RECOVERY_MIN_SEC = 60
 DUEL_RECOVERY_MAX_SEC = 180
 DUEL_RESULT_GRACE_SEC = 30
+DUEL_BATCH_STAGGER_MIN_SEC = 30
+DUEL_BATCH_STAGGER_MAX_SEC = 180
 DUEL_WAITING_PREFIX = "正在锁定对手天机，请稍候"
 DUEL_READY_PREFIX = "⚔️ 法宝齐出！"
 DUEL_REPORT_PREFIX = "【天道战报·文字版】"
@@ -55,8 +57,33 @@ def normalize_duel_target(value):
     return "@" + raw.split()[0]
 
 
+def normalize_duel_targets(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    parts = re.split(r"[\s,，;；|/]+", raw)
+    targets = []
+    seen = set()
+    for part in parts:
+        target = normalize_duel_target(part)
+        key = target.lower()
+        if not target or key in seen:
+            continue
+        targets.append(target)
+        seen.add(key)
+    return targets
+
+
 def _target_token():
-    return normalize_duel_target(state.get("duel_target", ""))
+    targets = _target_tokens()
+    if not targets:
+        return ""
+    completed = max(0, int(state.get("duel_completed_count", 0) or 0))
+    return targets[completed % len(targets)]
+
+
+def _target_tokens():
+    return normalize_duel_targets(state.get("duel_target", ""))
 
 
 def build_duel_command(target=None):
@@ -98,6 +125,21 @@ def _profile_gate_reason():
     if xiuwei_current <= DUEL_MIN_XIUWEI:
         current_text = xiuwei_current if xiuwei_current > 0 else "未知"
         return f"修为需 >{DUEL_MIN_XIUWEI}，当前={current_text}"
+    return ""
+
+
+def _target_gate_reason(target):
+    target = normalize_duel_target(target)
+    if not target:
+        return "斗法目标未配置"
+    profile = get_send_as_profile(get_current_identity_id()) or {}
+    username = str(profile.get("username") or "").strip().lstrip("@").lower()
+    target_name = target.lstrip("@").lower()
+    if username and target_name == username:
+        return f"斗法目标不能是自己：{target}"
+    current_id = str(get_current_identity_id() or "").strip()
+    if current_id and target == current_id:
+        return f"斗法目标不能是自己：{target}"
     return ""
 
 
@@ -205,6 +247,12 @@ def parse_duel_result_summary(text):
     return _first_line(raw)[:80] or "未知"
 
 
+def _duel_batch_stagger_sec():
+    if len(_target_tokens()) <= 1:
+        return 0
+    return random.uniform(DUEL_BATCH_STAGGER_MIN_SEC, DUEL_BATCH_STAGGER_MAX_SEC)
+
+
 def _duel_next_time_blocks(now):
     return cd_blocks(state.get("next_duel_time", 0), now, 0)
 
@@ -266,7 +314,7 @@ def clear_duel_state(*, persist=False, keep_last_error=False, keep_config=True):
 
 def apply_duel_config(target=None, total_count=None, *, reset_progress=False, now=None, persist=True):
     if target is not None:
-        state["duel_target"] = normalize_duel_target(target)
+        state["duel_target"] = " ".join(normalize_duel_targets(target))
     if total_count is not None:
         state["duel_total_count"] = max(0, _parse_int(total_count))
     if reset_progress:
@@ -279,20 +327,24 @@ def apply_duel_config(target=None, total_count=None, *, reset_progress=False, no
         mark_dirty()
     return {
         "target": state.get("duel_target", ""),
+        "targets": _target_tokens(),
         "total_count": int(state.get("duel_total_count", 0) or 0),
         "completed_count": int(state.get("duel_completed_count", 0) or 0),
     }
 
 
 def get_duel_status_text():
+    targets = _target_tokens()
     target = _target_token() or "未配置"
+    target_display = "、".join(targets) if targets else "未配置"
     total_count = int(state.get("duel_total_count", 0) or 0)
     completed_count = int(state.get("duel_completed_count", 0) or 0)
     profile = get_send_as_profile(get_current_identity_id()) or {}
     lines = [
         "🗡️ 斗法",
         f"- 已启用：{'是' if state.get('duel_enabled') else '否'}",
-        f"- 目标：{target}",
+        f"- 当前目标：{target}",
+        f"- 目标池：{target_display}",
         f"- 次数：{completed_count}/{total_count if total_count > 0 else '未配置'}",
         f"- 下次执行：{fmt_abs_ts(state.get('next_duel_time', 0))}（{fmt_remaining(state.get('next_duel_time', 0))}）",
         f"- 境界门槛：{DUEL_MIN_REALM} 且修为 >{DUEL_MIN_XIUWEI}",
@@ -378,7 +430,7 @@ async def _handle_duel_text(text, now, *, result_msg_id=0):
             await send_audit_log(f"✅ 斗法完成：{state['duel_completed_count']}/{total_count}", scope="identity", limit=180)
             return True
     cooldown = DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC if weak_or_unknown else DUEL_NORMAL_COOLDOWN_SEC
-    _schedule_next_duel(now, cooldown + CD_BUFFER_SEC)
+    _schedule_next_duel(now, cooldown + CD_BUFFER_SEC + _duel_batch_stagger_sec())
     save_state()
     await send_audit_log(f"🗡️ 斗法结果：{summary}", scope="identity", limit=220)
     return True
@@ -418,10 +470,16 @@ async def run_duel_scheduler(now):
     if not state.get("duel_enabled"):
         return
 
-    target = _target_token()
-    if not target:
+    targets = _target_tokens()
+    if not targets:
         if not _duel_next_time_blocks(now):
             _set_duel_error("斗法目标未配置", next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
+        return
+    target = _target_token()
+    target_gate_reason = _target_gate_reason(target)
+    if target_gate_reason:
+        if not _duel_next_time_blocks(now):
+            _set_duel_error(target_gate_reason, next_delay=DUEL_WEAK_OR_UNKNOWN_COOLDOWN_SEC, now=now)
         return
 
     gate_reason = _profile_gate_reason()
@@ -518,6 +576,7 @@ __all__ = [
     "handle_duel_reply",
     "is_duel_reply_text",
     "normalize_duel_target",
+    "normalize_duel_targets",
     "parse_duel_result_summary",
     "run_duel_scheduler",
     "schedule_duel_initial_check",

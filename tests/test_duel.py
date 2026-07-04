@@ -37,6 +37,8 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("@cupaopao", duel.normalize_duel_target("cupaopao"))
         self.assertEqual("@cupaopao", duel.normalize_duel_target("@cupaopao extra"))
         self.assertEqual("8398842598", duel.normalize_duel_target("8398842598"))
+        self.assertEqual(["@cupaopao", "@hughpig", "8398842598"], duel.normalize_duel_targets("cupaopao,@hughpig 8398842598"))
+        self.assertEqual(["@cupaopao"], duel.normalize_duel_targets("@cupaopao, cupaopao"))
         self.assertEqual(".斗法 @cupaopao", duel.build_duel_command("@cupaopao"))
 
     async def test_scheduler_blocks_realm_and_xiuwei_gate_without_sending(self):
@@ -88,6 +90,43 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
             self.assertEqual(now + duel.DUEL_REPLY_TIMEOUT_SEC, state_module.state["duel_reply_due_at"])
             self.assertEqual("已发送", state_module.state["duel_last_result"])
+
+    async def test_scheduler_rotates_batch_targets_by_completed_count(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@alpha @beta"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 1
+            state_module.state["next_duel_time"] = now - 1
+            fake_msg = SimpleNamespace(id=22027, sent_at=now)
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock(return_value=fake_msg)) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_awaited_once_with(".斗法 @beta", track=False, max_retry=0, source_module="斗法")
+            self.assertEqual(22027, state_module.state["duel_reply_to_msg_id"])
+
+    async def test_scheduler_blocks_self_target(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@walterwa2000 @beta"
+            state_module.state["duel_total_count"] = 5
+            state_module.state["duel_completed_count"] = 0
+            state_module.state["next_duel_time"] = now - 1
+            with (
+                patch.object(duel, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(duel, "save_state"),
+            ):
+                await duel.run_duel_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertIn("斗法目标不能是自己", state_module.state["duel_last_error"])
 
     async def test_scheduler_prepares_tianxing_before_future_duel_window(self):
         identity_id = self._prepare_identity()
@@ -430,6 +469,29 @@ class DuelTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(handled)
             self.assertEqual(now + duel.DUEL_NORMAL_COOLDOWN_SEC + duel.CD_BUFFER_SEC, state_module.state["next_duel_time"])
             self.assertEqual("", state_module.state["duel_last_error"])
+
+    async def test_batch_result_adds_stagger_after_normal_cooldown(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["duel_enabled"] = True
+            state_module.state["duel_target"] = "@cupaopao @hughpig"
+            state_module.state["duel_reply_to_msg_id"] = 22027
+            state_module.state["duel_reply_due_at"] = now + duel.DUEL_REPLY_TIMEOUT_SEC
+            with (
+                patch.object(duel, "send_audit_log", new=AsyncMock()),
+                patch.object(duel.random, "uniform", return_value=45),
+                patch.object(duel, "save_state"),
+            ):
+                handled = await duel.handle_duel_reply(
+                    "【天道战报·文字版】\n@walterwa2000 与 @cupaopao 斗法结束。\n胜者：@walterwa2000\n败者：@cupaopao",
+                    now,
+                    reply_to=SimpleNamespace(id=22027, raw_text=".斗法 @cupaopao"),
+                    result_msg_id=22029,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(now + duel.DUEL_NORMAL_COOLDOWN_SEC + duel.CD_BUFFER_SEC + 45, state_module.state["next_duel_time"])
 
     async def test_winner_not_self_without_loser_line_uses_long_cooldown(self):
         identity_id = self._prepare_identity()
