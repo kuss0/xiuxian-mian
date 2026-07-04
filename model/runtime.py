@@ -3189,7 +3189,7 @@ async def send_game_command(
             except asyncio.TimeoutError:
                 await send_audit_log(
                     (
-                        f"❌ 指令发送超时：{_truncate_log_text(command, limit=48)} | "
+                        f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
                         f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
                         f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
                     ),
@@ -3282,7 +3282,7 @@ async def send_game_command(
     except asyncio.TimeoutError:
         await send_audit_log(
             (
-                f"❌ 指令发送超时：{_truncate_log_text(command, limit=48)} | "
+                f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
                 f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
                 f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
             ),
