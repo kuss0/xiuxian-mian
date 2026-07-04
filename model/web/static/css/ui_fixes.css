@@ -580,6 +580,47 @@
   gap: 8px;
 }
 
+.replica-kind-enable-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.replica-kind-enable-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  background: #020617;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  color: #94a3b8;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.replica-kind-enable-on {
+  border-color: #1d4ed8;
+  color: #bfdbfe;
+}
+
+.replica-kind-enable-item span {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.replica-kind-enable-item strong {
+  color: #e5e7eb;
+}
+
+.replica-kind-enable-item em {
+  color: #94a3b8;
+  font-style: normal;
+  font-size: 12px;
+}
+
 .replica-kind-config {
   background: #020617;
   border: 1px solid #1e293b;

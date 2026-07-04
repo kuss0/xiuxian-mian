@@ -180,7 +180,7 @@ function renderReplicaKindManualConfig(replica) {
     const localIds = new Set((config.participant_identity_ids || []).map(function(id) { return Number(id); }));
     const dispatchIds = new Set((config.dispatch_participant_identity_ids || []).map(function(id) { return Number(id); }));
     const name = config.name || kind;
-    const summary = name + ' ｜ 推荐 ' + localIds.size + ' ｜ 主线 ' + dispatchIds.size;
+    const summary = name + ' ｜ 推荐/开房 ' + localIds.size + ' ｜ 主线 ' + dispatchIds.size;
     const renderIdentityChecks = function(attr, selectedIds) {
       return '<div class="replica-kind-checks">' + identities.map(function(identity) {
         const identityId = Number(identity.identity_id || 0);
@@ -195,10 +195,7 @@ function renderReplicaKindManualConfig(replica) {
     };
     return '<details class="replica-kind-config">'
       + '<summary>'
-      + '<label class="checkbox-inline checkbox-inline-small">'
-      + '<input type="checkbox" data-replica-kind-enabled="' + escapeHtml(kind) + '"' + (enabled ? ' checked' : '') + ' />'
       + '<strong>' + escapeHtml(summary) + '</strong>'
-      + '</label>'
       + '<span>' + escapeHtml(fallbackText) + '</span>'
       + '</summary>'
       + '<div class="replica-kind-config-body">'
@@ -206,6 +203,21 @@ function renderReplicaKindManualConfig(replica) {
       + '<div><div class="queue-section-title">主线拉人名单</div>' + renderIdentityChecks('data-replica-kind-dispatch-participant', dispatchIds) + '</div>'
       + '</div>'
       + '</details>';
+  }).join('') + '</div>';
+}
+
+function renderReplicaKindEnableGrid(replica) {
+  const kindConfigs = replica.kind_configs || {};
+  const orderedKinds = ['virtual_hall', 'zhuimo', 'huanglong', 'cangkun', 'kunwu', 'luoyun'];
+  return '<div class="replica-kind-enable-grid">' + orderedKinds.map(function(kind) {
+    const config = kindConfigs[kind] || {};
+    const enabled = config.enabled !== false;
+    const name = config.name || kind;
+    const short = config.short ? (' ' + config.short) : '';
+    return '<label class="replica-kind-enable-item' + (enabled ? ' replica-kind-enable-on' : '') + '">'
+      + '<input type="checkbox" data-replica-kind-enabled="' + escapeHtml(kind) + '"' + (enabled ? ' checked' : '') + ' />'
+      + '<span><strong>' + escapeHtml(name) + '</strong><em>' + escapeHtml(short) + '</em></span>'
+      + '</label>';
   }).join('') + '</div>';
 }
 
@@ -283,6 +295,10 @@ function renderReplicaConfig(replica) {
     + '<div class="replica-config-grid">'
     + '<label class="form-label">苍坤成功冷却（小时）<input class="text-input" name="replica_cangkun_success_cooldown_hours" type="number" min="0.25" max="24" step="0.25" value="' + escapeHtml(cangkunCooldownHours) + '" /></label>'
     + '</div>'
+    + '</div>'
+    + '<div class="dungeon-section">'
+    + '<div class="queue-section-title">开房开关</div>'
+    + renderReplicaKindEnableGrid(replica)
     + '</div>'
     + '<div class="dungeon-section">'
     + '<div class="queue-section-title">副本手动配置</div>'

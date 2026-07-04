@@ -113,6 +113,7 @@ async def _run_smoke(port: int) -> list[CheckResult]:
         realm="练气期",
         enabled=True,
     )
+    state_module.set_replica_participant_identity_ids([990001])
 
     results: list[CheckResult] = []
     await ui.start_ui_server()
@@ -139,7 +140,12 @@ async def _run_smoke(port: int) -> list[CheckResult]:
         )
 
         status, _headers, text = await _request(port, "GET", "/", cookie=cookie)
-        _add(results, "authenticated root renders boot data", status == 200 and "CHAOGU_BOOT_DATA" in text, f"status={status}")
+        _add(
+            results,
+            "authenticated root renders boot data and dungeon entry",
+            status == 200 and "CHAOGU_BOOT_DATA" in text and "data-open-dungeon='1'" in text and "/static/js/dungeon_ui.js" in text,
+            f"status={status}",
+        )
 
         status, _headers, text = await _request(port, "GET", "/static/js/app.js", cookie=cookie)
         _add(results, "app javascript is served", status == 200 and "const appState" in text, f"status={status}")
@@ -149,6 +155,18 @@ async def _run_smoke(port: int) -> list[CheckResult]:
             results,
             "fishing javascript is served",
             status == 200 and "/api/fishing-config" in text,
+            f"status={status}",
+        )
+
+        status, _headers, text = await _request(port, "GET", "/static/js/dungeon_ui.js", cookie=cookie)
+        _add(
+            results,
+            "dungeon javascript exposes replica open switches",
+            status == 200
+            and "开房开关" in text
+            and "data-replica-kind-enabled" in text
+            and "renderReplicaKindEnableGrid" in text
+            and ".开启副本 @用户名" in text,
             f"status={status}",
         )
 
@@ -163,7 +181,15 @@ async def _run_smoke(port: int) -> list[CheckResult]:
         _add(
             results,
             "authenticated state exposes expected snapshot",
-            status == 200 and payload.get("ok") is True and bool(identities) and "passive_inbox" in snapshot and "fishing" in identity,
+            status == 200
+            and payload.get("ok") is True
+            and bool(identities)
+            and "passive_inbox" in snapshot
+            and "fishing" in identity
+            and isinstance(snapshot.get("replica"), dict)
+            and "kind_configs" in snapshot.get("replica", {})
+            and "virtual_hall" in snapshot.get("replica", {}).get("kind_configs", {})
+            and snapshot.get("replica", {}).get("participant_identity_ids") == [990001],
             f"status={status} identities={len(identities)}",
         )
 

@@ -105,6 +105,8 @@ def test_render_new_ui_keeps_passive_inbox_on_home_without_legacy_link():
     assert "data-open-passive-inbox='1'" in body
     assert "/static-new/css/app.css" in body
     assert body.index("/static/js/app.js") < body.index("/static/js/module_cards_ui.js") < body.index("/static/js/fishing_ui.js")
+    assert "/static/js/dungeon_ui.js" in body
+    assert "data-open-dungeon='1'" in body
     assert "/static/js/passive_inbox_ui.js" in body
     assert "fonts.googleapis.com" not in body
 
@@ -190,6 +192,8 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "height: calc(100vh - 80px)" not in css
     assert "margin-top: 80px" not in css
     assert "flex: 0 1 100%" not in css
+    assert ".replica-kind-enable-grid" in css
+    assert "repeat(auto-fit, minmax(150px, 1fr))" in css
     assert ".topbar-left" in css
     assert ".app-topbar .topbar-actions > *" in css
     assert "grid-auto-rows: minmax(260px, 260px);" in new_css
@@ -198,6 +202,17 @@ def test_module_card_css_uses_adaptive_detail_scroll_and_single_row_topbar():
     assert "body.ui-new .module-setting-section" in new_css
     assert "body.ui-new .module-setting-current" in new_css
     assert "flex: 0 1 100%" not in new_css
+
+
+def test_dungeon_ui_keeps_replica_open_switches_visible():
+    script = (PROJECT_ROOT / "model/web/static/js/dungeon_ui.js").read_text(encoding="utf-8")
+
+    assert "function renderReplicaKindEnableGrid(replica)" in script
+    assert "开房开关" in script
+    assert "data-replica-kind-enabled" in script
+    assert "副本手动配置" in script
+    assert "推荐/开房名单" in script
+    assert "renderReplicaKindEnableGrid(replica)" in script
 
 
 def test_summary_card_script_keeps_role_resource_fields():
