@@ -4606,6 +4606,34 @@ def get_startup_module_alerts():
     )
 
 
+def _recover_stargazer_startup_followup(now):
+    if not state.get("stargazer_enabled"):
+        return False
+    try:
+        followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
+    except (TypeError, ValueError, OverflowError):
+        followup_due_at = 0.0
+    if followup_due_at <= 0 or now - followup_due_at < RETRY_MAX_SEC:
+        return False
+
+    queued_action = str(state.get("stargazer_queued_action") or "").strip()
+    last_action = str(state.get("stargazer_last_action") or "").strip()
+    if not queued_action and last_action.startswith("queue_"):
+        queued_action = last_action[len("queue_"):].strip()
+        state["stargazer_queued_action"] = queued_action
+
+    if queued_action:
+        state["stargazer_followup_due_at"] = float(now + random.uniform(15, 45))
+        state["stargazer_last_action"] = f"queue_{queued_action}"
+    else:
+        state["stargazer_followup_due_at"] = 0
+        state["stargazer_queued_action"] = ""
+        state["next_stargazer_panel_time"] = float(now + random.uniform(30, 90))
+        state["stargazer_last_action"] = "startup_recover_panel"
+    mark_dirty()
+    return True
+
+
 def scan_startup_timeout_tasks(now=None):
     if now is None:
         now = time.time()
@@ -4633,14 +4661,7 @@ def scan_startup_timeout_tasks(now=None):
 
             stargazer_followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
             if state.get("stargazer_enabled") and stargazer_followup_due_at > 0 and now - stargazer_followup_due_at >= RETRY_MAX_SEC:
-                _record_startup_timeout(
-                    identity_id,
-                    "观星台",
-                    "启动时检测到观星台后续动作等待超时，已自动关闭观星台模块。",
-                    "stargazer_followup_timeout",
-                    alerts,
-                    affected_identity_ids,
-                )
+                _recover_stargazer_startup_followup(now)
             # post_summary_wait means the summary was already observed and the next
             # action is a normal relaunch. Keep it alive across restarts; the
             # recovery spread will stagger the relaunch instead of disabling it.

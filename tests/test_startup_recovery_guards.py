@@ -111,6 +111,27 @@ class StartupRecoveryGuardTests(unittest.TestCase):
         with state_module.use_identity(send_as_id):
             self.assertEqual(now + 1, state_module.state["next_wild_training_time"])
 
+    def test_startup_scan_recovers_overdue_stargazer_followup_without_disabling(self):
+        now = 1_700_000_000.0
+        send_as_id = self._prepare_identity()
+        with state_module.use_identity(send_as_id):
+            self._disable_modules()
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_followup_due_at"] = now - config.RETRY_MAX_SEC - 60
+            state_module.state["stargazer_queued_action"] = "collect"
+            state_module.state["stargazer_last_action"] = "queue_collect"
+
+        with patch.object(control.random, "uniform", return_value=30):
+            result = control.scan_startup_timeout_tasks(now)
+
+        self.assertEqual(0, result["closed_count"])
+        self.assertEqual([], result["affected_identity_ids"])
+        with state_module.use_identity(send_as_id):
+            self.assertTrue(state_module.state["stargazer_enabled"])
+            self.assertEqual("collect", state_module.state["stargazer_queued_action"])
+            self.assertEqual("queue_collect", state_module.state["stargazer_last_action"])
+            self.assertEqual(now + 30, state_module.state["stargazer_followup_due_at"])
+
     def test_startup_spread_keeps_expired_tianxing_craft_prediction_wild_training_immediate(self):
         now = 1_700_000_000.0
         send_as_id = self._prepare_identity()
