@@ -45,6 +45,8 @@ WANXIN_MODULE_NAME = "婉心封魂"
 WANXIN_DEFAULT_ASSIST_SEND_AS_ID = 3907536807
 WANXIN_REPLY_TIMEOUT_SEC = 90
 WANXIN_RECOVERY_RETRY_SEC = 10 * 60
+WANXIN_SEND_QUEUE_TIMEOUT_SEC = 180
+WANXIN_SEND_QUEUE_RETRY_SEC = 10 * 60
 WANXIN_CHAIN_STEP_SEC = 20
 WANXIN_VISIT_CD_SEC = 24 * 3600
 WANXIN_PROTECT_CD_SEC = 6 * 3600
@@ -749,7 +751,7 @@ def _handle_unsent_or_uncertain_send(observed, action, command, now, *, send_as_
         _apply_uncertain_action_backoff(observed, action, now, detail)
         return False
     if code == "send_queue_timeout":
-        _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or f"{command} 排队超时未发送")
+        _schedule_next(observed, now, WANXIN_SEND_QUEUE_RETRY_SEC, error=reason or f"{command} 排队超时未发送")
         return False
     if code == "global_disabled":
         _schedule_next(observed, now, RETRY_MAX_SEC, error=reason or "全局暂停，婉心延后")
@@ -938,7 +940,7 @@ async def _send_owner_action(observed, action, now, *, command_override=""):
         reply_timeout=WANXIN_REPLY_TIMEOUT_SEC,
         source_module=WANXIN_MODULE_NAME,
         op_id=f"wanxin-{action}-{int(now)}",
-        queue_timeout=60,
+        queue_timeout=WANXIN_SEND_QUEUE_TIMEOUT_SEC,
     )
     if not msg:
         _handle_unsent_or_uncertain_send(observed, action, command, now, send_as_id=get_current_identity_id())
@@ -977,7 +979,7 @@ async def _send_accept_action(observed, now):
         send_as_id=assist_send_as_id,
         source_module=WANXIN_MODULE_NAME,
         op_id=f"wanxin-accept-{commission_id}-{int(now)}",
-        queue_timeout=60,
+        queue_timeout=WANXIN_SEND_QUEUE_TIMEOUT_SEC,
     )
     if not msg:
         _handle_unsent_or_uncertain_send(observed, WANXIN_ACTION_ACCEPT, command, now, send_as_id=assist_send_as_id)
@@ -1012,7 +1014,7 @@ async def _send_assist_action(observed, action, now):
         send_as_id=assist_send_as_id,
         source_module=WANXIN_MODULE_NAME,
         op_id=f"wanxin-assist-{action}-{int(now)}",
-        queue_timeout=60,
+        queue_timeout=WANXIN_SEND_QUEUE_TIMEOUT_SEC,
     )
     if not msg:
         if str(_send_block_code(assist_send_as_id, command)[0]) == "send_timeout" and _recover_recent_assist_success_from_log(observed, action, now):

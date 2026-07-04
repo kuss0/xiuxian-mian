@@ -741,13 +741,13 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
 
         with state_module.use_identity(send_as_id), \
              patch.object(wild_training, "save_state"), \
-             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_RETRY_MIN_SEC), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC), \
              patch.object(wild_training, "send_audit_log", new=AsyncMock()):
             await wild_training.run_wild_training_scheduler(now)
 
         self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(1, state_module.state["wild_training_retry_count"])
-        self.assertEqual(now + wild_training.WILD_TRAINING_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
         self.assertIn("准备补发一次", state_module.state["wild_training_last_error"])
 
     async def test_phaseful_cleanup_clears_unanswered_command_without_sending(self):

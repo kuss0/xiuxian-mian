@@ -35,6 +35,8 @@ WILD_TRAINING_REPLY_TIMEOUT_SEC = 10 * 60
 WILD_TRAINING_SEND_TIMEOUT_SEC = 180
 WILD_TRAINING_RETRY_MIN_SEC = 2 * 60
 WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
+WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC = 10 * 60
+WILD_TRAINING_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
 WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC = 10 * 60
 WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC = 45
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
@@ -1091,7 +1093,9 @@ async def _run_wild_training_scheduler_unlocked(now):
             state["wild_training_last_result"] = "发送队列拥堵，未发出，延后重试"
             state["wild_training_last_result_at"] = 0
             state["wild_training_last_error"] = "野外历练排队超时未发送，延后重试"
-            _schedule_retry(sent_at)
+            state["next_wild_training_time"] = float(
+                sent_at + random.uniform(WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC, WILD_TRAINING_SEND_QUEUE_RETRY_MAX_SEC)
+            )
             save_state()
             await send_audit_log(f"⏳ {state['wild_training_last_error']}。", scope="identity")
             return

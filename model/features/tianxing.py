@@ -55,8 +55,8 @@ TIANXING_RETREAT_FARM_DEFAULT_RETREAT_CD_SEC = 15 * 60
 TIANXING_CRAFT_FARM_LEGACY_REPLY_TIMEOUT_SEC = 120
 TIANXING_CRAFT_FARM_REPLY_TIMEOUT_SEC = 75
 TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC = 120
-TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MIN_SEC = 30
-TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MAX_SEC = 60
+TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MIN_SEC = 10 * 60
+TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
 TIANXING_CRAFT_FARM_RETRY_SEC = 20
 TIANXING_CRAFT_FARM_CALIBRATION_DELAY_SEC = 60
 TIANXING_FARM_WINDOWS_DEFAULT_TEXT = "02:00-05:00,06:00-11:50,14:30-17:30,23:00-23:35"
@@ -6366,7 +6366,7 @@ async def run_tianxing_craft_farm_scheduler(now, *, config=None):
         if str(send_block.get("code") or "") == "send_queue_timeout":
             farm["phase"] = "send_blocked"
             farm["next_time"] = float(now + random.uniform(TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MIN_SEC, TIANXING_CRAFT_FARM_SEND_QUEUE_RETRY_MAX_SEC))
-            farm["last_error"] = f"{command} 排队超过 {TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC}s 未发送，短退避后重试。"
+            farm["last_error"] = f"{command} 排队超过 {TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC}s 未发送，错峰后重试。"
             _craft_farm_audit(farm, now, "send_queue_timeout_retry", command=command, next_time=farm["next_time"])
             _set_tianxing_craft_farm_state(farm, now)
             save_state()

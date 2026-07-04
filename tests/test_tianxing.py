@@ -5484,7 +5484,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tianxing.TIANXING_CRAFT_FARM_SEND_QUEUE_TIMEOUT_SEC, send_mock.await_args.kwargs["queue_timeout"])
         self.assertEqual("sent_waiting_reply", craft["phase"])
 
-    async def test_craft_farm_send_queue_timeout_uses_short_retry(self):
+    async def test_craft_farm_send_queue_timeout_uses_staggered_retry(self):
         now = 1_780_000_000.0
         with state_module.use_identity(self.identity_id):
             self._prepare_identity(now, tianji_value=12)
@@ -5525,6 +5525,7 @@ class TianxingRetreatFarmTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("send_blocked", craft["phase"])
         self.assertEqual(now + 33, craft["next_time"])
         self.assertIn("排队超过", craft["last_error"])
+        self.assertIn("错峰", craft["last_error"])
 
     async def test_craft_farm_waits_when_explore_route_lease_is_active(self):
         now = 1_780_000_000.0
