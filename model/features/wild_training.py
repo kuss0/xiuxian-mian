@@ -1013,8 +1013,16 @@ async def _cleanup_wild_training_pending_timeout(now):
             reason="野外历练发送状态未知且消息日志未捞到反馈，先查盘校准",
         )
         await _send_tianxing_panel_calibration(now, "野外历练发送状态未知且消息日志未捞到反馈，已转天机盘校准")
+        next_time = _mark_unknown_send_unrecovered(
+            now,
+            "野外历练发送状态未知且消息日志未捞到反馈，已查天机盘校准后保守退避",
+        )
         save_state()
-        await send_audit_log("🌌 野外历练发送状态未知：日志未捞到反馈，已查天机盘校准；本轮不发送野外历练。", scope="identity", priority="high")
+        await send_audit_log(
+            f"🌌 野外历练发送状态未知：日志未捞到反馈，已查天机盘校准；退避至 {fmt_abs_ts(next_time)}。",
+            scope="identity",
+            priority="high",
+        )
         return True
 
     reply_to_msg_id = int(state.get("wild_training_reply_to_msg_id", 0) or 0)
