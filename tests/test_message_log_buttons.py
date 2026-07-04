@@ -322,6 +322,34 @@ class MessageLogButtonTests(unittest.TestCase):
                 patch.object(app_message_log, "get_all_clients", return_value={93001: listener_client}):
             self.assertFalse(app_message_log._append_replica_group_message_log(event, event_type="message"))
 
+    def test_replica_group_bot_429_backs_off_and_falls_back_without_audit_storm(self):
+        class FallbackClient:
+            async def send_message(self, chat_id, text, **kwargs):
+                return SimpleNamespace(id=94001)
+
+        async def run_case():
+            app_message_log._REPLICA_BOT_BACKOFF_UNTIL = 0
+            error_text = 'HTTP 429: {"ok":false,"parameters":{"retry_after":25}}'
+            with patch.object(app_message_log, "LOG_SEND_MODE", "bot"), \
+                    patch.object(app_message_log, "_send_replica_group_via_bot", return_value=(False, 0, error_text)), \
+                    patch.object(app_message_log, "_append_sent_replica_group_message_log") as sent_log_mock, \
+                    patch.object(app_message_log, "send_audit_log", new=AsyncMock()) as audit_mock:
+                msg = await app_message_log._send_replica_group_message(
+                    FallbackClient(),
+                    -100920,
+                    "坠魔谷结算",
+                    listener_account_id=93001,
+                )
+                return msg, sent_log_mock, audit_mock, app_message_log._REPLICA_BOT_BACKOFF_UNTIL
+
+        msg, sent_log_mock, audit_mock, backoff_until = asyncio.run(run_case())
+
+        self.assertEqual(94001, msg.id)
+        self.assertGreater(backoff_until, 0)
+        sent_log_mock.assert_called_once()
+        self.assertEqual("account", sent_log_mock.call_args.kwargs["sent_via"])
+        audit_mock.assert_not_awaited()
+
     def test_replica_button_event_can_use_log_group_overlap_listener(self):
         listener_client = SimpleNamespace(name="listener")
         event = SimpleNamespace(

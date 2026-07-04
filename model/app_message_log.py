@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import traceback
 from datetime import datetime
 from datetime import timedelta
@@ -31,6 +32,7 @@ _MESSAGE_LOG_BUTTON_TEXT_MAX_LEN = 128
 _REPLICA_BOT_CONNECT_TIMEOUT_SEC = 3
 _REPLICA_BOT_READ_TIMEOUT_SEC = 8
 _REPLICA_BOT_TOTAL_TIMEOUT_SEC = 12
+_REPLICA_BOT_BACKOFF_UNTIL = 0.0
 _MESSAGE_LOG_LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS message_log_events (
     event_key TEXT PRIMARY KEY,
@@ -435,9 +437,52 @@ def _send_replica_group_via_bot(chat_id, text, *, parse_mode=None, reply_to=None
     return True, msg_id, ""
 
 
+def _extract_replica_bot_retry_after(error_text):
+    text = str(error_text or "")
+    marker = '"retry_after":'
+    if marker in text:
+        tail = text.split(marker, 1)[1].lstrip()
+        digits = []
+        for ch in tail:
+            if ch.isdigit():
+                digits.append(ch)
+            else:
+                break
+        if digits:
+            try:
+                return max(0, int("".join(digits)))
+            except (TypeError, ValueError):
+                return 0
+    lower = text.lower()
+    marker = "retry after"
+    if marker in lower:
+        tail = lower.split(marker, 1)[1].lstrip()
+        digits = []
+        for ch in tail:
+            if ch.isdigit():
+                digits.append(ch)
+            elif digits:
+                break
+        if digits:
+            try:
+                return max(0, int("".join(digits)))
+            except (TypeError, ValueError):
+                return 0
+    return 0
+
+
+def _mark_replica_bot_backoff(error_text):
+    global _REPLICA_BOT_BACKOFF_UNTIL
+    retry_after = _extract_replica_bot_retry_after(error_text)
+    if retry_after <= 0:
+        return 0
+    _REPLICA_BOT_BACKOFF_UNTIL = max(_REPLICA_BOT_BACKOFF_UNTIL, time.time() + retry_after + 1)
+    return retry_after
+
+
 async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=None, reply_to=None, listener_account_id=0, log_text=None, buttons=None):
     log_payload_text = log_text if log_text is not None else str(text or "")
-    if LOG_SEND_MODE == "bot":
+    if LOG_SEND_MODE == "bot" and time.time() >= _REPLICA_BOT_BACKOFF_UNTIL:
         try:
             ok, msg_id, error_text = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -461,17 +506,15 @@ async def _send_replica_group_message(client_obj, chat_id, text, *, parse_mode=N
                     buttons=buttons,
                 )
                 return SimpleNamespace(id=msg_id)
-            await send_audit_log(f"❌ 副本群 bot 消息发送失败：{error_text}", scope="global", limit=200)
-            print(f"_send_replica_group_message bot failed: {error_text} | text={log_payload_text}")
-            return None
+            retry_after = _mark_replica_bot_backoff(error_text)
+            if retry_after:
+                print(f"_send_replica_group_message bot backoff {retry_after}s: {error_text} | text={log_payload_text}")
+            else:
+                print(f"_send_replica_group_message bot failed: {error_text} | text={log_payload_text}")
         except asyncio.TimeoutError:
-            await send_audit_log("❌ 副本群 bot 消息发送超时", scope="global", limit=160)
             print(f"_send_replica_group_message bot timeout | text={log_payload_text}")
-            return None
         except Exception:
-            await send_audit_log("❌ 副本群 bot 消息发送异常", scope="global", limit=160)
             print(traceback.format_exc())
-            return None
     try:
         send_kwargs = {}
         keyboard = _normalize_inline_keyboard_buttons(buttons)

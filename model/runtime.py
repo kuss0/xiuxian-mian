@@ -3,6 +3,7 @@ import html
 import json
 import os
 import random
+import re
 import secrets
 import time
 import traceback
@@ -1669,6 +1670,31 @@ def _send_log_group_via_bot(text, *, reply_to_msg_id=None, message_thread_id=Non
     return False, body or "bot api returned non-ok response"
 
 
+_LOG_BOT_BACKOFF_UNTIL = 0.0
+
+
+def _extract_bot_retry_after(error_text):
+    text = str(error_text or "")
+    match = re.search(r'"retry_after"\s*:\s*(\d+)', text)
+    if not match:
+        match = re.search(r"retry after\s+(\d+)", text, re.I)
+    if not match:
+        return 0
+    try:
+        return max(0, int(match.group(1)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _mark_log_bot_backoff(error_text):
+    global _LOG_BOT_BACKOFF_UNTIL
+    retry_after = _extract_bot_retry_after(error_text)
+    if retry_after <= 0:
+        return 0
+    _LOG_BOT_BACKOFF_UNTIL = max(_LOG_BOT_BACKOFF_UNTIL, time.time() + retry_after + 1)
+    return retry_after
+
+
 def _call_log_bot_api(method, payload=None, *, read_timeout=LOG_BOT_READ_TIMEOUT_SEC):
     if not LOG_BOT_TOKEN:
         return False, None, "missing bot token"
@@ -1756,7 +1782,7 @@ async def run_log_bot_callback_poller(callback_handler, stop_event=None):
 
 
 async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_id=None, link_preview=True, parse_mode=None, buttons=None):
-    if LOG_SEND_MODE == "bot":
+    if LOG_SEND_MODE == "bot" and time.time() >= _LOG_BOT_BACKOFF_UNTIL:
         try:
             ok, error_text = await asyncio.wait_for(
                 asyncio.to_thread(
@@ -1772,7 +1798,11 @@ async def _send_log_group_message(text, *, reply_to_msg_id=None, message_thread_
             )
             if ok:
                 return True
-            print(f"_send_log_group_message bot fallback: {error_text} | text={text}")
+            retry_after = _mark_log_bot_backoff(error_text)
+            if retry_after:
+                print(f"_send_log_group_message bot backoff {retry_after}s: {error_text} | text={text}")
+            else:
+                print(f"_send_log_group_message bot fallback: {error_text} | text={text}")
         except asyncio.TimeoutError:
             print(f"_send_log_group_message bot timeout | text={text}")
         except Exception as e:
