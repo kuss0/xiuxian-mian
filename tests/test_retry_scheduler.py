@@ -56,6 +56,11 @@ class _StateIsolationMixin:
             runtime._bot_probe_sent_at,
             runtime._bot_last_block_log_at,
         )
+        self._flood_wait_snapshot = (
+            dict(runtime._ACCOUNT_FLOOD_WAIT_UNTIL),
+            dict(runtime._ACCOUNT_FLOOD_WAIT_REASON),
+            dict(runtime._ACCOUNT_FLOOD_WAIT_LAST_LOG_AT),
+        )
 
     def tearDown(self):
         state_module._meta_state.clear()
@@ -69,6 +74,12 @@ class _StateIsolationMixin:
             runtime._bot_probe_sent_at,
             runtime._bot_last_block_log_at,
         ) = self._bot_health_snapshot
+        runtime._ACCOUNT_FLOOD_WAIT_UNTIL.clear()
+        runtime._ACCOUNT_FLOOD_WAIT_UNTIL.update(self._flood_wait_snapshot[0])
+        runtime._ACCOUNT_FLOOD_WAIT_REASON.clear()
+        runtime._ACCOUNT_FLOOD_WAIT_REASON.update(self._flood_wait_snapshot[1])
+        runtime._ACCOUNT_FLOOD_WAIT_LAST_LOG_AT.clear()
+        runtime._ACCOUNT_FLOOD_WAIT_LAST_LOG_AT.update(self._flood_wait_snapshot[2])
         super().tearDown()
 
 
@@ -148,6 +159,27 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
             self.assertNotIn(201, identity_state["pending_tasks"])
             self.assertEqual(1, identity_state["pending_tasks"][202]["retry"])
             self.assertEqual(1, identity_state["pending_tasks"][202]["max_retry"])
+
+    def test_account_flood_wait_blocks_all_priorities_before_send(self):
+        send_as_id = 971013
+        account_id = 881013
+        now = 6200.0
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        runtime._mark_account_flood_wait(account_id, 300, now=now)
+
+        with patch.object(runtime.time, "time", return_value=now + 10), \
+             patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)), \
+             patch.object(runtime, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(runtime, "_run_game_command_pre_send_guards", new=AsyncMock(return_value=(True, "", ""))):
+            normal_msg = asyncio.run(runtime.send_game_command(".测试指令", send_as_id=send_as_id, priority=runtime.SEND_PRIORITY_NORMAL))
+            p0_msg = asyncio.run(runtime.send_game_command(".验证 ABC 1", send_as_id=send_as_id, priority=runtime.SEND_PRIORITY_P0))
+            block = runtime.get_last_game_send_block(send_as_id, ".验证 ABC 1")
+
+        self.assertIsNone(normal_msg)
+        self.assertIsNone(p0_msg)
+        self.assertGreaterEqual(audit_mock.await_count, 1)
+        self.assertEqual("flood_wait_backoff", block.get("code"))
 
     def test_pending_retry_keeps_original_pending_when_resend_not_sent(self):
         send_as_id = 971012

@@ -507,6 +507,9 @@ _bot_waiting_since = 0.0
 _bot_last_seen_at = 0.0
 _bot_probe_sent_at = 0.0
 _bot_last_block_log_at = 0.0
+_ACCOUNT_FLOOD_WAIT_UNTIL = {}
+_ACCOUNT_FLOOD_WAIT_REASON = {}
+_ACCOUNT_FLOOD_WAIT_LAST_LOG_AT = {}
 
 
 def _now_ts(now=None):
@@ -664,6 +667,61 @@ def _bot_health_blocks_send(priority):
     if priority in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
         return False
     return _bot_health_state in {BOT_HEALTH_SUSPECT, BOT_HEALTH_PAUSED, BOT_HEALTH_PROBING}
+
+
+def _mark_account_flood_wait(account_id, seconds, now=None):
+    try:
+        account_id = int(account_id or 0)
+    except (TypeError, ValueError):
+        account_id = 0
+    if account_id <= 0:
+        return 0.0
+    now = _now_ts(now)
+    try:
+        seconds_value = max(1, int(float(seconds or 0)))
+    except (TypeError, ValueError):
+        seconds_value = 60
+    until = now + seconds_value
+    _ACCOUNT_FLOOD_WAIT_UNTIL[account_id] = max(float(_ACCOUNT_FLOOD_WAIT_UNTIL.get(account_id, 0) or 0), until)
+    _ACCOUNT_FLOOD_WAIT_REASON[account_id] = f"TG FloodWait {seconds_value}s"
+    return _ACCOUNT_FLOOD_WAIT_UNTIL[account_id]
+
+
+def _account_flood_wait_until(account_id, now=None):
+    try:
+        account_id = int(account_id or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    if account_id <= 0:
+        return 0.0
+    now = _now_ts(now)
+    until = float(_ACCOUNT_FLOOD_WAIT_UNTIL.get(account_id, 0) or 0)
+    if until <= 0:
+        return 0.0
+    if now >= until:
+        _ACCOUNT_FLOOD_WAIT_UNTIL.pop(account_id, None)
+        _ACCOUNT_FLOOD_WAIT_REASON.pop(account_id, None)
+        _ACCOUNT_FLOOD_WAIT_LAST_LOG_AT.pop(account_id, None)
+        return 0.0
+    return until
+
+
+async def _log_account_flood_wait_blocked(command, *, send_as_id, account_id, until):
+    now = time.time()
+    key = int(account_id or 0)
+    last_at = float(_ACCOUNT_FLOOD_WAIT_LAST_LOG_AT.get(key, 0) or 0)
+    if now - last_at < 60:
+        return
+    _ACCOUNT_FLOOD_WAIT_LAST_LOG_AT[key] = now
+    await send_audit_log(
+        (
+            f"⏸ TG FloodWait 退避中：acc={key}｜恢复 {fmt_abs_ts(until)}"
+            f"（{fmt_remaining(until)}）｜暂缓 {_truncate_log_text(command, limit=32)}"
+        ),
+        scope="identity",
+        send_as_id=send_as_id,
+        limit=260,
+    )
 
 
 def _refresh_bot_health_timeout_before_send():
@@ -2924,6 +2982,12 @@ async def send_game_command(
             _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
             return None
 
+        flood_until = _account_flood_wait_until(account_id)
+        if flood_until > 0:
+            await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
+            _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
+            return None
+
         if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
             await _log_weakness_blocked(command, send_as_id=send_as_id)
             _record_game_send_block(send_as_id, command, "identity_weak", "角色虚弱")
@@ -2992,6 +3056,11 @@ async def send_game_command(
                     reason=get_account_offline_reason(account_id) or "账号离线",
                 )
                 _record_game_send_block(send_as_id, command, "account_offline", get_account_offline_reason(account_id) or "账号离线")
+                return None
+            flood_until = _account_flood_wait_until(account_id)
+            if flood_until > 0:
+                await _log_account_flood_wait_blocked(command, send_as_id=send_as_id, account_id=account_id, until=flood_until)
+                _record_game_send_block(send_as_id, command, "flood_wait_backoff", f"until {fmt_abs_ts(flood_until)}")
                 return None
             if is_identity_weak(send_as_id) and not _weakness_allows_command(command, send_as_id=send_as_id):
                 await _log_weakness_blocked(command, send_as_id=send_as_id)
@@ -3103,12 +3172,16 @@ async def send_game_command(
                     timeout=GAME_SEND_RPC_TIMEOUT_SEC,
                 )
             except FloodWaitError as flood_err:
+                flood_until = _mark_account_flood_wait(account_id, int(flood_err.seconds), now=time.time())
                 mark_bot_health_suspect(
                     f"TG FloodWait {int(flood_err.seconds)}s",
                     reference_at=time.time(),
                 )
                 await send_audit_log(
-                    f"⏸ TG FloodWait {int(flood_err.seconds)}s，普通指令已暂停等待恢复：{_truncate_log_text(command, limit=24)}",
+                    (
+                        f"⏸ TG FloodWait {int(flood_err.seconds)}s，账号发送退避至 {fmt_abs_ts(flood_until)}："
+                        f"{_truncate_log_text(command, limit=24)}"
+                    ),
                     scope="identity", send_as_id=send_as_id, limit=220,
                 )
                 _record_game_send_block(send_as_id, command, "flood_wait", f"TG FloodWait {int(flood_err.seconds)}s")
