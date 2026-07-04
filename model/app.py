@@ -261,6 +261,10 @@ DUE_CONCUBINE_MAX_PER_TICK = 2
 DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC = 90
 DUE_CONCUBINE_DIAG_INTERVAL_SEC = 180
 _due_concubine_last_diag_at = 0.0
+DUE_STARGAZER_FOLLOWUP_MAX_PER_TICK = 2
+DUE_STARGAZER_FOLLOWUP_SCHEDULER_TIMEOUT_SEC = 45
+DUE_STARGAZER_FOLLOWUP_DIAG_INTERVAL_SEC = 180
+_due_stargazer_followup_last_diag_at = 0.0
 DUE_TIANXING_MAX_PER_TICK = 2
 DUE_TIANXING_SCHEDULER_TIMEOUT_SEC = 90
 DUE_TIANXING_DIAG_INTERVAL_SEC = 180
@@ -1376,6 +1380,83 @@ async def _run_due_concubine_candidate(identity_id, scheduler_now):
             await run_concubine_scheduler(candidate_now)
 
 
+async def _run_due_stargazer_followup_schedulers(now, *, limit=DUE_STARGAZER_FOLLOWUP_MAX_PER_TICK):
+    global _due_stargazer_followup_last_diag_at
+    candidates = []
+    for scan_index, identity_id in enumerate(get_identity_ids()):
+        if not get_identity_enabled(identity_id):
+            continue
+        if _is_identity_account_offline(identity_id):
+            continue
+        with use_identity(identity_id):
+            scheduler_now = max(float(now or 0), time.time())
+            if is_identity_weak(identity_id, scheduler_now):
+                continue
+            if has_phaseful_summary_block(scheduler_now):
+                continue
+            if not state.get("stargazer_enabled"):
+                continue
+            try:
+                followup_due_at = float(state.get("stargazer_followup_due_at", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                followup_due_at = 0.0
+            if followup_due_at <= 0 or followup_due_at > scheduler_now:
+                continue
+            queued_action = str(state.get("stargazer_queued_action") or "").strip()
+            last_action = str(state.get("stargazer_last_action") or "").strip()
+            if not queued_action and last_action.startswith("queue_"):
+                queued_action = last_action[len("queue_"):].strip()
+            if not queued_action:
+                continue
+            priority = 0 if queued_action == "collect" else 1
+            candidates.append((priority, followup_due_at, scan_index, identity_id, scheduler_now, queued_action))
+
+    if candidates and float(now or 0) - _due_stargazer_followup_last_diag_at >= DUE_STARGAZER_FOLLOWUP_DIAG_INTERVAL_SEC:
+        _due_stargazer_followup_last_diag_at = float(now or time.time())
+        preview = []
+        for _priority, due_at, _scan_index, identity_id, _scheduler_now, action in sorted(candidates)[:5]:
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            overdue = max(0, int(float(now or time.time()) - float(due_at or 0)))
+            preview.append(f"@{username}:{action}/{overdue}s")
+        console_log(
+            f"🌠 到期观星台跟进 {len(candidates)} 个，本轮上限 {int(limit or 1)}：{', '.join(preview)}",
+            scope="global",
+        )
+
+    processed = 0
+    for _priority, _due_at, _scan_index, identity_id, scheduler_now, action in sorted(candidates):
+        if processed >= int(limit or 1):
+            break
+        try:
+            await asyncio.wait_for(
+                _run_due_stargazer_followup_candidate(identity_id, scheduler_now),
+                timeout=max(1, float(DUE_STARGAZER_FOLLOWUP_SCHEDULER_TIMEOUT_SEC or 0)),
+            )
+        except asyncio.TimeoutError:
+            with use_identity(identity_id):
+                state["stargazer_last_action"] = f"due_followup_timeout_{action}"
+                state["stargazer_followup_due_at"] = float(time.time()) + 30
+                mark_dirty()
+            profile = get_send_as_profile(identity_id)
+            username = str((profile or {}).get("username") or identity_id)
+            console_log(f"🌠 到期观星台跟进超时：@{username} {action}", scope="global")
+        except Exception as exc:
+            with use_identity(identity_id):
+                state["stargazer_last_action"] = f"due_followup_error_{action}"
+                state["stargazer_followup_due_at"] = float(time.time()) + 60
+                mark_dirty()
+            print("due stargazer followup scheduler failed:")
+            print("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+        processed += 1
+
+
+async def _run_due_stargazer_followup_candidate(identity_id, scheduler_now):
+    with use_identity(identity_id):
+        candidate_now = max(float(scheduler_now or 0), time.time())
+        await run_stargazer_scheduler(candidate_now)
+
+
 def _record_due_concubine_candidate_failure(*, now, reason, transient=False):
     if transient:
         state["concubine_last_result"] = str(reason or "到期侍妾扫描让出本轮")
@@ -2414,6 +2495,7 @@ async def main_loop(stop_event=None):
         await _run_tianxing_daily_bootstrap_identity_schedulers(time.time())
         await _run_tianxing_timeline_followup_identity_schedulers(time.time())
         await _run_due_tianxing_schedulers(now)
+        await _run_due_stargazer_followup_schedulers(now)
         await _run_due_wild_training_retry_schedulers(now)
         await _run_due_concubine_schedulers(now)
         await run_rare_daily_report_scheduler(now)

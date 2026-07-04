@@ -2,6 +2,7 @@ import copy
 import asyncio
 import sys
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -323,6 +324,44 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         with state_module.use_identity(identity_id):
             self.assertEqual(0, state_module.state["next_stargazer_panel_time"])
             self.assertEqual(0, state_module.state["next_tower_time"])
+
+    async def test_due_stargazer_followup_runs_only_explicit_queued_action(self):
+        due_identity_id = 991782
+        panel_only_identity_id = 991783
+        now = 1_700_000_000.0
+        for identity_id in (due_identity_id, panel_only_identity_id):
+            state_module.ensure_identity_registered(identity_id)
+
+        with state_module.use_identity(due_identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_followup_due_at"] = now - 3
+            state_module.state["stargazer_queued_action"] = "collect"
+            state_module.state["stargazer_last_action"] = "queue_collect"
+        with state_module.use_identity(panel_only_identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["stargazer_followup_due_at"] = 0
+            state_module.state["stargazer_queued_action"] = ""
+            state_module.state["stargazer_last_action"] = "waiting_panel"
+            state_module.state["next_stargazer_panel_time"] = now - 3
+
+        seen = []
+
+        async def fake_stargazer_scheduler(scheduler_now):
+            seen.append((state_module.get_current_identity_id(), scheduler_now))
+
+        with (
+            patch.object(app, "get_identity_ids", return_value=[panel_only_identity_id, due_identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "run_stargazer_scheduler", new=AsyncMock(side_effect=fake_stargazer_scheduler)) as scheduler_mock,
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_due_stargazer_followup_schedulers(now, limit=2)
+
+        scheduler_mock.assert_awaited_once()
+        self.assertEqual([(due_identity_id, now)], seen)
 
     async def test_phaseful_catchup_runs_before_ordinary_when_due_during_long_cycle(self):
         identity_id = 991779
@@ -996,6 +1035,9 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         async def fake_wild_retry(now):
             seen.append(("wild_retry", now))
 
+        async def fake_stargazer_due(now):
+            seen.append(("stargazer_due", now))
+
         async def fake_tianxing_due(now):
             seen.append(("tianxing_due", now))
 
@@ -1014,34 +1056,42 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
         async def noop_async(*_args, **_kwargs):
             return None
 
-        with (
-            patch.object(app, "gc_my_msg_ids"),
-            patch.object(app, "gc_ui_login_tokens"),
-            patch.object(app, "gc_ui_sessions"),
-            patch.object(app, "flush_if_dirty", return_value=True),
-            patch.object(app, "has_persistence_write_failure", return_value=False),
-            patch.object(app, "check_bot_health_timeout"),
-            patch.object(app, "should_pause_for_bot_health", return_value=False),
-            patch.object(app, "get_global_enabled", return_value=True),
-            patch.object(app, "run_rare_daily_report_scheduler", new=AsyncMock(side_effect=fake_rare)),
-            patch.object(app, "_run_global_schedulers", new=AsyncMock(side_effect=fake_global)),
-            patch.object(app, "run_quiz_learning_scheduler", new=AsyncMock()),
-            patch.object(app, "run_retry_scheduler", new=AsyncMock()),
-            patch.object(app, "run_identity_info_followup_scheduler", new=AsyncMock()),
-            patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock(side_effect=fake_phaseful)),
-            patch.object(app, "_run_due_tianxing_schedulers", new=AsyncMock(side_effect=fake_tianxing_due)),
-            patch.object(app, "_run_due_wild_training_retry_schedulers", new=AsyncMock(side_effect=fake_wild_retry)),
-            patch.object(app, "_run_due_concubine_schedulers", new=AsyncMock(side_effect=fake_concubine_retry)),
-            patch.object(app, "_start_identity_schedulers_if_idle", side_effect=fake_start_identity),
-            patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
-            patch.object(app.time, "time", return_value=200.0),
-        ):
-            await app.main_loop(stop_event)
+        old_stargazer_due = app._run_due_stargazer_followup_schedulers
+        app._run_due_stargazer_followup_schedulers = AsyncMock(side_effect=fake_stargazer_due)
+        try:
+            with ExitStack() as stack:
+                for ctx in (
+                    patch.object(app, "gc_my_msg_ids"),
+                    patch.object(app, "gc_ui_login_tokens"),
+                    patch.object(app, "gc_ui_sessions"),
+                    patch.object(app, "flush_if_dirty", return_value=True),
+                    patch.object(app, "has_persistence_write_failure", return_value=False),
+                    patch.object(app, "check_bot_health_timeout"),
+                    patch.object(app, "should_pause_for_bot_health", return_value=False),
+                    patch.object(app, "get_global_enabled", return_value=True),
+                    patch.object(app, "run_rare_daily_report_scheduler", new=AsyncMock(side_effect=fake_rare)),
+                    patch.object(app, "_run_global_schedulers", new=AsyncMock(side_effect=fake_global)),
+                    patch.object(app, "run_quiz_learning_scheduler", new=AsyncMock()),
+                    patch.object(app, "run_retry_scheduler", new=AsyncMock()),
+                    patch.object(app, "run_identity_info_followup_scheduler", new=AsyncMock()),
+                    patch.object(app, "_run_phaseful_identity_schedulers", new=AsyncMock(side_effect=fake_phaseful)),
+                    patch.object(app, "_run_due_tianxing_schedulers", new=AsyncMock(side_effect=fake_tianxing_due)),
+                    patch.object(app, "_run_due_wild_training_retry_schedulers", new=AsyncMock(side_effect=fake_wild_retry)),
+                    patch.object(app, "_run_due_concubine_schedulers", new=AsyncMock(side_effect=fake_concubine_retry)),
+                    patch.object(app, "_start_identity_schedulers_if_idle", side_effect=fake_start_identity),
+                    patch.object(app, "_sleep_or_stop", new=AsyncMock(side_effect=fake_sleep)),
+                    patch.object(app.time, "time", return_value=200.0),
+                ):
+                    stack.enter_context(ctx)
+                await app.main_loop(stop_event)
+        finally:
+            app._run_due_stargazer_followup_schedulers = old_stargazer_due
 
         self.assertEqual(
             [
                 ("phaseful", 200.0),
                 ("tianxing_due", 200.0),
+                ("stargazer_due", 200.0),
                 ("wild_retry", 200.0),
                 ("concubine_retry", 200.0),
                 ("rare", 200.0),
