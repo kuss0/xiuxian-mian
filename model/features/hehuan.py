@@ -44,6 +44,7 @@ HEHUAN_BAIJI_NAME = "吧唧"
 HEHUAN_ANCHOR_TEXT = "。"
 HEHUAN_LOG_REPLAY_LOOKBACK_SEC = 15 * 60
 HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC = 30
+HEHUAN_FINAL_EDIT_WAIT_SEC = 3 * 60
 
 PATH_FANCHEN = "凡尘缘"
 PATH_TONGCAN = "同参道"
@@ -244,6 +245,26 @@ def _schedule_hehuan_retry(observed, now, reason):
     observed["auto_last_error_at"] = float(now) if observed["auto_last_error"] else 0
     observed["auto_next_time"] = float(now + _hehuan_retry_delay_sec(observed))
     _reset_hehuan_auto_pending(observed)
+    return observed
+
+
+def _mark_hehuan_pending_ack(observed, now):
+    observed = normalize_hehuan_observation(observed)
+    pending_msg_id = int(observed.get("auto_pending_msg_id", 0) or 0)
+    if pending_msg_id > 0:
+        pending_sent_at = float(observed.get("auto_pending_sent_at", 0) or 0)
+        if pending_sent_at <= 0:
+            observed["auto_pending_sent_at"] = float(now)
+        pending_deadline_at = float(observed.get("auto_pending_deadline_at", 0) or 0)
+        observed["auto_pending_deadline_at"] = max(
+            pending_deadline_at,
+            float(now + HEHUAN_FINAL_EDIT_WAIT_SEC),
+        )
+        observed["auto_next_time"] = observed["auto_pending_deadline_at"]
+    else:
+        observed["auto_next_time"] = float(now + HEHUAN_FINAL_EDIT_WAIT_SEC)
+    observed["auto_last_error"] = "温养已收到起手回复，等待最终结算"
+    observed["auto_last_error_at"] = 0
     return observed
 
 
@@ -953,7 +974,7 @@ def apply_hehuan_passive(text, now=None, family=""):
         _reset_hehuan_auto_pending(observed)
         auto_next_handled = True
     elif result == "pending":
-        observed = _schedule_hehuan_retry(observed, now, "温养结算无最终推进")
+        observed = _mark_hehuan_pending_ack(observed, now)
         auto_next_handled = True
     if not auto_next_handled:
         if observed.get("next_hehuan_time"):
@@ -1027,14 +1048,23 @@ def _has_unresolved_hehuan_pending(observed, now):
     pending_deadline_at = float(observed.get("auto_pending_deadline_at", 0) or 0)
     if pending_msg_id <= 0 or pending_sent_at <= 0 or pending_deadline_at <= 0:
         return False
-    if float(observed.get("last_observed_at", 0) or 0) >= pending_sent_at:
+    last_result = str(observed.get("last_result") or "").strip().lower()
+    if last_result != "pending" and float(observed.get("last_observed_at", 0) or 0) >= pending_sent_at:
         _reset_hehuan_auto_pending(observed)
         return False
     return now >= pending_deadline_at
 
 
-def _is_hehuan_reply_log_entry(entry):
-    return looks_like_hehuan_text((entry or {}).get("text") or "")
+def _is_hehuan_terminal_reply_log_entry(entry):
+    text = (entry or {}).get("text") or ""
+    if not looks_like_hehuan_text(text):
+        return False
+    parsed = parse_hehuan_text(
+        text,
+        now=float((entry or {}).get("ts_epoch") or time.time()),
+        family="hehuan_dual",
+    )
+    return bool(parsed) and str(parsed.get("result") or "").strip().lower() != "pending"
 
 
 def _recover_hehuan_pending_from_message_log(observed, now):
@@ -1046,7 +1076,7 @@ def _recover_hehuan_pending_from_message_log(observed, now):
         now,
         lookback_sec=HEHUAN_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC,
-        predicate=_is_hehuan_reply_log_entry,
+        predicate=_is_hehuan_terminal_reply_log_entry,
     )
     if not replies:
         return False

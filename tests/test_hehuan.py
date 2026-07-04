@@ -312,6 +312,32 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertEqual(0, observed["auto_pending_msg_id"])
         self.assertEqual([], observed["valuable_drop_reminders"])
 
+    def test_pending_start_reply_keeps_auto_pending_until_final_edit(self):
+        now = 1_780_000_000.0
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "auto_retry_count": 0,
+                "auto_pending_msg_id": 123,
+                "auto_pending_sent_at": now - 5,
+                "auto_pending_deadline_at": now + 30,
+            }
+
+            changed = hehuan.apply_hehuan_passive(
+                "契印感应，双方灵力开始共鸣，准备进行温养双修...",
+                now=now,
+                family="hehuan_dual",
+            )
+
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual("pending", observed["last_result"])
+        self.assertEqual(123, observed["auto_pending_msg_id"])
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertGreaterEqual(observed["auto_pending_deadline_at"], now + hehuan.HEHUAN_FINAL_EDIT_WAIT_SEC)
+        self.assertEqual(observed["auto_pending_deadline_at"], observed["auto_next_time"])
+
     def test_success_with_valuable_insight_queues_three_reminders(self):
         now = 1_780_000_000.0
         text = (
@@ -876,6 +902,50 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["auto_pending_msg_id"])
         self.assertEqual(0, observed["auto_retry_count"])
         self.assertEqual(now - 10 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+
+    async def test_scheduler_does_not_treat_start_reply_as_log_recovery(self):
+        now = 1_780_000_000.0
+        pending_entry = {
+            "text": "契印感应，双方灵力开始共鸣，准备进行温养双修...",
+            "ts_epoch": now - 200,
+            "message_id": 9902,
+            "reply_to_msg_id": 9901,
+        }
+
+        def fake_find_replies(*args, **kwargs):
+            predicate = kwargs.get("predicate")
+            self.assertIsNotNone(predicate)
+            self.assertFalse(predicate(pending_entry))
+            return []
+
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 200,
+                "last_result": "pending",
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+                "auto_retry_count": 0,
+                "auto_pending_msg_id": 9901,
+                "auto_pending_sent_at": now - 300,
+                "auto_pending_deadline_at": now - 1,
+            }
+            with (
+                patch.object(hehuan, "find_message_log_replies", side_effect=fake_find_replies),
+                patch.object(hehuan, "save_state") as save_mock,
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_called()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertEqual(1, observed["auto_retry_count"])
+        self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertIn("温养回复超时或被吞", observed["auto_last_error"])
 
     async def test_scheduler_blocks_warm_when_recent_partner_anchor_missing(self):
         now = 1_780_000_000.0
