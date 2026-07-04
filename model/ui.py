@@ -426,6 +426,12 @@ def _get_storage_bag_item_rule(item_name):
         raw_rule = saved_rule
     else:
         raw_rule = base_rule
+        if isinstance(raw_rule, dict) and str(raw_rule.get("method") or "").strip().lower() == "blocked":
+            raw_rule = {
+                **raw_rule,
+                "method": "gift",
+                "reason": raw_rule.get("reason") or "基础规则不可上架，默认改走赠送。",
+            }
     return _normalize_storage_bag_item_rule(item_name, raw_rule)
 
 

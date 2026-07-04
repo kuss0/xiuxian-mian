@@ -286,6 +286,29 @@ class StorageBagTransferTests(unittest.TestCase):
             {"identity_id": self.source_id, "command": ".赠送 苍坤残图*1", "note": "来源身份回复目标身份标记消息发送"},
         ], preview["commands"])
 
+    def test_base_blocked_items_default_to_gift_without_manual_override(self):
+        state_module.set_storage_bag_item_rules({})
+        state_module.set_storage_bag_records({
+            str(self.source_id): {
+                "updated_at": 1000,
+                "items": {"元磁山核·丁": 4},
+            },
+            str(self.target_id): {"updated_at": 1000, "items": {"灵石": 100}},
+        })
+
+        snapshot = ui.get_storage_bag_snapshot()
+
+        self.assertEqual("gift", snapshot["item_rules"]["元磁山核·丁"]["method"])
+        ok, message, preview = ui.ui_preview_storage_bag_transfer({
+            "source_identity_id": self.source_id,
+            "target_identity_id": self.target_id,
+            "items": [{"item_name": "元磁山核·丁", "quantity": 2}],
+        })
+
+        self.assertTrue(ok, message)
+        self.assertEqual("gift", preview["items"][0]["method"])
+        self.assertEqual(".赠送 元磁山核·丁*2", preview["commands"][1]["command"])
+
     def test_batch_transfer_preview_defaults_to_all_non_protected_sources(self):
         other_id = 1003
         protected_id = 1004

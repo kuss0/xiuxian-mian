@@ -1146,6 +1146,7 @@ async def _run_identity_schedulers(now):
             identity_now = time.time()
             if is_identity_weak(identity_id, identity_now):
                 continue
+            enforce_identity_module_availability(identity_id)
             for scheduler in _PHASEFUL_IDENTITY_SCHEDULERS:
                 await scheduler(identity_now)
             if has_phaseful_summary_block(identity_now):

@@ -286,6 +286,44 @@ class AppDelayedActionContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([("cleanup", identity_id, now)], seen)
 
+    async def test_identity_scheduler_enforces_module_availability_before_send_schedulers(self):
+        identity_id = 991781
+        state_module.ensure_identity_registered(identity_id)
+        state_module.update_send_as_profile(identity_id, username="sanxiu", sect_name="散修", realm="元婴初期")
+        with state_module.use_identity(identity_id):
+            state_module.state["stargazer_enabled"] = True
+            state_module.state["tower_enabled"] = True
+            state_module.state["next_stargazer_panel_time"] = 1
+            state_module.state["next_tower_time"] = 1
+
+        seen = []
+
+        async def fake_ordinary(now):
+            seen.append((
+                state_module.get_current_identity_id(),
+                bool(state_module.state.get("stargazer_enabled")),
+                bool(state_module.state.get("tower_enabled")),
+            ))
+
+        now = 1_700_000_000.0
+        with (
+            patch.object(app, "get_identity_ids", return_value=[identity_id]),
+            patch.object(app, "get_identity_enabled", return_value=True),
+            patch.object(app, "_PHASEFUL_IDENTITY_SCHEDULERS", ()),
+            patch.object(app, "_ORDINARY_IDENTITY_SCHEDULERS", (fake_ordinary,)),
+            patch.object(app, "has_phaseful_summary_block", return_value=False),
+            patch.object(app, "_is_identity_account_offline", return_value=False),
+            patch.object(app, "is_identity_weak", return_value=False),
+            patch("model.control.save_state"),
+            patch.object(app.time, "time", return_value=now),
+        ):
+            await app._run_identity_schedulers(now)
+
+        self.assertEqual([(identity_id, False, False)], seen)
+        with state_module.use_identity(identity_id):
+            self.assertEqual(0, state_module.state["next_stargazer_panel_time"])
+            self.assertEqual(0, state_module.state["next_tower_time"])
+
     async def test_phaseful_catchup_runs_before_ordinary_when_due_during_long_cycle(self):
         identity_id = 991779
         state_module.ensure_identity_registered(identity_id)
