@@ -1222,6 +1222,76 @@ class PhasefulSummaryTests(_StateIsolationMixin, unittest.IsolatedAsyncioTestCas
             self.assertEqual(now + 300, state_module.state["next_deep_retreat_time"])
             self.assertFalse(state_module.state["deep_retreat_probe_pending"])
 
+    async def test_deep_retreat_summary_due_recovers_send_timeout_launch_from_message_log(self):
+        send_as_id = 8659059253
+        now = 1_700_000_450.0
+        started_at = now - deep_retreat.DEEP_RETREAT_SPEC.summary_active_query_grace_sec - 1
+        self._prepare_identity(send_as_id, "RecoveredRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "summary_due"
+            state_module.state["deep_retreat_summary_sent_at"] = started_at
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful.time, "time", return_value=now + 25),
+                patch.object(_phaseful, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                patch.object(_phaseful, "get_last_game_send_block", return_value={"code": "send_timeout", "reason": ">25s"}),
+                patch.object(
+                    _phaseful,
+                    "find_recent_message_log_command",
+                    return_value={"message_id": 9253, "ts_epoch": now + 20},
+                ),
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_awaited_once_with(
+                deep_retreat.CMD_DEEP_RETREAT,
+                track=False,
+                priority="chain",
+                source_module="深度闭关",
+            )
+            self.assertEqual("waiting_summary", state_module.state["deep_retreat_phase"])
+            self.assertEqual(now + 20, state_module.state["deep_retreat_summary_sent_at"])
+            self.assertEqual(9253, state_module.state["last_deep_retreat_summary_msg_id"])
+            self.assertTrue(state_module.state["deep_retreat_probe_pending"])
+            self.assertTrue(any("消息日志恢复" in str(call.args[0]) for call in audit_mock.await_args_list))
+
+    async def test_deep_retreat_post_summary_recovers_delayed_send_timeout_launch_before_resend(self):
+        send_as_id = 8659059254
+        now = 1_700_000_450.0
+        first_attempt_at = now - 80
+        self._prepare_identity(send_as_id, "RecoveredDelayedRetreat")
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["deep_retreat_enabled"] = True
+            state_module.state["deep_retreat_phase"] = "post_summary_wait"
+            state_module.state["last_deep_retreat_command_time"] = first_attempt_at
+            state_module.state["next_deep_retreat_time"] = now - 1
+
+            with (
+                patch.object(_phaseful, "send_game_command", new=AsyncMock()) as send_mock,
+                patch.object(
+                    _phaseful,
+                    "find_recent_message_log_command",
+                    return_value={"message_id": 9254, "ts_epoch": first_attempt_at + 35},
+                ),
+                patch.object(_phaseful, "send_audit_log", new=AsyncMock()) as audit_mock,
+                patch.object(_phaseful, "console_log"),
+                patch.object(_phaseful, "save_state"),
+            ):
+                await deep_retreat.run_deep_retreat_scheduler(now)
+
+            send_mock.assert_not_awaited()
+            self.assertEqual("launching", state_module.state["deep_retreat_phase"])
+            self.assertEqual(first_attempt_at + 35, state_module.state["last_deep_retreat_command_time"])
+            self.assertGreater(state_module.state["next_deep_retreat_time"], now)
+            self.assertTrue(any("消息日志恢复" in str(call.args[0]) for call in audit_mock.await_args_list))
+
     async def test_deep_retreat_post_summary_failed_launch_stays_in_post_wait(self):
         send_as_id = 8659059202
         now = 1_700_000_450.0
