@@ -88,6 +88,7 @@ from .features.tiandao_judgement import handle_tiandao_judgement_prompt, handle_
 from .features.tianji_quiz import handle_tianji_quiz_prompt, handle_tianji_quiz_result_broadcast, run_tianji_quiz_scheduler
 from .features.tianxing import (
     apply_tianxing_passive,
+    build_tianxing_consume_window,
     has_tianxing_craft_farm_override_due,
     has_tianxing_timeline_due_work,
     is_tianxing_route_released,
@@ -166,6 +167,7 @@ from .features.wild_training import (
     WILD_TRAINING_CYCLE_MIN_SEC,
     WILD_TRAINING_RETRY_MAX_SEC,
     WILD_TRAINING_RETRY_MIN_SEC,
+    _tianxing_prepare_retry_blocks,
     handle_wild_training_reply,
     run_wild_training_phaseful_cleanup_scheduler,
     run_wild_training_scheduler,
@@ -203,6 +205,7 @@ from .runtime import (
     is_account_session_error,
     is_reply_to_identity_message,
     mark_bot_health_recovered,
+    note_bot_health_probe_attempt,
     note_game_bot_message,
     note_game_command_observed,
     note_identity_weakness,
@@ -804,8 +807,13 @@ async def _dispatch_fishing_swallowed_reply_fallback(event, text, now, *, event_
 
 
 def _get_bot_health_probe_identity_id():
+    now = time.time()
     for identity_id in get_identity_ids():
-        if get_identity_enabled(identity_id) and not _is_identity_account_offline(identity_id):
+        if (
+            get_identity_enabled(identity_id)
+            and not _is_identity_account_offline(identity_id)
+            and not is_identity_weak(identity_id, now)
+        ):
             return int(identity_id)
     return None
 
@@ -818,6 +826,9 @@ async def _send_bot_health_probe():
     msg = await send_game_command(CMD_IDENTITY_INFO, track=True, send_as_id=identity_id, priority="probe", max_retry=0)
     if msg:
         await send_audit_log("🩺 天尊恢复探测已发送，等待确认回复后恢复普通调度。", scope="identity", send_as_id=identity_id, limit=220)
+        return
+    note_bot_health_probe_attempt(time.time())
+    await send_audit_log("🩺 天尊恢复探测未发出，已记录探测尝试并等待超时回退/真实回复恢复。", scope="identity", send_as_id=identity_id, limit=220)
 
 
 def _is_identity_owner_event(event, send_as_id):
@@ -1211,6 +1222,22 @@ async def _run_due_wild_training_retry_schedulers(now, *, limit=DUE_WILD_TRAININ
                         next_time = scheduler_now
                         mark_dirty()
             if next_time <= 0 or next_time > scheduler_now:
+                if next_time > scheduler_now:
+                    with use_identity(identity_id):
+                        windows = build_tianxing_consume_window(
+                            "探索",
+                            now=scheduler_now,
+                            due_at=next_time,
+                            reason="野外历练",
+                            require_change_fate=True,
+                        )
+                        if (
+                            windows
+                            and state.get("tianxing_enabled")
+                            and not _tianxing_prepare_retry_blocks(scheduler_now)
+                        ):
+                            candidates.append((0, next_time, scan_index, identity_id, scheduler_now, "run"))
+                            continue
                 if retry_count > 0 and next_time > scheduler_now + WILD_TRAINING_RETRY_MAX_SEC + 5:
                     state["next_wild_training_time"] = scheduler_now + WILD_TRAINING_RETRY_MIN_SEC
                     state["wild_training_last_error"] = "野外历练补发计时器被恢复错峰拉长，已压回短补发窗口"

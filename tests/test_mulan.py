@@ -191,6 +191,34 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([".辨报 1", ".支援慕兰 护阵"], [command for command, _ in sent_commands])
             self.assertNotIn(".辨报 2", [command for command, _ in sent_commands])
 
+    async def test_late_judge_reply_does_not_clobber_current_support_pending(self):
+        identity_id = self._prepare_identity()
+        now = 1_700_000_000.0
+        with state_module.use_identity(identity_id):
+            state_module.state["mulan_enabled"] = True
+            state_module.state["mulan_phase"] = mulan.MULAN_PHASE_SUPPORT_PENDING
+            state_module.state["mulan_reply_to_msg_id"] = 3001
+            state_module.state["mulan_reply_due_at"] = now + 120
+            state_module.state["mulan_current_id"] = 0
+            state_module.state["mulan_pending_ids"] = "2,3"
+            state_module.state["mulan_support_action"] = "护阵"
+
+            with patch.object(mulan, "save_state"):
+                handled = await mulan.handle_mulan_reply(
+                    "1号军报研判较高，情报可靠，可公开。",
+                    now,
+                    reply_to=SimpleNamespace(id=2001, raw_text=".辨报 1"),
+                    matched_family="mulan_judge",
+                    result_msg_id=2002,
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(mulan.MULAN_PHASE_SUPPORT_PENDING, state_module.state["mulan_phase"])
+            self.assertEqual(3001, state_module.state["mulan_reply_to_msg_id"])
+            self.assertEqual("2,3", state_module.state["mulan_pending_ids"])
+            self.assertEqual("护阵", state_module.state["mulan_support_action"])
+            self.assertIn("不匹配", state_module.state["mulan_last_error"])
+
     async def test_shared_reliable_report_publishes_without_judging(self):
         identity_id = self._prepare_identity()
         now = 1_700_000_000.0
@@ -440,11 +468,12 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
 
                 await mulan.run_mulan_scheduler(now + 1)
                 self.assertEqual(".支援慕兰 奇袭", sent_commands[-1])
+                support_msg_id = state_module.state["mulan_reply_to_msg_id"]
 
                 handled = await mulan.handle_mulan_reply(
                     "【慕兰烽烟】\n@x 领了【夜袭法士营】之令，正赶往天南边境...",
                     now + 2,
-                    reply_to=SimpleNamespace(id=4003, raw_text=".支援慕兰 奇袭"),
+                    reply_to=SimpleNamespace(id=support_msg_id, raw_text=".支援慕兰 奇袭"),
                     matched_family="mulan_support",
                     result_msg_id=4004,
                 )
@@ -454,7 +483,7 @@ class MulanTests(unittest.IsolatedAsyncioTestCase):
                 handled = await mulan.handle_mulan_reply(
                     "【慕兰烽烟 · 夜袭法士营】小胜\n获得修为 +415\n边境军功 +3，累计 5\n连续支援 1 天",
                     now + 3,
-                    reply_to=SimpleNamespace(id=4003, raw_text=".支援慕兰 奇袭"),
+                    reply_to=SimpleNamespace(id=support_msg_id, raw_text=".支援慕兰 奇袭"),
                     matched_family="mulan_support",
                     result_msg_id=4004,
                 )

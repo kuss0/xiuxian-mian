@@ -213,15 +213,35 @@ def _claim_message_log_file_event(log_file, payload, *, scope="game"):
         return True
 
 
+def _unclaim_message_log_file_event(log_file, payload, *, scope="game"):
+    event_key = _message_log_event_key(scope, payload)
+    if not event_key:
+        return
+    try:
+        ledger_file = _message_log_ledger_file()
+        with sqlite3.connect(ledger_file, timeout=_MESSAGE_LOG_LEDGER_TIMEOUT_SEC) as conn:
+            conn.execute(f"PRAGMA busy_timeout={int(_MESSAGE_LOG_LEDGER_BUSY_TIMEOUT_MS)}")
+            conn.execute(
+                "DELETE FROM message_log_events WHERE event_key = ? AND log_file = ?",
+                (event_key, os.path.basename(str(log_file or ""))),
+            )
+    except Exception:
+        print(traceback.format_exc())
+
+
 def _write_message_log(log_file, payload, *, scope="game"):
+    claimed = False
     try:
         cleanup_message_logs()
         if not _claim_message_log_file_event(log_file, payload, scope=scope):
             return False
+        claimed = True
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return True
     except Exception:
+        if claimed:
+            _unclaim_message_log_file_event(log_file, payload, scope=scope)
         print(traceback.format_exc())
         return False
 

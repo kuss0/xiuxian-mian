@@ -570,6 +570,12 @@ def note_game_command_sent(command, sent_at=None, priority=SEND_PRIORITY_NORMAL)
         _bot_waiting_since = sent_at
 
 
+def note_bot_health_probe_attempt(attempted_at=None):
+    """Record a failed/blocked probe attempt so PROBING has a timeout exit."""
+    global _bot_probe_sent_at
+    _bot_probe_sent_at = _now_ts(attempted_at)
+
+
 def note_game_bot_message(now=None):
     """返回 probe/recover/None，交给 app 层决定是否发探测或恢复全局。"""
     global _bot_last_seen_at, _bot_waiting_since, _bot_probe_sent_at
@@ -581,7 +587,10 @@ def note_game_bot_message(now=None):
         _set_bot_health_state(BOT_HEALTH_PROBING, "bot 有发言，先探测确认", now)
         return "probe"
     if previous_state == BOT_HEALTH_PROBING:
-        if _bot_probe_sent_at > 0 and now >= _bot_probe_sent_at:
+        if _bot_probe_sent_at <= 0:
+            _set_bot_health_state(BOT_HEALTH_RECOVERING, "探测未落点但已再次看到 bot 发言，恢复普通调度", now)
+            return "recover"
+        if now >= _bot_probe_sent_at:
             _bot_probe_sent_at = 0.0
             _set_bot_health_state(BOT_HEALTH_RECOVERING, "探测后已看到 bot 回复", now)
             return "recover"
@@ -3568,6 +3577,7 @@ __all__ = [
     "issue_ui_login_token",
     "mark_bot_health_recovered",
     "mark_bot_health_suspect",
+    "note_bot_health_probe_attempt",
     "note_identity_weakness",
     "note_game_bot_message",
     "note_game_command_observed",

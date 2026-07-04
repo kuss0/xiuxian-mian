@@ -4247,6 +4247,30 @@ async def _send_tianxing_timeline_step(timeline, step, now, config):
         state["tianxing_timeline_state"] = timeline
         save_state()
         raise
+
+    latest_timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
+    latest_step = dict(latest_timeline.get("active_step") or {})
+    if (
+        str(latest_step.get("action") or "").strip() == action
+        and str(latest_step.get("arg") or "").strip() == arg
+        and str(latest_step.get("status") or "").strip() == "sending"
+    ):
+        timeline = latest_timeline
+        step = latest_step
+    else:
+        _timeline_audit(
+            latest_timeline,
+            now,
+            "send_result_stale_ignored",
+            action=action,
+            arg=arg,
+            current_action=latest_step.get("action"),
+            current_arg=latest_step.get("arg"),
+            current_status=latest_step.get("status"),
+        )
+        latest_timeline["updated_at"] = float(now)
+        return latest_timeline
+
     step = dict(step or {})
     sent_at = float(now)
     if msg:

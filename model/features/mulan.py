@@ -787,6 +787,27 @@ def _mulan_pending_family_for_phase(phase):
     return ""
 
 
+def _mulan_reply_matches_pending(family, reply_to, raw_text=""):
+    family = str(family or "").strip()
+    if family not in {"mulan_collect", "mulan_judge", "mulan_publish", "mulan_panel", "mulan_support"}:
+        return True, ""
+    pending_msg_id = int(state.get("mulan_reply_to_msg_id", 0) or 0)
+    reply_to_msg_id = int(getattr(reply_to, "id", 0) or 0)
+    pending_family = _mulan_pending_family_for_phase(state.get("mulan_phase"))
+    raw_text = str(raw_text or "")
+    if pending_msg_id <= 0:
+        if pending_family == family or {pending_family, family} <= {"mulan_collect", "mulan_panel"}:
+            return True, ""
+        if has_wait_time(raw_text) and any(keyword in raw_text for keyword in CD_KEYWORDS):
+            return True, ""
+        return False, "慕兰回复已无等待中的命令，按迟到回复忽略。"
+    if reply_to_msg_id > 0 and reply_to_msg_id != pending_msg_id:
+        return False, f"慕兰回复消息ID不匹配，当前等待 {pending_msg_id}，收到 {reply_to_msg_id}。"
+    if pending_family and pending_family != family and not ({pending_family, family} <= {"mulan_collect", "mulan_panel"}):
+        return False, f"慕兰回复阶段不匹配，当前等待 {pending_family}，收到 {family}。"
+    return True, ""
+
+
 def _is_mulan_reply_log_entry(entry):
     raw_text = str((entry or {}).get("text") or "").strip()
     if not raw_text:
@@ -841,9 +862,17 @@ async def handle_mulan_reply(text, now, reply_to=None, matched_family=None, resu
     family = _pending_command_family(reply_to=reply_to, matched_family=matched_family)
     if not family:
         return False
+    raw_text = str(text or "").strip()
+    matched, mismatch_reason = _mulan_reply_matches_pending(family, reply_to, raw_text)
+    if not matched:
+        result_msg_id = int(result_msg_id or 0)
+        if result_msg_id > 0:
+            state["mulan_last_msg_id"] = result_msg_id
+        state["mulan_last_error"] = mismatch_reason
+        save_state()
+        return True
     _close_mulan_action_guard(family, now)
 
-    raw_text = str(text or "").strip()
     result_msg_id = int(result_msg_id or 0)
     if result_msg_id > 0:
         state["mulan_last_msg_id"] = result_msg_id
