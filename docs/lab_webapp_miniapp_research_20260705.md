@@ -55,6 +55,14 @@
   - 当前定位是 manual-only diagnostics，不应直接变成 scheduler 输入
 - `model/app_message_log.py`
   - 当前按钮日志只保存 `url_host`，不保存完整 URL；这对安全有利，但不足以做 WebApp 诊断。
+  - lab 已补 `model/webapp_core.py` 安全摘要 helper，并让按钮日志可记录 `webapp` 脱敏摘要：host、是否存在 startapp/initData、start 参数摘要、敏感键名、玩法候选。不记录完整 URL、`tgWebAppData`、`initData`、`hash`、`user` 或 start 参数原文。
+
+## lab 进展
+
+- 新增 `model/webapp_core.py`：统一处理 WebApp/MiniApp URL 的 host 识别、start 参数脱敏摘要、敏感 initData 标记、玩法候选识别。
+- 接入 `model/app_message_log.py`：仅在按钮是 WebView、存在 start 参数、存在敏感 initData 或能识别玩法候选时，附加 `webapp` 安全摘要。
+- 已验证：`tests/test_webapp_core.py`、`tests/test_log_entries.py`、`tests/test_tiandao_judgement.py` 通过。
+- 尚未上线调度；当前不自动钓鱼、不自动打世界 boss，不获取或持久化 WebView initData。
 
 ## 建议架构
 
@@ -100,4 +108,3 @@
 - 所有 WebApp 行为有玩法开关、全局安全锁、action guard、审计日志。
 - HTTP/API 层有超时、重试上限、退避、域名白名单。
 - 测试覆盖脱敏、白名单拒绝、session 不可用、FloodWait、HTTP 超时、终态去重。
-

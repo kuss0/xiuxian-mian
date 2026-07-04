@@ -25,6 +25,7 @@ from .state import (
     get_replica_listener_account_map,
     state,
 )
+from .webapp_core import summarize_webapp_url
 
 _MESSAGE_LOG_BUTTON_MAX_ROWS = 20
 _MESSAGE_LOG_BUTTON_MAX_COLS = 20
@@ -93,6 +94,7 @@ def _get_message_log_button_type(raw_button):
 
 def _extract_message_log_buttons(event):
     message = getattr(event, "message", None) or event
+    message_text = str(getattr(event, "raw_text", "") or getattr(message, "raw_text", "") or "")
     rows = getattr(message, "buttons", None) or []
     result = []
     for raw_row in list(rows)[:_MESSAGE_LOG_BUTTON_MAX_ROWS]:
@@ -107,10 +109,24 @@ def _extract_message_log_buttons(event):
             item = {"text": text, "type": button_type}
             if button_type == "callback":
                 item["has_callback_data"] = getattr(raw_button, "data", None) is not None
-            elif button_type == "url":
-                url_host = _get_url_host(getattr(raw_button, "url", ""))
+            elif button_type in {"url", "web_view"}:
+                raw_url = (
+                    getattr(raw_button, "url", "")
+                    or getattr(raw_button, "webview", "")
+                    or getattr(raw_button, "web_view", "")
+                    or ""
+                )
+                url_host = _get_url_host(raw_url)
                 if url_host:
                     item["url_host"] = url_host
+                webapp = summarize_webapp_url(raw_url, button_text=text, message_text=message_text)
+                if webapp and (
+                    button_type == "web_view"
+                    or webapp.get("has_start_param")
+                    or webapp.get("has_sensitive_init_data")
+                    or webapp.get("game_hint")
+                ):
+                    item["webapp"] = webapp
             row.append(item)
         if row:
             result.append(row)

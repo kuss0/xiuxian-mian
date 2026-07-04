@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -36,7 +37,7 @@ if CREATED_ENV:
 
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from model import ui
+from model import app_message_log, ui
 
 
 class LogEntryTests(unittest.TestCase):
@@ -120,6 +121,39 @@ class LogEntryTests(unittest.TestCase):
         self.assertEqual(1, result["total"])
         self.assertEqual(11, result["entries"][0]["message_id"])
         self.assertEqual("稳固道心", result["entries"][0]["buttons"][0][0]["text"])
+
+    def test_message_log_buttons_include_safe_webapp_summary(self):
+        button = SimpleNamespace(
+            text="进入灵溪垂钓",
+            button=SimpleNamespace(
+                url=(
+                    "https://t.me/fanrenxiuxian_bot/app"
+                    "?startapp=fish_SECRET1234"
+                    "#tgWebAppData=query_id%3Dabc%26user%3Dhidden%26hash%3Dsecret"
+                )
+            ),
+        )
+        event = SimpleNamespace(
+            raw_text="灵溪垂钓已迁入小程序",
+            message=SimpleNamespace(buttons=[[button]]),
+        )
+
+        buttons = app_message_log._extract_message_log_buttons(event)
+
+        item = buttons[0][0]
+        self.assertEqual("进入灵溪垂钓", item["text"])
+        self.assertEqual("url", item["type"])
+        self.assertEqual("t.me", item["url_host"])
+        self.assertEqual("fishing", item["webapp"]["game_hint"])
+        self.assertTrue(item["webapp"]["has_start_param"])
+        self.assertTrue(item["webapp"]["has_sensitive_init_data"])
+        self.assertEqual("fish", item["webapp"]["start_param"]["kind"])
+        self.assertEqual("1234", item["webapp"]["start_param"]["suffix"])
+        serialized = json.dumps(item, ensure_ascii=False)
+        self.assertNotIn("fish_SECRET1234", serialized)
+        self.assertNotIn("query_id%3Dabc", serialized)
+        self.assertNotIn("hidden", serialized)
+        self.assertNotIn("secret", serialized)
 
 
 if __name__ == "__main__":
