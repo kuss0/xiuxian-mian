@@ -487,6 +487,7 @@ def _is_named_log_entry(payload, target_name="", target_id=0):
 
 
 def _is_baiji_log_entry(payload):
+    sender_name = str((payload or {}).get("sender_name") or "").strip()
     return (
         _is_named_log_entry(payload, HEHUAN_BAIJI_USERNAME, HEHUAN_BAIJI_SEND_AS_ID)
         or sender_name == HEHUAN_BAIJI_NAME
@@ -1113,6 +1114,69 @@ def _recover_hehuan_pending_from_message_log(observed, now):
     return handled_any
 
 
+def _find_recent_hehuan_sent_from_message_log(send_as_id, command, now, *, reply_to_msg_id=0, op_id="", lookback_sec=180):
+    now = float(now if now is not None else time.time())
+    min_ts = now - max(1, int(lookback_sec or 180))
+    game_group_id = int(get_game_group_id() or 0)
+    expected_command = str(command or "").strip()
+    expected_reply_to = int(reply_to_msg_id or 0)
+    expected_op_id = str(op_id or "").strip()
+    expected_sender_id = int(send_as_id or 0)
+    best = None
+    for path in _recent_message_log_paths(now):
+        if not os.path.exists(path):
+            continue
+        for line in reversed(_read_message_log_tail(path)):
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            event_type = str(payload.get("event_type") or "")
+            if event_type not in {"sent", "message"}:
+                continue
+            if game_group_id and int(payload.get("chat_id", 0) or 0) != game_group_id:
+                continue
+            if str(payload.get("text") or "").strip() != expected_command:
+                continue
+            msg_ts = _parse_message_log_ts(payload.get("ts"))
+            if msg_ts <= 0 or msg_ts < min_ts or msg_ts > now + 60:
+                continue
+            try:
+                sender_id = int(payload.get("sender_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                sender_id = 0
+            if expected_sender_id and sender_id not in {expected_sender_id, -expected_sender_id}:
+                continue
+            try:
+                payload_reply_to = int(payload.get("reply_to_msg_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                payload_reply_to = 0
+            if expected_reply_to and payload_reply_to != expected_reply_to:
+                continue
+            if event_type == "sent" and expected_op_id:
+                payload_op_id = str(payload.get("op_id") or "").strip()
+                if payload_op_id and payload_op_id != expected_op_id:
+                    continue
+            try:
+                msg_id = int(payload.get("message_id", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                msg_id = 0
+            if msg_id <= 0:
+                continue
+            best = {
+                "message_id": msg_id,
+                "ts_epoch": msg_ts,
+                "reply_to_msg_id": payload_reply_to,
+                "event_type": event_type,
+            }
+            break
+        if best:
+            break
+    return best
+
+
 async def run_hehuan_scheduler(now):
     now = float(now if now is not None else time.time())
     dirty_fields = _dirty_hehuan_time_fields(state.get("hehuan_observation"))
@@ -1166,19 +1230,46 @@ async def run_hehuan_scheduler(now):
     send_kwargs = {}
     if anchor_msg_id > 0:
         send_kwargs["reply_to"] = anchor_msg_id
+    op_id = f"hehuan-auto-warm-{int(now)}"
     msg = await send_game_command(
         plan["command"],
         track=True,
         max_retry=0,
         priority="normal",
         source_module="合欢宗",
-        op_id=f"hehuan-auto-warm-{int(now)}",
+        op_id=op_id,
         reply_timeout=max(1, int(retry_delay_sec)),
         delete_policy="manual_keep",
         **send_kwargs,
     )
     observed = normalize_hehuan_observation(state.get("hehuan_observation"))
     if not msg:
+        recovered_sent = _find_recent_hehuan_sent_from_message_log(
+            get_current_identity_id(),
+            plan["command"],
+            now,
+            reply_to_msg_id=anchor_msg_id,
+            op_id=op_id,
+        )
+        if recovered_sent:
+            sent_at = float(recovered_sent.get("ts_epoch") or now)
+            observed["auto_last_action"] = "warm"
+            observed["auto_last_error"] = ""
+            observed["auto_last_error_at"] = 0
+            observed["auto_pending_msg_id"] = int(recovered_sent.get("message_id") or 0)
+            observed["auto_pending_sent_at"] = sent_at
+            observed["auto_pending_deadline_at"] = max(
+                float(sent_at + retry_delay_sec),
+                float(now + HEHUAN_FINAL_EDIT_WAIT_SEC),
+            )
+            observed["auto_reply_anchor_msg_id"] = int(recovered_sent.get("reply_to_msg_id") or anchor_msg_id or 0)
+            observed["auto_next_time"] = observed["auto_pending_deadline_at"]
+            state["hehuan_observation"] = observed
+            if _recover_hehuan_pending_from_message_log(observed, now):
+                save_state()
+                return
+            save_state()
+            return
         _set_hehuan_auto_block(observed, now, "合欢宗自动温养发送失败或被安全策略拦截", now + HEHUAN_AUTO_SEND_FAIL_BACKOFF_SEC)
         return
 

@@ -576,6 +576,56 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(now + 123.0, observed["auto_pending_deadline_at"])
             self.assertEqual(observed["auto_pending_deadline_at"], observed["auto_next_time"])
 
+    async def test_scheduler_recovers_sent_warm_from_message_log_when_send_returns_none(self):
+        base_dt = datetime(2026, 7, 5, 7, 18, 41, tzinfo=hehuan.TZ_LOCAL)
+        now = base_dt.timestamp()
+        sent_at = datetime(2026, 7, 5, 7, 18, 17, tzinfo=hehuan.TZ_LOCAL).timestamp()
+        entries = [
+            {
+                "ts": "2026-07-05 07:18:17 UTC+8",
+                "event_type": "message",
+                "message_id": 9004,
+                "chat_id": -1001680975844,
+                "sender_id": self.identity_id,
+                "sender_username": "hehuan_auto",
+                "topic_id": 7310786,
+                "reply_to_msg_id": 8801,
+                "text": ".双修 温养",
+            }
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "2026-07-05.log"
+            log_path.write_text("\n".join(json.dumps(item, ensure_ascii=False) for item in entries), encoding="utf-8")
+            with state_module.use_identity(self.identity_id):
+                state_module.state["hehuan_enabled"] = True
+                state_module.state["hehuan_observation"] = {
+                    "last_observed_at": now - 60,
+                    "contract_until": now + 3600,
+                    "next_hehuan_time": 0,
+                    "last_partner": "@dao_partner",
+                    "auto_next_time": now - 1,
+                }
+                with (
+                    patch.object(hehuan, "MESSAGES_DIR", tmpdir),
+                    patch.object(hehuan, "get_game_group_id", return_value=-1001680975844),
+                    patch.object(hehuan, "get_game_topic_id", return_value=7310786),
+                    patch.object(hehuan, "_ensure_hehuan_reply_anchor", new=AsyncMock(return_value=(8801, ""))),
+                    patch.object(hehuan, "_hehuan_retry_delay_sec", return_value=90.0),
+                    patch.object(hehuan, "find_message_log_replies", return_value=[]),
+                    patch.object(hehuan, "save_state") as save_mock,
+                    patch.object(hehuan, "send_game_command", new=AsyncMock(return_value=None)) as send_mock,
+                ):
+                    await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_awaited_once()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+            self.assertEqual("", observed["auto_last_error"])
+            self.assertEqual(9004, observed["auto_pending_msg_id"])
+            self.assertEqual(sent_at, observed["auto_pending_sent_at"])
+            self.assertEqual(8801, observed["auto_reply_anchor_msg_id"])
+            self.assertGreaterEqual(observed["auto_pending_deadline_at"], now + hehuan.HEHUAN_FINAL_EDIT_WAIT_SEC)
+
     def test_recent_baiji_anchor_skips_command_messages(self):
         base_dt = datetime(2026, 6, 29, 12, 5, tzinfo=hehuan.TZ_LOCAL)
         now = base_dt.timestamp()

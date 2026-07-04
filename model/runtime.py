@@ -2041,6 +2041,14 @@ def _stateful_no_retry_timeout_is_module_managed(item, family=""):
         "pet_formation",
         "tianxing_craft_farm",
     }
+
+
+def _send_timeout_audit_priority(command, intent=None):
+    module = str(_compact_send_intent(intent).get("source_module") or "").strip()
+    family = resolve_reply_family(command) or ""
+    if module == "合欢宗" and family == "hehuan_dual":
+        return AUDIT_PRIORITY_LOW
+    return "auto"
 _DUNGEON_QUIET_FAILURE_SUPPRESS_WINDOW_SEC = 8
 _recent_dungeon_quiet_send_blocks = {}
 
@@ -3196,6 +3204,7 @@ async def send_game_command(
                     scope="identity",
                     send_as_id=send_as_id,
                     limit=240,
+                    priority=_send_timeout_audit_priority(command, send_intent),
                 )
                 _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
                 return None
@@ -3289,6 +3298,7 @@ async def send_game_command(
             scope="identity",
             send_as_id=send_as_id,
             limit=240,
+            priority=_send_timeout_audit_priority(command, send_intent),
         )
         _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
         return None

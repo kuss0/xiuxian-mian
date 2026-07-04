@@ -88,6 +88,22 @@ class RetrySchedulerTests(_StateIsolationMixin, unittest.TestCase):
         self.assertEqual(1, config.RETRY_LIMIT)
         self.assertEqual(1, runtime.RETRY_LIMIT)
 
+    def test_hehuan_send_timeout_audit_is_low_priority_only_for_warm(self):
+        self.assertEqual(
+            runtime.AUDIT_PRIORITY_LOW,
+            runtime._send_timeout_audit_priority(
+                f"{config.CMD_HEHUAN_DUAL} 温养",
+                {"source_module": "合欢宗"},
+            ),
+        )
+        self.assertEqual(
+            "auto",
+            runtime._send_timeout_audit_priority(
+                ".野外历练 深入",
+                {"source_module": "天星宗"},
+            ),
+        )
+
     def test_default_pending_stops_after_one_resend(self):
         send_as_id = 971001
         now = 5000.0
