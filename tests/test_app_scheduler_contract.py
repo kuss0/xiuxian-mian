@@ -152,6 +152,16 @@ class AppSchedulerContractTests(unittest.TestCase):
         self.assertEqual([], missing_manifests)
         self.assertEqual([], missing_specs)
 
+    def test_due_scan_outer_timeouts_cover_inner_send_queue_budgets(self):
+        self.assertGreaterEqual(
+            app.DUE_WILD_TRAINING_SCHEDULER_TIMEOUT_SEC,
+            app.WILD_TRAINING_SEND_TIMEOUT_SEC + app.DUE_SCAN_TIMEOUT_MARGIN_SEC,
+        )
+        self.assertGreaterEqual(
+            app.DUE_CONCUBINE_SCHEDULER_TIMEOUT_SEC,
+            app.CONCUBINE_DUE_SCAN_SEND_QUEUE_TIMEOUT_SEC + app.DUE_SCAN_TIMEOUT_MARGIN_SEC,
+        )
+
     def test_bootstrap_and_helper_schedulers_are_explicitly_allowed(self):
         bridge = app.get_scheduler_manifest_bridge_contract()
 
