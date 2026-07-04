@@ -38,6 +38,8 @@ WILD_TRAINING_RETRY_MAX_SEC = 3 * 60
 WILD_TRAINING_SEND_QUEUE_RETRY_MIN_SEC = 10 * 60
 WILD_TRAINING_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
 WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC = 10 * 60
+WILD_TRAINING_SEND_UNKNOWN_UNRECOVERED_MIN_SEC = 30 * 60
+WILD_TRAINING_SEND_UNKNOWN_UNRECOVERED_MAX_SEC = 45 * 60
 WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC = 45
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
@@ -267,6 +269,21 @@ def _mark_send_unknown(now):
     state["wild_training_last_error"] = "野外历练发送状态未知，先等待被动结果，避免重复消耗"
     state["next_wild_training_time"] = wait_until
     return wait_until
+
+
+def _mark_unknown_send_unrecovered(now, reason):
+    next_time = float(now or 0) + random.uniform(
+        WILD_TRAINING_SEND_UNKNOWN_UNRECOVERED_MIN_SEC,
+        WILD_TRAINING_SEND_UNKNOWN_UNRECOVERED_MAX_SEC,
+    )
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_retry_count"] = 0
+    state["wild_training_last_result"] = "未知发送未找回，已保守退避"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = str(reason or "野外历练发送状态未知且消息日志未捞到反馈，已保守退避")
+    state["next_wild_training_time"] = next_time
+    return next_time
 
 
 def _has_unknown_send_wait(now):
@@ -948,6 +965,18 @@ async def _cleanup_wild_training_pending_timeout(now):
             return True
         if now < float(state.get("wild_training_reply_due_at", 0) or 0):
             return False
+        if not state.get("tianxing_enabled"):
+            next_time = _mark_unknown_send_unrecovered(
+                now,
+                "野外历练发送状态未知且消息日志未捞到反馈，普通野外已保守退避",
+            )
+            save_state()
+            await send_audit_log(
+                f"🏞️ 野外历练发送状态未知：日志未捞到反馈，普通野外已退避至 {fmt_abs_ts(next_time)}。",
+                scope="identity",
+                priority="normal",
+            )
+            return True
         mark_tianxing_route_result_unknown(
             "探索",
             now=now,
