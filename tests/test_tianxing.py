@@ -2712,6 +2712,10 @@ class TianxingTimelineSchedulerTests(unittest.IsolatedAsyncioTestCase):
             tianxing.TIANXING_TIMELINE_SEND_TIMEOUT_SEC,
             tianxing._effective_tianxing_timeline_send_timeout({"send_timeout_sec": tianxing.TIANXING_TIMELINE_LEGACY_SEND_TIMEOUT_SEC}),
         )
+        self.assertEqual(
+            tianxing.TIANXING_TIMELINE_SEND_TIMEOUT_SEC,
+            tianxing._effective_tianxing_timeline_send_timeout({"send_timeout_sec": tianxing.TIANXING_TIMELINE_SHORT_SEND_TIMEOUT_SEC}),
+        )
         self.assertEqual(1, tianxing._effective_tianxing_timeline_send_timeout({"send_timeout_sec": 1}))
 
     def test_timeline_set_star_rejection_replans_to_observe(self):
