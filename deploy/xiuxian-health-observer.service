@@ -1,7 +1,7 @@
 [Unit]
 Description=Xiuxian read-only runtime health observer
-After=network.target xiuxian.service xiuxian-listener.service xiuxian-safety-watchdog.service
-Wants=xiuxian.service xiuxian-listener.service xiuxian-safety-watchdog.service
+After=network.target xiuxian.service
+Wants=xiuxian.service
 
 [Service]
 Type=simple

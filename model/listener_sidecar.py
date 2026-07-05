@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import signal
-import sqlite3
 import time
 import traceback
 from pathlib import Path
@@ -103,38 +102,46 @@ def _source_session_base(account_id):
     return os.path.join(SESSION_DIR, f"account_{int(account_id)}")
 
 
-def _backup_sqlite_session(src_file, dst_file):
-    tmp_file = Path(f"{dst_file}.tmp.{os.getpid()}.{time.time_ns()}")
+def _read_session_auth_keys(session_file):
+    import sqlite3
+
+    path = Path(session_file)
+    if not path.exists():
+        return set()
     try:
-        with sqlite3.connect(f"file:{Path(src_file).as_posix()}?mode=ro", uri=True, timeout=5.0) as src_conn:
-            with sqlite3.connect(str(tmp_file), timeout=5.0) as dst_conn:
-                src_conn.backup(dst_conn)
-        os.chmod(tmp_file, 0o600)
-        os.replace(tmp_file, dst_file)
-    finally:
-        try:
-            if tmp_file.exists():
-                tmp_file.unlink()
-        except OSError:
-            pass
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=5.0) as conn:
+            rows = conn.execute("SELECT auth_key FROM sessions WHERE auth_key IS NOT NULL").fetchall()
+    except sqlite3.Error as exc:
+        raise RuntimeError(f"listener session 无法读取: {path}: {exc}") from exc
+    keys = set()
+    for (auth_key,) in rows:
+        if auth_key:
+            keys.add(bytes(auth_key))
+    return keys
 
 
-def _ensure_listener_session_copy(account_id):
+def _ensure_listener_session(account_id):
     source_base = _source_session_base(account_id)
     listener_base = _listener_session_base(account_id)
     source_file = _session_file(source_base)
     listener_file = _session_file(listener_base)
-    if listener_file.exists():
-        return listener_base
-    if not source_file.exists():
-        raise RuntimeError(f"源 session 不存在: {source_file}")
-    listener_file.parent.mkdir(parents=True, exist_ok=True)
-    _backup_sqlite_session(source_file, listener_file)
+    if not listener_file.exists():
+        raise RuntimeError(
+            f"listener session 未独立授权: {listener_file}；已禁止复制主 session，"
+            f"请先单独登录 listener_account_{int(account_id)}。"
+        )
+    listener_keys = _read_session_auth_keys(listener_file)
+    source_keys = _read_session_auth_keys(source_file)
+    if listener_keys and source_keys and listener_keys.intersection(source_keys):
+        raise RuntimeError(
+            f"listener session 与主 session auth_key 相同: account_{int(account_id)}；"
+            "疑似复制件，已阻止启动，请删除 listener session 后单独登录授权。"
+        )
     return listener_base
 
 
 def _create_listener_account_client(account_id, *, api_id=None, api_hash=None):
-    session_base = _ensure_listener_session_copy(account_id)
+    session_base = _ensure_listener_session(account_id)
     return _create_telegram_client(session_base, api_id=api_id, api_hash=api_hash)
 
 
@@ -172,7 +179,7 @@ async def _connect_listener_account(account_id, acct_info):
             listener_file = _session_file(_listener_session_base(account_id))
             if listener_file.exists():
                 listener_file.unlink()
-            raise RuntimeError("listener session 未授权，已删除副本，等待下轮从源 session 重建")
+            raise RuntimeError("listener session 未授权，已删除无效 listener session，等待重新独立登录")
         register_client(account_id, tc)
         _register_listener_handlers(tc)
         registered = set(int(item) for item in (_listener_stats.get("registered_accounts") or []))
@@ -237,15 +244,7 @@ async def _connect_saved_accounts():
     account_ids = _listener_account_ids(accounts)
     connected = []
     if not accounts:
-        await client.connect()
-        if not await client.is_user_authorized():
-            raise RuntimeError("主 session 未授权，listener 无法启动。")
-        me = await client.get_me()
-        if me:
-            state["my_user_id"] = me.id
-            register_client(me.id, client)
-            connected.append(int(me.id))
-        _register_listener_handlers(client)
+        raise RuntimeError("未配置独立监听账号，listener 已阻止使用主 session 启动。")
     else:
         for account_id in account_ids:
             acct_info = accounts.get(str(account_id)) or {}

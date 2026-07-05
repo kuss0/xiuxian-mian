@@ -1777,6 +1777,14 @@ def is_warn_only_breach_reason(reason: str) -> bool:
     return any(raw.startswith(prefix) for prefix in WARN_ONLY_REASON_PREFIXES)
 
 
+def warning_throttle_key(reason: str) -> str:
+    raw = str(reason or "").strip()
+    for prefix in WARN_ONLY_REASON_PREFIXES:
+        if raw.startswith(prefix):
+            return prefix.rstrip(":") or prefix
+    return raw
+
+
 def needs_soft_breach_confirmation(reason: str) -> bool:
     raw = str(reason or "")
     if is_warn_only_breach_reason(raw):
@@ -1916,9 +1924,10 @@ def main(argv: list[str]) -> int:
             if journal_breach and not journal_breach.startswith("journal check failed"):
                 breach = journal_breach
         if breach and is_warn_only_breach_reason(breach):
-            last_warning_at = float(last_warning_at_by_reason.get(breach, 0.0) or 0.0)
+            warning_key = warning_throttle_key(breach)
+            last_warning_at = float(last_warning_at_by_reason.get(warning_key, 0.0) or 0.0)
             if now - last_warning_at >= WARNING_REPEAT_SEC:
-                last_warning_at_by_reason[breach] = now
+                last_warning_at_by_reason[warning_key] = now
                 perform_warning(cfg, env, breach)
             reset_breach_confirmation(breach_confirmation)
             time.sleep(cfg.interval_sec)

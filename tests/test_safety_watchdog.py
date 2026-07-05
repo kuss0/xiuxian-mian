@@ -766,6 +766,12 @@ class SafetyWatchdogTests(unittest.TestCase):
         confirm = safety_watchdog.BreachConfirmationState()
         self.assertFalse(safety_watchdog.should_fuse_breach(breach, confirm, now))
 
+    def test_global_lock_warning_throttles_by_type_not_full_reason(self):
+        first = "global lock breach: gap 3.0s between 100:.闯塔 and 200:.天机盘"
+        second = "global lock breach: gap 5.0s between 300:.野外历练 and 400:.小世界"
+
+        self.assertEqual(safety_watchdog.warning_throttle_key(first), safety_watchdog.warning_throttle_key(second))
+
     def test_non_dungeon_commands_still_send_burst(self):
         now = time.time()
         events = [

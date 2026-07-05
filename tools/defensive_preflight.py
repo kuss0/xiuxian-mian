@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import sqlite3
+import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH = PROJECT_ROOT / "data" / "state" / "chaogu_state.db"
 HEARTBEAT_PATH = PROJECT_ROOT / "data" / "state" / "listener_heartbeat.json"
+LISTENER_SERVICE_NAME = "xiuxian-listener.service"
 
 TIANXING_TIMELINE_ACK_TIMEOUT_SEC = 90
 TIANXING_TIMELINE_SEND_TIMEOUT_SEC = 75
@@ -174,17 +176,39 @@ def _fetch_rows(conn: sqlite3.Connection, query: str) -> list[dict[str, Any]]:
     return [dict(row) for row in conn.execute(query).fetchall()]
 
 
+def _listener_service_state() -> str:
+    try:
+        proc = subprocess.run(
+            ["systemctl", "is-active", LISTENER_SERVICE_NAME],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except Exception:
+        return ""
+    return str(proc.stdout or "").strip()
+
+
 def _listener_status(now: float) -> dict[str, Any]:
+    service_state = _listener_service_state()
+    service_inactive = bool(service_state and service_state != "active")
     if not HEARTBEAT_PATH.exists():
-        return {"level": "at_risk", "module": "listener", "reason": "listener heartbeat missing"}
+        level = "watch" if service_inactive else "at_risk"
+        reason = "listener sidecar inactive; using main runtime listener only" if service_inactive else "listener heartbeat missing"
+        return {"level": level, "module": "listener", "service_state": service_state, "reason": reason}
     try:
         payload = json.loads(HEARTBEAT_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
-        return {"level": "at_risk", "module": "listener", "reason": f"listener heartbeat unreadable: {exc!r}"}
+        level = "watch" if service_inactive else "at_risk"
+        reason = "listener sidecar inactive; heartbeat unreadable but ignored" if service_inactive else f"listener heartbeat unreadable: {exc!r}"
+        return {"level": level, "module": "listener", "service_state": service_state, "reason": reason}
     updated_at = _epoch(payload.get("updated_at"))
     age = int(now - updated_at) if updated_at else 999999
     failed = payload.get("failed_accounts") or []
-    if age > 120 or failed:
+    if service_inactive:
+        level = "watch"
+    elif age > 120 or failed:
         level = "at_risk"
     elif age > 45:
         level = "watch"
@@ -193,10 +217,17 @@ def _listener_status(now: float) -> dict[str, Any]:
     return {
         "level": level,
         "module": "listener",
+        "service_state": service_state,
         "age_sec": age,
         "registered_accounts": payload.get("registered_accounts") or [],
         "failed_accounts": failed,
-        "reason": "listener heartbeat fresh" if level == "healthy" else "listener heartbeat stale or failed account present",
+        "reason": (
+            "listener heartbeat fresh"
+            if level == "healthy"
+            else "listener sidecar inactive; using main runtime listener only"
+            if service_inactive
+            else "listener heartbeat stale or failed account present"
+        ),
     }
 
 

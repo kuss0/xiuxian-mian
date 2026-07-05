@@ -50,6 +50,100 @@ class HealthObserverTests(unittest.TestCase):
         self.assertEqual("error", status)
         self.assertIn("xiuxian.service not running: inactive/dead", reasons)
 
+    def test_classify_snapshot_treats_listener_inactive_as_warning(self):
+        status, reasons = health_observer.classify_snapshot(
+            {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-listener.service": {"ActiveState": "inactive", "SubState": "dead"},
+            },
+            [{"hard_count": 0, "warn_count": 0}],
+        )
+
+        self.assertEqual("warn", status)
+        self.assertIn("xiuxian-listener.service inactive: inactive/dead", reasons)
+
+    def test_classify_snapshot_treats_disabled_watchdog_as_warning(self):
+        status, reasons = health_observer.classify_snapshot(
+            {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-safety-watchdog.service": {"ActiveState": "inactive", "SubState": "dead"},
+            },
+            [{"hard_count": 0, "warn_count": 0}],
+        )
+
+        self.assertEqual("warn", status)
+        self.assertIn("xiuxian-safety-watchdog.service inactive: inactive/dead", reasons)
+
+    def test_optional_inactive_listener_journal_is_skipped(self):
+        self.assertTrue(
+            health_observer.should_skip_optional_inactive_journal(
+                "xiuxian-listener.service",
+                {"xiuxian-listener.service": {"ActiveState": "inactive", "SubState": "dead"}},
+            )
+        )
+        self.assertFalse(
+            health_observer.should_skip_optional_inactive_journal(
+                "xiuxian-listener.service",
+                {"xiuxian-listener.service": {"ActiveState": "active", "SubState": "running"}},
+            )
+        )
+        self.assertFalse(
+            health_observer.should_skip_optional_inactive_journal(
+                "xiuxian.service",
+                {"xiuxian.service": {"ActiveState": "inactive", "SubState": "dead"}},
+            )
+        )
+
+    def test_optional_inactive_watchdog_journal_is_skipped(self):
+        self.assertTrue(
+            health_observer.should_skip_optional_inactive_journal(
+                "xiuxian-safety-watchdog.service",
+                {"xiuxian-safety-watchdog.service": {"ActiveState": "inactive", "SubState": "dead"}},
+            )
+        )
+
+    def test_should_print_snapshot_throttles_repeated_warning_signature(self):
+        snapshot = {
+            "status": "warn",
+            "reasons": ["journal warn matches: 16"],
+            "health": {
+                "risk_reasons": [
+                    {"code": "journal_warn", "message": "journal warn matches: 16", "severity": "warn"}
+                ]
+            },
+        }
+        signature = health_observer.snapshot_log_signature(snapshot)
+
+        self.assertFalse(
+            health_observer.should_print_snapshot(
+                snapshot,
+                last_signature=signature,
+                last_print_at=1000.0,
+                now=1000.0 + health_observer.WARN_PRINT_INTERVAL_SEC - 1,
+            )
+        )
+        self.assertTrue(
+            health_observer.should_print_snapshot(
+                snapshot,
+                last_signature=signature,
+                last_print_at=1000.0,
+                now=1000.0 + health_observer.WARN_PRINT_INTERVAL_SEC,
+            )
+        )
+
+    def test_should_print_snapshot_reports_changed_signature_immediately(self):
+        old_snapshot = {"status": "warn", "reasons": ["journal warn matches: 16"], "health": {"risk_reasons": []}}
+        new_snapshot = {"status": "warn", "reasons": ["business warnings: 1"], "health": {"risk_reasons": []}}
+
+        self.assertTrue(
+            health_observer.should_print_snapshot(
+                new_snapshot,
+                last_signature=health_observer.snapshot_log_signature(old_snapshot),
+                last_print_at=1000.0,
+                now=1001.0,
+            )
+        )
+
     def test_health_payload_flags_foreign_xiuxian_process(self):
         cfg = health_observer.ObserverConfig(
             project_root=Path("/opt/xiuxian-main"),
@@ -335,6 +429,38 @@ class HealthObserverTests(unittest.TestCase):
         payload = health_observer.build_health_payload(snapshot, cfg)
 
         self.assertTrue(any(item["code"] == "listener_heartbeat_stale" for item in payload["risk_reasons"]))
+
+    def test_health_payload_treats_listener_inactive_as_optional_warning(self):
+        cfg = health_observer.ObserverConfig(
+            project_root=Path("/opt/xiuxian-main"),
+            services=("xiuxian.service", "xiuxian-listener.service"),
+            interval_sec=60,
+            journal_window_sec=600,
+            max_journal_matches=12,
+            max_event_lines=100,
+            state_dir=Path(tempfile.mkdtemp()),
+            business_window_sec=1800,
+        )
+        snapshot = {
+            "ts": "2026-07-02 01:30:00",
+            "status": "warn",
+            "services": {
+                "xiuxian.service": {"ActiveState": "active", "SubState": "running"},
+                "xiuxian-listener.service": {"ActiveState": "inactive", "SubState": "dead"},
+            },
+            "listener": {"available": True, "status": "stopped", "age_sec": 999, "path": "/tmp/listener_heartbeat.json"},
+            "safety": {"fused": False},
+            "journals": [],
+            "business": {"message_state": {}, "db_state": {}},
+            "foreign_xiuxian_processes": [],
+        }
+
+        payload = health_observer.build_health_payload(snapshot, cfg)
+
+        codes = {item["code"] for item in payload["risk_reasons"]}
+        self.assertIn("optional_service_inactive", codes)
+        self.assertNotIn("service_not_running", codes)
+        self.assertNotIn("listener_heartbeat_stale", codes)
 
     def test_business_message_analysis_flags_repeated_active_status_queries(self):
         now = 1_780_500_000.0

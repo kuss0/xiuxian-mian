@@ -1,4 +1,5 @@
 from tools import defensive_preflight as preflight
+from unittest.mock import patch
 
 
 def test_tianxing_outside_prepare_window_is_watch():
@@ -86,3 +87,14 @@ def test_tianxing_later_action_with_prior_consume_is_watch():
     assert item["level"] == "watch"
     assert "先被" in item["reason"]
     assert "消费" in item["reason"]
+
+
+def test_listener_inactive_without_heartbeat_is_watch(tmp_path):
+    missing = tmp_path / "listener_heartbeat.json"
+
+    with patch.object(preflight, "HEARTBEAT_PATH", missing), patch.object(preflight, "_listener_service_state", return_value="inactive"):
+        item = preflight._listener_status(1_700_000_000.0)
+
+    assert item["level"] == "watch"
+    assert item["service_state"] == "inactive"
+    assert "inactive" in item["reason"]

@@ -24,6 +24,13 @@ from typing import Iterable
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SERVICES = ("xiuxian.service", "xiuxian-safety-watchdog.service")
+OPTIONAL_INACTIVE_SERVICES = {
+    "xiuxian-listener.service",
+    # The external watchdog may be deliberately disabled during false-positive
+    # repair. Main runtime guards still run; keep this as a warning, not a hard
+    # health failure, so the observer does not fight the repair window.
+    "xiuxian-safety-watchdog.service",
+}
 LEGACY_PROJECT_ROOTS = (Path("/opt/xiuxian"),)
 HARD_PATTERN = re.compile(r"Traceback|ERROR|Exception|FATAL|FloodWait|FUSED|熔断|风暴", re.I)
 WARN_PATTERN = re.compile(r"超时|补发|未发送|失窃|暂停|发送失败|回复失败|未识别|无法识别|过期|锁", re.I)
@@ -81,6 +88,9 @@ PHASEFUL_ATTENTION_PHASES = {
 IDLE_PHASE_VALUES = {"", "idle", "normal", "none", "{}", "[]"}
 NEXT_LAG_WARN_SEC = 180
 NEXT_LAG_ERROR_SEC = 600
+OK_PRINT_INTERVAL_SEC = 10 * 60
+WARN_PRINT_INTERVAL_SEC = 15 * 60
+ERROR_PRINT_INTERVAL_SEC = 60
 MODULE_HEALTH_SPECS = [
     {
         "key": "tianxing",
@@ -439,6 +449,14 @@ def read_journal_matches(service: str, window_sec: int, limit: int, *, service_s
         "hard": hard[-max_items:],
         "warn": warn[-max_items:],
     }
+
+
+def service_running(info: dict[str, str] | None) -> bool:
+    return bool(isinstance(info, dict) and info.get("ActiveState") == "active" and info.get("SubState") == "running")
+
+
+def should_skip_optional_inactive_journal(service: str, service_states: dict[str, dict[str, str]]) -> bool:
+    return service in OPTIONAL_INACTIVE_SERVICES and not service_running(service_states.get(service))
 
 
 def journal_filter_start_epoch(service: str, *, service_start_epoch: float = 0.0, watchdog_reset_epoch: float = 0.0) -> float:
@@ -1521,20 +1539,32 @@ def build_health_payload(snapshot: dict[str, object], cfg: ObserverConfig) -> di
         if str(service).startswith("_") or not isinstance(info, dict):
             continue
         if info.get("ActiveState") != "active" or info.get("SubState") != "running":
-            add_risk(
-                "service_not_running",
-                f"{service} not running: {info.get('ActiveState')}/{info.get('SubState')}",
-                "critical",
-                35,
-                service=service,
-            )
+            if service in OPTIONAL_INACTIVE_SERVICES:
+                add_risk(
+                    "optional_service_inactive",
+                    f"{service} inactive: {info.get('ActiveState')}/{info.get('SubState')}",
+                    "warn",
+                    6,
+                    service=service,
+                )
+            else:
+                add_risk(
+                    "service_not_running",
+                    f"{service} not running: {info.get('ActiveState')}/{info.get('SubState')}",
+                    "critical",
+                    35,
+                    service=service,
+                )
 
     listener = snapshot.get("listener") if isinstance(snapshot.get("listener"), dict) else {}
     listener_expected = "xiuxian-listener.service" in services or bool(listener.get("available"))
     if listener_expected:
         listener_service = services.get("xiuxian-listener.service") if isinstance(services.get("xiuxian-listener.service"), dict) else {}
         listener_running = listener_service.get("ActiveState") == "active" and listener_service.get("SubState") == "running"
-        if not listener.get("available"):
+        listener_service_inactive = bool(listener_service) and not listener_running
+        if listener_service_inactive:
+            pass
+        elif not listener.get("available"):
             severity = "error" if listener_running else "warn"
             add_risk("listener_heartbeat_missing", "listener heartbeat missing", severity, 18 if listener_running else 8, path=listener.get("path"))
         else:
@@ -1777,12 +1807,18 @@ def format_audit_pack_markdown(snapshot: dict[str, object]) -> str:
 
 def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[dict[str, object]]) -> tuple[str, list[str]]:
     reasons: list[str] = []
+    service_errors = 0
     for service, info in service_states.items():
         if service.startswith("_"):
             reasons.append(f"{service}: {info}")
+            service_errors += 1
             continue
         if info.get("ActiveState") != "active" or info.get("SubState") != "running":
-            reasons.append(f"{service} not running: {info.get('ActiveState')}/{info.get('SubState')}")
+            if service in OPTIONAL_INACTIVE_SERVICES:
+                reasons.append(f"{service} inactive: {info.get('ActiveState')}/{info.get('SubState')}")
+            else:
+                reasons.append(f"{service} not running: {info.get('ActiveState')}/{info.get('SubState')}")
+                service_errors += 1
 
     hard_total = sum(int(item.get("hard_count") or 0) for item in journals)
     warn_total = sum(int(item.get("warn_count") or 0) for item in journals)
@@ -1791,7 +1827,7 @@ def classify_snapshot(service_states: dict[str, dict[str, str]], journals: list[
     if warn_total:
         reasons.append(f"journal warn matches: {warn_total}")
 
-    if any("not running" in item for item in reasons) or hard_total:
+    if service_errors or hard_total:
         return "error", reasons
     if reasons:
         return "warn", reasons
@@ -1805,21 +1841,37 @@ def collect_snapshot(cfg: ObserverConfig) -> dict[str, object]:
     listener = read_listener_heartbeat(cfg.project_root, now)
     watchdog_reset_epoch = parse_optional_epoch(safety.get("reset_at_epoch"))
     foreign_processes = read_foreign_xiuxian_processes(cfg.project_root)
-    journals = [
-        read_journal_matches(
-            service,
-            cfg.journal_window_sec,
-            cfg.max_journal_matches,
-            service_start_epoch=journal_filter_start_epoch(
+    journals = []
+    for service in cfg.services:
+        if should_skip_optional_inactive_journal(service, service_states):
+            journals.append({
+                "service": service,
+                "since": "",
+                "returncode": 0,
+                "stderr": "",
+                "total_lines": 0,
+                "hard_count": 0,
+                "warn_count": 0,
+                "hard": [],
+                "warn": [],
+                "skipped": True,
+                "skip_reason": "optional service inactive",
+            })
+            continue
+        journals.append(
+            read_journal_matches(
                 service,
-                service_start_epoch=parse_systemd_start_timestamp(
-                    service_states.get(service, {}).get("ExecMainStartTimestamp", "")
+                cfg.journal_window_sec,
+                cfg.max_journal_matches,
+                service_start_epoch=journal_filter_start_epoch(
+                    service,
+                    service_start_epoch=parse_systemd_start_timestamp(
+                        service_states.get(service, {}).get("ExecMainStartTimestamp", "")
+                    ),
+                    watchdog_reset_epoch=watchdog_reset_epoch,
                 ),
-                watchdog_reset_epoch=watchdog_reset_epoch,
-            ),
+            )
         )
-        for service in cfg.services
-    ]
     status, reasons = classify_snapshot(service_states, journals)
     business = collect_business_snapshot(cfg, now)
     status, business_reasons = merge_status(status, list(business.get("alerts") or []))
@@ -1884,6 +1936,38 @@ def observe_once(cfg: ObserverConfig) -> dict[str, object]:
     return snapshot
 
 
+def snapshot_log_signature(snapshot: dict[str, object]) -> tuple[object, ...]:
+    reasons = tuple(str(item) for item in (snapshot.get("reasons") or []))
+    health = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else {}
+    risks = tuple(
+        (
+            str(item.get("code") or ""),
+            str(item.get("message") or ""),
+            str(item.get("severity") or ""),
+        )
+        for item in (health.get("risk_reasons") or [])
+        if isinstance(item, dict)
+    )
+    return (str(snapshot.get("status") or ""), reasons, risks)
+
+
+def snapshot_print_interval_sec(status: str) -> int:
+    if status == "error":
+        return ERROR_PRINT_INTERVAL_SEC
+    if status == "warn":
+        return WARN_PRINT_INTERVAL_SEC
+    return OK_PRINT_INTERVAL_SEC
+
+
+def should_print_snapshot(snapshot: dict[str, object], *, last_signature=None, last_print_at=0.0, now=None) -> bool:
+    signature = snapshot_log_signature(snapshot)
+    if signature != last_signature:
+        return True
+    current = float(now or time.time())
+    interval = snapshot_print_interval_sec(str(snapshot.get("status") or "ok"))
+    return current - float(last_print_at or 0.0) >= interval
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read-only Xiuxian runtime health observer")
     parser.add_argument("--project-root", default=str(PROJECT_ROOT))
@@ -1921,9 +2005,15 @@ def main(argv: list[str]) -> int:
         return 0 if snapshot["status"] == "ok" else 1
 
     print(f"health observer started: root={cfg.project_root} interval={cfg.interval_sec}s")
+    last_signature = None
+    last_print_at = 0.0
     while True:
         snapshot = observe_once(cfg)
-        print(f"{snapshot['ts']} {snapshot['status']}: {', '.join(snapshot.get('reasons') or []) or 'ok'}", flush=True)
+        now = time.time()
+        if should_print_snapshot(snapshot, last_signature=last_signature, last_print_at=last_print_at, now=now):
+            print(f"{snapshot['ts']} {snapshot['status']}: {', '.join(snapshot.get('reasons') or []) or 'ok'}", flush=True)
+            last_signature = snapshot_log_signature(snapshot)
+            last_print_at = now
         time.sleep(cfg.interval_sec)
 
 
