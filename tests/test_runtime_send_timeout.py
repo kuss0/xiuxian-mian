@@ -1,6 +1,8 @@
 import asyncio
 import copy
+import json
 import sys
+import tempfile
 import unittest
 from contextlib import ExitStack
 from pathlib import Path
@@ -102,6 +104,28 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(100.0, clock["mono"])
 
         self.assertEqual([], sleeps)
+
+    def test_append_sent_message_log_uses_actual_sent_at(self):
+        sent_at = 1_700_000_000.0
+        with tempfile.TemporaryDirectory() as tmpdir, \
+                patch.object(runtime, "MESSAGES_DIR", tmpdir), \
+                patch.object(runtime, "cleanup_message_logs"), \
+                patch.object(runtime, "get_game_group_id", return_value=123456), \
+                patch.object(runtime, "get_game_topic_id", return_value=7310786):
+            runtime._append_sent_message_log(
+                920001,
+                ".闯塔",
+                301299112,
+                priority=runtime.SEND_PRIORITY_NORMAL,
+                sent_at=sent_at,
+            )
+            files = list(Path(tmpdir).glob("*.log"))
+            self.assertEqual(1, len(files))
+            payload = json.loads(files[0].read_text(encoding="utf-8").strip())
+
+        self.assertEqual("2023-11-15 06:13:20 UTC+8", payload["ts"])
+        self.assertEqual(920001, payload["message_id"])
+        self.assertEqual(".闯塔", payload["text"])
 
     async def test_identity_gap_applies_after_whitelisted_burst_send(self):
         send_as_id = 301299112

@@ -762,6 +762,9 @@ class SafetyWatchdogTests(unittest.TestCase):
         breach = safety_watchdog.find_send_breach(events, now, cfg)
 
         self.assertIn("global lock breach", breach)
+        self.assertTrue(safety_watchdog.is_warn_only_breach_reason(breach))
+        confirm = safety_watchdog.BreachConfirmationState()
+        self.assertFalse(safety_watchdog.should_fuse_breach(breach, confirm, now))
 
     def test_non_dungeon_commands_still_send_burst(self):
         now = time.time()
@@ -1889,7 +1892,7 @@ class SafetyWatchdogTests(unittest.TestCase):
 
     def test_soft_breach_confirmation_resets_after_quiet_window(self):
         state = safety_watchdog.BreachConfirmationState()
-        reason = "global lock breach: gap 2.0s between a and b"
+        reason = "same command repeat: 3943773722:.稳 gap 5.0s"
 
         self.assertFalse(safety_watchdog.should_fuse_breach(reason, state, 1000.0))
         self.assertFalse(

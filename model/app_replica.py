@@ -3226,6 +3226,8 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         if chat_id == 0:
             return False, "按钮动作缺少副本群。"
         current = _get_lightweight_last_room(chat_id, now=time.time())
+        if isinstance(current, dict):
+            current = _refresh_lightweight_room_team_from_message_log(current, now=time.time())
         if not isinstance(current, dict):
             event = _make_replica_command_event(
                 ".查询副本",
@@ -3277,6 +3279,40 @@ async def _execute_replica_button_action_with_callback(action, actor_id=0, callb
         phase = str(current.get("phase") or "")
         if phase in {"dissolved", "entered"}:
             return True, "该副本房间已结束，未发送解散确认。"
+        if phase == "dissolve_requested":
+            text = _format_lightweight_dissolve_pending_notice(current, html=True)
+            ok = await _send_replica_group_message(
+                event.client,
+                chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_build_lightweight_room_action_buttons(current, include_enter=False, include_dissolve=False, include_query=True),
+            )
+            return bool(ok), "该副本房间已请求解散。"
+        if _has_lightweight_room_closed_or_full_evidence(current):
+            event = _make_replica_command_event(
+                ".查询副本",
+                chat_id,
+                actor_id=actor_id,
+                listener_account_id=listener_account_id,
+                event_id=_callback_message_id(callback_query),
+                button_message_id=_callback_message_id(callback_query),
+                button_actor_id=actor_id,
+                button_action_type=action_type,
+            )
+            text = "当前副本房间已有满队/进入证据，未发送解散确认。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
+            ok = await _send_replica_group_message(
+                event.client,
+                chat_id,
+                text,
+                parse_mode="html",
+                listener_account_id=listener_account_id,
+                log_text=_strip_html_code_tags(text),
+                buttons=_build_lightweight_room_action_buttons(current, include_enter=True, include_dissolve=False, include_query=True),
+            )
+            return bool(ok), "房间已有满队证据，未解散。"
         event = _make_replica_command_event(
             ".解散副本",
             chat_id,
@@ -3476,8 +3512,12 @@ def _merge_lightweight_room_update(existing, incoming):
         merged["team_usernames"] = existing_team
         if existing.get("team_identity_ids"):
             merged["team_identity_ids"] = existing.get("team_identity_ids")
-        if existing.get("team_professions_by_username") and not incoming.get("team_professions_by_username"):
+        if existing.get("team_professions_by_username"):
             merged["team_professions_by_username"] = existing.get("team_professions_by_username")
+        if existing.get("team_capacity"):
+            merged["team_capacity"] = existing.get("team_capacity")
+        if existing.get("team_snapshot_msg_id"):
+            merged["team_snapshot_msg_id"] = existing.get("team_snapshot_msg_id")
     try:
         merged["updated_at"] = max(float(existing.get("updated_at") or 0), float(incoming.get("updated_at") or incoming.get("opened_at") or 0))
     except (TypeError, ValueError):
@@ -3989,6 +4029,9 @@ def _update_lightweight_room_team_snapshot(replica_kind, room_id, team_usernames
         return False
     candidates.sort(key=lambda item: item[0], reverse=True)
     _updated_at, source, key, room = candidates[0]
+    existing_usernames = _normalize_replica_username_list(room.get("team_usernames") or [])
+    if len(existing_usernames) > len(normalized_usernames):
+        return False
     room["team_usernames"] = normalized_usernames
     room["team_identity_ids"] = _map_replica_usernames_to_identity_ids(normalized_usernames)
     room["team_professions_by_username"] = normalized_professions
@@ -4450,6 +4493,137 @@ def _get_lightweight_room_actual_team_usernames(room):
         return team_usernames
     leader_username = _normalize_replica_username(room.get("leader_username") or "")
     return [leader_username] if leader_username else []
+
+
+def _parse_replica_team_snapshot_entry(entry, *, replica_kind_hint="", room_id_hint=""):
+    entry = entry if isinstance(entry, dict) else {}
+    raw_text = str(entry.get("text") or "")
+    if str(entry.get("event_type") or "") not in {"message", "edit"}:
+        return {}
+    joined_match = _REPLICA_JOINED_RE.search(raw_text)
+    if not joined_match:
+        return {}
+    team_usernames = _extract_replica_team_usernames(raw_text)
+    if not team_usernames:
+        return {}
+    replica_kind = _infer_replica_kind_from_text(raw_text) or (replica_kind_hint if replica_kind_hint in _REPLICA_KINDS else "")
+    if replica_kind not in _REPLICA_KINDS:
+        return {}
+    room_id = next((str(group or "").strip() for group in joined_match.groups()[1:] if str(group or "").strip()), "")
+    if not room_id:
+        room_id = str(room_id_hint or "").strip()
+    capacity = _parse_replica_team_capacity(raw_text, default=5)
+    try:
+        msg_id = int(entry.get("message_id") or 0)
+    except (TypeError, ValueError):
+        msg_id = 0
+    return {
+        "replica_kind": replica_kind,
+        "room_id": room_id,
+        "team_usernames": team_usernames,
+        "team_professions_by_username": _extract_replica_team_professions_by_username(raw_text),
+        "capacity": capacity,
+        "count": len(team_usernames),
+        "full": len(team_usernames) >= capacity,
+        "message_id": msg_id,
+        "ts": _parse_log_ts(entry.get("ts")),
+    }
+
+
+def _find_recent_lightweight_room_team_snapshot_from_log(room, now=None, *, lookback_sec=600):
+    room = room if isinstance(room, dict) else {}
+    replica_kind = room.get("replica_kind")
+    room_id = str(room.get("room_id") or "").strip()
+    if replica_kind not in _REPLICA_KINDS or not room_id:
+        return {}
+    now = float(now or time.time())
+    opened_at = float(room.get("opened_at") or room.get("updated_at") or 0)
+    start_ts = max(0.0, (opened_at - 5) if opened_at > 0 else now - max(60, float(lookback_sec or 0)))
+    end_ts = now + 5
+    known_usernames = set(
+        _normalize_replica_username_list(
+            [room.get("leader_username") or ""]
+            + list(room.get("team_usernames") or [])
+            + list(room.get("join_requested_usernames") or [])
+        )
+    )
+    candidates = []
+    for entry in _iter_game_message_log_entries_between(start_ts, end_ts):
+        snapshot = _parse_replica_team_snapshot_entry(
+            entry,
+            replica_kind_hint=replica_kind,
+            room_id_hint=room_id,
+        )
+        if not snapshot or snapshot.get("replica_kind") != replica_kind:
+            continue
+        snapshot_room_id = str(snapshot.get("room_id") or "").strip()
+        if snapshot_room_id and snapshot_room_id != room_id:
+            continue
+        snapshot_usernames = set(_normalize_replica_username_list(snapshot.get("team_usernames") or []))
+        if known_usernames and not known_usernames.intersection(snapshot_usernames):
+            continue
+        candidates.append(snapshot)
+    if not candidates:
+        return {}
+    candidates.sort(
+        key=lambda item: (
+            int(item.get("count") or 0),
+            int(bool(item.get("full"))),
+            float(item.get("ts") or 0),
+            int(item.get("message_id") or 0),
+        ),
+        reverse=True,
+    )
+    return dict(candidates[0])
+
+
+def _refresh_lightweight_room_team_from_message_log(room, now=None):
+    room = room if isinstance(room, dict) else {}
+    if not room:
+        return room
+    current_count = len(_normalize_replica_username_list(room.get("team_usernames") or []))
+    snapshot = _find_recent_lightweight_room_team_snapshot_from_log(room, now=now)
+    if not snapshot:
+        return room
+    snapshot_usernames = _normalize_replica_username_list(snapshot.get("team_usernames") or [])
+    if len(snapshot_usernames) < current_count:
+        return room
+    refreshed = dict(room)
+    refreshed["team_usernames"] = snapshot_usernames
+    refreshed["team_identity_ids"] = _map_replica_usernames_to_identity_ids(snapshot_usernames)
+    refreshed["team_professions_by_username"] = _normalize_replica_team_professions_by_username(snapshot.get("team_professions_by_username"))
+    refreshed["team_capacity"] = int(snapshot.get("capacity") or 5)
+    refreshed["team_snapshot_msg_id"] = int(snapshot.get("message_id") or 0)
+    refreshed["team_snapshot_seen_at"] = float(snapshot.get("ts") or now or time.time())
+    refreshed["updated_at"] = max(float(refreshed.get("updated_at") or 0), float(snapshot.get("ts") or 0), float(now or 0))
+    _set_lightweight_last_room(refreshed)
+    return refreshed
+
+
+def _is_lightweight_cangkun_room_full(room):
+    room = room if isinstance(room, dict) else {}
+    if room.get("replica_kind") != _REPLICA_KIND_CANGKUN:
+        return False
+    capacity = max(1, int(room.get("team_capacity") or 5))
+    return len(_normalize_replica_username_list(room.get("team_usernames") or [])) >= capacity
+
+
+def _is_lightweight_room_dissolve_actionable(room):
+    room = room if isinstance(room, dict) else {}
+    if str(room.get("phase") or "") in {"entered", "dissolved", "dissolve_requested"}:
+        return False
+    if _is_lightweight_cangkun_room_full(room):
+        return False
+    return True
+
+
+def _has_lightweight_room_closed_or_full_evidence(room):
+    room = room if isinstance(room, dict) else {}
+    if str(room.get("phase") or "") in {"entered", "dissolved"}:
+        return True
+    if _is_lightweight_cangkun_room_full(room):
+        return True
+    return False
 
 
 def _get_lightweight_room_team_identity_ids(room, now=None):
@@ -5055,6 +5229,8 @@ def _build_lightweight_room_action_buttons(
 ):
     if include_enter and not _is_lightweight_room_enter_actionable(room):
         include_enter = False
+    if include_dissolve and not _is_lightweight_room_dissolve_actionable(room):
+        include_dissolve = False
     first_row = []
     join_button = _lightweight_join_button(room, join_command, label=join_label)
     if join_button:
@@ -12266,6 +12442,9 @@ def _should_fast_retry_lightweight_dissolve(identity_id, replica_kind, room_id, 
     current = _get_current_lightweight_retry_room(replica_kind, room_id, chat_id=chat_id, now=now)
     if not current:
         return False
+    current = _refresh_lightweight_room_team_from_message_log(current, now=now)
+    if _has_lightweight_room_closed_or_full_evidence(current):
+        return False
     if str(current.get("phase") or "") != "dissolve_requested":
         return False
     dissolve_msg_id = int(current.get("dissolve_msg_id") or 0)
@@ -12416,6 +12595,14 @@ async def _run_lightweight_room_auto_dissolve(room_snapshot, delay):
         or current.get("phase") in {"dissolved", "dissolve_requested"}
     ):
         return False
+    current = _refresh_lightweight_room_team_from_message_log(current, now=now)
+    if not _is_lightweight_room_dissolve_actionable(current):
+        await _send_lightweight_replica_notice(
+            current,
+            "已看到满队/进入证据，自动解散已取消。\n\n" + _format_lightweight_next_commands(".查询副本", html=True),
+            html=True,
+        )
+        return False
     reserve_status, current = _reserve_lightweight_room_dissolve(
         current,
         now,
@@ -12526,6 +12713,7 @@ def _parse_lightweight_replica_open_failure(text):
 
 async def _send_lightweight_opened_room_notice(room, opened_text, now, *, allow_auto_dissolve=True):
     room = room if isinstance(room, dict) else {}
+    room = _refresh_lightweight_room_team_from_message_log(room, now=now)
     replica_kind = room.get("replica_kind")
     room_id = str(room.get("room_id") or "").strip()
     if not room_id or replica_kind not in _REPLICA_KINDS:
@@ -12546,16 +12734,17 @@ async def _send_lightweight_opened_room_notice(room, opened_text, now, *, allow_
         int(room.get("leader_identity_id") or 0),
         html=True,
     )
+    next_commands = [
+        join_command or (".查询副本" if replica_kind == _REPLICA_KIND_ZHUIMO else ".加入副本 @用户名 @用户名")
+    ]
+    if _is_lightweight_room_dissolve_actionable(room):
+        next_commands.append(".解散副本")
     await _send_lightweight_replica_notice(
         room,
         f"已记录{escape(_REPLICA_KIND_META[replica_kind]['name'])}房间 {escape(room_id)}。\n\n"
         + recommendation_text
         + "\n\n"
-        + _format_lightweight_next_commands(
-            join_command or (".查询副本" if replica_kind == _REPLICA_KIND_ZHUIMO else ".加入副本 @用户名 @用户名"),
-            ".解散副本",
-            html=True,
-        ),
+        + _format_lightweight_next_commands(*next_commands, html=True),
         html=True,
         buttons=_build_lightweight_room_action_buttons(
             room,
@@ -13108,7 +13297,7 @@ async def _handle_lightweight_join_command(event):
                 f"缺职业：{missing_text}\n"
                 + _format_cangkun_spiritual_sense_status(current_team_ids)
             )
-            commands_text = _format_lightweight_next_commands(".解散副本", ".查询副本", html=True)
+            commands_text = _format_lightweight_next_commands(_REPLICA_KIND_META[_REPLICA_KIND_CANGKUN]["enter_command"], ".查询副本", html=True)
             text = escape(plain_text) + "\n\n" + commands_text
             await _send_replica_group_message(
                 event.client,
@@ -13117,7 +13306,7 @@ async def _handle_lightweight_join_command(event):
                 parse_mode="html",
                 listener_account_id=listener_account_id,
                 log_text=plain_text + "\n\n" + _strip_html_code_tags(commands_text),
-                buttons=_build_lightweight_room_action_buttons(room, include_enter=False, include_dissolve=True, include_query=True),
+                buttons=_build_lightweight_room_action_buttons(room, include_enter=True, include_dissolve=False, include_query=True),
             )
             return True
         current_team_ids = _get_lightweight_room_team_identity_ids(room, now=now_for_join)
@@ -13266,7 +13455,10 @@ async def _handle_lightweight_join_command(event):
         summary += "\n" + _format_cangkun_spiritual_sense_status(cangkun_team_ids)
     summary = escape(summary)
     next_commands = [_REPLICA_KIND_META[replica_kind]["enter_command"]] if enter_actionable else []
-    next_commands.append(".解散副本")
+    if _is_lightweight_room_dissolve_actionable(room):
+        next_commands.append(".解散副本")
+    if not next_commands:
+        next_commands.append(".查询副本")
     summary += "\n\n" + _format_lightweight_next_commands(*next_commands, html=True)
     await _send_replica_group_message(
         event.client,
@@ -13554,6 +13746,19 @@ async def _handle_lightweight_dissolve_command(event):
     leader_identity_id = int(room.get("leader_identity_id") or 0)
     if leader_identity_id <= 0:
         text = "已记录副本房间，但缺少开房身份，不能自动解散。\n\n" + _format_lightweight_next_commands(".查询副本", _REPLICA_LIGHTWEIGHT_OPEN_USAGE, html=True)
+        await _send_replica_group_message(
+            event.client,
+            event.chat_id,
+            text,
+            parse_mode="html",
+            listener_account_id=listener_account_id,
+            log_text=_strip_html_code_tags(text),
+            buttons=_build_lightweight_room_action_buttons(room, include_enter=True, include_dissolve=False, include_query=True),
+        )
+        return True
+    room = _refresh_lightweight_room_team_from_message_log(room, now=now)
+    if _has_lightweight_room_closed_or_full_evidence(room):
+        text = "当前副本房间已有满队/进入证据，未发送解散命令。\n\n" + _format_lightweight_next_commands(".查询副本", html=True)
         await _send_replica_group_message(
             event.client,
             event.chat_id,

@@ -251,6 +251,44 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         console_mock.assert_called_once()
         self.assertIn("重复结果已忽略", console_mock.call_args.args[0])
 
+    async def test_duplicate_final_edit_with_different_event_id_is_idempotent(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_010.0
+        text = (
+            "【野外历练 · 灵机暗藏】\n"
+            "@myios7 在山涧残阵旁避开妖兽踪迹，采得一份机缘。\n"
+            "获得修为 +392，获得 【清灵草】x1。"
+        )
+        reply_to = SimpleNamespace(raw_text=f"{config.CMD_WILD_TRAINING} 谨慎", id=101)
+
+        with state_module.use_identity(send_as_id), \
+             patch.object(wild_training, "save_state"), \
+             patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_CYCLE_MIN_SEC), \
+             patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+             patch.object(wild_training, "console_log") as console_mock:
+            first = await wild_training.handle_wild_training_reply(
+                text,
+                now,
+                reply_to,
+                matched_family="wild_training",
+                current_msg_id=201,
+            )
+            next_time = state_module.state["next_wild_training_time"]
+            second = await wild_training.handle_wild_training_reply(
+                text,
+                now + 30,
+                reply_to,
+                matched_family="wild_training",
+                current_msg_id=202,
+            )
+
+        self.assertTrue(first)
+        self.assertTrue(second)
+        self.assertEqual(1, audit_mock.await_count)
+        self.assertEqual(next_time, state_module.state["next_wild_training_time"])
+        console_mock.assert_called_once()
+        self.assertIn("重复结果已忽略", console_mock.call_args.args[0])
+
     async def test_tianxing_final_edit_reports_high_priority_before_normal_audit(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_010.0

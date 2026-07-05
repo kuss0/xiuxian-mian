@@ -1136,9 +1136,13 @@ def _pending_send_intent_kwargs(pending_item):
     return {key: value for key, value in intent.items() if value}
 
 
-def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None, intent=None):
+def _append_sent_message_log(msg_id, command, send_as_id, reply_to_msg_id=0, *, priority="", track=None, intent=None, sent_at=None):
     try:
-        now = datetime.now(TZ_LOCAL)
+        try:
+            sent_at_value = float(sent_at or 0)
+        except (TypeError, ValueError, OverflowError):
+            sent_at_value = 0.0
+        now = datetime.fromtimestamp(sent_at_value, TZ_LOCAL) if sent_at_value > 0 else datetime.now(TZ_LOCAL)
         log_file = os.path.join(MESSAGES_DIR, f"{now.strftime('%Y-%m-%d')}.log")
         cleanup_message_logs()
         family = resolve_reply_family(command) or ""
@@ -2965,6 +2969,7 @@ def _finalize_game_command_sent(
             priority=send_priority,
             track=track,
             intent=send_intent,
+            sent_at=sent_at,
         )
     msg = SimpleNamespace(id=msg_id, sent_at=sent_at, recovered_from_message_log=bool(recovered))
     action_guard_note_sent(command, send_as_id, msg_id, sent_at=sent_at)
@@ -3340,10 +3345,6 @@ async def send_game_command(
             result = await asyncio.wait_for(asyncio.shield(send_task), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
         except FloodWaitError as flood_err:
             flood_until = _mark_account_flood_wait(account_id, int(flood_err.seconds), now=time.time())
-            mark_bot_health_suspect(
-                f"TG FloodWait {int(flood_err.seconds)}s",
-                reference_at=time.time(),
-            )
             await send_audit_log(
                 (
                     f"⏸ TG FloodWait {int(flood_err.seconds)}s，账号发送退避至 {fmt_abs_ts(flood_until)}："
@@ -3406,7 +3407,7 @@ async def send_game_command(
         msg_id = _extract_sent_message_id(result)
         if msg_id <= 0:
             raise ValueError("无法从发送结果中解析消息 ID")
-        sent_at = time.time()
+        sent_at = float(send_request_started_at or 0) or time.time()
         msg = _finalize_game_command_sent(
             command,
             msg_id=msg_id,
@@ -3646,23 +3647,6 @@ async def run_retry_scheduler(now, send_as_id=None):
                 retry = int(current_item.get("retry", retry) or 0)
                 cmd = get_pending_command(current_item) or cmd
                 saved_priority = current_item.get("priority") or None
-
-                if get_bot_last_seen_at() < float(send_time or 0):
-                    changed = mark_bot_health_suspect(
-                        f"指令 {_truncate_log_text(cmd, limit=32)} 超时且无 bot 发言",
-                        reference_at=send_time,
-                        now=now,
-                    )
-                    if changed:
-                        await send_audit_log(
-                            f"🩺 天尊疑似静默：{mono(_truncate_log_text(cmd, limit=40))} 超时 {threshold}s 后仍无 bot 发言，已暂停普通补发。",
-                            scope="identity",
-                            send_as_id=identity_id,
-                            limit=260,
-                        )
-                    identity_state["pending_tasks"].pop(msg_id, None)
-                    mark_dirty()
-                    continue
 
                 retry_limit = max(0, int(current_item.get("max_retry", RETRY_LIMIT) or 0))
                 if retry >= retry_limit:

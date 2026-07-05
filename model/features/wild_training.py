@@ -50,6 +50,7 @@ WILD_TRAINING_STALE_RESULT_RESCHEDULE_MARGIN_SEC = 30
 WILD_TRAINING_LOG_REPLAY_LOOKBACK_SEC = 20 * 60
 WILD_TRAINING_LOG_REPLAY_LOOKAHEAD_SEC = 2 * 60
 WILD_TRAINING_TIANXING_CONSUME_ATTEMPT_GRACE_SEC = 10 * 60
+WILD_TRAINING_RESULT_DEDUPE_SEC = 5 * 60
 WILD_TRAINING_TITLE = "【野外历练"
 WILD_TRAINING_RESULT_TITLES = (
     "【野外历练 · 妖兽遭遇】",
@@ -553,14 +554,28 @@ def _apply_wild_training_result(raw_text, now, msg_id):
     _schedule_next(now)
 
 
-def _is_duplicate_wild_training_result(raw_text, msg_id):
+def _is_duplicate_wild_training_result(raw_text, msg_id, now=None):
     msg_id = int(msg_id or 0)
+    summary = _result_summary(raw_text)
+    last_result_at = float(state.get("wild_training_last_result_at", 0) or 0)
+    try:
+        now_value = float(now or 0)
+    except (TypeError, ValueError, OverflowError):
+        now_value = 0.0
+    if (
+        summary
+        and last_result_at > 0
+        and now_value > 0
+        and now_value - last_result_at <= WILD_TRAINING_RESULT_DEDUPE_SEC
+        and str(state.get("wild_training_last_result") or "") == summary
+    ):
+        # 多 DC 监听和 message/edit 重放可能带来不同事件上下文；同身份同摘要短窗只播一次。
+        return True
     if msg_id <= 0:
         return False
-    summary = _result_summary(raw_text)
     if (
         int(state.get("wild_training_last_msg_id", 0) or 0) == msg_id
-        and float(state.get("wild_training_last_result_at", 0) or 0) > 0
+        and last_result_at > 0
         and str(state.get("wild_training_last_result") or "") == summary
     ):
         return True
@@ -866,7 +881,7 @@ async def handle_wild_training_reply(text, now, reply_to, matched_family=None, c
     if not _is_result_notice(raw_text):
         return False
 
-    if _is_duplicate_wild_training_result(raw_text, msg_id):
+    if _is_duplicate_wild_training_result(raw_text, msg_id, now=now):
         console_log(f"🏞️ 野外历练重复结果已忽略（msg_id={msg_id}）", scope="identity")
         return True
 

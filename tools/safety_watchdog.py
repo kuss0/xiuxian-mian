@@ -221,8 +221,12 @@ HARD_BREACH_REASON_PREFIXES = (
     "journal hard-stop keyword:",
     "world boss over attempts:",
 )
+WARN_ONLY_REASON_PREFIXES = (
+    "global lock breach:",
+)
 SOFT_BREACH_CONFIRM_HITS = 2
 SOFT_BREACH_CONFIRM_WINDOW_SEC = 90.0
+WARNING_REPEAT_SEC = 300.0
 
 
 def load_dotenv(env_path: Path) -> dict[str, str]:
@@ -1634,6 +1638,22 @@ def format_fuse_message(reason: str, action: str, actions: list[str], *, env: di
     return message
 
 
+def format_warning_message(reason: str, *, env: dict[str, str], dry_run: bool = False) -> str:
+    lines = [
+        "[SAFETY WATCHDOG WARNING]",
+        f"reason: {reason}",
+        "action: warn",
+    ]
+    if dry_run:
+        lines[0] = "[SAFETY WATCHDOG WOULD WARN]"
+        lines[-1] = "action: warn dry-run"
+    message = "\n".join(html.escape(line) for line in lines)
+    mentions = format_admin_mentions_html(env)
+    if mentions and not dry_run:
+        message += f"\n关注：{mentions}"
+    return message
+
+
 def write_fuse_marker(project_root: Path, reason: str, actions: list[str]) -> None:
     marker = fuse_marker_path(project_root)
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -1707,6 +1727,13 @@ def perform_fuse(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
     print(send_log_via_bot(env, format_fuse_message(reason, cfg.action, actions, env=env)))
 
 
+def perform_warning(cfg: WatchdogConfig, env: dict[str, str], reason: str) -> None:
+    message = format_warning_message(reason, env=env, dry_run=cfg.dry_run)
+    print(message)
+    if not cfg.dry_run:
+        print(send_log_via_bot(env, message))
+
+
 def current_log_file(project_root: Path) -> Path:
     return project_root / "data" / "messages" / f"{datetime.now().strftime('%Y-%m-%d')}.log"
 
@@ -1745,8 +1772,15 @@ def is_hard_breach_reason(reason: str) -> bool:
     return any(raw.startswith(prefix) for prefix in HARD_BREACH_REASON_PREFIXES)
 
 
+def is_warn_only_breach_reason(reason: str) -> bool:
+    raw = str(reason or "")
+    return any(raw.startswith(prefix) for prefix in WARN_ONLY_REASON_PREFIXES)
+
+
 def needs_soft_breach_confirmation(reason: str) -> bool:
     raw = str(reason or "")
+    if is_warn_only_breach_reason(raw):
+        return False
     if is_hard_breach_reason(raw):
         return False
     return any(raw.startswith(prefix) for prefix in SOFT_CONFIRM_REASON_PREFIXES)
@@ -1755,6 +1789,9 @@ def needs_soft_breach_confirmation(reason: str) -> bool:
 def should_fuse_breach(reason: str, state: BreachConfirmationState, now: float) -> bool:
     raw = str(reason or "").strip()
     if not raw:
+        reset_breach_confirmation(state)
+        return False
+    if is_warn_only_breach_reason(raw):
         reset_breach_confirmation(state)
         return False
     if not needs_soft_breach_confirmation(raw):
@@ -1858,12 +1895,16 @@ def main(argv: list[str]) -> int:
         if not breach and journal_breach and not journal_breach.startswith("journal check failed"):
             breach = journal_breach
         if breach:
+            if is_warn_only_breach_reason(breach):
+                perform_warning(cfg, env, breach)
+                return 0
             perform_fuse(cfg, env, breach)
             return 2
         print("watchdog ok")
         return 0
 
     last_journal_check = 0.0
+    last_warning_at_by_reason: dict[str, float] = {}
     breach_confirmation = BreachConfirmationState()
     print(f"watchdog started: root={cfg.project_root} action={cfg.action}")
     while True:
@@ -1874,6 +1915,14 @@ def main(argv: list[str]) -> int:
             journal_breach = find_journal_breach(cfg.service_name)
             if journal_breach and not journal_breach.startswith("journal check failed"):
                 breach = journal_breach
+        if breach and is_warn_only_breach_reason(breach):
+            last_warning_at = float(last_warning_at_by_reason.get(breach, 0.0) or 0.0)
+            if now - last_warning_at >= WARNING_REPEAT_SEC:
+                last_warning_at_by_reason[breach] = now
+                perform_warning(cfg, env, breach)
+            reset_breach_confirmation(breach_confirmation)
+            time.sleep(cfg.interval_sec)
+            continue
         if breach and should_fuse_breach(breach, breach_confirmation, now):
             perform_fuse(cfg, env, breach)
         time.sleep(cfg.interval_sec)
