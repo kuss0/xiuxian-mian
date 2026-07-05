@@ -285,6 +285,52 @@ def _latest_hehuan_pending_warm_at(observed):
     return latest
 
 
+def _hehuan_pending_consumed_base_at(observed):
+    observed = normalize_hehuan_observation(observed)
+    if str(observed.get("last_result") or "").strip().lower() != "pending":
+        return 0.0
+    return max(
+        float(observed.get("last_observed_at", 0) or 0),
+        float(observed.get("auto_pending_sent_at", 0) or 0),
+        _latest_hehuan_pending_warm_at(observed),
+    )
+
+
+def _assume_hehuan_pending_consumed(observed, now):
+    now = float(now if now is not None else time.time())
+    observed = normalize_hehuan_observation(observed)
+    base_at = _hehuan_pending_consumed_base_at(observed)
+    if base_at <= 0:
+        return observed, False
+    final_wait_until = float(base_at + HEHUAN_FINAL_EDIT_WAIT_SEC)
+    if now < final_wait_until:
+        observed["auto_next_time"] = final_wait_until
+        observed["auto_last_action"] = "warm"
+        observed["auto_last_error"] = "温养已收到起手回复，等待最终结算"
+        observed["auto_last_error_at"] = 0
+        return observed, True
+    cooldown_until = float(base_at + HEHUAN_WARM_OBSERVED_CD_SEC + HEHUAN_CD_BUFFER_SEC)
+    observed["last_result"] = "assumed_consumed"
+    observed["last_summary"] = "温养起手已确认，最终结算未入库，按已消费保守冷却"
+    observed["next_hehuan_time"] = max(float(observed.get("next_hehuan_time", 0) or 0), cooldown_until)
+    observed["auto_next_time"] = observed["next_hehuan_time"] if observed["next_hehuan_time"] > now else float(now)
+    observed["auto_last_action"] = "warm"
+    observed["auto_last_error"] = "温养起手已确认但最终编辑未入库，已按起手+1小时保守冷却"
+    observed["auto_last_error_at"] = float(now)
+    observed["auto_retry_count"] = 0
+    observed["auto_retry_reason"] = ""
+    _reset_hehuan_auto_pending(observed)
+    observed["recent"].append({
+        "ts": now,
+        "path": observed.get("last_path") or PATH_TONGCAN,
+        "action": "双修 温养",
+        "result": "assumed_consumed",
+        "summary": observed["last_summary"],
+    })
+    observed["recent"] = observed["recent"][-8:]
+    return observed, observed["next_hehuan_time"] > now
+
+
 def _block_hehuan_until(observed, until_ts, reason, now=None):
     now = float(now if now is not None else time.time())
     observed = normalize_hehuan_observation(observed)
@@ -904,6 +950,13 @@ def apply_hehuan_passive(text, now=None, family=""):
     previous_success_at = float(observed.get("last_warm_success_at", 0) or 0)
     result = str(parsed.get("result") or "").strip().lower()
     parsed_partner = str(parsed.get("partner") or "").strip()
+    if (
+        result == "pending"
+        and previous_success_at > 0
+        and now <= previous_success_at + HEHUAN_FINAL_EDIT_WAIT_SEC
+        and int(observed.get("auto_pending_msg_id", 0) or 0) <= 0
+    ):
+        return True
     observed["last_observed_at"] = now
     observed["last_path"] = parsed.get("path") or observed.get("last_path", "")
     observed["last_action"] = parsed.get("action") or ""
@@ -1078,7 +1131,7 @@ def _has_unresolved_hehuan_pending(observed, now):
     return now >= pending_deadline_at
 
 
-def _is_hehuan_terminal_reply_log_entry(entry):
+def _is_hehuan_recoverable_reply_log_entry(entry):
     text = (entry or {}).get("text") or ""
     if not looks_like_hehuan_text(text):
         return False
@@ -1087,7 +1140,17 @@ def _is_hehuan_terminal_reply_log_entry(entry):
         now=float((entry or {}).get("ts_epoch") or time.time()),
         family="hehuan_dual",
     )
-    return bool(parsed) and str(parsed.get("result") or "").strip().lower() != "pending"
+    if not parsed:
+        return False
+    result = str(parsed.get("result") or "").strip().lower()
+    action = str(parsed.get("action") or "").strip()
+    path = str(parsed.get("path") or "").strip()
+    if path != PATH_TONGCAN:
+        return False
+    return result in {"pending", "success", "cooldown", "contract_invalid", "realm_blocked"} and action in {
+        "双修",
+        "双修 温养",
+    }
 
 
 def _recover_hehuan_pending_from_message_log(observed, now):
@@ -1099,7 +1162,7 @@ def _recover_hehuan_pending_from_message_log(observed, now):
         now,
         lookback_sec=HEHUAN_LOG_REPLAY_LOOKBACK_SEC,
         lookahead_sec=HEHUAN_LOG_REPLAY_LOOKAHEAD_SEC,
-        predicate=_is_hehuan_terminal_reply_log_entry,
+        predicate=_is_hehuan_recoverable_reply_log_entry,
     )
     if not replies:
         return False
@@ -1111,6 +1174,11 @@ def _recover_hehuan_pending_from_message_log(observed, now):
             family="hehuan_dual",
         )
         handled_any = handled_any or handled
+    if handled_any:
+        observed_after = normalize_hehuan_observation(state.get("hehuan_observation"))
+        if str(observed_after.get("last_result") or "").strip().lower() == "pending":
+            observed_after, _wait_for_cooldown = _assume_hehuan_pending_consumed(observed_after, now)
+            state["hehuan_observation"] = observed_after
     return handled_any
 
 
@@ -1207,10 +1275,24 @@ async def run_hehuan_scheduler(now):
         if _recover_hehuan_pending_from_message_log(observed, now):
             save_state()
             return
-        observed = _schedule_hehuan_retry(observed, now, "温养回复超时或被吞")
+        if str(observed.get("last_result") or "").strip().lower() == "pending":
+            observed, wait_for_cooldown = _assume_hehuan_pending_consumed(observed, now)
+            state["hehuan_observation"] = observed
+            save_state()
+            if wait_for_cooldown:
+                return
+        else:
+            observed = _schedule_hehuan_retry(observed, now, "温养回复超时或被吞")
+            state["hehuan_observation"] = observed
+            save_state()
+            if float(observed.get("auto_next_time", 0) or 0) > now:
+                return
+
+    if str(observed.get("last_result") or "").strip().lower() == "pending":
+        observed, wait_for_cooldown = _assume_hehuan_pending_consumed(observed, now)
         state["hehuan_observation"] = observed
         save_state()
-        if float(observed.get("auto_next_time", 0) or 0) > now:
+        if wait_for_cooldown:
             return
 
     plan = build_hehuan_manual_plan("warm", now=now)

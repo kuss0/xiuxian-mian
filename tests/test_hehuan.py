@@ -338,6 +338,37 @@ class HehuanManualPlanTests(unittest.TestCase):
         self.assertGreaterEqual(observed["auto_pending_deadline_at"], now + hehuan.HEHUAN_FINAL_EDIT_WAIT_SEC)
         self.assertEqual(observed["auto_pending_deadline_at"], observed["auto_next_time"])
 
+    def test_late_pending_reply_does_not_overwrite_recent_success(self):
+        now = 1_780_000_000.0
+        success_at = now - 10
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": success_at,
+                "last_path": "同参道",
+                "last_action": "双修 温养",
+                "last_result": "success",
+                "last_summary": "温养双修成功",
+                "last_partner": "@dao_partner",
+                "last_warm_success_at": success_at,
+                "next_hehuan_time": success_at + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC,
+                "contract_until": success_at + hehuan.HEHUAN_CONTRACT_SEC,
+                "auto_next_time": success_at + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC,
+            }
+
+            changed = hehuan.apply_hehuan_passive(
+                "契印感应，双方灵力开始共鸣，准备进行温养双修...",
+                now=now,
+                family="hehuan_dual",
+            )
+
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertTrue(changed)
+        self.assertEqual("success", observed["last_result"])
+        self.assertEqual("温养双修成功", observed["last_summary"])
+        self.assertEqual(success_at + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
+
     def test_success_with_valuable_insight_queues_three_reminders(self):
         now = 1_780_000_000.0
         text = (
@@ -927,7 +958,7 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             save_mock.assert_called_once()
             observed = state_module.state["hehuan_observation"]
             self.assertEqual("pending", observed["last_result"])
-            self.assertIn("仍待真实结果", observed["auto_last_error"])
+            self.assertIn("等待最终结算", observed["auto_last_error"])
 
     async def test_scheduler_stops_after_retry_limit_on_swallowed_reply(self):
         now = 1_780_000_000.0
@@ -991,7 +1022,7 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, observed["auto_retry_count"])
         self.assertEqual(now - 10 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC, observed["next_hehuan_time"])
 
-    async def test_scheduler_does_not_treat_start_reply_as_log_recovery(self):
+    async def test_scheduler_treats_start_reply_without_final_edit_as_consumed(self):
         now = 1_780_000_000.0
         pending_entry = {
             "text": "契印感应，双方灵力开始共鸣，准备进行温养双修...",
@@ -1003,8 +1034,8 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
         def fake_find_replies(*args, **kwargs):
             predicate = kwargs.get("predicate")
             self.assertIsNotNone(predicate)
-            self.assertFalse(predicate(pending_entry))
-            return []
+            self.assertTrue(predicate(pending_entry))
+            return [pending_entry]
 
         with state_module.use_identity(self.identity_id):
             state_module.state["hehuan_enabled"] = True
@@ -1031,9 +1062,64 @@ class HehuanSchedulerTests(unittest.IsolatedAsyncioTestCase):
             save_mock.assert_called_once()
             observed = state_module.state["hehuan_observation"]
 
-        self.assertEqual(1, observed["auto_retry_count"])
+        self.assertEqual(0, observed["auto_retry_count"])
         self.assertEqual(0, observed["auto_pending_msg_id"])
-        self.assertIn("温养回复超时或被吞", observed["auto_last_error"])
+        self.assertEqual("assumed_consumed", observed["last_result"])
+        self.assertEqual(
+            now - 200 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC + hehuan.HEHUAN_CD_BUFFER_SEC,
+            observed["next_hehuan_time"],
+        )
+        self.assertIn("已按起手+1小时保守冷却", observed["auto_last_error"])
+
+    async def test_scheduler_recovers_logged_start_reply_before_retrying(self):
+        now = 1_780_000_000.0
+        pending_entry = {
+            "text": "契印感应，双方灵力开始共鸣，准备进行温养双修...",
+            "ts_epoch": now - 200,
+            "message_id": 9902,
+            "reply_to_msg_id": 9901,
+        }
+
+        def fake_find_replies(*args, **kwargs):
+            predicate = kwargs.get("predicate")
+            self.assertIsNotNone(predicate)
+            self.assertTrue(predicate(pending_entry))
+            return [pending_entry]
+
+        with state_module.use_identity(self.identity_id):
+            state_module.state["hehuan_enabled"] = True
+            state_module.state["hehuan_observation"] = {
+                "last_observed_at": now - 600,
+                "last_result": "success",
+                "last_warm_success_at": now - 7200,
+                "contract_until": now + 3600,
+                "next_hehuan_time": 0,
+                "last_partner": "@dao_partner",
+                "auto_next_time": now - 1,
+                "auto_retry_count": 1,
+                "auto_pending_msg_id": 9901,
+                "auto_pending_sent_at": now - 300,
+                "auto_pending_deadline_at": now - 1,
+            }
+            with (
+                patch.object(hehuan, "find_message_log_replies", side_effect=fake_find_replies),
+                patch.object(hehuan, "save_state") as save_mock,
+                patch.object(hehuan, "send_game_command", new=AsyncMock()) as send_mock,
+            ):
+                await hehuan.run_hehuan_scheduler(now)
+
+            send_mock.assert_not_called()
+            save_mock.assert_called_once()
+            observed = state_module.state["hehuan_observation"]
+
+        self.assertEqual(0, observed["auto_retry_count"])
+        self.assertEqual(0, observed["auto_pending_msg_id"])
+        self.assertEqual("assumed_consumed", observed["last_result"])
+        self.assertEqual(
+            now - 200 + hehuan.HEHUAN_WARM_OBSERVED_CD_SEC + hehuan.HEHUAN_CD_BUFFER_SEC,
+            observed["next_hehuan_time"],
+        )
+        self.assertIn("已按起手+1小时保守冷却", observed["auto_last_error"])
 
     async def test_scheduler_blocks_warm_when_recent_partner_anchor_missing(self):
         now = 1_780_000_000.0
