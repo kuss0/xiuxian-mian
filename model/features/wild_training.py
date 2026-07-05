@@ -40,6 +40,8 @@ WILD_TRAINING_SEND_QUEUE_RETRY_MAX_SEC = 20 * 60
 WILD_TRAINING_SEND_UNKNOWN_WAIT_SEC = 10 * 60
 WILD_TRAINING_SEND_UNKNOWN_UNRECOVERED_MIN_SEC = 30 * 60
 WILD_TRAINING_SEND_UNKNOWN_UNRECOVERED_MAX_SEC = 45 * 60
+WILD_TRAINING_SEND_UNKNOWN_RETRY_MIN_SEC = 2 * 60
+WILD_TRAINING_SEND_UNKNOWN_RETRY_MAX_SEC = 3 * 60
 WILD_TRAINING_TIANXING_PANEL_QUEUE_TIMEOUT_SEC = 45
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MIN_SEC = 10
 WILD_TRAINING_DUNGEON_QUIET_RESUME_MAX_SEC = 40
@@ -283,6 +285,21 @@ def _mark_unknown_send_unrecovered(now, reason):
     state["wild_training_last_result"] = "未知发送未找回，已保守退避"
     state["wild_training_last_result_at"] = 0
     state["wild_training_last_error"] = str(reason or "野外历练发送状态未知且消息日志未捞到反馈，已保守退避")
+    state["next_wild_training_time"] = next_time
+    return next_time
+
+
+def _mark_unknown_send_short_retry(now, reason):
+    next_time = float(now or 0) + random.uniform(
+        WILD_TRAINING_SEND_UNKNOWN_RETRY_MIN_SEC,
+        WILD_TRAINING_SEND_UNKNOWN_RETRY_MAX_SEC,
+    )
+    state["wild_training_reply_to_msg_id"] = 0
+    state["wild_training_reply_due_at"] = 0
+    state["wild_training_retry_count"] = 0
+    state["wild_training_last_result"] = "未知发送未找回，短退避后重试"
+    state["wild_training_last_result_at"] = 0
+    state["wild_training_last_error"] = str(reason or "野外历练发送状态未知且消息日志未捞到命令，短退避后重试")
     state["next_wild_training_time"] = next_time
     return next_time
 
@@ -792,7 +809,16 @@ def _recover_unknown_wild_training_from_message_log(now):
         return "result"
     start_entry = _find_logged_start_for_command(command_entry["msg_id"], now)
     if not start_entry:
-        return ""
+        state["wild_training_reply_to_msg_id"] = int(command_entry["msg_id"] or 0)
+        state["wild_training_last_msg_id"] = int(command_entry["msg_id"] or 0)
+        strategy = str(command_entry.get("text") or CMD_WILD_TRAINING).replace(CMD_WILD_TRAINING, "", 1).strip()
+        state["wild_training_last_result"] = f"已发送：{strategy or '未知策略'}"
+        state["wild_training_last_error"] = "野外历练发送状态未知，但已从消息日志回捞到命令，继续等待回复或冷却校准"
+        state["wild_training_reply_due_at"] = max(
+            float(state.get("wild_training_reply_due_at", 0) or 0),
+            float(command_entry["ts"] or now) + WILD_TRAINING_REPLY_TIMEOUT_SEC,
+        )
+        return "command"
     result_entry = _find_logged_entry_by_msg_id(start_entry["msg_id"], now, result=True)
     if result_entry:
         _apply_wild_training_result(result_entry["text"], result_entry["ts"] or now, result_entry["msg_id"])
@@ -1001,6 +1027,14 @@ async def _cleanup_wild_training_pending_timeout(now):
             save_state()
             await send_audit_log(f"🏞️ 野外历练日志补偿：{state['wild_training_last_result']}", scope="identity", limit=220)
             return True
+        if recovered == "command":
+            save_state()
+            await send_audit_log(
+                f"🏞️ 野外历练发送回捞：已找回命令 msg_id={state['wild_training_reply_to_msg_id']}，继续等待回复或冷却校准。",
+                scope="identity",
+                limit=220,
+            )
+            return True
         if recovered == "start" and now < float(state.get("wild_training_reply_due_at", 0) or 0):
             save_state()
             console_log(
@@ -1011,13 +1045,13 @@ async def _cleanup_wild_training_pending_timeout(now):
         if now < float(state.get("wild_training_reply_due_at", 0) or 0):
             return False
         if not state.get("tianxing_enabled"):
-            next_time = _mark_unknown_send_unrecovered(
+            next_time = _mark_unknown_send_short_retry(
                 now,
-                "野外历练发送状态未知且消息日志未捞到反馈，普通野外已保守退避",
+                "野外历练发送状态未知且消息日志未捞到命令，普通野外短退避后重试",
             )
             save_state()
             await send_audit_log(
-                f"🏞️ 野外历练发送状态未知：日志未捞到反馈，普通野外已退避至 {fmt_abs_ts(next_time)}。",
+                f"🏞️ 野外历练发送状态未知：日志未捞到命令，普通野外短退避后重试至 {fmt_abs_ts(next_time)}。",
                 scope="identity",
                 priority="normal",
             )
@@ -1028,13 +1062,13 @@ async def _cleanup_wild_training_pending_timeout(now):
             reason="野外历练发送状态未知且消息日志未捞到反馈，先查盘校准",
         )
         await _send_tianxing_panel_calibration(now, "野外历练发送状态未知且消息日志未捞到反馈，已转天机盘校准")
-        next_time = _mark_unknown_send_unrecovered(
+        next_time = _mark_unknown_send_short_retry(
             now,
-            "野外历练发送状态未知且消息日志未捞到反馈，已查天机盘校准后保守退避",
+            "野外历练发送状态未知且消息日志未捞到命令，已查天机盘校准后短退避重试",
         )
         save_state()
         await send_audit_log(
-            f"🌌 野外历练发送状态未知：日志未捞到反馈，已查天机盘校准；退避至 {fmt_abs_ts(next_time)}。",
+            f"🌌 野外历练发送状态未知：日志未捞到命令，已查天机盘校准；短退避至 {fmt_abs_ts(next_time)}。",
             scope="identity",
             priority="high",
         )

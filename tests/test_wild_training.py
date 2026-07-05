@@ -2102,7 +2102,48 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cooldown_ts + 6938 + config.CD_BUFFER_SEC + 10, state_module.state["next_wild_training_time"])
         self.assertEqual("", state_module.state["wild_training_last_error"])
 
-    async def test_unknown_send_without_tianxing_backs_off_once(self):
+    async def test_unknown_send_recovers_channel_identity_command_as_pending(self):
+        send_as_id = self._prepare_identity()
+        now = 1_700_000_700.0
+        command_ts = now - 120
+        entries = [
+            {
+                "ts": self._log_ts(command_ts),
+                "event_type": "message",
+                "message_id": 501,
+                "chat_id": -1001680975844,
+                "sender_id": int(f"-100{send_as_id}"),
+                "reply_to_msg_id": 7310786,
+                "text": ".野外历练 谨慎",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._write_message_log(tmpdir, entries, now)
+            with state_module.use_identity(send_as_id) as identity_state:
+                identity_state["next_wild_training_time"] = now - 1
+                identity_state["wild_training_reply_to_msg_id"] = 0
+                identity_state["wild_training_reply_due_at"] = now - 1
+                identity_state["wild_training_last_result"] = "发送状态未知，等待被动回复或冷却校准"
+                identity_state["wild_training_last_error"] = "野外历练发送状态未知"
+                identity_state["tianxing_enabled"] = False
+
+            with state_module.use_identity(send_as_id), \
+                 patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
+                 patch.object(wild_training, "save_state"), \
+                 patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
+                 patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
+                await wild_training.run_wild_training_scheduler(now)
+
+        send_mock.assert_not_awaited()
+        audit_mock.assert_awaited_once()
+        self.assertEqual(501, state_module.state["wild_training_reply_to_msg_id"])
+        self.assertEqual(501, state_module.state["wild_training_last_msg_id"])
+        self.assertEqual(command_ts + wild_training.WILD_TRAINING_REPLY_TIMEOUT_SEC, state_module.state["wild_training_reply_due_at"])
+        self.assertEqual("已发送：谨慎", state_module.state["wild_training_last_result"])
+        self.assertIn("回捞到命令", state_module.state["wild_training_last_error"])
+
+    async def test_unknown_send_without_tianxing_short_retries_when_command_not_found(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
 
@@ -2119,7 +2160,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             with state_module.use_identity(send_as_id), \
                  patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
                  patch.object(wild_training, "save_state"), \
-                 patch.object(wild_training.random, "uniform", return_value=1800), \
+                 patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_SEND_UNKNOWN_RETRY_MIN_SEC), \
                  patch.object(wild_training, "send_audit_log", new=AsyncMock()) as audit_mock, \
                  patch.object(wild_training, "send_game_command", new=AsyncMock()) as send_mock:
                 await wild_training.run_wild_training_scheduler(now)
@@ -2130,11 +2171,11 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
         self.assertEqual(0, state_module.state["wild_training_retry_count"])
-        self.assertEqual("未知发送未找回，已保守退避", state_module.state["wild_training_last_result"])
-        self.assertIn("普通野外已保守退避", state_module.state["wild_training_last_error"])
-        self.assertEqual(now + 1800, state_module.state["next_wild_training_time"])
+        self.assertEqual("未知发送未找回，短退避后重试", state_module.state["wild_training_last_result"])
+        self.assertIn("普通野外短退避后重试", state_module.state["wild_training_last_error"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_SEND_UNKNOWN_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
 
-    async def test_unknown_send_with_tianxing_calibrates_and_backs_off_once(self):
+    async def test_unknown_send_with_tianxing_calibrates_and_short_retries_when_command_not_found(self):
         send_as_id = self._prepare_identity()
         now = 1_700_000_700.0
 
@@ -2151,7 +2192,7 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
             with state_module.use_identity(send_as_id), \
                  patch.object(wild_training, "MESSAGES_DIR", tmpdir), \
                  patch.object(wild_training, "save_state"), \
-                 patch.object(wild_training.random, "uniform", return_value=1800), \
+                 patch.object(wild_training.random, "uniform", return_value=wild_training.WILD_TRAINING_SEND_UNKNOWN_RETRY_MIN_SEC), \
                  patch.object(wild_training, "_send_tianxing_panel_calibration", new=AsyncMock(return_value=True)) as panel_mock, \
                  patch.object(wild_training, "mark_tianxing_route_result_unknown") as mark_unknown_mock, \
                  patch.object(wild_training, "build_tianxing_consume_window", return_value=[]), \
@@ -2167,9 +2208,9 @@ class WildTrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(0, state_module.state["wild_training_reply_to_msg_id"])
         self.assertEqual(0, state_module.state["wild_training_reply_due_at"])
         self.assertEqual(0, state_module.state["wild_training_retry_count"])
-        self.assertEqual("未知发送未找回，已保守退避", state_module.state["wild_training_last_result"])
-        self.assertIn("已查天机盘校准后保守退避", state_module.state["wild_training_last_error"])
-        self.assertEqual(now + 1800, state_module.state["next_wild_training_time"])
+        self.assertEqual("未知发送未找回，短退避后重试", state_module.state["wild_training_last_result"])
+        self.assertIn("已查天机盘校准后短退避重试", state_module.state["wild_training_last_error"])
+        self.assertEqual(now + wild_training.WILD_TRAINING_SEND_UNKNOWN_RETRY_MIN_SEC, state_module.state["next_wild_training_time"])
 
     async def test_passive_start_notice_does_not_clear_pending(self):
         send_as_id = self._prepare_identity()

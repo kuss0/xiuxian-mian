@@ -3760,8 +3760,13 @@ def _timeline_step_is_confirmed(step, observed, now):
     action = str((step or {}).get("action") or "").strip()
     arg = str((step or {}).get("arg") or "").strip()
     sent_at = float((step or {}).get("sent_at", 0) or 0)
+    send_started_at = float((step or {}).get("send_started_at", 0) or 0)
     observed_at = float((observed or {}).get("last_observed_at", 0) or 0)
-    if sent_at > 0 and observed_at > 0 and observed_at + 0.001 < sent_at:
+    confirmation_floor = 0.0
+    for candidate in (send_started_at, sent_at):
+        if candidate > 0 and (confirmation_floor <= 0 or candidate < confirmation_floor):
+            confirmation_floor = candidate
+    if confirmation_floor > 0 and observed_at > 0 and observed_at + 0.001 < confirmation_floor:
         return False
     if action == "set_star":
         return bool(arg) and _effective_fixed_star(observed, now) == arg
@@ -3789,7 +3794,11 @@ def _timeline_step_is_confirmed(step, observed, now):
 def _confirm_tianxing_timeline_from_observation(now):
     timeline = normalize_tianxing_timeline_state(state.get("tianxing_timeline_state"))
     step = dict(timeline.get("active_step") or {})
-    if str(step.get("status") or "") not in {"sending", "sent_waiting_ack"}:
+    status = str(step.get("status") or "")
+    action = str(step.get("action") or "").strip()
+    if status not in {"sending", "sent_waiting_ack", "ack_timeout"}:
+        return False, timeline
+    if status == "ack_timeout" and action == "panel":
         return False, timeline
     observed = normalize_tianxing_observation(state.get("tianxing_observation"))
     _close_tianxing_guards_from_observation(observed, now)
@@ -3799,6 +3808,7 @@ def _confirm_tianxing_timeline_from_observation(now):
     step["confirmed_at"] = float(now)
     timeline["phase"] = "state_confirmed"
     timeline["last_error"] = ""
+    timeline["blocked_until"] = 0
     timeline["updated_at"] = float(now)
     _set_timeline_step(timeline, _timeline_active_index(timeline), step)
     _timeline_audit(timeline, now, "state_confirmed", action=step.get("action"), arg=step.get("arg"), route=step.get("route"))
@@ -3874,6 +3884,8 @@ async def _release_tianxing_calibration_if_route_ready(timeline, observed, now, 
     active_step["status"] = "skipped_route_ready"
     active_step["skipped_at"] = float(now)
     active_step["last_error"] = "已有有效推命与改命，跳过查盘校准并放行下游。"
+    timeline["blocked_until"] = 0
+    timeline["last_error"] = ""
     _set_timeline_step(timeline, active_index, active_step)
     _timeline_audit(timeline, now, "calibration_skipped_route_ready", route=release_step.get("route") or release_step.get("arg"))
     _activate_timeline_step(timeline, release_index, now)
