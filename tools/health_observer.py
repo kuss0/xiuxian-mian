@@ -50,7 +50,7 @@ COOLDOWN_REPLY_PATTERN = re.compile(
 )
 MODULE_ERROR_ATTENTION_PATTERN = re.compile(r"超时|失败|异常|无法|未识别|安全锁|熔断|风暴|吞|卡住|人工|manual", re.I)
 BENIGN_MODULE_ERROR_PATTERN = re.compile(
-    r"今日.*已达上限|今日.*已达\s*\d+\s*轮|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次|回到时间线重算|需重算时间线|不连续查盘"
+    r"今日.*已达上限|今日.*已达\s*\d+\s*轮|次数已达上限|冷却中|尚未恢复|尚未重启|等待|无需|不补发|稍后重试|准备补发一次|回到时间线重算|需重算时间线|不连续查盘|显灵失败，停止本轮"
 )
 ACTIVE_STATUS_COMMANDS = {".查看闭关", ".元婴状态"}
 GUARDED_COMMAND_REPEAT_ALERT_MIN = 4

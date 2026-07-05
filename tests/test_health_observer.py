@@ -810,6 +810,43 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(any(item["module"] == "fishing" for item in summary))
 
+    def test_module_summary_treats_small_world_manifest_loss_as_game_result(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, small_world_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_small_world_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    small_world_phase TEXT NOT NULL DEFAULT 'idle',
+                    small_world_query_msg_id INTEGER NOT NULL DEFAULT 0,
+                    small_world_preach_reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    small_world_manifest_msg_id INTEGER NOT NULL DEFAULT 0,
+                    small_world_harvest_msg_id INTEGER NOT NULL DEFAULT 0,
+                    small_world_barrier_msg_id INTEGER NOT NULL DEFAULT 0,
+                    small_world_preach_due_at REAL NOT NULL DEFAULT 0,
+                    small_world_barrier_due_at REAL NOT NULL DEFAULT 0,
+                    small_world_god_cooldown_until REAL NOT NULL DEFAULT 0,
+                    small_world_last_error TEXT NOT NULL DEFAULT ''
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'smallworld')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, small_world_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_small_world_time) VALUES(42, ?)", (now + 3600,))
+            conn.execute(
+                "INSERT INTO identity_runtime_state(send_as_id, small_world_last_error) VALUES(42, '显灵失败，停止本轮')"
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        item = next(entry for entry in summary if entry["module"] == "small_world")
+        self.assertEqual("ok", item["status"])
+        self.assertTrue(any("显灵失败，停止本轮" in detail for detail in item["details"]))
+
     def test_module_summary_ignores_resolved_concubine_puzzle_send_error(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
