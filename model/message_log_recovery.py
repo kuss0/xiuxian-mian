@@ -5,6 +5,10 @@ from pathlib import Path
 from .config import MESSAGES_DIR, TZ_LOCAL
 
 
+def normalize_command_text(text):
+    return str(text or "").strip().replace("。", ".", 1)
+
+
 def parse_message_log_ts(raw_ts):
     raw = str(raw_ts or "").strip()
     if not raw:
@@ -105,6 +109,25 @@ def find_recent_message_log_command(now, *, sender_id=0, command_predicate=None,
     return found
 
 
+def find_recent_message_log_commands(now, *, sender_id=0, command_predicate=None, start_ts=0, lookback_sec=900, lookahead_sec=30, messages_dir=None):
+    sender_id = int(sender_id or 0)
+    end_ts = float(now or 0) + max(0, int(lookahead_sec or 0))
+    start_ts = float(start_ts or 0)
+    if start_ts <= 0:
+        start_ts = max(0.0, end_ts - max(1, int(lookback_sec or 1)))
+    matches = []
+    for entry, entry_ts in iter_message_log_entries_between(start_ts, end_ts, messages_dir=messages_dir):
+        if sender_id > 0 and int((entry or {}).get("sender_id") or 0) != sender_id:
+            continue
+        if command_predicate is not None and not command_predicate(entry):
+            continue
+        item = dict(entry)
+        item["ts_epoch"] = entry_ts
+        matches.append(item)
+    matches.sort(key=lambda item: (float(item.get("ts_epoch") or 0), int(item.get("message_id") or 0)))
+    return matches
+
+
 def sender_matches_identity(sender_id, identity_id):
     try:
         sender_id = int(sender_id or 0)
@@ -149,12 +172,19 @@ def recover_sent_command_from_message_log(
     if send_as_id <= 0:
         return None
 
-    def predicate(entry):
+    command_norm = normalize_command_text(command)
+
+    def base_match(entry):
         if str((entry or {}).get("event_type") or "") not in {"message", "sent"}:
             return False
         if game_group_id and int((entry or {}).get("chat_id") or 0) != game_group_id:
             return False
-        if str((entry or {}).get("text") or "").strip() != command:
+        if normalize_command_text((entry or {}).get("text")) != command_norm:
+            return False
+        return sender_matches_identity((entry or {}).get("sender_id"), send_as_id)
+
+    def strict_match(entry):
+        if not base_match(entry):
             return False
         entry_reply_to = int((entry or {}).get("reply_to_msg_id") or 0)
         if reply_to_msg_id > 0:
@@ -162,17 +192,35 @@ def recover_sent_command_from_message_log(
                 return False
         elif topic_id > 0 and entry_reply_to not in {0, topic_id}:
             return False
-        return sender_matches_identity((entry or {}).get("sender_id"), send_as_id)
+        return True
 
     found = find_recent_message_log_command(
         now,
         sender_id=0,
-        command_predicate=predicate,
+        command_predicate=strict_match,
         start_ts=start_ts,
         lookback_sec=lookback_sec,
         lookahead_sec=lookahead_sec,
         messages_dir=messages_dir,
     )
+    if not found:
+        candidates = find_recent_message_log_commands(
+            now,
+            sender_id=0,
+            command_predicate=base_match,
+            start_ts=start_ts,
+            lookback_sec=lookback_sec,
+            lookahead_sec=lookahead_sec,
+            messages_dir=messages_dir,
+        )
+        if candidates:
+            found = min(
+                candidates,
+                key=lambda item: (
+                    abs(float(item.get("ts_epoch") or 0) - float(start_ts or 0)),
+                    int(item.get("message_id") or 0),
+                ),
+            )
     if not found:
         return None
     try:

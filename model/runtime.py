@@ -313,7 +313,7 @@ LOG_BOT_POLL_READ_TIMEOUT_SEC = 35
 LOG_BOT_POLL_INTERVAL_SEC = 1.0
 LOG_ACCOUNT_SEND_TIMEOUT_SEC = 10
 GAME_SEND_RPC_TIMEOUT_SEC = 25
-GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 3.0
+GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC = 35.0
 _ACCOUNT_OFFLINE_AUDIT_LAST = {}
 ACCOUNT_OFFLINE_AUDIT_INTERVAL_SEC = 30 * 60
 WEAKNESS_BLOCK_AUDIT_INTERVAL_SEC = 5 * 60
@@ -828,7 +828,13 @@ def _minimum_send_queue_timeout_sec(priority, command=None, send_as_id=None, int
         identity_id = 0
     identity_gap = float(IDENTITY_SEND_GAP_MIN_SEC or 0.0) if identity_id > 0 else 0.0
     local_wait_budget = max(float(max_gap or 0.0), float(module_gap or 0.0), float(identity_gap or 0.0))
-    return max(1.0, float(GAME_SEND_RPC_TIMEOUT_SEC or 0.0) + local_wait_budget + SEND_QUEUE_TIMEOUT_MARGIN_SEC)
+    return max(
+        1.0,
+        float(GAME_SEND_RPC_TIMEOUT_SEC or 0.0)
+        + float(GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC or 0.0)
+        + local_wait_budget
+        + SEND_QUEUE_TIMEOUT_MARGIN_SEC,
+    )
 
 
 def _effective_send_queue_timeout(priority, command=None, send_as_id=None, intent=None, queue_timeout=None):
@@ -2713,6 +2719,15 @@ def _extract_sent_message_id(result):
     return 0
 
 
+def _consume_background_task_result(task):
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        pass
+
+
 def _is_account_session_error(error):
     error_text = str(error or "")
     error_code = error_text.upper()
@@ -3007,6 +3022,7 @@ async def _recover_timed_out_game_send(
     game_group_id,
     topic_id=0,
     reply_to=0,
+    send_task=None,
 ):
     try:
         start_ts = max(0.0, float(send_started_at or 0) - 3.0)
@@ -3017,12 +3033,24 @@ async def _recover_timed_out_game_send(
     try:
         recovery_wait = min(
             max(0.0, float(GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC or 0.0)),
-            max(0.0, float(GAME_SEND_RPC_TIMEOUT_SEC or 0.0) * 0.5),
+            90.0,
         )
     except (TypeError, ValueError, OverflowError):
         recovery_wait = 0.0
     deadline = time.time() + recovery_wait
     while True:
+        if send_task is not None and send_task.done():
+            try:
+                result = send_task.result()
+                msg_id = _extract_sent_message_id(result)
+            except Exception:
+                msg_id = 0
+            if msg_id > 0:
+                return {
+                    "event_type": "rpc_result",
+                    "message_id": msg_id,
+                    "ts_epoch": time.time(),
+                }
         recovered = recover_sent_command_from_message_log(
             command,
             send_as_id,
@@ -3165,6 +3193,65 @@ async def send_game_command(
             _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
             return None
 
+        if account_id:
+            active_client = get_registered_client(account_id)
+            if active_client is None:
+                reason = "账号 client 未注册或启动失败"
+                mark_account_offline(account_id, reason)
+                await _log_account_offline_blocked(
+                    command,
+                    send_as_id=send_as_id,
+                    account_id=account_id,
+                    reason=reason,
+                    force=True,
+                )
+                _record_game_send_block(send_as_id, command, "account_client_missing", reason)
+                return None
+            try:
+                await asyncio.wait_for(_ensure_account_client_ready(active_client), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+            except Exception as e:
+                reason = _compact_account_error(e)
+                if _is_account_session_error(e):
+                    mark_account_offline(account_id, reason)
+                    await _log_account_offline_blocked(
+                        command,
+                        send_as_id=send_as_id,
+                        account_id=account_id,
+                        reason=reason,
+                        force=True,
+                    )
+                else:
+                    await send_audit_log(
+                        (
+                            f"⚠️ 账号连接检查失败，稍后重试：acc={account_id}｜"
+                            f"{reason}｜跳过 {_truncate_log_text(command, limit=32)}"
+                        ),
+                        scope="identity",
+                        send_as_id=send_as_id,
+                        limit=240,
+                    )
+                _record_game_send_block(send_as_id, command, "account_client_not_ready", reason)
+                return None
+        else:
+            active_client = _get_any_authed_client()
+        game_group_id = get_game_group_id()
+        if not game_group_id:
+            raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
+        try:
+            peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+        except ValueError:
+            await asyncio.wait_for(active_client.get_dialogs(), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+            peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+        send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+        reply_to_spec = None
+        if reply_to:
+            reply_to_spec = types.InputReplyToMessage(
+                reply_to_msg_id=int(reply_to),
+                top_msg_id=int(topic_id or 0) or None,
+            )
+        elif topic_id > 0:
+            reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
+
         effective_queue_timeout = _effective_send_queue_timeout(
             send_priority,
             command=command,
@@ -3172,6 +3259,7 @@ async def send_game_command(
             intent=send_intent,
             queue_timeout=queue_timeout,
         )
+        send_task = None
         async with _send_slot(send_priority, command=command, send_as_id=send_as_id, intent=send_intent, queue_timeout=effective_queue_timeout):
             if not get_global_enabled() and send_priority not in {SEND_PRIORITY_P0, SEND_PRIORITY_PROBE}:
                 _record_game_send_block(send_as_id, command, "global_disabled", "全局暂停")
@@ -3235,158 +3323,103 @@ async def send_game_command(
                 _record_game_send_block(send_as_id, command, "action_guard", guard_reason)
                 return None
 
-            if account_id:
-                active_client = get_registered_client(account_id)
-                if active_client is None:
-                    reason = "账号 client 未注册或启动失败"
-                    mark_account_offline(account_id, reason)
-                    await _log_account_offline_blocked(
-                        command,
-                        send_as_id=send_as_id,
-                        account_id=account_id,
-                        reason=reason,
-                        force=True,
+            send_request_started_at = time.time()
+            send_task = asyncio.create_task(
+                active_client(
+                    functions.messages.SendMessageRequest(
+                        peer=peer,
+                        message=command,
+                        reply_to=reply_to_spec,
+                        send_as=send_as_peer,
                     )
-                    _record_game_send_block(send_as_id, command, "account_client_missing", reason)
-                    return None
-                try:
-                    await asyncio.wait_for(_ensure_account_client_ready(active_client), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-                except Exception as e:
-                    reason = _compact_account_error(e)
-                    if _is_account_session_error(e):
-                        mark_account_offline(account_id, reason)
-                        await _log_account_offline_blocked(
-                            command,
-                            send_as_id=send_as_id,
-                            account_id=account_id,
-                            reason=reason,
-                            force=True,
-                        )
-                    else:
-                        await send_audit_log(
-                            (
-                                f"⚠️ 账号连接检查失败，稍后重试：acc={account_id}｜"
-                                f"{reason}｜跳过 {_truncate_log_text(command, limit=32)}"
-                            ),
-                            scope="identity",
-                            send_as_id=send_as_id,
-                            limit=240,
-                        )
-                    _record_game_send_block(send_as_id, command, "account_client_not_ready", reason)
-                    return None
-            else:
-                active_client = _get_any_authed_client()
-            game_group_id = get_game_group_id()
-            if not game_group_id:
-                raise ValueError("游戏群聊 ID 未配置，请在 UI 基础配置中设置")
-            try:
-                peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-            except ValueError:
-                await asyncio.wait_for(active_client.get_dialogs(), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-                peer = await asyncio.wait_for(active_client.get_input_entity(game_group_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-            send_as_peer = await asyncio.wait_for(active_client.get_input_entity(send_as_id), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
-            reply_to_spec = None
-            if reply_to:
-                reply_to_spec = types.InputReplyToMessage(
-                    reply_to_msg_id=int(reply_to),
-                    top_msg_id=int(topic_id or 0) or None,
                 )
-            elif topic_id > 0:
-                reply_to_spec = types.InputReplyToMessage(reply_to_msg_id=int(topic_id))
-            try:
-                send_request_started_at = time.time()
-                result = await asyncio.wait_for(
-                    active_client(
-                        functions.messages.SendMessageRequest(
-                            peer=peer,
-                            message=command,
-                            reply_to=reply_to_spec,
-                            send_as=send_as_peer,
-                        )
-                    ),
-                    timeout=GAME_SEND_RPC_TIMEOUT_SEC,
-                )
-            except FloodWaitError as flood_err:
-                flood_until = _mark_account_flood_wait(account_id, int(flood_err.seconds), now=time.time())
-                mark_bot_health_suspect(
-                    f"TG FloodWait {int(flood_err.seconds)}s",
-                    reference_at=time.time(),
-                )
-                await send_audit_log(
-                    (
-                        f"⏸ TG FloodWait {int(flood_err.seconds)}s，账号发送退避至 {fmt_abs_ts(flood_until)}："
-                        f"{_truncate_log_text(command, limit=24)}"
-                    ),
-                    scope="identity", send_as_id=send_as_id, limit=220,
-                )
-                _record_game_send_block(send_as_id, command, "flood_wait", f"TG FloodWait {int(flood_err.seconds)}s")
-                return None
-            except asyncio.TimeoutError:
-                recovered = await _recover_timed_out_game_send(
-                    command,
-                    send_as_id=send_as_id,
-                    send_started_at=send_request_started_at,
-                    game_group_id=game_group_id,
-                    topic_id=topic_id,
-                    reply_to=reply_to,
-                )
-                if recovered:
-                    msg = _finalize_game_command_sent(
-                        command,
-                        msg_id=int(recovered.get("message_id") or 0),
-                        sent_at=float(recovered.get("ts_epoch") or time.time()),
-                        send_as_id=send_as_id,
-                        reply_to=reply_to,
-                        send_priority=send_priority,
-                        track=track,
-                        reply_timeout=reply_timeout,
-                        max_retry=max_retry,
-                        send_intent=send_intent,
-                        append_sent_log=str(recovered.get("event_type") or "") != "sent",
-                        recovered=True,
-                    )
-                    if msg is not None:
-                        await send_audit_log(
-                            (
-                                f"♻️ 指令发送返回慢但已回捞到消息ID："
-                                f"{_truncate_log_text(command, limit=40)}｜msg_id={msg.id}"
-                            ),
-                            scope="identity",
-                            send_as_id=send_as_id,
-                            limit=220,
-                            priority=AUDIT_PRIORITY_LOW,
-                        )
-                        return msg
-                await send_audit_log(
-                    (
-                        f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
-                        f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
-                        f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
-                    ),
-                    scope="identity",
-                    send_as_id=send_as_id,
-                    limit=240,
-                    priority=_send_timeout_audit_priority(command, send_intent),
-                )
-                _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
-                return None
-            msg_id = _extract_sent_message_id(result)
-            if msg_id <= 0:
-                raise ValueError("无法从发送结果中解析消息 ID")
-            sent_at = time.time()
-            msg = _finalize_game_command_sent(
-                command,
-                msg_id=msg_id,
-                sent_at=sent_at,
-                send_as_id=send_as_id,
-                reply_to=reply_to,
-                send_priority=send_priority,
-                track=track,
-                reply_timeout=reply_timeout,
-                max_retry=max_retry,
-                send_intent=send_intent,
             )
-            return msg
+            send_task.add_done_callback(_consume_background_task_result)
+
+        try:
+            result = await asyncio.wait_for(asyncio.shield(send_task), timeout=GAME_SEND_RPC_TIMEOUT_SEC)
+        except FloodWaitError as flood_err:
+            flood_until = _mark_account_flood_wait(account_id, int(flood_err.seconds), now=time.time())
+            mark_bot_health_suspect(
+                f"TG FloodWait {int(flood_err.seconds)}s",
+                reference_at=time.time(),
+            )
+            await send_audit_log(
+                (
+                    f"⏸ TG FloodWait {int(flood_err.seconds)}s，账号发送退避至 {fmt_abs_ts(flood_until)}："
+                    f"{_truncate_log_text(command, limit=24)}"
+                ),
+                scope="identity", send_as_id=send_as_id, limit=220,
+            )
+            _record_game_send_block(send_as_id, command, "flood_wait", f"TG FloodWait {int(flood_err.seconds)}s")
+            return None
+        except asyncio.TimeoutError:
+            recovered = await _recover_timed_out_game_send(
+                command,
+                send_as_id=send_as_id,
+                send_started_at=send_request_started_at,
+                game_group_id=game_group_id,
+                topic_id=topic_id,
+                reply_to=reply_to,
+                send_task=send_task,
+            )
+            if recovered:
+                msg = _finalize_game_command_sent(
+                    command,
+                    msg_id=int(recovered.get("message_id") or 0),
+                    sent_at=float(recovered.get("ts_epoch") or time.time()),
+                    send_as_id=send_as_id,
+                    reply_to=reply_to,
+                    send_priority=send_priority,
+                    track=track,
+                    reply_timeout=reply_timeout,
+                    max_retry=max_retry,
+                    send_intent=send_intent,
+                    append_sent_log=str(recovered.get("event_type") or "") != "sent",
+                    recovered=True,
+                )
+                if msg is not None:
+                    await send_audit_log(
+                        (
+                            f"♻️ 指令发送返回慢但已回捞到消息ID："
+                            f"{_truncate_log_text(command, limit=40)}｜msg_id={msg.id}"
+                        ),
+                        scope="identity",
+                        send_as_id=send_as_id,
+                        limit=220,
+                        priority=AUDIT_PRIORITY_LOW,
+                    )
+                    return msg
+            await send_audit_log(
+                (
+                    f"⚠️ 指令发送返回慢，状态未知：{_truncate_log_text(command, limit=48)} | "
+                    f">{GAME_SEND_RPC_TIMEOUT_SEC}s | "
+                    f"acc={account_id} group={get_game_group_id()} topic={topic_id}"
+                ),
+                scope="identity",
+                send_as_id=send_as_id,
+                limit=240,
+                priority=_send_timeout_audit_priority(command, send_intent),
+            )
+            _record_game_send_block(send_as_id, command, "send_timeout", f">{GAME_SEND_RPC_TIMEOUT_SEC}s")
+            return None
+        msg_id = _extract_sent_message_id(result)
+        if msg_id <= 0:
+            raise ValueError("无法从发送结果中解析消息 ID")
+        sent_at = time.time()
+        msg = _finalize_game_command_sent(
+            command,
+            msg_id=msg_id,
+            sent_at=sent_at,
+            send_as_id=send_as_id,
+            reply_to=reply_to,
+            send_priority=send_priority,
+            track=track,
+            reply_timeout=reply_timeout,
+            max_retry=max_retry,
+            send_intent=send_intent,
+        )
+        return msg
     except GameSendQueueTimeout:
         _close_guard_for_unsent_command(command, send_as_id, "send_queue_timeout")
         effective_queue_timeout = _effective_send_queue_timeout(

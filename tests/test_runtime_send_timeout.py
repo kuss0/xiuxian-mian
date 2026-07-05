@@ -19,6 +19,7 @@ class _FakeClient:
     def __init__(self, behaviors):
         self.behaviors = list(behaviors)
         self.sent_requests = []
+        self.cancelled_count = 0
 
     def is_connected(self):
         return True
@@ -36,7 +37,11 @@ class _FakeClient:
         self.sent_requests.append(request)
         behavior = self.behaviors.pop(0) if self.behaviors else "ok"
         if behavior == "timeout":
-            await asyncio.sleep(10)
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                self.cancelled_count += 1
+                raise
         return SimpleNamespace(id=910001)
 
 
@@ -148,6 +153,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         with ExitStack() as stack:
             for patcher in (
                 patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.05),
+                patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 0.0),
                 patch.object(runtime, "get_registered_client", return_value=client),
                 patch.object(runtime, "is_account_offline", return_value=False),
                 patch.object(runtime, "get_game_group_id", return_value=123456),
@@ -235,10 +241,85 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(".观星台", pending["cmd"])
         self.assertEqual(1234.5, pending["sent_at"])
 
+    async def test_slow_rpc_does_not_hold_global_send_lock(self):
+        send_as_id = 301299112
+        account_id = 7001
+        state_module.ensure_identity_registered(send_as_id)
+        state_module.set_identity_account(send_as_id, account_id)
+        client = _FakeClient(["timeout", "ok"])
+
+        with ExitStack() as stack:
+            for patcher in (
+                patch.object(runtime, "GAME_SEND_RPC_TIMEOUT_SEC", 0.35),
+                patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 0.0),
+                patch.object(runtime, "get_registered_client", return_value=client),
+                patch.object(runtime, "is_account_offline", return_value=False),
+                patch.object(runtime, "get_game_group_id", return_value=123456),
+                patch.object(runtime, "get_game_topic_id", return_value=0),
+                patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_send_gap_range", return_value=(0.0, 0.0)),
+                patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
+                patch.object(runtime, "IDENTITY_SEND_GAP_MIN_SEC", 0.0),
+                patch.object(runtime, "_dungeon_quiet_blocks_send", new=AsyncMock(return_value=False)),
+                patch.object(runtime, "is_identity_weak", return_value=False),
+                patch.object(runtime, "action_guard_before_send", return_value=(True, "")),
+                patch.object(runtime, "send_audit_log", new=AsyncMock()),
+                patch.object(runtime, "_append_sent_message_log"),
+                patch.object(runtime, "action_guard_note_sent"),
+                patch.object(runtime, "mark_dirty"),
+                patch.object(runtime, "note_game_command_sent"),
+                patch.object(runtime, "_notify_game_command_sent_observers"),
+            ):
+                stack.enter_context(patcher)
+
+            first_task = asyncio.create_task(
+                runtime.send_game_command(".慢返回", send_as_id=send_as_id, priority="probe", track=False)
+            )
+            await asyncio.sleep(0.05)
+            second = await asyncio.wait_for(
+                runtime.send_game_command(".正常发送", send_as_id=send_as_id, priority="probe", track=False),
+                timeout=0.2,
+            )
+            first = await asyncio.wait_for(first_task, timeout=1)
+
+        self.assertIsNone(first)
+        self.assertEqual(910001, second.id)
+        self.assertFalse(runtime._GAME_SEND_LOCK.locked())
+        self.assertEqual(2, len(client.sent_requests))
+        self.assertEqual(0, client.cancelled_count)
+
+    async def test_send_timeout_recovery_polls_for_delayed_message_log_entry(self):
+        recovered = {
+            "event_type": "message",
+            "message_id": 920003,
+            "ts_epoch": 5678.5,
+        }
+
+        async def fake_sleep(_delay):
+            return None
+
+        with (
+            patch.object(runtime, "GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC", 5.0),
+            patch.object(runtime.time, "time", return_value=100.0),
+            patch.object(runtime.asyncio, "sleep", new=fake_sleep),
+            patch.object(runtime, "recover_sent_command_from_message_log", side_effect=[None, None, recovered]) as recover_mock,
+        ):
+            result = await runtime._recover_timed_out_game_send(
+                ".元婴状态",
+                send_as_id=301299112,
+                send_started_at=99.0,
+                game_group_id=123456,
+                topic_id=7310786,
+            )
+
+        self.assertEqual(920003, result["message_id"])
+        self.assertEqual(3, recover_mock.call_count)
+
     async def test_send_queue_timeout_releases_action_guard_placeholder(self):
         send_as_id = 301299112
         runtime._GAME_LAST_SEND_AT = runtime.time.monotonic()
         state_module.ensure_identity_registered(send_as_id)
+        client = _FakeClient(["ok"])
         with state_module.use_identity(send_as_id) as identity_state:
             identity_state["action_guard_sessions"] = {
                 "wild_training": {
@@ -259,6 +340,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(runtime, "get_game_group_id", return_value=123456),
                 patch.object(runtime, "get_game_topic_id", return_value=0),
                 patch.object(runtime, "get_global_enabled", return_value=True),
+                patch.object(runtime, "_get_any_authed_client", return_value=client),
                 patch.object(runtime, "_get_send_gap_range", return_value=(10.0, 10.0)),
                 patch.object(runtime.random, "uniform", return_value=10.0),
                 patch.object(runtime, "_module_send_gap_min_sec", return_value=0.0),
@@ -302,6 +384,7 @@ class RuntimeSendTimeoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(
             timeout,
             runtime.GAME_SEND_RPC_TIMEOUT_SEC
+            + runtime.GAME_SEND_TIMEOUT_RECOVERY_WAIT_SEC
             + max(runtime.REACTIVE_SEND_GAP_MAX_SEC, runtime.IDENTITY_SEND_GAP_MIN_SEC)
             + runtime.SEND_QUEUE_TIMEOUT_MARGIN_SEC,
         )
