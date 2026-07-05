@@ -525,6 +525,17 @@ def _handle_send_queue_timeout(command, now, *, due_key=None, error_key="concubi
     return True
 
 
+def _normalize_resolved_puzzle_send_error():
+    if str(state.get("concubine_last_error") or "") != "发送 .拼图 失败":
+        return False
+    if _phase() != "idle" or _is_puzzle_ready():
+        return False
+    state["concubine_last_error"] = ""
+    if not str(state.get("concubine_last_result") or "").strip():
+        state["concubine_last_result"] = "拼图发送失败已退回残图重查"
+    return True
+
+
 def _schedule_at_due_or_chain(now, due_at):
     due_at = float(due_at or 0)
     if due_at <= now:
@@ -3526,6 +3537,22 @@ async def _send_puzzle_command(now):
     msg = await _send_concubine_game_command(CMD_CONCUBINE_PUZZLE, track=False, priority="chain")
     sent_at = float(getattr(msg, "sent_at", 0) or time.time()) if msg else time.time()
     if not msg:
+        if await _recover_sent_command_after_empty_send(
+            sent_at,
+            "puzzle_pending",
+            CMD_CONCUBINE_PUZZLE,
+            "concubine_puzzle_msg_id",
+            label="残图拼合",
+            decision="puzzle_sent_recovered_after_empty_send",
+        ):
+            return True
+        if _handle_send_queue_timeout(
+            CMD_CONCUBINE_PUZZLE,
+            sent_at,
+            label="残图拼合",
+        ):
+            save_state()
+            return False
         state["concubine_last_error"] = "发送 .拼图 失败"
         _set_phase("idle")
         _backoff_after_pending_timeout(sent_at, "puzzle_pending")
@@ -5094,6 +5121,9 @@ async def _run_concubine_scheduler(now):
         save_state()
 
     if _clear_stale_phaseful_summary_wait_errors(now):
+        save_state()
+
+    if _normalize_resolved_puzzle_send_error():
         save_state()
 
     phase = _phase()

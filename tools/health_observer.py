@@ -919,6 +919,25 @@ def module_error_has_scheduled_retry(text: object, spec: dict[str, object], valu
     return "发送失败或被安全策略拦截" in raw or "发送" in raw
 
 
+def module_error_is_resolved(module_key: object, field: object, text: object, value_for) -> bool:
+    raw = str(text or "").strip()
+    if str(module_key or "") != "concubine" or str(field or "") != "concubine_last_error":
+        return False
+    if raw != "发送 .拼图 失败":
+        return False
+    if str(value_for("concubine_phase") or "").strip() != "idle":
+        return False
+    xutian_count = positive_int(value_for("concubine_fragment_xutian_count"))
+    xutian_total = positive_int(value_for("concubine_fragment_xutian_total")) or 4
+    cangkun_count = positive_int(value_for("concubine_fragment_cangkun_count"))
+    cangkun_total = positive_int(value_for("concubine_fragment_cangkun_total")) or 4
+    puzzle_ready = (
+        (xutian_total > 0 and xutian_count >= xutian_total)
+        or (cangkun_total > 0 and cangkun_count >= cangkun_total)
+    )
+    return not puzzle_ready
+
+
 def normalize_json_state_for_health(field: str, payload: dict[str, object], now: float | None = None) -> dict[str, object]:
     if not payload:
         return {}
@@ -1193,6 +1212,8 @@ def build_module_summary(conn: sqlite3.Connection, now: float, *, limit: int = 1
             for field, label_text in spec.get("last_error_fields", ()):
                 text = str(value_for(str(field)) or "").strip()
                 if text:
+                    if module_error_is_resolved(module_key, field, text, value_for):
+                        continue
                     add_module_detail(details, str(label_text), text)
                     if enabled and module_error_needs_attention(text):
                         scheduled_retry = module_error_has_scheduled_retry(text, spec, value_for, now)

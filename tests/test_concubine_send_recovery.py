@@ -112,6 +112,49 @@ class ConcubineSendRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual("", state_module.state["concubine_last_error"])
             self.assertIn("发送队列拥堵", state_module.state["concubine_last_result"])
 
+    async def test_puzzle_send_queue_timeout_is_deferred_not_health_error(self):
+        now = 1_783_122_900.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_phase"] = "puzzle_ready"
+            concubine._set_fragment_progress(concubine.DREAM_KIND_CANGKUN, 4, 4)
+            with (
+                patch.object(concubine, "send_game_command", new=AsyncMock(return_value=None)),
+                patch.object(concubine, "get_last_game_send_block", return_value={"code": "send_queue_timeout"}),
+                patch.object(concubine.time, "time", return_value=now),
+                patch.object(concubine.random, "uniform", return_value=120),
+            ):
+                sent = await concubine._send_puzzle_command(now)
+
+            self.assertFalse(sent)
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+            self.assertEqual(now + 120, state_module.state["next_concubine_time"])
+            self.assertEqual("", state_module.state["concubine_last_error"])
+            self.assertIn("发送队列拥堵", state_module.state["concubine_last_result"])
+            self.assertEqual((4, 4), concubine._get_fragment_progress(concubine.DREAM_KIND_CANGKUN))
+
+    async def test_resolved_puzzle_send_failure_is_cleared_from_health_state(self):
+        now = 1_783_123_100.0
+        send_as_id = self._prepare_identity()
+
+        with state_module.use_identity(send_as_id):
+            state_module.state["concubine_enabled"] = True
+            state_module.state["concubine_phase"] = "idle"
+            state_module.state["concubine_availability"] = "available"
+            state_module.state["concubine_name"] = "银月"
+            state_module.state["concubine_last_error"] = "发送 .拼图 失败"
+            state_module.state["next_concubine_time"] = now + 600
+            concubine._set_fragment_progress(concubine.DREAM_KIND_XUTIAN, 3, 4)
+            concubine._set_fragment_progress(concubine.DREAM_KIND_CANGKUN, 3, 4)
+            with patch.object(concubine, "save_state"):
+                await concubine.run_concubine_scheduler(now)
+
+            self.assertEqual("", state_module.state["concubine_last_error"])
+            self.assertEqual("拼图发送失败已退回残图重查", state_module.state["concubine_last_result"])
+            self.assertEqual("idle", state_module.state["concubine_phase"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -684,6 +684,59 @@ class HealthObserverTests(unittest.TestCase):
 
         self.assertFalse(any(item["module"] == "fishing" for item in summary))
 
+    def test_module_summary_ignores_resolved_concubine_puzzle_send_error(self):
+        now = 1_780_500_000.0
+        with sqlite3.connect(":memory:") as conn:
+            conn.row_factory = sqlite3.Row
+            conn.executescript(
+                """
+                CREATE TABLE identities(send_as_id INTEGER PRIMARY KEY, username TEXT NOT NULL DEFAULT '', label TEXT NOT NULL DEFAULT '');
+                CREATE TABLE identity_module_state(send_as_id INTEGER PRIMARY KEY, concubine_enabled INTEGER NOT NULL DEFAULT 0);
+                CREATE TABLE identity_timers(send_as_id INTEGER PRIMARY KEY, next_concubine_time REAL NOT NULL DEFAULT 0);
+                CREATE TABLE identity_runtime_state(
+                    send_as_id INTEGER PRIMARY KEY,
+                    concubine_phase TEXT NOT NULL DEFAULT 'idle',
+                    concubine_last_error TEXT NOT NULL DEFAULT '',
+                    concubine_last_result TEXT NOT NULL DEFAULT '',
+                    concubine_fragment_xutian_count INTEGER NOT NULL DEFAULT 0,
+                    concubine_fragment_xutian_total INTEGER NOT NULL DEFAULT 4,
+                    concubine_fragment_cangkun_count INTEGER NOT NULL DEFAULT 0,
+                    concubine_fragment_cangkun_total INTEGER NOT NULL DEFAULT 4
+                );
+                """
+            )
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(42, 'resolved')")
+            conn.execute("INSERT INTO identities(send_as_id, username) VALUES(43, 'ready')")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(42, 1)")
+            conn.execute("INSERT INTO identity_module_state(send_as_id, concubine_enabled) VALUES(43, 1)")
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(42, ?)", (now + 600,))
+            conn.execute("INSERT INTO identity_timers(send_as_id, next_concubine_time) VALUES(43, ?)", (now + 600,))
+            conn.execute(
+                """
+                INSERT INTO identity_runtime_state(
+                    send_as_id, concubine_last_error,
+                    concubine_fragment_xutian_count, concubine_fragment_cangkun_count
+                ) VALUES(42, '发送 .拼图 失败', 3, 3)
+                """
+            )
+            conn.execute(
+                """
+                INSERT INTO identity_runtime_state(
+                    send_as_id, concubine_last_error,
+                    concubine_fragment_xutian_count, concubine_fragment_cangkun_count
+                ) VALUES(43, '发送 .拼图 失败', 3, 4)
+                """
+            )
+
+            summary = health_observer.build_module_summary(conn, now)
+
+        resolved = next(item for item in summary if item["identity_id"] == 42)
+        ready = next(item for item in summary if item["identity_id"] == 43)
+        self.assertEqual("ok", resolved["status"])
+        self.assertFalse(any("发送 .拼图 失败" in detail for detail in resolved["details"]))
+        self.assertEqual("warn", ready["status"])
+        self.assertTrue(any("发送 .拼图 失败" in detail for detail in ready["details"]))
+
     def test_module_summary_ignores_stale_heart_due_during_unrelated_concubine_phase(self):
         now = 1_780_500_000.0
         with sqlite3.connect(":memory:") as conn:
